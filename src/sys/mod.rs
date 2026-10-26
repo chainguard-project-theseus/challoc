@@ -514,6 +514,46 @@ pub fn find_from(s: &[u8], start: usize, b: u8) -> (r: usize)
     i
 }
 
+/// The length of the first line of `s`, without its newline.
+pub open spec fn line_len(s: Seq<u8>) -> nat {
+    find_byte(s, 10)
+}
+
+/// What follows the first line of `s` and its newline.
+pub open spec fn after_line(s: Seq<u8>) -> Seq<u8> {
+    if line_len(s) < s.len() {
+        s.skip(line_len(s) as int + 1)
+    } else {
+        Seq::empty()
+    }
+}
+
+/// One step of a line scan: the line of `s` that starts at `start` ends at
+/// `end`, and the scan resumes after it.
+pub proof fn lemma_line_step(s: Seq<u8>, start: int, end: int)
+    requires
+        0 <= start < s.len(),
+        start <= end <= s.len(),
+        end - start == line_len(s.skip(start)),
+    ensures
+        s.skip(start).take(end - start) == s.subrange(start, end),
+        end < s.len() ==> after_line(s.skip(start)) == s.skip(end + 1),
+        end == s.len() ==> after_line(s.skip(start)) == Seq::<u8>::empty(),
+{
+    assert(s.skip(start).take(end - start) =~= s.subrange(start, end));
+    if end < s.len() {
+        assert(s.skip(start).skip(end - start + 1) =~= s.skip(end + 1));
+    }
+}
+
+/// A borrowed byte string's contents, if any.
+pub open spec fn opt_view(r: Option<&[u8]>) -> Option<Seq<u8>> {
+    match r {
+        Some(q) => Some(q@),
+        None => None,
+    }
+}
+
 } // verus!
 
 mod linux {

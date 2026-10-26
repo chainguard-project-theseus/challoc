@@ -28,11 +28,18 @@
 //! paths only; the limit walk is repeated at most once per
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
 
-use core::cell::UnsafeCell;
+use crate::vspec::byte::BytePerm;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::byte::byte_id;
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use vstd::cell::CellId;
+use vstd::cell::pcell::{PCell, PointsTo as PCellPerm};
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 
+#[cfg(verus_keep_ghost)]
+use super::{after_line, find_byte, lemma_line_step, line_len, opt_view, parse_decimal_spec};
 use super::{bytes_is, find_from, parse_decimal};
 use vstd::prelude::*;
 
@@ -44,7 +51,7 @@ verus! {
 pub const PATH_CAP: usize = 2048;
 /// Room after the directory for `/` plus the longest file name read here
 /// (`memory.current`, 14 bytes) plus the NUL, rounded up.
-const FILE_ROOM: usize = 32;
+pub const FILE_ROOM: usize = 32;
 /// Buffer for one cgroup file. `memory.events` is a handful of lines;
 /// `/proc/self/cgroup` can carry a dozen v1 lines on a hybrid host and
 /// still fits.
@@ -63,6 +70,7 @@ pub const LIMIT_INTERVAL_NS: u64 = 1_000_000_000;
 /// Two sampling windows: a process that ends sooner (a shell command, a
 /// short compiler step, an interpreter's start) never reads the files.
 pub const DEFER_NS: u64 = 2 * SAMPLE_INTERVAL_NS;
+
 /// `max` in a limit file: no limit at this level.
 pub const UNLIMITED: u64 = u64::MAX;
 /// Levels, from the leaf up, whose own limit and usage are kept: each one
@@ -83,29 +91,140 @@ pub const LEVELS: usize = 16;
 // nor take byte-string literals or patterns.
 // ---------------------------------------------------------------------------
 
+verus! {
+
 /// Leading decimal number of `bytes`, ignoring what follows the digits.
 /// `None` without a digit or on overflow (`sys::parse_decimal`).
-fn parse_u64_prefix(bytes: &[u8]) -> Option<u64> {
+fn parse_u64_prefix(bytes: &[u8]) -> (r: Option<u64>)
+    ensures
+        r == parse_decimal_spec(bytes@),
+{
     parse_decimal(bytes)
 }
 
+/// An ASCII whitespace byte (`u8::is_ascii_whitespace`).
+pub open spec fn is_ws(b: u8) -> bool {
+    b == 32 || b == 9 || b == 10 || b == 12 || b == 13
+}
+
+/// The number of leading whitespace bytes of `s`.
+pub open spec fn ws_lead(s: Seq<u8>) -> nat
+    decreases s.len(),
+{
+    if s.len() > 0 && is_ws(s[0]) {
+        1 + ws_lead(s.drop_first())
+    } else {
+        0
+    }
+}
+
+/// The number of trailing whitespace bytes of `s`.
+pub open spec fn ws_trail(s: Seq<u8>) -> nat
+    decreases s.len(),
+{
+    if s.len() > 0 && is_ws(s.last()) {
+        1 + ws_trail(s.drop_last())
+    } else {
+        0
+    }
+}
+
+/// `s` without its leading and trailing whitespace.
+pub open spec fn trim_spec(s: Seq<u8>) -> Seq<u8> {
+    let a = s.skip(ws_lead(s) as int);
+    a.take(a.len() - ws_trail(a))
+}
+
+proof fn lemma_ws_lead(s: Seq<u8>, k: int)
+    requires
+        0 <= k <= s.len(),
+        forall|j: int| 0 <= j < k ==> is_ws(#[trigger] s[j]),
+        k == s.len() || !is_ws(s[k]),
+    ensures
+        ws_lead(s) == k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_ws_lead(s.drop_first(), k - 1);
+    }
+}
+
+proof fn lemma_ws_trail(s: Seq<u8>, e: int)
+    requires
+        0 <= e <= s.len(),
+        forall|j: int| e <= j < s.len() ==> is_ws(#[trigger] s[j]),
+        e == 0 || !is_ws(s[e - 1]),
+    ensures
+        ws_trail(s) == s.len() - e,
+    decreases s.len() - e,
+{
+    if e < s.len() {
+        lemma_ws_trail(s.drop_last(), e);
+    }
+}
+
 /// Strip leading and trailing ASCII whitespace.
-fn trim(b: &[u8]) -> &[u8] {
+fn trim(b: &[u8]) -> (r: &[u8])
+    ensures
+        r@.len() <= b@.len(),
+        r@ == trim_spec(b@),
+{
     let mut start = 0;
-    while start < b.len() && b[start].is_ascii_whitespace() {
+    while start < b.len() && b[start].is_ascii_whitespace()
+        invariant
+            start <= b@.len(),
+            forall|j: int| 0 <= j < start ==> is_ws(#[trigger] b@[j]),
+        decreases b@.len() - start,
+    {
         start += 1;
     }
     let mut end = b.len();
-    while end > start && b[end - 1].is_ascii_whitespace() {
+    while end > start && b[end - 1].is_ascii_whitespace()
+        invariant
+            start <= end <= b@.len(),
+            forall|j: int| end <= j < b@.len() ==> is_ws(#[trigger] b@[j]),
+        decreases end,
+    {
         end -= 1;
     }
+    proof {
+        lemma_ws_lead(b@, start as int);
+        let a = b@.skip(start as int);
+        assert forall|j: int| end - start <= j < a.len() implies is_ws(#[trigger] a[j]) by {
+            assert(a[j] == b@[start + j]);
+        }
+        if end > start {
+            assert(a[end - start - 1] == b@[end - 1]);
+        }
+        lemma_ws_trail(a, end - start);
+        assert(b@.subrange(start as int, end as int) =~= a.take(end - start));
+    }
     &b[start..end]
+}
+
+/// What [`cgroup_path_from_line`] returns: the trimmed rest of a `0::`
+/// line when it starts with `/`.
+pub open spec fn cgroup_path_line_spec(l: Seq<u8>) -> Option<Seq<u8>> {
+    if l.len() >= 3 && l[0] == 48 && l[1] == 58 && l[2] == 58 {
+        let r = trim_spec(l.skip(3));
+        if r.len() > 0 && r[0] == 47 {
+            Some(r)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 /// The unified-hierarchy path of one `/proc/self/cgroup` line: `0::/a/b`
 /// gives `/a/b`; inside a cgroup namespace the line is `0::/`. `None` for
 /// any other line (a v1 controller's `N:name:/path`).
-pub fn cgroup_path_from_line(line: &[u8]) -> Option<&[u8]> {
+pub fn cgroup_path_from_line(line: &[u8]) -> (r: Option<&[u8]>)
+    ensures
+        r matches Some(p) ==> p@.len() <= line@.len(),
+        opt_view(r) == cgroup_path_line_spec(line@),
+{
     if line.len() < 3 || line[0] != b'0' || line[1] != b':' || line[2] != b':' {
         return None;
     }
@@ -117,16 +236,47 @@ pub fn cgroup_path_from_line(line: &[u8]) -> Option<&[u8]> {
     }
 }
 
+/// What [`cgroup_path`] returns: the path of the first line that has one.
+pub open spec fn cgroup_path_spec(s: Seq<u8>) -> Option<Seq<u8>>
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        None
+    } else {
+        let l = s.take(line_len(s) as int);
+        if l.len() > 0 && cgroup_path_line_spec(l) is Some {
+            cgroup_path_line_spec(l)
+        } else {
+            cgroup_path_spec(after_line(s))
+        }
+    }
+}
+
 /// The unified-hierarchy path from the whole of `/proc/self/cgroup`, or
 /// `None` when there is no `0::` line (a cgroup v1 only system). Every
 /// non-empty line is tried in order; a final line without a newline
 /// counts.
 // One test per step of the line scan, not one collapsed `if`.
 #[allow(clippy::collapsible_if)]
-pub fn cgroup_path(contents: &[u8]) -> Option<&[u8]> {
+pub fn cgroup_path(contents: &[u8]) -> (r: Option<&[u8]>)
+    ensures
+        r matches Some(p) ==> p@.len() <= contents@.len(),
+        opt_view(r) == cgroup_path_spec(contents@),
+{
+    proof {
+        assert(contents@.skip(0) =~= contents@);
+    }
     let mut start = 0;
-    while start < contents.len() {
+    while start < contents.len()
+        invariant
+            start <= contents@.len(),
+            cgroup_path_spec(contents@) == cgroup_path_spec(contents@.skip(start as int)),
+        decreases contents@.len() - start,
+    {
         let end = find_from(contents, start, b'\n');
+        proof {
+            lemma_line_step(contents@, start as int, end as int);
+        }
         let line = &contents[start..end];
         if !line.is_empty() {
             if let Some(p) = cgroup_path_from_line(line) {
@@ -134,11 +284,100 @@ pub fn cgroup_path(contents: &[u8]) -> Option<&[u8]> {
             }
         }
         if end == contents.len() {
+            proof {
+                assert(cgroup_path_spec(Seq::<u8>::empty()) is None);
+            }
             return None;
         }
         start = end + 1;
     }
+    proof {
+        assert(contents@.skip(start as int) =~= Seq::<u8>::empty());
+    }
     None
+}
+
+/// ` - ` starts at `j` in `s`.
+pub open spec fn sep_at(s: Seq<u8>, j: int) -> bool {
+    0 <= j && j + 3 <= s.len() && s[j] == 32 && s[j + 1] == 45 && s[j + 2] == 32
+}
+
+/// The index of the first ` - ` in `s`.
+pub open spec fn find_sep(s: Seq<u8>) -> Option<nat>
+    decreases s.len(),
+{
+    if s.len() < 3 {
+        None
+    } else if sep_at(s, 0) {
+        Some(0)
+    } else {
+        match find_sep(s.drop_first()) {
+            Some(i) => Some(i + 1),
+            None => None,
+        }
+    }
+}
+
+proof fn lemma_find_sep(s: Seq<u8>, k: int)
+    requires
+        0 <= k <= s.len(),
+        forall|j: int| 0 <= j < k ==> !#[trigger] sep_at(s, j),
+        k + 3 > s.len() || sep_at(s, k),
+    ensures
+        find_sep(s) == (if k + 3 > s.len() { None } else { Some(k as nat) }),
+    decreases k,
+{
+    if k > 0 && s.len() >= 3 {
+        assert forall|j: int| 0 <= j < k - 1 implies !#[trigger] sep_at(s.drop_first(), j) by {
+            assert(!sep_at(s, j + 1));
+        }
+        assert(!sep_at(s, 0));
+        lemma_find_sep(s.drop_first(), k - 1);
+    }
+}
+
+/// Field `n` (from 0) of `s` split at every space, empty fields counted
+/// (`split(' ').nth(n)`).
+pub open spec fn field(s: Seq<u8>, n: nat) -> Option<Seq<u8>>
+    decreases n,
+{
+    let k = find_byte(s, 32);
+    if n == 0 {
+        Some(s.take(k as int))
+    } else if k < s.len() {
+        field(s.skip(k as int + 1), (n - 1) as nat)
+    } else {
+        None
+    }
+}
+
+/// A mount point field: kept when it starts with `/`.
+pub open spec fn mount_field(f: Option<Seq<u8>>) -> Option<Seq<u8>> {
+    match f {
+        Some(m) => if m.len() > 0 && m[0] == 47 {
+            Some(m)
+        } else {
+            None
+        },
+        None => None,
+    }
+}
+
+/// What [`cgroup2_mount_from_line`] returns: field 5 of a line whose
+/// filesystem type is `cgroup2`, when it starts with `/`.
+pub open spec fn cgroup2_mount_line_spec(l: Seq<u8>) -> Option<Seq<u8>> {
+    match find_sep(l) {
+        None => None,
+        Some(sep) => {
+            let post = l.skip(sep as int + 3);
+            // `cgroup2`
+            if post.take(find_byte(post, 32) as int) != seq![99u8, 103, 114, 111, 117, 112, 50] {
+                None
+            } else {
+                mount_field(field(l.take(sep as int), 4))
+            }
+        },
+    }
 }
 
 /// The mount point of one `/proc/self/mountinfo` line if it mounts a
@@ -149,12 +388,22 @@ pub fn cgroup_path(contents: &[u8]) -> Option<&[u8]> {
 /// they are: no cgroup2 mount has one.
 // Verus rejects byte-string literals.
 #[allow(clippy::byte_char_slices)]
-pub fn cgroup2_mount_from_line(line: &[u8]) -> Option<&[u8]> {
+pub fn cgroup2_mount_from_line(line: &[u8]) -> (r: Option<&[u8]>)
+    ensures
+        opt_view(r) == cgroup2_mount_line_spec(line@),
+{
     let mut sep = 0;
     while line.len() - sep >= 3
         && !(line[sep] == b' ' && line[sep + 1] == b'-' && line[sep + 2] == b' ')
+        invariant
+            sep <= line@.len(),
+            forall|j: int| 0 <= j < sep ==> !#[trigger] sep_at(line@, j),
+        decreases line@.len() - sep,
     {
         sep += 1;
+    }
+    proof {
+        lemma_find_sep(line@, sep as int);
     }
     if line.len() - sep < 3 {
         return None;
@@ -162,21 +411,41 @@ pub fn cgroup2_mount_from_line(line: &[u8]) -> Option<&[u8]> {
     let pre = &line[..sep];
     let post = &line[sep + 3..];
     let fend = find_from(post, 0, b' ');
+    proof {
+        assert(post@.skip(0) =~= post@);
+    }
     if !bytes_is(&post[..fend], &[b'c', b'g', b'r', b'o', b'u', b'p', b'2']) {
         return None;
+    }
+    proof {
+        assert(pre@.skip(0) =~= pre@);
+        assert(cgroup2_mount_line_spec(line@) == mount_field(field(pre@, 4)));
     }
     // Field 4 (from 0) of `pre` split at every space.
     let mut start = 0;
     let mut n = 0;
-    while n < 4 {
+    while n < 4
+        invariant
+            start <= pre@.len(),
+            n <= 4,
+            field(pre@, 4) == field(pre@.skip(start as int), (4 - n) as nat),
+            cgroup2_mount_line_spec(line@) == mount_field(field(pre@, 4)),
+        decreases 4 - n,
+    {
         let k = find_from(pre, start, b' ');
         if k == pre.len() {
             return None;
+        }
+        proof {
+            assert(pre@.skip(start as int).skip(k - start + 1) =~= pre@.skip(k + 1));
         }
         start = k + 1;
         n += 1;
     }
     let end = find_from(pre, start, b' ');
+    proof {
+        assert(pre@.skip(start as int).take(end - start) =~= pre@.subrange(start as int, end as int));
+    }
     let mount = &pre[start..end];
     if !mount.is_empty() && mount[0] == b'/' {
         Some(mount)
@@ -208,13 +477,34 @@ pub fn cgroup2_mount(contents: &[u8]) -> Option<&[u8]> {
     None
 }
 
+/// `max`.
+pub open spec fn max_word() -> Seq<u8> {
+    seq![109u8, 97, 120]
+}
+
+/// What [`parse_limit`] returns.
+pub open spec fn parse_limit_spec(s: Seq<u8>) -> Option<u64> {
+    let t = trim_spec(s);
+    if t == max_word() {
+        Some(UNLIMITED)
+    } else {
+        parse_decimal_spec(t)
+    }
+}
+
 /// `memory.max`, `memory.high` or `memory.current`: a decimal byte count,
 /// or `max` meaning [`UNLIMITED`]. `None` for anything else (an absent
 /// file is the caller's `None` before this is reached).
 // Verus rejects byte-string literals.
 #[allow(clippy::byte_char_slices)]
-pub fn parse_limit(contents: &[u8]) -> Option<u64> {
+pub fn parse_limit(contents: &[u8]) -> (r: Option<u64>)
+    ensures
+        r == parse_limit_spec(contents@),
+{
     let t = trim(contents);
+    proof {
+        assert(seq![b'm', b'a', b'x'] =~= max_word());
+    }
     if bytes_is(t, &[b'm', b'a', b'x']) {
         return Some(UNLIMITED);
     }
@@ -242,16 +532,72 @@ pub struct Events {
     pub oom_kill: u64,
 }
 
+/// Every counter zero.
+pub open spec fn events_zero() -> Events {
+    Events { low: 0, high: 0, max: 0, oom: 0, oom_kill: 0 }
+}
+
 /// One `key value` line of `memory.events` applied to `e`: a known key
 /// with a number takes it; anything else leaves `e` as it is.
+pub open spec fn events_line(e: Events, l: Seq<u8>) -> Events {
+    let k = find_byte(l, 32);
+    if k >= l.len() {
+        e
+    } else {
+        let key = l.take(k as int);
+        match parse_decimal_spec(trim_spec(l.skip(k as int + 1))) {
+            None => e,
+            Some(v) => if key == seq![108u8, 111, 119] {
+                Events { low: v, ..e }
+            } else if key == seq![104u8, 105, 103, 104] {
+                Events { high: v, ..e }
+            } else if key == max_word() {
+                Events { max: v, ..e }
+            } else if key == seq![111u8, 111, 109] {
+                Events { oom: v, ..e }
+            } else if key == seq![111u8, 111, 109, 95, 107, 105, 108, 108] {
+                Events { oom_kill: v, ..e }
+            } else {
+                e
+            },
+        }
+    }
+}
+
+/// Every non-empty line of `s` applied to `e` in order.
+pub open spec fn events_fold(e: Events, s: Seq<u8>) -> Events
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        e
+    } else {
+        let l = s.take(line_len(s) as int);
+        events_fold(if l.len() > 0 { events_line(e, l) } else { e }, after_line(s))
+    }
+}
+
+/// One line of `memory.events` applied to `e` ([`events_line`]).
 // Verus rejects byte-string literals.
 #[allow(clippy::byte_char_slices)]
-fn events_note_line(e: Events, line: &[u8]) -> Events {
+fn events_note_line(e: Events, line: &[u8]) -> (r: Events)
+    ensures
+        r == events_line(e, line@),
+{
     let mut e = e;
     let k = find_from(line, 0, b' ');
+    proof {
+        assert(line@.skip(0) =~= line@);
+    }
     if k < line.len() {
         let key = &line[..k];
         if let Some(v) = parse_u64_prefix(trim(&line[k + 1..])) {
+            proof {
+                assert(seq![b'l', b'o', b'w'] =~= seq![108u8, 111, 119]);
+                assert(seq![b'h', b'i', b'g', b'h'] =~= seq![104u8, 105, 103, 104]);
+                assert(seq![b'm', b'a', b'x'] =~= max_word());
+                assert(seq![b'o', b'o', b'm'] =~= seq![111u8, 111, 109]);
+                assert(seq![b'o', b'o', b'm', b'_', b'k', b'i', b'l', b'l'] =~= seq![111u8, 111, 109, 95, 107, 105, 108, 108]);
+            }
             if bytes_is(key, &[b'l', b'o', b'w']) {
                 e.low = v;
             } else if bytes_is(key, &[b'h', b'i', b'g', b'h']) {
@@ -269,8 +615,11 @@ fn events_note_line(e: Events, line: &[u8]) -> Events {
 }
 
 /// `memory.events` read into [`Events`]: every non-empty line applied in
-/// order, so a key seen twice keeps its last value.
-pub fn parse_events(contents: &[u8]) -> Events {
+/// order ([`events_fold`]), so a key seen twice keeps its last value.
+pub fn parse_events(contents: &[u8]) -> (r: Events)
+    ensures
+        r == events_fold(events_zero(), contents@),
+{
     let mut e = Events {
         low: 0,
         high: 0,
@@ -278,20 +627,41 @@ pub fn parse_events(contents: &[u8]) -> Events {
         oom: 0,
         oom_kill: 0,
     };
+    proof {
+        assert(contents@.skip(0) =~= contents@);
+    }
     let mut start = 0;
-    while start < contents.len() {
+    while start < contents.len()
+        invariant
+            start <= contents@.len(),
+            events_fold(events_zero(), contents@) == events_fold(e, contents@.skip(start as int)),
+        decreases contents@.len() - start,
+    {
         let end = find_from(contents, start, b'\n');
+        proof {
+            lemma_line_step(contents@, start as int, end as int);
+        }
         let line = &contents[start..end];
         if !line.is_empty() {
             e = events_note_line(e, line);
         }
         if end == contents.len() {
+            proof {
+                assert(events_fold(e, Seq::<u8>::empty()) == e);
+            }
             return e;
         }
         start = end + 1;
     }
+    proof {
+        assert(contents@.skip(start as int) =~= Seq::<u8>::empty());
+    }
     e
 }
+
+} // verus!
+
+verus! {
 
 /// The levels of a walk from the leaf directory `dir` up to the cgroup2
 /// mount (the first `mount_len` bytes of `dir`, inclusive), in turn: each
@@ -307,8 +677,28 @@ struct Levels<'a> {
 }
 
 impl<'a> Levels<'a> {
+    /// The level's directory is within `dir`, and the level count is
+    /// bounded by the bytes walked past.
+    spec fn wf(&self) -> bool {
+        &&& self.end <= self.dir@.len()
+        &&& self.level + self.end <= self.dir@.len()
+    }
+
+    /// What is left of the walk: nothing once the mount has been visited.
+    spec fn rest(&self) -> nat {
+        if self.done {
+            0
+        } else {
+            self.end as nat + 1
+        }
+    }
+
     /// The walk over `dir`, from its leaf.
-    fn new(dir: &'a [u8], mount_len: usize) -> Levels<'a> {
+    fn new(dir: &'a [u8], mount_len: usize) -> (r: Levels<'a>)
+        ensures
+            r.wf(),
+            r.dir == dir,
+    {
         Levels {
             dir,
             mount_len,
@@ -320,7 +710,15 @@ impl<'a> Levels<'a> {
 
     /// The next level and its directory, `None` once the mount has been
     /// visited.
-    fn next_level(&mut self) -> Option<(usize, &'a [u8])> {
+    fn next_level(&mut self) -> (r: Option<(usize, &'a [u8])>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            final(self).dir == old(self).dir,
+            r is None ==> old(self).rest() == 0,
+            r matches Some((_, d)) ==> d@.len() <= old(self).dir@.len() && final(self).rest() < old(self).rest(),
+    {
         if self.done {
             return None;
         }
@@ -332,7 +730,12 @@ impl<'a> Levels<'a> {
         }
         // The last `/` of `dir[mount_len..end]`, which ends the parent.
         let mut i = self.end;
-        while i > self.mount_len && self.dir[i - 1] != b'/' {
+        while i > self.mount_len && self.dir[i - 1] != b'/'
+            invariant
+                self.mount_len <= i <= self.end,
+                self.end <= self.dir@.len(),
+            decreases i,
+        {
             i -= 1;
         }
         if i == self.mount_len {
@@ -356,10 +759,19 @@ pub fn walk_min<F: FnMut(usize, &[u8]) -> Option<u64>>(
     dir: &[u8],
     mount_len: usize,
     mut read: F,
-) -> u64 {
+) -> u64
+    requires
+        forall|l: usize, d: &[u8]| d@.len() <= dir@.len() ==> #[trigger] call_requires(read, (l, d)),
+{
     let mut min = UNLIMITED;
     let mut levels = Levels::new(dir, mount_len);
-    while let Some((level, d)) = levels.next_level() {
+    while let Some((level, d)) = levels.next_level()
+        invariant
+            levels.wf(),
+            levels.dir == dir,
+            forall|l: usize, d: &[u8]| d@.len() <= dir@.len() ==> #[trigger] call_requires(read, (l, d)),
+        decreases levels.rest(),
+    {
         if let Some(v) = read(level, d) {
             min = min.min(v);
         }
@@ -367,12 +779,48 @@ pub fn walk_min<F: FnMut(usize, &[u8]) -> Option<u64>>(
     min
 }
 
+/// `s` without one trailing `/`.
+pub open spec fn strip_slash(s: Seq<u8>) -> Seq<u8> {
+    if s.len() > 0 && s.last() == 47 {
+        s.drop_last()
+    } else {
+        s
+    }
+}
+
+/// The path part [`join_dir`] appends: nothing for `/`, else the path
+/// without a trailing `/`.
+pub open spec fn join_path_part(p: Seq<u8>) -> Seq<u8> {
+    if p == seq![47u8] {
+        Seq::empty()
+    } else {
+        strip_slash(p)
+    }
+}
+
 /// Join `mount` and `path` into `out` as the cgroup directory without a
 /// trailing slash: (`/sys/fs/cgroup`, `/a/b`) is `/sys/fs/cgroup/a/b` and
 /// (`/sys/fs/cgroup`, `/`) is `/sys/fs/cgroup`. Returns the directory
 /// length and the mount's length within it, or `None` when it would not
 /// fit in `out` less [`FILE_ROOM`].
-pub fn join_dir(out: &mut [u8], mount: &[u8], path: &[u8]) -> Option<(usize, usize)> {
+pub fn join_dir(out: &mut [u8], mount: &[u8], path: &[u8]) -> (r: Option<(usize, usize)>)
+    requires
+        mount@.len() + path@.len() + FILE_ROOM <= usize::MAX,
+    ensures
+        final(out)@.len() == old(out)@.len(),
+        ({
+            let m = strip_slash(mount@);
+            let p = join_path_part(path@);
+            if m.len() + p.len() + FILE_ROOM > old(out)@.len() {
+                r is None && final(out)@ == old(out)@
+            } else {
+                r == Some(((m.len() + p.len()) as usize, m.len() as usize))
+                    && final(out)@.take((m.len() + p.len()) as int) == m + p
+            }
+        }),
+{
+    let ghost mount0 = mount@;
+    let ghost path0 = path@;
     let mount = if !mount.is_empty() && mount[mount.len() - 1] == b'/' {
         &mount[..mount.len() - 1]
     } else {
@@ -385,36 +833,87 @@ pub fn join_dir(out: &mut [u8], mount: &[u8], path: &[u8]) -> Option<(usize, usi
     } else {
         path
     };
+    proof {
+        assert(mount@ =~= strip_slash(mount0)) by {
+            if mount0.len() > 0 && mount0.last() == 47 {
+                assert(mount@ =~= mount0.drop_last());
+            }
+        }
+        assert(path@ =~= join_path_part(path0)) by {
+            if path0 == seq![47u8] {
+                assert(path@ =~= Seq::<u8>::empty());
+            } else if path0.len() == 1 && path0[0] == 47 {
+                assert(path0 =~= seq![47u8]);
+            } else if path0.len() > 0 && path0.last() == 47 {
+                assert(path@ =~= path0.drop_last());
+            }
+        }
+    }
     let len = mount.len() + path.len();
     if len + FILE_ROOM > out.len() {
         return None;
     }
     out[..mount.len()].copy_from_slice(mount);
     out[mount.len()..len].copy_from_slice(path);
+    proof {
+        assert(out@.take(len as int) =~= mount@ + path@);
+    }
     Some((len, mount.len()))
 }
+
+} // verus!
+
+verus! {
 
 /// Feed `buf`-sized chunks from `read` to `on_line` one complete line at a
 /// time (without the newline), carrying a partial line across chunks;
 /// stops early when `on_line` returns `true`, and returns where that line
 /// is in `buf` (`None` when no line was taken). A line longer than `buf`
 /// is dropped. `read` returns the bytes it filled, 0 at end of file, or
-/// `None` on error (which ends the scan).
-pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> Option<(usize, usize)>
-where
-    R: FnMut(&mut [u8]) -> Option<usize>,
-    F: FnMut(&[u8]) -> bool,
+/// `None` on error (which ends the scan). Runs until `read` reports the
+/// end or an error, so a reader that never does keeps it going.
+#[verifier::exec_allows_no_decreases_clause]
+pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: Option<(usize, usize)>)
+    where
+        R: FnMut(&mut [u8]) -> Option<usize>,
+        F: FnMut(&[u8]) -> bool,
+    requires
+        forall|b: &mut [u8]| call_requires(read, (b,)),
+        forall|b: &mut [u8], r: Option<usize>|
+            call_ensures(read, (b,), r) ==> (r matches Some(n) ==> n <= b@.len()) && final(b)@.len() == b@.len(),
+        forall|l: &[u8]| call_requires(on_line, (l,)),
+    ensures
+        final(buf)@.len() == old(buf)@.len(),
+        found matches Some((lo, hi)) ==> lo <= hi <= final(buf)@.len(),
 {
     let mut len = 0;
     let mut dropping = false;
-    loop {
+    loop
+        invariant
+            len <= buf@.len(),
+            buf@.len() == old(buf)@.len(),
+            forall|b: &mut [u8]| call_requires(read, (b,)),
+            forall|b: &mut [u8], r: Option<usize>|
+                call_ensures(read, (b,), r) ==> (r matches Some(n) ==> n <= b@.len()) && final(b)@.len() == b@.len(),
+            forall|l: &[u8]| call_requires(on_line, (l,)),
+    {
         let n = match read(&mut buf[len..]) {
             Some(0) | None => break,
             Some(n) => n,
         };
+        proof {
+            assert(buf.len() == buf@.len());
+            assert(n <= buf@.len() - len);
+        }
         len += n;
         let mut start = 0;
-        loop {
+        loop
+            invariant
+                start <= len <= buf@.len(),
+                buf@.len() == old(buf)@.len(),
+                forall|l: &[u8]| call_requires(on_line, (l,)),
+            decreases len - start,
+        {
             let i = find_from(&buf[..len], start, b'\n');
             if i == len {
                 break;
@@ -443,9 +942,13 @@ where
     None
 }
 
+} // verus!
+
 // ---------------------------------------------------------------------------
 // Runtime state.
 // ---------------------------------------------------------------------------
+
+verus! {
 
 /// Why the cgroup is not tracked, or that it is.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -510,8 +1013,23 @@ pub struct Cgroup {
 }
 
 impl Cgroup {
+    /// The directory leaves room for `/`, a file name and the NUL, and
+    /// the mount is a prefix of it.
+    #[verifier::type_invariant]
+    spec fn wf(&self) -> bool {
+        self.dir_len as int + FILE_ROOM <= PATH_CAP && self.mount_len <= self.dir_len
+    }
+
+    /// The lengths of the directory and of the mount within it.
+    pub closed spec fn layout(&self) -> (nat, nat) {
+        (self.dir_len as nat, self.mount_len as nat)
+    }
+
     /// Nothing tracked, for `cgroup:false` and hosts without cgroup2.
-    pub const fn untracked(state: State) -> Cgroup {
+    pub const fn untracked(state: State) -> (r: Cgroup)
+        ensures
+            r.layout() == (0nat, 0nat),
+    {
         Cgroup {
             dir: [0; PATH_CAP],
             dir_len: 0,
@@ -587,18 +1105,31 @@ impl Cgroup {
     }
 
     /// The cgroup directory (empty when untracked).
-    pub fn dir(&self) -> &[u8] {
+    pub fn dir(&self) -> (r: &[u8])
+        ensures
+            r@.len() == self.layout().0,
+            r@.len() + FILE_ROOM <= PATH_CAP,
+    {
+        proof {
+            use_type_invariant(self);
+        }
         &self.dir[..self.dir_len as usize]
     }
 
     /// The cgroup2 mount point (empty when untracked).
     pub fn mount(&self) -> &[u8] {
+        proof {
+            use_type_invariant(self);
+        }
         &self.dir[..self.mount_len as usize]
     }
 
     /// The path relative to the mount, as `/proc/self/cgroup` gave it
     /// (`/` at the mount itself).
     pub fn path(&self) -> &[u8] {
+        proof {
+            use_type_invariant(self);
+        }
         let p = &self.dir[self.mount_len as usize..self.dir_len as usize];
         if p.is_empty() { b"/" } else { p }
     }
@@ -621,7 +1152,10 @@ impl Cgroup {
     /// limit is never below the effective one, against the same usage.
     /// One ancestor at a time rather than an iterator over them, which
     /// Verus does not specify.
-    pub fn ancestor(&self, level: usize) -> (u64, u64) {
+    pub fn ancestor(&self, level: usize) -> (u64, u64)
+        requires
+            level < LEVELS,
+    {
         (
             self.level_limit[level].load(Ordering::Relaxed),
             self.level_current[level].load(Ordering::Relaxed),
@@ -700,6 +1234,8 @@ impl Cgroup {
     }
 }
 
+} // verus!
+
 /// A path shown as text, one `?` per byte that is not printable ASCII, for
 /// the `cgroup:` line. (This type, [`unsafe_char`] and [`Limit`] are items
 /// of the module rather than of `Cgroup::fmt`'s body, where Verus does
@@ -719,12 +1255,22 @@ impl fmt::Display for PathBytes<'_> {
     }
 }
 
+verus! {
+
 /// The printable ASCII bytes, `' '..='~'`, in order. Computed rather than
 /// written as a byte-string literal, whose bytes Verus does not see.
-const fn printable_ascii() -> [u8; 95] {
+const fn printable_ascii() -> (r: [u8; 95])
+    ensures
+        forall|i: int| 0 <= i < 95 ==> #[trigger] r[i] == 0x20 + i,
+{
     let mut t = [0u8; 95];
     let mut i = 0;
-    while i < 95 {
+    while i < 95
+        invariant
+            i <= 95,
+            forall|j: int| 0 <= j < i ==> #[trigger] t[j] == 0x20 + j,
+        decreases 95 - i,
+    {
         t[i] = 0x20 + i as u8;
         i += 1;
     }
@@ -732,15 +1278,31 @@ const fn printable_ascii() -> [u8; 95] {
 }
 
 /// [`printable_ascii`]'s table, for [`unsafe_char`].
-const PRINTABLE: [u8; 95] = printable_ascii();
+exec const PRINTABLE: [u8; 95]
+    ensures
+        forall|i: int| 0 <= i < 95 ==> #[trigger] PRINTABLE[i] == 0x20 + i,
+{
+    printable_ascii()
+}
 
 /// One printable ASCII byte as a `&'static str`.
-fn unsafe_char(b: u8) -> &'static str {
+fn unsafe_char(b: u8) -> &'static str
+    requires
+        0x20 <= b <= 0x7e,
+{
     let table: &'static [u8; 95] = &PRINTABLE;
     let i = (b - b' ') as usize;
+    proof {
+        let s = table@.subrange(i as int, i + 1);
+        assert(s =~= seq![b]);
+        reveal_with_fuel(vstd::utf8::valid_utf8, 2);
+        assert(vstd::utf8::valid_utf8(s));
+    }
     // SAFETY: `PRINTABLE` is ASCII, so every one-byte window is UTF-8.
-    unsafe { core::str::from_utf8_unchecked(&table[i..i + 1]) }
+    unsafe { str::from_utf8_unchecked(&table[i..i + 1]) }
 }
+
+} // verus!
 
 /// A limit, `max` when unlimited, for the `cgroup:` line.
 struct Limit(u64);
@@ -791,6 +1353,8 @@ impl fmt::Display for Cgroup {
     }
 }
 
+verus! {
+
 /// The process's [`Cgroup`], discovered late (design 11): at init only
 /// when something needs the limit then (`thp:always`, which a limit under
 /// 1 GiB forces to `never`), otherwise at the first periodic tick
@@ -802,51 +1366,184 @@ impl fmt::Display for Cgroup {
 ///
 /// One thread discovers (a compare-exchange from `PENDING`) into the
 /// cell and publishes it with a release store of `DONE`; readers see the
-/// cell only after an acquire load of `DONE`, so the record's plain
-/// fields are never read while they are written.
+/// cell only after an acquire load of `DONE` (the discoverer, after its
+/// own write), so the record's plain fields are never read while they
+/// are written. The phase's invariant
+/// ([`PhasePred`]) carries that protocol: it holds the cell's permission
+/// while the phase is `PENDING`, hands it to the exchange's winner, and
+/// holds it frozen from the `DONE` store on, for every reader.
 pub struct Deferred {
     phase: AtomicU8,
     /// Coarse-clock time of init.
     born: u64,
     /// Initialised once `phase` is `DONE`.
-    cell: UnsafeCell<MaybeUninit<Cgroup>>,
+    cell: PCell<MaybeUninit<Cgroup>>,
+    /// Ghost (no bytes): the phase's invariant ([`PhasePred`]), which
+    /// holds the phase's permission and the cell's.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    phase_inv: Tracked<PhaseInv>,
 }
 
-const PHASE_DONE: u8 = 0;
-const PHASE_PENDING: u8 = 1;
-const PHASE_RUNNING: u8 = 2;
+pub const PHASE_DONE: u8 = 0;
+pub const PHASE_PENDING: u8 = 1;
+pub const PHASE_RUNNING: u8 = 2;
 
-// SAFETY: the cell is written once, by the thread that won the
-// `PENDING -> RUNNING` exchange, before the release store of `DONE`, and
-// read only after an acquire load of `DONE` (the type doc); everything
-// else in `Cgroup` is atomic.
-unsafe impl Sync for Deferred {}
+/// The permission to a [`Deferred`] record's cell.
+pub type CellPerm = PCellPerm<MaybeUninit<Cgroup>>;
+
+/// `p` is the permission to the cell with identity `id`, and the cell
+/// holds a record.
+pub open spec fn cell_done(p: CellPerm, id: CellId) -> bool {
+    &&& p.id() == id
+    &&& p.value().mem_contents() is Init
+}
+
+/// Namespace of the phase invariants ([`PhasePred`]).
+pub open spec fn phase_ns() -> int {
+    0x7068_6173
+}
+
+/// What a phase's invariant holds: the phase's permission, the cell's
+/// permission while the phase is `PENDING`, and the cell's permission,
+/// frozen, from `DONE` on.
+pub type PhaseVal = (BytePerm, Option<CellPerm>, Option<&'static CellPerm>);
+
+/// A phase's invariant, keyed by the phase's identity
+/// (`vspec::byte::byte_id`) and the cell's: the phase is `DONE`,
+/// `PENDING` or `RUNNING`; while it is `PENDING` the invariant holds the
+/// cell's permission, and from `DONE` on the cell's permission frozen,
+/// the cell holding a record. `Deferred::now` makes it at `DONE` with
+/// the record written, `Deferred::later` at `PENDING` with the cell
+/// empty. The exchange from `PENDING` to `RUNNING`
+/// ([`Deferred::claim`]) takes the cell's permission out, the `DONE`
+/// store ([`Deferred::publish`]) puts it back frozen, after the winner's
+/// write, and the fork child's reset from `RUNNING` to `PENDING`
+/// ([`Deferred::fork_child`]) puts back the permission that
+/// [`axiom_cell_orphaned`] hands it: nothing else writes the phase
+/// (`vspec::byte`), so `DONE` is never left.
+pub struct PhasePred;
+
+impl InvariantPredicate<(int, CellId), PhaseVal> for PhasePred {
+    open spec fn inv(k: (int, CellId), v: PhaseVal) -> bool {
+        &&& v.0.id() == k.0
+        &&& v.0.value() == PHASE_DONE || v.0.value() == PHASE_PENDING || v.0.value() == PHASE_RUNNING
+        &&& v.0.value() == PHASE_PENDING ==> (v.1 matches Some(p) && p.id() == k.1)
+        &&& v.0.value() == PHASE_DONE ==> (v.2 matches Some(p) && cell_done(*p, k.1))
+    }
+}
+
+/// The invariant of a deferred record's phase.
+pub type PhaseInv = AtomicInvariant<(int, CellId), PhaseVal, PhasePred>;
+
+/// The cell's frozen permission a thread has seen, if any: what
+/// [`Deferred::load_phase`] hands back when it reads `DONE`.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct CellSeen {
+    pub tracked frozen: Option<&'static CellPerm>,
+}
+
+/// The cell's permission a thread has claimed, if any: what
+/// [`Deferred::claim`] hands its winner.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct CellClaim {
+    pub tracked cell: Option<CellPerm>,
+}
+
+/// The caller is the child of a `fork`, in the child's fork handler
+/// (`api::fork_child`), where only the forking thread runs: what
+/// [`Deferred::fork_child`] and [`axiom_cell_orphaned`] require, so that
+/// no other verified code can reset a phase and take the cell's
+/// permission. Opaque, with no meaning: a capability, as
+/// `sys::may_syscall` is.
+#[verifier::opaque]
+pub open spec fn in_fork_child() -> bool {
+    true
+}
+
+/// Premise (the fork child's orphaned cell): in the child of a `fork`,
+/// a record whose phase the child's reset found `RUNNING` (`before`, the
+/// phase's permission just before the reset, and `perm`, just after it,
+/// at `PENDING`) was being discovered by a thread of the parent, which
+/// holds the cell's permission between its winning exchange and its
+/// `DONE` store ([`Deferred::claim`], [`Deferred::publish`]). The child
+/// has only the forking thread, so when the discoverer was another
+/// thread, no thread of the child holds that permission, and the reset
+/// takes it (`before` and [`in_fork_child`] are the caller's word).
+/// Called only by [`Deferred::fork_child`], right after its
+/// successful reset, which only the child's fork handler runs
+/// (`api::fork_child`, through `Shared::cgroup_fork_child`; this
+/// module's unit tests, unverified, also call it on records of their
+/// own).
+///
+/// The residue this does not cover: when the discoverer was the forking
+/// thread itself (a signal handler that forked while its thread was
+/// discovering), the permission exists twice in the child, the reset's
+/// and the interrupted discovery's. The child may then discover again
+/// and publish `DONE`, and the interrupted discovery, resumed when the
+/// handler returns, writes the cell a second time and stores `DONE`
+/// again: a record a reader of the first `DONE` may hold a reference
+/// into is overwritten with a second discovery of the same cgroup. The
+/// two discoveries run one after the other when both are the forking
+/// thread's; if the child has started another thread by then (the
+/// handler allocates and starts the lazy background thread, whose tick
+/// discovers, say), they can run concurrently, a data race on the cell.
+axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &BytePerm) -> (tracked p: CellPerm)
+    requires
+        in_fork_child(),
+        before.id() == byte_id(&d.phase),
+        before.value() == PHASE_RUNNING,
+        perm.id() == before.id(),
+        perm.value() == PHASE_PENDING,
+    ensures
+        p.id() == d.cell.id(),
+;
 
 impl Deferred {
+    /// The phase's invariant is the one over this record's phase and
+    /// cell, in [`phase_ns`].
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        &&& self.phase_inv@.constant() == (byte_id(&self.phase), self.cell.id())
+        &&& self.phase_inv@.namespace() == phase_ns()
+    }
+
     /// A record discovered now (`Cgroup::discover`).
     pub fn now(cg: Cgroup) -> Deferred {
+        let (phase, Tracked(pperm)) = crate::vspec::byte::new(PHASE_DONE);
+        let (cell, Tracked(cperm)) = PCell::new(MaybeUninit::new(cg));
+        let tracked frozen = vstd::modes::tracked_static_ref(cperm);
+        let tracked phase_inv = PhaseInv::new((byte_id(&phase), cell.id()), (pperm, None, Some(frozen)), phase_ns());
         Deferred {
-            phase: AtomicU8::new(PHASE_DONE),
+            phase,
             born: 0,
-            cell: UnsafeCell::new(MaybeUninit::new(cg)),
+            cell,
+            phase_inv: Tracked(phase_inv),
         }
     }
 
     /// A record to discover later; `born` is init's coarse-clock time.
     pub const fn later(born: u64) -> Deferred {
+        let (phase, Tracked(pperm)) = crate::vspec::byte::new(PHASE_PENDING);
+        let (cell, Tracked(cperm)) = PCell::new(MaybeUninit::uninit());
+        let tracked phase_inv = PhaseInv::new((byte_id(&phase), cell.id()), (pperm, Some(cperm), None), phase_ns());
         Deferred {
-            phase: AtomicU8::new(PHASE_PENDING),
+            phase,
             born,
-            cell: UnsafeCell::new(MaybeUninit::uninit()),
+            cell,
+            phase_inv: Tracked(phase_inv),
         }
     }
 
     /// The record once discovery has run, `None` before.
     #[inline]
     pub fn get(&self) -> Option<&Cgroup> {
-        if self.phase.load(Ordering::Acquire) == PHASE_DONE {
-            // SAFETY: `DONE` was published after the cell was written.
-            Some(unsafe { (*self.cell.get()).assume_init_ref() })
+        let tracked mut seen = CellSeen { frozen: None };
+        if self.load_phase(Tracked(&mut seen)) == PHASE_DONE {
+            // `DONE` was published after the cell was written: its
+            // permission, frozen then.
+            Some(self.cell_ref(Tracked(seen.frozen.tracked_unwrap())))
         } else {
             None
         }
@@ -865,48 +1562,161 @@ impl Deferred {
     /// the record before it is published, so what it sets up (the policy's
     /// `high` baseline) is in place before any other thread's sample can
     /// act on the record. A call that finds another thread discovering
-    /// waits for it when `wait`, and otherwise returns at once with the
-    /// record still pending.
-    pub fn discover(&self, wait: bool, found: impl FnOnce(&Cgroup)) -> bool {
-        match self.phase.compare_exchange(
-            PHASE_PENDING,
-            PHASE_RUNNING,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        ) {
+    /// waits for it when `wait` (termination is not claimed: the wait ends
+    /// when the other thread's discovery does), and otherwise returns at
+    /// once with the record still pending.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F) -> bool
+        requires
+            crate::sys::may_syscall(),
+            forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
+    {
+        let tracked mut claimed = CellClaim { cell: None };
+        match self.claim(Tracked(&mut claimed)) {
             Ok(_) => {
+                let tracked mut cell = claimed.cell.tracked_unwrap();
                 let cg = Cgroup::discover(true);
-                // SAFETY: this thread won the exchange; no reader looks at
-                // the cell before `DONE`.
-                let cg = unsafe { (*self.cell.get()).write(cg) };
+                // This thread won the exchange, so it holds the cell's
+                // permission; no reader looks at the cell before `DONE`.
+                let cg = self.cell_write(cg, Tracked(&mut cell));
                 found(cg);
-                self.phase.store(PHASE_DONE, Ordering::Release);
+                self.publish(Tracked(cell));
                 true
-            }
+            },
             Err(_) => {
-                while wait && self.phase.load(Ordering::Acquire) != PHASE_DONE {
+                let tracked mut seen = CellSeen { frozen: None };
+                while wait && self.load_phase(Tracked(&mut seen)) != PHASE_DONE {
                     core::hint::spin_loop();
                 }
                 false
-            }
+            },
         }
     }
 
     /// The child of a `fork` has only the forking thread: a discovery
     /// another thread had under way is not coming, so it starts over.
-    pub fn fork_child(&self) {
-        let _ = self.phase.compare_exchange(
-            PHASE_RUNNING,
-            PHASE_PENDING,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
+    /// The reset puts back the cell's permission, which that thread held
+    /// ([`axiom_cell_orphaned`]).
+    pub fn fork_child(&self)
+        requires
+            in_fork_child(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
+            let ghost before = v.0;
+            let _reset = crate::vspec::byte::compare_exchange(&self.phase, PHASE_RUNNING, PHASE_PENDING, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.0));
+            proof {
+                if _reset is Ok {
+                    v.1 = Some(axiom_cell_orphaned(self, before, &v.0));
+                }
+            }
+        });
+    }
+
+    /// An acquire load of the phase, with the cell's frozen permission
+    /// when it reads `DONE` ([`PhasePred`]).
+    #[inline(always)]
+    fn load_phase(&self, Tracked(seen): Tracked<&mut CellSeen>) -> (r: u8)
+        ensures
+            r == PHASE_DONE ==> (final(seen).frozen matches Some(p) && cell_done(*p, self.cell.id())),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let r;
+        vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
+            r = crate::vspec::byte::load(&self.phase, Ordering::Acquire, Tracked(&v.0));
+            proof {
+                if r == PHASE_DONE {
+                    seen.frozen = v.2;
+                }
+            }
+        });
+        r
+    }
+
+    /// The phase's exchange from `PENDING` to `RUNNING`: the winner gets
+    /// the cell's permission (in `claimed`), which the invariant holds
+    /// while the phase is `PENDING` ([`PhasePred`]).
+    #[inline(always)]
+    fn claim(&self, Tracked(claimed): Tracked<&mut CellClaim>) -> (r: Result<u8, u8>)
+        ensures
+            r is Ok ==> (final(claimed).cell matches Some(p) && p.id() == self.cell.id()),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let won;
+        vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
+            won = crate::vspec::byte::compare_exchange(&self.phase, PHASE_PENDING, PHASE_RUNNING, Ordering::Acquire, Ordering::Relaxed, Tracked(&mut v.0));
+            proof {
+                if won is Ok {
+                    claimed.cell = Some(v.1.tracked_take());
+                }
+            }
+        });
+        won
+    }
+
+    /// The phase's `DONE` store, `Release`, with the cell's permission
+    /// frozen into the invariant for every reader ([`PhasePred`]).
+    #[inline(always)]
+    fn publish(&self, Tracked(cell): Tracked<CellPerm>)
+        requires
+            cell_done(cell, self.cell.id()),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked frozen = vstd::modes::tracked_static_ref(cell);
+        vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
+            crate::vspec::byte::store(&self.phase, PHASE_DONE, Ordering::Release, Tracked(&mut v.0));
+            proof {
+                v.2 = Some(frozen);
+            }
+        });
+    }
+
+    /// The discovered record in the cell, through its permission.
+    #[inline(always)]
+    fn cell_ref<'a>(&'a self, Tracked(p): Tracked<&'a CellPerm>) -> &'a Cgroup
+        requires
+            cell_done(*p, self.cell.id()),
+        opens_invariants none
+    {
+        // SAFETY: the permission says the cell holds a record.
+        unsafe { self.cell.borrow(Tracked(p)).assume_init_ref() }
+    }
+
+    /// `cg` written into the cell, through its permission, which
+    /// [`Deferred::get`] reads once `DONE` is published.
+    #[inline(always)]
+    fn cell_write<'a>(&'a self, cg: Cgroup, Tracked(p): Tracked<&'a mut CellPerm>) -> &'a Cgroup
+        requires
+            old(p).id() == self.cell.id(),
+        ensures
+            cell_done(*final(p), self.cell.id()),
+        opens_invariants none
+    {
+        self.cell.borrow_mut(Tracked(p)).write(cg)
     }
 }
+
+} // verus!
+
+// SAFETY: the cell is written once, by the thread that won the
+// `PENDING -> RUNNING` exchange, before the release store of `DONE`, and
+// read only after an acquire load of `DONE` (the type doc); everything
+// else in `Cgroup` is atomic.
+unsafe impl Sync for Deferred {}
 
 mod linux {
     use super::*;
     use crate::sys::{self, O_RDONLY, read_small_file};
+
+    verus! {
 
     /// `/proc/self/cgroup`, NUL-terminated (spelled as bytes so the
     /// verifier sees the NUL `sys::open` requires).
@@ -922,7 +1732,13 @@ mod linux {
     ];
 
     /// `dir/name`, NUL-terminated, in `out`.
-    fn file_path<'a>(out: &'a mut [u8; PATH_CAP + FILE_ROOM], dir: &[u8], name: &[u8]) -> &'a [u8] {
+    fn file_path<'a>(out: &'a mut [u8; PATH_CAP + FILE_ROOM], dir: &[u8], name: &[u8]) -> (r: &'a [u8])
+        requires
+            dir@.len() + name@.len() + 2 <= PATH_CAP + FILE_ROOM,
+        ensures
+            r@.len() == dir@.len() + name@.len() + 2,
+            r@.last() == 0,
+    {
         let n = dir.len();
         out[..n].copy_from_slice(dir);
         out[n] = b'/';
@@ -932,10 +1748,50 @@ mod linux {
     }
 
     /// Read `dir/name` into `buf`; `None` when absent.
-    fn read_in(dir: &[u8], name: &[u8], buf: &mut [u8]) -> Option<usize> {
+    fn read_in(dir: &[u8], name: &[u8], buf: &mut [u8]) -> (r: Option<usize>)
+        requires
+            crate::sys::may_syscall(),
+            dir@.len() + FILE_ROOM <= PATH_CAP,
+            name@.len() + 2 <= FILE_ROOM,
+        ensures
+            r matches Some(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
         let mut p = [0u8; PATH_CAP + FILE_ROOM];
         let path = file_path(&mut p, dir, name);
         read_small_file(path, buf)
+    }
+
+    /// What [`read_in`] promises of a read, as the samplers need it of any
+    /// reader they take (`read_in`, or a test's captured files): callable
+    /// for a directory and a file name that fit [`file_path`], and a count
+    /// within the buffer.
+    pub open spec fn reader_ok<R: FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>>(read: R) -> bool {
+        &&& forall|d: &[u8], n: &[u8], b: &mut [u8]|
+            d@.len() + FILE_ROOM <= PATH_CAP && n@.len() + 2 <= FILE_ROOM ==> #[trigger] call_requires(read, (d, n, b))
+        &&& forall|d: &[u8], n: &[u8], b: &mut [u8], r: Option<usize>|
+            #[trigger] call_ensures(read, (d, n, b), r) ==> (r matches Some(k) ==> k <= b@.len())
+    }
+
+    /// [`read_in`] as the samplers' reader ([`reader_ok`]), where syscalls
+    /// are allowed. (A closure over it rather than the function item
+    /// `read_in` itself, whose `call_requires` the verifier does not
+    /// carry into a `&mut` argument.)
+    #[inline(always)]
+    fn reader() -> (r: impl FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize>)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            reader_ok(r),
+    {
+        |d: &[u8], n: &[u8], b: &mut [u8]| -> (r: Option<usize>)
+            requires
+                crate::sys::may_syscall(),
+                d@.len() + FILE_ROOM <= PATH_CAP,
+                n@.len() + 2 <= FILE_ROOM,
+            ensures
+                r matches Some(k) ==> k <= old(b)@.len(),
+            { read_in(d, n, b) }
     }
 
     /// `dir/name` parsed as a limit file through `read` (`read_in`, or a
@@ -944,18 +1800,17 @@ mod linux {
         read: &mut R,
         dir: &[u8],
         name: &[u8],
-    ) -> Option<u64> {
+    ) -> Option<u64>
+        requires
+            reader_ok(*old(read)),
+            dir@.len() + FILE_ROOM <= PATH_CAP,
+            name@.len() + 2 <= FILE_ROOM,
+        ensures
+            *final(read) == *old(read),
+    {
         let mut buf = [0u8; 64];
         let n = read(dir, name, &mut buf)?;
         parse_limit(&buf[..n])
-    }
-
-    /// [`read_in`] as the samplers' reader. (A closure over it rather than
-    /// the function item `read_in` itself, whose `call_requires` the
-    /// verifier does not carry into a `&mut` argument.)
-    #[inline(always)]
-    fn reader() -> impl FnMut(&[u8], &[u8], &mut [u8]) -> Option<usize> {
-        |d: &[u8], n: &[u8], b: &mut [u8]| read_in(d, n, b)
     }
 
     /// The minimum of the limit file `name` over the levels of the walk of
@@ -972,11 +1827,29 @@ mod linux {
         read: &mut R,
         own: &mut [u64; LEVELS],
         name: &[u8],
-    ) -> u64 {
+    ) -> u64
+        requires
+            reader_ok(*old(read)),
+            dir@.len() + FILE_ROOM <= PATH_CAP,
+            name@.len() + 2 <= FILE_ROOM,
+        ensures
+            *final(read) == *old(read),
+    {
         let mut min = UNLIMITED;
         let mut levels = Levels::new(dir, mount_len);
-        while let Some((level, d)) = levels.next_level() {
+        while let Some((level, d)) = levels.next_level()
+            invariant
+                levels.wf(),
+                levels.dir == dir,
+                dir@.len() + FILE_ROOM <= PATH_CAP,
+                name@.len() + 2 <= FILE_ROOM,
+                *read == *old(read),
+                reader_ok(*read),
+            decreases levels.rest(),
+        {
             let v = read_limit(read, d, name);
+            // `if let (Some(o), Some(v)) = (own.get_mut(level), v)`,
+            // spelled out.
             if level < LEVELS {
                 if let Some(v) = v {
                     own[level] = own[level].min(v);
@@ -995,17 +1868,28 @@ mod linux {
     /// and leaves it in the scan buffer, where it is parsed again for the
     /// copy (the line closure does not write `mount`: Verus has no
     /// closures that capture by mutable reference).
-    fn mountinfo_cgroup2(mount: &mut [u8; PATH_CAP]) -> usize {
+    fn mountinfo_cgroup2(mount: &mut [u8; PATH_CAP]) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r <= PATH_CAP,
+    {
         let mut scan = [0u8; SCAN_BUF];
         let Ok(fd) = sys::open(&PROC_SELF_MOUNTINFO, O_RDONLY) else {
             return 0;
         };
         let found = scan_lines(
             &mut scan,
-            |b: &mut [u8]| sys::read_full(fd, b).ok(),
-            |line: &[u8]| match cgroup2_mount_from_line(line) {
-                Some(m) => m.len() <= PATH_CAP,
-                None => false,
+            |b: &mut [u8]| -> (r: Option<usize>)
+                ensures
+                    r matches Some(n) ==> n <= old(b)@.len(),
+                    final(b)@.len() == old(b)@.len(),
+                { sys::read_full(fd, b).ok() },
+            |line: &[u8]| -> bool {
+                match cgroup2_mount_from_line(line) {
+                    Some(m) => m.len() <= PATH_CAP,
+                    None => false,
+                }
             },
         );
         let _ = sys::close(fd);
@@ -1022,11 +1906,17 @@ mod linux {
     impl Cgroup {
         /// Design 10 step 7: find the cgroup and read its limits once.
         /// With `enabled == false` (`cgroup:false`) nothing is opened.
-        pub fn discover(enabled: bool) -> Cgroup {
+        pub fn discover(enabled: bool) -> Cgroup
+            requires
+                crate::sys::may_syscall(),
+        {
             if !enabled {
                 return Cgroup::untracked(State::Disabled);
             }
             let mut cg = Cgroup::untracked(State::NoUnifiedPath);
+            proof {
+                use_type_invariant(&cg);
+            }
             let mut pathbuf = [0u8; FILE_BUF];
             let Some(n) = read_small_file(&PROC_SELF_CGROUP, &mut pathbuf) else {
                 return cg;
@@ -1040,6 +1930,9 @@ mod linux {
             if mount_len == 0 {
                 cg.state = State::NoMount;
                 return cg;
+            }
+            proof {
+                use_type_invariant(&cg);
             }
             let Some((dir_len, mlen)) = join_dir(&mut cg.dir, &mount[..mount_len], path) else {
                 cg.state = State::PathTooLong;
@@ -1060,11 +1953,17 @@ mod linux {
             cg
         }
 
-        fn walk_limits(&self, now: u64) {
+        fn walk_limits(&self, now: u64)
+            requires
+                crate::sys::may_syscall(),
+        {
             self.walk_limits_with(now, &mut reader());
         }
 
-        fn sample_now(&self, now: u64) {
+        fn sample_now(&self, now: u64)
+            requires
+                crate::sys::may_syscall(),
+        {
             self.sample_now_with(now, &mut reader());
         }
 
@@ -1076,7 +1975,12 @@ mod linux {
             &self,
             now: u64,
             read: &mut R,
-        ) {
+        )
+            requires
+                reader_ok(*old(read)),
+            ensures
+                *final(read) == *old(read),
+        {
             self.limits_at.store(now, Ordering::Relaxed);
             let (dir, mlen) = (self.dir(), self.mount_len as usize);
             let mut own = [UNLIMITED; LEVELS];
@@ -1091,7 +1995,11 @@ mod linux {
             // `for (slot, v) in self.level_limit.iter().zip(own)`, spelled
             // out: Verus does not specify `Zip`.
             let mut i = 0;
-            while i < LEVELS {
+            while i < LEVELS
+                invariant
+                    i <= LEVELS,
+                decreases LEVELS - i,
+            {
                 self.level_limit[i].store(own[i], Ordering::Relaxed);
                 i += 1;
             }
@@ -1109,7 +2017,12 @@ mod linux {
             &self,
             now: u64,
             read: &mut R,
-        ) {
+        )
+            requires
+                reader_ok(*old(read)),
+            ensures
+                *final(read) == *old(read),
+        {
             // The walk first, so an ancestor that just gained a limit has
             // its usage read in this same sample.
             if now.saturating_sub(self.limits_at.load(Ordering::Relaxed)) >= LIMIT_INTERVAL_NS {
@@ -1126,7 +2039,15 @@ mod linux {
             // `read` by mutable reference, which Verus does not support.
             let dir = self.dir();
             let mut levels = Levels::new(dir, self.mount_len as usize);
-            while let Some((level, d)) = levels.next_level() {
+            while let Some((level, d)) = levels.next_level()
+                invariant
+                    levels.wf(),
+                    levels.dir == dir,
+                    dir@.len() + FILE_ROOM <= PATH_CAP,
+                    *read == *old(read),
+                    reader_ok(*read),
+                decreases levels.rest(),
+            {
                 if level != 0
                     && level < LEVELS
                     && self.level_limit[level].load(Ordering::Relaxed) != UNLIMITED
@@ -1149,7 +2070,10 @@ mod linux {
         /// A `now` older than the last sample (read before another thread
         /// sampled) is not due, so the window only moves forward. `true`
         /// when this call read the files. Slow paths only.
-        pub fn sample(&self, now: u64) -> bool {
+        pub fn sample(&self, now: u64) -> bool
+            requires
+                crate::sys::may_syscall(),
+        {
             if !self.tracked() {
                 return false;
             }
@@ -1168,6 +2092,8 @@ mod linux {
             true
         }
     }
+
+    } // verus!
 }
 
 #[cfg(test)]

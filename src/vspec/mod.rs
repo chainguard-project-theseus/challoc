@@ -8,6 +8,7 @@
 use vstd::prelude::*;
 
 pub(crate) mod addr;
+pub(crate) mod byte;
 // Specifications only: Verus alone compiles these.
 #[cfg(verus_keep_ghost)]
 pub(crate) mod class;
