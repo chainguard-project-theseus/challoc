@@ -610,16 +610,17 @@ impl Cgroup {
         self.current.load(Ordering::Relaxed)
     }
 
-    /// `(limit, current)` of each ancestor within [`LEVELS`], the parent
-    /// first: its own limit ([`UNLIMITED`] for none) and its own usage as
-    /// last sampled. The leaf is not among them: its own limit is never
-    /// below the effective one, against the same usage.
-    pub fn ancestors(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
-        self.level_limit
-            .iter()
-            .zip(&self.level_current)
-            .skip(1)
-            .map(|(l, c)| (l.load(Ordering::Relaxed), c.load(Ordering::Relaxed)))
+    /// `(limit, current)` of the ancestor `level` levels up (the parent at
+    /// 1, below [`LEVELS`]): its own limit ([`UNLIMITED`] for none) and its
+    /// own usage as last sampled. The leaf is not among them: its own
+    /// limit is never below the effective one, against the same usage.
+    /// One ancestor at a time rather than an iterator over them, which
+    /// Verus does not specify.
+    pub fn ancestor(&self, level: usize) -> (u64, u64) {
+        (
+            self.level_limit[level].load(Ordering::Relaxed),
+            self.level_current[level].load(Ordering::Relaxed),
+        )
     }
 
     /// The last `memory.events` counters sampled, every field the file
