@@ -35,6 +35,12 @@ impl Zeroed {
         self.len
     }
 
+    /// The token covers at least `n` bytes from `p`.
+    pub open spec fn covers(&self, p: *mut u8, n: int) -> bool {
+        &&& self.addr() == p@.addr
+        &&& n <= self.len()
+    }
+
     /// The empty range at `addr` reads as zero: there is nothing to read.
     pub proof fn empty(addr: int) -> (tracked z: Zeroed)
         ensures

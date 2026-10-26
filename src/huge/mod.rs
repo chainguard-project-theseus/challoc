@@ -821,6 +821,56 @@ proof fn lemma_epages_len(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, Point
     }
 }
 
+/// `epages` of `l.insert(i, x)`.
+proof fn lemma_epages_insert(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, i: int, x: *mut HugeDesc)
+    requires
+        0 <= i <= l.len(),
+    ensures
+        epages(l.insert(i, x), descs) == epages(l, descs) + descs[x].value().pages,
+    decreases l.len(),
+{
+    if i == 0 {
+        assert(l.insert(0, x).drop_first() =~= l);
+    } else {
+        lemma_epages_insert(l.drop_first(), descs, i - 1, x);
+        assert(l.insert(i, x).drop_first() =~= l.drop_first().insert(i - 1, x));
+    }
+}
+
+/// One entry's pages changed: `epages` changes by the difference.
+proof fn lemma_epages_update(
+    l: Seq<*mut HugeDesc>,
+    d1: Map<*mut HugeDesc, PointsTo<HugeDesc>>,
+    d2: Map<*mut HugeDesc, PointsTo<HugeDesc>>,
+    x: *mut HugeDesc,
+)
+    requires
+        l.no_duplicates(),
+        l.contains(x),
+        forall|i: int| 0 <= i < l.len() && l[i] != x ==> #[trigger] d2[l[i]].value().pages == d1[l[i]].value().pages,
+    ensures
+        epages(l, d2) == epages(l, d1) - d1[x].value().pages + d2[x].value().pages,
+{
+    let j = l.index_of(x);
+    let r = l.remove(j);
+    assert forall|i: int| 0 <= i < r.len() implies #[trigger] d2[r[i]].value().pages == d1[r[i]].value().pages by {
+        if i < j {
+            assert(r[i] == l[i]);
+            assert(l[i] != x) by {
+                assert(l.no_duplicates());
+            }
+        } else {
+            assert(r[i] == l[i + 1]);
+            assert(l[i + 1] != x) by {
+                assert(l.no_duplicates());
+            }
+        }
+    }
+    lemma_epages_frame(r, d1, d2);
+    lemma_epages_remove(l, d1, j);
+    lemma_epages_remove(l, d2, j);
+}
+
 /// A descriptor's fields make sense below the high-water mark: a valid
 /// state, at least one page, and no page at or past `next_page`.
 spec fn desc_ok(v: HugeDesc, next_page: usize) -> bool {
@@ -1326,6 +1376,52 @@ proof fn lemma_tally_update(
     lemma_tally_remove(l, d2, j, k);
 }
 
+/// `tally` of `l.push(x)`.
+proof fn lemma_tally_push(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, x: *mut HugeDesc, k: int)
+    ensures
+        tally(l.push(x), descs, k) == tally(l, descs, k) + weight(descs[x].value(), k),
+    decreases l.len(),
+{
+    if l.len() > 0 {
+        lemma_tally_push(l.drop_first(), descs, x, k);
+        assert(l.push(x).drop_first() =~= l.drop_first().push(x));
+    } else {
+        assert(l.push(x).drop_first() =~= l);
+    }
+}
+
+/// Every weight is at least zero, so every tally is.
+proof fn lemma_tally_nonneg(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, k: int)
+    ensures
+        tally(l, descs, k) >= 0,
+    decreases l.len(),
+{
+    if l.len() > 0 {
+        lemma_tally_nonneg(l.drop_first(), descs, k);
+    }
+}
+
+/// With a page or more per extent, a state's count is at most its pages,
+/// and the keys are at most twice the extents.
+proof fn lemma_tally_counts(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, k: int)
+    requires
+        0 <= k < 3,
+        forall|i: int| 0 <= i < l.len() ==> (#[trigger] descs[l[i]].value()).pages >= 1 && descs[l[i]].value().state <= 2,
+    ensures
+        tally(l, descs, k) <= tally(l, descs, k + 3),
+        tally(l, descs, 6) <= 2 * (tally(l, descs, 0) + tally(l, descs, 1) + tally(l, descs, 2)),
+    decreases l.len(),
+{
+    if l.len() > 0 {
+        assert forall|i: int| 0 <= i < l.drop_first().len() implies (#[trigger] descs[l.drop_first()[i]].value()).pages >= 1
+            && descs[l.drop_first()[i]].value().state <= 2 by {
+            assert(l.drop_first()[i] == l[i + 1]);
+        }
+        assert(descs[l[0]].value().pages >= 1 && descs[l[0]].value().state <= 2);
+        lemma_tally_counts(l.drop_first(), descs, k);
+    }
+}
+
 /// The run authorities of a well-formed state (`wf`, for proofs that hide
 /// it).
 proof fn lemma_run_auths(g0: Inner)
@@ -1376,6 +1472,27 @@ proof fn lemma_token_extent(g0: Inner, d: *mut HugeDesc, s: int, n: int)
     }
 }
 
+/// A live descriptor is counted: its state's extent and page counters
+/// hold it, so [`HugeStats::sub`] can take it out.
+proof fn lemma_can_sub(g: Inner, d: *mut HugeDesc)
+    requires
+        g.wf(),
+        g.descs@.contains_key(d),
+    ensures
+        g.stats.can_sub(state_of(g.descs@[d].value().state), g.descs@[d].value().pages as usize),
+{
+    let v = g.descs@[d].value();
+    let j = g.all@.index_of(d);
+    assert(desc_ok(v, g.next_page));
+    let k = v.state as int;
+    lemma_tally_remove(g.all@, g.descs@, j, k);
+    lemma_tally_nonneg(g.all@.remove(j), g.descs@, k);
+    lemma_tally_remove(g.all@, g.descs@, j, k + 3);
+    lemma_tally_nonneg(g.all@.remove(j), g.descs@, k + 3);
+    assert(stat(g.stats, k) == tally(g.all@, g.descs@, k));
+    assert(stat(g.stats, k + 3) == tally(g.all@, g.descs@, k + 3));
+}
+
 } // verus!
 
 // SAFETY: the raw pointers address the metadata region, which is process
@@ -1423,12 +1540,16 @@ impl Huge {
 
 } // verus!
 
+verus! {
+
 /// `PROT_NONE`, `PROT_READ | PROT_WRITE` and the guard advice of
 /// `sys` (checked against them below).
 const PROT_NONE: i32 = 0;
 const PROT_RW: i32 = 3;
 const MADV_GUARD_INSTALL: i32 = 102;
 const MADV_GUARD_REMOVE: i32 = 103;
+
+} // verus!
 
 const _: () = assert!(
     PROT_NONE == sys::PROT_NONE
@@ -1437,49 +1558,97 @@ const _: () = assert!(
         && MADV_GUARD_REMOVE == sys::MADV_GUARD_REMOVE
 );
 
-fn commit(addr: usize, len: usize) -> Result<(), Errno> {
+verus! {
+
+fn commit(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: inside our own reservation; adding permissions to pages
     // nobody holds cannot break anything.
     unsafe { sys::mprotect(addr, len, PROT_RW) }
 }
 
-fn protect_none(addr: usize, len: usize) -> Result<(), Errno> {
+fn protect_none(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: the page is a guard that no caller may touch.
     unsafe { sys::mprotect(addr, len, PROT_NONE) }
 }
 
-fn guard_install(addr: usize, len: usize) -> Result<(), Errno> {
+fn guard_install(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: as `protect_none`.
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
 
-fn guard_remove(addr: usize, len: usize) -> Result<(), Errno> {
+fn guard_remove(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: the run is being freed; the guard protects nothing now.
     unsafe { sys::madvise(addr, len, MADV_GUARD_REMOVE) }
 }
 
-fn now_ns() -> u64 {
+fn now_ns() -> u64
+    requires
+        crate::sys::may_syscall(),
+{
     sys::now_coarse_ns()
 }
 
 /// A block for a descriptor from `meta`, with the permission to it
 /// (`Meta::alloc_raw`'s, typed) and its claim (`Meta::alloc_raw`'s, which
 /// [`free_desc`] gives back); null, with neither, when the metadata region
-/// is exhausted.
+/// is exhausted. The block is `meta`'s, so metadata when `meta` is the
+/// process's.
 // The tracked result is part of the signature.
 #[allow(clippy::type_complexity)]
 #[inline(always)]
-fn alloc_desc(
-    meta: &Meta,
-) -> (
-    *mut HugeDesc,
-    Tracked<Option<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>>,
-) {
-    let (p, _blk) = meta.alloc_raw(Layout::new::<HugeDesc>());
-    (p as *mut HugeDesc, Tracked::assume_new())
+fn alloc_desc(meta: &Meta) -> (r: (*mut HugeDesc, Tracked<Option<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>>))
+    requires
+        crate::sys::may_syscall(),
+    ensures
+        r.0@.addr != 0 ==> r.1@ is Some && (r.1@->0).0.ptr() == r.0 && (r.1@->0).0.is_uninit(),
+        r.0@.addr != 0 ==> desc_claim_for((r.1@->0).1, r.0, meta.live_id()),
+        r.0@.addr != 0 ==> meta.holds(r.0@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
+        r.0@.addr != 0 && meta.is_process() ==> desc_in_meta(r.0),
+{
+    proof {
+        crate::meta::lemma_consts();
+    }
+    let (p, Tracked(blk)) = meta.alloc_raw(Layout::new::<HugeDesc>());
+    let tracked (raw, claim) = blk;
+    let d = p as *mut HugeDesc;
+    proof {
+        assert((d as *mut u8)@ == p@);
+    }
+    let tracked perm = desc_perm(raw, claim, d);
+    (d, Tracked(perm))
 }
 
-verus! {
+/// The descriptor permission of a block of `raw` at `d`, with the block's
+/// claim, when there is a block.
+proof fn desc_perm(tracked raw: PointsToRaw, tracked claim: crate::meta::MetaClaim, d: *mut HugeDesc) -> (tracked r: Option<
+    (PointsTo<HugeDesc>, crate::meta::MetaClaim),
+>)
+    ensures
+        d@.addr != 0 && raw.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
+            && raw.provenance() == d@.provenance && d@.addr as int % vstd::layout::align_of::<HugeDesc>() as int == 0
+            ==> r is Some && (r->0).0.ptr() == d && (r->0).0.is_uninit() && (r->0).1 == claim,
+{
+    if d@.addr != 0 && raw.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
+        && raw.provenance() == d@.provenance && d@.addr as int % vstd::layout::align_of::<HugeDesc>() as int == 0 {
+        let tracked perm = raw.into_typed::<HugeDesc>(d@.addr);
+        assert(perm.ptr()@ == d@);
+        Some((perm, claim))
+    } else {
+        None
+    }
+}
 
 /// The permission to the bytes of the descriptor block that `desc.0`
 /// is the permission to (its contents dropped), with the block's claim:
@@ -1513,6 +1682,937 @@ fn free_desc(meta: &Meta, d: *mut HugeDesc, blk: Tracked<(PointsToRaw, crate::me
         assert((d as *mut u8)@.addr == d@.addr && (d as *mut u8)@.provenance == d@.provenance);
     }
     meta.free(d as *mut u8, Layout::new::<HugeDesc>(), blk);
+}
+
+/// Where a run may be taken ([`Huge::find`]'s answer): fresh pages at or
+/// past the mark when no free extent touches it, or pages from a free extent
+/// that starts at or before the run and either holds it or touches the mark.
+spec fn take_ok(p: Placement, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, next_page: usize) -> bool {
+    if p.ext@.addr == 0 {
+        p.start >= next_page && none_ends_at(descs, next_page as int)
+    } else {
+        let v = descs[p.ext].value();
+        &&& descs.contains_key(p.ext)
+        &&& v.state != RunState::Active as u8
+        &&& v.start <= p.start
+        &&& (p.start + p.pages <= v.start + v.pages || v.start + v.pages == next_page)
+    }
+}
+
+/// Every key of `t` names a descriptor of `d` whose extent holds it and
+/// ends at or before `mark`. Opaque: `Huge::take` reveals it only where it
+/// reasons about keys, since each instance is costly.
+#[verifier::opaque]
+spec fn keys_inside(t: Table, d: Map<*mut HugeDesc, PointsTo<HugeDesc>>, mark: int) -> bool {
+    forall|k: usize| #[trigger] t.lookup(k) is Some ==> d.contains_key(t.lookup(k).unwrap()) && d[t.lookup(
+        k,
+    ).unwrap()].value().start <= k < d[t.lookup(k).unwrap()].value().start + d[t.lookup(k).unwrap()].value().pages <= mark
+}
+
+/// The zero token of a run `Huge::take` placed at page `s` with `usable`
+/// pages before its guard, over a region at `base` with pages of `pg`
+/// bytes whose high-water mark was `mark`: empty unless `zeroed`, which
+/// `take` sets for a run from fresh pages (no extent, or a start at or
+/// past the extent it touches, which then ends at the mark) or from a
+/// `Purged` extent while `purge::purged_is_zero` read true under the lock
+/// (`ve` the extent). Pages at or past the mark are fresh
+/// ([`axiom_fresh_anon_zero`]: only `take` raises the mark, and
+/// no run has covered them); the pages of a `Purged` extent were
+/// discarded with `MADV_DONTNEED` ([`axiom_discarded_zero`]),
+/// and when the run runs past such an extent the extent ends at the mark
+/// and the rest is fresh.
+proof fn zero_run(base: int, pg: int, s: int, usable: int, mark: int, has_ext: bool, ve: HugeDesc, zeroed: bool) -> (tracked z: Zeroed)
+    requires
+        pg > 0,
+        usable >= 0,
+        !has_ext ==> s >= mark,
+        has_ext ==> ve.start <= s,
+        has_ext ==> (s + usable + GUARD_PAGES <= ve.start + ve.pages || ve.start + ve.pages == mark),
+        zeroed && has_ext ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages,
+    ensures
+        zeroed ==> z.addr() == base + s * pg && z.len() == usable * pg,
+{
+    if !zeroed {
+        Zeroed::empty(0)
+    } else if !has_ext || s >= ve.start + ve.pages {
+        // At or past the mark.
+        assert(s >= mark);
+        axiom_fresh_anon_zero(base + s * pg, usable * pg)
+    } else if s + usable <= ve.start + ve.pages {
+        // Inside the `Purged` extent.
+        assert(ve.state == RunState::Purged as u8);
+        axiom_discarded_zero(base + s * pg, usable * pg)
+    } else {
+        // The `Purged` extent up to the mark, then fresh pages.
+        let e = ve.start + ve.pages;
+        assert(ve.state == RunState::Purged as u8 && e == mark);
+        let tracked lo = axiom_discarded_zero(base + s * pg, (e - s) * pg);
+        let tracked hi = axiom_fresh_anon_zero(base + e * pg, (s + usable - e) * pg);
+        assert(base + s * pg + (e - s) * pg == base + e * pg) by (nonlinear_arith);
+        assert((e - s) * pg + (s + usable - e) * pg == usable * pg) by (nonlinear_arith);
+        assert((e - s) * pg >= 0 && (s + usable - e) * pg >= 0) by (nonlinear_arith)
+            requires s < e, e < s + usable, pg > 0;
+        lo.join(hi)
+    }
+}
+
+/// `mmap(2)`: a private anonymous mapping reads as zero until it is first
+/// written. Changing its protection (`mprotect`), populating it
+/// (`MADV_POPULATE_WRITE`), advising it (`MADV_HUGEPAGE`,
+/// `MADV_COLLAPSE`) and guard markers (`MADV_GUARD_INSTALL`/`REMOVE`)
+/// leave the contents alone.
+///
+/// Premise, trusted and the caller's: the `len` bytes at `addr` lie in the
+/// huge region (`Regions::reserve`) and nothing has written them since it
+/// was mapped, or written anything but zero. Private to this module, and
+/// [`zero_run`] is its one caller (`huge::tests::zero_axioms_called_from_zero_run_only`
+/// pins that), for pages at or past the high-water mark it is given; its
+/// `requires` ties that mark to the run `Huge::take` places (only `take`
+/// raises the mark, and no run has covered pages past it).
+axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
+    requires
+        0 <= len,
+    ensures
+        z.addr() == addr,
+        z.len() == len,
+;
+
+/// `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory,
+/// reads return zero-fill-on-demand pages (`MADV_FREE` gives no such
+/// guarantee: the old contents stay until the kernel reclaims the page).
+///
+/// Premise, trusted and the caller's: the `len` bytes at `addr` were
+/// discarded with `MADV_DONTNEED`, or never written but with zeros, and
+/// nothing has written them since. Private to this module, and
+/// [`zero_run`] is its one caller (pinned as for
+/// [`axiom_fresh_anon_zero`]), for a `Purged` extent. Not checked: that
+/// `purge::purged_is_zero` read true for it. `take` reads the flag into
+/// its `zeroed` result, but `zero_run` requires only the extent's state:
+/// no batch of the process has used `MADV_FREE` while the flag reads true
+/// (`purge::Batch::flush` clears it before it issues one), `Purged` is set
+/// only in the lock hold that flushes the extent's discard or, for the
+/// hole alignment leaves at the mark, by `take` for pages never handed
+/// out, and a `Purged` extent has no allocated run.
+axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)
+    requires
+        0 <= len,
+    ensures
+        z.addr() == addr,
+        z.len() == len,
+;
+
+/// Initialise a metadata block, whose permission is `perm`, as a free
+/// extent.
+fn init_free(
+    d: *mut HugeDesc,
+    Tracked(perm): Tracked<&mut PointsTo<HugeDesc>>,
+    start: usize,
+    pages: usize,
+    state: RunState,
+    dirty_at: u64,
+)
+    requires
+        old(perm).ptr() == d,
+        state != RunState::Active,
+    ensures
+        final(perm).ptr() == d,
+        final(perm).is_init(),
+        final(perm).value() == (HugeDesc {
+            start: start as u32,
+            pages: pages as u32,
+            arena: 0,
+            state: state as u8,
+            _pad: 0,
+            usable: 0,
+            dirty_at,
+            prev: ptr::null_mut(),
+            next: ptr::null_mut(),
+        }),
+{
+    debug_assert!(state.is_free());
+    // `d` is a fresh metadata block for a `HugeDesc`.
+    ptr_mut_write(
+        d,
+        Tracked(perm),
+        HugeDesc {
+            start: start as u32,
+            pages: pages as u32,
+            arena: 0,
+            state: state as u8,
+            _pad: 0,
+            usable: 0,
+            dirty_at,
+            prev: ptr::null_mut(),
+            next: ptr::null_mut(),
+        },
+    )
+}
+
+/// What [`Huge::take`] puts in place of the extent `ext` it takes a run
+/// from (or of the fresh pages at the mark): the run `vr` at `run`, the
+/// extent's head `vh` (kept in `ext`), its tail or the hole alignment
+/// left at the mark `vs` (in `spare`). `mark` is `next_page` before,
+/// `nm` after.
+#[allow(dead_code)]
+ghost struct Take {
+    ext: *mut HugeDesc,
+    has_ext: bool,
+    ve: HugeDesc,
+    head: bool,
+    vh: HugeDesc,
+    used: bool,
+    spare: *mut HugeDesc,
+    vs: HugeDesc,
+    run: *mut HugeDesc,
+    vr: HugeDesc,
+    mark: usize,
+    nm: usize,
+}
+
+impl Take {
+    /// The descriptor at `x` afterwards, up to its list links.
+    spec fn model(self, d0: Map<*mut HugeDesc, PointsTo<HugeDesc>>, x: *mut HugeDesc) -> Option<HugeDesc> {
+        if x == self.run {
+            Some(self.vr)
+        } else if self.used && x == self.spare {
+            Some(self.vs)
+        } else if self.has_ext && x == self.ext {
+            if self.head { Some(self.vh) } else { None }
+        } else if d0.contains_key(x) {
+            Some(d0[x].value())
+        } else {
+            None
+        }
+    }
+
+    /// The table's entry for `k` afterwards.
+    spec fn lookup(self, t0: Table, k: usize) -> Option<*mut HugeDesc> {
+        if is_key(self.vr, k as int) {
+            Some(self.run)
+        } else if self.head && is_key(self.vh, k as int) {
+            Some(self.ext)
+        } else if self.used && is_key(self.vs, k as int) {
+            Some(self.spare)
+        } else if self.has_ext && is_key(self.ve, k as int) {
+            None
+        } else {
+            t0.lookup(k)
+        }
+    }
+
+    /// What tally `k` gains.
+    spec fn delta(self, k: int) -> int {
+        (if self.has_ext { -weight(self.ve, k) } else { 0 }) + (if self.head { weight(self.vh, k) } else { 0 }) + (if self.used {
+            weight(self.vs, k)
+        } else {
+            0
+        }) + weight(self.vr, k)
+    }
+
+    /// `all` without a retired `ext`.
+    spec fn base(self, a0: Seq<*mut HugeDesc>) -> Seq<*mut HugeDesc> {
+        if self.has_ext && !self.head { a0.remove(a0.index_of(self.ext)) } else { a0 }
+    }
+
+    /// `all` afterwards.
+    spec fn all_after(self, a0: Seq<*mut HugeDesc>) -> Seq<*mut HugeDesc> {
+        (if self.used { self.base(a0).push(self.spare) } else { self.base(a0) }).push(self.run)
+    }
+
+    /// The `Empty` list afterwards: an `Empty` tail goes right after
+    /// `ext`, and a retired `Empty` `ext` leaves.
+    spec fn elist_after(self, l0: Seq<*mut HugeDesc>) -> Seq<*mut HugeDesc> {
+        if self.has_ext && self.ve.state == RunState::Empty as u8 {
+            let l1 = if self.used { l0.insert(l0.index_of(self.ext) + 1, self.spare) } else { l0 };
+            if self.head { l1 } else { l1.remove(l1.index_of(self.ext)) }
+        } else {
+            l0
+        }
+    }
+
+    /// A piece lies where it may: inside `ext`, or past it when `ext`
+    /// touches the mark; at or past the mark without `ext`.
+    spec fn covered(self, v: HugeDesc) -> bool {
+        if self.has_ext {
+            &&& v.start >= self.ve.start
+            &&& (v.start + v.pages <= self.ve.start + self.ve.pages || self.ve.start + self.ve.pages == self.mark)
+        } else {
+            v.start >= self.mark
+        }
+    }
+
+    /// A piece's shape: a page or more, a valid state, below `nm`.
+    spec fn piece(self, v: HugeDesc) -> bool {
+        &&& v.pages >= 1
+        &&& v.state <= 2
+        &&& v.start + v.pages <= self.nm
+        &&& self.covered(v)
+    }
+
+    /// The pieces, against the state `g0` they were cut from.
+    spec fn pieces_ok(self, g0: Inner) -> bool {
+        &&& self.mark == g0.next_page
+        &&& self.has_ext == (self.ext@.addr != 0)
+        &&& self.mark <= self.nm <= g0.np@
+        &&& self.has_ext ==> g0.descs@.contains_key(self.ext) && self.ve == g0.descs@[self.ext].value() && self.ve.state
+            != RunState::Active as u8
+        &&& !self.has_ext ==> !self.head && (self.used ==> self.vs.state == RunState::Purged as u8)
+        &&& self.has_ext && self.used ==> self.vs.state == self.ve.state
+        &&& self.head ==> self.vh.state == self.ve.state && self.vh.start == self.ve.start
+        &&& self.piece(self.vr) && self.vr.state == RunState::Active as u8
+        &&& run_ok(self.vr, g0.lg@)
+        &&& self.used ==> self.piece(self.vs) && self.vs.state != RunState::Active as u8 && apart(self.vs, self.vr)
+        &&& self.head ==> self.piece(self.vh) && apart(self.vh, self.vr)
+        &&& self.head && self.used ==> apart(self.vh, self.vs)
+        &&& !g0.descs@.contains_key(self.run) || (self.has_ext && !self.head && self.run == self.ext)
+        &&& self.used ==> !g0.descs@.contains_key(self.spare) && self.spare != self.run
+        &&& self.run@.addr != 0
+        &&& self.used ==> self.spare@.addr != 0
+        &&& (if self.has_ext { self.ve.pages as int } else { 0 }) + (self.nm - self.mark) == (if self.used {
+            self.vs.pages as int
+        } else {
+            0
+        }) + (if self.head { self.vh.pages as int } else { 0 }) + self.vr.pages
+    }
+
+    /// Where the free pieces lie, for coalescing: the head ends where the
+    /// run starts; a tail runs from the run's end to the end of `ext`; a
+    /// hole runs from the mark, which no free extent touched, to the run.
+    /// And they cover what they must, for the exact free-page set: `ext`
+    /// keeps a head when it starts below the run and leaves a tail when it
+    /// ends past the run, and a hole is left whenever the run starts past
+    /// the mark.
+    spec fn touch_ok(self, g0: Inner) -> bool {
+        &&& self.head ==> self.vh.start + self.vh.pages == self.vr.start
+        &&& self.has_ext && self.used ==> self.vs.start == self.vr.start + self.vr.pages && self.vs.start + self.vs.pages
+            == self.ve.start + self.ve.pages
+        &&& !self.has_ext && self.used ==> self.vs.start == self.mark && self.vs.start + self.vs.pages == self.vr.start
+        &&& !self.has_ext ==> none_ends_at(g0.descs@, self.mark as int)
+        &&& self.has_ext && !self.head ==> self.vr.start <= self.ve.start
+        &&& self.has_ext && !self.used ==> self.ve.start + self.ve.pages <= self.vr.start + self.vr.pages
+        &&& !self.has_ext && !self.used ==> self.vr.start <= self.mark
+    }
+}
+
+impl Inner {
+    /// `self` is `g0` with the pieces of `t` in place.
+    spec fn took(&self, g0: Inner, t: Take) -> bool {
+        &&& t.pieces_ok(g0)
+        &&& self.table.wf()
+        &&& self.table.spec_count() == g0.table.spec_count() + t.delta(6)
+        &&& forall|k: usize| #[trigger] self.table.lookup(k) == t.lookup(g0.table, k)
+        &&& perms_ok(self.descs@)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@)
+        &&& self.table.spec_mid() == self.mid@
+        &&& forall|x: *mut HugeDesc| #[trigger] self.descs@.contains_key(x) <==> t.model(g0.descs@, x) is Some
+        &&& forall|x: *mut HugeDesc| #[trigger] self.descs@.contains_key(x) ==> same_but_links(
+            t.model(g0.descs@, x).unwrap(),
+            self.descs@[x].value(),
+        )
+        &&& self.all@ == t.all_after(g0.all@)
+        &&& forall|k: int| 0 <= k < 6 ==> #[trigger] stat(self.stats, k) == stat(g0.stats, k) + t.delta(k)
+        &&& self.next_page == t.nm
+        &&& self.stats.next_page == self.next_page
+        &&& self.np == g0.np
+        &&& self.lg == g0.lg
+        &&& self.free.map.wf()
+        &&& self.free.map.spec_nbits() == self.np@
+        &&& self.free.own_claimed()
+        &&& self.free.l1_words <= 0x1_0000_0000
+        &&& self.elist@ == t.elist_after(g0.elist@)
+        &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
+    }
+}
+
+/// An old extent other than `ext` shares no page with a piece: it is
+/// apart from `ext` and below the mark.
+proof fn lemma_took_apart(g0: Inner, t: Take, x: *mut HugeDesc, v: HugeDesc)
+    requires
+        g0.wf(),
+        t.pieces_ok(g0),
+        g0.descs@.contains_key(x),
+        !(t.has_ext && x == t.ext),
+        t.piece(v),
+    ensures
+        apart(g0.descs@[x].value(), v),
+{
+    assert(desc_ok(g0.descs@[x].value(), g0.next_page));
+    if t.has_ext {
+        assert(apart(g0.descs@[x].value(), g0.descs@[t.ext].value()));
+    }
+}
+
+/// What `l.push(y)` contains.
+proof fn lemma_push_contains(l: Seq<*mut HugeDesc>, y: *mut HugeDesc, x: *mut HugeDesc)
+    ensures
+        l.push(y).contains(x) <==> l.contains(x) || x == y,
+{
+    if l.contains(x) {
+        assert(l.push(y)[l.index_of(x)] == x);
+    }
+    if x == y {
+        assert(l.push(y)[l.len() as int] == x);
+    }
+    if l.push(y).contains(x) {
+        let i = l.push(y).index_of(x);
+        if i < l.len() {
+            assert(l[i] == x);
+        }
+    }
+}
+
+/// The extents after a take: inside the new mark, disjoint, each under
+/// exactly its keys.
+proof fn lemma_took_extents(g0: Inner, g1: Inner, t: Take)
+    requires
+        g0.wf(),
+        g1.took(g0, t),
+    ensures
+        forall|d: *mut HugeDesc| #[trigger] g1.descs@.contains_key(d) ==> desc_ok(g1.descs@[d].value(), g1.next_page),
+        forall|k: usize| #[trigger] g1.table.lookup(k) matches Some(d) ==> g1.descs@.contains_key(d),
+        forall|d: *mut HugeDesc| #[trigger] g1.descs@.contains_key(d) ==> keyed(g1.table, g1.descs@[d].value(), d),
+        forall|k: usize| #[trigger] g1.table.lookup(k) matches Some(d) ==> is_key(g1.descs@[d].value(), k as int),
+        forall|d1: *mut HugeDesc, d2: *mut HugeDesc|
+            #[trigger] g1.descs@.contains_key(d1) && #[trigger] g1.descs@.contains_key(d2) && d1 != d2 ==> apart(
+                g1.descs@[d1].value(),
+                g1.descs@[d2].value(),
+            ),
+{
+    let d0 = g0.descs@;
+    let d1 = g1.descs@;
+    let t0 = g0.table;
+    // Which descriptors are old.
+    assert forall|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && x != t.run && !(t.used && x == t.spare) && !(t.has_ext
+        && x == t.ext) implies d0.contains_key(x) && same_but_links(d0[x].value(), d1[x].value()) by {}
+    assert forall|d: *mut HugeDesc| #[trigger] d1.contains_key(d) implies desc_ok(d1[d].value(), g1.next_page) by {
+        if d != t.run && !(t.used && d == t.spare) && !(t.has_ext && d == t.ext) {
+            assert(desc_ok(d0[d].value(), g0.next_page));
+        }
+    }
+    assert forall|d: *mut HugeDesc| #[trigger] d1.contains_key(d) implies keyed(g1.table, d1[d].value(), d) by {
+        let v = d1[d].value();
+        let k1 = v.start as usize;
+        let k2 = (v.start + v.pages - 1) as usize;
+        assert(g1.table.lookup(k1) == t.lookup(t0, k1));
+        assert(g1.table.lookup(k2) == t.lookup(t0, k2));
+        if d != t.run && !(t.used && d == t.spare) && !(t.has_ext && d == t.ext) {
+            lemma_took_apart(g0, t, d, t.vr);
+            if t.used {
+                lemma_took_apart(g0, t, d, t.vs);
+            }
+            if t.head {
+                lemma_took_apart(g0, t, d, t.vh);
+            }
+            if t.has_ext {
+                assert(apart(d0[d].value(), t.ve));
+            }
+            assert(keyed(t0, d0[d].value(), d));
+        }
+    }
+    assert forall|k: usize| #[trigger] g1.table.lookup(k) is Some implies d1.contains_key(g1.table.lookup(k).unwrap()) && is_key(
+        d1[g1.table.lookup(k).unwrap()].value(),
+        k as int,
+    ) by {
+        assert(g1.table.lookup(k) == t.lookup(t0, k));
+        let y = g1.table.lookup(k).unwrap();
+        if !is_key(t.vr, k as int) && !(t.head && is_key(t.vh, k as int)) && !(t.used && is_key(t.vs, k as int)) {
+            assert(t0.lookup(k) == Some(y));
+            assert(d0.contains_key(y) && is_key(d0[y].value(), k as int));
+            assert(y != t.run && !(t.used && y == t.spare));
+            if t.has_ext {
+                assert(y != t.ext);
+            }
+            assert(t.model(d0, y) == Some(d0[y].value()));
+            assert(d1.contains_key(y));
+            assert(same_but_links(d0[y].value(), d1[y].value()));
+        } else if is_key(t.vr, k as int) {
+            assert(t.model(d0, t.run) is Some);
+            assert(d1.contains_key(t.run));
+        } else if t.head && is_key(t.vh, k as int) {
+            assert(t.model(d0, t.ext) is Some);
+            assert(d1.contains_key(t.ext));
+        } else {
+            assert(t.model(d0, t.spare) is Some);
+            assert(d1.contains_key(t.spare));
+        }
+    }
+    assert forall|x1: *mut HugeDesc, x2: *mut HugeDesc|
+        #[trigger] d1.contains_key(x1) && #[trigger] d1.contains_key(x2) && x1 != x2 implies apart(d1[x1].value(), d1[x2].value()) by {
+        let new1 = x1 == t.run || (t.used && x1 == t.spare) || (t.has_ext && x1 == t.ext);
+        let new2 = x2 == t.run || (t.used && x2 == t.spare) || (t.has_ext && x2 == t.ext);
+        if !new1 && !new2 {
+            assert(apart(d0[x1].value(), d0[x2].value()));
+        } else if !new1 {
+            lemma_took_apart(g0, t, x1, t.model(d0, x2).unwrap());
+        } else if !new2 {
+            lemma_took_apart(g0, t, x2, t.model(d0, x1).unwrap());
+        }
+    }
+}
+
+/// The tallies after a take gain `delta`; `all` stays a list of the live
+/// descriptors.
+///
+/// The proof's solver cost moves with unrelated items elsewhere in the
+/// crate; the rlimit leaves it headroom.
+#[verifier::rlimit(40)]
+proof fn lemma_took_tally(g0: Inner, g1: Inner, t: Take, k: int)
+    requires
+        g0.wf(),
+        g1.took(g0, t),
+    ensures
+        tally(g1.all@, g1.descs@, k) == tally(g0.all@, g0.descs@, k) + t.delta(k),
+        g1.all@.no_duplicates(),
+        forall|d: *mut HugeDesc| #[trigger] g1.descs@.contains_key(d) <==> g1.all@.contains(d),
+{
+    let d0 = g0.descs@;
+    let d1 = g1.descs@;
+    let a0 = g0.all@;
+    let b = t.base(a0);
+    assert(forall|x: *mut HugeDesc| #[trigger] a0.contains(x) ==> d0.contains_key(x));
+    assert forall|i: int| 0 <= i < a0.len() && !(t.has_ext && a0[i] == t.ext) implies #[trigger] weight(d1[a0[i]].value(), k) == weight(
+        d0[a0[i]].value(),
+        k,
+    ) by {
+        assert(d0.contains_key(a0[i]));
+        assert(a0[i]@.addr != 0);
+        assert(a0[i] != t.run && !(t.used && a0[i] == t.spare));
+        assert(d1.contains_key(a0[i]));
+    }
+    if t.has_ext && !t.head {
+        let j = a0.index_of(t.ext);
+        assert forall|i: int| 0 <= i < b.len() implies #[trigger] weight(d1[b[i]].value(), k) == weight(d0[b[i]].value(), k) by {
+            if i < j {
+                assert(b[i] == a0[i]);
+                assert(a0[i] != t.ext) by {
+                    assert(a0.no_duplicates());
+                }
+            } else {
+                assert(b[i] == a0[i + 1]);
+                assert(a0[i + 1] != t.ext) by {
+                    assert(a0.no_duplicates());
+                }
+            }
+        }
+        lemma_tally_frame(b, d0, d1, k);
+        lemma_tally_remove(a0, d0, j, k);
+    } else if t.has_ext {
+        assert(d1.contains_key(t.ext));
+        lemma_tally_update(a0, d0, d1, t.ext, k);
+    } else {
+        lemma_tally_frame(a0, d0, d1, k);
+    }
+    let c = if t.used { b.push(t.spare) } else { b };
+    assert(g1.all@ == c.push(t.run));
+    if t.used {
+        lemma_tally_push(b, d1, t.spare, k);
+        assert(d1.contains_key(t.spare));
+    }
+    lemma_tally_push(c, d1, t.run, k);
+    assert(d1.contains_key(t.run));
+    // `all` afterwards.
+    assert forall|x: *mut HugeDesc| #[trigger] b.contains(x) <==> a0.contains(x) && !(t.has_ext && !t.head && x == t.ext) by {
+        if t.has_ext && !t.head {
+            let j = a0.index_of(t.ext);
+            if b.contains(x) {
+                let i = b.index_of(x);
+                let i0 = if i < j { i } else { i + 1 };
+                assert(a0[i0] == x);
+                assert(x != t.ext) by {
+                    assert(a0.no_duplicates());
+                }
+            }
+            if a0.contains(x) && x != t.ext {
+                let i0 = a0.index_of(x);
+                assert(i0 != j);
+                let i = if i0 < j { i0 } else { i0 - 1 };
+                assert(b[i] == x);
+            }
+        }
+    }
+    assert(b.no_duplicates()) by {
+        if t.has_ext && !t.head {
+            let j = a0.index_of(t.ext);
+            assert forall|i1: int, i2: int| 0 <= i1 < b.len() && 0 <= i2 < b.len() && i1 != i2 implies b[i1] != b[i2] by {
+                let j1 = if i1 < j { i1 } else { i1 + 1 };
+                let j2 = if i2 < j { i2 } else { i2 + 1 };
+                assert(b[i1] == a0[j1] && b[i2] == a0[j2]);
+            }
+        }
+    }
+    assert(c.no_duplicates());
+    assert(g1.all@.no_duplicates());
+    assert forall|d: *mut HugeDesc| #[trigger] d1.contains_key(d) <==> g1.all@.contains(d) by {
+        assert(d1.contains_key(d) <==> t.model(d0, d) is Some);
+        assert(a0.contains(d) <==> d0.contains_key(d));
+        lemma_push_contains(c, t.run, d);
+        if t.used {
+            lemma_push_contains(b, t.spare, d);
+        }
+    }
+}
+
+/// The `Empty` list after a take: its length and pages are the counters,
+/// and it holds every `Empty` extent.
+///
+/// The explicit rlimit: this proof is sensitive to crate-wide context and
+/// went past the default once unrelated ghost state was added elsewhere.
+#[verifier::rlimit(40)]
+proof fn lemma_took_elist(g0: Inner, g1: Inner, t: Take)
+    requires
+        g0.wf(),
+        g1.took(g0, t),
+    ensures
+        g1.stats.empty == g1.elist@.len(),
+        g1.stats.empty_pages == epages(g1.elist@, g1.descs@),
+        forall|d: *mut HugeDesc| #[trigger] g1.descs@.contains_key(d) && g1.descs@[d].value().state == RunState::Empty as u8
+            ==> g1.elist@.contains(d),
+{
+    let d0 = g0.descs@;
+    let d1 = g1.descs@;
+    let l0 = g0.elist@;
+    assert(stat(g1.stats, 1) == stat(g0.stats, 1) + t.delta(1));
+    assert(stat(g1.stats, 4) == stat(g0.stats, 4) + t.delta(4));
+    // The old list's members other than `ext` keep their pages.
+    assert forall|i: int| #![trigger d0.contains_key(l0[i])] #![trigger d0[l0[i]]] 0 <= i < l0.len() implies d0.contains_key(l0[i]) && d0[l0[i]].value().state == RunState::Empty as u8 by {
+        assert(enode(l0, d0, i));
+    }
+    assert forall|i: int| 0 <= i < l0.len() && l0[i] != t.ext implies #[trigger] d1[l0[i]].value().pages == d0[l0[i]].value().pages by {
+        assert(d0.contains_key(l0[i]));
+        assert(l0[i] != t.run && !(t.used && l0[i] == t.spare));
+        assert(d1.contains_key(l0[i]));
+    }
+    if t.has_ext && t.ve.state == RunState::Empty as u8 {
+        assert(l0.contains(t.ext));
+        let j = l0.index_of(t.ext);
+        lemma_epages_update(l0, d0, d1, t.ext);
+        let l1 = if t.used { l0.insert(j + 1, t.spare) } else { l0 };
+        if t.used {
+            lemma_epages_insert(l0, d1, j + 1, t.spare);
+            assert(d1.contains_key(t.spare));
+        }
+        assert(l1[j] == t.ext);
+        assert(l1.no_duplicates()) by {
+            if t.used {
+                assert(!l0.contains(t.spare)) by {
+                    if l0.contains(t.spare) {
+                        assert(d0.contains_key(l0[l0.index_of(t.spare)]));
+                    }
+                }
+            }
+        }
+        if !t.head {
+            assert(l1.index_of(t.ext) == j);
+            lemma_epages_remove(l1, d1, j);
+        } else {
+            assert(d1.contains_key(t.ext));
+        }
+        assert forall|d: *mut HugeDesc| #[trigger] d1.contains_key(d) && d1[d].value().state == RunState::Empty as u8 implies g1.elist@.contains(
+            d,
+        ) by {
+            assert(t.model(d0, d) is Some);
+            if d != t.run && !(t.used && d == t.spare) && !(t.has_ext && d == t.ext) {
+                assert(l0.contains(d));
+                let i = l0.index_of(d);
+                if t.used {
+                    if i <= j {
+                        assert(l1[i] == d);
+                    } else {
+                        assert(l1[i + 1] == d);
+                    }
+                }
+                assert(l1.contains(d));
+                if !t.head {
+                    let i1 = l1.index_of(d);
+                    assert(i1 != j);
+                    if i1 < j {
+                        assert(g1.elist@[i1] == d);
+                    } else {
+                        assert(g1.elist@[i1 - 1] == d);
+                    }
+                }
+            } else if t.used && d == t.spare {
+                assert(l1[j + 1] == d);
+                if !t.head {
+                    assert(g1.elist@[j] == d);
+                }
+            } else if t.has_ext && d == t.ext {
+                assert(l1[j] == d);
+            }
+        }
+    } else {
+        assert forall|i: int| 0 <= i < l0.len() implies l0[i] != t.ext by {
+            assert(d0.contains_key(l0[i]));
+            if t.has_ext && l0[i] == t.ext {
+                assert(d0[l0[i]].value().state == RunState::Empty as u8);
+            }
+        }
+        lemma_epages_frame(l0, d0, d1);
+        assert forall|d: *mut HugeDesc| #[trigger] d1.contains_key(d) && d1[d].value().state == RunState::Empty as u8 implies g1.elist@.contains(
+            d,
+        ) by {
+            assert(t.model(d0, d) is Some);
+        }
+    }
+}
+
+/// A take makes the run the one new `Active` descriptor: the run
+/// authorities gain its extent and its pages, which no `Active`
+/// descriptor had (it is apart from every other extent).
+proof fn lemma_took_active(g0: Inner, g1: Inner, t: Take)
+    requires
+        g0.wf(),
+        g1.took(g0, t),
+    ensures
+        !active_runs(g0.descs@).contains((t.vr.start as int, t.vr.pages as int)),
+        active_pages(g0.descs@).disjoint(vstd::set_lib::set_int_range(t.vr.start as int, t.vr.start + t.vr.pages)),
+        active_runs(g1.descs@) == active_runs(g0.descs@).insert((t.vr.start as int, t.vr.pages as int)),
+        active_pages(g1.descs@) == active_pages(g0.descs@).union(vstd::set_lib::set_int_range(t.vr.start as int, t.vr.start + t.vr.pages)),
+{
+    let d0 = g0.descs@;
+    let d1 = g1.descs@;
+    lemma_active(d0);
+    lemma_active(d1);
+    let er = (t.vr.start as int, t.vr.pages as int);
+    let range = vstd::set_lib::set_int_range(t.vr.start as int, t.vr.start + t.vr.pages);
+    // An old `Active` extent is not `ext` and keeps its value.
+    assert forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && d0[x].value().state == RunState::Active as u8 implies {
+        &&& !(t.has_ext && x == t.ext)
+        &&& x != t.run
+        &&& d1.contains_key(x)
+        &&& same_but_links(d0[x].value(), d1[x].value())
+        &&& apart(d0[x].value(), t.vr)
+    } by {
+        assert(t.model(d0, x) == Some(d0[x].value()));
+        assert(d1.contains_key(x) <==> t.model(d0, x) is Some);
+        assert(d1.contains_key(x));
+        assert(same_but_links(t.model(d0, x).unwrap(), d1[x].value()));
+        lemma_took_apart(g0, t, x, t.vr);
+    }
+    // A new `Active` extent is the run or an old one.
+    assert forall|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && d1[x].value().state == RunState::Active as u8 implies
+        x == t.run || (d0.contains_key(x) && same_but_links(d0[x].value(), d1[x].value())) by {
+        assert(same_but_links(t.model(d0, x).unwrap(), d1[x].value()));
+    }
+    assert(d1.contains_key(t.run) && same_but_links(t.vr, d1[t.run].value())) by {
+        assert(t.model(d0, t.run) == Some(t.vr));
+    }
+    assert forall|k: int| active_pages(d0).contains(k) implies !range.contains(k) by {
+        let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_page(d0[x].value(), k);
+    }
+    assert(!active_runs(d0).contains(er)) by {
+        if active_runs(d0).contains(er) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_at(d0[x].value(), er);
+            assert(apart(d0[x].value(), t.vr));
+        }
+    }
+    assert forall|e: (int, int)| active_runs(d1).contains(e) <==> active_runs(d0).insert(er).contains(e) by {
+        if active_runs(d1).contains(e) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && run_at(d1[x].value(), e);
+            if x != t.run {
+                assert(d0.contains_key(x) && run_at(d0[x].value(), e));
+            }
+        }
+        if active_runs(d0).contains(e) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_at(d0[x].value(), e);
+            assert(d1.contains_key(x) && run_at(d1[x].value(), e));
+        }
+        if e == er {
+            assert(d1.contains_key(t.run) && run_at(d1[t.run].value(), e));
+        }
+    }
+    assert forall|k: int| active_pages(d1).contains(k) <==> active_pages(d0).union(range).contains(k) by {
+        if active_pages(d1).contains(k) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && run_page(d1[x].value(), k);
+            if x != t.run {
+                assert(d0.contains_key(x) && run_page(d0[x].value(), k));
+            }
+        }
+        if active_pages(d0).contains(k) {
+            let x = choose|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && run_page(d0[x].value(), k);
+            assert(d1.contains_key(x) && run_page(d1[x].value(), k));
+        }
+        if range.contains(k) {
+            assert(d1.contains_key(t.run) && run_page(d1[t.run].value(), k));
+        }
+    }
+    assert(active_runs(d1) =~= active_runs(d0).insert(er));
+    assert(active_pages(d1) =~= active_pages(d0).union(range));
+}
+
+/// The free-page set after a take, against `f0` before: exactly what was
+/// free outside the run `[lo, hi)`, and the stretch `[mark, lo)` alignment
+/// skipped at the mark (empty unless the run starts past it).
+spec fn took_free(f0: vstd::set::Set<nat>, f1: vstd::set::Set<nat>, lo: int, hi: int, mark: int) -> bool {
+    forall|q: nat| #[trigger] f1.contains(q) <==> (f0.contains(q) && !(lo <= q < hi)) || (mark <= q < lo)
+}
+
+/// A take keeps the free extents coalesced and marked free: the head
+/// ends at the run, a tail starts at its end and ends where `ext` did,
+/// a hole starts at the mark, which no free extent touched, and ends at
+/// the run; their pages, and the old free extents' (apart from the run),
+/// are in the free-page set, and nothing else is: an old free page outside
+/// the run is in an old free extent other than `ext`, or in `ext`'s head
+/// or tail, and a page skipped at the mark is in the hole or the head.
+proof fn lemma_took_coalesced(g0: Inner, g1: Inner, t: Take)
+    requires
+        g0.wf(),
+        g1.took(g0, t),
+        t.touch_ok(g0),
+        took_free(g0.free.map.view(), g1.free.map.view(), t.vr.start as int, t.vr.start + t.vr.pages, t.mark as int),
+    ensures
+        coalesced(g1.descs@),
+        free_marked(g1.descs@, g1.free.map.view()),
+        free_exact(g1.descs@, g1.free.map.view()),
+{
+    let d0 = g0.descs@;
+    let d1 = g1.descs@;
+    let f0 = g0.free.map.view();
+    let f1 = g1.free.map.view();
+    let (vr, vh, vs, ve) = (t.vr, t.vh, t.vs, t.ve);
+    // Which descriptors are old.
+    assert forall|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && x != t.run && !(t.used && x == t.spare) && !(t.has_ext
+        && x == t.ext) implies d0.contains_key(x) && same_but_links(d0[x].value(), d1[x].value()) by {
+        assert(t.model(d0, x) is Some);
+    }
+    assert(t.model(d0, t.run) == Some(vr));
+    assert(d1.contains_key(t.run));
+    assert(same_but_links(vr, d1[t.run].value()));
+    if t.used {
+        assert(t.model(d0, t.spare) == Some(vs));
+        assert(d1.contains_key(t.spare));
+        assert(same_but_links(vs, d1[t.spare].value()));
+    }
+    if t.head {
+        assert(t.model(d0, t.ext) == Some(vh));
+        assert(d1.contains_key(t.ext));
+        assert(same_but_links(vh, d1[t.ext].value()));
+    }
+    if t.has_ext {
+        assert(desc_ok(ve, g0.next_page));
+        assert(marked(f0, ve));
+    }
+    assert forall|x1: *mut HugeDesc, x2: *mut HugeDesc|
+        #[trigger] d1.contains_key(x1) && #[trigger] d1.contains_key(x2) && d1[x1].value().state != RunState::Active as u8
+            && d1[x2].value().state != RunState::Active as u8 implies d1[x1].value().start + d1[x1].value().pages
+            != d1[x2].value().start by {
+        let v1 = d1[x1].value();
+        let v2 = d1[x2].value();
+        let old1 = x1 != t.run && !(t.used && x1 == t.spare) && !(t.has_ext && x1 == t.ext);
+        let old2 = x2 != t.run && !(t.used && x2 == t.spare) && !(t.has_ext && x2 == t.ext);
+        if old1 {
+            assert(desc_ok(d0[x1].value(), g0.next_page));
+            if t.has_ext {
+                assert(apart(d0[x1].value(), ve));
+            }
+        }
+        if old2 {
+            assert(desc_ok(d0[x2].value(), g0.next_page));
+            if t.has_ext {
+                assert(apart(d0[x2].value(), ve));
+            }
+        }
+        if old1 && old2 {
+            assert(d0.contains_key(x1) && d0.contains_key(x2));
+        } else if old1 && t.has_ext && x2 == t.ext {
+            assert(d0.contains_key(x1) && d0.contains_key(t.ext));
+        } else if t.used && t.has_ext && x1 == t.spare && old2 {
+            assert(d0.contains_key(t.ext) && d0.contains_key(x2));
+        }
+    }
+    assert forall|x: *mut HugeDesc| #[trigger] d1.contains_key(x) && d1[x].value().state != RunState::Active as u8 implies marked(
+        f1,
+        d1[x].value(),
+    ) by {
+        let v = d1[x].value();
+        if x != t.run && !(t.used && x == t.spare) && !(t.has_ext && x == t.ext) {
+            assert(d0.contains_key(x));
+            assert(marked(f0, d0[x].value()));
+            lemma_took_apart(g0, t, x, vr);
+            assert forall|q: int| v.start <= q < v.start + v.pages implies #[trigger] f1.contains(q as nat) by {
+                assert(f0.contains(q as nat));
+            }
+        } else {
+            assert forall|q: int| v.start <= q < v.start + v.pages implies #[trigger] f1.contains(q as nat) by {
+                if t.has_ext && q < ve.start + ve.pages {
+                    assert(f0.contains(q as nat));
+                }
+            }
+        }
+    }
+    assert forall|q: nat| #[trigger] f1.contains(q) implies exists|x: *mut HugeDesc| #[trigger] in_free(d1, x, q as int) by {
+        if f0.contains(q) && !(vr.start <= q < vr.start + vr.pages) {
+            let x = choose|x: *mut HugeDesc| #[trigger] in_free(d0, x, q as int);
+            if t.has_ext && x == t.ext {
+                if q < vr.start {
+                    assert(in_free(d1, t.ext, q as int));
+                } else {
+                    assert(in_free(d1, t.spare, q as int));
+                }
+            } else {
+                assert(x != t.run && !(t.used && x == t.spare));
+                assert(t.model(d0, x) == Some(d0[x].value()));
+                assert(d1.contains_key(x));
+                assert(same_but_links(d0[x].value(), d1[x].value()));
+                assert(in_free(d1, x, q as int));
+            }
+        } else if t.has_ext {
+            assert(desc_ok(ve, g0.next_page));
+            assert(in_free(d1, t.ext, q as int));
+        } else {
+            assert(in_free(d1, t.spare, q as int));
+        }
+    }
+}
+
+/// A take keeps `Inner::wf`.
+proof fn lemma_took_wf(g0: Inner, g1: Inner, t: Take)
+    requires
+        g0.wf(),
+        g1.took(g0, t),
+        g1.runs@.id() == run_loc(),
+        g1.pgs@.id() == page_loc(),
+        g1.runs@@ == active_runs(g1.descs@),
+        g1.pgs@@ == active_pages(g1.descs@),
+        t.touch_ok(g0),
+        took_free(g0.free.map.view(), g1.free.map.view(), t.vr.start as int, t.vr.start + t.vr.pages, t.mark as int),
+    ensures
+        g1.wf(),
+{
+    lemma_took_extents(g0, g1, t);
+    lemma_took_elist(g0, g1, t);
+    lemma_took_coalesced(g0, g1, t);
+    assert forall|k: int| 0 <= k < 7 implies #[trigger] tally(g1.all@, g1.descs@, k) == tally(g0.all@, g0.descs@, k) + t.delta(k) by {
+        lemma_took_tally(g0, g1, t, k);
+    }
+    // Once more outside the `forall`, for what it says about `all`.
+    lemma_took_tally(g0, g1, t, 0);
+    assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(g1.stats, k) == tally(g1.all@, g1.descs@, k) by {
+        assert(stat(g1.stats, k) == stat(g0.stats, k) + t.delta(k));
+        assert(stat(g0.stats, k) == tally(g0.all@, g0.descs@, k));
+    }
+    assert(g1.table.spec_count() == tally(g1.all@, g1.descs@, 6));
+    // The pages sum to the mark.
+    assert(t.delta(3) + t.delta(4) + t.delta(5) == t.nm - t.mark);
+    assert(stat(g1.stats, 3) + stat(g1.stats, 4) + stat(g1.stats, 5) == stat(g0.stats, 3) + stat(g0.stats, 4) + stat(g0.stats, 5)
+        + t.delta(3) + t.delta(4) + t.delta(5));
+    // Every extent has a page, so the counts are at most the pages.
+    let a1 = g1.all@;
+    let d1 = g1.descs@;
+    assert forall|i: int| 0 <= i < a1.len() implies (#[trigger] d1[a1[i]].value()).pages >= 1 && d1[a1[i]].value().state <= 2 by {
+        assert(d1.contains_key(a1[i]));
+        assert(desc_ok(d1[a1[i]].value(), g1.next_page));
+    }
+    lemma_tally_counts(a1, d1, 0);
+    lemma_tally_counts(a1, d1, 1);
+    lemma_tally_counts(a1, d1, 2);
+    assert(stat(g1.stats, 0) + stat(g1.stats, 1) + stat(g1.stats, 2) <= g1.next_page);
+    assert forall|d: *mut HugeDesc| #[trigger] g1.descs@.contains_key(d) && g1.descs@[d].value().state == RunState::Empty as u8
+        implies g1.elist@.contains(d) by {}
+    // The run is the one new `Active` descriptor; the rest keep theirs.
+    assert forall|d: *mut HugeDesc| #[trigger] g1.descs@.contains_key(d) implies run_ok(g1.descs@[d].value(), g1.lg@) by {
+        assert(same_but_links(t.model(g0.descs@, d).unwrap(), d1[d].value()));
+    }
 }
 
 impl Inner {
@@ -1560,6 +2660,10 @@ impl Inner {
         &&& coalesced(self.descs@)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@)
         &&& self.free.map.wf()
+        &&& self.free.map.spec_nbits() == self.np@
+        &&& self.free.own_claimed()
+        &&& self.table.spec_mid() == self.mid@
+        &&& self.free.l1_words <= 0x1_0000_0000
         &&& free_marked(self.descs@, self.free.map@)
         &&& free_exact(self.descs@, self.free.map@)
     }
@@ -1712,6 +2816,12 @@ impl Inner {
         self.lg@
     }
 
+    /// The live-object records' identity of the `Meta` the descriptors
+    /// come from ([`Inner::mid`]).
+    pub(crate) closed spec fn spec_mid(&self) -> vstd::resource::Loc {
+        self.mid@
+    }
+
     /// The `Empty` list's entries are live, with a page or more each,
     /// no more pages than `next_page` in all.
     proof fn lemma_elist(&self)
@@ -1822,6 +2932,7 @@ impl Inner {
             ),
             final(self).stats.next_page == old(self).stats.next_page,
             *final(self) == (Inner { table: final(self).table, stats: final(self).stats, ..*old(self) }),
+            final(self).table.spec_mid() == old(self).table.spec_mid(),
     {
         // `d` is a live descriptor owned by this allocator.
         let (start, pages, state) = (self.desc(d).start(), self.desc(d).pages(), self.desc(d).state());
@@ -1865,6 +2976,7 @@ impl Inner {
             ),
             final(self).stats.next_page == old(self).stats.next_page,
             *final(self) == (Inner { table: final(self).table, stats: final(self).stats, ..*old(self) }),
+            final(self).table.spec_mid() == old(self).table.spec_mid(),
     {
         // As `add_extent`.
         let (start, pages, state) = (self.desc(d).start(), self.desc(d).pages(), self.desc(d).state());
@@ -2225,6 +3337,8 @@ impl Inner {
 
 } // verus!
 
+verus! {
+
 /// Where [`Huge::find`] put a run: its first page, its length in pages
 /// (guard included) and the free extent the pages come from, null for
 /// fresh pages at the high-water mark. What [`Huge::take`] records.
@@ -2238,10 +3352,17 @@ struct Placement {
 impl Placement {
     /// One past the run's last page.
     #[inline]
-    fn end(&self) -> usize {
+    fn end(&self) -> (r: usize)
+        requires
+            self.start + self.pages <= usize::MAX,
+        ensures
+            r == self.start + self.pages,
+    {
         self.start + self.pages
     }
 }
+
+} // verus!
 
 verus! {
 
@@ -2417,6 +3538,74 @@ impl Huge {
     /// The page size.
     pub closed spec fn spec_page(&self) -> int {
         pow2(self.lg_page as nat) as int
+    }
+
+    /// The live-object records' identity of the `Meta` this allocator's
+    /// descriptors and table come from ([`Inner::spec_mid`], fixed at
+    /// creation): the `meta` its callers pass.
+    pub closed spec fn spec_mid(&self) -> vstd::resource::Loc {
+        lock_init(self.inner).spec_mid()
+    }
+
+    /// `a` is what [`Huge::alloc_run`] returns for `size` bytes at `align`:
+    /// a page start of the region, a multiple of `align`, with `size` bytes
+    /// and at least a page of the region from it on.
+    pub open spec fn spec_run_at(&self, a: usize, size: usize, align: usize) -> bool {
+        let end = self.spec_base() + self.spec_npages() * self.spec_page();
+        &&& self.spec_base() <= a
+        &&& (a - self.spec_base()) % self.spec_page() == 0
+        &&& a + size <= end
+        &&& a + self.spec_page() <= end
+        &&& (a as int) % (align as int) == 0
+    }
+
+    /// `t[0]` is the token of the run `r` [`Huge::alloc_run`] placed: of
+    /// the run's first page and page count, inside the region.
+    pub open spec fn run_token(&self, t: Map<int, RunToken>, r: Placed) -> bool {
+        &&& t.contains_key(0)
+        &&& t[0].wf()
+        &&& self.spec_base() + t[0].start() * self.spec_page() == r.ptr@.addr
+        &&& t[0].npages() == r.pages
+        &&& t[0].start() + t[0].npages() <= self.spec_npages()
+    }
+
+    /// A run of `usable` pages (enough for `size` bytes) and its guard at
+    /// the start `s` [`Huge::find`] returned is a [`Huge::spec_run_at`].
+    proof fn lemma_run_at(&self, s: usize, usable: usize, size: usize, align: usize)
+        requires
+            self.inv(),
+            crate::meta::is_pow2(align),
+            usable >= 1,
+            size <= usable * pow2(self.lg_page as nat),
+            (self.base as int) % (pow2(self.lg_page as nat) as int) == 0,
+            s + usable + GUARD_PAGES <= self.npages,
+            align > pow2(self.lg_page as nat) ==> (self.base + s * pow2(self.lg_page as nat)) % (align as int) == 0,
+        ensures
+            self.spec_run_at((self.base + s * pow2(self.lg_page as nat)) as usize, size, align),
+    {
+        self.lemma_page();
+        let p = pow2(self.lg_page as nat) as int;
+        let a = self.base + s * p;
+        let n = self.npages as int;
+        assert(s * p + size <= n * p && s * p + p <= n * p) by (nonlinear_arith)
+            requires
+                size <= usable * p,
+                s + usable + 1 <= n,
+                usable >= 1,
+                p > 0,
+                s >= 0,
+        ;
+        assert(0 <= s * p) by (nonlinear_arith)
+            requires s >= 0, p > 0;
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(s as int, p);
+        if align <= p {
+            let k = choose|k: nat| k < 64 && align as nat == #[trigger] pow2(k);
+            vstd::arithmetic::power2::lemma_pow2_pos(k);
+            vstd::arithmetic::div_mod::lemma_mod_self_0(align as int);
+            crate::layout::lemma_pow2_divides_pow2(align, align as int, self.lg_page as nat);
+            crate::layout::lemma_mod_lin3(self.base as int, s as int, p, 0, 0, p);
+            crate::layout::lemma_aligned_down(a, p, align as int);
+        }
     }
 
     /// The address of page 0.
@@ -2860,7 +4049,11 @@ impl Huge {
             .0;
         (r.ptr, r.zeroed)
     }
+}
 
+verus! {
+
+impl Huge {
     /// Allocate `size` bytes aligned to `align` (a power of two; anything
     /// up to a page is free). Returns the pointer, whether the memory is
     /// known to read as zero and the pages of the run as its descriptor
@@ -2873,120 +4066,153 @@ impl Huge {
     // Cold: out of line in `Shared::alloc_huge`, so the ghost arguments that
     // verified code erases cannot change whether it is inlined.
     #[inline(never)]
-    pub fn alloc_run(
-        &self,
-        meta: &Meta,
-        size: usize,
-        align: usize,
-        arena: u16,
-        tok: Tracked<&mut Map<int, RunToken>>,
-        ord: Tracked<&mut LockOrder>,
-    ) -> (Placed, Tracked<Zeroed>) {
-        assert!(
-            align.is_power_of_two(),
-            "huge: alignment not a power of two"
-        );
-        self.alloc_aligned(meta, size, align, arena, tok, ord)
+    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            crate::meta::is_pow2(align),
+            self.spec_base_aligned(),
+            self.is_process(),
+            meta.is_process(),
+            meta.live_id() == self.spec_mid(),
+            old(ord).allows(rank_huge()),
+        ensures
+            *final(ord) == *old(ord),
+            r.0.pages <= u32::MAX,
+            r.0.ptr@.addr != 0 ==> self.spec_run_at(r.0.ptr@.addr, size, align),
+            r.0.ptr@.addr != 0 && r.0.zeroed ==> r.1@.covers(r.0.ptr, self.spec_usable(size)),
+            r.0.ptr@.addr != 0 ==> size <= self.spec_usable(size),
+            r.0.ptr@.addr != 0 ==> size + self.spec_page() - 1 <= usize::MAX,
+            r.0.ptr@.addr != 0 ==> self.run_token(*final(tok), r.0),
+            r.0.ptr@.addr != 0 ==> (final(tok)[0].npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
+            r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
+    {
+        assert!(align.is_power_of_two(), "huge: alignment not a power of two");
+        self.alloc_aligned(meta, size, align, arena, Tracked(tok), Tracked(ord))
     }
 
     /// [`Huge::alloc_run`] for an `align` already known to be a power of
     /// two.
     #[inline(always)]
-    fn alloc_aligned(
-        &self,
-        meta: &Meta,
-        size: usize,
-        align: usize,
-        arena: u16,
-        tok: Tracked<&mut Map<int, RunToken>>,
-        ord: Tracked<&mut LockOrder>,
-    ) -> (Placed, Tracked<Zeroed>) {
-        let Some(need) = self.run_pages(size, align) else {
-            return (Placed::NONE, Tracked::assume_new());
-        };
+    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            crate::meta::is_pow2(align),
+            self.spec_base_aligned(),
+            self.is_process(),
+            meta.is_process(),
+            meta.live_id() == self.spec_mid(),
+            old(ord).allows(rank_huge()),
+        ensures
+            *final(ord) == *old(ord),
+            r.0.pages <= u32::MAX,
+            r.0.ptr@.addr != 0 ==> self.spec_run_at(r.0.ptr@.addr, size, align),
+            r.0.ptr@.addr != 0 && r.0.zeroed ==> r.1@.covers(r.0.ptr, self.spec_usable(size)),
+            r.0.ptr@.addr != 0 ==> size <= self.spec_usable(size),
+            r.0.ptr@.addr != 0 ==> size + self.spec_page() - 1 <= usize::MAX,
+            r.0.ptr@.addr != 0 ==> self.run_token(*final(tok), r.0),
+            r.0.ptr@.addr != 0 ==> (final(tok)[0].npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
+            r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
+    {
+        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+            self.lemma_pages(self.npages);
+            let k = choose|k: nat| k < 64 && align as nat == #[trigger] pow2(k);
+            vstd::bits::lemma_usize_pow2_no_overflow(k);
+            vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+            let ku = k as usize;
+            assert((1usize << ku) > 0 && (1usize << ku) & sub(1usize << ku, 1) == 0) by (bit_vector)
+                requires ku < 64;
+        }
+        let Some(need) = self.run_pages(size, align) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
         let usable_pages = need - GUARD_PAGES;
         let page = self.page_size();
-        let mut g = self.inner.lock(ord, Tracked::assume_new());
-        let Some((s, ext)) = self.find(&g, need, align) else {
-            return (Placed::NONE, Tracked::assume_new());
-        };
+        let tracked mut under = LockOrder::spare();
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
+        let Some((s, ext)) = self.find(&g, need, align) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
         let end = s + need;
+        proof {
+            // `s` is a placement, so the request is placeable.
+            assert(self.aligned_at(s as int, align));
+            assert(page_aligned(self.base as int, self.spec_page(), s as int, align as int));
+        }
 
         // Everything fallible happens before any state changes.
-        let (run, _run_perm) = alloc_desc(meta);
+        let (run, _run_opt) = alloc_desc(meta);
         if run.is_null() {
-            return (Placed::NONE, Tracked::assume_new());
+            return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
-        let (spare, _spare_perm) = alloc_desc(meta);
+        let run_perm = Tracked(_run_opt.get().tracked_unwrap());
+        let (spare, _spare_opt) = alloc_desc(meta);
         if spare.is_null() {
-            free_desc(meta, run, Tracked::assume_new());
-            return (Placed::NONE, Tracked::assume_new());
+            free_desc(meta, run, Tracked(desc_raw(run_perm.get())));
+            return (Placed::NONE, Tracked(Zeroed::empty(0)));
+        }
+        let spare_perm = Tracked(_spare_opt.get().tracked_unwrap());
+        proof {
+            // The table holds at most two keys per extent, a page or more
+            // each, so its count is far below `Table::ensure`'s bound.
+            assert forall|i: int| 0 <= i < g@.all@.len() implies (#[trigger] g@.descs@[g@.all@[i]].value()).pages >= 1
+                && g@.descs@[g@.all@[i]].value().state <= 2 by {
+                assert(g@.all@.contains(g@.all@[i]));
+                assert(g@.descs@.contains_key(g@.all@[i]));
+            }
+            lemma_tally_counts(g@.all@, g@.descs@, 0);
+            assert(stat(g@.stats, 0) == tally(g@.all@, g@.descs@, 0));
+            assert(stat(g@.stats, 1) == tally(g@.all@, g@.descs@, 1));
+            assert(stat(g@.stats, 2) == tally(g@.all@, g@.descs@, 2));
         }
         let ok = g.table.ensure(meta, page, 3).is_ok()
-            && (end <= g.next_page
-                || g.free
-                    .ensure(meta, page, end - 1, Tracked::assume_new())
-                    .is_ok())
+            && (end <= g.next_page || g.free.ensure(meta, page, end - 1, Tracked(&mut under)).is_ok())
             && self.prepare(s, usable_pages, g.next_page).is_ok();
         if !ok {
-            free_desc(meta, run, Tracked::assume_new());
-            free_desc(meta, spare, Tracked::assume_new());
-            return (Placed::NONE, Tracked::assume_new());
+            free_desc(meta, run, Tracked(desc_raw(run_perm.get())));
+            free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())));
+            return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
 
         // `check_zero` needs the extent's state before `take` may free it.
-        let prior = if purge::check_zero() {
-            Some(self.prior_state(s, ext, Tracked::assume_new()))
-        } else {
-            None
-        };
-        let (zeroed, z) = self.take(
-            &mut g,
-            meta,
-            Placement {
-                start: s,
-                pages: need,
-                ext,
-            },
-            run,
-            spare,
-            arena,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-            tok,
-        );
+        let _gi: &Inner = &g;
+        let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
+        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, run_perm, spare_perm, Tracked(tok));
         // `take` wrote the run's descriptor; the lock is still held.
         let pages = g.desc(run).pages();
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
             self.check_zero(s, usable_pages, prior, arena);
         }
-        (
-            Placed {
-                ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)),
-                zeroed,
-                pages,
-            },
-            z,
-        )
+        proof {
+            self.lemma_run_at(s, usable_pages, size, align);
+        }
+        (Placed { ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)), zeroed, pages }, z)
     }
 
     /// Where the pages of a run at `s` come from, for `check_zero`: the
     /// free extent's state, or "fresh" for never-touched pages at or past
     /// the mark (which is also what an aligned start beyond `ext` gets).
+    ///
+    /// `descs` is the caller's guard's descriptor permissions, and `ext`,
+    /// when not null, the free extent `find` returned.
     #[cold]
-    fn prior_state(
-        &self,
-        s: usize,
-        ext: *mut HugeDesc,
-        _descs: Tracked<&Map<*mut HugeDesc, PointsTo<HugeDesc>>>,
-    ) -> &'static str {
+    fn prior_state(&self, s: usize, ext: *mut HugeDesc, Tracked(descs): Tracked<&Map<*mut HugeDesc, PointsTo<HugeDesc>>>) -> &'static str
+        requires
+            crate::sys::may_abort(),
+            ext@.addr != 0 ==> {
+                &&& descs.contains_key(ext)
+                &&& descs[ext].ptr() == ext
+                &&& descs[ext].is_init()
+                &&& descs[ext].value().state != RunState::Active as u8
+                &&& descs[ext].value().state <= 2
+                &&& descs[ext].value().start + descs[ext].value().pages <= usize::MAX
+            },
+    {
         if ext.is_null() {
             return "fresh";
         }
-        // `ext` is a live free extent found under the lock the caller
-        // holds.
-        let e = ptr_ref(ext, Tracked::assume_new());
+        let e = ptr_ref(ext, Tracked(descs.tracked_borrow(ext)));
         let (st, e_end) = (e.state(), e.end());
         if s >= e_end {
             return "fresh";
@@ -3002,10 +4228,16 @@ impl Huge {
     /// The `check_zero` debug mode: the first and
     /// last word of every usable page of a run reported zero must read
     /// zero. Aborts with the run, the pages' prior state, the arena and the
-    /// purge advice. Faults every page in, so debug only.
+    /// purge advice. Faults every page in, so debug only. Trusted for now
+    /// (`external_body`): its reads of the run's pages need a permission
+    /// to the run's bytes, which the live-block model mints.
     #[cold]
     #[inline(never)]
-    fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16) {
+    #[verifier::external_body]
+    fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16)
+        requires
+            crate::sys::may_abort(),
+    {
         let page = self.page_size();
         let base = self.addr(s);
         for i in 0..usable_pages {
@@ -3020,7 +4252,11 @@ impl Huge {
             }
         }
     }
+}
 
+} // verus!
+
+impl Huge {
     /// The word at `a`, read once, for [`Huge::check_zero`]. Nothing is
     /// claimed about the value.
     ///
@@ -3237,11 +4473,6 @@ impl Huge {
         if s + need <= self.npages { Some((s, ptr::null_mut())) } else { None }
     }
 
-}
-
-} // verus!
-
-impl Huge {
     /// Kernel side of an allocation of `usable` pages at `s`: commit and
     /// place the guard. Pages below `watermark` are committed already
     /// (apart from `PROT_NONE` guards in fallback mode).
@@ -3255,7 +4486,24 @@ impl Huge {
     /// committed. Committing only `[s, end)` here left the hole `PROT_NONE`
     /// and the first write into it faulted; the fallback mode never had
     /// the problem because it commits `[s, s + usable)` on every call.
-    fn prepare(&self, s: usize, usable: usize, watermark: usize) -> Result<(), Errno> {
+    fn prepare(&self, s: usize, usable: usize, watermark: usize) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+            s + usable + GUARD_PAGES <= self.npages,
+            watermark <= self.npages,
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_pages(usable);
+            self.lemma_pages(GUARD_PAGES);
+            self.lemma_pages((self.npages - watermark) as usize);
+            let p = pow2(self.lg_page as nat) as int;
+            assert(forall|x: int, y: int| 0 <= x <= y ==> #[trigger] (x * p) <= #[trigger] (y * p)) by {
+                assert forall|x: int, y: int| 0 <= x <= y implies #[trigger] (x * p) <= #[trigger] (y * p) by {
+                    vstd::arithmetic::mul::lemma_mul_inequality(x, y, p);
+                }
+            }
+        }
         let page = self.page_size();
         let guard = s + usable;
         let end = guard + GUARD_PAGES;
@@ -3284,6 +4532,19 @@ impl Huge {
     /// Record the run `p` taken from its extent (or fresh pages), splitting
     /// the extent around it. Infallible. Returns the zero flag, with the
     /// token that the run's usable bytes read as zero.
+    ///
+    /// Proved to keep `Inner::wf`: the pieces (the run, the head of the
+    /// extent before it, its tail after the run, or the hole alignment
+    /// leaves at the mark) cover exactly what they replace, so the extents
+    /// stay disjoint and inside `next_page`, each under exactly its keys,
+    /// and the counters stay their tallies. `run` and `spare` come with
+    /// their permissions (from [`alloc_desc`], through `Meta::alloc_raw`),
+    /// so they are neither live descriptors nor the same block.
+    ///
+    /// The proof is large, and its solver cost moves with unrelated items
+    /// elsewhere in the crate; the rlimit leaves it headroom.
+    #[verifier::rlimit(800)]
+    #[allow(non_shorthand_field_patterns)]
     // The extra arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
     fn take(
@@ -3294,61 +4555,218 @@ impl Huge {
         run: *mut HugeDesc,
         spare: *mut HugeDesc,
         arena: u16,
-        _run_desc: Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
-        _spare_desc: Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
-        _tok: Tracked<&mut Map<int, RunToken>>,
-    ) -> (bool, Tracked<Zeroed>) {
-        let Placement {
-            start: s,
-            pages: need,
-            ext,
-        } = p;
+        Tracked(run_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
+        Tracked(spare_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
+        Tracked(tok): Tracked<&mut Map<int, RunToken>>,
+    ) -> (r: (bool, Tracked<Zeroed>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(g).wf(),
+            old(g).spec_np() == self.npages,
+            old(g).spec_lg() == self.lg_page,
+            run@.addr != 0,
+            spare@.addr != 0,
+            run_desc.0.ptr() == run,
+            desc_claim_for(run_desc.1, run, old(g).mid@),
+            spare_desc.0.ptr() == spare,
+            desc_claim_for(spare_desc.1, spare, old(g).mid@),
+            meta.live_id() == old(g).mid@,
+            desc_in_meta(run),
+            desc_in_meta(spare),
+            GUARD_PAGES < p.pages,
+            p.start + p.pages <= self.npages,
+            (old(g).table.spec_count() + 3) * 2 <= old(g).table.spec_cap(),
+            take_ok(p, old(g).descs@, old(g).next_page),
+        ensures
+            final(g).wf(),
+            final(g).spec_np() == old(g).spec_np(),
+            final(g).spec_lg() == old(g).spec_lg(),
+            final(g).descs@.contains_key(run),
+            final(g).descs@[run].value().pages == p.pages,
+            final(tok).contains_key(0),
+            final(tok)[0].wf(),
+            final(tok)[0].start() == p.start,
+            final(tok)[0].npages() == p.pages,
+            r.0 ==> r.1@.addr() == self.base + p.start * self.spec_page()
+                && r.1@.len() == (p.pages - GUARD_PAGES) * self.spec_page(),
+    {
+        // The lists' pairwise distinctness is most of the solver's work if
+        // left open; only the `all` step below needs it.
+        hide(Seq::no_duplicates);
+        let Placement { start: s, pages: need, ext } = p;
+        proof {
+            use_type_invariant(self);
+        }
         let end = p.end();
         let old_mark = g.next_page;
         let mut spare_used = false;
         let mut zeroed = true;
+        let tracked (run_perm, run_claim) = run_desc;
+        let tracked (spare_perm, spare_claim) = spare_desc;
+        let tracked mut spare_slot = Some(spare_perm);
+        let tracked mut spare_claim_slot = Some(spare_claim);
+        let ghost d0 = g.descs@;
+        let ghost a0 = g.all@;
+        let ghost l0 = g.elist@;
+        let ghost t0 = g.table;
+        let ghost st0 = g.stats;
+        let ghost f0 = g.free.map.view();
+        let ghost has_ext = ext@.addr != 0;
+        let ghost ve = d0[ext].value();
+        let ghost mut vs = ve;
+        let ghost mut vh = ve;
+        let ghost mut head = false;
+        let ghost mut t1 = t0;
+        let ghost mut t2 = t0;
+        let ghost mut s1 = st0;
+        let ghost mut s2 = st0;
+        let ghost mut vr = ve;
+        proof {
+            // The table's keys lie inside their extents, which end at the
+            // mark; `ext`'s pages belong to no other extent.
+            assert(keys_inside(t0, d0, old_mark as int)) by {
+                reveal(keys_inside);
+                assert forall|k: usize| #[trigger] t0.lookup(k) is Some implies d0.contains_key(t0.lookup(k).unwrap()) && d0[t0.lookup(
+                    k,
+                ).unwrap()].value().start <= k < d0[t0.lookup(k).unwrap()].value().start + d0[t0.lookup(k).unwrap()].value().pages <= old_mark by {
+                    let x = t0.lookup(k).unwrap();
+                    assert(is_key(d0[x].value(), k as int));
+                    assert(desc_ok(d0[x].value(), old_mark));
+                }
+            }
+            lemma_tally_nonneg(a0, d0, 6);
+            if has_ext {
+                assert(desc_ok(ve, old_mark));
+            }
+            // Every free bit is below the mark, so the run's pages past
+            // `ext` (or past the mark) have none.
+            old(g).lemma_free_below();
+        }
         if ext.is_null() {
             if s > old_mark {
                 // Alignment left a hole at the mark: a clean free extent.
-                init_free(
-                    spare,
-                    Tracked::assume_new(),
-                    old_mark,
-                    s - old_mark,
-                    RunState::Purged,
-                    0,
-                );
+                let tracked mut sp = spare_slot.tracked_take();
+                init_free(spare, Tracked(&mut sp), old_mark, s - old_mark, RunState::Purged, 0);
+                proof {
+                    if g.descs@.contains_key(spare) {
+                        sp.is_disjoint(g.descs.borrow().tracked_borrow(spare));
+                    }
+                    assert(!d0.contains_key(spare));
+                    vs = sp.value();
+                    g.descs.borrow_mut().tracked_insert(spare, sp);
+                    let tracked sc = spare_claim_slot.tracked_take();
+                    g.dclaims.borrow_mut().tracked_insert(spare, sc);
+                    g.all@ = g.all@.push(spare);
+                    reveal(keys_inside);
+                    assert(t0.lookup(old_mark) is None);
+                    assert(t0.lookup((s - 1) as usize) is None);
+                    let v = g.descs@[spare].value();
+                    assert(v.state <= 2);
+                    assert(g.table.lookup(v.start as usize) is None);
+                    assert(v.state != RunState::Active as u8 && v.pages > 1 ==> g.table.lookup((v.start + v.pages - 1) as usize) is None);
+                    assert(g.table.spec_count() + 2 < g.table.spec_cap());
+                    assert(g.stats.can_add(state_of(v.state), v.pages as usize));
+                    assert(forall|i: int| 0 <= i < l0.len() ==> #[trigger] enode(l0, g.descs@, i) == enode(l0, d0, i));
+                }
                 g.free.map.set_range(old_mark, s - old_mark);
                 g.add_extent(spare);
                 spare_used = true;
+                proof {
+                    t2 = g.table;
+                    s2 = g.stats;
+                }
+            }
+            proof {
+                assert(took_free(f0, g.free.map.view(), s as int, end as int, old_mark as int));
             }
         } else {
             // `ext` is a live free extent found under this lock.
-            let (a, e_end, st, dirty_at) = (
-                g.desc(ext).start(),
-                g.desc(ext).end(),
-                g.desc(ext).state(),
-                g.desc(ext).dirty_at,
-            );
+            let (a, e_end, st, dirty_at) = (g.desc(ext).start(), g.desc(ext).end(), g.desc(ext).state(), g.desc(ext).dirty_at);
+            proof {
+                assert(e_end <= old_mark);
+                lemma_state_byte(ve.state);
+                assert(forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && x != ext ==> apart(d0[x].value(), ve));
+            }
             // `Purged` pages are zero unless a lazy purge discarded them
             // with `MADV_FREE`; pages at or past the mark are untouched.
             zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
-            g.drop_extent(ext, Ghost::assume_new());
+            proof {
+                assert(zeroed ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
+                lemma_can_sub(*old(g), ext);
+            }
+            g.drop_extent(ext, Ghost(Seq::empty()));
+            proof {
+                t1 = g.table;
+                s1 = g.stats;
+            }
+            proof {
+                assert(stat(g.stats, 0) <= st0.runs && stat(g.stats, 1) <= st0.empty && stat(g.stats, 2) <= st0.purged);
+                assert(stat(g.stats, 3) <= st0.run_pages && stat(g.stats, 4) <= st0.empty_pages && stat(g.stats, 5) <= st0.purged_pages);
+                // Nothing is keyed inside `ext` or at or past the mark now.
+                assert forall|k: usize| (a <= k < e_end || k >= old_mark) implies #[trigger] t1.lookup(k) is None by {
+                    reveal(keys_inside);
+                    if t0.lookup(k) is Some {
+                        let x = t0.lookup(k).unwrap();
+                        if x != ext {
+                            assert(apart(d0[x].value(), ve));
+                        }
+                    }
+                }
+            }
             let taken_lo = s.max(a);
             let taken_hi = end.min(e_end);
             if taken_lo < taken_hi {
                 g.free.map.clear_range(taken_lo, taken_hi - taken_lo);
             }
+            proof {
+                assert(took_free(f0, g.free.map.view(), s as int, end as int, s as int));
+            }
             let tail = e_end.saturating_sub(end);
             if tail > 0 {
                 // The tail inherits the state and age of `ext` and, when
                 // `Empty`, its place in the FIFO (same `dirty_at`).
-                init_free(spare, Tracked::assume_new(), end, tail, st, dirty_at);
+                let tracked mut sp = spare_slot.tracked_take();
+                init_free(spare, Tracked(&mut sp), end, tail, st, dirty_at);
+                proof {
+                    if g.descs@.contains_key(spare) {
+                        sp.is_disjoint(g.descs.borrow().tracked_borrow(spare));
+                    }
+                    assert(!d0.contains_key(spare));
+                    assert(!l0.contains(spare)) by {
+                        if l0.contains(spare) {
+                            assert(enode(l0, d0, l0.index_of(spare)));
+                        }
+                    }
+                    vs = sp.value();
+                    g.descs.borrow_mut().tracked_insert(spare, sp);
+                    let tracked sc = spare_claim_slot.tracked_take();
+                    g.dclaims.borrow_mut().tracked_insert(spare, sc);
+                    g.all@ = g.all@.push(spare);
+                    assert(forall|i: int| 0 <= i < l0.len() ==> #[trigger] enode(l0, g.descs@, i) == enode(l0, d0, i));
+                    assert(t1.lookup(end) is None);
+                    assert(t1.lookup((e_end - 1) as usize) is None);
+                }
+                let ghost ds = g.descs@;
                 if st == RunState::Empty {
                     g.link_after(ext, spare);
                 }
+                proof {
+                    assert(ds.contains_key(spare) && ds[spare].value() == vs);
+                    assert(same_but_links(vs, g.descs@[spare].value()));
+                    let v = g.descs@[spare].value();
+                    assert(v.state <= 2);
+                    assert(g.table.lookup(v.start as usize) is None);
+                    assert(v.state != RunState::Active as u8 && v.pages > 1 ==> g.table.lookup((v.start + v.pages - 1) as usize) is None);
+                    assert(g.table.spec_count() + 2 < g.table.spec_cap());
+                    assert(g.stats.can_add(state_of(v.state), v.pages as usize));
+                }
                 g.add_extent(spare);
                 spare_used = true;
+            }
+            proof {
+                t2 = g.table;
+                s2 = g.stats;
             }
             if s > a {
                 // Head survives (and, when `s >= e_end`, absorbs the hole
@@ -3356,19 +4774,77 @@ impl Huge {
                 if s > e_end {
                     g.free.map.set_range(e_end, s - e_end);
                 }
+                proof {
+                    assert(took_free(f0, g.free.map.view(), s as int, end as int, old_mark as int));
+                }
+                let ghost dm = g.descs@;
                 g.desc_mut(ext).pages = (s - a) as u32;
+                proof {
+                    head = true;
+                    vh = HugeDesc { pages: (s - a) as u32, ..ve };
+                    assert(dm.contains_key(ext));
+                    assert(same_but_links(ve, dm[ext].value()));
+                    assert(same_but_links(vh, g.descs@[ext].value()));
+                    assert(forall|i: int| 0 <= i < g.elist@.len() ==> #[trigger] enode(g.elist@, g.descs@, i) == enode(g.elist@, dm, i));
+                    assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(g.stats, k) <= stat(st0, k) + self.npages by {
+                        assert(stat(s2, k) == stat(st0, k) - weight(ve, k) + if spare_used { weight(vs, k) } else { 0 });
+                    }
+                    assert(stat(g.stats, 1) <= stat(st0, 1) + self.npages && stat(g.stats, 2) <= stat(st0, 2) + self.npages);
+                    assert(stat(g.stats, 4) <= stat(st0, 4) + self.npages && stat(g.stats, 5) <= stat(st0, 5) + self.npages);
+                    assert(t2.lookup(a) is None);
+                    assert(t2.lookup((s - 1) as usize) is None);
+                    let v = g.descs@[ext].value();
+                    assert(v.state <= 2);
+                    assert(g.table.lookup(v.start as usize) is None);
+                    assert(v.state != RunState::Active as u8 && v.pages > 1 ==> g.table.lookup((v.start + v.pages - 1) as usize) is None);
+                    assert(g.table.spec_count() + 2 < g.table.spec_cap());
+                    assert(g.stats.can_add(state_of(v.state), v.pages as usize));
+                    assert(perms_ok(g.descs@));
+                }
                 g.add_extent(ext);
             } else {
+                proof {
+                    assert(a0.contains(ext));
+                    assert(g.descs@.contains_key(ext));
+                    assert(same_but_links(ve, g.descs@[ext].value()));
+                    assert(g.all@ == a0 || g.all@ == a0.push(spare));
+                    assert(g.all@.contains(ext)) by {
+                        if g.all@ != a0 {
+                            assert(g.all@[a0.index_of(ext)] == ext);
+                        }
+                    }
+                    if ve.state == RunState::Empty as u8 {
+                        assert(l0.contains(ext));
+                        assert(g.elist@.contains(ext)) by {
+                            if g.elist@ != l0 {
+                                assert(g.elist@ == l0.insert(l0.index_of(ext) + 1, spare));
+                                assert(g.elist@[l0.index_of(ext)] == ext);
+                            }
+                        }
+                    }
+                }
                 g.retire(meta, ext);
+            }
+            proof {
+                assert(took_free(f0, g.free.map.view(), s as int, end as int, old_mark as int));
             }
         }
         if end > old_mark {
             g.next_page = end;
         }
+        let ghost t3 = g.table;
+        let ghost s3 = g.stats;
+        let ghost dr = g.descs@;
+        let ghost ar = g.all@;
+        proof {
+            assert(stat(g.stats, 0) == stat(st0, 0) && stat(g.stats, 3) == stat(st0, 3));
+            assert(t3.lookup(s) is None);
+        }
         // `run` is a fresh metadata block for a `HugeDesc`.
+        let tracked mut rp = run_perm;
         ptr_mut_write(
             run,
-            Tracked::assume_new(),
+            Tracked(&mut rp),
             HugeDesc {
                 start: s as u32,
                 pages: need as u32,
@@ -3381,14 +4857,107 @@ impl Huge {
                 next: ptr::null_mut(),
             },
         );
+        proof {
+            if g.descs@.contains_key(run) {
+                rp.is_disjoint(g.descs.borrow().tracked_borrow(run));
+            }
+            vr = rp.value();
+            self.lemma_pages((need - GUARD_PAGES) as usize);
+            assert(run_ok(vr, g.lg@));
+            g.descs.borrow_mut().tracked_insert(run, rp);
+            g.dclaims.borrow_mut().tracked_insert(run, run_claim);
+            g.all@ = g.all@.push(run);
+            assert(forall|i: int| 0 <= i < g.elist@.len() ==> #[trigger] enode(g.elist@, g.descs@, i) == enode(g.elist@, dr, i));
+        }
         g.add_extent(run);
+        let ghost s4 = g.stats;
         g.stats.next_page = g.next_page;
         if !spare_used {
-            free_desc(meta, spare, Tracked::assume_new());
+            let tracked sp = spare_slot.tracked_unwrap();
+            let tracked sc = spare_claim_slot.tracked_unwrap();
+            free_desc(meta, spare, Tracked(desc_raw((sp, sc))));
         }
-        (zeroed, Tracked::assume_new())
+        proof {
+            let t = Take {
+                ext,
+                has_ext,
+                ve,
+                head,
+                vh,
+                used: spare_used,
+                spare,
+                vs,
+                run,
+                vr,
+                mark: old_mark,
+                nm: g.next_page,
+            };
+            // The pieces replace what they cover; scoped, so the steps below
+            // see only the conclusion.
+            assert(g.took(*old(g), t)) by {
+                assert(t.pieces_ok(*old(g)));
+                assert forall|k: usize| #[trigger] g.table.lookup(k) == t.lookup(t0, k) by {
+                    assert(g.table.lookup(k) == if is_key(vr, k as int) { Some(run) } else { t3.lookup(k) });
+                    assert(t3.lookup(k) == if head && is_key(vh, k as int) { Some(ext) } else { t2.lookup(k) });
+                    assert(t2.lookup(k) == if spare_used && is_key(vs, k as int) { Some(spare) } else { t1.lookup(k) });
+                    assert(t1.lookup(k) == if has_ext && is_key(ve, k as int) { None } else { t0.lookup(k) });
+                }
+                assert(g.table.spec_count() == t0.spec_count() + t.delta(6));
+                assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(g.stats, k) == stat(st0, k) + t.delta(k) by {
+                    assert(stat(s4, k) == stat(s3, k) + weight(vr, k));
+                    assert(stat(g.stats, k) == stat(s4, k));
+                    assert(stat(s3, k) == stat(s2, k) + if head { weight(vh, k) } else { 0 });
+                    assert(stat(s2, k) == stat(s1, k) + if spare_used { weight(vs, k) } else { 0 });
+                    assert(stat(s1, k) == stat(st0, k) - if has_ext { weight(ve, k) } else { 0 });
+                }
+                assert forall|x: *mut HugeDesc| #[trigger] g.descs@.contains_key(x) <==> t.model(d0, x) is Some by {
+                    assert(x != run ==> (dr.contains_key(x) <==> t.model(d0, x) is Some));
+                }
+                assert forall|x: *mut HugeDesc| #[trigger] g.descs@.contains_key(x) implies same_but_links(
+                    t.model(d0, x).unwrap(),
+                    g.descs@[x].value(),
+                ) by {
+                    if x != run {
+                        assert(same_but_links(t.model(d0, x).unwrap(), dr[x].value()));
+                    }
+                }
+                assert(g.all@ =~= t.all_after(a0)) by {
+                    reveal(Seq::no_duplicates);
+                }
+                assert(g.elist@ == t.elist_after(l0));
+                assert(g.table.wf());
+                assert(perms_ok(g.descs@));
+                assert(g.next_page == t.nm && g.np == old(g).np);
+                assert(g.free.map.wf() && g.free.map.spec_nbits() == g.np@);
+                assert(elist_ok(g.empty_head, g.empty_tail, g.elist@, g.descs@));
+            }
+            // The run's token: its extent and pages enter the run
+            // authorities, which held neither.
+            lemma_took_active(*old(g), *g, t);
+            let ghost gt = *g;
+            let tracked ext = g.runs.borrow_mut().insert((s as int, need as int));
+            let tracked pages = g.pgs.borrow_mut().insert_set(vstd::set_lib::set_int_range(s as int, s + need));
+            tok.tracked_insert(0, RunToken { ext, pages });
+            assert(*g == (Inner { runs: g.runs, pgs: g.pgs, ..gt }));
+            assert(g.took(*old(g), t));
+            assert(t.touch_ok(*old(g)));
+            lemma_took_wf(*old(g), *g, t);
+        }
+        proof {
+            assert(!has_ext ==> s >= old_mark);
+            assert(has_ext ==> ve.start <= s);
+            assert(has_ext ==> (s + (need - GUARD_PAGES) + GUARD_PAGES <= ve.start + ve.pages || ve.start + ve.pages == old_mark));
+            assert(zeroed && has_ext ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
+            self.lemma_page();
+        }
+        let tracked z = zero_run(self.base as int, self.spec_page(), s as int, (need - GUARD_PAGES) as int, old_mark as int, has_ext, ve, zeroed);
+        (zeroed, Tracked(z))
     }
+}
 
+} // verus!
+
+impl Huge {
     /// [`Huge::free_run`] returning only the usable bytes released.
     #[cfg(test)]
     pub fn free(&self, meta: &Meta, page: usize) -> usize {
@@ -4669,34 +6238,6 @@ impl Huge {
         }
         assert_eq!(n, st.empty);
     }
-}
-
-/// Initialise a metadata block as a free extent.
-fn init_free(
-    d: *mut HugeDesc,
-    perm: Tracked<&mut PointsTo<HugeDesc>>,
-    start: usize,
-    pages: usize,
-    state: RunState,
-    dirty_at: u64,
-) {
-    debug_assert!(state.is_free());
-    // `d` is a fresh metadata block for a `HugeDesc`.
-    ptr_mut_write(
-        d,
-        perm,
-        HugeDesc {
-            start: start as u32,
-            pages: pages as u32,
-            arena: 0,
-            state: state as u8,
-            _pad: 0,
-            usable: 0,
-            dirty_at,
-            prev: ptr::null_mut(),
-            next: ptr::null_mut(),
-        },
-    )
 }
 
 verus! {
