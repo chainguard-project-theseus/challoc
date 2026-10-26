@@ -1258,7 +1258,7 @@ impl Huge {
             npages > 0 && npages <= u32::MAX as usize,
             "huge: region page count out of range"
         );
-        let free = Set::new(meta, page, npages)?;
+        let free = Set::new(meta, page, npages, Tracked::assume_new())?;
         let table = Table::new(meta, page)?;
         Some(Huge {
             base: regions.huge_base,
@@ -1411,7 +1411,9 @@ impl Huge {
     /// report as `pages`, so the caller's per-arena page count never
     /// drifts from what the free subtracts); [`Placed::NONE`] when the
     /// region, the metadata region or the kernel refuses.
-    #[inline]
+    // Cold: out of line in `Shared::alloc_huge`, so the ghost arguments that
+    // verified code erases cannot change whether it is inlined.
+    #[inline(never)]
     pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> Placed {
         assert!(
             align.is_power_of_two(),
@@ -1448,7 +1450,10 @@ impl Huge {
             return Placed::NONE;
         }
         let ok = g.table.ensure(meta, page, 3).is_ok()
-            && (end <= g.next_page || g.free.ensure(meta, page, end - 1).is_ok())
+            && (end <= g.next_page
+                || g.free
+                    .ensure(meta, page, end - 1, Tracked::assume_new())
+                    .is_ok())
             && self.prepare(s, usable_pages, g.next_page).is_ok();
         if !ok {
             free_desc(meta, run);

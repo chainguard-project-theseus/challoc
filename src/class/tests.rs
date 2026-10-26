@@ -126,7 +126,14 @@ impl Env {
     /// A fresh set table for one arena (leaked: the states point at it).
     fn sets(&self) -> &'static SetTable {
         std::boxed::Box::leak(std::boxed::Box::new(
-            SetTable::new(&self.meta, &self.regions).expect("set table"),
+            SetTable::new(
+                &self.meta,
+                &self.regions,
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .expect("set table"),
         ))
     }
 
@@ -162,12 +169,13 @@ impl Env {
 fn set_scans_never_read_uncommitted_words() {
     let env = Env::new();
     let nbits = 1 << 21;
-    let mut set = Set::new(&env.meta, page_size(), nbits).expect("set");
+    let mut set = Set::new(&env.meta, page_size(), nbits, Tracked::assume_new()).expect("set");
     assert_eq!(set.map.lowest_set(), None);
     assert_eq!(set.map.lowest_set_from(0), None);
     assert_eq!(set.map.lowest_set_from(12345), None);
     assert_eq!(set.map.lowest_set_from(nbits - 1), None);
-    set.ensure(&env.meta, page_size(), 100).unwrap();
+    set.ensure(&env.meta, page_size(), 100, Tracked::assume_new())
+        .unwrap();
     set.map.set(100);
     assert_eq!(set.map.lowest_set_from(0), Some(100));
     assert_eq!(set.map.lowest_set_from(100), Some(100));
