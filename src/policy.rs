@@ -60,7 +60,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
 use crate::purge::NEVER;
-use crate::sys::cgroup::{Cgroup, UNLIMITED};
+use crate::sys::cgroup::{Cgroup, LEVELS, UNLIMITED};
 
 /// Fixed-point one for the band position and the keep ratio.
 pub const FRAC_ONE: u32 = 1 << 16;
@@ -150,12 +150,17 @@ pub fn band(limit: u64, current: u64) -> Band {
 /// limit against the leaf's usage, which also stands in for any limited
 /// level beyond `sys::cgroup::LEVELS`; and each ancestor with a limit of
 /// its own against its own usage, since the kernel holds an ancestor to
-/// its limit by the usage of all its children.
+/// its limit by the usage of all its children. (`cg.ancestors().fold(..,
+/// |b, (l, c)| b.max(band(l, c)))`, spelled out: one ancestor at a time.)
 pub fn cgroup_band(cg: &Cgroup) -> Band {
-    cg.ancestors().fold(
-        band(cg.limit().min(cg.high()), cg.current()),
-        |b, (l, c)| b.max(band(l, c)),
-    )
+    let mut b = band(cg.limit().min(cg.high()), cg.current());
+    let mut level = 1;
+    while level < LEVELS {
+        let (l, c) = cg.ancestor(level);
+        b = b.max(band(l, c));
+        level += 1;
+    }
+    b
 }
 
 /// The advice a purge batch is issued with (design 8).
