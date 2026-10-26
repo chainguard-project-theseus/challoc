@@ -7,6 +7,7 @@ use crate::layout::{CLASSES, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
 use crate::lock::{Lock, RawLock};
 use crate::meta::Meta;
 use crate::sys::Errno;
+use vstd::prelude::Tracked;
 
 /// A never-freed table in the metadata region, committed page by page as
 /// the high-water mark grows (a table of at most `meta::EAGER_MAX` bytes
@@ -83,7 +84,11 @@ impl Set {
         // Level 1 is small and touched by every operation: commit it now.
         table.ensure(meta, page, 8 * l1_words).ok()?;
         // SAFETY: the words come from a fresh, zero, never-freed reservation.
-        let map = unsafe { TwoLevelBitmap::from_raw(nslabs, table.base as *mut u64) };
+        // Their ghost permission, as zero bytes, is trusted on the same
+        // grounds.
+        let map = unsafe {
+            TwoLevelBitmap::from_raw(nslabs, table.base as *mut u64, Tracked::assume_new())
+        };
         Some(Set {
             map,
             store: Store::Own(table),
@@ -102,12 +107,14 @@ impl Set {
         // SAFETY: the slot's words are `base + 8 * (slot + r * stride)`,
         // disjoint from every other slot's, zero, never freed; the rows a
         // slab's bit needs are committed by `ensure` before the class
-        // touches it (`take_group`).
+        // touches it (`take_group`). Their ghost permission, as zero bytes,
+        // is trusted on the same grounds.
         let map = unsafe {
             TwoLevelBitmap::from_raw_chunked(
                 nslabs,
                 (group.base + 8 * slot) as *mut u64,
                 group.stride,
+                Tracked::assume_new(),
             )
         };
         Set {
