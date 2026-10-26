@@ -124,22 +124,22 @@ fn batch_merges_adjacent_ranges() {
     let _serial = serial();
     let page = page_size();
     let base = scratch(8, page);
-    let mut b = Batch::new();
-    b.push(base, page, |_, _, done| assert!(done));
-    b.push(base + page, page, |_, _, done| assert!(done));
-    b.push(base + 2 * page, page, |_, _, done| assert!(done));
+    let mut b = Batch::new_t();
+    b.push_t(base, page, |_, _, done| assert!(done));
+    b.push_t(base + page, page, |_, _, done| assert!(done));
+    b.push_t(base + 2 * page, page, |_, _, done| assert!(done));
     assert_eq!(b.len(), 1);
     assert_eq!(b.ranges[0], (base, 3 * page, page));
     // A range of another length starts a new range, so does a gap, and
     // so does a range that is not the next one.
-    b.push(base + 3 * page, 2 * page, |_, _, done| assert!(done));
+    b.push_t(base + 3 * page, 2 * page, |_, _, done| assert!(done));
     assert_eq!(b.len(), 2);
     assert_eq!(b.ranges[1], (base + 3 * page, 2 * page, 2 * page));
-    b.push(base + 6 * page, page, |_, _, done| assert!(done));
+    b.push_t(base + 6 * page, page, |_, _, done| assert!(done));
     assert_eq!(b.len(), 3);
-    b.push(base + 5 * page, page, |_, _, done| assert!(done));
+    b.push_t(base + 5 * page, page, |_, _, done| assert!(done));
     assert_eq!(b.len(), 4);
-    b.flush(|_, _, done| assert!(done));
+    b.flush_t(|_, _, done| assert!(done));
     assert!(b.is_empty());
 }
 
@@ -149,18 +149,18 @@ fn batch_fills_and_flushes() {
     let (_, eager0) = batches();
     let page = page_size();
     let base = scratch(2 * MAX_BATCH + 4, page);
-    let mut b = Batch::new();
+    let mut b = Batch::new_t();
     assert!(b.is_empty());
     // Every other page, so nothing merges.
     for i in 0..MAX_BATCH {
         assert!(!b.is_full());
-        b.push(base + 2 * page * i, page, |_, _, done| assert!(done));
+        b.push_t(base + 2 * page * i, page, |_, _, done| assert!(done));
     }
     assert!(b.is_full());
     assert_eq!(b.len(), MAX_BATCH);
     // The 65th push flushes the first 64 first, reporting each.
     let mut settled = std::vec::Vec::new();
-    b.push(base + 2 * page * MAX_BATCH, 2 * page, |addr, len, done| {
+    b.push_t(base + 2 * page * MAX_BATCH, 2 * page, |addr, len, done| {
         settled.push((addr, len, done))
     });
     assert_eq!(b.len(), 1);
@@ -168,9 +168,9 @@ fn batch_fills_and_flushes() {
         .map(|i| (base + 2 * page * i, page, true))
         .collect();
     assert_eq!(settled, want);
-    b.flush(|_, _, done| assert!(done));
+    b.flush_t(|_, _, done| assert!(done));
     assert!(b.is_empty());
-    b.flush(|_, _, done| assert!(done));
+    b.flush_t(|_, _, done| assert!(done));
     assert!(b.is_empty());
     // At least the two eager batches of this test were counted (the
     // default advice; other tests flush their own batches concurrently

@@ -2,9 +2,9 @@
 
 use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
-use crate::purge::{Batch, Curve, STEPS};
+use crate::purge::{Batch, Curve, Pieces, STEPS, Settle};
 use crate::slab::State;
-use vstd::prelude::Tracked;
+use vstd::prelude::{Ghost, Tracked, int};
 
 /// The older of two `dirty_at` stamps where 0 means "none yet": the fold
 /// of the purge walks over the `Empty` slabs they keep, feeding the gate's `oldest_empty` (0 when no slab is `Empty`).
@@ -17,11 +17,32 @@ pub(super) fn min_nonzero(cur: u64, t: u64) -> u64 {
 
 /// What a purge walk's flushes settled: slabs made `Purged`, the oldest
 /// `dirty_at` among the survivors (`min_nonzero`), and whether a discard
-/// failed.
+/// failed. It settles the walk's batch ([`Settle`], through
+/// [`ClassState::settle`]).
 struct Tally {
     purged: usize,
     oldest: u64,
     failed: bool,
+}
+
+impl Settle for Tally {
+    type Owner = ClassState;
+
+    type Ctx = Inner;
+
+    #[inline(always)]
+    fn settle(
+        &mut self,
+        o: &ClassState,
+        c: &mut Inner,
+        addr: usize,
+        len: usize,
+        done: bool,
+        _piece: Ghost<int>,
+        _pend: Ghost<Pieces>,
+    ) {
+        o.settle(c, addr, len, done, self);
+    }
 }
 
 /// The cut-off step of a decay walk that must purge `need` of the slabs
@@ -86,8 +107,7 @@ impl ClassState {
             p: Purger::new(spp),
         };
         self.walk_empty(&mut g, &mut v);
-        v.p.batch
-            .flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut v.p.t));
+        v.p.batch.flush(&mut v.p.t, self, &mut g);
         self.gate.set_oldest_empty(v.p.t.oldest);
         v.p.t.purged
     }
@@ -111,7 +131,9 @@ impl ClassState {
         batch.push(
             self.slab_addr(first),
             self.class().slab_size() * spp,
-            |addr, len, done| self.settle(g, addr, len, done, t),
+            t,
+            self,
+            g,
         );
         first + spp
     }
@@ -209,8 +231,7 @@ impl ClassState {
             p: Purger::new(spp),
         };
         self.walk_empty(&mut g, &mut v);
-        v.p.batch
-            .flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut v.p.t));
+        v.p.batch.flush(&mut v.p.t, self, &mut g);
         if v.p.t.failed {
             self.gate.back_off(now);
         }
@@ -307,7 +328,7 @@ impl Purger {
         Purger {
             spp,
             pushed: 0,
-            batch: Batch::new(),
+            batch: Batch::new(Ghost::assume_new()),
             t: Tally {
                 purged: 0,
                 oldest: 0,
