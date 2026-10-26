@@ -39,6 +39,11 @@ use core::ffi::CStr;
 use core::fmt::{self, Write as _};
 
 use crate::heap::{MAX_CAP, MIN_CAP};
+use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
+use vstd::string::*;
+
+verus! {
 
 /// Largest accepted `tcache_nslots_small_max`. A cache array is allocated
 /// from the metadata region as one object, and `Meta::alloc` serves layouts
@@ -58,10 +63,16 @@ pub const MAX_GUARD_SLAB_INTERVAL: u32 = 1 << 22;
 /// caps decay at `NSTIME_SEC_MAX * 1000`, which is far larger, but a `u64`
 /// of nanoseconds must not overflow when the interval is converted.
 pub const MAX_INTERVAL_MS: i64 = 1_000_000_000_000;
+
+} // verus!
+
 /// Largest `huge_retain_max`: the preferred huge region (2^40 bytes,
 /// `layout::LG_HUGE_PREFERRED`); no run can be larger, so anything above
 /// means "retain every freed run for decay".
 pub const MAX_HUGE_RETAIN_MAX: usize = 1 << crate::layout::LG_HUGE_PREFERRED;
+
+verus! {
+
 /// `thp` values (`default` is accepted as `never`; design 7, 10 and 17,
 /// `thp.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +106,8 @@ pub enum PercpuArena {
     Phycpu,
 }
 
+} // verus!
+
 /// The names [`Thp::name`] gives, in variant order: one constant the
 /// verifier can take on trust (it takes no `CStr` literal).
 const THP_NAMES: [&CStr; 3] = [c"never", c"auto", c"always"];
@@ -122,6 +135,8 @@ impl PercpuArena {
         }
     }
 }
+
+verus! {
 
 /// Every tunable of design section 12; [`Config::DEFAULT`] holds the
 /// compiled defaults. `docs/tuning.md` section 2 documents each key: its
@@ -178,6 +193,20 @@ pub struct Config {
 }
 
 impl Config {
+    /// The ranges the cache-capacity rule ([`Config::cap_for`]) relies on:
+    /// `tcache_nslots_small_max` in `[MIN_CAP, MAX_NSLOTS]` and
+    /// `lg_tcache_nslots_mul` in its jemalloc range; and the guard slab
+    /// interval `SlabTable::new` accepts: 0 or a power of two from 2 to
+    /// [`MAX_GUARD_SLAB_INTERVAL`]. [`Config::DEFAULT`] has them and every
+    /// [`Config::set`] keeps them (the parsers clamp; the interval's also
+    /// lifts 1 to 2 and rounds up to a power of two).
+    pub open spec fn wf(&self) -> bool {
+        &&& MIN_CAP <= self.tcache_nslots_small_max <= MAX_NSLOTS
+        &&& LG_NSLOTS_MUL_MIN <= self.lg_tcache_nslots_mul <= LG_NSLOTS_MUL_MAX
+        &&& self.guard_slab_interval == 0 || (2 <= self.guard_slab_interval <= MAX_GUARD_SLAB_INTERVAL
+            && crate::meta::is_pow2(self.guard_slab_interval as usize))
+    }
+
     /// The compiled defaults (design section 12).
     pub const DEFAULT: Config = Config {
         background_thread: None,
@@ -208,18 +237,41 @@ impl Config {
     /// is passed to `report`; the corresponding pair is skipped (or clamped,
     /// for [`Issue::OutOfRange`]) and parsing continues with the next pair.
     /// Returns the number of problems reported.
-    pub fn parse(&mut self, text: &[u8], mut report: impl FnMut(Issue<'_>)) -> usize {
+    pub fn parse(&mut self, text: &[u8], mut report: impl FnMut(Issue<'_>)) -> (issues: usize)
+        requires
+            old(self).wf(),
+            forall|i: Issue| call_requires(report, (i,)),
+        ensures
+            issues <= text.len(),
+            final(self).wf(),
+    {
         self.parse_with(text, &mut report)
     }
 
     /// [`parse`](Self::parse) through a borrowed `report`, which the
     /// caller can go on using.
-    fn parse_with<F: FnMut(Issue<'_>)>(&mut self, text: &[u8], report: &mut F) -> usize {
+    fn parse_with<F: FnMut(Issue<'_>)>(&mut self, text: &[u8], report: &mut F) -> (issues: usize)
+        requires
+            old(self).wf(),
+            forall|i: Issue| call_requires(*old(report), (i,)),
+        ensures
+            issues <= text.len(),
+            final(self).wf(),
+            *final(report) == *old(report),
+    {
         let mut issues = 0;
         let mut pairs = Pairs(text);
         // `for pair in Pairs(text)`, spelled out: Verus has no
         // specification for a hand-written `Iterator`.
-        while let Some(pair) = pairs.next_pair() {
+        while let Some(pair) = pairs.next_pair()
+            invariant
+                pairs.0@.len() <= text.len(),
+                issues <= text.len() - pairs.0@.len(),
+                *report == *old(report),
+                forall|i: Issue| call_requires(*report, (i,)),
+                self.wf(),
+            decreases pairs.0@.len(),
+        {
             if let Err(issue) = self.apply_pair(pair) {
                 issues += 1;
                 report(issue);
@@ -239,7 +291,16 @@ impl Config {
         text: &[u8],
         cut: bool,
         mut report: impl FnMut(Issue<'_>),
-    ) -> usize {
+    ) -> (issues: usize)
+        requires
+            old(self).wf(),
+            text@.len() < usize::MAX,
+            forall|i: Issue| call_requires(report, (i,)),
+        ensures
+            issues <= text.len() + 1,
+            cut ==> issues > 0,
+            final(self).wf(),
+    {
         if !cut {
             return self.parse(text, report);
         }
@@ -252,13 +313,26 @@ impl Config {
     /// Split one pair and set the key. Empty pairs (from `a,,b` or a
     /// trailing comma) are ignored, as jemalloc ignores them. A value with
     /// an unterminated quote is malformed whatever the key.
-    fn apply_pair<'a>(&mut self, pair: &'a [u8]) -> Result<(), Issue<'a>> {
+    fn apply_pair<'a>(&mut self, pair: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            pair@.len() == 0 ==> r is Ok && *final(self) == *old(self),
+            pair@.len() > 0 && (forall|j: int| 0 <= j < pair@.len() ==> pair@[j] != b':')
+                ==> r == Err::<(), Issue<'a>>(Issue::Malformed(pair)),
+            pair@.len() > 0 && pair@[0] == b':' ==> r == Err::<(), Issue<'a>>(Issue::Malformed(pair)),
+            final(self).wf(),
+    {
         if pair.is_empty() {
             return Ok(());
         }
         let Some(colon) = position_of(pair, b':') else {
             return Err(Issue::Malformed(pair));
         };
+        proof {
+            assert(colon < pair@.len());
+            assert(colon + 1 <= pair.len());
+        }
         let (key, value) = (&pair[..colon], &pair[colon + 1..]);
         let Some(value) = unquote(value) else {
             return Err(Issue::Malformed(pair));
@@ -274,7 +348,12 @@ impl Config {
     /// [`Issue::Inert`]), an ignored key ([`IGNORED_KEYS`]: any value), else
     /// [`Issue::UnknownKey`]. An out-of-range number is clamped *and*
     /// returned as [`Issue::OutOfRange`].
-    pub fn set<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> Result<(), Issue<'a>> {
+    pub fn set<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+    {
         if let Some(r) = self.set_listed(key, value) {
             return r;
         }
@@ -295,15 +374,30 @@ impl Config {
     }
 
     /// The [`TABLE`] entry's parser for `key`, `None` when no entry is
-    /// named `key`.
+    /// named `key`. Trusted: the table holds function pointers. The three
+    /// fields of [`Config::wf`] are written only by their own parsers,
+    /// through `num` with the `wf` range as its bounds; the guard slab
+    /// interval's then lifts 1 to 2 and rounds a value that is not a power
+    /// of two up to the next, which stays within the bound (itself a power
+    /// of two). The config must be well formed: on a value that does not
+    /// parse the interval keeps its old value, which that rounding would
+    /// overflow past `2^31`.
+    #[verifier::external_body]
     #[inline(always)]
-    fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> Option<Result<(), Issue<'a>>> {
+    fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Result<(), Issue<'a>>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+    {
         Key::find(key).map(|k| (k.parse.0)(self, key, value))
     }
 
     /// The value of a key by name, for `mallctl("opt.<key>")`: the
     /// [`TABLE`] entry's reader. `None` for keys that are only accepted
-    /// and ignored, for inert keys and for unknown keys.
+    /// and ignored, for inert keys and for unknown keys. Outside the
+    /// verifier's view: the table holds function pointers.
+    #[verifier::external]
     pub fn get(&self, key: &[u8]) -> Option<Value> {
         Key::find(key).map(|k| (k.read.0)(self))
     }
@@ -315,7 +409,12 @@ impl Config {
     /// arenas, is 60 MiB of mstress's RSS. Explicit
     /// `MALLOCX_ARENA` allocations keep their arena.
     #[inline]
-    pub fn shared_class(&self, class: usize) -> bool {
+    pub fn shared_class(&self, class: usize) -> (r: bool)
+        requires
+            class < crate::layout::NCLASSES,
+        ensures
+            r == (crate::layout::class_table()[class as int].size > self.tcache_max),
+    {
         crate::layout::CLASSES.table()[class].size() > self.tcache_max
     }
 
@@ -335,7 +434,18 @@ impl Config {
     /// tcache_nslots_small_max]`.
     ///
     /// [`shared_class`]: Config::shared_class
-    pub fn cap_for(&self, home: u16, arena: u16, class: usize) -> u32 {
+    pub fn cap_for(&self, home: u16, arena: u16, class: usize) -> (r: u32)
+        requires
+            class < crate::layout::NCLASSES,
+            LG_NSLOTS_MUL_MIN <= self.lg_tcache_nslots_mul <= LG_NSLOTS_MUL_MAX,
+        ensures
+            !self.tcache ==> r == 0,
+            crate::layout::class_table()[class as int].size > self.tcache_max ==> r == 0,
+            self.tcache && crate::layout::class_table()[class as int].size <= self.tcache_max && arena == home
+                ==> MIN_CAP <= r <= vstd::math::max(self.tcache_nslots_small_max as int, MIN_CAP as int),
+            r <= vstd::math::max(self.tcache_nslots_small_max as int, MIN_CAP as int),
+            self.tcache_nslots_small_max <= MAX_NSLOTS ==> r <= MAX_NSLOTS,
+    {
         if !self.tcache
             || self.shared_class(class)
             || (arena != home && class >= crate::layout::NBINS)
@@ -350,7 +460,10 @@ impl Config {
     }
 
     /// The guard slab interval actually used: 0 when guards are off.
-    pub fn effective_guard_slab_interval(&self) -> u32 {
+    pub fn effective_guard_slab_interval(&self) -> (r: u32)
+        ensures
+            r == if self.guards { self.guard_slab_interval } else { 0 },
+    {
         if self.guards {
             self.guard_slab_interval
         } else {
@@ -366,7 +479,12 @@ impl Config {
     /// of partial slab sets a thread-heavy program can hold; with the
     /// least-loaded assignment only `min(live threads, narenas)` arenas
     /// are ever built.
-    pub fn effective_narenas(&self, ncpus: u32) -> u32 {
+    pub fn effective_narenas(&self, ncpus: u32) -> (r: u32)
+        ensures
+            self.narenas != 0 ==> r == self.narenas,
+            self.narenas == 0 ==> r == vstd::math::min(4 * vstd::math::max(ncpus as int, 1), MAX_AUTO_ARENAS as int),
+            self.narenas == 0 ==> 4 <= r <= MAX_AUTO_ARENAS,
+    {
         if self.narenas != 0 {
             return self.narenas;
         }
@@ -378,13 +496,21 @@ impl Config {
     /// `opt.huge_dirty_decay_ms` reads). At run time the huge tier
     /// follows arena 0's live period when the key is unset
     /// (`Shared::huge_decay_ns`).
-    pub fn huge_decay_ms(&self) -> i64 {
+    pub fn huge_decay_ms(&self) -> (r: i64)
+        ensures
+            r == match self.huge_dirty_decay_ms {
+                Some(ms) => ms,
+                None => self.dirty_decay_ms,
+            },
+    {
         self.huge_dirty_decay_ms.unwrap_or(self.dirty_decay_ms)
     }
 }
 
 /// Cap of the automatic `narenas` default (design section 13.3).
 pub const MAX_AUTO_ARENAS: u32 = 64;
+
+} // verus!
 
 /// A key's parser: `(config, key, value)`; the key is passed so the issue
 /// can name it. A newtype, so the verifier, which rejects function
@@ -397,6 +523,20 @@ struct Parse(for<'a> fn(&mut Config, &'a [u8], &'a [u8]) -> Result<(), Issue<'a>
 /// [`Parse`].
 struct Read(fn(&Config) -> Value);
 
+verus! {
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `Parse` to the verifier.
+#[allow(dead_code)]
+struct ExParse(Parse);
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `Read` to the verifier.
+#[allow(dead_code)]
+struct ExRead(Read);
+
 /// One tunable of design section 12: its name (`opt.<name>`), the parser
 /// [`Config::set`] runs on its value and the reader [`Config::get`]
 /// answers with. The entries are [`TABLE`]; [`KEYS`] is their names.
@@ -408,13 +548,23 @@ pub struct Key {
 
 impl Key {
     /// The entry named `key`, if any.
-    fn find(key: &[u8]) -> Option<&'static Key> {
+    fn find(key: &[u8]) -> (r: Option<&'static Key>)
+        ensures
+            r matches Some(k) ==> k.name.spec_bytes() == key@,
+    {
         // `TABLE.iter().find(|k| k.name.as_bytes() == key)`, with an
         // index: Verus does not specify `Iterator::find`.
         let table = TABLE;
         let mut i = 0;
-        while i < table.len() {
+        while i < table.len()
+            invariant
+                i <= table@.len(),
+            decreases table@.len() - i,
+        {
             if table[i].name.as_bytes() == key {
+                proof {
+                    assert(table@[i as int].name.spec_bytes() =~= key@);
+                }
                 return Some(&table[i]);
             }
             i += 1;
@@ -424,7 +574,13 @@ impl Key {
 }
 
 /// A bool key: `true` / `false` into `slot`.
-fn bool_into<'a>(slot: &mut bool, key: &'a [u8], value: &'a [u8]) -> Result<(), Issue<'a>> {
+fn bool_into<'a>(slot: &mut bool, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+    ensures
+        match parse_bool_spec(value@) {
+            Some(b) => r is Ok && *final(slot) == b,
+            None => r == Err::<(), Issue<'a>>(Issue::BadValue { key, value }) && *final(slot) == *old(slot),
+        },
+{
     *slot = parse_bool(value).ok_or(Issue::BadValue { key, value })?;
     Ok(())
 }
@@ -438,7 +594,15 @@ fn num<'a>(
     min: i64,
     max: i64,
     store: impl FnOnce(&mut Config, i64),
-) -> Result<(), Issue<'a>> {
+) -> (r: Result<(), Issue<'a>>)
+    requires
+        min <= max,
+        forall|c: &mut Config, v: i64| min <= v <= max ==> call_requires(store, (c, v)),
+    ensures
+        parse_int_spec(value@) is None ==> r == Err::<(), Issue<'a>>(Issue::BadValue { key, value }),
+        parse_int_spec(value@) matches Some(v) ==> (r is Ok <==> min <= v <= max),
+        r is Err && parse_int_spec(value@) is Some ==> r == Err::<(), Issue<'a>>(Issue::OutOfRange { key, value }),
+{
     let (v, clamped) = clamped(key, value, min, max)?;
     store(cfg, v);
     if clamped {
@@ -450,18 +614,33 @@ fn num<'a>(
 
 /// A named-value key: `value` looked up in `names` (aliases are extra
 /// rows), anything else [`Issue::BadValue`].
-fn pick<'a, T: Copy>(names: &[(&str, T)], key: &'a [u8], value: &'a [u8]) -> Result<T, Issue<'a>> {
+fn pick<'a, T: Copy>(names: &[(&str, T)], key: &'a [u8], value: &'a [u8]) -> (r: Result<T, Issue<'a>>)
+    ensures
+        r matches Ok(t) ==> exists|j: int| 0 <= j < names@.len() && #[trigger] names@[j].0.spec_bytes() == value@ && names@[j].1 == t,
+        r is Err <==> forall|j: int| 0 <= j < names@.len() ==> #[trigger] names@[j].0.spec_bytes() != value@,
+        r is Err ==> r == Err::<T, Issue<'a>>(Issue::BadValue { key, value }),
+{
     // `names.iter().find(..).map(..).ok_or(..)`, spelled out: Verus does
     // not specify `Iterator::find`.
     let mut i = 0;
-    while i < names.len() {
+    while i < names.len()
+        invariant
+            i <= names@.len(),
+            forall|j: int| 0 <= j < i ==> #[trigger] names@[j].0.spec_bytes() != value@,
+        decreases names@.len() - i,
+    {
         if names[i].0.as_bytes() == value {
+            proof {
+                assert(names@[i as int].0.spec_bytes() =~= value@);
+            }
             return Ok(names[i].1);
         }
         i += 1;
     }
     Err(Issue::BadValue { key, value })
 }
+
+} // verus!
 
 /// A [`TABLE`] entry for a bool key stored in `field`.
 macro_rules! bool_key {
@@ -634,8 +813,15 @@ const ENTRIES: &[Key] = &[
     bool_key!("check_zero", check_zero),
 ];
 
-/// [`ENTRIES`], the tunables.
-pub const TABLE: &[Key] = ENTRIES;
+verus! {
+
+/// [`ENTRIES`], the tunables. Trusted: the verifier cannot see the
+/// entries (they hold closures); nothing is claimed about them.
+// The lifetimes are spelled out: `verus!` builds an `exec const` as a
+// function in the verifier's view, where `&[Key]` would have none.
+#[allow(clippy::redundant_static_lifetimes)]
+#[verifier::external_body]
+pub exec const TABLE: &'static [Key] = ENTRIES;
 
 /// The names of [`TABLE`], in its order. The loop also tests `out`'s
 /// length, which is `TABLE.len()` by its type: the verifier does not
@@ -644,12 +830,18 @@ const fn names() -> [&'static str; TABLE.len()] {
     let table = TABLE;
     let mut out = [""; TABLE.len()];
     let mut i = 0;
-    while i < table.len() && i < out.len() {
+    while i < table.len() && i < out.len()
+        invariant
+            i <= table@.len(),
+        decreases table@.len() - i,
+    {
         out[i] = table[i].name;
         i += 1;
     }
     out
 }
+
+} // verus!
 
 const NAMES: [&str; TABLE.len()] = names();
 
@@ -658,8 +850,11 @@ const NAMES: [&str; TABLE.len()] = names();
 /// compile time, by position) and the tests: the names of [`TABLE`].
 pub const KEYS: &[&str] = &NAMES;
 
+verus! {
+
 /// jemalloc keys that are accepted and ignored.
-pub const IGNORED_KEYS: &[&str] = &[
+#[allow(clippy::redundant_static_lifetimes)]
+pub exec const IGNORED_KEYS: &'static [&'static str] = &[
     "junk",
     "zero",
     "retain",
@@ -672,14 +867,26 @@ pub const IGNORED_KEYS: &[&str] = &[
 /// stores: `stats_print` has nothing to print at exit. Setting one is
 /// [`Issue::Inert`], which `abort_conf` turns into an abort;
 /// `malloc_stats_print` lists them as "accepted, no effect".
-pub const INERT_KEYS: &[&str] = &["stats_print"];
+#[allow(clippy::redundant_static_lifetimes)]
+pub exec const INERT_KEYS: &'static [&'static str] = &["stats_print"];
 
 /// Whether `key` is one of `names` (`names.iter().any(..)`, spelled out:
 /// Verus does not specify `Iterator::any`).
-fn contains(names: &[&str], key: &[u8]) -> bool {
+fn contains(names: &[&str], key: &[u8]) -> (r: bool)
+    ensures
+        r <==> exists|j: int| 0 <= j < names@.len() && #[trigger] names@[j].spec_bytes() == key@,
+{
     let mut i = 0;
-    while i < names.len() {
+    while i < names.len()
+        invariant
+            i <= names@.len(),
+            forall|j: int| 0 <= j < i ==> #[trigger] names@[j].spec_bytes() != key@,
+        decreases names@.len() - i,
+    {
         if names[i].as_bytes() == key {
+            proof {
+                assert(names@[i as int].spec_bytes() =~= key@);
+            }
             return true;
         }
         i += 1;
@@ -692,7 +899,14 @@ fn contains(names: &[&str], key: &[u8]) -> bool {
 /// clamped to `[MIN_CAP, max]`. With `max = MAX_CAP` and `lg_mul = 1` this
 /// is the design 6.2 table (`heap::default_cap`); [`Config::cap_for`] adds
 /// the rules for which classes are cached at all.
-pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
+pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> (r: u32)
+    requires
+        class < crate::layout::NCLASSES,
+        LG_NSLOTS_MUL_MIN <= lg_mul <= LG_NSLOTS_MUL_MAX,
+    ensures
+        MIN_CAP <= r,
+        r <= vstd::math::max(max as int, MIN_CAP as int),
+{
     // Sizes are compile-time (only the slab geometry is fixed at init).
     let size = crate::layout::BASE_CLASSES[class].size();
     // Doublings above 128 bytes: sizes in (128, 256] halve once, (256, 512]
@@ -721,6 +935,8 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
     if cap < MIN_CAP { MIN_CAP } else { cap }
 }
 
+} // verus!
+
 /// A readable configuration value (`mallctl` `opt.*`, the report's
 /// `opt.` lines). The variant is the key's C type in `mallctl`,
 /// jemalloc's for the keys jemalloc has: `Int` is `ssize_t` (the decay
@@ -736,6 +952,8 @@ pub enum Value {
     Size(usize),
     Str(&'static CStr),
 }
+
+verus! {
 
 /// One problem found while parsing; the offending bytes borrow the input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -763,6 +981,8 @@ pub enum Issue<'a> {
     /// after the last pair that ends before the cut was ignored.
     Cut,
 }
+
+} // verus!
 
 impl fmt::Display for Issue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -829,12 +1049,28 @@ impl fmt::Display for Bytes<'_> {
     }
 }
 
+verus! {
+
 /// Iterator over the comma-separated pairs of a conf string.
 struct Pairs<'a>(&'a [u8]);
 
 impl<'a> Pairs<'a> {
     /// The next pair, `None` once the string is used up.
-    fn next_pair(&mut self) -> Option<&'a [u8]> {
+    fn next_pair(&mut self) -> (r: Option<&'a [u8]>)
+        ensures
+            r is None <==> old(self).0@.len() == 0,
+            r is None ==> final(self).0@ == old(self).0@,
+            r matches Some(pair) ==> {
+                &&& pair@.len() <= old(self).0@.len()
+                &&& pair@ == old(self).0@.take(pair@.len() as int)
+                &&& final(self).0@ == if pair@.len() < old(self).0@.len() {
+                    old(self).0@.skip(pair@.len() + 1int)
+                } else {
+                    Seq::empty()
+                }
+                &&& pair@.len() < old(self).0@.len() ==> old(self).0@[pair@.len() as int] == b','
+            },
+    {
         if self.0.is_empty() {
             return None;
         }
@@ -845,7 +1081,16 @@ impl<'a> Pairs<'a> {
         let mut i = 0;
         let mut colon: Option<usize> = None;
         let mut quoted = false;
-        while i < self.0.len() {
+        while i < self.0.len()
+            invariant
+                i <= self.0@.len(),
+                self.0 == old(self).0,
+                colon matches Some(c) ==> c < i,
+            ensures
+                i <= self.0@.len(),
+                i < self.0@.len() ==> self.0@[i as int] == b',',
+            decreases self.0@.len() - i,
+        {
             let b = self.0[i];
             if quoted {
                 if b == b'"' {
@@ -881,10 +1126,24 @@ impl<'a> Pairs<'a> {
 /// spelled out: Verus has no specification for a hand-written
 /// `Iterator`). What is kept is whole pairs: it is all of `text`, empty,
 /// or ends at a comma.
-fn before_last_pair(text: &[u8]) -> usize {
+fn before_last_pair(text: &[u8]) -> (keep: usize)
+    ensures
+        keep <= text@.len(),
+        keep < text@.len() ==> keep == 0 || text@[keep - 1] == b',',
+{
     let mut keep = text.len();
     let mut pairs = Pairs(text);
-    loop {
+    loop
+        invariant
+            pairs.0@.len() <= text@.len(),
+            keep <= text@.len(),
+            keep < text@.len() ==> keep == 0 || text@[keep - 1] == b',',
+            pairs.0@.len() > 0 ==> {
+                &&& pairs.0@ == text@.skip(text@.len() - pairs.0@.len())
+                &&& pairs.0@.len() == text@.len() || text@[text@.len() - pairs.0@.len() - 1] == b','
+            },
+        decreases pairs.0@.len(),
+    {
         let rest = pairs.0.len();
         let Some(pair) = pairs.next_pair() else {
             break;
@@ -892,19 +1151,53 @@ fn before_last_pair(text: &[u8]) -> usize {
         if pair.len() == rest {
             keep = text.len() - pair.len();
         }
+        proof {
+            if pairs.0@.len() > 0 {
+                assert(pair@.len() < rest);
+                assert(pairs.0@ =~= text@.skip(text@.len() - pairs.0@.len()));
+            }
+        }
     }
     keep
+}
+
+/// `value` without one pair of surrounding double quotes; `None` when it
+/// opens a quote it does not close at its end (a quote inside the value
+/// included).
+pub open spec fn unquote_spec(value: Seq<u8>) -> Option<Seq<u8>> {
+    if value.len() >= 2 && value[0] == b'"' && value[value.len() - 1] == b'"'
+        && !value.subrange(1, value.len() - 1).contains(b'"') {
+        Some(value.subrange(1, value.len() - 1))
+    } else if value.len() >= 1 && value[0] == b'"' {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 /// Strip one pair of surrounding double quotes; `None` when the value opens
 /// a quote it does not close at its end. (`match value { [b'"', inner @
 /// .., b'"'] if !inner.contains(&b'"') => Some(inner), [b'"', ..] => None,
 /// _ => Some(value) }`, spelled out: Verus has no slice patterns.)
-fn unquote(value: &[u8]) -> Option<&[u8]> {
+fn unquote(value: &[u8]) -> (r: Option<&[u8]>)
+    ensures
+        r matches Some(v) ==> unquote_spec(value@) == Some(v@),
+        r is None ==> unquote_spec(value@) is None,
+{
     if value.len() >= 2 && value[0] == b'"' && value[value.len() - 1] == b'"' {
         let inner = &value[1..value.len() - 1];
         if position_of(inner, b'"').is_none() {
+            proof {
+                assert(!inner@.contains(b'"'));
+            }
             return Some(inner);
+        }
+        proof {
+            let j = choose|j: int| 0 <= j < inner@.len() && inner@[j] == b'"';
+            assert(inner@ == value@.subrange(1, value@.len() - 1));
+            assert(value@.subrange(1, value@.len() - 1).contains(b'"')) by {
+                assert(value@.subrange(1, value@.len() - 1)[j] == b'"');
+            }
         }
         return None;
     }
@@ -917,9 +1210,18 @@ fn unquote(value: &[u8]) -> Option<&[u8]> {
 
 /// The index of the first `b` in `s` (`s.iter().position(..)`, spelled
 /// out: Verus does not specify `Iterator::position`).
-fn position_of(s: &[u8], b: u8) -> Option<usize> {
+fn position_of(s: &[u8], b: u8) -> (r: Option<usize>)
+    ensures
+        r is None ==> forall|j: int| 0 <= j < s@.len() ==> s@[j] != b,
+        r matches Some(i) ==> i < s@.len() && s@[i as int] == b && forall|j: int| 0 <= j < i ==> s@[j] != b,
+{
     let mut i = 0;
-    while i < s.len() {
+    while i < s.len()
+        invariant
+            i <= s@.len(),
+            forall|j: int| 0 <= j < i ==> s@[j] != b,
+        decreases s@.len() - i,
+    {
         if s[i] == b {
             return Some(i);
         }
@@ -928,23 +1230,165 @@ fn position_of(s: &[u8], b: u8) -> Option<usize> {
     None
 }
 
-/// `true` / `false` only, as in jemalloc.
-pub fn parse_bool(value: &[u8]) -> Option<bool> {
-    // A `match` on byte-string patterns, spelled as comparisons: such
-    // patterns crash Verus.
-    if value == b"true" {
+/// What [`parse_bool`] accepts.
+pub open spec fn parse_bool_spec(value: Seq<u8>) -> Option<bool> {
+    if value == b"true"@ {
         Some(true)
-    } else if value == b"false" {
+    } else if value == b"false"@ {
         Some(false)
     } else {
         None
     }
 }
 
+/// `true` / `false` only, as in jemalloc.
+pub fn parse_bool(value: &[u8]) -> (r: Option<bool>)
+    ensures
+        r == parse_bool_spec(value@),
+{
+    // A `match` on byte-string patterns, spelled as comparisons: such
+    // patterns crash Verus.
+    if value == b"true" {
+        proof {
+            assert(value@ =~= b"true"@);
+        }
+        Some(true)
+    } else if value == b"false" {
+        proof {
+            assert(value@ =~= b"false"@);
+        }
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// `char::to_digit` on the character `c` (`core` documentation): `0`..`9`,
+/// then `a`..`z` or `A`..`Z` for 10..35, when below `radix`.
+pub open spec fn to_digit_spec(c: u32, radix: u32) -> Option<u32> {
+    let d = if 48 <= c <= 57 {
+        c - 48
+    } else if 97 <= c <= 122 {
+        c - 97 + 10
+    } else if 65 <= c <= 90 {
+        c - 65 + 10
+    } else {
+        36
+    };
+    if d < radix { Some(d as u32) } else { None }
+}
+
+/// The value of the digits `s` in `radix`, most significant first; `None`
+/// when a byte is not a digit of `radix`.
+pub open spec fn digits_spec(s: Seq<u8>, radix: u32) -> Option<int>
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        Some(0)
+    } else {
+        match (digits_spec(s.drop_last(), radix), to_digit_spec(s.last() as u32, radix)) {
+            (Some(v), Some(d)) => Some(v * radix + d),
+            _ => None,
+        }
+    }
+}
+
+/// The sign, the radix and the digits of a number: a leading `-` or `+`,
+/// then `0x` or `0X` with at least one more byte after it for hexadecimal,
+/// a leading `0` with at least one more byte after it for octal, else
+/// decimal.
+pub open spec fn int_parts(value: Seq<u8>) -> (bool, u32, Seq<u8>) {
+    let (negative, digits) = if value.len() > 0 && value[0] == b'-' {
+        (true, value.drop_first())
+    } else if value.len() > 0 && value[0] == b'+' {
+        (false, value.drop_first())
+    } else {
+        (false, value)
+    };
+    if digits.len() >= 3 && digits[0] == b'0' && (digits[1] == b'x' || digits[1] == b'X') {
+        (negative, 16, digits.skip(2))
+    } else if digits.len() >= 2 && digits[0] == b'0' {
+        (negative, 8, digits.drop_first())
+    } else {
+        (negative, 10, digits)
+    }
+}
+
+/// What [`parse_int`] returns: the number `value` spells, when it spells
+/// one that fits an `i64`.
+pub open spec fn parse_int_spec(value: Seq<u8>) -> Option<i64> {
+    let (negative, radix, digits) = int_parts(value);
+    if digits.len() == 0 {
+        None
+    } else {
+        match digits_spec(digits, radix) {
+            Some(m) => {
+                let v = if negative { -m } else { m };
+                if i64::MIN <= v <= i64::MAX { Some(v as i64) } else { None }
+            },
+            None => None,
+        }
+    }
+}
+
+proof fn lemma_digits_nonneg(s: Seq<u8>, radix: u32)
+    requires
+        radix >= 1,
+    ensures
+        digits_spec(s, radix) matches Some(v) ==> v >= 0,
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        lemma_digits_nonneg(s.drop_last(), radix);
+        if let Some(v) = digits_spec(s.drop_last(), radix) {
+            assert(v * radix >= 0) by (nonlinear_arith)
+                requires
+                    v >= 0,
+                    radix >= 1,
+            ;
+        }
+    }
+}
+
+/// A prefix that is not a number, or is a larger one, bounds the whole.
+proof fn lemma_digits_prefix(s: Seq<u8>, k: int, radix: u32)
+    requires
+        radix >= 1,
+        0 <= k <= s.len(),
+    ensures
+        digits_spec(s.take(k), radix) is None ==> digits_spec(s, radix) is None,
+        digits_spec(s.take(k), radix) matches Some(p) ==> (digits_spec(s, radix) matches Some(v) ==> p <= v),
+    decreases s.len() - k,
+{
+    if k == s.len() {
+        assert(s.take(k) =~= s);
+    } else {
+        lemma_digits_prefix(s, k + 1, radix);
+        assert(s.take(k + 1).drop_last() =~= s.take(k));
+        lemma_digits_nonneg(s.take(k), radix);
+        if let Some(p) = digits_spec(s.take(k), radix) {
+            if let Some(q) = digits_spec(s.take(k + 1), radix) {
+                let d = to_digit_spec(s.take(k + 1).last() as u32, radix)->Some_0;
+                assert(q == p * radix + d);
+                assert(p <= p * radix + d) by (nonlinear_arith)
+                    requires
+                        p >= 0,
+                        radix >= 1,
+                        d >= 0,
+                ;
+            }
+        }
+    }
+}
+
 /// A decimal, `0x` hexadecimal or leading-zero octal integer with an
 /// optional sign (jemalloc's `malloc_strtoumax` with base 0). `None` on
 /// anything else, including overflow.
-pub fn parse_int(value: &[u8]) -> Option<i64> {
+#[verifier::rlimit(40)]
+pub fn parse_int(value: &[u8]) -> (r: Option<i64>)
+    ensures
+        r == parse_int_spec(value@),
+{
     // The slice patterns (`[b'-', rest @ ..]`, `[b'0', b'x' | b'X', rest
     // @ ..] if !rest.is_empty()`), spelled as length and byte tests:
     // Verus does not support slice patterns.
@@ -963,24 +1407,59 @@ pub fn parse_int(value: &[u8]) -> Option<i64> {
         } else {
             (10, digits)
         };
+    proof {
+        assert(int_parts(value@) == (negative, radix as u32, digits@));
+    }
     if digits.is_empty() {
         return None;
     }
     let mut magnitude: u64 = 0;
     // `for &b in digits`, spelled out with an index for the invariant.
     let mut i = 0;
-    while i < digits.len() {
+    while i < digits.len()
+        invariant
+            i <= digits@.len(),
+            digits@.len() > 0,
+            radix == 8 || radix == 10 || radix == 16,
+            int_parts(value@) == (negative, radix as u32, digits@),
+            digits_spec(digits@.take(i as int), radix as u32) == Some(magnitude as int),
+        decreases digits@.len() - i,
+    {
         let b = digits[i];
+        proof {
+            assert(digits@.take(i + 1).drop_last() =~= digits@.take(i as int));
+            assert(digits@.take(i + 1).last() == b);
+            assert((b as char) as u32 == b as u32);
+            lemma_digits_prefix(digits@, i + 1, radix as u32);
+        }
         let d = (b as char).to_digit(radix as u32)? as u64;
+        proof {
+            assert(digits_spec(digits@.take(i + 1), radix as u32) == Some(magnitude * radix + d));
+        }
         magnitude = magnitude.checked_mul(radix)?.checked_add(d)?;
         i += 1;
+    }
+    proof {
+        assert(digits@.take(digits@.len() as int) =~= digits@);
     }
     if negative {
         if magnitude > i64::MAX as u64 + 1 {
             return None;
         }
-        Some((magnitude as i64).wrapping_neg())
+        proof {
+            assert(magnitude == 0x8000_0000_0000_0000 ==> #[verifier::truncate] (magnitude as i64) == i64::MIN)
+                by (bit_vector);
+            assert(magnitude < 0x8000_0000_0000_0000 ==> #[verifier::truncate] (magnitude as i64) == magnitude)
+                by (bit_vector);
+            assert(parse_int_spec(value@) == Some((-(magnitude as int)) as i64));
+        }
+        #[cfg_attr(verus_keep_ghost, verifier::truncate)]
+        let magnitude = magnitude as i64;
+        Some(magnitude.wrapping_neg())
     } else {
+        proof {
+            assert(parse_int_spec(value@) == (if magnitude <= i64::MAX as u64 { Some(magnitude as i64) } else { None }));
+        }
         // `i64::try_from(magnitude).ok()`, spelled out: vstd does not
         // specify that conversion.
         if magnitude <= i64::MAX as u64 {
@@ -1000,7 +1479,17 @@ fn clamped<'a>(
     value: &'a [u8],
     min: i64,
     max: i64,
-) -> Result<(i64, bool), Issue<'a>> {
+) -> (r: Result<(i64, bool), Issue<'a>>)
+    requires
+        min <= max,
+    ensures
+        match parse_int_spec(value@) {
+            None => r == Err::<(i64, bool), Issue<'a>>(Issue::BadValue { key, value }),
+            Some(v) => r == Ok::<(i64, bool), Issue<'a>>(
+                if v < min { (min, true) } else if v > max { (max, true) } else { (v, false) },
+            ),
+        },
+{
     let v = parse_int(value).ok_or(Issue::BadValue { key, value })?;
     if v < min {
         Ok((min, true))
@@ -1010,6 +1499,8 @@ fn clamped<'a>(
         Ok((v, false))
     }
 }
+
+} // verus!
 
 pub use linux::load;
 #[cfg(test)]

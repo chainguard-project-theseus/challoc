@@ -12,6 +12,8 @@ pub(crate) mod addr;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod class;
 #[cfg(verus_keep_ghost)]
+mod config;
+#[cfg(verus_keep_ghost)]
 pub(crate) mod core_int;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod layout;
