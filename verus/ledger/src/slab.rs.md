@@ -24,7 +24,7 @@ fn bad_state_byte(v: u8) -> !
 
 ## `desc_stride`
 
-src/slab.rs:214. Kind: external_body. Category: core library.
+src/slab.rs:245. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Descriptor stride for `class` in bytes.
@@ -40,7 +40,7 @@ pub fn desc_stride(class: usize) -> (r: usize)
 
 ## `SlabDesc::sub_live`
 
-src/slab.rs:328. Kind: external_body. Category: atomics primitive.
+src/slab.rs:359. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.

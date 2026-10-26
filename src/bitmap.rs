@@ -3360,6 +3360,18 @@ pub broadcast proof fn lemma_marks(lo: int, hi: int, b: int)
     broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
 }
 
+/// The markers of bit-range sets nest with their ranges.
+pub proof fn lemma_marks_sub(lo: int, hi: int, lo2: int, hi2: int)
+    requires
+        lo2 <= lo,
+        hi <= hi2,
+    ensures
+        fresh_marks(lo, hi).subset_of(fresh_marks(lo2, hi2)),
+        init_marks(lo, hi).subset_of(init_marks(lo2, hi2)),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+}
+
 /// Every element of a set of fresh (init) markers is the marker of a bit.
 pub proof fn lemma_marks_elems(lo: int, hi: int, m: int)
     ensures
@@ -3415,6 +3427,90 @@ pub type WordVal = (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<in
 
 /// The invariant of one bitmap word.
 pub type WordInv = AtomicInvariant<WordKey, WordVal, WordPred>;
+
+/// `invs` holds the invariant of each of the `nwords` words of the class
+/// bitmap `s` at `base`.
+pub open spec fn words_wf(invs: Map<int, WordInv>, s: Slots, base: usize, nwords: int) -> bool {
+    forall|j: int| #![trigger invs.contains_key(j)] #![trigger invs[j]] 0 <= j < nwords ==> {
+        &&& invs.contains_key(j)
+        &&& invs[j].constant() == (WordKey { slots: s, j, addr: (base + 8 * j) as usize })
+        &&& invs[j].namespace() == word_ns()
+    }
+}
+
+/// The slots of a class bitmap: what its authority is made with.
+pub open spec fn slot_set(s: Slots) -> Set<int> {
+    addrs(s, Set::<int>::range(0, s.nbits).filter(|b: int| s.real(b)))
+}
+
+/// The word invariants of a fresh class bitmap of `n` words at `base`:
+/// every word zero, so each holds the tokens of all its slots, split off
+/// `toks`, which holds at least those, and the fresh markers of all its
+/// bits, split off `marks`, which holds at least those.
+pub proof fn fresh_word_invs(
+    tracked perms: Map<int, WordPerm>,
+    tracked toks: GhostSubset<int>,
+    tracked marks: GhostSubset<int>,
+    s: Slots,
+    base: usize,
+    n: nat,
+) -> (tracked r: Map<int, WordInv>)
+    requires
+        forall|j: int| #![trigger perms.contains_key(j)] #![trigger perms[j]] 0 <= j < n ==> perms.contains_key(j) && perms[j].addr() == base + 8 * j && perms[j].value() == 0,
+        s.wf(),
+        toks.id() == s.loc,
+        forall|b: int| 0 <= b < 64 * n && s.real(b) ==> toks@.contains(#[trigger] s.addr(b)),
+        marks.id() == s.mloc,
+        fresh_marks(0, 64 * n as int).subset_of(marks@),
+    ensures
+        words_wf(r, s, base, n as int),
+    decreases n,
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains, lemma_marks};
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let j = n - 1;
+        assert(0 <= j < n);
+        assert(perms.contains_key(j));
+        assert(perms[j].addr() == base + 8 * j);
+        let tracked mut perms = perms;
+        let tracked mut toks = toks;
+        let tracked mut marks = marks;
+        let tracked p = perms.tracked_remove(j);
+        lemma_marks_sub(64 * j, 64 * j + 64, 0, 64 * n as int);
+        let tracked u = marks.split(fresh_marks(64 * j, 64 * j + 64));
+        let tracked d = marks.empty();
+        assert forall|m: int| #[trigger] fresh_marks(0, 64 * j).contains(m) implies marks@.contains(m) by {
+            lemma_marks_elems(0, 64 * j, m);
+            lemma_marks_sub(0, 64 * j, 0, 64 * n as int);
+        }
+        assert forall|k: u64| k < 64 implies !#[trigger] has_bit(0u64, k) by {
+            assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+        }
+        let fa = addrs(s, free_bits(s, j, 0));
+        assert forall|y: int| fa.contains(y) implies toks@.contains(y) by {
+            let b = choose|b: int| free_bits(s, j, 0).contains(b) && y == s.addr(b);
+        }
+        let tracked t = toks.split(fa);
+        assert forall|b: int| 0 <= b < 64 * j && s.real(b) implies toks@.contains(#[trigger] s.addr(b)) by {
+            if fa.contains(s.addr(b)) {
+                let b2 = choose|b2: int| free_bits(s, j, 0).contains(b2) && s.addr(b) == s.addr(b2);
+                lemma_addr_inj(s, b, b2);
+            }
+        }
+        let k = WordKey { slots: s, j, addr: (base + 8 * j) as usize };
+        assert(p.addr() == k.addr);
+        assert(t.id() == s.loc);
+        assert(t@ == addrs(s, free_bits(s, j, p.value())));
+        assert(marks_ok(s, j, p.value(), u@, d@));
+        assert(guards_ok(s, j, u@));
+        let tracked inv = AtomicInvariant::<WordKey, WordVal, WordPred>::new(k, (p, t, u, d), word_ns());
+        let tracked mut r = fresh_word_invs(perms, toks, marks, s, base, (n - 1) as nat);
+        r.tracked_insert(j, inv);
+        r
+    }
+}
 
 /// Bit `t` of `x >> s` is bit `t + s` of `x`.
 proof fn lemma_shr_bit(x: u64, s: u64, t: u64)

@@ -128,7 +128,10 @@ pub struct SlabDesc {
 /// protect (`init` and `set_state` also write `shadow`, and `init`
 /// `live`, which it does not track). The slab-table proofs give it to the
 /// holder of the lock that protects them. Not `Copy`, and its fields are
-/// private to this module, which has no constructor.
+/// private to this module, which has no constructor: the one source is
+/// the trusted `class::table::axiom_zero_desc`, once per descriptor of a
+/// class table (it uses up the descriptor's zero bytes). The accessors
+/// that take one do not yet require it to be their descriptor's.
 // Ghost: for the specifications of the descriptor accessors.
 #[allow(dead_code)]
 pub tracked struct DescPerm {
@@ -137,6 +140,34 @@ pub tracked struct DescPerm {
     ghost dirty: u64,
     ghost arena: u16,
 }
+
+impl DescPerm {
+    /// The descriptor this permission is for ([`desc_id`]).
+    pub closed spec fn id(&self) -> usize {
+        self.id
+    }
+
+    /// The descriptor's `state` byte.
+    pub closed spec fn state(&self) -> u8 {
+        self.state
+    }
+
+    /// The descriptor's `dirty_at` stamp.
+    pub closed spec fn dirty(&self) -> u64 {
+        self.dirty
+    }
+
+    /// The descriptor's arena.
+    pub closed spec fn arena(&self) -> u16 {
+        self.arena
+    }
+}
+
+/// The address of a descriptor: the identity a [`DescPerm`] is for (as
+/// `vspec::word::word_addr` is a bitmap word's). `class::table`'s
+/// `axiom_zero_desc` ties it to the descriptor's address when it mints
+/// the permissions.
+pub uninterp spec fn desc_id(d: &SlabDesc) -> usize;
 
 const fn strides_of(classes: &[Class; NCLASSES]) -> (out: [u32; NCLASSES])
     requires
