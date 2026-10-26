@@ -542,7 +542,9 @@ extern "C" fn fork_prepare() {
     // is called from a signal handler): the child then starts that one
     // over (`fork_child`), and the parent's finishes as usual.
     shared().discover_cgroup_for_fork();
-    let mask = sys::block_all_signals();
+    // Unverified: the signal-mask token is a placeholder until the fork
+    // handlers are verified.
+    let mask = sys::block_all_signals(Tracked::assume_new());
     let s = shared();
     s.tcaches.raw_lock().lock_held(Tracked::assume_new());
     s.arenas.raw_lock().lock_held(Tracked::assume_new());
@@ -645,7 +647,7 @@ fn fork_release() {
     s.stats.raw().unlock_held(Tracked::assume_new());
     s.arenas.raw_lock().unlock_held(Tracked::assume_new());
     s.tcaches.raw_lock().unlock_held(Tracked::assume_new());
-    sys::set_signal_mask(mask);
+    sys::set_signal_mask(mask, Tracked::assume_new());
 }
 
 extern "C" fn fork_parent() {

@@ -6,7 +6,12 @@
 use core::fmt;
 
 use super::features::{Value, write_words};
+#[cfg(verus_keep_ghost)]
+use super::find_byte;
 use super::{bytes_is, find_from, parse_decimal};
+use vstd::prelude::*;
+
+verus! {
 
 /// One transparent-huge-page sysfs setting, the bracketed word of
 /// `/sys/kernel/mm/transparent_hugepage/enabled` (`always [madvise] never`)
@@ -32,23 +37,72 @@ impl ThpSetting {
     }
 }
 
+} // verus!
+
+verus! {
+
+/// The setting a bracketed word names.
+pub open spec fn thp_word(w: Seq<u8>) -> Option<ThpSetting> {
+    if w == b"always"@ {
+        Some(ThpSetting::Always)
+    } else if w == b"inherit"@ {
+        Some(ThpSetting::Inherit)
+    } else if w == b"madvise"@ {
+        Some(ThpSetting::Madvise)
+    } else if w == b"never"@ {
+        Some(ThpSetting::Never)
+    } else {
+        None
+    }
+}
+
+/// What [`parse_thp_setting`] returns: the word between the first `[` and
+/// the first `]` after it.
+pub open spec fn thp_setting_spec(b: Seq<u8>) -> Option<ThpSetting> {
+    let open = find_byte(b, b'[');
+    if open >= b.len() {
+        None
+    } else {
+        let rest = b.skip(open as int + 1);
+        let close = find_byte(rest, b']');
+        if close >= rest.len() {
+            None
+        } else {
+            thp_word(rest.take(close as int))
+        }
+    }
+}
+
 /// The bracketed word of a THP `enabled` file. `None` for anything that is
 /// not one of the four words in brackets (an empty or foreign file).
-pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
+pub fn parse_thp_setting(bytes: &[u8]) -> (r: Option<ThpSetting>)
+    ensures
+        r == thp_setting_spec(bytes@),
+{
     // `bytes.iter().position(|&b| b == b'[')?` and the `]` after it,
     // spelled out (Verus does not specify `Iterator::position`), and the
     // `match` on byte-string patterns as comparisons (such patterns crash
     // Verus).
     let open = find_from(bytes, 0, b'[');
+    proof {
+        assert(bytes@.skip(0) =~= bytes@);
+    }
     if open == bytes.len() {
         return None;
     }
     let rest = &bytes[open + 1..];
     let close = find_from(rest, 0, b']');
+    proof {
+        assert(rest@.skip(0) =~= rest@);
+        assert(rest@ =~= bytes@.skip(open + 1));
+    }
     if close == rest.len() {
         return None;
     }
     let word = &rest[..close];
+    proof {
+        assert(word@ =~= rest@.take(close as int));
+    }
     if bytes_is(word, b"always") {
         Some(ThpSetting::Always)
     } else if bytes_is(word, b"inherit") {
@@ -61,6 +115,10 @@ pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
         None
     }
 }
+
+} // verus!
+
+verus! {
 
 /// The kernel's transparent-huge-page configuration as read at init from
 /// `/sys/kernel/mm/transparent_hugepage` with raw syscalls (design 10 step
@@ -87,17 +145,38 @@ pub struct Thp {
     pub madvise: u64,
 }
 
+} // verus!
+
+verus! {
+
 /// `/sys/kernel/mm/transparent_hugepage/`, the directory of every file
 /// [`Thp::from_reader`] reads.
 const THP_DIR: [u8; 36] = *b"/sys/kernel/mm/transparent_hugepage/";
 
 /// `bytes` copied into `out` at `at`; the length after them.
 #[inline(always)]
-fn append(out: &mut [u8; 96], at: usize, bytes: &[u8]) -> usize {
+fn append(out: &mut [u8; 96], at: usize, bytes: &[u8]) -> (r: usize)
+    requires
+        at + bytes@.len() <= 96,
+    ensures
+        r == at + bytes@.len(),
+        final(out)@.subrange(at as int, r as int) == bytes@,
+        forall|j: int| 0 <= j < at ==> final(out)@[j] == old(out)@[j],
+{
     let mut i = 0;
-    while i < bytes.len() {
+    while i < bytes.len()
+        invariant
+            i <= bytes@.len(),
+            at + bytes@.len() <= 96,
+            forall|j: int| 0 <= j < i ==> out@[at + j] == bytes@[j],
+            forall|j: int| 0 <= j < at ==> out@[j] == old(out)@[j],
+        decreases bytes@.len() - i,
+    {
         out[at + i] = bytes[i];
         i += 1;
+    }
+    proof {
+        assert(out@.subrange(at as int, at + bytes@.len()) =~= bytes@);
     }
     at + bytes.len()
 }
@@ -119,7 +198,16 @@ impl Thp {
     /// a page size past 2^33 (none exists) yields garbage bits rather than
     /// a panic; at every real page size nothing wraps and `lg_pmd` is
     /// below 64.
-    pub fn from_reader(page: usize, mut read: impl FnMut(&[u8], &mut [u8]) -> usize) -> Thp {
+    // Verus has no let-chains, so the `hpage_pmd_size` test stays nested.
+    #[allow(clippy::collapsible_if)]
+    pub fn from_reader(page: usize, mut read: impl FnMut(&[u8], &mut [u8]) -> usize) -> (r: Thp)
+        requires
+            forall|p: &[u8], b: &mut [u8]| p@.len() > 0 && p@.last() == 0 ==> #[trigger] call_requires(read, (p, b)),
+            forall|p: &[u8], b: &mut [u8], n: usize|
+                #[trigger] call_ensures(read, (p, b), n) ==> n <= b@.len() && final(b)@.len() == b@.len(),
+        ensures
+            0 < page <= 1usize << 33 ==> r.lg_pmd < 64,
+    {
         let mut buf = [0u8; 128];
         // The paths are built in `path` from `THP_DIR` and a NUL rather
         // than passed as `b"...\0"` literals: Verus does not see a byte
@@ -128,6 +216,9 @@ impl Thp {
         let len = append(&mut path, 0, &THP_DIR);
         let len = append(&mut path, len, b"enabled");
         path[len] = 0;
+        proof {
+            assert(path@.subrange(0, len + 1).last() == 0);
+        }
         let n = read(&path[..len + 1], &mut buf);
         let enabled = if n == 0 {
             None
@@ -135,16 +226,40 @@ impl Thp {
             parse_thp_setting(&buf[..n])
         };
         let lg_page = page.trailing_zeros() as u8;
+        proof {
+            let p = page as u64;
+            vstd::std_specs::bits::axiom_u64_trailing_zeros(p);
+            let z = vstd::std_specs::bits::u64_trailing_zeros(p) as u64;
+            assert(1usize << 33 == 0x2_0000_0000usize) by (bit_vector);
+            if 0 < page <= 1usize << 33 {
+                assert(z < 64);
+                assert((p >> z) & 1u64 == 1u64);
+                assert(p != 0 && p <= 0x2_0000_0000 && z < 64 && (p >> z) & 1u64 == 1u64 ==> z <= 33) by (bit_vector);
+            }
+        }
         let mut lg_pmd = (2 * lg_page).saturating_sub(3);
+        proof {
+            if 0 < page <= 1usize << 33 {
+                assert(lg_page <= 33);
+                assert(lg_pmd < 64);
+            }
+        }
         let len = append(&mut path, 0, &THP_DIR);
         let len = append(&mut path, len, b"hpage_pmd_size");
         path[len] = 0;
+        proof {
+            assert(path@.subrange(0, len + 1).last() == 0);
+        }
         let n = read(&path[..len + 1], &mut buf);
-        if let Some(v) = parse_decimal(&buf[..n])
-            && v.is_power_of_two()
-            && v.trailing_zeros() as u8 > lg_page
-        {
-            lg_pmd = v.trailing_zeros() as u8;
+        if let Some(v) = parse_decimal(&buf[..n]) {
+            if v.is_power_of_two() && v.trailing_zeros() as u8 > lg_page {
+                proof {
+                    let k = choose|k: nat| k < 64 && v as nat == vstd::arithmetic::power2::pow2(k);
+                    vstd::arithmetic::power2::lemma_pow2_pos(k);
+                    vstd::std_specs::bits::axiom_u64_trailing_zeros(v);
+                }
+                lg_pmd = v.trailing_zeros() as u8;
+            }
         }
         let mut t = Thp {
             enabled,
@@ -160,14 +275,32 @@ impl Thp {
         // `append` instead of a loop over `THP_DIR.iter().chain(..)`; the shifts
         // are `wrapping_shl`, which is what `<<` compiles to in release.
         let mut lg = lg_page;
-        while lg < lg_pmd {
+        while lg < lg_pmd
+            invariant
+                lg_page <= 64,
+                lg_pmd <= 125,
+                lg_page <= lg <= 125,
+                t.lg_pmd == lg_pmd,
+                0 < page <= 1usize << 33 ==> lg_pmd < 64,
+                buf@.len() == 128,
+                forall|p: &[u8], b: &mut [u8]| p@.len() > 0 && p@.last() == 0 ==> #[trigger] call_requires(read, (p, b)),
+                forall|p: &[u8], b: &mut [u8], n: usize|
+                    #[trigger] call_ensures(read, (p, b), n) ==> n <= b@.len() && final(b)@.len() == b@.len(),
+            decreases lg_pmd - lg,
+        {
             lg += 1;
             let len = append(&mut path, 0, &THP_DIR);
             let len = append(&mut path, len, b"hugepages-");
             let kib = 1u64.wrapping_shl(lg as u32) >> 10;
+            proof {
+                lemma_decimal_digits_u64(kib as nat);
+            }
             let len = len + write_decimal(&mut path[len..], kib);
             let len = append(&mut path, len, b"kB/enabled");
             path[len] = 0;
+            proof {
+                assert(path@.subrange(0, len + 1).last() == 0);
+            }
             let n = read(&path[..len + 1], &mut buf);
             if n == 0 {
                 continue;
@@ -200,23 +333,53 @@ impl Thp {
         }
         t
     }
+}
 
+} // verus!
+
+verus! {
+
+impl Thp {
     /// Sizes a `MADV_HUGEPAGE`d range can be backed with: effective
     /// `always` or `madvise`.
     #[inline]
-    pub fn enabled_sizes(&self) -> u64 {
+    pub fn enabled_sizes(&self) -> (r: u64)
+        ensures
+            r == self.always | self.madvise,
+    {
         self.always | self.madvise
     }
 
-    /// The enabled sizes below the PMD (the multi-size THP path).
+    /// The enabled sizes below the PMD (the multi-size THP path). Shifts
+    /// `1u64` by `lg_pmd`, so needs it below 64.
     #[inline]
-    pub fn sub_pmd_sizes(&self) -> u64 {
+    pub fn sub_pmd_sizes(&self) -> (r: u64)
+        requires
+            self.lg_pmd < 64,
+        ensures
+            r == (self.always | self.madvise) & sub(1u64 << self.lg_pmd, 1u64),
+    {
+        let ghost lg = self.lg_pmd;
+        proof {
+            assert(lg < 64 ==> 1u64 << lg >= 1) by (bit_vector);
+        }
         self.enabled_sizes() & ((1u64 << self.lg_pmd) - 1)
     }
 
     /// The effective setting of the PMD size: what `MADV_HUGEPAGE` would
     /// change for 2 MiB pages. `Never` when nothing is listed.
-    pub fn pmd_setting(&self) -> ThpSetting {
+    pub fn pmd_setting(&self) -> (r: ThpSetting)
+        requires
+            self.lg_pmd < 64,
+        ensures
+            r == (if self.always & (1u64 << self.lg_pmd) != 0 {
+                ThpSetting::Always
+            } else if self.madvise & (1u64 << self.lg_pmd) != 0 {
+                ThpSetting::Madvise
+            } else {
+                ThpSetting::Never
+            }),
+    {
         let bit = 1u64 << self.lg_pmd;
         if self.always & bit != 0 {
             ThpSetting::Always
@@ -227,11 +390,31 @@ impl Thp {
         }
     }
 
-    /// `log2` of the smallest size in `set`, if any.
-    pub fn smallest(set: u64) -> Option<u8> {
-        (set != 0).then(|| set.trailing_zeros() as u8)
+    /// `log2` of the smallest size in `set`, if any: the index of the
+    /// lowest set bit, with every bit below it clear.
+    pub fn smallest(set: u64) -> (r: Option<u8>)
+        ensures
+            set == 0 <==> r is None,
+            r matches Some(lg) ==> lg < 64 && set & (1u64 << lg) != 0 && set & sub(1u64 << lg, 1u64) == 0,
+    {
+        proof {
+            vstd::std_specs::bits::axiom_u64_trailing_zeros(set);
+            let tz = vstd::std_specs::bits::u64_trailing_zeros(set) as u64;
+            if set != 0 {
+                assert(tz < 64 && (set >> tz) & 1u64 == 1u64 ==> set & (1u64 << tz) != 0) by (bit_vector);
+                assert(tz < 64 && set << sub(64, tz) == 0 ==> set & sub(1u64 << tz, 1u64) == 0) by (bit_vector);
+            }
+        }
+        (set != 0).then(|| -> (r: u8)
+            ensures
+                r as u32 == vstd::std_specs::bits::u64_trailing_zeros(set),
+            { set.trailing_zeros() as u8 })
     }
 }
+
+} // verus!
+
+verus! {
 
 impl Thp {
     /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`. (An
@@ -253,17 +436,99 @@ impl Thp {
     }
 }
 
+// The THP keys format (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Thp {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
 impl fmt::Display for Thp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_words(f, &self.words())
     }
 }
 
+/// The number of decimal digits of `v`.
+pub open spec fn decimal_digits(v: nat) -> nat
+    decreases v,
+{
+    if v < 10 {
+        1
+    } else {
+        1 + decimal_digits(v / 10)
+    }
+}
+
+proof fn lemma_decimal_digits_u64(v: nat)
+    requires
+        v <= u64::MAX,
+    ensures
+        1 <= decimal_digits(v) <= 20,
+{
+    assert(pow10(20) == 100_000_000_000_000_000_000nat) by (compute);
+    lemma_decimal_digits_bound(v, 20);
+}
+
+proof fn lemma_decimal_digits_bound(v: nat, k: nat)
+    requires
+        k >= 1,
+        v < pow10(k),
+    ensures
+        1 <= decimal_digits(v) <= k,
+    decreases k,
+{
+    if v >= 10 {
+        assert(k > 1) by {
+            if k == 1 {
+                assert(pow10(1) == 10) by {
+                    assert(pow10(0) == 1);
+                }
+            }
+        }
+        assert(v / 10 < pow10((k - 1) as nat)) by {
+            assert(pow10(k) == 10 * pow10((k - 1) as nat));
+        }
+        lemma_decimal_digits_bound(v / 10, (k - 1) as nat);
+    }
+}
+
+/// `10^k`.
+pub open spec fn pow10(k: nat) -> nat
+    decreases k,
+{
+    if k == 0 {
+        1
+    } else {
+        10 * pow10((k - 1) as nat)
+    }
+}
+
 /// `v` in decimal into `out`; returns the digit count.
-fn write_decimal(out: &mut [u8], mut v: u64) -> usize {
+fn write_decimal(out: &mut [u8], mut v: u64) -> (n: usize)
+    requires
+        old(out)@.len() >= decimal_digits(v as nat),
+    ensures
+        n == decimal_digits(v as nat),
+        final(out)@.len() == old(out)@.len(),
+{
+    let ghost v0 = v;
     let mut tmp = [0u8; 20];
     let mut n = 0;
-    loop {
+    proof {
+        lemma_decimal_digits_u64(v as nat);
+    }
+    loop
+        invariant_except_break
+            n + decimal_digits(v as nat) == decimal_digits(v0 as nat),
+        invariant
+            decimal_digits(v0 as nat) <= 20,
+            n <= 20,
+        ensures
+            n == decimal_digits(v0 as nat),
+        decreases v,
+    {
         tmp[n] = b'0' + (v % 10) as u8;
         n += 1;
         v /= 10;
@@ -271,7 +536,13 @@ fn write_decimal(out: &mut [u8], mut v: u64) -> usize {
             break;
         }
     }
-    for i in 0..n {
+    for i in 0..n
+        invariant
+            n <= 20,
+            n == decimal_digits(v0 as nat),
+            out@.len() == old(out)@.len(),
+            out@.len() >= n,
+    {
         out[i] = tmp[n - 1 - i];
     }
     n
@@ -279,10 +550,22 @@ fn write_decimal(out: &mut [u8], mut v: u64) -> usize {
 
 /// The THP table from `/sys/kernel/mm/transparent_hugepage` (about ten
 /// sysfs reads on a 4 KiB kernel).
-pub fn probe(page: usize) -> Thp {
-    Thp::from_reader(page, |path, buf| {
-        super::read_small_file(path, buf).unwrap_or(0)
-    })
+pub fn probe(page: usize) -> (r: Thp)
+    requires
+        crate::sys::may_syscall(),
+    ensures
+        0 < page <= 1usize << 33 ==> r.lg_pmd < 64,
+{
+    Thp::from_reader(page, |path: &[u8], buf: &mut [u8]| -> (n: usize)
+        requires
+            path@.len() > 0,
+            path@.last() == 0,
+        ensures
+            n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+        {
+            super::read_small_file(path, buf).unwrap_or(0)
+        })
 }
 
 /// `/sys/kernel/mm/transparent_hugepage/hugepages-`, the start of every
@@ -296,7 +579,12 @@ fn in_size_dir(path: &[u8]) -> bool {
         return false;
     }
     let mut i = 0;
-    while i < SIZE_DIR.len() {
+    while i < SIZE_DIR.len()
+        invariant
+            i <= 46,
+            path@.len() >= 46,
+        decreases 46 - i,
+    {
         if path[i] != SIZE_DIR[i] {
             return false;
         }
@@ -308,15 +596,29 @@ fn in_size_dir(path: &[u8]) -> bool {
 /// The top-level `enabled` and `hpage_pmd_size` only (two reads), the
 /// table a kernel without per-size directories gives: what `thp:never`
 /// needs at init (`Features::probe`).
-pub fn probe_top(page: usize) -> Thp {
-    Thp::from_reader(page, |path, buf| {
-        if in_size_dir(path) {
-            0
-        } else {
-            super::read_small_file(path, buf).unwrap_or(0)
-        }
-    })
+pub fn probe_top(page: usize) -> (r: Thp)
+    requires
+        crate::sys::may_syscall(),
+    ensures
+        0 < page <= 1usize << 33 ==> r.lg_pmd < 64,
+{
+    Thp::from_reader(page, |path: &[u8], buf: &mut [u8]| -> (n: usize)
+        requires
+            path@.len() > 0,
+            path@.last() == 0,
+        ensures
+            n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+        {
+            if in_size_dir(path) {
+                0
+            } else {
+                super::read_small_file(path, buf).unwrap_or(0)
+            }
+        })
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

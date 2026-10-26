@@ -28,9 +28,22 @@ use super::{
     PROT_WRITE, yn,
 };
 use crate::sys;
+use vstd::prelude::verus;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+
+verus! {
 
 /// Bit sets of sizes as `64K,2M`, or `none`.
 struct SizeSet(u64);
+
+// Every set formats (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for SizeSet {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
 
 impl fmt::Display for SizeSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -38,7 +51,10 @@ impl fmt::Display for SizeSet {
             return f.write_str("none");
         }
         let mut first = true;
-        for lg in 0..64u8 {
+        for lg in 0..64u8
+            invariant
+                lg <= 64,
+        {
             if self.0 & (1u64 << lg) != 0 {
                 if !first {
                     f.write_str(",")?;
@@ -53,6 +69,16 @@ impl fmt::Display for SizeSet {
 
 /// `1 << lg` bytes as `64K`, `2M`, `1G`.
 struct LgSize(u8);
+
+// A size formats when `1 << lg` is a `u64`: the one caller passes a bit
+// index of a `u64` set (ghost only; closed because the field is private
+// to this module).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for LgSize {
+    closed spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        self.0 < 64
+    }
+}
 
 impl fmt::Display for LgSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -79,6 +105,14 @@ pub enum Value {
     Sizes(u64),
 }
 
+// Every value formats (ghost only).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Value {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -96,7 +130,11 @@ pub fn write_words(f: &mut fmt::Formatter<'_>, words: &[(&'static str, Value)]) 
     // `for (i, (key, value)) in words.iter().enumerate()`, with an index:
     // Verus does not specify a slice's iterator.
     let mut i = 0;
-    while i < words.len() {
+    while i < words.len()
+        invariant
+            i <= words@.len(),
+        decreases words@.len() - i,
+    {
         let (key, value) = words[i];
         if i > 0 {
             f.write_str(" ")?;
@@ -163,6 +201,14 @@ impl Features {
     }
 }
 
+// Every line formats (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Features {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
 impl fmt::Display for Features {
     /// One line, `key=value` separated by spaces, for `challoc_features()`,
     /// `malloc_stats_print` and abort messages: [`Features::words`].
@@ -180,6 +226,12 @@ pub struct FeatureLine {
 }
 
 impl FeatureLine {
+    /// Room for the NUL after the line.
+    #[verifier::type_invariant]
+    spec fn wf(&self) -> bool {
+        self.len < Self::CAP
+    }
+
     /// Room for the line and its NUL; the longest possible line (every
     /// probe `yes`, every THP size listed) is under `CAP - 64` bytes (`feature_line_fits`).
     pub const CAP: usize = 640;
@@ -195,12 +247,18 @@ impl FeatureLine {
         // The value, not the reference: Verus specifies `Display` per type,
         // and has nothing for `&T`.
         let _ = write!(line, "{}", *features);
+        proof {
+            use_type_invariant(&line);
+        }
         line.buf[line.len] = 0;
         line
     }
 
     /// The line without its NUL.
     pub fn as_str(&self) -> &str {
+        proof {
+            use_type_invariant(self);
+        }
         // Only `str` fragments were copied, cut at a fragment boundary.
         core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
@@ -216,6 +274,9 @@ impl fmt::Write for FeatureLine {
     // an external unit struct.
     #[allow(clippy::default_constructed_unit_structs)]
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        proof {
+            use_type_invariant(&*self);
+        }
         let b = s.as_bytes();
         let room = Self::CAP - 1 - self.len;
         if b.len() > room {
@@ -225,7 +286,12 @@ impl fmt::Write for FeatureLine {
         // spelled out: Verus does not take a `&mut` through a field of a
         // type with an invariant in a call that may unwind.
         let mut i = 0;
-        while i < b.len() {
+        while i < b.len()
+            invariant
+                self.len + b@.len() < Self::CAP,
+                i <= b@.len(),
+            decreases b@.len() - i,
+        {
             self.buf[self.len + i] = b[i];
             i += 1;
         }
@@ -235,8 +301,15 @@ impl fmt::Write for FeatureLine {
 }
 
 /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
-/// guessing a page size would corrupt every mapping we make.
-pub fn page_size() -> usize {
+/// guessing a page size would corrupt every mapping we make. The abort
+/// is unreachable: the kernel's page is a power of two of at most 64 KiB
+/// (the `getauxval` specification).
+pub fn page_size() -> (r: usize)
+    ensures
+        r != 0,
+        crate::meta::is_pow2(r),
+        r <= 0x1_0000,
+{
     let v = getauxval(AT_PAGESZ);
     if v != 0 && v.is_power_of_two() {
         return v;
@@ -245,14 +318,22 @@ pub fn page_size() -> usize {
 }
 
 /// Map a fresh private anonymous scratch page with the given protection.
-fn scratch(page: usize, prot: i32) -> Option<usize> {
+fn scratch(page: usize, prot: i32) -> Option<usize>
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: fresh anonymous private mapping, no fixed address.
     unsafe { sys::mmap(0, page, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.ok()
 }
 
 /// Release a scratch page. Failure is a heap inconsistency: we just
 /// mapped it, so it is unmapped only if something is very wrong.
-fn release(addr: usize, page: usize) {
+fn release(addr: usize, page: usize)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
     // SAFETY: `addr` is a scratch page nothing else references.
     if let Err(e) = unsafe { sys::munmap(addr, page) } {
         sys::abort_fmt(format_args!("munmap of probe page failed: {e}"));
@@ -262,7 +343,11 @@ fn release(addr: usize, page: usize) {
 /// `MADV_GUARD_INSTALL` then `MADV_GUARD_REMOVE` on a scratch page. Both
 /// must succeed for the feature to count: a kernel that installs guards
 /// it cannot remove would break slab reuse.
-pub fn probe_guard_install(page: usize) -> bool {
+pub fn probe_guard_install(page: usize) -> bool
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
         return false;
     };
@@ -278,7 +363,11 @@ pub fn probe_guard_install(page: usize) -> bool {
 /// `mseal` a `PROT_NONE` scratch page. On success the page can never be
 /// unmapped again, so it is left in place: one VMA, zero resident bytes.
 /// On failure the page is released.
-pub fn probe_mseal(page: usize) -> bool {
+pub fn probe_mseal(page: usize) -> bool
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let Some(addr) = scratch(page, PROT_NONE) else {
         return false;
     };
@@ -299,7 +388,11 @@ const PROBE_NAME: [u8; 14] = [
 ];
 
 /// `PR_SET_VMA_ANON_NAME` on a scratch page.
-pub fn probe_anon_name(page: usize) -> bool {
+pub fn probe_anon_name(page: usize) -> bool
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let Some(addr) = scratch(page, PROT_NONE) else {
         return false;
     };
@@ -315,7 +408,18 @@ impl Features {
     /// Called once from init (design.md section 10); calling it again is
     /// harmless but leaks a sealed page, so init stores the result. Pure
     /// apart from that page.
-    pub fn probe(thp_sizes: bool) -> Features {
+    pub fn probe(thp_sizes: bool) -> (r: Features)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+        ensures
+            r.page_size != 0,
+            crate::meta::is_pow2(r.page_size),
+            r.page_size <= 1usize << 33 ==> r.thp.lg_pmd < 64,
+            r.page_size <= 0x1_0000,
+            r.pac ==> crate::sys::pac::pac_available(),
+            r.thp_sizes == thp_sizes,
+    {
         let page_size = page_size();
         Features {
             page_size,
@@ -334,6 +438,8 @@ impl Features {
         }
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

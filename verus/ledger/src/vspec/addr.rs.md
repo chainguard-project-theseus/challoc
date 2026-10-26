@@ -9,6 +9,7 @@ file.
 |---|---|---|---|---|
 | `addr_to_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `<*mut T...s_null` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `<*const...s_null` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 
 ## `addr_to_ptr`
 
@@ -35,6 +36,22 @@ Tool: RefinedRust. Status: trusted.
 
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: *mut T) -> (r: bool)
+    ensures
+        r == (p@.addr == 0),
+    opens_invariants none
+    no_unwind
+;
+```
+
+## `<*const T>::is_null`
+
+src/vspec/addr.rs:43. Kind: assume_spec. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `<*const T>::is_null`: the address is zero.
+
+```rust
+pub assume_specification<T: core::marker::PointeeSized>[ <*const T>::is_null ](p: *const T) -> (r: bool)
     ensures
         r == (p@.addr == 0),
     opens_invariants none

@@ -85,11 +85,11 @@ const SIGSET_WORDS_BYTES: usize = 8;
 /// and the caller hangs. `sigprocmask` and `pthread_sigmask` never block
 /// them; a raw `rt_sigprocmask` must not either. Signal `n` is bit
 /// `n - 1`.
-const SIGCANCEL: u32 = 32;
-const SIGSETXID: u32 = 33;
+pub const SIGCANCEL: u32 = 32;
+pub const SIGSETXID: u32 = 33;
 /// Every signal but glibc's two internal ones: the set
 /// [`block_all_signals`] blocks.
-const BLOCKABLE_SIGNALS: u64 = !((1u64 << (SIGCANCEL - 1)) | (1u64 << (SIGSETXID - 1)));
+pub const BLOCKABLE_SIGNALS: u64 = !((1u64 << (SIGCANCEL - 1)) | (1u64 << (SIGSETXID - 1)));
 
 pub const STDERR_FILENO: i32 = 2;
 
@@ -106,12 +106,184 @@ verus! {
 /// its loop's invariant) carries the fact.
 ///
 /// Opaque, with no meaning: a capability, not a claim about the world.
+/// Closed: no module outside `sys` and its submodules can reveal it.
 #[verifier::opaque]
-pub open spec fn may_syscall() -> bool {
+pub closed spec fn may_syscall() -> bool {
     true
 }
 
+/// Grant [`may_syscall`]. Called only at the roots of the allocator's
+/// call graph: the bodies of `extern "C"` functions (the C caller lets the
+/// allocator enter the kernel; outside tests no Rust code calls them) and
+/// of functions that never return (only `abort_fmt`: the abort's write
+/// and `SIGABRT`). `tests::syscall_grants_only_at_roots` checks the source
+/// for that.
+pub proof fn grant_syscalls()
+    ensures
+        may_syscall(),
+{
+    reveal(may_syscall);
+}
+
+/// The caller may abort the process: reach `abort_fmt`, which every abort
+/// goes through (`abort`, the trusted bodies that can panic, and the
+/// panic handler). Every function that can reach an abort requires this,
+/// or one of the narrower capabilities of the aborts it reaches
+/// ([`may_abort_corrupt`], [`may_abort_kernel`], [`may_abort_pending`]),
+/// so a verified function that neither requires one, nor carries it in a
+/// loop invariant, nor calls [`grant_aborts`] never aborts.
+///
+/// Opaque, with no meaning: a capability, not a claim about the world.
+/// Closed: no module outside `sys` and its submodules can reveal it.
+#[verifier::opaque]
+pub closed spec fn may_abort() -> bool {
+    true
+}
+
+/// Grant [`may_abort`]. Called only at the roots of the allocator's call
+/// graph: the bodies of `extern "C"` functions and of the panic handler
+/// (the panic runtime calls it; no code in the crate does), and, unlike
+/// [`grant_syscalls`], never `abort_fmt`'s.
+/// `tests::abort_grants_only_at_roots` checks the source for that.
+pub proof fn grant_aborts()
+    ensures
+        may_abort(),
+{
+    reveal(may_abort);
+}
+
+/// The capability of the integrity checks alone: an abort only where a
+/// test of allocator state that no verified invariant constrains (a word
+/// other threads update with plain atomics) fails, so only if that state
+/// is corrupt. Uninterpreted, so no module can prove it: only a function
+/// that requires it has it.
+pub uninterp spec fn integrity_aborts() -> bool;
+
+/// The caller may abort at an integrity check ([`integrity_aborts`]).
+/// Every holder of [`may_abort`] has it.
+pub open spec fn may_abort_corrupt() -> bool {
+    may_abort() || integrity_aborts()
+}
+
+/// The capability of the resource-failure aborts alone: an abort only
+/// where a resource the allocator needs fails it (a system call that
+/// returns an error, such as an `madvise`, or metadata that the
+/// reservation or the kernel cannot supply), which nothing the program
+/// does rules out. Uninterpreted, as [`integrity_aborts`] is.
+pub uninterp spec fn kernel_aborts() -> bool;
+
+/// The caller may abort at a resource failure ([`kernel_aborts`]): what
+/// [`abort_kernel`] requires. Every holder of [`may_abort`] has it.
+pub open spec fn may_abort_kernel() -> bool {
+    may_abort() || kernel_aborts()
+}
+
+/// The capability of the free paths' checks not yet proved unreachable
+/// for a live block (the watermark, the live count, the slab state, the
+/// owner word): checks that fire on an invalid free, and on a valid one
+/// only if allocator state no verified invariant constrains is corrupt.
+/// Apart from [`integrity_aborts`], so a function that holds only that
+/// reaches none of them. Uninterpreted, as [`integrity_aborts`] is.
+pub uninterp spec fn pending_aborts() -> bool;
+
+/// The caller may abort at one of the pending checks
+/// ([`pending_aborts`]): what [`abort_pending`] requires. Every holder of
+/// [`may_abort`] has it.
+pub open spec fn may_abort_pending() -> bool {
+    may_abort() || pending_aborts()
+}
+
 } // verus!
+
+// ---- the calling thread's signal mask ------------------------------------
+
+verus! {
+
+/// The signals the kernel never blocks: `SIGKILL` (9) and `SIGSTOP` (19),
+/// bits 8 and 18 of the 64-bit kernel sigset.
+pub open spec fn unblockable() -> u64 {
+    0x4_0100
+}
+
+/// The mask `rt_sigprocmask` leaves in force when asked for `m`: the
+/// kernel silently drops `SIGKILL` and `SIGSTOP`.
+pub open spec fn effective(m: u64) -> u64 {
+    m & !unblockable()
+}
+
+/// Every blockable signal blocked but glibc's `SIGCANCEL` and `SIGSETXID`:
+/// what [`block_all_signals`] leaves.
+pub open spec fn all_blocked() -> u64 {
+    effective(BLOCKABLE_SIGNALS)
+}
+
+/// `effective` is idempotent: restoring a mask the kernel held leaves
+/// exactly that mask. It also keeps glibc's two internal signals clear
+/// when `m` does, and [`all_blocked`] has them clear.
+pub proof fn lemma_effective_idempotent(m: u64)
+    ensures
+        effective(effective(m)) == effective(m),
+        m & !BLOCKABLE_SIGNALS == 0 ==> effective(m) & !BLOCKABLE_SIGNALS == 0,
+        all_blocked() & !BLOCKABLE_SIGNALS == 0,
+{
+    assert(BLOCKABLE_SIGNALS == 0xFFFF_FFFE_7FFF_FFFFu64) by (compute_only);
+    assert((m & !0x4_0100u64) & !0x4_0100u64 == m & !0x4_0100u64) by (bit_vector);
+    assert(m & !0xFFFF_FFFE_7FFF_FFFFu64 == 0 ==> (m & !0x4_0100u64) & !0xFFFF_FFFE_7FFF_FFFFu64 == 0)
+        by (bit_vector);
+    assert((0xFFFF_FFFE_7FFF_FFFFu64 & !0x4_0100u64) & !0xFFFF_FFFE_7FFF_FFFFu64 == 0) by (bit_vector);
+}
+
+} // verus!
+
+/// The calling thread's signal-mask token, in a module of its own: its
+/// field is private here, so no code in `sys` (or anywhere) builds one.
+/// Nothing mints one yet: the unverified callers pass placeholders
+/// (`Tracked::assume_new()`, in the ledger) until a trusted axiom for the
+/// calling thread's mask lands with the first verified caller.
+mod sigmask {
+    #[cfg(verus_keep_ghost)]
+    use super::{BLOCKABLE_SIGNALS, effective};
+    use vstd::prelude::*;
+
+    verus! {
+
+    /// The calling thread's signal mask (the kernel's 64-bit sigset), as
+    /// [`block_all_signals`](super::block_all_signals) and
+    /// [`set_signal_mask`](super::set_signal_mask) change it. Ghost: no
+    /// code. Changed only through `&mut` by those two functions' trusted
+    /// raw calls, so a holder knows the mask stays as they left it while
+    /// they hold the token. Premises (trusted, of whoever mints one): the
+    /// token stays on its thread, and nothing else on that thread changes
+    /// the mask while it is held (the C caller's code does not run inside
+    /// an allocator call, and `abort`'s own unblocking of `SIGABRT` never
+    /// returns).
+    // Ghost: built and read only by proof code.
+    #[allow(dead_code)]
+    pub tracked struct SigMask {
+        ghost mask: u64,
+    }
+
+    impl SigMask {
+        /// The mask in force on the calling thread.
+        pub closed spec fn mask(self) -> u64 {
+            self.mask
+        }
+
+        /// A mask the kernel can hold (without `SIGKILL` and `SIGSTOP`) and
+        /// challoc can leave: without glibc's `SIGCANCEL` and `SIGSETXID`,
+        /// which glibc's calls never block and challoc's raw calls never
+        /// add, so a `SIG_BLOCK` of [`BLOCKABLE_SIGNALS`] leaves exactly
+        /// [`all_blocked`](super::all_blocked).
+        pub open spec fn wf(self) -> bool {
+            &&& effective(self.mask()) == self.mask()
+            &&& self.mask() & !BLOCKABLE_SIGNALS == 0
+        }
+    }
+
+    } // verus!
+}
+
+pub use sigmask::SigMask;
 
 // ---- pure helpers shared by the probes and the cgroup parsers ----------
 
@@ -345,13 +517,22 @@ pub fn find_from(s: &[u8], start: usize, b: u8) -> (r: usize)
 } // verus!
 
 mod linux {
+    #[cfg(verus_keep_ghost)]
+    use super::errno::MAX_ERRNO;
     use super::errno::{Errno, decode};
     use super::{
         AT_FDCWD, BLOCKABLE_SIGNALS, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG,
         FUTEX_WAIT, FUTEX_WAKE, O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIG_BLOCK,
-        SIG_SETMASK, SIGSET_WORDS_BYTES, abort_fmt,
+        SIG_SETMASK, SIGSET_WORDS_BYTES, SigMask, abort_fmt,
     };
+    #[cfg(verus_keep_ghost)]
+    use super::{all_blocked, effective, lemma_effective_idempotent};
     use super::{nr, raw};
+    #[cfg(verus_keep_ghost)]
+    use crate::vspec::core_int::popcount;
+    use vstd::prelude::*;
+
+    verus! {
 
     // ---- structs ---------------------------------------------------------
 
@@ -365,7 +546,11 @@ mod linux {
 
     impl Timespec {
         /// Whole nanoseconds since the clock's epoch. Wraps after ~292 years.
-        pub const fn as_nanos(self) -> u64 {
+        pub const fn as_nanos(self) -> (r: u64)
+            ensures
+                self.sec >= 0 && self.nsec >= 0 && self.sec * 1_000_000_000 + self.nsec <= u64::MAX
+                    ==> r == self.sec * 1_000_000_000 + self.nsec,
+        {
             (self.sec as u64)
                 .wrapping_mul(1_000_000_000)
                 .wrapping_add(self.nsec as u64)
@@ -386,7 +571,10 @@ mod linux {
         flags: i32,
         fd: i32,
         offset: usize,
-    ) -> Result<usize, Errno> {
+    ) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
             raw::syscall6(
@@ -406,7 +594,10 @@ mod linux {
     /// # Safety
     /// Nothing may still reference the range.
     #[inline]
-    pub unsafe fn munmap(addr: usize, len: usize) -> Result<(), Errno> {
+    pub unsafe fn munmap(addr: usize, len: usize) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall2(nr::MUNMAP, addr, len) }).map(|_| ())
     }
@@ -416,7 +607,10 @@ mod linux {
     /// # Safety
     /// Removing permissions from memory in use faults later accesses.
     #[inline]
-    pub unsafe fn mprotect(addr: usize, len: usize, prot: i32) -> Result<(), Errno> {
+    pub unsafe fn mprotect(addr: usize, len: usize, prot: i32) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MPROTECT, addr, len, prot as isize as usize) })
             .map(|_| ())
@@ -427,7 +621,10 @@ mod linux {
     /// # Safety
     /// `MADV_DONTNEED`/`MADV_FREE` discard contents the caller must not need.
     #[inline]
-    pub unsafe fn madvise(addr: usize, len: usize, advice: i32) -> Result<(), Errno> {
+    pub unsafe fn madvise(addr: usize, len: usize, advice: i32) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MADVISE, addr, len, advice as isize as usize) })
             .map(|_| ())
@@ -439,7 +636,10 @@ mod linux {
     /// # Safety
     /// Irreversible; the range must never need to change again.
     #[inline]
-    pub unsafe fn mseal(addr: usize, len: usize, flags: usize) -> Result<(), Errno> {
+    pub unsafe fn mseal(addr: usize, len: usize, flags: usize) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MSEAL, addr, len, flags) }).map(|_| ())
     }
@@ -454,7 +654,12 @@ mod linux {
         addr: usize,
         len: usize,
         name: &'static [u8],
-    ) -> Result<(), Errno> {
+    ) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+            name@.len() > 0,
+            name@.last() == 0,
+    {
         debug_assert!(!name.is_empty() && name[name.len() - 1] == 0);
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
@@ -481,7 +686,10 @@ mod linux {
         arg3: usize,
         arg4: usize,
         arg5: usize,
-    ) -> Result<usize, Errno> {
+    ) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
             raw::syscall5(nr::PRCTL, option as isize as usize, arg2, arg3, arg4, arg5)
@@ -490,10 +698,32 @@ mod linux {
 
     // ---- misc ------------------------------------------------------------
 
+    /// Kernel fact (`getrandom(2)`, Linux's `drivers/char/random.c`): a
+    /// `getrandom` that does not fail returns the number of bytes it
+    /// stored, at most `buflen`, unless a ptrace tracer or a seccomp
+    /// supervisor rewrites the result (assumed absent). About the call `raw::syscall3` names in `r`;
+    /// nothing about the bytes.
+    pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: usize, r: usize)
+        requires
+            #[trigger] raw::returned3(nr::GETRANDOM, buf, buflen, flags, r),
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> r <= buflen,
+    ;
+
     /// `getrandom(2)`. Returns the number of bytes written, which may be
     /// short; callers that need the full buffer should loop.
+    ///
+    /// The count bound is the kernel's ([`axiom_getrandom_count`]).
     #[inline]
-    pub fn getrandom(buf: &mut [u8], flags: u32) -> Result<usize, Errno> {
+    pub fn getrandom(buf: &mut [u8], flags: u32) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r matches Ok(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
+        broadcast use axiom_getrandom_count;
+
         // SAFETY: the pointer/length pair describes a live, writable slice.
         decode(unsafe {
             raw::syscall3(
@@ -506,12 +736,22 @@ mod linux {
     }
 
     /// Fill `buf` completely from `getrandom`, retrying short reads and
-    /// `EINTR`. Fails only if the kernel refuses outright. (An offset into
-    /// `buf` rather than a reborrowed tail, and `EINTR` as a guard rather
-    /// than a pattern: Verus takes neither of those.)
-    pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno> {
+    /// `EINTR`. Fails only if the kernel refuses outright. May spin as long
+    /// as the kernel keeps answering `EINTR`. (An offset into `buf` rather
+    /// than a reborrowed tail, and `EINTR` as a guard rather than a pattern:
+    /// Verus takes neither of those.)
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         let mut filled = 0;
-        while filled < buf.len() {
+        while filled < buf.len()
+            invariant
+                crate::sys::may_syscall(),
+                filled <= buf@.len(),
+                buf@.len() == old(buf)@.len(),
+        {
             match getrandom(&mut buf[filled..], 0) {
                 Ok(0) => return Err(Errno::EIO),
                 Ok(n) => filled += n,
@@ -534,7 +774,10 @@ mod linux {
         timeout: *const Timespec,
         uaddr2: *const u32,
         val3: u32,
-    ) -> Result<usize, Errno> {
+    ) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
             raw::syscall6(
@@ -563,7 +806,10 @@ mod linux {
         uaddr: *const u32,
         val: u32,
         timeout: Option<&Timespec>,
-    ) -> Result<(), Errno> {
+    ) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         let ts = timeout.map_or(core::ptr::null(), |t| core::ptr::from_ref(t));
         // SAFETY: forwarded to the caller's contract.
         unsafe {
@@ -585,7 +831,10 @@ mod linux {
     /// # Safety
     /// `uaddr` must be a live, 4-byte-aligned `u32`.
     #[inline]
-    pub unsafe fn futex_wake(uaddr: *const u32, n: u32) -> Result<usize, Errno> {
+    pub unsafe fn futex_wake(uaddr: *const u32, n: u32) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: forwarded to the caller's contract.
         unsafe {
             futex(
@@ -601,7 +850,10 @@ mod linux {
 
     /// `clock_gettime(2)`.
     #[inline]
-    pub fn clock_gettime(clock: i32) -> Result<Timespec, Errno> {
+    pub fn clock_gettime(clock: i32) -> Result<Timespec, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         let mut ts = Timespec { sec: 0, nsec: 0 };
         // SAFETY: `ts` is a live, writable `Timespec` matching the kernel ABI.
         decode(unsafe {
@@ -617,7 +869,10 @@ mod linux {
     /// Monotonic coarse clock in nanoseconds; the only clock the allocator
     /// reads on its own behalf (design.md section 11).
     #[inline]
-    pub fn now_coarse_ns() -> u64 {
+    pub fn now_coarse_ns() -> u64
+        requires
+            crate::sys::may_syscall(),
+    {
         match clock_gettime(CLOCK_MONOTONIC_COARSE) {
             Ok(ts) => ts.as_nanos(),
             // COARSE is older than our floor kernel; this is unreachable, but
@@ -630,7 +885,12 @@ mod linux {
 
     /// `openat(AT_FDCWD, path, flags | O_CLOEXEC, 0)`. `path` must be
     /// NUL-terminated.
-    pub fn open(path: &[u8], flags: i32) -> Result<i32, Errno> {
+    pub fn open(path: &[u8], flags: i32) -> Result<i32, Errno>
+        requires
+            crate::sys::may_syscall(),
+            path@.len() > 0,
+            path@.last() == 0,
+    {
         debug_assert!(!path.is_empty() && path[path.len() - 1] == 0);
         // SAFETY: `path` is a live NUL-terminated byte string.
         decode(unsafe {
@@ -645,9 +905,32 @@ mod linux {
         .map(|fd| fd as i32)
     }
 
+    /// Kernel fact (`read(2)`, Linux's `fs/read_write.c`): a `read` that
+    /// does not fail returns the number of bytes it stored, at most
+    /// `count`, unless a ptrace tracer or a seccomp supervisor rewrites
+    /// the result or a driver returns more than it was asked for (the VFS
+    /// does not clamp it), all assumed absent. About the call `raw::syscall3` names in
+    /// `r`; nothing about the bytes.
+    pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: usize)
+        requires
+            #[trigger] raw::returned3(nr::READ, fd, buf, count, r),
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> r <= count,
+    ;
+
     /// `read(2)`.
+    ///
+    /// The count bound is the kernel's ([`axiom_read_count`]).
     #[inline]
-    pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    pub fn read(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r matches Ok(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
+        broadcast use axiom_read_count;
+
         // SAFETY: the pointer/length pair describes a live, writable slice.
         decode(unsafe {
             raw::syscall3(
@@ -660,10 +943,23 @@ mod linux {
     }
 
     /// Read as much of `buf` as the file yields, retrying `EINTR`. Returns
-    /// the number of bytes read; stops at EOF or a full buffer.
-    pub fn read_full(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    /// the number of bytes read; stops at EOF or a full buffer. May spin as
+    /// long as the kernel keeps answering `EINTR`.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r matches Ok(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
         let mut filled = 0;
-        while filled < buf.len() {
+        while filled < buf.len()
+            invariant
+                crate::sys::may_syscall(),
+                filled <= buf@.len(),
+                buf@.len() == old(buf)@.len(),
+        {
             match read(fd, &mut buf[filled..]) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
@@ -678,16 +974,45 @@ mod linux {
     /// `open`, [`read_full`], `close`. The byte count, or `None` when the
     /// file cannot be opened (absent, or the controller is not here) or
     /// read. A file longer than `buf` is cut at `buf.len()`.
-    pub fn read_small_file(path: &[u8], buf: &mut [u8]) -> Option<usize> {
+    pub fn read_small_file(path: &[u8], buf: &mut [u8]) -> (r: Option<usize>)
+        requires
+            crate::sys::may_syscall(),
+            path@.len() > 0,
+            path@.last() == 0,
+        ensures
+            r matches Some(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
         let fd = open(path, super::O_RDONLY).ok()?;
         let r = read_full(fd, buf).ok();
         let _ = close(fd);
         r
     }
 
+    /// Kernel fact (`write(2)`, Linux's `fs/read_write.c`): a `write` that
+    /// does not fail returns the number of bytes it took, at most `count`,
+    /// unless a ptrace tracer or a seccomp supervisor rewrites the result
+    /// (assumed absent).
+    /// About the call `raw::syscall3` names in `r`.
+    pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r: usize)
+        requires
+            #[trigger] raw::returned3(nr::WRITE, fd, buf, count, r),
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> r <= count,
+    ;
+
     /// `write(2)`.
+    ///
+    /// The count bound is the kernel's ([`axiom_write_count`]).
     #[inline]
-    pub fn write(fd: i32, buf: &[u8]) -> Result<usize, Errno> {
+    pub fn write(fd: i32, buf: &[u8]) -> (r: Result<usize, Errno>)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r matches Ok(n) ==> n <= buf@.len(),
+    {
+        broadcast use axiom_write_count;
+
         // SAFETY: the pointer/length pair describes a live slice.
         decode(unsafe {
             raw::syscall3(
@@ -701,10 +1026,19 @@ mod linux {
 
     /// Write all of `buf`, retrying short writes and `EINTR`. Any other error
     /// is swallowed: this is used on the abort path, where there is nothing
-    /// better to do. (An offset into `buf`, as in [`getrandom_exact`].)
-    pub fn write_all(fd: i32, buf: &[u8]) {
+    /// better to do. May spin as long as the kernel keeps answering `EINTR`.
+    /// (An offset into `buf`, as in [`getrandom_exact`].)
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn write_all(fd: i32, buf: &[u8])
+        requires
+            crate::sys::may_syscall(),
+    {
         let mut done = 0;
-        while done < buf.len() {
+        while done < buf.len()
+            invariant
+                crate::sys::may_syscall(),
+                done <= buf@.len(),
+        {
             match write(fd, &buf[done..]) {
                 Ok(0) => return,
                 Ok(n) => done += n,
@@ -716,7 +1050,10 @@ mod linux {
 
     /// `close(2)`.
     #[inline]
-    pub fn close(fd: i32) -> Result<(), Errno> {
+    pub fn close(fd: i32) -> Result<(), Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no pointers.
         decode(unsafe { raw::syscall1(nr::CLOSE, fd as isize as usize) }).map(|_| ())
     }
@@ -724,15 +1061,41 @@ mod linux {
     // ---- process ---------------------------------------------------------
 
     #[inline]
-    pub fn getpid() -> i32 {
+    pub fn getpid() -> i32
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no arguments; cannot fail.
         unsafe { raw::syscall0(nr::GETPID) as i32 }
     }
 
     #[inline]
-    pub fn gettid() -> i32 {
+    pub fn gettid() -> i32
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no arguments; cannot fail.
         unsafe { raw::syscall0(nr::GETTID) as i32 }
+    }
+
+    /// A word below `2^k` has at most `k` bits set.
+    proof fn lemma_popcount_bound(x: u64, k: nat)
+        requires
+            x < vstd::arithmetic::power2::pow2(k),
+        ensures
+            popcount(x) <= k,
+        decreases k,
+    {
+        vstd::arithmetic::power2::lemma_pow2_pos(k);
+        if x != 0 {
+            assert(k > 0) by {
+                if k == 0 {
+                    vstd::arithmetic::power2::lemma2_to64();
+                }
+            }
+            vstd::arithmetic::power2::lemma_pow2_unfold(k);
+            lemma_popcount_bound(x / 2, (k - 1) as nat);
+        }
     }
 
     /// CPUs the calling thread may run on: the bits set in the affinity
@@ -741,7 +1104,12 @@ mod linux {
     /// kernel writes its own mask width and refuses a buffer narrower than
     /// it with `EINVAL`; 8192 CPUs covers every supported kernel. 1 when
     /// the call fails (a seccomp filter, or a wider mask), never 0.
-    pub fn ncpus() -> u32 {
+    pub fn ncpus() -> (r: u32)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            1 <= r <= 8192,
+    {
         let mut mask = [0u64; 128];
         // `size_of_val(&mask)`, which Verus does not specify.
         let len = 128 * 8;
@@ -754,7 +1122,18 @@ mod linux {
                 // out: Verus does not specify `Map` or `Sum`.
                 let mut bits: u32 = 0;
                 let mut i = 0;
-                while i < words {
+                while i < words
+                    invariant
+                        words <= 128,
+                        i <= words,
+                        bits <= 64 * i,
+                    decreases words - i,
+                {
+                    proof {
+                        vstd::arithmetic::power2::lemma2_to64();
+                        vstd::arithmetic::power2::lemma2_to64_rest();
+                        lemma_popcount_bound(mask[i as int], 64);
+                    }
                     bits += mask[i].count_ones();
                     i += 1;
                 }
@@ -774,7 +1153,10 @@ mod linux {
 
     /// `sched_setscheduler(0, SCHED_OTHER, &{ sched_priority: 0 })`: put
     /// the calling thread on the default time-sharing policy.
-    pub fn sched_set_other() -> Result<usize, Errno> {
+    pub fn sched_set_other() -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // `struct sched_param` is one `int`.
         let param = [0i32; 1];
         // SAFETY: `param` is a live `sched_param` for the whole call; the
@@ -792,7 +1174,10 @@ mod linux {
     /// `sched_getaffinity(pid)` into `set`. On `Ok(n)` the kernel has
     /// stored the first `n` bytes of the mask and left the rest of `set`
     /// as it was (glibc's wrapper zeroes them: start from a zeroed set).
-    pub fn sched_getaffinity(pid: i32, set: &mut CpuSet) -> Result<usize, Errno> {
+    pub fn sched_getaffinity(pid: i32, set: &mut CpuSet) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // `size_of::<CpuSet>()`, which Verus does not specify.
         let len = 16 * 8;
         // SAFETY: `set` is writable for `len` bytes and outlives the call.
@@ -807,7 +1192,10 @@ mod linux {
     }
 
     /// `sched_setaffinity(pid, set)`.
-    pub fn sched_setaffinity(pid: i32, set: &CpuSet) -> Result<usize, Errno> {
+    pub fn sched_setaffinity(pid: i32, set: &CpuSet) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // `size_of::<CpuSet>()`, as in [`sched_getaffinity`].
         let len = 16 * 8;
         // SAFETY: `set` is readable for `len` bytes and outlives the call.
@@ -825,7 +1213,10 @@ mod linux {
     /// The raw syscall returns `20 - nice` (1 to 40) on success, so unlike
     /// glibc's wrapper a failure is not confused with a nice value of -1.
     /// The conversion is glibc's: the word as an `int`, subtracted from 20.
-    pub fn getpriority(pid: i32) -> Result<i32, Errno> {
+    pub fn getpriority(pid: i32) -> Result<i32, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no pointers.
         let r = decode(unsafe {
             raw::syscall2(
@@ -835,13 +1226,20 @@ mod linux {
             )
         });
         match r {
-            Ok(v) => Ok(20i32.wrapping_sub(v as i32)),
+            Ok(v) => {
+                #[cfg_attr(verus_keep_ghost, verifier::truncate)]
+                let v = v as i32;
+                Ok(20i32.wrapping_sub(v))
+            },
             Err(e) => Err(e),
         }
     }
 
     /// `setpriority(PRIO_PROCESS, pid, nice)`.
-    pub fn setpriority(pid: i32, nice: i32) -> Result<usize, Errno> {
+    pub fn setpriority(pid: i32, nice: i32) -> Result<usize, Errno>
+        requires
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no pointers.
         decode(unsafe {
             raw::syscall3(
@@ -856,37 +1254,83 @@ mod linux {
     /// `rt_sigprocmask(SIG_BLOCK, all)`: block every signal on the calling
     /// thread but glibc's `SIGCANCEL` and `SIGSETXID`, as `pthread_sigmask`
     /// would, and return the mask that was in force before. The kernel
-    /// silently leaves `SIGKILL` and `SIGSTOP` unblocked.
-    pub fn block_all_signals() -> u64 {
+    /// silently leaves `SIGKILL` and `SIGSTOP` unblocked. `sig` is
+    /// the calling thread's mask ([`SigMask`]).
+    pub fn block_all_signals(Tracked(sig): Tracked<&mut SigMask>) -> (r: u64)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(sig).wf(),
+        ensures
+            r == old(sig).mask(),
+            final(sig).mask() == all_blocked(),
+            final(sig).wf(),
+    {
         let all: u64 = BLOCKABLE_SIGNALS;
         let mut old: u64 = 0;
         // SAFETY: both pointers are live 8-byte sigsets for the whole call.
-        let r = unsafe { sigprocmask_block(&all, &mut old) };
+        let r = unsafe { sigprocmask_block(&all, &mut old, Tracked(sig)) };
         if let Err(e) = decode(r) {
             sigprocmask_failed("SIG_BLOCK", e);
+        }
+        proof {
+            lemma_effective_idempotent(BLOCKABLE_SIGNALS);
         }
         old
     }
 
     /// `rt_sigprocmask(SIG_SETMASK, mask)`: restore a mask saved by
-    /// [`block_all_signals`] on the calling thread.
-    pub fn set_signal_mask(mask: u64) {
+    /// [`block_all_signals`] on the calling thread. `sig` is the calling
+    /// thread's mask ([`SigMask`]). `mask` leaves glibc's two internal
+    /// signals unblocked, as every mask `block_all_signals` returns does.
+    pub fn set_signal_mask(mask: u64, Tracked(sig): Tracked<&mut SigMask>)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            mask & !BLOCKABLE_SIGNALS == 0,
+        ensures
+            final(sig).mask() == effective(mask),
+            final(sig).wf(),
+    {
         // SAFETY: `mask` is a live 8-byte sigset; the old-set pointer is null.
-        let r = unsafe { sigprocmask_setmask(&mask) };
+        let r = unsafe { sigprocmask_setmask(&mask, Tracked(sig)) };
         if let Err(e) = decode(r) {
             sigprocmask_failed("SIG_SETMASK", e);
+        }
+        proof {
+            lemma_effective_idempotent(mask);
         }
     }
 
     /// The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the
-    /// syscall's word: a successful call wrote the mask in force before it
-    /// to `*before`. Apart from [`block_all_signals`] so that the raw call,
-    /// whose effect Verus cannot see, is a function of its own.
+    /// syscall's word. Trusted (the kernel's semantics): a successful call
+    /// (a word `decode` takes for success) wrote the mask in force before
+    /// it to `*before` and left blocked every signal of `*all`, every bit
+    /// but glibc's `SIGCANCEL` and `SIGSETXID` (the kernel drops `SIGKILL`
+    /// and `SIGSTOP`). `SIG_BLOCK` adds to the mask in force, so the mask
+    /// after is exactly `all_blocked()` only because no thread has those
+    /// two blocked: glibc's `sigprocmask` and `pthread_sigmask` refuse to
+    /// block them, and challoc's raw calls block only `*all` and restore
+    /// masks saved from those (a premise, as the token is). Verus does
+    /// not see the kernel's write through the address. On failure nothing
+    /// is said: the caller aborts.
     ///
     /// # Safety
     /// As `raw::syscall4`; both pointers are live 8-byte sigsets.
+    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn sigprocmask_block(all: &u64, before: &mut u64) -> usize {
+    unsafe fn sigprocmask_block(
+        all: &u64,
+        before: &mut u64,
+        Tracked(sig): Tracked<&mut SigMask>,
+    ) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
+            *all == BLOCKABLE_SIGNALS,
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> (*final(before) == old(sig).mask() && final(sig).mask()
+                == all_blocked()),
+    {
         // SAFETY: guaranteed by the caller.
         unsafe {
             raw::syscall4(
@@ -900,13 +1344,20 @@ mod linux {
     }
 
     /// The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the
-    /// syscall's word. Apart from [`set_signal_mask`], as
-    /// [`sigprocmask_block`] is.
+    /// syscall's word. Trusted (the kernel's semantics): a successful call
+    /// leaves `*mask` in force, less `SIGKILL` and `SIGSTOP`. On failure
+    /// nothing is said: the caller aborts.
     ///
     /// # Safety
     /// As `raw::syscall4`; `mask` is a live 8-byte sigset.
+    #[verifier::external_body]
     #[inline(always)]
-    unsafe fn sigprocmask_setmask(mask: &u64) -> usize {
+    unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r <= usize::MAX - MAX_ERRNO ==> final(sig).mask() == effective(*mask),
+    {
         // SAFETY: guaranteed by the caller.
         unsafe {
             raw::syscall4(
@@ -922,12 +1373,21 @@ mod linux {
     /// Abort on a failed `rt_sigprocmask(how)`.
     #[cold]
     #[inline(never)]
-    fn sigprocmask_failed(how: &str, e: Errno) -> ! {
+    fn sigprocmask_failed(how: &str, e: Errno) -> !
+        requires
+            crate::sys::may_abort(),
+    {
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
         abort_fmt(format_args!("rt_sigprocmask({how}) failed: {e}"))
     }
 
     /// `exit_group(2)`: terminate every thread in the process.
-    pub fn exit_group(status: i32) -> ! {
+    pub fn exit_group(status: i32) -> !
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+    {
         // SAFETY: no pointers; does not return.
         unsafe {
             raw::syscall1(nr::EXIT_GROUP, status as isize as usize);
@@ -938,8 +1398,12 @@ mod linux {
 
     /// Architecture trap instruction, for the impossible case where the
     /// kernel returns from a terminating syscall.
+    #[verifier::external_body]
     #[inline(always)]
-    pub fn trap() -> ! {
+    pub fn trap() -> !
+        requires
+            crate::sys::may_abort(),
+    {
         // SAFETY: both instructions raise a fatal signal and nothing else.
         unsafe {
             #[cfg(target_arch = "x86_64")]
@@ -948,6 +1412,8 @@ mod linux {
             core::arch::asm!("brk #0x1", options(noreturn, nostack));
         }
     }
+
+    } // verus!
 }
 
 #[cfg(test)]
@@ -986,6 +1452,110 @@ mod tests {
     use std::{env, format, vec::Vec};
 
     const PAGE: usize = 4096;
+
+    /// The `.rs` files under `dir`, in path order.
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Whether `t` starts a `fn` item: qualifiers, then `fn `.
+    fn fn_item(t: &str) -> bool {
+        let mut t = t;
+        loop {
+            let rest = [
+                "pub ",
+                "const ",
+                "unsafe ",
+                "extern \"C\" ",
+                "proof ",
+                "open ",
+                "closed ",
+            ]
+            .iter()
+            .find_map(|q| t.strip_prefix(q))
+            .or_else(|| {
+                t.strip_prefix("pub(")
+                    .and_then(|r| r.split_once(") ").map(|(_, r)| r))
+            });
+            match rest {
+                Some(r) => t = r,
+                None => return t.starts_with("fn "),
+            }
+        }
+    }
+
+    /// Every call of `grant` under `src/`, as the `fn` item line it belongs
+    /// to (the nearest one above it) and its place, skipping comments and
+    /// the grant's own definition.
+    fn grant_sites(grant: &str) -> Vec<(std::string::String, std::string::String)> {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        let def = format!("pub proof fn {grant}()");
+        let mut sites = Vec::new();
+        for path in &files {
+            let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
+            let text = std::fs::read_to_string(path).unwrap();
+            let mut sig = "";
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                if t.starts_with("//") || t == def {
+                    continue;
+                }
+                if fn_item(t) {
+                    sig = t;
+                }
+                if t.contains(grant) {
+                    sites.push((sig.into(), format!("{rel}:{}: `{t}`", i + 1)));
+                }
+            }
+        }
+        sites
+    }
+
+    /// `grant_syscalls` is called only in the body of an `extern "C"`
+    /// function or of `abort_fmt`, which never returns ([`may_syscall`]'s
+    /// premise).
+    #[test]
+    fn syscall_grants_only_at_roots() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let sites = grant_sites(&format!("{}{}", "grant_", "syscalls"));
+        assert!(!sites.is_empty());
+        for (sig, at) in &sites {
+            assert!(
+                sig.contains("extern \"C\" fn ") || sig.starts_with("pub fn abort_fmt("),
+                "{at}: a syscall grant in `{sig}`"
+            );
+        }
+    }
+
+    /// `grant_aborts` is called only in the body of an `extern "C"`
+    /// function or of the panic handler ([`may_abort`]'s premise), never
+    /// in `abort_fmt`'s.
+    #[test]
+    fn abort_grants_only_at_roots() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let sites = grant_sites(&format!("{}{}", "grant_", "aborts"));
+        assert!(!sites.is_empty());
+        for (sig, at) in &sites {
+            assert!(
+                sig.contains("extern \"C\" fn ")
+                    || sig.starts_with("fn panic(info: &core::panic::PanicInfo"),
+                "{at}: an abort grant in `{sig}`"
+            );
+        }
+    }
 
     /// A fresh read/write private anonymous mapping of `len` bytes, for
     /// this module's tests and `features::linux_tests`.
@@ -1076,9 +1646,9 @@ mod tests {
     #[test]
     fn block_all_signals_leaves_glibc_internal_signals_unblocked() {
         std::thread::spawn(|| {
-            let before = block_all_signals();
-            let during = block_all_signals();
-            set_signal_mask(before);
+            let before = block_all_signals(Tracked::assume_new());
+            let during = block_all_signals(Tracked::assume_new());
+            set_signal_mask(before, Tracked::assume_new());
             assert_eq!(during & (1 << 31), 0, "SIGCANCEL blocked: {during:#x}");
             assert_eq!(during & (1 << 32), 0, "SIGSETXID blocked: {during:#x}");
             for sig in [1u32, 2, 10, 15, 17, 31, 34, 64] {

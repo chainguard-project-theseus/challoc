@@ -449,7 +449,9 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> 
         }
         let mut thread = None;
         if ::libc::pthread_attr_setstack(&mut attr, base as *mut c_void, len) == 0 {
-            let mask = sys::block_all_signals();
+            // Unverified: the signal-mask token is a placeholder until
+            // `spawn` is verified.
+            let mask = sys::block_all_signals(Tracked::assume_new());
             let mut tid: ::libc::pthread_t = 0;
             let rc = ::libc::pthread_create(
                 &mut tid,
@@ -457,7 +459,7 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> 
                 main,
                 shared as *const Shared as *mut c_void,
             );
-            sys::set_signal_mask(mask);
+            sys::set_signal_mask(mask, Tracked::assume_new());
             if rc == 0 {
                 thread = Some(tid);
             }
