@@ -7,23 +7,12 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Huge` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Tally::settle` | external_body | allocator invariant | Verus | trusted |
-| `Inner::retire` | external_body | allocator invariant | Verus | trusted |
-| `Inner::extent_at` | external_body | allocator invariant | Verus | trusted |
-
-## `Huge`
-
-src/huge/mod.rs:429. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-pub struct ExHuge(Huge);
-```
+| `axiom_run_locs` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `Tally::settle`
 
-src/huge/mod.rs:502. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:511. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -39,26 +28,19 @@ fn settle(
 )
 ```
 
-## `Inner::retire`
+## `axiom_run_locs`
 
-src/huge/mod.rs:1076. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/huge/mod.rs:653. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
-> Give a dropped descriptor back to `meta`, leaving the `Empty` list first when it is a member (every `Empty` extent is; a freed run's descriptor still reads `Active` here and is in no list).
-
-Body mints Tracked at line 1081.
+> Trusted: outside tests, [`Huge::new`] runs once per process, for the process's `Shared` (`Shared::init`), so the run authorities it makes are the process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc` for the slot authorities.
 
 ```rust
-fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
-```
-
-## `Inner::extent_at`
-
-src/huge/mod.rs:1252. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> The free extent starting at `page`, which must be a set free bit.
-
-```rust
-fn extent_at(&self, page: usize) -> *mut HugeDesc
+axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked once: Once)
+    requires
+        once.step() == Step::Huge,
+    ensures
+        run_loc() == r,
+        page_loc() == p,
+;
 ```

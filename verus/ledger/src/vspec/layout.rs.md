@@ -12,6 +12,7 @@ file.
 | `Layout::size` | assume_spec | core library | Kani | trusted |
 | `Layout::align` | assume_spec | core library | Kani | trusted |
 | `Layout::from_size_align` | assume_spec | core library | Kani | trusted |
+| `Layout::new::<T>` | assume_spec | core library | Kani | trusted |
 
 ## `Layout`
 
@@ -72,5 +73,20 @@ pub assume_specification[ Layout::from_size_align ](size: usize, align: usize) -
     ensures
         r is Ok <==> (align > 0 && align & sub(align, 1) == 0 && size <= isize::MAX - (align - 1)),
         r matches Ok(l) ==> layout_size(l) == size && layout_align(l) == align,
+;
+```
+
+## `Layout::new::<T>`
+
+src/vspec/layout.rs:54. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Layout::new::<T>()`: the size and alignment of `T`.
+
+```rust
+pub assume_specification<T>[ Layout::new::<T> ]() -> (r: Layout)
+    ensures
+        layout_size(r) == vstd::layout::size_of::<T>(),
+        layout_align(r) == vstd::layout::align_of::<T>(),
 ;
 ```

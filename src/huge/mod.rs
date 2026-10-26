@@ -56,10 +56,16 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, LockOrder, RawLock};
+#[cfg(verus_keep_ghost)]
+use crate::lock::{axiom_entry, lock_init, rank_huge, rank_meta};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, Pieces, Settle};
 use crate::sys::{self, Errno};
+#[cfg(verus_keep_ghost)]
+use crate::vspec::huge::{axiom_huge_lock_frame, axiom_huge_lock_inv};
 use crate::vspec::once::Once;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::once::Step;
 
 mod table;
 
@@ -140,6 +146,15 @@ pub open spec fn state_of(v: u8) -> RunState {
     } else {
         RunState::Purged
     }
+}
+
+/// `state_of` undoes the cast of a state to its byte.
+proof fn lemma_state_byte(v: u8)
+    requires
+        v <= 2,
+    ensures
+        state_of(v) as u8 == v,
+{
 }
 
 /// Descriptor of one extent (design section 7's `HugeDesc`). Allocated from
@@ -422,12 +437,6 @@ fn huge_count_underflow(state: RunState) -> !
 
 verus! {
 
-// `Huge`, opaque: the purge proofs here do not look inside it.
-#[cfg(verus_keep_ghost)]
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExHuge(Huge);
-
 /// What a purge walk's flushes settled: extents made `Purged` and whether
 /// a discard failed. It settles the walk's batch ([`Settle`], through
 /// [`Huge::settle`]).
@@ -517,7 +526,7 @@ impl Settle for Tally {
 
 verus! {
 
-struct Inner {
+pub(crate) struct Inner {
     /// Free pages below `next_page`.
     free: Set,
     table: Table,
@@ -604,6 +613,21 @@ spec fn perms_ok(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
     }
 }
 
+/// `claims` holds the claim of the descriptor block at `d`
+/// ([`desc_claim_for`]), from the `Meta` whose live-object records are
+/// `id`.
+spec fn desc_claimed(claims: Map<*mut HugeDesc, crate::meta::MetaClaim>, d: *mut HugeDesc, id: vstd::resource::Loc) -> bool {
+    &&& claims.contains_key(d)
+    &&& desc_claim_for(claims[d], d, id)
+}
+
+/// `c` is the claim of the descriptor block at `d`, from the `Meta`
+/// whose live-object records are `id`; `Meta::free` takes it back with
+/// the block ([`free_desc`]).
+spec fn desc_claim_for(c: crate::meta::MetaClaim, d: *mut HugeDesc, id: vstd::resource::Loc) -> bool {
+    c.held(id, d as *mut u8, vstd::layout::size_of::<HugeDesc>() as int, vstd::layout::align_of::<HugeDesc>() as int)
+}
+
 /// The 48 bytes of the descriptor at `d` are metadata
 /// ([`Regions::in_meta`]).
 pub open spec fn desc_in_meta(d: *mut HugeDesc) -> bool {
@@ -616,6 +640,23 @@ pub uninterp spec fn run_loc() -> vstd::resource::Loc;
 
 /// The authority of the live runs' pages.
 pub uninterp spec fn page_loc() -> vstd::resource::Loc;
+
+/// Trusted: outside tests, [`Huge::new`] runs once per process, for the
+/// process's `Shared` (`Shared::init`), so the run authorities it makes
+/// are the process's ([`run_loc`], [`page_loc`]), as
+/// `class::table::axiom_slot_loc` for the slot authorities. Two calls
+/// with two pairs of authorities would prove `false`, so a call uses up
+/// `once`, the process's one token of this step (`vspec::once`), handed
+/// to `Huge::new`.
+// `once` is read only by the requires (ghost).
+#[allow(unused_variables)]
+axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked once: Once)
+    requires
+        once.step() == Step::Huge,
+    ensures
+        run_loc() == r,
+        page_loc() == p,
+;
 
 /// Entry `i` of the `Empty` list: a live `Empty` descriptor linked to its
 /// neighbours.
@@ -714,6 +755,49 @@ spec fn coalesced(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
             + descs[d1].value().pages != descs[d2].value().start
 }
 
+/// Every page of `v` is in `f`.
+spec fn marked(f: vstd::set::Set<nat>, v: HugeDesc) -> bool {
+    forall|q: int| v.start <= q < v.start + v.pages ==> #[trigger] f.contains(q as nat)
+}
+
+/// Every page of every free extent is in the free-page set `f`.
+spec fn free_marked(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, f: vstd::set::Set<nat>) -> bool {
+    forall|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && descs[d].value().state != RunState::Active as u8 ==> marked(
+        f,
+        descs[d].value(),
+    )
+}
+
+/// Every page in the free-page set `f` is a page of a free extent: the
+/// converse of [`free_marked`], so the set is exactly the free extents'
+/// pages (what [`Inner::extent_at`] needs to find an extent at a free bit).
+spec fn free_exact(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, f: vstd::set::Set<nat>) -> bool {
+    forall|q: nat| #[trigger] f.contains(q) ==> exists|x: *mut HugeDesc| #[trigger] in_free(descs, x, q as int)
+}
+
+/// A page of a marked extent is in the set.
+proof fn lemma_marked(f: vstd::set::Set<nat>, v: HugeDesc, q: int)
+    requires
+        marked(f, v),
+        v.start <= q < v.start + v.pages,
+    ensures
+        f.contains(q as nat),
+{
+}
+
+/// Page `p` lies in `x`, a free extent of `descs`.
+spec fn in_free(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, x: *mut HugeDesc, p: int) -> bool {
+    &&& descs.contains_key(x)
+    &&& descs[x].value().state != RunState::Active as u8
+    &&& descs[x].value().start <= p < descs[x].value().start + descs[x].value().pages
+}
+
+/// Every free extent starting below `from` ends at or before it.
+spec fn ends_by(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, from: int) -> bool {
+    forall|x: *mut HugeDesc| #[trigger] descs.contains_key(x) && descs[x].value().state != RunState::Active as u8
+        && descs[x].value().start < from ==> descs[x].value().start + descs[x].value().pages <= from
+}
+
 /// What an extent adds to tally `k`: its count (`k` 0 to 2) or its pages
 /// (3 to 5) when its state is `k % 3`, and its table keys (6).
 spec fn weight(v: HugeDesc, k: int) -> int {
@@ -760,6 +844,8 @@ spec fn stat(s: HugeStats, k: int) -> int {
 // global; the `Lock` serialises every access.
 unsafe impl Send for Inner {}
 
+verus! {
+
 /// The huge allocator: one per process, shared by every arena (design
 /// section 7); the arena an allocation was made through is recorded per
 /// run for the per-arena statistics.
@@ -780,6 +866,24 @@ pub struct Huge {
     gate: Decayer,
     inner: Lock<Inner>,
 }
+
+impl Huge {
+    /// The region's geometry: `npages` pages of `2^lg_page` bytes from
+    /// `base`, below the end of the user address space; the lock's first
+    /// value has the same page count and shift, and the lock its rank.
+    #[verifier::type_invariant]
+    spec fn inv(&self) -> bool {
+        &&& self.lg_page < 64
+        &&& 4 <= self.lg_page
+        &&& 0 < self.npages <= u32::MAX
+        &&& self.base + self.npages * pow2(self.lg_page as nat) <= crate::meta::va_limit()
+        &&& lock_init(self.inner).spec_np() == self.npages
+        &&& lock_init(self.inner).spec_lg() == self.lg_page
+        &&& self.inner.rank() == rank_huge()
+    }
+}
+
+} // verus!
 
 /// `PROT_NONE`, `PROT_READ | PROT_WRITE` and the guard advice of
 /// `sys` (checked against them below).
@@ -827,14 +931,41 @@ fn alloc_desc(meta: &Meta) -> *mut HugeDesc {
     meta.alloc(Layout::new::<HugeDesc>()) as *mut HugeDesc
 }
 
+verus! {
+
+/// The permission to the bytes of the descriptor block that `desc.0`
+/// is the permission to (its contents dropped), with the block's claim:
+/// what [`free_desc`] takes.
+proof fn desc_raw(tracked desc: (PointsTo<HugeDesc>, crate::meta::MetaClaim)) -> (tracked r: (
+    PointsToRaw,
+    crate::meta::MetaClaim,
+))
+    ensures
+        r.0.is_range(desc.0.ptr()@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
+        r.0.provenance() == desc.0.ptr()@.provenance,
+        r.1 == desc.1,
+{
+    let tracked (mut perm, claim) = desc;
+    perm.leak_contents();
+    (perm.into_raw(), claim)
+}
+
 /// Give the block `d` from [`alloc_desc`] back to `meta`, with `blk`,
 /// the permission to its bytes and its claim, which `Meta::free` takes.
 #[inline(always)]
-fn free_desc(meta: &Meta, d: *mut HugeDesc, blk: Tracked<(PointsToRaw, crate::meta::MetaClaim)>) {
+fn free_desc(meta: &Meta, d: *mut HugeDesc, blk: Tracked<(PointsToRaw, crate::meta::MetaClaim)>)
+    requires
+        crate::sys::may_syscall(),
+        d@.addr != 0,
+        blk@.0.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
+        blk@.0.provenance() == d@.provenance,
+        desc_claim_for(blk@.1, d, meta.live_id()),
+{
+    proof {
+        assert((d as *mut u8)@.addr == d@.addr && (d as *mut u8)@.provenance == d@.provenance);
+    }
     meta.free(d as *mut u8, Layout::new::<HugeDesc>(), blk);
 }
-
-verus! {
 
 impl Inner {
     /// The invariant of the huge lock: the table is well formed and every
@@ -843,8 +974,10 @@ impl Inner {
     /// each under its keys in the table and nowhere else, and the counters
     /// are their tallies, whose pages sum to `next_page`; the run
     /// authorities (`runs`, `pgs`) hold the `Active` extents and their pages;
-    /// and no two free extents touch.
-    spec fn wf(&self) -> bool {
+    /// no two free extents touch; `dclaims` holds every live descriptor's
+    /// block claim, from the `Meta` at `mid`; and the free-page bitmap holds
+    /// exactly the free extents' pages.
+    pub(crate) closed spec fn wf(&self) -> bool {
         &&& self.table.wf()
         &&& perms_ok(self.descs@)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_ok(self.descs@[d].value(), self.next_page)
@@ -877,6 +1010,42 @@ impl Inner {
         &&& self.runs@@ == active_runs(self.descs@)
         &&& self.pgs@@ == active_pages(self.descs@)
         &&& coalesced(self.descs@)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@)
+        &&& free_marked(self.descs@, self.free.map@)
+        &&& free_exact(self.descs@, self.free.map@)
+    }
+
+    /// The huge free bitmap is exact: in every value the huge lock admits,
+    /// page `q`'s free bit is set iff `q` is a page of a free (`Empty` or
+    /// `Purged`) extent, and no bit at or past the high-water mark is set.
+    /// `Huge::audit` checks the same at run time.
+    proof fn theorem_free_exact(&self, q: int)
+        requires
+            self.wf(),
+            0 <= q,
+        ensures
+            self.free.map@.contains(q as nat) <==> exists|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q),
+            q >= self.next_page ==> !self.free.map@.contains(q as nat),
+    {
+        if exists|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q) {
+            let x = choose|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q);
+            lemma_marked(self.free.map@, self.descs@[x].value(), q);
+        }
+        self.lemma_free_below();
+    }
+
+    /// Every free bit lies below the mark: its page is in a free extent,
+    /// which ends by the mark.
+    proof fn lemma_free_below(&self)
+        requires
+            self.wf(),
+        ensures
+            forall|q: nat| #[trigger] self.free.map@.contains(q) ==> q < self.next_page,
+    {
+        assert forall|q: nat| #[trigger] self.free.map@.contains(q) implies q < self.next_page by {
+            let x = choose|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, q as int);
+            assert(desc_ok(self.descs@[x].value(), self.next_page));
+        }
     }
 
     /// Huge free extents are maximally coalesced: in every value `wf`
@@ -937,6 +1106,28 @@ impl Inner {
         &&& forall|k: usize| #[trigger] self.table.lookup(k) matches Some(d) ==> self.descs@.contains_key(d)
     }
 
+    /// The ghost page count.
+    pub(crate) closed spec fn spec_np(&self) -> usize {
+        self.np@
+    }
+
+    /// The ghost page shift.
+    pub(crate) closed spec fn spec_lg(&self) -> u32 {
+        self.lg@
+    }
+
+    /// The list head, if any, is a live descriptor.
+    proof fn lemma_head(&self)
+        requires
+            self.wf(),
+        ensures
+            self.empty_head@.addr != 0 ==> self.descs@.contains_key(self.empty_head),
+    {
+        if self.elist@.len() > 0 {
+            assert(enode(self.elist@, self.descs@, 0));
+        }
+    }
+
     /// Everything but the descriptors' links and the list is as in `o`.
     spec fn frame(&self, o: &Inner) -> bool {
         &&& self.free == o.free
@@ -948,6 +1139,8 @@ impl Inner {
         &&& self.all == o.all
         &&& self.runs == o.runs
         &&& self.pgs == o.pgs
+        &&& self.dclaims == o.dclaims
+        &&& self.mid == o.mid
         &&& links_only(o.descs@, self.descs@)
     }
 
@@ -1069,16 +1262,100 @@ impl Inner {
 
     /// Give a dropped descriptor back to `meta`, leaving the `Empty` list
     /// first when it is a member (every `Empty` extent is; a freed run's
-    /// descriptor still reads `Active` here and is in no list). Trusted
-    /// for now (`external_body`): it hands the block back to `Meta`, whose
-    /// allocation calls Verus does not check yet.
-    #[verifier::external_body]
-    fn retire(&mut self, meta: &Meta, d: *mut HugeDesc) {
-        // `d` is live and about to be discarded.
+    /// descriptor still reads `Active` here and is in no list), with its
+    /// permission and its block's claim.
+    fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
+        requires
+            crate::sys::may_syscall(),
+            perms_ok(old(self).descs@),
+            elist_ok(old(self).empty_head, old(self).empty_tail, old(self).elist@, old(self).descs@),
+            old(self).descs@.contains_key(d),
+            old(self).descs@[d].value().state <= 2,
+            old(self).all@.contains(d),
+            old(self).descs@[d].value().state == RunState::Empty as u8 ==> old(self).elist@.contains(d),
+            meta.live_id() == old(self).mid@,
+            forall|x: *mut HugeDesc| #[trigger] old(self).descs@.contains_key(x) ==> desc_claimed(old(self).dclaims@, x, old(self).mid@),
+        ensures
+            final(self).descs@.dom() == old(self).descs@.dom().remove(d),
+            final(self).mid == old(self).mid,
+            forall|x: *mut HugeDesc| #[trigger] final(self).descs@.contains_key(x) ==> desc_claimed(final(self).dclaims@, x, final(self).mid@),
+            perms_ok(final(self).descs@),
+            forall|x: *mut HugeDesc| #[trigger] final(self).descs@.contains_key(x) ==> same_but_links(
+                old(self).descs@[x].value(),
+                final(self).descs@[x].value(),
+            ),
+            final(self).elist@ == if old(self).descs@[d].value().state == RunState::Empty as u8 {
+                old(self).elist@.remove(old(self).elist@.index_of(d))
+            } else {
+                old(self).elist@
+            },
+            elist_ok(final(self).empty_head, final(self).empty_tail, final(self).elist@, final(self).descs@),
+            final(self).all@ == old(self).all@.remove(old(self).all@.index_of(d)),
+            final(self).free == old(self).free,
+            final(self).table == old(self).table,
+            final(self).next_page == old(self).next_page,
+            final(self).stats == old(self).stats,
+            final(self).np == old(self).np,
+            final(self).lg == old(self).lg,
+            final(self).runs == old(self).runs,
+            final(self).pgs == old(self).pgs,
+    {
+        let ghost d0 = self.descs@;
+        let ghost l0 = self.elist@;
+        proof {
+            if d0[d].value().state != RunState::Empty as u8 {
+                assert(!l0.contains(d)) by {
+                    if l0.contains(d) {
+                        assert(enode(l0, d0, l0.index_of(d)));
+                    }
+                }
+            }
+        }
+        // `d` is live and about to be discarded; its claim goes with it.
+        let tracked dc = self.dclaims.borrow_mut().tracked_remove(d);
+        proof {
+            assert(desc_claimed(old(self).dclaims@, d, old(self).mid@));
+            lemma_state_byte(d0[d].value().state);
+        }
         if self.desc(d).state() == RunState::Empty {
             self.unlink(d);
         }
-        free_desc(meta, d, Tracked::assume_new());
+        let ghost d1 = self.descs@;
+        let ghost l1 = self.elist@;
+        proof {
+            // `d` is in no list now.
+            assert(!l1.contains(d)) by {
+                if d0[d].value().state == RunState::Empty as u8 {
+                    assert(l0.no_duplicates());
+                    let j = l0.index_of(d);
+                    if l1.contains(d) {
+                        let i = l1.index_of(d);
+                        if i < j {
+                            assert(l1[i] == l0[i]);
+                        } else {
+                            assert(l1[i] == l0[i + 1]);
+                        }
+                    }
+                }
+            }
+        }
+        let tracked perm = self.descs.borrow_mut().tracked_remove(d);
+        proof {
+            self.all@ = self.all@.remove(self.all@.index_of(d));
+            assert(self.descs@.dom() =~= d0.dom().remove(d));
+            assert forall|i: int| 0 <= i < l1.len() implies #[trigger] enode(l1, self.descs@, i) by {
+                assert(enode(l1, d1, i));
+            }
+            assert forall|x: *mut HugeDesc| #[trigger] self.descs@.contains_key(x) implies same_but_links(
+                d0[x].value(),
+                self.descs@[x].value(),
+            ) by {
+                if d0[d].value().state == RunState::Empty as u8 {
+                    assert(same_but_links(d0[x].value(), d1[x].value()));
+                }
+            }
+        }
+        free_desc(meta, d, Tracked(desc_raw((perm, dc))));
     }
 
     /// Append to the `Empty` list; `d.dirty_at` must be the newest.
@@ -1245,14 +1522,32 @@ impl Inner {
         }
     }
 
-    /// The free extent starting at `page`, which must be a set free bit.
-    /// Trusted for now (`external_body`): its proof reads the free-page
-    /// set, which Verus does not check yet.
-    #[verifier::external_body]
-    fn extent_at(&self, page: usize) -> *mut HugeDesc {
+    /// The free extent starting at `page`, which must be a set free bit
+    /// that no free extent starting below it covers. The check that the
+    /// table has a free extent starting there is proved never to fail: the
+    /// bit's page is in a free extent (`free_exact`), which starts at it.
+    fn extent_at(&self, page: usize) -> (r: *mut HugeDesc)
+        requires
+            self.wf(),
+            self.free.map@.contains(page as nat),
+            ends_by(self.descs@, page as int),
+        ensures
+            self.descs@.contains_key(r),
+            self.descs@[r].value().start == page,
+            self.descs@[r].value().state != RunState::Active as u8,
+    {
+        let ghost x = choose|x: *mut HugeDesc| #[trigger] in_free(self.descs@, x, page as int);
+        proof {
+            // `x` holds `page` and starts at or below it; one starting
+            // below would end by it.
+            assert(keyed(self.table, self.descs@[x].value(), x));
+        }
         let d = self.table.get(page);
         // Table entries are live descriptors.
         if d.is_null() || self.desc(d).start() != page || !self.desc(d).state().is_free() {
+            proof {
+                assert(false);
+            }
             sys::abort_fmt(format_args!("huge: free page {page} has no extent"));
         }
         d
@@ -1333,6 +1628,8 @@ impl Placement {
     }
 }
 
+verus! {
+
 impl Huge {
     /// Create the huge allocator for `regions`, reserving its free-page
     /// bitmap and descriptor table in `meta`. `guard_install` should be the
@@ -1342,17 +1639,69 @@ impl Huge {
         meta: &Meta,
         regions: &Regions,
         guard_install: bool,
-        _once: Tracked<Once>,
-        ord: Tracked<&mut LockOrder>,
-    ) -> Option<Huge> {
+        Tracked(once): Tracked<Once>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<Huge>)
+        requires
+            crate::sys::may_syscall(),
+            regions.wf(),
+            0 < regions.huge_len >> regions.lg_page <= u32::MAX,
+            regions.huge_base + regions.huge_len <= crate::meta::va_limit(),
+            (1usize << regions.lg_page) >= 16,
+            meta.is_process(),
+            crate::meta::process_page() == (1usize << regions.lg_page),
+            old(ord).allows(rank_meta()),
+            once.step() == Step::Huge,
+        ensures
+            r matches Some(h) ==> h.spec_npages() == (regions.huge_len >> regions.lg_page) as int
+                && h.spec_page() == (1usize << regions.lg_page) as int,
+            *final(ord) == *old(ord),
+    {
+        broadcast use axiom_huge_lock_inv;
+
         let page = regions.page_size();
         let npages = regions.huge_pages();
-        assert!(
-            npages > 0 && npages <= u32::MAX as usize,
-            "huge: region page count out of range"
-        );
-        let free = Set::new(meta, page, npages, ord)?;
+        assert!(npages > 0 && npages <= u32::MAX as usize, "huge: region page count out of range");
+        proof {
+            let lg = regions.lg_page as usize;
+            assert((1usize << lg) <= 0x8000_0000_0000_0000usize) by (bit_vector)
+                requires
+                    lg < 64,
+            ;
+            assert(4 <= lg) by (bit_vector)
+                requires
+                    lg < 64,
+                    (1usize << lg) >= 16,
+            ;
+            vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+            vstd::bits::lemma_usize_shl_is_mul(1, lg);
+            assert(page as nat == pow2(lg as nat));
+            assert(crate::meta::is_pow2(page));
+        }
+        let free = Set::new(meta, page, npages, Tracked(ord))?;
         let table = Table::new(meta, page)?;
+        let tracked descs = Map::tracked_empty();
+        // The run authorities, empty: no run is live yet.
+        let tracked (runs, _) = GhostSetAuth::<(int, int)>::new(vstd::set::Set::empty());
+        let tracked (pgs, _) = GhostSetAuth::<int>::new(vstd::set::Set::empty());
+        proof {
+            axiom_run_locs(runs.id(), pgs.id(), once);
+            assert(active_runs(descs) =~= vstd::set::Set::empty());
+            assert(active_pages(descs) =~= vstd::set::Set::empty());
+        }
+        proof {
+            let lg = regions.lg_page;
+            let p = pow2(lg as nat) as int;
+            vstd::bits::lemma_usize_shr_is_div(regions.huge_len, lg as usize);
+            vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(regions.huge_len as int, p);
+            vstd::arithmetic::div_mod::lemma_mod_pos_bound(regions.huge_len as int, p);
+            assert(npages * p <= regions.huge_len) by (nonlinear_arith)
+                requires
+                    regions.huge_len == p * npages + (regions.huge_len as int) % p,
+                    0 <= (regions.huge_len as int) % p,
+            ;
+        }
         Some(Huge {
             base: regions.huge_base,
             lg_page: regions.lg_page,
@@ -1378,19 +1727,17 @@ impl Huge {
                         next_page: 0,
                         table_cap: 0,
                     },
-                    // The ghost model: `Huge::new` is outside `verus!`, so
-                    // nothing proves `Inner::wf` of it here.
-                    descs: Tracked::assume_new(),
-                    dclaims: Tracked::assume_new(),
-                    mid: Ghost::assume_new(),
-                    elist: Ghost::assume_new(),
-                    all: Ghost::assume_new(),
-                    np: Ghost::assume_new(),
-                    lg: Ghost::assume_new(),
-                    runs: Tracked::assume_new(),
-                    pgs: Tracked::assume_new(),
+                    descs: Tracked(descs),
+                    dclaims: Tracked(Map::tracked_empty()),
+                    mid: Ghost(meta.live_id()),
+                    elist: Ghost(Seq::empty()),
+                    all: Ghost(Seq::empty()),
+                    np: Ghost(npages),
+                    lg: Ghost(regions.lg_page),
+                    runs: Tracked(runs),
+                    pgs: Tracked(pgs),
                 },
-                Ghost::assume_new(),
+                Ghost(rank_huge()),
             ),
         })
     }
@@ -1401,8 +1748,81 @@ impl Huge {
         self.inner.raw()
     }
 
+    /// The page, `2^lg_page`, and at least one page fits the region.
+    proof fn lemma_page(&self)
+        requires
+            self.inv(),
+        ensures
+            self.lg_page < 64,
+            0 < self.npages <= u32::MAX,
+            0 < pow2(self.lg_page as nat) <= self.npages * pow2(self.lg_page as nat),
+            self.base + self.npages * pow2(self.lg_page as nat) <= crate::meta::va_limit(),
+            16 <= pow2(self.lg_page as nat),
+            (1usize << self.lg_page) == pow2(self.lg_page as nat),
+    {
+        let p = pow2(self.lg_page as nat);
+        vstd::arithmetic::power2::lemma2_to64();
+        if self.lg_page > 4 {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(4, self.lg_page as nat);
+        }
+        vstd::arithmetic::power2::lemma_pow2_pos(self.lg_page as nat);
+        assert(p <= self.npages * p) by (nonlinear_arith)
+            requires
+                self.npages >= 1,
+                p > 0,
+        ;
+        vstd::bits::lemma_usize_shl_is_mul(1, self.lg_page as usize);
+    }
+
+    /// `x` pages of `2^lg_page` fit the region when `x <= npages`.
+    proof fn lemma_pages(&self, x: usize)
+        requires
+            self.inv(),
+            x <= self.npages,
+        ensures
+            x * pow2(self.lg_page as nat) <= self.npages * pow2(self.lg_page as nat),
+            self.base + x * pow2(self.lg_page as nat) <= crate::meta::va_limit(),
+            (x << self.lg_page) == x * pow2(self.lg_page as nat),
+    {
+        self.lemma_page();
+        let p = pow2(self.lg_page as nat);
+        assert(x * p <= self.npages * p) by (nonlinear_arith)
+            requires
+                x <= self.npages,
+                p >= 0,
+        ;
+        vstd::bits::lemma_usize_shl_is_mul(x, self.lg_page as usize);
+    }
+
+    /// Pages in the region.
+    pub closed spec fn spec_npages(&self) -> int {
+        self.npages as int
+    }
+
+    /// The page size.
+    pub closed spec fn spec_page(&self) -> int {
+        pow2(self.lg_page as nat) as int
+    }
+
+    /// The usable bytes of a run for `size`: `size` rounded up to a page,
+    /// and at least one page.
+    pub open spec fn spec_usable(&self, size: usize) -> int {
+        let n = (size + self.spec_page() - 1) / self.spec_page();
+        (if n == 0 { 1 } else { n }) * self.spec_page()
+    }
+
     #[inline]
-    pub fn page_size(&self) -> usize {
+    pub fn page_size(&self) -> (r: usize)
+        ensures
+            r == self.spec_page(),
+            r > 0,
+            crate::meta::is_pow2(r),
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+            assert((1usize << self.lg_page) as nat == pow2(self.lg_page as nat));
+        }
         1 << self.lg_page
     }
 
@@ -1431,25 +1851,87 @@ impl Huge {
         self.purge_on_free.store(on, Ordering::Relaxed);
     }
 
+    /// The address of page `page`, inside the region (or its end).
     #[inline]
-    fn addr(&self, page: usize) -> usize {
+    fn addr(&self, page: usize) -> (r: usize)
+        requires
+            page <= self.npages,
+        ensures
+            r == self.base + page * pow2(self.lg_page as nat),
+            r <= crate::meta::va_limit(),
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_pages(page);
+        }
         self.base + (page << self.lg_page)
     }
 
     /// Usable pages for a request, or `None` if it cannot be represented.
     #[inline]
-    pub fn usable_pages(&self, size: usize) -> Option<usize> {
+    pub fn usable_pages(&self, size: usize) -> (r: Option<usize>)
+        ensures
+            r matches Some(n) ==> n >= 1 && size <= n * self.spec_page() && n * self.spec_page() <= usize::MAX,
+            r matches Some(n) ==> n * self.spec_page() == self.spec_usable(size),
+            r is None <==> size + self.spec_page() - 1 > usize::MAX,
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+        }
         let n = size.checked_add(self.page_size() - 1)? >> self.lg_page;
+        proof {
+            let p = pow2(self.lg_page as nat) as int;
+            let y = (size + p - 1) as usize;
+            vstd::bits::lemma_usize_shr_is_div(y, self.lg_page as usize);
+            assert(n as int == y as int / p);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(y as int, p);
+            vstd::arithmetic::div_mod::lemma_mod_pos_bound(y as int, p);
+            assert(size <= n * p && n * p <= y) by (nonlinear_arith)
+                requires
+                    y == size + p - 1,
+                    y == p * n + (y as int) % p,
+                    0 <= (y as int) % p < p,
+            ;
+            if n == 0 {
+                assert(n * p == 0) by (nonlinear_arith)
+                    requires
+                        n == 0,
+                ;
+            }
+            assert(p <= usize::MAX);
+            if n == 0 {
+                assert(size <= 1 * p && 1 * p <= usize::MAX);
+            }
+        }
         Some(n.max(1))
     }
 
     /// Usable bytes `alloc(size, ..)` would give: `nallocx` for huge sizes.
     #[inline]
-    pub fn usable_for(&self, size: usize) -> Option<usize> {
+    pub fn usable_for(&self, size: usize) -> (r: Option<usize>)
+        ensures
+            r matches Some(b) ==> size <= b,
+            r matches Some(b) ==> b == self.spec_usable(size),
+            r is None <==> size + self.spec_page() - 1 > usize::MAX,
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+        }
         let n = self.usable_pages(size);
+        proof {
+            if let Some(n) = n {
+                vstd::bits::lemma_usize_shl_is_mul(n, self.lg_page as usize);
+            }
+        }
         Some(n? << self.lg_page)
     }
+}
 
+} // verus!
+
+impl Huge {
     /// Pages a run for `size` bytes at `align` takes, its guard included, or
     /// `None` when no placement in the region can hold it: the size cannot
     /// be represented, the run is longer than the region, or `align` is
@@ -1642,20 +2124,30 @@ impl Huge {
         // SAFETY: the caller's.
         unsafe { ptr::read_volatile(q as *const u64) }
     }
+}
 
+verus! {
+
+impl Huge {
     /// Refresh `oldest_empty` from the list head. Returns `true` when the
     /// list went from empty to non-empty, which is when a background
     /// thread sleeping without a deadline needs waking.
-    fn sync_oldest(&self, g: &Inner) -> bool {
+    fn sync_oldest(&self, g: &Inner) -> bool
+        requires
+            g.wf(),
+    {
+        proof {
+            g.lemma_head();
+        }
         // The head, if any, is a live `Empty` extent.
-        let new = if g.empty_head.is_null() {
-            0
-        } else {
-            g.desc(g.empty_head).dirty_at
-        };
+        let new = if g.empty_head.is_null() { 0 } else { g.desc(g.empty_head).dirty_at };
         self.gate.set_oldest_empty(new)
     }
+}
 
+} // verus!
+
+impl Huge {
     /// Lowest-address first fit for `need` pages at `align`. Returns the
     /// start page and the free extent it comes from (`None` for fresh pages
     /// at the high-water mark). The extent may end below `s + need` only if
@@ -1966,12 +2458,40 @@ impl Huge {
             dirty_at: 0,
         }
     }
+}
+
+verus! {
+
+impl Huge {
+    /// `r` is the usable size of a run starting at `page`: whole pages, at
+    /// least one, with the run's guard after them inside the region.
+    pub open spec fn spec_run_usable(&self, page: usize, r: usize) -> bool {
+        &&& r >= self.spec_page()
+        &&& (r as int) % self.spec_page() == 0
+        &&& page * self.spec_page() + r + GUARD_PAGES * self.spec_page() <= self.spec_npages() * self.spec_page()
+    }
 
     /// Usable bytes of the live run starting at `page`. Aborts otherwise.
-    pub fn usable_size(&self, page: usize) -> usize {
-        let g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+    /// The result is the bytes of the run's usable pages, as its descriptor
+    /// counts them (`Huge::take` writes `usable` from the pages it commits).
+    pub fn usable_size(&self, page: usize) -> (r: usize)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            page <= self.spec_npages(),
+        ensures
+            page < self.spec_npages(),
+            self.spec_run_usable(page, r),
+    {
+        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
+
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+        }
+        // Premise (lock order): the callers hold no allocator lock.
+        let tracked mut ord = axiom_entry();
+        let g = self.inner.lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
         let d = g.table.get(page);
         // Table entries are live descriptors.
         if d.is_null() || g.desc(d).start() != page {
@@ -1980,12 +2500,49 @@ impl Huge {
         if g.desc(d).state() != RunState::Active {
             already_free(self.addr(page));
         }
+        proof {
+            // A live descriptor's pages lie below the mark.
+            assert(g@.descs@.contains_key(d));
+            let v = g@.descs@[d].value();
+            assert(desc_ok(v, g@.next_page));
+            assert(v.start == page && g@.next_page <= g@.np@);
+            lemma_state_byte(v.state);
+            assert(g@.spec_lg() == self.lg_page);
+            // An `Active` descriptor's usable pages and guard are its pages.
+            assert(run_ok(v, g@.lg@));
+            let p = self.spec_page();
+            assert(v.usable >= p && (v.usable as int) % p == 0) by {
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(v.pages - GUARD_PAGES, p);
+                assert((v.pages - GUARD_PAGES) * p >= 1 * p) by (nonlinear_arith)
+                    requires
+                        v.pages - GUARD_PAGES >= 1,
+                        p > 0,
+                ;
+            }
+            assert(page * p + v.usable + GUARD_PAGES * p <= self.npages * p) by (nonlinear_arith)
+                requires
+                    v.usable == (v.pages - GUARD_PAGES) * p,
+                    page + v.pages <= self.npages,
+                    p > 0,
+            ;
+        }
         g.desc(d).usable
     }
 
     /// Descriptor of the extent starting or ending at `page`, if any.
-    pub fn lookup(&self, page: usize, ord: Tracked<&mut LockOrder>) -> Option<RunInfo> {
-        let g = self.inner.lock(ord, Tracked::assume_new());
+    pub fn lookup(&self, page: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<RunInfo>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
+
+        proof {
+            use_type_invariant(self);
+        }
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let d = g.table.get(page);
         if d.is_null() {
             return None;
@@ -2000,7 +2557,11 @@ impl Huge {
             dirty_at: g.desc(d).dirty_at,
         })
     }
+}
 
+} // verus!
+
+impl Huge {
     /// Purge every `Empty` extent whose `dirty_at` is at or before `cutoff`
     /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`; an extent
     /// whose discard fails stays `Empty` in its place (the next purge
@@ -2199,22 +2760,60 @@ impl Huge {
             self.purge_curve(now, curve, keep16, ord);
         })
     }
+}
 
+verus! {
+
+impl Huge {
     /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's
-    /// retention figure.
-    pub fn empty_bytes(&self, ord: Tracked<&mut LockOrder>) -> usize {
-        let g = self.inner.lock(ord, Tracked::assume_new());
+    /// retention figure: at most the region.
+    pub fn empty_bytes(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
+        ensures
+            *final(ord) == *old(ord),
+            r <= crate::meta::va_limit(),
+    {
+        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
+
+        proof {
+            use_type_invariant(self);
+        }
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        proof {
+            assert(g@.stats.empty_pages <= g@.next_page <= self.npages);
+            self.lemma_pages(g@.stats.empty_pages as usize);
+        }
         g.stats.empty_pages << self.lg_page
     }
 
-    pub fn stats(&self, ord: Tracked<&mut LockOrder>) -> HugeStats {
-        let g = self.inner.lock(ord, Tracked::assume_new());
-        HugeStats {
-            table_cap: g.table.cap(),
-            ..g.stats
-        }
-    }
+    /// The extent counters, from one lock hold. The free extents' pages
+    /// are among the region's, at most `u32::MAX`.
+    pub fn stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: HugeStats)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_huge()),
+        ensures
+            r.empty_pages + r.purged_pages <= u32::MAX,
+            *final(ord) == *old(ord),
+    {
+        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
 
+        proof {
+            use_type_invariant(self);
+        }
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        proof {
+            g@.table.lemma_wf_storage();
+        }
+        HugeStats { table_cap: g.table.cap(), ..g.stats }
+    }
+}
+
+} // verus!
+
+impl Huge {
     /// Oldest `Empty` extent's `dirty_at`, read under the lock (the decay
     /// driver reads the copy in [`Huge::oldest_empty`] instead).
     #[cfg(test)]
@@ -2342,21 +2941,27 @@ fn init_free(d: *mut HugeDesc, start: usize, pages: usize, state: RunState, dirt
     }
 }
 
+verus! {
+
 #[cold]
 #[inline(never)]
-fn not_a_run(p: usize) -> ! {
-    sys::abort_fmt(format_args!(
-        "invalid free of {p:#x}: not the start of a huge allocation"
-    ))
+fn not_a_run(p: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
+    sys::abort_fmt(format_args!("invalid free of {p:#x}: not the start of a huge allocation"))
 }
 
 #[cold]
 #[inline(never)]
-fn already_free(p: usize) -> ! {
-    sys::abort_fmt(format_args!(
-        "double free of {p:#x}: huge allocation already freed"
-    ))
+fn already_free(p: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
+    sys::abort_fmt(format_args!("double free of {p:#x}: huge allocation already freed"))
 }
+
+} // verus!
 
 /// The `check_zero` abort: a huge run handed out as zero has a dirty word.
 #[cold]

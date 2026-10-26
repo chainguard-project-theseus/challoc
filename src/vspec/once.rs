@@ -13,6 +13,9 @@ verus! {
 // Ghost: for the proofs that take a step's token.
 #[allow(dead_code)]
 pub ghost enum Step {
+    /// The huge allocator's run authorities (`huge::axiom_run_locs`,
+    /// `Huge::new`).
+    Huge,
     /// Class `c`'s slot-token authority (`class::table`,
     /// `SlabTable::new`).
     SlotLoc(int),
@@ -28,6 +31,13 @@ pub ghost enum Step {
 #[allow(dead_code)]
 pub tracked struct Once {
     ghost step: Step,
+}
+
+impl Once {
+    /// The step this token is for.
+    pub closed spec fn step(self) -> Step {
+        self.step
+    }
 }
 
 } // verus!
