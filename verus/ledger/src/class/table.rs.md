@@ -11,7 +11,7 @@ file.
 
 ## `axiom_table_lock_inv`
 
-src/class/table.rs:104. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:105. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit lock's value keeps [`TableInner::inv`] while the lock is free.

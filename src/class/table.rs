@@ -19,6 +19,7 @@ use crate::purge;
 use crate::slab::stride_of;
 use crate::slab::{DESC_ALIGN, HEADER, SlabDesc, desc_stride};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
+use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::addr::cast_provenance;
 use crate::vspec::atom::new_usize;
@@ -327,12 +328,13 @@ fn watermark_aligned(s: usize, lg_group: u8) {
 }
 
 /// [`SlabTable::install_guard`]'s abort: the guard slab of `class` at `s`
-/// could be neither guarded nor re-protected. Inlined and `track_caller`, as
-/// [`group_geometry`], so the panic names the caller's line.
+/// could be neither guarded nor re-protected.
 #[inline(always)]
-#[track_caller]
 fn guard_unprotectable(class: &u16, s: &usize) -> ! {
-    panic!("class {}: cannot re-protect guard slab {}", *class, *s)
+    sys::abort_kernel(format_args!(
+        "class {}: cannot re-protect guard slab {}",
+        *class, *s
+    ))
 }
 
 verus! {
@@ -928,8 +930,9 @@ impl SlabTable {
         self.committed_slabs.load(order)
     }
 
-    /// Guard slabs committed so far.
-    pub fn guards(&self) -> usize {
+    /// Guard slabs committed so far. `_ord` is the caller's lock-order
+    /// token (ghost) for the commit lock.
+    pub fn guards(&self, _ord: Tracked<&mut LockOrder>) -> usize {
         self.inner
             .lock(Tracked::assume_new(), Tracked::assume_new())
             .guards
@@ -1116,7 +1119,7 @@ impl SlabTable {
 
     #[inline]
     pub(super) fn slot_ptr(&self, slab: usize, slot: usize) -> *mut u8 {
-        (self.slab_addr(slab) + slot * self.class().size()) as *mut u8
+        addr_to_ptr(self.slab_addr(slab) + slot * self.class().size())
     }
 
     /// Slab and slot of a pointer that must be a slot start in this class's
@@ -1424,11 +1427,18 @@ impl SlabTable {
     /// class lock), so the syscalls run without the commit lock, which
     /// only counts the guard.
     ///
+    /// `ord` is the caller's lock-order token (ghost) for the commit lock.
+    ///
     /// [`starts_run`]: SlabTable::starts_run
     /// [`run_slabs`]: SlabTable::run_slabs
-    pub(super) fn commit_run(&self, s: usize, limit: usize) -> Option<bool> {
+    pub(super) fn commit_run(
+        &self,
+        s: usize,
+        limit: usize,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Option<bool> {
         if !self.runs() {
-            return self.commit_slab(s);
+            return self.commit_slab(s, ord);
         }
         let cls = self.class();
         let guard = self.is_guard_slab(s);
@@ -1478,10 +1488,11 @@ impl SlabTable {
     /// slab and `s` starts one) read-write, or install the guard when `s`
     /// is a guard slab. `Some(true)` for a slab ready to allocate from,
     /// `Some(false)` for a guard slab, `None` when `mprotect` fails (the
-    /// slab stays uncommitted and may be retried).
+    /// slab stays uncommitted and may be retried). `_ord` is the caller's
+    /// lock-order token (ghost) for the commit lock.
     // Refill path: left as written so its codegen does not move.
     #[allow(clippy::manual_is_multiple_of)]
-    pub(super) fn commit_slab(&self, s: usize) -> Option<bool> {
+    pub(super) fn commit_slab(&self, s: usize, _ord: Tracked<&mut LockOrder>) -> Option<bool> {
         let cls = self.class();
         let page = 1usize << self.lg_page;
         let mut g = self
