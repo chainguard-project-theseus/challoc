@@ -906,6 +906,20 @@ proof fn lemma_run_slabs(t: SlabTable)
     assert(1usize & sub(1usize, 1) == 0) by (bit_vector);
 }
 
+/// `spec_nslabs` is the field, for the rest of `class/`.
+pub(super) broadcast proof fn lemma_spec_nslabs(t: SlabTable)
+    ensures
+        #[trigger] t.spec_nslabs() == t.nslabs,
+{
+}
+
+/// `spec_class` is the field, for the rest of `class/`.
+pub(super) broadcast proof fn lemma_spec_class(t: SlabTable)
+    ensures
+        #[trigger] t.spec_class() == t.class as usize,
+{
+}
+
 } // verus!
 
 verus! {
