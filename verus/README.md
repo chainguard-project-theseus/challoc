@@ -89,6 +89,13 @@ FLOOR rises in its own pull requests between merges, to the figures the
 check names, so parallel pull requests do not conflict on it; the floor is
 lowered only on purpose, with the reason in FLOOR.
 
+The [README badge](../README.md) shows a snapshot of the verified shares,
+as `verus-main` reported them on main. The repository is private,
+so shields.io cannot read the counts; the badge carries them in its
+URL. It changes in the pull requests that raise FLOOR, to the figures
+the check names, so parallel pull requests do not conflict on it. Each
+`verus-main` log has the current figures.
+
 The counter comes from pcre3's `verus/count`, cut to challoc's single
 crate.
 
