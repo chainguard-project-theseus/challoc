@@ -80,6 +80,8 @@ fn count_op() {
     TEST_OPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
+verus! {
+
 // arm64 `AT_HWCAP` bits, from `arch/arm64/include/uapi/asm/hwcap.h`; the
 // container test cross-checks them against the installed header where one
 // exists.
@@ -88,10 +90,21 @@ pub const HWCAP_PACA: u64 = 1 << 30;
 #[cfg(any(test, target_arch = "aarch64"))]
 pub const HWCAP_PACG: u64 = 1 << 31;
 
+/// The process may execute the data-key A instructions [`sign`], [`auth`]
+/// and [`strip`] (`pacda`, `autda`, `xpacd`): every CPU it runs on
+/// implements FEAT_PAuth. Without it the three are UNDEFINED on aarch64
+/// (`SIGILL`). Uninterpreted; the one fact about it is the trusted
+/// `AT_HWCAP` reading in `sys::auxv`, which [`available`] turns into its
+/// contract.
+pub uninterp spec fn pac_available() -> bool;
+
 /// Whether the kernel exposes pointer authentication with the address key
 /// (`HWCAP_PACA`) and the generic key (`HWCAP_PACG`) to this process.
 /// False on x86_64.
-pub fn available() -> bool {
+pub fn available() -> (r: bool)
+    ensures
+        r ==> pac_available(),
+{
     #[cfg(target_arch = "aarch64")]
     {
         use super::auxv::{AT_HWCAP, getauxval};
@@ -103,6 +116,8 @@ pub fn available() -> bool {
         false
     }
 }
+
+} // verus!
 
 /// Whether the CPU has FEAT_FPAC (a failed `autda` faults at the
 /// instruction) rather than the original PAuth (it returns a non-canonical

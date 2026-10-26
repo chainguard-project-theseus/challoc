@@ -1,0 +1,2 @@
+getauxval#1	FFI/syscall	none (assumption)
+getauxval#2	FFI/syscall	none (assumption)

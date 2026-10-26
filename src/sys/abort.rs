@@ -5,6 +5,9 @@
 use super::{SIG_UNBLOCK, SIGABRT, SIGSET_WORDS_BYTES, STDERR_FILENO};
 use super::{exit_group, getpid, gettid, nr, raw, write_all};
 use core::fmt;
+use vstd::prelude::*;
+
+verus! {
 
 /// The kernel's `struct sigaction` for `rt_sigaction`. Both x86_64 and
 /// aarch64 define `SA_RESTORER`, so the layout is the same.
@@ -25,14 +28,35 @@ pub struct Stderr {
 }
 
 impl Stderr {
-    pub const fn new() -> Self {
+    /// At most the buffer is pending, and the sink was built where a system
+    /// call may be made (its flush is one).
+    #[verifier::type_invariant]
+    spec fn wf(&self) -> bool {
+        self.len <= 512 && crate::sys::may_syscall()
+    }
+
+    pub const fn new() -> Self
+        requires
+            crate::sys::may_syscall(),
+    {
         Stderr {
             buf: [0; 512],
             len: 0,
         }
     }
 
-    pub fn flush(&mut self) {
+    /// The bytes waiting in the buffer.
+    pub closed spec fn pending(&self) -> nat {
+        self.len as nat
+    }
+
+    pub fn flush(&mut self)
+        ensures
+            final(self).pending() == 0,
+    {
+        proof {
+            use_type_invariant(&*self);
+        }
         if self.len > 0 {
             write_all(STDERR_FILENO, &self.buf[..self.len]);
             self.len = 0;
@@ -40,6 +64,9 @@ impl Stderr {
     }
 }
 
+// Outside the proofs: building a `Stderr` needs `may_syscall` (its type
+// invariant), which `Default::default` cannot require.
+#[verifier::external]
 impl Default for Stderr {
     fn default() -> Self {
         Self::new()
@@ -54,7 +81,12 @@ impl fmt::Write for Stderr {
     /// or `copy_from_slice`.)
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let mut b = s.as_bytes();
-        while !b.is_empty() {
+        while !b.is_empty()
+            decreases 2 * b@.len() + (if self.len > 0 { 1int } else { 0int }),
+        {
+            proof {
+                use_type_invariant(&*self);
+            }
             let room = self.buf.len() - self.len;
             if room == 0 {
                 self.flush();
@@ -63,7 +95,13 @@ impl fmt::Write for Stderr {
             // Cut on a character boundary: a UTF-8 continuation byte
             // (`0b10xx_xxxx`) is never the first byte of a character.
             let mut n = b.len().min(room);
-            while n > 0 && n < b.len() && (b[n] & 0xC0) == 0x80 {
+            while n > 0 && n < b.len() && (b[n] & 0xC0) == 0x80
+                invariant
+                    n <= b@.len(),
+                    n <= room,
+                    room == 512 - self.len,
+                decreases n,
+            {
                 n -= 1;
             }
             if n == 0 {
@@ -76,7 +114,14 @@ impl fmt::Write for Stderr {
                 n = b.len().min(room);
             }
             let mut i = 0;
-            while i < n {
+            while i < n
+                invariant
+                    crate::sys::may_syscall(),
+                    self.len + n <= 512,
+                    n <= b@.len(),
+                    i <= n,
+                decreases n - i,
+            {
                 self.buf[self.len + i] = b[i];
                 i += 1;
             }
@@ -90,14 +135,25 @@ impl fmt::Write for Stderr {
 /// Write `challoc: <msg>` to stderr and terminate with `SIGABRT`.
 #[cold]
 #[inline(never)]
-pub fn abort(msg: &str) -> ! {
+pub fn abort(msg: &str) -> !
+    requires
+        crate::sys::may_abort(),
+{
     abort_fmt(format_args!("{msg}"))
 }
 
 /// Formatting variant of [`abort`]. Use through the `abort!` macro.
 #[cold]
 #[inline(never)]
-pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
+pub fn abort_fmt(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort(),
+{
+    proof {
+        // A root of the call graph for `may_syscall`: the abort's write and
+        // `SIGABRT`, after which nothing returns.
+        crate::sys::grant_syscalls();
+    }
     use fmt::Write as _;
     #[cfg(test)]
     test_unwind(args);
@@ -113,17 +169,29 @@ pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
 /// [`abort_fmt`] at a resource failure: a resource the allocator needs
 /// failed it (a system call that returns an error, such as an `madvise`,
 /// or metadata the reservation or the kernel cannot supply), which nothing
-/// the program does rules out.
+/// the program does rules out ([`super::kernel_aborts`]). Trusted: the
+/// call, which needs [`super::may_abort`], under the narrower
+/// [`super::may_abort_kernel`].
+#[verifier::external_body]
 #[inline(always)]
-pub fn abort_kernel(args: fmt::Arguments<'_>) -> ! {
+pub fn abort_kernel(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort_kernel(),
+{
     abort_fmt(args)
 }
 
 /// [`abort_fmt`] at a check of the free paths that fires on an invalid
 /// free, and on a valid one only if allocator state is corrupt (the
-/// watermark, the live count, the slab state, the owner word).
+/// watermark, the live count, the slab state, the owner word;
+/// [`super::pending_aborts`]). Trusted: the call, which needs
+/// [`super::may_abort`], under the narrower [`super::may_abort_pending`].
+#[verifier::external_body]
 #[inline(always)]
-pub fn abort_pending(args: fmt::Arguments<'_>) -> ! {
+pub fn abort_pending(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort_pending(),
+{
     abort_fmt(args)
 }
 
@@ -132,7 +200,11 @@ pub fn abort_pending(args: fmt::Arguments<'_>) -> ! {
 /// disposition to default and deliver again. `exit_group` is the last
 /// resort so the process never continues past an inconsistency.
 #[cold]
-fn die() -> ! {
+fn die() -> !
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let set: u64 = 1 << (SIGABRT - 1);
     let pid = getpid() as isize as usize;
     let tid = gettid() as isize as usize;
@@ -165,6 +237,8 @@ fn die() -> ! {
     // 128 + SIGABRT, the shell convention for death by signal 6.
     exit_group(134)
 }
+
+} // verus!
 
 /// Abort the process with a formatted `challoc: ...` message on stderr.
 #[macro_export]
