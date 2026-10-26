@@ -4,6 +4,7 @@
 use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
 use crate::meta::Meta;
+use vstd::prelude::Tracked;
 
 impl ClassState {
     /// The slab a refill uses when no partial slab has room (design
@@ -63,7 +64,7 @@ impl ClassState {
             }
             let s = g.group_next;
             let usable = if table.starts_run(s) {
-                table.commit_run(s, g.group_end)?
+                table.commit_run(s, g.group_end, Tracked::assume_new())?
             } else {
                 true
             };
