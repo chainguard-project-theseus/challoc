@@ -92,20 +92,46 @@ impl TableInner {
 
 /// Assumption (`lock.rs`): the commit lock's value keeps
 /// [`TableInner::inv`] while the lock is free. `new` (verified) builds it
-/// with zero counts and uncommitted tables. The holders are not verified
-/// yet: `take_group` moves `next_slab` to the end of the group it hands
-/// out, a group boundary or the region's end, and commits the tables
-/// through `Lazy::ensure`, which keeps [`lazy_ok`] when its requirements
-/// hold; `commit_run` and `commit_slab` add one guard per guard slab they
-/// commit, which keeps the count at most `next_slab` because every slab
-/// below `next_slab` is reached once by the cursor of the arena its group
-/// went to; `guards` and `mirror_watermark` change no field this reads;
-/// the test helper `corrupt_owner_word` only commits through
-/// `Lazy::ensure`.
+/// with zero counts and uncommitted tables ([`lemma_first_value`]).
+///
+/// Verified holders: `guards` changes nothing. `commit_run` and
+/// `commit_slab` add one to `guards` for the guard slab they commit and
+/// change no other field, so every conjunct but `guards <= next_slab`
+/// still holds when their guard drops; that one rests on a premise their
+/// proofs do not show: each slab below `next_slab` is reached once, by
+/// the cursor of the one arena its group went to (`next_fresh_slab`
+/// moves each arena's cursor forward through its own groups, under that
+/// arena's class lock), so at most one guard is counted per guard slab
+/// handed out.
+///
+/// Unverified holders: `take_group` moves `next_slab` to the end of the
+/// group it hands out, a group boundary or the region's end, and commits
+/// the tables through `Lazy::ensure`, which keeps [`lazy_ok`] when its
+/// requirements hold; `mirror_watermark` changes no field this reads; the
+/// test helper `corrupt_owner_word` only commits through `Lazy::ensure`.
 pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
     ensures
         #[trigger] lock_inv(v) == v.inv(),
 ;
+
+/// The commit lock's first value, as [`SlabTable::new`] builds it (no
+/// slab handed out, no guard, the three tables reserved and uncommitted),
+/// keeps the lock's invariant: what `Lock::new` requires of it.
+proof fn lemma_first_value(descs: Lazy, bits: Lazy, owners: Lazy, page: usize, group: usize)
+    requires
+        1 <= page <= 0x8000_0000_0000_0000,
+        page == crate::meta::process_page(),
+        group >= 1,
+        lazy_ok(descs, page),
+        lazy_ok(bits, page),
+        lazy_ok(owners, page),
+    ensures
+        forall|v: TableInner|
+            v.descs == descs && v.bits == bits && v.owners == owners && v.next_slab == 0 && v.guards == 0
+                && v.page@ == page && v.group@ == group ==> #[trigger] lock_inv(v),
+{
+    broadcast use axiom_table_lock_inv;
+}
 
 /// Offset of class `class`'s descriptor array, bitmap and owner array
 /// inside their reservations.
@@ -246,26 +272,43 @@ const _: () = assert!(!core::mem::size_of::<SlabTable>().is_multiple_of(512));
 // ever used under the lock.
 unsafe impl Send for TableInner {}
 
+verus! {
+
 /// Bytes a run holds at most ([`SlabTable::commit_run`]): the default
 /// guard interval of 64 KiB slabs, so a run is as long with guards on or
 /// off, and a class of large slabs commits one at a time.
 pub(super) const RUN_BYTES: usize = 512 << 10;
 
+} // verus!
+
 // SAFETY (all three): `addr..addr + len` is inside a class region this
 // allocator reserved (the callers pass slab or page-group ranges below
 // the region's end), so changing its protection or installing a guard
 // affects only pages nothing else in the process maps.
-fn commit(addr: usize, len: usize) -> Result<(), Errno> {
+verus! {
+
+fn commit(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
 }
 
-fn decommit(addr: usize, len: usize) -> Result<(), Errno> {
+fn decommit(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     unsafe { sys::mprotect(addr, len, PROT_NONE) }
 }
 
-fn guard(addr: usize, len: usize) -> Result<(), Errno> {
+fn guard(addr: usize, len: usize) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
+
+} // verus!
 
 /// `(*w).load(Relaxed)` of the owner word of a handed-out group: the
 /// arena that owns the group's slabs.
@@ -327,15 +370,19 @@ fn watermark_aligned(s: usize, lg_group: u8) {
     );
 }
 
+verus! {
+
 /// [`SlabTable::install_guard`]'s abort: the guard slab of `class` at `s`
 /// could be neither guarded nor re-protected.
 #[inline(always)]
-fn guard_unprotectable(class: &u16, s: &usize) -> ! {
-    sys::abort_kernel(format_args!(
-        "class {}: cannot re-protect guard slab {}",
-        *class, *s
-    ))
+fn guard_unprotectable(class: &u16, s: &usize) -> !
+    requires
+        crate::sys::may_abort_kernel(),
+{
+    sys::abort_kernel(format_args!("class {}: cannot re-protect guard slab {}", *class, *s))
 }
+
+} // verus!
 
 verus! {
 
@@ -402,6 +449,24 @@ impl SlabTable {
     /// The class, for other modules' contracts.
     pub closed spec fn spec_class(&self) -> usize {
         self.class as usize
+    }
+
+    /// Slabs per page group, for other modules' contracts.
+    pub closed spec fn spec_slabs_per_page(&self) -> usize {
+        self.slabs_per_page as usize
+    }
+
+    /// Whether `slab` is a guard slab ([`is_guard_slab`]).
+    ///
+    /// [`is_guard_slab`]: SlabTable::is_guard_slab
+    pub closed spec fn spec_is_guard(&self, slab: usize) -> bool {
+        crate::layout::guard_of(self.lg_slabs_per_page, self.guard_mask, slab)
+    }
+
+    /// The slabs a run holds at most ([`run_slabs`](SlabTable::run_slabs)).
+    pub closed spec fn spec_run_slabs(&self) -> usize {
+        let r = RUN_BYTES >> class_table()[self.class as int].lg_slab;
+        if r < 1 { 1 } else { r }
     }
 
     /// Create the table for `class`. Reserves the descriptor array, the
@@ -587,6 +652,9 @@ impl SlabTable {
             assert(lazy_ok(bits, page));
             assert(lazy_ok(owners, page));
             lemma_groups_paged(regions.class_base[class as int], slabs_per_page, cls.lg_slab, regions.lg_page, page);
+        }
+        proof {
+            lemma_first_value(descs, bits, owners, page, group);
         }
         let (committed_slabs, _cperm) = new_usize(0);
         let inner = Padded(Lock::new(
@@ -789,11 +857,69 @@ proof fn lemma_mask_shape(gi: u32)
     }
 }
 
+/// The guard test with one slab per page group ([`SlabTable::is_guard_slab`]),
+/// for a slab number of a region: with guards off no slab is a guard
+/// slab; otherwise slab `x` is one iff its low bits under the mask are
+/// all set, so the guard slabs are every `guard_mask + 1`-th slab.
+proof fn lemma_guard_test(t: SlabTable, x: usize)
+    requires
+        t.inv(),
+        t.spec_slabs_per_page() == 1,
+        x <= 0x400_0000,
+    ensures
+        t.guard_mask == u32::MAX ==> !t.spec_is_guard(x),
+        t.guard_mask != u32::MAX ==> (t.spec_is_guard(x) == (x & (t.guard_mask as usize) == t.guard_mask as usize)),
+{
+    reveal(crate::layout::guard_of);
+    reveal(SlabTable::page_groups_ok);
+    let (spp, lg) = (t.slabs_per_page as usize, t.lg_slabs_per_page);
+    assert(spp == 1usize << lg && lg <= 26 && spp == 1 ==> lg == 0) by (bit_vector);
+    let m = t.guard_mask;
+    let mu = m as usize;
+    let pg = (x >> lg) as u32;
+    assert(pg as usize == x && pg < 0x400_0001u32) by (bit_vector)
+        requires pg == (x >> lg) as u32, lg == 0, x <= 0x400_0000;
+    if m != 0xFFFF_FFFFu32 {
+        assert((add(pg, 1u32) & m == 0) == (pg & m == m)) by (bit_vector)
+            requires m & (m >> 1u32) == m >> 1u32, pg < 0x400_0001u32, m != 0xFFFF_FFFFu32;
+    }
+    assert(add(pg, 1u32) & 0xFFFF_FFFFu32 != 0) by (bit_vector)
+        requires pg < 0x400_0001u32;
+    assert((pg & m == m) == (x & mu == mu)) by (bit_vector)
+        requires pg as usize == x, mu == m as usize;
+    assert(pg != u32::MAX);
+}
+
+/// [`SlabTable::run_slabs`] is a power of two from 1 to 128.
+proof fn lemma_run_slabs(t: SlabTable)
+    requires
+        t.inv(),
+    ensures
+        1 <= t.spec_run_slabs() <= 0x80,
+        t.spec_run_slabs() & sub(t.spec_run_slabs(), 1) == 0,
+{
+    let lg = class_table()[t.class as int].lg_slab;
+    assert(class_table()[t.class as int].wf());
+    assert((512usize << 10usize) == 0x8_0000usize) by (bit_vector);
+    assert(12 <= lg <= 22 ==> (0x8_0000usize >> lg) <= 0x80
+        && ((0x8_0000usize >> lg) == 0 || (0x8_0000usize >> lg) & sub(0x8_0000usize >> lg, 1) == 0)) by (bit_vector);
+    assert(1usize & sub(1usize, 1) == 0) by (bit_vector);
+}
+
 } // verus!
+
+verus! {
 
 impl SlabTable {
     #[inline]
-    pub fn class(&self) -> &'static Class {
+    pub fn class(&self) -> (r: &'static Class)
+        ensures
+            *r == class_table()[self.spec_class() as int],
+            r.wf(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         &CLASSES.table()[self.class as usize]
     }
 
@@ -826,7 +952,14 @@ impl SlabTable {
     ///
     /// [`slabs_per_page`]: SlabTable::slabs_per_page
     #[inline(always)]
-    pub fn is_guard_slab(&self, slab: usize) -> bool {
+    pub fn is_guard_slab(&self, slab: usize) -> (r: bool)
+        ensures
+            r == self.spec_is_guard(slab),
+    {
+        proof {
+            use_type_invariant(self);
+            reveal(crate::layout::guard_of);
+        }
         let page_group = (slab >> self.lg_slabs_per_page) as u32;
         page_group.wrapping_add(1) & self.guard_mask == 0
     }
@@ -846,7 +979,11 @@ impl SlabTable {
     pub fn guard_mask(&self) -> u32 {
         self.guard_mask
     }
+}
 
+} // verus!
+
+impl SlabTable {
     /// Keep `*mirror` equal to the hand-out watermark from now on: it is
     /// set to the current value here and stored after the watermark at
     /// every hand-out, under the commit lock, so a reader of the copy never
@@ -929,15 +1066,30 @@ impl SlabTable {
     fn watermark(&self, order: Ordering) -> usize {
         self.committed_slabs.load(order)
     }
+}
 
-    /// Guard slabs committed so far. `_ord` is the caller's lock-order
-    /// token (ghost) for the commit lock.
-    pub fn guards(&self, _ord: Tracked<&mut LockOrder>) -> usize {
-        self.inner
-            .lock(Tracked::assume_new(), Tracked::assume_new())
-            .guards
+verus! {
+
+impl SlabTable {
+    /// Guard slabs committed so far. `ord` is the caller's lock-order
+    /// token for the commit lock.
+    pub fn guards(&self, Tracked(ord): Tracked<&mut LockOrder>) -> usize
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_table(0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).guards
     }
+}
 
+} // verus!
+
+impl SlabTable {
     /// Descriptor of a handed-out slab. Aborts for a slab that was never
     /// handed out rather than faulting on its `PROT_NONE` descriptor page.
     #[inline]
@@ -1111,17 +1263,67 @@ impl SlabTable {
         // SAFETY: `slab` is below the acquire-loaded watermark.
         unsafe { self.owner_at(slab) }
     }
+}
 
+verus! {
+
+impl SlabTable {
     #[inline]
-    pub(super) fn slab_addr(&self, slab: usize) -> usize {
+    pub(super) fn slab_addr(&self, slab: usize) -> (r: usize)
+        requires
+            slab < self.spec_nslabs(),
+        ensures
+            r == self.base + slab * ((1usize << class_table()[self.spec_class() as int].lg_slab) as int),
+            r + (1usize << class_table()[self.spec_class() as int].lg_slab)
+                <= self.base + (self.spec_nslabs() << class_table()[self.spec_class() as int].lg_slab),
+            r + (1usize << class_table()[self.spec_class() as int].lg_slab) <= 1usize << 57,
+    {
+        proof {
+            use_type_invariant(self);
+            let lg = class_table()[self.class as int].lg_slab as usize;
+            let (m, m57) = ((usize::MAX - self.base) as usize, ((1usize << 57) - self.base) as usize);
+            vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+            vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(self.nslabs, lg, m);
+            vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(self.nslabs, lg, m57);
+            let p = pow2(lg as nat) as int;
+            assert(slab * p + p <= self.nslabs * p) by (nonlinear_arith)
+                requires slab < self.nslabs, p >= 0;
+            vstd::bits::lemma_usize_shl_is_mul(self.nslabs, lg);
+            vstd::bits::lemma_usize_shl_is_mul(slab, lg);
+            vstd::bits::lemma_usize_shl_is_mul(1, lg);
+        }
         self.base + (slab << self.class().lg_slab)
     }
 
+    /// The start of slot `slot` of slab `slab`: `slot_at` of the
+    /// process's regions, a pointer of the address-cast provenance.
     #[inline]
-    pub(super) fn slot_ptr(&self, slab: usize, slot: usize) -> *mut u8 {
+    pub(super) fn slot_ptr(&self, slab: usize, slot: usize) -> (r: *mut u8)
+        requires
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].slab_bits,
+        ensures
+            r@.addr == process_regions().slot_at(self.spec_class() as int, slab as int, slot as int),
+            r@.provenance == cast_provenance(),
+    {
+        proof {
+            use_type_invariant(self);
+            let cls = class_table()[self.class as int];
+            assert(slot * (cls.size as int) <= 0x2000 * 0x4_0000) by (nonlinear_arith)
+                requires
+                    slot < cls.slab_bits,
+                    cls.slab_bits <= 0x2000,
+                    cls.size <= 0x4_0000,
+            ;
+            assert((1usize << 57u32) == 0x200_0000_0000_0000usize) by (bit_vector);
+        }
         addr_to_ptr(self.slab_addr(slab) + slot * self.class().size())
     }
+}
 
+} // verus!
+
+impl SlabTable {
     /// Slab and slot of a pointer that must be a slot start in this class's
     /// region. Aborts otherwise.
     #[inline]
@@ -1358,12 +1560,27 @@ impl SlabTable {
     pub(super) unsafe fn owner_word(&self, group: usize) -> *const AtomicU16 {
         (self.owners_base + group * 2) as *const AtomicU16
     }
+}
 
+verus! {
+
+impl SlabTable {
     /// The slab range of `group`: `group << lg_group` and the `group`
     /// slabs from there, clipped to the class's slab count (the last
     /// group of a region may be short).
     #[inline]
-    pub(super) fn group_range(&self, group: usize) -> (usize, usize) {
+    pub(super) fn group_range(&self, group: usize) -> (r: (usize, usize))
+        requires
+            group <= self.spec_nslabs() >> self.lg_group,
+        ensures
+            r.0 == group << self.lg_group,
+            r.0 <= r.1 <= self.spec_nslabs(),
+    {
+        proof {
+            use_type_invariant(self);
+            let (n, lg) = (self.nslabs, self.lg_group);
+            assert(group <= n >> lg && lg < 64 ==> group << lg <= n) by (bit_vector);
+        }
         let start = group << self.lg_group;
         (start, (start + self.group as usize).min(self.nslabs))
     }
@@ -1377,7 +1594,17 @@ impl SlabTable {
     /// [`commit_run`]: SlabTable::commit_run
     /// [`run_slabs`]: SlabTable::run_slabs
     #[inline]
-    pub(super) fn starts_run(&self, s: usize) -> bool {
+    pub(super) fn starts_run(&self, s: usize) -> bool
+        requires
+            s < self.spec_nslabs(),
+    {
+        proof {
+            use_type_invariant(self);
+            let lg = self.lg_group;
+            assert((1usize << lg) >= 1) by (bit_vector)
+                requires lg < 64;
+            assert(s & sub(1usize << lg, 1) != 0 ==> s > 0) by (bit_vector);
+        }
         !self.runs()
             || s & ((1 << self.lg_group) - 1) == 0
             || self.is_guard_slab(s)
@@ -1387,7 +1614,10 @@ impl SlabTable {
     /// The most slabs a run holds: [`RUN_BYTES`] of them, at least one (a
     /// power of two, as both are).
     #[inline]
-    fn run_slabs(&self) -> usize {
+    fn run_slabs(&self) -> (r: usize)
+        ensures
+            r == self.spec_run_slabs(),
+    {
         (RUN_BYTES >> self.class().lg_slab).max(1)
     }
 
@@ -1402,7 +1632,10 @@ impl SlabTable {
     /// [`commit_slab`]: SlabTable::commit_slab
     /// [`starts_run`]: SlabTable::starts_run
     #[inline]
-    pub(super) fn runs(&self) -> bool {
+    pub(super) fn runs(&self) -> (r: bool)
+        ensures
+            r ==> self.spec_slabs_per_page() == 1,
+    {
         self.slabs_per_page == 1
             && crate::thp::class_mode(self.class().slab_size()) != crate::thp::Mode::Chunks
     }
@@ -1427,18 +1660,26 @@ impl SlabTable {
     /// class lock), so the syscalls run without the commit lock, which
     /// only counts the guard.
     ///
-    /// `ord` is the caller's lock-order token (ghost) for the commit lock.
+    /// `ord` is the caller's lock-order token for the commit lock.
     ///
     /// [`starts_run`]: SlabTable::starts_run
     /// [`run_slabs`]: SlabTable::run_slabs
-    pub(super) fn commit_run(
-        &self,
-        s: usize,
-        limit: usize,
-        ord: Tracked<&mut LockOrder>,
-    ) -> Option<bool> {
+    pub(super) fn commit_run(&self, s: usize, limit: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
+        requires
+            crate::sys::may_abort_kernel(),
+            crate::sys::may_syscall(),
+            s < limit <= self.spec_nslabs(),
+            old(ord).allows(rank_table(0)),
+        ensures
+            r matches Some(usable) ==> usable == !self.spec_is_guard(s),
+            *final(ord) == *old(ord),
+    {
+        broadcast use axiom_table_lock_inv;
         if !self.runs() {
-            return self.commit_slab(s, ord);
+            return self.commit_slab(s, Tracked(ord));
+        }
+        proof {
+            use_type_invariant(self);
         }
         let cls = self.class();
         let guard = self.is_guard_slab(s);
@@ -1447,9 +1688,12 @@ impl SlabTable {
         if guard {
             let page = 1usize << self.lg_page;
             self.install_guard(s, self.slab_addr(s), page, cls.slab_size());
-            self.inner
-                .lock(Tracked::assume_new(), Tracked::assume_new())
-                .guards += 1;
+            proof {
+                assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
+            }
+            // `guards <= next_slab` after the increment is the cross-arena
+            // premise `axiom_table_lock_inv` names, not shown here.
+            self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).guards += 1;
             return Some(false);
         }
         Some(true)
@@ -1462,7 +1706,23 @@ impl SlabTable {
     /// [`starts_run`]: SlabTable::starts_run
     /// [`runs`]: SlabTable::runs
     #[inline]
-    pub(super) fn run_end(&self, s: usize, limit: usize) -> usize {
+    pub(super) fn run_end(&self, s: usize, limit: usize) -> (r: usize)
+        requires
+            s < limit <= self.spec_nslabs(),
+            self.spec_slabs_per_page() == 1,
+        ensures
+            s < r <= limit,
+    {
+        proof {
+            use_type_invariant(self);
+            lemma_run_slabs(*self);
+            lemma_guard_test(*self, s);
+            let m = (self.spec_run_slabs() - 1) as usize;
+            assert(s <= 0x400_0000 && m < 0x80 ==> s < (s | m) + 1 <= s + 0x80) by (bit_vector);
+            let gm = self.guard_mask as usize;
+            assert(s < 0x400_0000 && gm <= 0xFFFF_FFFF ==> s < add(s, 1usize) | gm && add(s, 1usize) | gm <= 0x1_0400_0000) by (bit_vector);
+            assert(s & gm != gm ==> s < s | gm) by (bit_vector);
+        }
         debug_assert!(s < limit && limit <= self.nslabs);
         // With one slab per page group a guard slab is every
         // `guard_mask + 1`-th slab and `x | guard_mask` the first one at or
@@ -1488,16 +1748,27 @@ impl SlabTable {
     /// slab and `s` starts one) read-write, or install the guard when `s`
     /// is a guard slab. `Some(true)` for a slab ready to allocate from,
     /// `Some(false)` for a guard slab, `None` when `mprotect` fails (the
-    /// slab stays uncommitted and may be retried). `_ord` is the caller's
-    /// lock-order token (ghost) for the commit lock.
+    /// slab stays uncommitted and may be retried). `ord` is the caller's
+    /// lock-order token for the commit lock.
     // Refill path: left as written so its codegen does not move.
     #[allow(clippy::manual_is_multiple_of)]
-    pub(super) fn commit_slab(&self, s: usize, _ord: Tracked<&mut LockOrder>) -> Option<bool> {
+    pub(super) fn commit_slab(&self, s: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
+        requires
+            crate::sys::may_abort_kernel(),
+            crate::sys::may_syscall(),
+            s < self.spec_nslabs(),
+            old(ord).allows(rank_table(0)),
+        ensures
+            r matches Some(usable) ==> usable == !self.spec_is_guard(s),
+            *final(ord) == *old(ord),
+    {
+        broadcast use axiom_table_lock_inv;
+        proof {
+            use_type_invariant(self);
+        }
         let cls = self.class();
         let page = 1usize << self.lg_page;
-        let mut g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let addr = self.slab_addr(s);
         // A slab smaller than a page is committed with its whole page
         // group when the group's first slab comes up; a group is whole
@@ -1506,6 +1777,13 @@ impl SlabTable {
         let spp = self.slabs_per_page as usize;
         let len = cls.slab_size().max(page);
         let mode = crate::thp::class_mode(cls.slab_size());
+        proof {
+            let lp = self.lg_page;
+            assert((1usize << lp) <= 0x8000_0000_0000_0000usize) by (bit_vector)
+                requires lp < 64;
+            assert((1usize << 57u32) == 0x200_0000_0000_0000usize) by (bit_vector);
+            assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
+        }
         let first_of_page_group = s % spp == 0;
         if first_of_page_group {
             self.commit_page_group(addr, len, mode)?;
@@ -1520,6 +1798,8 @@ impl SlabTable {
             if first_of_page_group && mode != crate::thp::Mode::Chunks {
                 self.install_guard(s, addr, page, len);
             }
+            // As in `commit_run`: `guards <= next_slab` afterwards rests on
+            // the cross-arena premise `axiom_table_lock_inv` names.
             g.guards += 1;
             return Some(false);
         }
@@ -1534,10 +1814,23 @@ impl SlabTable {
     /// committed costs two no-op calls); if that fails, the plain commit
     /// is the fallback and the slab is served with small pages. `None`
     /// when the plain commit fails too.
-    fn commit_page_group(&self, addr: usize, len: usize, mode: crate::thp::Mode) -> Option<()> {
+    fn commit_page_group(&self, addr: usize, len: usize, mode: crate::thp::Mode) -> Option<()>
+        requires
+            crate::sys::may_syscall(),
+            self.base <= addr <= self.base + (self.spec_nslabs() << class_table()[self.spec_class() as int].lg_slab),
+            addr + len <= usize::MAX,
+    {
+        proof {
+            use_type_invariant(self);
+        }
         if mode == crate::thp::Mode::Chunks {
             let cls = self.class();
             let pmd = crate::thp::pmd_size();
+            proof {
+                let (n, lg, b) = (self.nslabs, cls.lg_slab, self.base);
+                assert(n <= (usize::MAX - b) as usize >> lg && lg <= 22 ==> b + (n << lg) <= usize::MAX) by (bit_vector);
+                assert(b < 1usize << 57 && pmd & sub(pmd, 1) == 0 && pmd > 0 ==> b + pmd <= usize::MAX) by (bit_vector);
+            }
             let region_end = self.base + (self.nslabs << cls.lg_slab);
             let (lo, hi) = crate::thp::chunk(addr, len, self.base, region_end, pmd);
             // Groups are one to sixteen slabs and arenas commit theirs
@@ -1560,7 +1853,11 @@ impl SlabTable {
     /// fails, fall back to leaving the whole slab (or page group, `len`)
     /// `PROT_NONE`: a hard guard at the cost of a VMA split. A slab that
     /// can be neither guarded nor re-protected aborts.
-    fn install_guard(&self, s: usize, addr: usize, page: usize, len: usize) {
+    fn install_guard(&self, s: usize, addr: usize, page: usize, len: usize)
+        requires
+            crate::sys::may_abort_kernel(),
+            crate::sys::may_syscall(),
+    {
         if guard(addr, page).is_ok() {
             return;
         }
@@ -1569,3 +1866,5 @@ impl SlabTable {
         }
     }
 }
+
+} // verus!

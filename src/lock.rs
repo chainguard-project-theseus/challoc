@@ -367,12 +367,13 @@ pub struct Lock<T> {
 /// this is an assumption about every holder of the lock: a verified holder
 /// ends with the value satisfying it, through the postcondition of the
 /// last call that changes the value or an explicit `assert` before the
-/// guard goes out of scope; an unverified one is trusted. A verified
+/// guard goes out of scope, unless the owner of the type names a premise
+/// that holder rests on instead; an unverified one is trusted. A verified
 /// holder must not move a tracked permission out of the value and keep it
 /// past the guard: the next `lock` would hand out the invariant's
 /// permission again. `lock_inv` is uninterpreted; the owner of each locked
 /// type states what it means for that type, and lists its unverified
-/// holders. The assumption enters at [`axiom_acquired`], and at
+/// holders and the verified ones that rest on a premise. The assumption enters at [`axiom_acquired`], and at
 /// [`axiom_held`] for a holder of the raw lock.
 pub uninterp spec fn lock_inv<T>(v: T) -> bool;
 

@@ -21,8 +21,12 @@ use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use crate::layout::{Class, NCLASSES, build_classes, classes_for_page};
 use crate::vspec::addr::addr_to_ptr;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::addr::cast_provenance;
 use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, ptr_ref};
+#[cfg(verus_keep_ghost)]
+use vstd::raw_ptr::{PtrData, ptr_mut_from_data};
 
 verus! {
 
@@ -219,10 +223,8 @@ pub fn desc_stride(class: usize) -> (r: usize)
 
 impl SlabDesc {
     /// Descriptor of slab `slab` in the array for `class` starting at
-    /// `base`. `perm` is the permission to it (ghost), which the body
-    /// passes to `ptr_ref`; trusted: the contract states only
-    /// `desc_stride`'s bound and the debug check, and does not tie `perm`
-    /// to the descriptor yet.
+    /// `base`, read through `perm`, the permission to it; the result is
+    /// the descriptor `perm` holds.
     ///
     /// # Safety
     /// `base` must be the start of a descriptor array for `class` with at
@@ -230,16 +232,22 @@ impl SlabDesc {
     #[inline]
     // The debug check mirrors the `requires` clause, `%` and all.
     #[allow(clippy::manual_is_multiple_of)]
-    #[verifier::external_body]
     pub unsafe fn at(
         base: usize,
         class: usize,
         slab: usize,
-        perm: Tracked<&PointsTo<SlabDesc>>,
-    ) -> &SlabDesc
+        Tracked(perm): Tracked<&PointsTo<SlabDesc>>,
+    ) -> (r: &SlabDesc)
         requires
             class < NCLASSES,
             base % DESC_ALIGN == 0,
+            base + slab * stride_of(class as int) <= usize::MAX,
+            perm.ptr() == ptr_mut_from_data::<SlabDesc>(
+                PtrData { addr: (base + slab * stride_of(class as int)) as usize, provenance: cast_provenance(), metadata: () },
+            ),
+            perm.is_init(),
+        ensures
+            *r == perm.value(),
     {
         debug_assert!(base % DESC_ALIGN == 0);
         // The caller guarantees the entry is inside a committed array;
@@ -249,7 +257,7 @@ impl SlabDesc {
         // `from_u8`, and garbage in 1..=3 reads as a plausible state, which
         // is why `take_group` cross-checks the arena against the owner word
         // and `check_zero` exists.
-        ptr_ref(addr_to_ptr(base + slab * desc_stride(class)) as *const SlabDesc, perm)
+        ptr_ref(addr_to_ptr(base + slab * desc_stride(class)) as *const SlabDesc, Tracked(perm))
     }
 
     /// Initialise the descriptor of a slab handed to `arena`: `Fresh`, no
