@@ -640,6 +640,44 @@ impl Meta {
             .0
     }
 
+    /// [`alloc`](Meta::alloc), with the permission to the object's
+    /// `layout.size()` bytes and the [`MetaClaim`] that [`free`](Meta::free)
+    /// takes back with them. Trusted for now (`external_body`): its proof
+    /// splits the bin's block as [`alloc_zeroed`](Meta::alloc_zeroed) does.
+    // The tracked results are part of the signature.
+    #[allow(clippy::type_complexity)]
+    #[verifier::external_body]
+    pub fn alloc_raw(&self, layout: Layout) -> (r: (*mut u8, Tracked<(PointsToRaw, MetaClaim)>))
+        requires
+            crate::sys::may_syscall(),
+            layout_align(layout) <= MAX_ALIGN,
+            layout_size(layout) <= MAX_BINNED,
+        ensures
+            r.0 as usize != 0 ==> (r.0 as usize) % layout_align(layout) == 0,
+            r.0 as usize != 0 ==> self.holds(r.0 as usize as int, layout_size(layout) as int),
+            r.0 as usize != 0 ==> r.1@.0.is_range(r.0 as usize as int, layout_size(layout) as int),
+            r.0 as usize != 0 ==> r.1@.0.provenance() == r.0@.provenance,
+            r.0 as usize != 0 ==> r.1@.1.of(self.live_id(), r.0, layout),
+    {
+        assert!(
+            layout.align() <= MAX_ALIGN,
+            "meta: alignment too large for an object"
+        );
+        let Some(bin) = bin_for(layout) else {
+            panic!("meta: object too large")
+        };
+        let tracked mut ord = axiom_meta_order();
+        let (p, Tracked(blk)) = self
+            .inner
+            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()))
+            .alloc(bin);
+        let tracked (raw, mc, _fz) = blk;
+        let tracked MetaClaim { claim, .. } = mc;
+        // The bin's slack past `layout.size()` goes with the claim.
+        let tracked (obj, mc) = split_block(raw, claim, p, layout, bin, self.live_id());
+        (p, Tracked((obj, mc)))
+    }
+
     /// [`alloc`](Meta::alloc), then zero the object if it was reused; with
     /// the permission to the object's `layout.size()` bytes and its
     /// [`MetaClaim`], which [`free`](Meta::free) takes back, and the token

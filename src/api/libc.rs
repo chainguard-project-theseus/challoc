@@ -345,7 +345,9 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
                 .check_live(slab as usize, slot as usize, p as usize);
             CLASSES[class].size()
         }
-        Kind::Huge { page } => shared.huge.usable_size(page),
+        Kind::Huge { page } => shared
+            .huge
+            .usable_size(page, vstd::prelude::Tracked::assume_new()),
         Kind::Invalid => not_an_allocation(p),
     }
 }
@@ -400,7 +402,9 @@ pub(super) fn old_size_or_keep(
             Some(CLASSES[class].size())
         }
         Kind::Huge { page } => {
-            let old = shared.huge.usable_size(page);
+            let old = shared
+                .huge
+                .usable_size(page, vstd::prelude::Tracked::assume_new());
             if class_for(size, align).is_none()
                 && shared.huge.usable_for(size) == Some(old)
                 && (p as usize) % align == 0
@@ -634,7 +638,9 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
             (class_of(size) == Some(class), CLASSES[class].size())
         }
         Kind::Huge { page } => {
-            let old = shared.huge.usable_size(page);
+            let old = shared
+                .huge
+                .usable_size(page, vstd::prelude::Tracked::assume_new());
             (
                 class_of(size).is_none() && shared.huge.usable_for(size) == Some(old),
                 old,
@@ -683,7 +689,9 @@ fn free_usable_slow(p: *mut u8) -> usize {
     };
     let usable = match shared.classify_free(p) {
         Ok((class, _)) => CLASSES[class].size(),
-        Err(page) => shared.huge.usable_size(page),
+        Err(page) => shared
+            .huge
+            .usable_size(page, vstd::prelude::Tracked::assume_new()),
     };
     heap::free(shared, p);
     usable

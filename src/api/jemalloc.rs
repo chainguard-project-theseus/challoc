@@ -611,7 +611,11 @@ mod tests {
         };
         assert_eq!(
             s.huge
-                .lookup(page, vstd::prelude::Tracked::assume_new())
+                .lookup(
+                    page,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                )
                 .unwrap()
                 .arena,
             lua
@@ -710,7 +714,11 @@ mod tests {
         };
         assert_eq!(
             s.huge
-                .lookup(page, vstd::prelude::Tracked::assume_new())
+                .lookup(
+                    page,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                )
                 .unwrap()
                 .arena,
             lua

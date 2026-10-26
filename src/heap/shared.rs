@@ -1202,7 +1202,10 @@ impl Shared {
                 }
             }
             Kind::Huge { page } => {
-                let Some(run) = self.huge.lookup(page, Tracked::assume_new()) else {
+                let Some(run) =
+                    self.huge
+                        .lookup(page, Tracked::assume_new(), Tracked::assume_new())
+                else {
                     return;
                 };
                 if run.start == page
@@ -1357,7 +1360,17 @@ impl Shared {
         let Some(a) = self.arena(arena) else {
             no_such_arena(arena)
         };
-        let r = self.huge.alloc_run(&self.meta, size, align, arena);
+        let r = self
+            .huge
+            .alloc_run(
+                &self.meta,
+                size,
+                align,
+                arena,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .0;
         if !r.ptr.is_null() {
             // The pages the run's descriptor records, which is what
             // `free_huge` will subtract.
@@ -1373,7 +1386,7 @@ impl Shared {
     #[cold]
     #[inline(never)]
     pub fn zero_huge(&self, page: usize) {
-        let n = self.huge.usable_size(page);
+        let n = self.huge.usable_size(page, Tracked::assume_new());
         // SAFETY: a live run's usable bytes are committed, writable memory
         // this allocator handed out and the caller is freeing.
         unsafe { ptr::write_bytes(self.regions.huge_addr(page) as *mut u8, 0, n) };
@@ -1382,7 +1395,12 @@ impl Shared {
     /// Free the huge run starting at `page`. Aborts unless it is a live
     /// run start. Returns the usable bytes released.
     pub fn free_huge(&self, page: usize) -> usize {
-        let run = self.huge.free_run(&self.meta, page);
+        let run = self.huge.free_run(
+            &self.meta,
+            page,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         self.owner(run.arena).note_huge_free(run.pages);
         run.usable
     }

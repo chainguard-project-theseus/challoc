@@ -1,0 +1,3 @@
+# Temporary seam: alloc_raw splits the bin block as alloc_zeroed does;
+# verified with its first verified caller, huge::alloc_desc.
+Meta::alloc_raw	allocator invariant	Verus
