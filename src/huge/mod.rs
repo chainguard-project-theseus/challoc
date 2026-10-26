@@ -57,7 +57,7 @@ use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, RawLock};
 use crate::meta::Meta;
-use crate::purge::{self, Batch, Curve, Decayer};
+use crate::purge::{self, Batch, Curve, Decayer, Pieces, Settle};
 use crate::sys::{self, Errno};
 
 mod table;
@@ -420,11 +420,32 @@ fn huge_count_underflow(state: RunState) -> !
 } // verus!
 
 /// What a purge walk's flushes settled: extents made `Purged` and whether
-/// a discard failed.
+/// a discard failed. It settles the walk's batch ([`Settle`], through
+/// [`Huge::settle`]).
 #[derive(Default)]
 struct Tally {
     purged: usize,
     failed: bool,
+}
+
+impl Settle for Tally {
+    type Owner = Huge;
+
+    type Ctx = Inner;
+
+    #[inline(always)]
+    fn settle(
+        &mut self,
+        o: &Huge,
+        c: &mut Inner,
+        addr: usize,
+        len: usize,
+        done: bool,
+        _piece: Ghost<int>,
+        _pend: Ghost<Pieces>,
+    ) {
+        o.settle(c, addr, len, done, self);
+    }
 }
 
 verus! {
@@ -1772,7 +1793,7 @@ impl Huge {
         // on is kept `Empty` for decay or the next explicit purge.
         let cap = self.retain_max();
         let purge = usable > cap || self.purge_on_free();
-        let st = if purge && purge::discard_one(addr, n * page_size) {
+        let st = if purge && purge::discard_one(addr, n * page_size, Ghost::assume_new()) {
             RunState::Purged
         } else {
             RunState::Empty
@@ -1912,7 +1933,7 @@ impl Huge {
             .inner
             .lock(Tracked::assume_new(), Tracked::assume_new());
         let mut t = Tally::default();
-        let mut batch = Batch::new();
+        let mut batch = Batch::new(Ghost::assume_new());
         let mut d = g.empty_head;
         while !d.is_null() {
             // List members are live `Empty` extents; `next` is read before
@@ -1924,7 +1945,7 @@ impl Huge {
             self.push_extent(&mut g, d, &mut batch, &mut t);
             d = next;
         }
-        batch.flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut t));
+        batch.flush(&mut t, self, &mut g);
         self.sync_oldest(&g);
         t.purged
     }
@@ -1945,11 +1966,7 @@ impl Huge {
     ) -> usize {
         // List members are live `Empty` extents.
         let (start, pages) = (g.desc(d).start(), g.desc(d).pages());
-        batch.push(
-            self.addr(start),
-            pages * self.page_size(),
-            |addr, len, done| self.settle(g, addr, len, done, t),
-        );
+        batch.push(self.addr(start), pages * self.page_size(), t, self, g);
         pages
     }
 
@@ -2031,7 +2048,7 @@ impl Huge {
         let capped = keep16 < crate::policy::KEEP_ALL;
         let mut t = Tally::default();
         if excess > 0 {
-            let mut batch = Batch::new();
+            let mut batch = Batch::new(Ghost::assume_new());
             let mut d = g.empty_head;
             while !d.is_null() && excess > 0 {
                 // As above; `next` is read before a flush can unlink `d`.
@@ -2042,7 +2059,7 @@ impl Huge {
                 }
                 d = next;
             }
-            batch.flush(|addr, len, done| self.settle(&mut g, addr, len, done, &mut t));
+            batch.flush(&mut t, self, &mut g);
         }
         if t.failed {
             self.gate.back_off(now);
