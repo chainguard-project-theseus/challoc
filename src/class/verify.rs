@@ -7,6 +7,7 @@ use super::{ClassState, Pick, SlabTable};
 use crate::purge;
 use crate::slab::{SlabDesc, State};
 use crate::sys;
+use vstd::prelude::*;
 
 impl SlabTable {
     /// Tests: [`check_located`] for a pointer not yet located (`p` must be
@@ -172,11 +173,15 @@ impl core::fmt::Debug for Says {
     }
 }
 
-/// The address of `d`, for an abort message.
+verus! {
+
+/// The address of `d`, for an abort message; nothing is claimed about it.
 #[inline(always)]
 pub(super) fn desc_ptr_addr(d: &SlabDesc) -> usize {
     core::ptr::from_ref(d) as usize
 }
+
+} // verus!
 
 /// The word at `p + off` of a slot `p`, read once.
 ///

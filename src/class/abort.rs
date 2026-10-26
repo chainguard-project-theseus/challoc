@@ -4,6 +4,7 @@
 use super::MAX_EMPTY_PASSES;
 use crate::slab::State;
 use crate::sys;
+use vstd::prelude::*;
 
 #[cold]
 #[inline(never)]
@@ -13,13 +14,23 @@ pub(super) fn never_committed(class: usize, slab: usize) -> ! {
     ))
 }
 
+verus! {
+
+/// A slab's owner word and its descriptor name different arenas: one of
+/// them is corrupt. A pending check (`sys::may_abort_pending`): no
+/// verified invariant relates the descriptor's arena to the owner word.
 #[cold]
 #[inline(never)]
-pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16) -> ! {
+pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16) -> !
+    requires
+        crate::sys::may_abort_pending(),
+{
     sys::abort_pending(format_args!(
         "heap inconsistency: class {class} group {group}: owner word says arena {word}, slab {slab}'s descriptor says arena {desc}"
     ))
 }
+
+} // verus!
 
 /// A `Fresh` or `Purged` slab selected by a refill had a bit set before
 /// its slots were claimed under the lock (`claim_prefix`): `live` no longer
@@ -114,10 +125,17 @@ pub(super) fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> !
     ))
 }
 
+verus! {
+
 /// A slab count of `ClassStats` went below zero: the sets and the counts
 /// disagree, which is a heap inconsistency.
 #[cold]
 #[inline(never)]
-pub(super) fn slab_count_underflow(which: &str) -> ! {
+pub(super) fn slab_count_underflow(which: &str) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!("class: {which} slab count underflow"))
 }
+
+} // verus!
