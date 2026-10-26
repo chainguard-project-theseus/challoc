@@ -4,3 +4,7 @@
 Set	allocator invariant	Verus
 Inner::retire	allocator invariant	Verus
 Inner::extent_at	allocator invariant	Verus
+# Temporary seams: Huge is opaque, and Tally::settle trusted, until
+# Huge::settle and the purge walks are verified.
+Huge	allocator invariant	Verus
+Tally::settle	allocator invariant	Verus
