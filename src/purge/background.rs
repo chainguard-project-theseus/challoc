@@ -552,25 +552,16 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
 /// what the kernel refuses (raising priority past `RLIMIT_NICE`, leaving
 /// `SCHED_IDLE`, a main thread that has exited) stays as inherited.
 fn detach_from_starter() {
-    // SAFETY: scheduling calls on this thread (id 0) and reads of the
-    // main thread's settings, all into locals.
-    unsafe {
-        let param = ::libc::sched_param { sched_priority: 0 };
-        let _ = ::libc::sched_setscheduler(0, ::libc::SCHED_OTHER, &param);
-        let pid = ::libc::getpid();
-        let mut set: ::libc::cpu_set_t = core::mem::zeroed();
-        let size = core::mem::size_of::<::libc::cpu_set_t>();
-        if ::libc::sched_getaffinity(pid, size, &mut set) == 0 {
-            let _ = ::libc::sched_setaffinity(0, size, &set);
-        }
-        // getpriority returns the nice value, -1 included, so errno tells
-        // a failure apart.
-        let errno = ::libc::__errno_location();
-        *errno = 0;
-        let nice = ::libc::getpriority(::libc::PRIO_PROCESS, pid as ::libc::id_t);
-        if *errno == 0 {
-            let _ = ::libc::setpriority(::libc::PRIO_PROCESS, 0, nice);
-        }
+    let _ = sys::sched_set_other();
+    let pid = sys::getpid();
+    // Zeroed: glibc's wrapper zeroes the bytes the kernel does not store.
+    let mut set: sys::CpuSet = [0u64; 16];
+    if sys::sched_getaffinity(pid, &mut set).is_ok() {
+        let _ = sys::sched_setaffinity(0, &set);
+    }
+    // A failed getpriority is an `Err`, never a nice value.
+    if let Ok(nice) = sys::getpriority(pid) {
+        let _ = sys::setpriority(0, nice);
     }
 }
 

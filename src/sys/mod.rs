@@ -764,6 +764,95 @@ mod linux {
         }
     }
 
+    // ---- scheduling ------------------------------------------------------
+
+    const SCHED_OTHER: i32 = 0;
+    const PRIO_PROCESS: i32 = 0;
+
+    /// A CPU mask the size of glibc's `cpu_set_t` (1024 CPUs).
+    pub type CpuSet = [u64; 16];
+
+    /// `sched_setscheduler(0, SCHED_OTHER, &{ sched_priority: 0 })`: put
+    /// the calling thread on the default time-sharing policy.
+    pub fn sched_set_other() -> Result<usize, Errno> {
+        // `struct sched_param` is one `int`.
+        let param = [0i32; 1];
+        // SAFETY: `param` is a live `sched_param` for the whole call; the
+        // kernel only reads it.
+        decode(unsafe {
+            raw::syscall3(
+                nr::SCHED_SETSCHEDULER,
+                0,
+                SCHED_OTHER as isize as usize,
+                param.as_ptr() as usize,
+            )
+        })
+    }
+
+    /// `sched_getaffinity(pid)` into `set`. On `Ok(n)` the kernel has
+    /// stored the first `n` bytes of the mask and left the rest of `set`
+    /// as it was (glibc's wrapper zeroes them: start from a zeroed set).
+    pub fn sched_getaffinity(pid: i32, set: &mut CpuSet) -> Result<usize, Errno> {
+        // `size_of::<CpuSet>()`, which Verus does not specify.
+        let len = 16 * 8;
+        // SAFETY: `set` is writable for `len` bytes and outlives the call.
+        decode(unsafe {
+            raw::syscall3(
+                nr::SCHED_GETAFFINITY,
+                pid as isize as usize,
+                len,
+                set.as_mut_ptr() as usize,
+            )
+        })
+    }
+
+    /// `sched_setaffinity(pid, set)`.
+    pub fn sched_setaffinity(pid: i32, set: &CpuSet) -> Result<usize, Errno> {
+        // `size_of::<CpuSet>()`, as in [`sched_getaffinity`].
+        let len = 16 * 8;
+        // SAFETY: `set` is readable for `len` bytes and outlives the call.
+        decode(unsafe {
+            raw::syscall3(
+                nr::SCHED_SETAFFINITY,
+                pid as isize as usize,
+                len,
+                set.as_ptr() as usize,
+            )
+        })
+    }
+
+    /// `getpriority(PRIO_PROCESS, pid)`: the nice value of thread `pid`.
+    /// The raw syscall returns `20 - nice` (1 to 40) on success, so unlike
+    /// glibc's wrapper a failure is not confused with a nice value of -1.
+    /// The conversion is glibc's: the word as an `int`, subtracted from 20.
+    pub fn getpriority(pid: i32) -> Result<i32, Errno> {
+        // SAFETY: no pointers.
+        let r = decode(unsafe {
+            raw::syscall2(
+                nr::GETPRIORITY,
+                PRIO_PROCESS as isize as usize,
+                pid as isize as usize,
+            )
+        });
+        match r {
+            Ok(v) => Ok(20i32.wrapping_sub(v as i32)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `setpriority(PRIO_PROCESS, pid, nice)`.
+    pub fn setpriority(pid: i32, nice: i32) -> Result<usize, Errno> {
+        // SAFETY: no pointers.
+        decode(unsafe {
+            raw::syscall3(
+                nr::SETPRIORITY,
+                PRIO_PROCESS as isize as usize,
+                pid as isize as usize,
+                nice as isize as usize,
+            )
+        })
+    }
+
     /// `rt_sigprocmask(SIG_BLOCK, all)`: block every signal on the calling
     /// thread but glibc's `SIGCANCEL` and `SIGSETXID`, as `pthread_sigmask`
     /// would, and return the mask that was in force before. The kernel
@@ -1220,6 +1309,30 @@ mod tests {
             0
         );
         assert_eq!(n as i32, unsafe { libc::CPU_COUNT(&set) });
+    }
+
+    /// The raw scheduling wrappers read what glibc's do: the affinity mask
+    /// of `sched_getaffinity` and the nice value of `getpriority`.
+    #[test]
+    fn sched_wrappers_match_libc() {
+        let pid = getpid();
+        let mut set: CpuSet = [0u64; 16];
+        assert!(sched_getaffinity(pid, &mut set).is_ok());
+        // SAFETY: a zeroed `cpu_set_t` is a valid empty set, and the call
+        // writes at most `size_of::<cpu_set_t>()` bytes into it.
+        let mut libc_set: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+        let size = core::mem::size_of::<libc::cpu_set_t>();
+        assert_eq!(size, core::mem::size_of::<CpuSet>());
+        assert_eq!(
+            unsafe { libc::sched_getaffinity(pid, size, &mut libc_set) },
+            0
+        );
+        // SAFETY: both are `size` bytes of plain data.
+        let libc_words: CpuSet = unsafe { core::mem::transmute(libc_set) };
+        assert_eq!(set, libc_words);
+        // SAFETY: `getpriority` has no memory preconditions.
+        let nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t) };
+        assert_eq!(getpriority(pid), Ok(nice));
     }
 
     /// Cross-check `nr.rs` against the kernel headers via a tiny C program.

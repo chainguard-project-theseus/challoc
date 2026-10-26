@@ -680,13 +680,13 @@ pub fn note_decay_changed() {
 /// `EPERM` that the program sealed our free memory, and anything else is
 /// unexplained.
 fn discard(addr: usize, len: usize, advice: Advice) -> bool {
-    assert!(
-        {
-            let page = sys::features::page_size();
-            addr % page == 0 && len % page == 0 && len != 0
-        },
-        "purge: discard of {addr:#x}+{len:#x} is not page-aligned"
-    );
+    // The range must be whole pages (checked against the page size here).
+    let page = sys::features::page_size();
+    if !(addr % page == 0 && len % page == 0 && len != 0) {
+        sys::abort_fmt(format_args!(
+            "purge: discard of {addr:#x}+{len:#x} is not page-aligned"
+        ));
+    }
     #[cfg(test)]
     DISCARD_CALLS.fetch_add(1, Ordering::Relaxed);
     let advice = advice.madv();
@@ -694,8 +694,10 @@ fn discard(addr: usize, len: usize, advice: Advice) -> bool {
     // the caller holds free (the `Batch` invariant).
     match unsafe { sys::madvise(addr, len, advice) } {
         Ok(()) => true,
-        Err(sys::Errno::EINVAL) => false,
-        Err(e) => panic!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}"),
+        Err(e) if e.0 == sys::Errno::EINVAL.0 => false,
+        Err(e) => sys::abort_kernel(format_args!(
+            "purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}"
+        )),
     }
 }
 
