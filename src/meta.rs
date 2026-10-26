@@ -599,7 +599,7 @@ impl Inner {
             "meta: bad page size"
         );
         assert!(
-            base % page == 0 && len % page == 0 && len > 0,
+            base.is_multiple_of(page) && len.is_multiple_of(page) && len > 0,
             "meta: region not page aligned"
         );
         assert!(base.checked_add(len).is_some(), "meta: region wraps");
@@ -747,7 +747,7 @@ impl Inner {
         let addr = p as usize;
         let size = BINS[bin] as usize;
         assert!(
-            addr >= self.base && addr + size <= self.bump && addr % bin_align(bin) == 0,
+            addr >= self.base && addr + size <= self.bump && addr.is_multiple_of(bin_align(bin)),
             "meta: free of a pointer that was never allocated here"
         );
         let node = p as *mut FreeNode;
@@ -786,7 +786,7 @@ impl Inner {
 
     fn commit(&mut self, addr: usize, len: usize) -> Result<(), Errno> {
         assert!(
-            addr % self.page == 0 && len % self.page == 0 && len > 0,
+            addr.is_multiple_of(self.page) && len.is_multiple_of(self.page) && len > 0,
             "meta: commit range not page aligned"
         );
         assert!(addr.checked_add(len).is_some(), "meta: commit range wraps");
@@ -966,10 +966,10 @@ impl Meta {
     /// [`commit`](Meta::commit) on the pages it uses before touching them.
     pub fn reserve_table(&self, len: usize, align: usize) -> Option<usize> {
         let mut g = self.inner.lock();
-        if g.eager_ok(len) {
-            if let Some(p) = g.reserve_eager(len, align) {
-                return Some(p);
-            }
+        if g.eager_ok(len)
+            && let Some(p) = g.reserve_eager(len, align)
+        {
+            return Some(p);
         }
         g.reserve(len, align)
     }
@@ -1102,7 +1102,7 @@ mod tests {
                 "bin {i} ({b}) not a multiple of its alignment"
             );
             // Power of two or 1.5x a power of two; from 128 up, line sized.
-            assert!(b.is_power_of_two() || (b % 3 == 0 && (b / 3).is_power_of_two()));
+            assert!(b.is_power_of_two() || (b.is_multiple_of(3) && (b / 3).is_power_of_two()));
             if i >= 4 {
                 assert_eq!(b % CACHE_LINE, 0);
             } else {
@@ -1409,7 +1409,7 @@ mod tests {
         let before = m.stats();
         assert_eq!(before.eager, 3 * page_size() + page_size() + EAGER_MAX);
         assert_eq!(before.bumped, t3 + EAGER_MAX - b.base);
-        assert!(before.writable >= before.bumped && before.writable % page_size() == 0);
+        assert!(before.writable >= before.bumped && before.writable.is_multiple_of(page_size()));
         assert!(before.committed <= before.writable);
         // The owner's commits: writable does not move, committed counts.
         m.commit(t1, page_size()).unwrap();
@@ -1572,7 +1572,7 @@ mod tests {
         let mut expect_allocated = 0usize;
         for _ in 0..20_000 {
             let r = xorshift(&mut s);
-            if live.is_empty() || (live.len() < 400 && r % 2 == 0) {
+            if live.is_empty() || (live.len() < 400 && r.is_multiple_of(2)) {
                 let size = match xorshift(&mut s) % 10 {
                     0 => (xorshift(&mut s) as usize) % (64 * 1024) + 1,
                     1..=3 => (xorshift(&mut s) as usize) % 4096 + 1,
@@ -1609,7 +1609,7 @@ mod tests {
             let st = m.stats();
             assert_eq!(st.allocated, expect_allocated);
             assert!(st.allocated <= st.bumped && st.bumped <= st.committed);
-            assert!(st.committed <= st.len && st.committed % page_size() == 0);
+            assert!(st.committed <= st.len && st.committed.is_multiple_of(page_size()));
         }
         // Free everything, then the same sequence of layouts reuses memory.
         let layouts: Vec<Layout> = live.iter().map(|(_, l, _)| *l).collect();
@@ -1642,7 +1642,7 @@ mod tests {
                     let mut live: Vec<(*mut u8, Layout)> = Vec::new();
                     let fill = t as u8 + 1;
                     for _ in 0..5_000 {
-                        if live.len() < 64 && xorshift(&mut s) % 3 != 0 {
+                        if live.len() < 64 && !xorshift(&mut s).is_multiple_of(3) {
                             let size = (xorshift(&mut s) as usize) % 2048 + 1;
                             let l = layout(size, 1 << (xorshift(&mut s) % 7));
                             let p = m.alloc(l);

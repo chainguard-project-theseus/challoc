@@ -195,6 +195,8 @@ impl TestHeap {
         TestHeap { h, s }
     }
 
+    // The test heap stands in for the thread's heap (`heap_for_thread`).
+    #[allow(clippy::mut_from_ref)]
     pub(crate) fn heap(&self) -> &mut Heap {
         unsafe { &mut *self.h }
     }
@@ -288,7 +290,7 @@ fn default_caps_follow_the_design_table() {
             _ => 8,
         };
         assert_eq!(cap, expect, "class {c} size {}", cls.size());
-        assert!(cap >= MIN_CAP && cap <= MAX_CAP);
+        assert!((MIN_CAP..=MAX_CAP).contains(&cap));
         // A cache may hold more than one slab's worth (a 64 KiB slab of
         // 128-byte slots has 512); refills and flushes span slabs.
         let l = CacheHeader::slots_layout(cap);
@@ -1290,7 +1292,7 @@ fn zeroed_prefix_stays_below_low_water() {
             let k = (x >> 8) as usize % live.len();
             t.free(live.swap_remove(k));
         }
-        if x % 97 == 0 {
+        if x.is_multiple_of(97) {
             t.gc();
         }
         let h = t.cache(c);
@@ -1778,7 +1780,7 @@ fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
     let p = t.alloc(c);
     assert_eq!(t.ticks(), ticks + 1);
     assert!(!p.is_null());
-    let (cls, arena) = s.classify_free(p).ok().expect("a slot of the class");
+    let (cls, arena) = s.classify_free(p).expect("a slot of the class");
     assert_eq!((cls, arena), (c, 0));
     // The GC flushed `p0`, the rebuild dropped back to probing, and the
     // refill served the pop: half a cache minus the one popped.
@@ -2861,6 +2863,8 @@ fn default_narenas_is_resolved_at_init() {
 /// (design 6.3 step 4, 13.3), rather than one cache per arena a thread
 /// frees into.
 #[test]
+// `forget` marks `t` consumed: `Heap::destroy` freed its heap.
+#[allow(clippy::forget_non_drop)]
 fn foreign_frees_share_one_flush_only_cache_per_class() {
     let s = shared();
     let a1 = s.arenas.create(s).unwrap();
@@ -3263,7 +3267,7 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
     );
     assert_eq!(t.alloc(c), p);
     // A full cache: the slot goes through `free_slow` after the clear.
-    let cap = t.cache(c).cap() as usize;
+    let cap = t.cache(c).cap();
     let ps: Vec<*mut u8> = (0..cap).map(|_| dirty(&t)).collect();
     for &q in &ps {
         t.free(q);
@@ -3550,6 +3554,8 @@ fn an_others_node_for_the_home_arena_aborts() {
 /// the most recently created first, and a walk may free the node it was
 /// handed (`destroy` does).
 #[test]
+// `forget` marks `t` consumed: `Heap::destroy` freed its heap.
+#[allow(clippy::forget_non_drop)]
 fn others_nodes_iterate_newest_first_and_survive_freeing() {
     let s = shared();
     let a1 = s.arenas.create(s).unwrap();
@@ -3811,9 +3817,8 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
     // prefix), and the flag says so.
     t.free(first);
     assert_eq!(h.pop_fast(c, flags), Some((first, false)));
-    assert_eq!(
+    assert!(
         t.alloc_zeroed(c).1,
-        true,
         "below the pushed entry the prefix still holds"
     );
     t.flush_all();

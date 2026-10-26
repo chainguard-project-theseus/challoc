@@ -60,7 +60,7 @@ mod linux_tests {
         let raw = std::fs::read("/proc/self/auxv").unwrap();
         const W: usize = core::mem::size_of::<usize>();
         let mut found = std::collections::BTreeMap::new();
-        for pair in raw.chunks_exact(2 * W) {
+        for pair in raw.as_chunks::<{ 2 * W }>().0 {
             let key = usize::from_ne_bytes(pair[..W].try_into().unwrap());
             let val = usize::from_ne_bytes(pair[W..].try_into().unwrap());
             if key == AT_NULL {

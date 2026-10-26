@@ -1307,6 +1307,8 @@ const _: () = assert!(NCLASSES * CLASS_STRIDE <= u16::MAX as usize);
 /// number with the compiler told that the entry is a multiple of the
 /// stride (so that `class * CLASS_STRIDE` folds back into the entry).
 #[inline(always)]
+// Hot size-class lookup: written for the codegen, not the idiom.
+#[allow(clippy::manual_div_ceil, clippy::manual_is_multiple_of)]
 fn small_class(n: usize) -> usize {
     let off = SMALL_LOOKUP[(n + QUANTUM - 1) / QUANTUM] as usize;
     // SAFETY: every entry is a class number times the stride

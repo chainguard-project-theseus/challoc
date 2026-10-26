@@ -140,10 +140,11 @@ impl Thp {
         let len = append(&mut path, len, b"hpage_pmd_size");
         path[len] = 0;
         let n = read(&path[..len + 1], &mut buf);
-        if let Some(v) = parse_decimal(&buf[..n]) {
-            if v.is_power_of_two() && v.trailing_zeros() as u8 > lg_page {
-                lg_pmd = v.trailing_zeros() as u8;
-            }
+        if let Some(v) = parse_decimal(&buf[..n])
+            && v.is_power_of_two()
+            && v.trailing_zeros() as u8 > lg_page
+        {
+            lg_pmd = v.trailing_zeros() as u8;
         }
         let mut t = Thp {
             enabled,

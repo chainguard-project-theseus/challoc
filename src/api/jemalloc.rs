@@ -268,6 +268,8 @@ fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int) {
 /// `sdallocx` through an explicit cache or none.
 #[cold]
 #[inline(never)]
+// sdallocx's path: left as written so its codegen does not move.
+#[allow(clippy::collapsible_if)]
 fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
     if p.is_null() {
         return;

@@ -141,8 +141,8 @@ const TABLE_TAIL: usize = 2 * PAD_ALIGN - core::mem::size_of::<Padded<Lock<Table
 const _: () = assert!(core::mem::offset_of!(SlabTable, inner) == PAD_ALIGN);
 const _: () = assert!(core::mem::size_of::<SlabTable>() == 3 * PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(SlabTable, lg_group) < 32);
-const _: () = assert!(core::mem::size_of::<SlabTable>() % PAD_ALIGN == 0);
-const _: () = assert!(core::mem::size_of::<SlabTable>() % 512 != 0);
+const _: () = assert!(core::mem::size_of::<SlabTable>().is_multiple_of(PAD_ALIGN));
+const _: () = assert!(!core::mem::size_of::<SlabTable>().is_multiple_of(512));
 
 // SAFETY: `Lazy` holds an address into the metadata region that is only
 // ever used under the lock.
@@ -200,7 +200,7 @@ unsafe fn store_owner(w: *const AtomicU16, arena: u16) {
 #[inline(always)]
 #[track_caller]
 fn group_geometry(group: usize, slabs_per_page: usize) {
-    assert!(group.is_power_of_two() && group % slabs_per_page == 0);
+    assert!(group.is_power_of_two() && group.is_multiple_of(slabs_per_page));
 }
 
 /// `index` itself, for [`SlabTable::is_set_unchecked`]'s word index. On
@@ -279,7 +279,7 @@ impl SlabTable {
         let stagger = desc_stagger(class);
         let align = DESC_ALIGN.max(page);
         let slabs_per_page = (page / cls.slab_size()).max(1);
-        assert!(slabs_per_page.is_power_of_two() && nslabs % slabs_per_page == 0);
+        assert!(slabs_per_page.is_power_of_two() && nslabs.is_multiple_of(slabs_per_page));
         let group = cls.slabs_per_line().max(slabs_per_page);
         group_geometry(group, slabs_per_page);
         let stride = desc_stride(class);
@@ -539,6 +539,8 @@ impl SlabTable {
     /// # Safety
     /// As [`desc_unchecked`](SlabTable::desc_unchecked).
     #[inline]
+    // Hot bitmap lookup: left as written.
+    #[allow(clippy::manual_is_multiple_of)]
     unsafe fn bits_unchecked(&self, slab: usize) -> AtomicBitmap<'_> {
         let nbits = self.slab_bits as usize;
         let first = slab * nbits;
@@ -979,6 +981,8 @@ impl SlabTable {
     /// is a guard slab. `Some(true)` for a slab ready to allocate from,
     /// `Some(false)` for a guard slab, `None` when `mprotect` fails (the
     /// slab stays uncommitted and may be retried).
+    // Refill path: left as written so its codegen does not move.
+    #[allow(clippy::manual_is_multiple_of)]
     pub(super) fn commit_slab(&self, s: usize) -> Option<bool> {
         let cls = self.class();
         let page = 1usize << self.lg_page;

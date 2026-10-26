@@ -210,6 +210,8 @@ impl SlabDesc {
     /// `base` must be the start of a descriptor array for `class` with at
     /// least `slab + 1` committed entries.
     #[inline]
+    // The debug check mirrors the `requires` clause, `%` and all.
+    #[allow(clippy::manual_is_multiple_of)]
     #[verifier::external_body]
     pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc
         requires
@@ -374,7 +376,7 @@ mod tests {
         for (c, cls) in CLASSES.iter().enumerate() {
             let s = desc_stride(c);
             assert!(
-                s >= HEADER && s <= DESC_ALIGN && DESC_ALIGN % s == 0,
+                (HEADER..=DESC_ALIGN).contains(&s) && DESC_ALIGN.is_multiple_of(s),
                 "class {c}: stride {s}"
             );
             // The descriptors sharing a line are consecutive slabs of one

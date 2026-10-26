@@ -1202,7 +1202,8 @@ fn jemalloc_symbols_in_release_so() {
     }
     // `je_malloc_conf` is read from the program, never defined here: a weak
     // undefined reference resolved through the GOT.
-    for sym in ["je_malloc_conf"] {
+    {
+        let sym = "je_malloc_conf";
         let l = dynsym
             .lines()
             .find(|l| l.ends_with(&std::format!(" {sym}")));

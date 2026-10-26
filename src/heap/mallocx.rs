@@ -120,10 +120,10 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
                 .or_else(|| crate::heap::existing_heap(shared).map(|h| h.arena()))
                 .unwrap_or(0);
             let (p, zero) = alloc_direct(shared, class, a);
-            if !p.is_null() {
-                if let Some(h) = crate::heap::existing_heap(shared) {
-                    h.count_direct_alloc(class);
-                }
+            if !p.is_null()
+                && let Some(h) = crate::heap::existing_heap(shared)
+            {
+                h.count_direct_alloc(class);
             }
             (p, zero)
         }

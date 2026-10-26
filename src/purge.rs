@@ -679,6 +679,8 @@ pub fn note_decay_changed() {
 /// of the range not mapped) means one of our reservations is gone,
 /// `EPERM` that the program sealed our free memory, and anything else is
 /// unexplained.
+// `%` rather than `is_multiple_of`: the purge proofs reason about `%`.
+#[allow(clippy::manual_is_multiple_of)]
 fn discard(addr: usize, len: usize, advice: Advice) -> bool {
     // The range must be whole pages (checked against the page size here).
     let page = sys::features::page_size();

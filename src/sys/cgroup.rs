@@ -1666,8 +1666,7 @@ mod tests {
     /// buffer of `buf` bytes and collect the lines seen.
     fn scanned(contents: &[u8], chunk: usize, buf: usize, stop_at: Option<&[u8]>) -> Vec<Vec<u8>> {
         let mut pos = 0;
-        let mut b: Vec<u8> = Vec::new();
-        b.resize(buf, 0);
+        let mut b: Vec<u8> = std::vec![0; buf];
         let mut seen = Vec::new();
         scan_lines(
             &mut b,
@@ -1830,10 +1829,10 @@ mod linux_tests {
         let mut min = UNLIMITED;
         let mut d = String::from(dir);
         loop {
-            if let Some(c) = read_opt(&format!("{d}/{file}")) {
-                if let Some(v) = parse_limit(c.as_bytes()) {
-                    min = min.min(v);
-                }
+            if let Some(c) = read_opt(&format!("{d}/{file}"))
+                && let Some(v) = parse_limit(c.as_bytes())
+            {
+                min = min.min(v);
             }
             if d == mount {
                 break;

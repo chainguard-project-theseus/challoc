@@ -808,7 +808,7 @@ fn randomised_model_check() {
                     2 => (xorshift(&mut rng) as usize % (100 * page_size())) + 1,
                     _ => page_size() * ((xorshift(&mut rng) as usize % 8) + 1),
                 };
-                let align = if xorshift(&mut rng) % 3 == 0 {
+                let align = if xorshift(&mut rng).is_multiple_of(3) {
                     1usize << (13 + xorshift(&mut rng) % 9)
                 } else {
                     1
@@ -845,7 +845,7 @@ fn randomised_model_check() {
                 h.audit();
             }
             9 => {
-                let cutoff = if xorshift(&mut rng) % 2 == 0 {
+                let cutoff = if xorshift(&mut rng).is_multiple_of(2) {
                     u64::MAX
                 } else {
                     now_ns().saturating_sub(5)
@@ -897,7 +897,7 @@ fn lowest_fit(
     }
     (0..huge_pages()).find(|&q| {
         q + need <= huge_pages()
-            && (env.regions.huge_base + q * page_size()) % align == 0
+            && (env.regions.huge_base + q * page_size()).is_multiple_of(align)
             && run[q] >= need
     })
 }
@@ -1078,7 +1078,7 @@ fn concurrent_runs_are_disjoint() {
                     held.push((page, size.div_ceil(page_size())));
                     got += 1;
                 }
-                if xorshift(&mut rng) % 3 == 0 && !held.is_empty() {
+                if xorshift(&mut rng).is_multiple_of(3) && !held.is_empty() {
                     let i = xorshift(&mut rng) as usize % held.len();
                     let (page, n) = held.swap_remove(i);
                     assert_eq!(h.free(&env.meta, page), n * page_size());

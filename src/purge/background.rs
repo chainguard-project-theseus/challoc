@@ -358,6 +358,8 @@ unsafe fn pthread_join(t: ::libc::pthread_t) -> i32 {
 /// Create the thread on `stack` (reserving the stack first if there is
 /// none yet), after joining `previous`. Returns the stack (kept even
 /// when creation fails, for the next attempt) and the new thread.
+// A `match`, not `Option::filter`: vstd does not specify it.
+#[allow(clippy::manual_filter)]
 fn create(
     shared: &Shared,
     stack: usize,
