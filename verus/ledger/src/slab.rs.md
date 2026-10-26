@@ -9,12 +9,11 @@ file.
 |---|---|---|---|---|
 | `bad_state_byte` | external_body | panic/abort | Verus | trusted |
 | `desc_stride` | external_body | core library | Kani | trusted |
-| `SlabDesc::at` | external_body | raw pointer (internal) | Verus | trusted |
 | `SlabDes...b_live` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `bad_state_byte`
 
-src/slab.rs:39. Kind: external_body. Category: panic/abort.
+src/slab.rs:43. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > Trusted: Verus does not model the panic's formatted message.
@@ -25,7 +24,7 @@ fn bad_state_byte(v: u8) -> !
 
 ## `desc_stride`
 
-src/slab.rs:210. Kind: external_body. Category: core library.
+src/slab.rs:214. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Descriptor stride for `class` in bytes.
@@ -39,28 +38,9 @@ pub fn desc_stride(class: usize) -> (r: usize)
         r == stride_of(class as int),
 ```
 
-## `SlabDesc::at`
-
-src/slab.rs:234. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> Descriptor of slab `slab` in the array for `class` starting at `base`.
-
-```rust
-pub unsafe fn at(
-    base: usize,
-    class: usize,
-    slab: usize,
-    perm: Tracked<&PointsTo<SlabDesc>>,
-) -> &SlabDesc
-    requires
-        class < NCLASSES,
-        base % DESC_ALIGN == 0,
-```
-
 ## `SlabDesc::sub_live`
 
-src/slab.rs:320. Kind: external_body. Category: atomics primitive.
+src/slab.rs:328. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.
