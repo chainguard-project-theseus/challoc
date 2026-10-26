@@ -13,7 +13,7 @@ file.
 
 ## `Set`
 
-src/huge/mod.rs:437. Kind: ext_type_spec. Category: allocator invariant.
+src/huge/mod.rs:458. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -22,7 +22,7 @@ pub struct ExSet(Set);
 
 ## `Inner::retire`
 
-src/huge/mod.rs:989. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:1010. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Give a dropped descriptor back to `meta`, leaving the `Empty` list first when it is a member (every `Empty` extent is; a freed run's descriptor still reads `Active` here and is in no list).
@@ -33,7 +33,7 @@ fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
 
 ## `Inner::extent_at`
 
-src/huge/mod.rs:1165. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:1186. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The free extent starting at `page`, which must be a set free bit.

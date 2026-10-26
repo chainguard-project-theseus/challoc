@@ -50,6 +50,7 @@ use crate::arena::Arena;
 use crate::heap::Shared;
 pub use crate::policy::Advice;
 use crate::sys;
+use vstd::prelude::*;
 
 mod curve;
 #[cfg(test)]
@@ -220,6 +221,18 @@ pub fn purged_is_zero() -> bool {
     !LAZY_EVER.load(Ordering::Relaxed)
 }
 
+verus! {
+
+/// Ghost: a set of bytes by address, such as those a [`Batch`] may
+/// discard ([`Batch::new`]).
+pub type Bytes = spec_fn(int) -> bool;
+
+/// Ghost: a set of `(addr, len)` pieces, such as those a flush has yet
+/// to settle ([`Settle::settle`]).
+pub type Pieces = spec_fn((int, int)) -> bool;
+
+} // verus!
+
 /// Up to [`MAX_BATCH`] page ranges to discard together.
 ///
 /// Invariant the callers uphold (the reason [`Batch::push`] and
@@ -234,15 +247,16 @@ pub fn purged_is_zero() -> bool {
 /// that hold.
 ///
 /// The memory stays in its free state (`Empty`) until the flush reports
-/// it discarded: `push` and `flush` take the caller's `settle(addr, len,
-/// discarded)`, which the flush (a full batch flushes inside `push`)
-/// calls for every range it issued, and the caller makes the memory
-/// `Purged` only when `discarded` is true. Only ranges pushed with the
-/// same length merge (a walk's page groups); a merged range the kernel
-/// refuses is issued again piece by piece, as pushed, and each piece is
-/// reported on its own, so a locked page keeps only its own piece dirty.
-/// A piece `madvise` refused part of is reported not discarded, and the
-/// bytes a refused call did discard are not counted.
+/// it discarded: `push` and `flush` take the caller's settler
+/// ([`Settle::settle`]`(addr, len, discarded)`), which the flush (a full
+/// batch flushes inside `push`) calls for every range it issued, and the
+/// caller makes the memory `Purged` only when `discarded` is true. Only
+/// ranges pushed with the same length merge (a walk's page groups); a
+/// merged range the kernel refuses is issued again piece by piece, as
+/// pushed, and each piece is reported on its own, so a locked page keeps
+/// only its own piece dirty. A piece `madvise` refused part of is
+/// reported not discarded, and the bytes a refused call did discard are
+/// not counted.
 ///
 /// The re-issue starts with the first and the last piece; when both are
 /// refused too, the middle ones are reported refused without a call.
@@ -259,13 +273,82 @@ pub struct Batch {
     /// of each range merged into it.
     ranges: [(usize, usize, usize); MAX_BATCH],
     n: usize,
+    // The ghost fields below are zero-sized: they change neither the
+    // offsets above nor the machine code.
+    /// Ghost: the bytes the batch may discard.
+    free: Ghost<Bytes>,
+    /// Ghost: the bytes `madvise` took and the flushes reported
+    /// discarded so far.
+    #[allow(dead_code)]
+    sent: Ghost<int>,
+    /// Ghost: the ranges handed to [`discard`] so far, in call order.
+    #[allow(dead_code)]
+    gone: Ghost<Seq<(usize, usize)>>,
+}
+
+/// How a batch's ranges are settled ([`Batch::flush`]): the caller's
+/// record of the memory a batch discards, whose state changes only once a
+/// flush reports a range discarded ([`Batch`]). Owned by the caller
+/// (`Self`, its tally), it works on the caller's state `c` (the lock
+/// value), with its owner `o` (the class or the huge allocator) for
+/// context. Each flush settles each piece pushed once, alone or as part
+/// of its merged range.
+pub trait Settle {
+    type Owner;
+
+    type Ctx;
+
+    /// The flush's report on `[addr, addr + len)`, made of the pieces
+    /// `piece` bytes long pushed and not yet settled (ghost: `pend`, the
+    /// pieces pushed and not yet settled before this report): `done`,
+    /// `madvise` took the range.
+    #[allow(clippy::too_many_arguments)]
+    fn settle(
+        &mut self,
+        o: &Self::Owner,
+        c: &mut Self::Ctx,
+        addr: usize,
+        len: usize,
+        done: bool,
+        piece: Ghost<int>,
+        pend: Ghost<Pieces>,
+    );
+}
+
+/// [`discard_one`]'s settler: whether the one range was discarded.
+struct One {
+    discarded: bool,
+}
+
+impl Settle for One {
+    type Owner = ();
+
+    type Ctx = ();
+
+    #[inline(always)]
+    fn settle(
+        &mut self,
+        _o: &(),
+        _c: &mut (),
+        _addr: usize,
+        _len: usize,
+        done: bool,
+        _piece: Ghost<int>,
+        _pend: Ghost<Pieces>,
+    ) {
+        self.discarded = done;
+    }
 }
 
 impl Batch {
-    pub const fn new() -> Batch {
+    /// An empty batch that may discard the bytes `free` admits.
+    pub const fn new(free: Ghost<Bytes>) -> Batch {
         Batch {
             ranges: [(0, 0, 0); MAX_BATCH],
             n: 0,
+            free,
+            sent: Ghost::assume_new(),
+            gone: Ghost::assume_new(),
         }
     }
 
@@ -287,8 +370,15 @@ impl Batch {
     }
 
     /// Add `[addr, addr + len)` (free, per the type's invariant), flushing
-    /// first, with `settle`, if the batch is full.
-    pub fn push(&mut self, addr: usize, len: usize, settle: impl FnMut(usize, usize, bool)) {
+    /// first, with the settler `s`, if the batch is full.
+    pub fn push<S: Settle>(
+        &mut self,
+        addr: usize,
+        len: usize,
+        s: &mut S,
+        o: &S::Owner,
+        c: &mut S::Ctx,
+    ) {
         // Adjacent ranges of one length pushed in address order (a run of
         // empty 4 KiB slabs) go out as one.
         if self.n != 0 {
@@ -299,23 +389,38 @@ impl Batch {
             }
         }
         if self.is_full() {
-            self.flush(settle);
+            self.flush_in(s, o, c, Ghost::assume_new());
         }
         self.ranges[self.n] = (addr, len, len);
         self.n += 1;
     }
 
-    /// Discard every range with `madvise`, report each to `settle(addr,
-    /// len, discarded)` (a refused merged range piece by piece, the type's
-    /// doc), then empty the batch. The advice is [`advice`] at this moment;
-    /// a batch that discarded anything is counted, and so are the bytes
-    /// discarded ([`discarded_bytes`]; a refused piece counts in
-    /// [`failed_discards`]). A lazy flush makes `Purged` memory
-    /// unknown-zero for the rest of the process (the module doc), which is
-    /// published before the discard so a claim of one of these ranges
-    /// after the caller's lock drops sees it. The ranges are free (the
-    /// type's invariant), which is what makes the discard sound.
-    pub fn flush(&mut self, mut settle: impl FnMut(usize, usize, bool)) {
+    /// Discard every range with `madvise`, report each to the settler `s`
+    /// ([`Settle::settle`]`(addr, len, discarded)`; a refused merged range
+    /// piece by piece, the type's doc), then empty the batch. The advice
+    /// is [`advice`] at this moment; a batch that discarded anything is
+    /// counted, and so are the bytes discarded ([`discarded_bytes`]; a
+    /// refused piece counts in [`failed_discards`]). A lazy flush makes
+    /// `Purged` memory unknown-zero for the rest of the process (the
+    /// module doc), which is published before the discard so a claim of
+    /// one of these ranges after the caller's lock drops sees it. The
+    /// ranges are free (the type's invariant), which is what makes the
+    /// discard sound.
+    #[inline(always)]
+    pub fn flush<S: Settle>(&mut self, s: &mut S, o: &S::Owner, c: &mut S::Ctx) {
+        self.flush_in(s, o, c, Ghost::assume_new());
+    }
+
+    /// [`Batch::flush`], with `keep` (ghost), pieces of the settler's
+    /// invariant that are not the batch's and stay pending:
+    /// [`Batch::push`] leaves the range being pushed.
+    fn flush_in<S: Settle>(
+        &mut self,
+        s: &mut S,
+        o: &S::Owner,
+        c: &mut S::Ctx,
+        _keep: Ghost<Pieces>,
+    ) {
         if self.n != 0 {
             let advice = advice();
             if let Advice::Lazy = advice {
@@ -328,9 +433,17 @@ impl Batch {
             let mut i = 0;
             while i < self.n {
                 let (addr, len, piece) = self.ranges[i];
-                if discard(addr, len, advice) {
+                if discard(addr, len, advice, self.free) {
                     bytes += len as u64;
-                    settle(addr, len, true);
+                    s.settle(
+                        o,
+                        c,
+                        addr,
+                        len,
+                        true,
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                    );
                     i += 1;
                     continue;
                 }
@@ -339,12 +452,12 @@ impl Batch {
                 // middle ones (the type's doc).
                 let last = addr + len - piece;
                 let first_done = if piece < len {
-                    discard(addr, piece, advice)
+                    discard(addr, piece, advice, self.free)
                 } else {
                     false
                 };
                 let last_done = if piece < len {
-                    discard(last, piece, advice)
+                    discard(last, piece, advice, self.free)
                 } else {
                     false
                 };
@@ -356,17 +469,33 @@ impl Batch {
                     } else if at == last {
                         last_done
                     } else if middle {
-                        discard(at, piece, advice)
+                        discard(at, piece, advice, self.free)
                     } else {
                         false
                     };
                     if done {
                         bytes += piece as u64;
-                        settle(at, piece, true);
+                        s.settle(
+                            o,
+                            c,
+                            at,
+                            piece,
+                            true,
+                            Ghost::assume_new(),
+                            Ghost::assume_new(),
+                        );
                     } else {
                         FAILED_PIECES.fetch_add(1, Ordering::Relaxed);
                         FAILED_BYTES.fetch_add(piece as u64, Ordering::Relaxed);
-                        settle(at, piece, false);
+                        s.settle(
+                            o,
+                            c,
+                            at,
+                            piece,
+                            false,
+                            Ghost::assume_new(),
+                            Ghost::assume_new(),
+                        );
                     }
                     at += piece;
                 }
@@ -387,13 +516,14 @@ impl Batch {
 
 /// Discard `[addr, addr + len)` alone, free per the [`Batch`] invariant,
 /// as a batch of one: whether it was discarded (`Huge::free_run`'s purge
-/// at free time).
-pub fn discard_one(addr: usize, len: usize) -> bool {
-    let mut discarded = false;
-    let mut batch = Batch::new();
-    batch.push(addr, len, |_, _, _| {});
-    batch.flush(|_, _, d| discarded = d);
-    discarded
+/// at free time). `free` (ghost) is the bytes it may discard
+/// ([`Batch::new`]).
+pub fn discard_one(addr: usize, len: usize, free: Ghost<Bytes>) -> bool {
+    let mut discarded = One { discarded: false };
+    let mut batch = Batch::new(free);
+    batch.push(addr, len, &mut discarded, &(), &mut ());
+    batch.flush(&mut discarded, &(), &mut ());
+    discarded.discarded
 }
 
 /// The step gate of design section 8, one per `ClassState` and one in
@@ -670,10 +800,11 @@ pub fn note_decay_changed() {
 
 /// Issue `advice` on `[addr, addr + len)`, which is free (the [`Batch`]
 /// invariant; this is the one place the batch's ranges reach the
-/// kernel). Whether the kernel took it: on a refusal (`EINVAL` for a
-/// range with `mlock`ed pages, under `mlockall` every range) the pages
-/// keep their contents, or some of them do (Linux applies the advice to
-/// the VMAs before the one it refuses). Every supported kernel has
+/// kernel): every byte of it is one the batch's `free` (ghost) admits.
+/// Whether the kernel took it: on a refusal (`EINVAL` for a range with
+/// `mlock`ed pages, under `mlockall` every range) the pages keep their
+/// contents, or some of them do (Linux applies the advice to the VMAs
+/// before the one it refuses). Every supported kernel has
 /// `MADV_FREE` (design 17), so `EINVAL` is never an unknown advice. Any
 /// other errno aborts: `ENOMEM` (part
 /// of the range not mapped) means one of our reservations is gone,
@@ -681,7 +812,7 @@ pub fn note_decay_changed() {
 /// unexplained.
 // `%` rather than `is_multiple_of`: the purge proofs reason about `%`.
 #[allow(clippy::manual_is_multiple_of)]
-fn discard(addr: usize, len: usize, advice: Advice) -> bool {
+fn discard(addr: usize, len: usize, advice: Advice, _free: Ghost<Bytes>) -> bool {
     // The range must be whole pages (checked against the page size here).
     let page = sys::features::page_size();
     if !(addr % page == 0 && len % page == 0 && len != 0) {
@@ -706,6 +837,48 @@ fn discard(addr: usize, len: usize, advice: Advice) -> bool {
 /// `madvise` calls [`discard`] made (the tests' syscall counts).
 #[cfg(test)]
 static DISCARD_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// A test's settler: a closure over each report, as the tests write
+/// them.
+#[cfg(test)]
+struct FnSettle<F: FnMut(usize, usize, bool)>(F);
+
+#[cfg(test)]
+impl<F: FnMut(usize, usize, bool)> Settle for FnSettle<F> {
+    type Owner = ();
+
+    type Ctx = ();
+
+    fn settle(
+        &mut self,
+        _o: &(),
+        _c: &mut (),
+        addr: usize,
+        len: usize,
+        done: bool,
+        _piece: Ghost<int>,
+        _pend: Ghost<Pieces>,
+    ) {
+        (self.0)(addr, len, done)
+    }
+}
+
+/// Tests: a batch with no ghost predicate (the tests hold no ghost
+/// state), pushed and flushed with a closure as the settler.
+#[cfg(test)]
+impl Batch {
+    fn new_t() -> Batch {
+        Batch::new(Ghost::assume_new())
+    }
+
+    fn push_t(&mut self, addr: usize, len: usize, settle: impl FnMut(usize, usize, bool)) {
+        self.push(addr, len, &mut FnSettle(settle), &(), &mut ())
+    }
+
+    fn flush_t(&mut self, settle: impl FnMut(usize, usize, bool)) {
+        self.flush(&mut FnSettle(settle), &(), &mut ())
+    }
+}
 
 /// The background thread (design 8.1).
 pub mod background;
