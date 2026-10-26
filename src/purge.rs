@@ -1955,7 +1955,9 @@ fn decay_huge(shared: &Shared, now: u64, keep16: u32) -> Option<u64> {
     if decay_ns == NEVER {
         return None;
     }
-    shared.huge.decay_with(now, decay_ns, keep16)
+    shared
+        .huge
+        .decay_with(now, decay_ns, keep16, Tracked::assume_new())
 }
 
 /// The earlier of two optional deadlines; either one when the other is
@@ -1990,7 +1992,7 @@ pub fn purge_all(shared: &Shared) -> usize {
             n += arena.purge_all();
         }
     }
-    n + shared.huge.purge_empty(u64::MAX)
+    n + shared.huge.purge_empty(u64::MAX, Tracked::assume_new())
 }
 
 /// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
@@ -2001,7 +2003,7 @@ pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
     let arena = shared.arenas.get_existing(index)?;
     let mut n = arena.purge_all();
     if index == 0 {
-        n += shared.huge.purge_empty(u64::MAX);
+        n += shared.huge.purge_empty(u64::MAX, Tracked::assume_new());
     }
     Some(n)
 }

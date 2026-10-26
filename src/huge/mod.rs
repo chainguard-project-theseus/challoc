@@ -55,10 +55,11 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::class::Set;
 use crate::layout::Regions;
-use crate::lock::{Lock, RawLock};
+use crate::lock::{Lock, LockOrder, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, Pieces, Settle};
 use crate::sys::{self, Errno};
+use crate::vspec::once::Once;
 
 mod table;
 
@@ -66,7 +67,7 @@ use table::Table;
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
-use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
+use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_ref, ptr_ref};
 use vstd::resource::set::GhostSetAuth;
 
 verus! {
@@ -430,21 +431,52 @@ pub struct ExHuge(Huge);
 /// What a purge walk's flushes settled: extents made `Purged` and whether
 /// a discard failed. It settles the walk's batch ([`Settle`], through
 /// [`Huge::settle`]).
+// Ghost fields that only the proofs read.
+#[allow(dead_code)]
 struct Tally {
     purged: usize,
     failed: bool,
+    /// Ghost: the run-page authority's set when the walk started; no
+    /// purge changes it.
+    held: Ghost<vstd::set::Set<int>>,
+    /// Ghost: the `Empty` extents the walk visited.
+    vis: Ghost<vstd::set::Set<*mut HugeDesc>>,
+    /// Ghost: the members of the `Empty` list left to visit.
+    rest: Ghost<Seq<*mut HugeDesc>>,
+    /// Ghost: the walk pushes every extent it visits (a full purge).
+    full: Ghost<bool>,
+    /// Ghost: the length of the `Empty` list when the walk started.
+    e0: Ghost<int>,
     /// Ghost: the bytes reported discarded ([`Settle::bytes`]).
-    #[allow(dead_code)]
     bytes: Ghost<int>,
+    /// Ghost: the extents of ranges reported not discarded.
+    refused: Ghost<vstd::set::Set<*mut HugeDesc>>,
 }
 
 impl Tally {
-    /// Nothing settled yet.
-    fn new() -> (t: Tally)
+    /// Nothing visited of the list `l`, of `e0` members; the run
+    /// authority's set `held`, `full` for a walk that pushes every extent
+    /// it visits.
+    fn new(
+        Ghost(held): Ghost<vstd::set::Set<int>>,
+        Ghost(l): Ghost<Seq<*mut HugeDesc>>,
+        Ghost(full): Ghost<bool>,
+        Ghost(e0): Ghost<int>,
+    ) -> (t: Tally)
         ensures
             t.bytes@ == 0,
     {
-        Tally { purged: 0, failed: false, bytes: Ghost(0) }
+        Tally {
+            purged: 0,
+            failed: false,
+            held: Ghost(held),
+            vis: Ghost(vstd::set::Set::empty()),
+            rest: Ghost(l),
+            full: Ghost(full),
+            e0: Ghost(e0),
+            bytes: Ghost(0),
+            refused: Ghost(vstd::set::Set::empty()),
+        }
     }
 }
 
@@ -474,10 +506,10 @@ impl Settle for Tally {
         addr: usize,
         len: usize,
         done: bool,
-        _piece: Ghost<int>,
-        _pend: Ghost<Pieces>,
+        piece: Ghost<int>,
+        pend: Ghost<Pieces>,
     ) {
-        o.settle(c, addr, len, done, self);
+        o.settle(c, addr, len, done, self, piece, pend);
     }
 }
 
@@ -498,6 +530,15 @@ struct Inner {
     /// Ghost: the permission to every live descriptor.
     #[allow(dead_code)]
     descs: Tracked<Map<*mut HugeDesc, PointsTo<HugeDesc>>>,
+    /// Ghost: the [`MetaClaim`](crate::meta::MetaClaim) of every live
+    /// descriptor's block, for [`free_desc`].
+    #[allow(dead_code)]
+    dclaims: Tracked<Map<*mut HugeDesc, crate::meta::MetaClaim>>,
+    /// Ghost: the live-object records' identity of the `Meta` the
+    /// descriptors and the table come from (`Huge::new`'s), fixed at
+    /// creation.
+    #[allow(dead_code)]
+    mid: Ghost<vstd::resource::Loc>,
     /// Ghost: the `Empty` list, head first.
     #[allow(dead_code)]
     elist: Ghost<Seq<*mut HugeDesc>>,
@@ -786,14 +827,11 @@ fn alloc_desc(meta: &Meta) -> *mut HugeDesc {
     meta.alloc(Layout::new::<HugeDesc>()) as *mut HugeDesc
 }
 
-/// Give the block `d` from [`alloc_desc`] back to `meta`.
+/// Give the block `d` from [`alloc_desc`] back to `meta`, with `blk`,
+/// the permission to its bytes and its claim, which `Meta::free` takes.
 #[inline(always)]
-fn free_desc(meta: &Meta, d: *mut HugeDesc) {
-    meta.free(
-        d as *mut u8,
-        Layout::new::<HugeDesc>(),
-        vstd::prelude::Tracked::assume_new(),
-    );
+fn free_desc(meta: &Meta, d: *mut HugeDesc, blk: Tracked<(PointsToRaw, crate::meta::MetaClaim)>) {
+    meta.free(d as *mut u8, Layout::new::<HugeDesc>(), blk);
 }
 
 verus! {
@@ -1040,7 +1078,7 @@ impl Inner {
         if self.desc(d).state() == RunState::Empty {
             self.unlink(d);
         }
-        free_desc(meta, d);
+        free_desc(meta, d, Tracked::assume_new());
     }
 
     /// Append to the `Empty` list; `d.dirty_at` must be the newest.
@@ -1215,7 +1253,7 @@ impl Inner {
         let d = self.table.get(page);
         // Table entries are live descriptors.
         if d.is_null() || self.desc(d).start() != page || !self.desc(d).state().is_free() {
-            panic!("huge: free page {page} has no extent");
+            sys::abort_fmt(format_args!("huge: free page {page} has no extent"));
         }
         d
     }
@@ -1300,14 +1338,20 @@ impl Huge {
     /// bitmap and descriptor table in `meta`. `guard_install` should be the
     /// probed `MADV_GUARD_INSTALL` support. `None` if the metadata region
     /// cannot hold the tables.
-    pub fn new(meta: &Meta, regions: &Regions, guard_install: bool) -> Option<Huge> {
+    pub fn new(
+        meta: &Meta,
+        regions: &Regions,
+        guard_install: bool,
+        _once: Tracked<Once>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Option<Huge> {
         let page = regions.page_size();
         let npages = regions.huge_pages();
         assert!(
             npages > 0 && npages <= u32::MAX as usize,
             "huge: region page count out of range"
         );
-        let free = Set::new(meta, page, npages, Tracked::assume_new())?;
+        let free = Set::new(meta, page, npages, ord)?;
         let table = Table::new(meta, page)?;
         Some(Huge {
             base: regions.huge_base,
@@ -1337,6 +1381,8 @@ impl Huge {
                     // The ghost model: `Huge::new` is outside `verus!`, so
                     // nothing proves `Inner::wf` of it here.
                     descs: Tracked::assume_new(),
+                    dclaims: Tracked::assume_new(),
+                    mid: Ghost::assume_new(),
                     elist: Ghost::assume_new(),
                     all: Ghost::assume_new(),
                     np: Ghost::assume_new(),
@@ -1495,7 +1541,7 @@ impl Huge {
         }
         let spare = alloc_desc(meta);
         if spare.is_null() {
-            free_desc(meta, run);
+            free_desc(meta, run, Tracked::assume_new());
             return Placed::NONE;
         }
         let ok = g.table.ensure(meta, page, 3).is_ok()
@@ -1505,8 +1551,8 @@ impl Huge {
                     .is_ok())
             && self.prepare(s, usable_pages, g.next_page).is_ok();
         if !ok {
-            free_desc(meta, run);
-            free_desc(meta, spare);
+            free_desc(meta, run, Tracked::assume_new());
+            free_desc(meta, spare, Tracked::assume_new());
             return Placed::NONE;
         }
 
@@ -1771,7 +1817,7 @@ impl Huge {
         g.add_extent(run);
         g.stats.next_page = g.next_page;
         if !spare_used {
-            free_desc(meta, spare);
+            free_desc(meta, spare, Tracked::assume_new());
         }
         zeroed
     }
@@ -1938,10 +1984,8 @@ impl Huge {
     }
 
     /// Descriptor of the extent starting or ending at `page`, if any.
-    pub fn lookup(&self, page: usize) -> Option<RunInfo> {
-        let g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+    pub fn lookup(&self, page: usize, ord: Tracked<&mut LockOrder>) -> Option<RunInfo> {
+        let g = self.inner.lock(ord, Tracked::assume_new());
         let d = g.table.get(page);
         if d.is_null() {
             return None;
@@ -1961,11 +2005,14 @@ impl Huge {
     /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`; an extent
     /// whose discard fails stays `Empty` in its place (the next purge
     /// retries it). Returns the number purged.
-    pub fn purge_empty(&self, cutoff: u64) -> usize {
-        let mut g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
-        let mut t = Tally::new();
+    pub fn purge_empty(&self, cutoff: u64, ord: Tracked<&mut LockOrder>) -> usize {
+        let mut g = self.inner.lock(ord, Tracked::assume_new());
+        let mut t = Tally::new(
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+        );
         let mut batch = Batch::new(Ghost::assume_new());
         let mut d = g.empty_head;
         while !d.is_null() {
@@ -2023,7 +2070,17 @@ impl Huge {
     /// they stay as they are.
     ///
     /// [`push_extent`]: Huge::push_extent
-    fn settle(&self, g: &mut Inner, addr: usize, len: usize, done: bool, t: &mut Tally) {
+    #[allow(clippy::too_many_arguments)]
+    fn settle(
+        &self,
+        g: &mut Inner,
+        addr: usize,
+        len: usize,
+        done: bool,
+        t: &mut Tally,
+        _piece: Ghost<int>,
+        _pend: Ghost<Pieces>,
+    ) {
         if !done {
             t.failed = true;
             return;
@@ -2034,7 +2091,9 @@ impl Huge {
             let d = g.table.get(page);
             // Table entries are live descriptors.
             if d.is_null() || g.desc(d).start() != page || g.desc(d).state() != RunState::Empty {
-                panic!("huge: purged range {addr:#x}+{len:#x} is not Empty extents");
+                sys::abort_fmt(format_args!(
+                    "huge: purged range {addr:#x}+{len:#x} is not Empty extents"
+                ));
             }
             let pages = self.purge_desc(g, d);
             t.purged += 1;
@@ -2052,10 +2111,14 @@ impl Huge {
     /// before. A failed discard leaves its extent `Empty` and backs the
     /// gate off (`Decayer::back_off`). Returns the number of extents
     /// purged.
-    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
-        let mut g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+    fn purge_curve(
+        &self,
+        now: u64,
+        curve: &Curve,
+        keep16: u32,
+        ord: Tracked<&mut LockOrder>,
+    ) -> usize {
+        let mut g = self.inner.lock(ord, Tracked::assume_new());
         let mut total = 0usize;
         let mut weighted = 0u64;
         let mut d = g.empty_head;
@@ -2079,7 +2142,12 @@ impl Huge {
         // cap for good (measured: 50 freed 8 MiB runs, one 400 MiB
         // extent, nothing purged in 3 s). The curve alone keeps the rule.
         let capped = keep16 < crate::policy::KEEP_ALL;
-        let mut t = Tally::new();
+        let mut t = Tally::new(
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+        );
         if excess > 0 {
             let mut batch = Batch::new(Ghost::assume_new());
             let mut d = g.empty_head;
@@ -2111,8 +2179,8 @@ impl Huge {
     /// [`decay_with`](Huge::decay_with) keeping everything the curve
     /// allows.
     #[cfg(test)]
-    pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
-        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
+    pub fn decay(&self, now: u64, decay_ns: u64, ord: Tracked<&mut LockOrder>) -> Option<u64> {
+        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL, ord)
     }
 
     /// Decay step (design section 8), as `ClassState::decay_with`: the
@@ -2120,25 +2188,27 @@ impl Huge {
     /// curve, with the cgroup policy's keep ratio (design 11), and returns
     /// the next deadline, `None` when nothing is `Empty`. Lock-free unless
     /// a walk is due.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
+    pub fn decay_with(
+        &self,
+        now: u64,
+        decay_ns: u64,
+        keep16: u32,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Option<u64> {
         self.gate.decay(now, decay_ns, |now, curve| {
-            self.purge_curve(now, curve, keep16);
+            self.purge_curve(now, curve, keep16, ord);
         })
     }
 
     /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's
     /// retention figure.
-    pub fn empty_bytes(&self) -> usize {
-        let g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+    pub fn empty_bytes(&self, ord: Tracked<&mut LockOrder>) -> usize {
+        let g = self.inner.lock(ord, Tracked::assume_new());
         g.stats.empty_pages << self.lg_page
     }
 
-    pub fn stats(&self) -> HugeStats {
-        let g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+    pub fn stats(&self, ord: Tracked<&mut LockOrder>) -> HugeStats {
+        let g = self.inner.lock(ord, Tracked::assume_new());
         HugeStats {
             table_cap: g.table.cap(),
             ..g.stats
@@ -2275,13 +2345,17 @@ fn init_free(d: *mut HugeDesc, start: usize, pages: usize, state: RunState, dirt
 #[cold]
 #[inline(never)]
 fn not_a_run(p: usize) -> ! {
-    panic!("invalid free of {p:#x}: not the start of a huge allocation")
+    sys::abort_fmt(format_args!(
+        "invalid free of {p:#x}: not the start of a huge allocation"
+    ))
 }
 
 #[cold]
 #[inline(never)]
 fn already_free(p: usize) -> ! {
-    panic!("double free of {p:#x}: huge allocation already freed")
+    sys::abort_fmt(format_args!(
+        "double free of {p:#x}: huge allocation already freed"
+    ))
 }
 
 /// The `check_zero` abort: a huge run handed out as zero has a dirty word.

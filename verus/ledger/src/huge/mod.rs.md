@@ -14,7 +14,7 @@ file.
 
 ## `Huge`
 
-src/huge/mod.rs:428. Kind: ext_type_spec. Category: allocator invariant.
+src/huge/mod.rs:429. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -23,7 +23,7 @@ pub struct ExHuge(Huge);
 
 ## `Tally::settle`
 
-src/huge/mod.rs:470. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:502. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -34,17 +34,19 @@ fn settle(
     addr: usize,
     len: usize,
     done: bool,
-    _piece: Ghost<int>,
-    _pend: Ghost<Pieces>,
+    piece: Ghost<int>,
+    pend: Ghost<Pieces>,
 )
 ```
 
 ## `Inner::retire`
 
-src/huge/mod.rs:1038. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:1076. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Give a dropped descriptor back to `meta`, leaving the `Empty` list first when it is a member (every `Empty` extent is; a freed run's descriptor still reads `Active` here and is in no list).
+
+Body mints Tracked at line 1081.
 
 ```rust
 fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
@@ -52,7 +54,7 @@ fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
 
 ## `Inner::extent_at`
 
-src/huge/mod.rs:1214. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:1252. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The free extent starting at `page`, which must be a set free bit.
