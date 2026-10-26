@@ -21,8 +21,10 @@
 #   ext_trait_spec       `#[verifier::external_trait_specification]`
 #   no_decreases         `#[verifier::exec_allows_no_decreases_clause]`
 #   assume_new           `Tracked::assume_new()`/`Ghost::assume_new()`
-#                        outside tests and outside external_body bodies
-#                        (those inside are noted on their function's entry)
+#                        inside `verus!`, outside tests and outside
+#                        external_body bodies (those inside are noted on
+#                        their function's entry; code outside `verus!` is
+#                        not verified, so its own are no seam)
 # and prints, per item, its place, the contract Verus assumes (the
 # signature with its requires/ensures, verbatim), a category and a
 # proposed discharging tool. Categories and tools come from heuristics on
@@ -191,7 +193,7 @@ function finish_doc(    s) {
 newfile {
     newfile = 0
     depth = 0; nimpl = 0; skip = 0; cap = 0; attrs = ""; doc = ""
-    pendtest = 0; lastfn = ""; pendimpl = ""
+    pendtest = 0; lastfn = ""; pendimpl = ""; inverus = 0
 }
 
 {
@@ -275,7 +277,7 @@ newfile {
     }
     if (isfn) lastfn = qual(fname)
 
-    if (kind == "" && c ~ /(Tracked|Ghost)::assume_new\(\)/) {
+    if (kind == "" && inverus && c ~ /(Tracked|Ghost)::assume_new\(\)/) {
         e = begin(c ~ /Tracked::assume_new/ ? "assume_new" : "ghost_assume_new", lastfn)
         econtract[e] = rawt
     }
@@ -292,8 +294,10 @@ newfile {
     } else if (pendimpl != "" && opens > closes) {
         nimpl++; implname[nimpl] = pendimpl; impld[nimpl] = depth; pendimpl = ""
     }
+    if (t ~ /^verus! *\{/) { inverus = 1; verusd = depth }
     depth += opens - closes
     while (nimpl > 0 && depth <= impld[nimpl]) nimpl--
+    if (inverus && depth <= verusd) inverus = 0
 }
 EOF
 )
