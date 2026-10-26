@@ -836,8 +836,17 @@ impl Shared {
                 );
             }
             let arena0 = Shared::arena0_ptr(this);
-            let all_tables = &*(tables as *const [SlabTable; NCLASSES]);
-            if !Arena::init(arena0, meta, regions, all_tables, 0, decay_ns) {
+            if !Arena::init(
+                arena0,
+                meta,
+                regions,
+                tables,
+                Tracked::assume_new(),
+                0,
+                decay_ns,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            ) {
                 return false;
             }
             match Huge::new(

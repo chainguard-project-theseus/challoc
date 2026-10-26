@@ -1,0 +1,3 @@
+# A temporary seam: opaque until the statistics are specified
+# (the accounting identities `ArenaStats::identities_hold` checks).
+ArenaStats	allocator invariant	Verus

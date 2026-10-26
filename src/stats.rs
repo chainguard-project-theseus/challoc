@@ -45,7 +45,7 @@ use crate::heap::Shared;
 use crate::huge::{GUARD_PAGES, HugeStats};
 use crate::layout::{NBINS, NCLASSES};
 use crate::meta::MetaStats;
-use vstd::prelude::Tracked;
+use vstd::prelude::{Tracked, verus};
 
 /// One `(arena, class)` pair (`stats.arenas.<i>.bins.<j>.*` and the
 /// `arenas.bin.<j>.*` geometry).
@@ -181,6 +181,18 @@ pub struct ArenaStats {
     pub mapped: usize,
     pub bins: [BinStats; NCLASSES],
 }
+
+verus! {
+
+/// `ArenaStats`, opaque: `arena.rs` keeps one in each arena's statistics
+/// lock and copies it in and out, and states nothing about its figures.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `ArenaStats` to the verifier.
+#[allow(dead_code)]
+pub struct ExArenaStats(ArenaStats);
+
+} // verus!
 
 impl ArenaStats {
     /// All zero, for `index`.
@@ -527,7 +539,7 @@ fn collect_into(shared: &Shared, store: bool) -> Snapshot {
             totals.add_arena(&a);
             narenas += 1;
             if store {
-                arena.store_stats(&a);
+                arena.store_stats(&a, Tracked::assume_new());
             }
         }
     }
@@ -571,7 +583,12 @@ pub fn snapshot(shared: &Shared) -> Snapshot {
 /// `None` if the arena does not exist. An arena created since the last
 /// epoch reports zeros.
 pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats> {
-    Some(shared.arenas.get_existing(index)?.stats())
+    Some(
+        shared
+            .arenas
+            .get_existing(index)?
+            .stats(Tracked::assume_new()),
+    )
 }
 
 /// `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`): every existing arena's
@@ -585,7 +602,7 @@ pub fn arena_stats_all(shared: &Shared) -> ArenaStats {
     let n = shared.arenas.count();
     for i in 0..n as usize {
         if let Some(arena) = arena_at(shared, i) {
-            all.add(&arena.stats());
+            all.add(&arena.stats(Tracked::assume_new()));
         }
     }
     all
@@ -1018,7 +1035,7 @@ mod tests {
                 let snap = snapshot(s);
                 let mut sum = Totals::EMPTY;
                 for a in s.arenas.iter() {
-                    sum.add_arena(&a.stats());
+                    sum.add_arena(&a.stats(Tracked::assume_new()));
                 }
                 if sum != snap.totals {
                     bad = Some((round, sum, snap.totals));
