@@ -24,6 +24,53 @@ pub tracked struct Zeroed {
     ghost len: int,
 }
 
+impl Zeroed {
+    /// First byte.
+    pub closed spec fn addr(&self) -> int {
+        self.addr
+    }
+
+    /// Bytes covered.
+    pub closed spec fn len(&self) -> int {
+        self.len
+    }
+
+    /// The empty range at `addr` reads as zero: there is nothing to read.
+    pub proof fn empty(addr: int) -> (tracked z: Zeroed)
+        ensures
+            z.addr() == addr,
+            z.len() == 0,
+    {
+        Zeroed { addr, len: 0 }
+    }
+
+    /// A zero range is its first `k` bytes and the rest, both zero.
+    pub proof fn split(tracked self, k: int) -> (tracked r: (Zeroed, Zeroed))
+        requires
+            0 <= k <= self.len(),
+        ensures
+            r.0.addr() == self.addr(),
+            r.0.len() == k,
+            r.1.addr() == self.addr() + k,
+            r.1.len() == self.len() - k,
+    {
+        (Zeroed { addr: self.addr, len: k }, Zeroed { addr: self.addr + k, len: self.len - k })
+    }
+
+    /// Two adjacent zero ranges are one.
+    pub proof fn join(tracked self, tracked next: Zeroed) -> (tracked z: Zeroed)
+        requires
+            self.len() >= 0,
+            next.len() >= 0,
+            self.addr() + self.len() == next.addr(),
+        ensures
+            z.addr() == self.addr(),
+            z.len() == self.len() + next.len(),
+    {
+        Zeroed { addr: self.addr, len: self.len + next.len }
+    }
+}
+
 /// Ghost permission to bytes that read as zero: a raw permission together
 /// with the fact that its bytes read as zero. A bitmap built on such bytes
 /// starts from words that read as zero (`bitmap::TwoLevelBitmap::from_raw`

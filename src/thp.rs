@@ -51,6 +51,7 @@ use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use crate::config::Thp as Key;
 use crate::sys::features::Features;
 use crate::sys::thp_host::{Thp as Table, ThpSetting};
+use vstd::prelude::*;
 
 /// The effective mode.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -410,14 +411,21 @@ pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool {
     advise_nohugepage(addr, len)
 }
 
+verus! {
+
 /// Whether `never` is the policy in force: the key, or `always` forced to
 /// `never` by design 11. The key, not the mode: an `auto` the kernel's
 /// table made inert keeps its regions eligible for the folios the host may
 /// enable later (and `MADV_NOHUGEPAGE` would forbid them as well as the
 /// PMD).
+/// Trusted for now (`external_body`): Verus takes the result as any
+/// `bool`, which is all `meta::eager_policy` relies on.
+#[verifier::external_body]
 pub fn is_never() -> bool {
     key() == Key::Never || Reason::from_u8(REASON.load(Ordering::Relaxed)) == Reason::Forced
 }
+
+} // verus!
 
 /// `MADV_NOHUGEPAGE` on a reservation, counted; nothing on a kernel
 /// without THP.
@@ -517,8 +525,12 @@ pub fn pmd_size() -> usize {
     1usize.wrapping_shl(lg as u32)
 }
 
+verus! {
+
 /// The folio metadata commits are rounded to and advised with; 0 when
-/// metadata is left alone.
+/// metadata is left alone. Trusted for now (`external_body`): Verus
+/// takes the result as any `usize`, which is all `meta::Inner` relies on.
+#[verifier::external_body]
 #[inline]
 pub fn meta_folio_size() -> usize {
     match load_lg_meta() {
@@ -528,6 +540,8 @@ pub fn meta_folio_size() -> usize {
         _ => 0,
     }
 }
+
+} // verus!
 
 /// The smallest huge run (bytes) that is advised; `usize::MAX` when none.
 #[inline]
@@ -593,10 +607,20 @@ pub fn advise_huge(addr: usize, len: usize) -> bool {
     advise(addr, len, &HUGE_RANGES, true)
 }
 
-/// `MADV_HUGEPAGE` on a metadata commit.
-pub fn advise_meta(addr: usize, len: usize) -> bool {
+verus! {
+
+/// `MADV_HUGEPAGE` on a metadata commit. Trusted for now
+/// (`external_body`): `madvise` changes a VMA flag, never contents, and
+/// Verus takes the result as any `bool`.
+#[verifier::external_body]
+pub fn advise_meta(addr: usize, len: usize) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     advise(addr, len, &META_RANGES, true)
 }
+
+} // verus!
 
 /// The counters, for the report and `stats.thp.*`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
