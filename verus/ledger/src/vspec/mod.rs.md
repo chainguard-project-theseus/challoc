@@ -11,7 +11,7 @@ file.
 
 ## `<u64>::div_ceil`
 
-src/vspec/mod.rs:43. Kind: assume_spec. Category: core library.
+src/vspec/mod.rs:44. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `u64::div_ceil`: the quotient rounded up; panics when `rhs == 0` (core docs), and cannot overflow otherwise.

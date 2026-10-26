@@ -10,6 +10,12 @@ pub assume_specification[ u8::is_ascii_digit ](b: &u8) -> (r: bool)
     ensures r <==> 48 <= *b <= 57,
 ;
 
+/// `u8::is_ascii_whitespace`: space, tab, line feed, form feed and
+/// carriage return (not vertical tab).
+pub assume_specification[ u8::is_ascii_whitespace ](b: &u8) -> (r: bool)
+    ensures r <==> (*b == 32 || *b == 9 || *b == 10 || *b == 12 || *b == 13),
+;
+
 /// `isize::wrapping_neg`: `-x`, except that `isize::MIN` is its own
 /// negation.
 pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)

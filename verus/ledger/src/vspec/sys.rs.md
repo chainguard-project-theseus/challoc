@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `u8::is_ascii_digit` | assume_spec | core library | Kani | trusted |
+| `u8::is_ascii_whitespace` | assume_spec | core library | Kani | trusted |
 | `isize::wrapping_neg` | assume_spec | core library | Kani | trusted |
 | `<[T]>::as_mut_ptr` | assume_spec | core library | Kani | trusted |
 | `<[T]>::as_ptr` | assume_spec | core library | Kani | trusted |
@@ -32,9 +33,22 @@ pub assume_specification[ u8::is_ascii_digit ](b: &u8) -> (r: bool)
 ;
 ```
 
-## `isize::wrapping_neg`
+## `u8::is_ascii_whitespace`
 
 src/vspec/sys.rs:15. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `u8::is_ascii_whitespace`: space, tab, line feed, form feed and carriage return (not vertical tab).
+
+```rust
+pub assume_specification[ u8::is_ascii_whitespace ](b: &u8) -> (r: bool)
+    ensures r <==> (*b == 32 || *b == 9 || *b == 10 || *b == 12 || *b == 13),
+;
+```
+
+## `isize::wrapping_neg`
+
+src/vspec/sys.rs:21. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `isize::wrapping_neg`: `-x`, except that `isize::MIN` is its own negation.
@@ -47,7 +61,7 @@ pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)
 
 ## `<[T]>::as_mut_ptr`
 
-src/vspec/sys.rs:25. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:31. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The address of a slice's first element, for a syscall argument; the verified code never dereferences it.
@@ -61,7 +75,7 @@ pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
 
 ## `<[T]>::as_ptr`
 
-src/vspec/sys.rs:30. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:36. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -70,7 +84,7 @@ pub assume_specification<T>[ <[T]>::as_ptr ](s: &[T]) -> *const T;
 
 ## `core::ptr::from_ref`
 
-src/vspec/sys.rs:33. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/sys.rs:39. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > A reference as a raw pointer, for a syscall argument.
@@ -81,7 +95,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r
 
 ## `core::ptr::from_mut`
 
-src/vspec/sys.rs:35. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/sys.rs:41. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -90,7 +104,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r
 
 ## `Option::<T>::map_or`
 
-src/vspec/sys.rs:38. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:44. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Option::map_or`: `f` of the value, else `default`.
@@ -111,7 +125,7 @@ pub assume_specification<T, U, F: FnOnce(T) -> U>[ Option::<T>::map_or ](
 
 ## `Result::<T, E>::map_or`
 
-src/vspec/sys.rs:51. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:57. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Result::map_or`: `f` of the `Ok` value, else `default`.
@@ -132,7 +146,7 @@ pub assume_specification<T, E, U, F: FnOnce(T) -> U>[ Result::<T, E>::map_or ](
 
 ## `Result::<T, E>::unwrap_or`
 
-src/vspec/sys.rs:64. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:70. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Result::unwrap_or`: the `Ok` value, else `default`.
@@ -149,7 +163,7 @@ pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>
 
 ## `core::str::Utf8Error`
 
-src/vspec/sys.rs:74. Kind: ext_type_spec. Category: core library.
+src/vspec/sys.rs:80. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -158,7 +172,7 @@ pub struct ExUtf8Error(core::str::Utf8Error);
 
 ## `core::str::from_utf8`
 
-src/vspec/sys.rs:77. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:83. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `core::str::from_utf8`: the bytes as a `str` when they are UTF-8.
