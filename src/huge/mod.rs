@@ -63,7 +63,11 @@ use crate::sys::{self, Errno};
 mod table;
 
 use table::Table;
-use vstd::prelude::verus;
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::pow2;
+use vstd::prelude::*;
+use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
+use vstd::resource::set::GhostSetAuth;
 
 verus! {
 
@@ -72,8 +76,6 @@ pub const GUARD_PAGES: usize = 1;
 /// Runs with more usable bytes than this are purged as soon as they are
 /// freed (`huge_retain_max`).
 pub const DEFAULT_RETAIN_MAX: usize = 64 << 20;
-
-} // verus!
 
 /// State of an extent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,9 +92,15 @@ pub enum RunState {
 impl RunState {
     /// Decode a state byte. Aborts on a value no state has: a corrupted
     /// byte must not read as `Purged`, whose pages `take` hands out as
-    /// zero memory.
+    /// zero memory. Verified callers pass a valid byte, so they never
+    /// reach the abort.
     #[inline]
-    fn from_u8(v: u8) -> RunState {
+    fn from_u8(v: u8) -> (r: RunState)
+        requires
+            v <= 2,
+        ensures
+            r == state_of(v),
+    {
         match RunState::try_from_u8(v) {
             Some(s) => s,
             None => bad_run_state_byte(v),
@@ -101,7 +109,10 @@ impl RunState {
 
     /// [`from_u8`](RunState::from_u8) without the abort.
     #[inline]
-    const fn try_from_u8(v: u8) -> Option<RunState> {
+    const fn try_from_u8(v: u8) -> (r: Option<RunState>)
+        ensures
+            r == if v <= 2 { Some(state_of(v)) } else { None },
+    {
         match v {
             0 => Some(RunState::Active),
             1 => Some(RunState::Empty),
@@ -111,8 +122,22 @@ impl RunState {
     }
 
     #[inline]
-    pub const fn is_free(self) -> bool {
+    pub const fn is_free(self) -> (r: bool)
+        ensures
+            r == (self != RunState::Active),
+    {
         !matches!(self, RunState::Active)
+    }
+}
+
+/// The state a valid state byte encodes.
+pub open spec fn state_of(v: u8) -> RunState {
+    if v == 0 {
+        RunState::Active
+    } else if v == 1 {
+        RunState::Empty
+    } else {
+        RunState::Purged
     }
 }
 
@@ -134,38 +159,81 @@ pub struct HugeDesc {
     next: *mut HugeDesc,
 }
 
+// Checked by the compiler; `desc_in_meta` reads the size.
+#[cfg_attr(not(verus_keep_ghost), allow(unused_braces))]
+global layout HugeDesc is size == 48, align == 8;
+
 impl HugeDesc {
+    pub closed spec fn spec_start(&self) -> int {
+        self.start as int
+    }
+
+    pub closed spec fn spec_pages(&self) -> int {
+        self.pages as int
+    }
+
+    pub closed spec fn spec_arena(&self) -> u16 {
+        self.arena
+    }
+
+    /// The state byte.
+    pub closed spec fn spec_state(&self) -> u8 {
+        self.state
+    }
+
     #[inline]
-    pub fn start(&self) -> usize {
+    pub fn start(&self) -> (r: usize)
+        ensures
+            r == self.spec_start(),
+    {
         self.start as usize
     }
 
     #[inline]
-    pub fn pages(&self) -> usize {
+    pub fn pages(&self) -> (r: usize)
+        ensures
+            r == self.spec_pages(),
+    {
         self.pages as usize
     }
 
     /// One past the last page.
     #[inline]
-    pub fn end(&self) -> usize {
+    pub fn end(&self) -> (r: usize)
+        ensures
+            r == self.spec_start() + self.spec_pages(),
+    {
         self.start() + self.pages()
     }
 
     #[inline]
-    pub fn arena(&self) -> u16 {
+    pub fn arena(&self) -> (r: u16)
+        ensures
+            r == self.spec_arena(),
+    {
         self.arena
     }
 
+    /// Aborts unless the state byte is valid ([`RunState::from_u8`]).
     #[inline]
-    pub fn state(&self) -> RunState {
+    pub fn state(&self) -> (r: RunState)
+        requires
+            self.spec_state() <= 2,
+        ensures
+            r == state_of(self.spec_state()),
+    {
         RunState::from_u8(self.state)
     }
 }
+
+} // verus!
 
 impl HugeDesc {
     #[cfg(test)]
     const LAYOUT: Layout = Layout::new::<HugeDesc>();
 }
+
+verus! {
 
 /// What [`Huge::alloc_run`] placed: the run's start, whether it reads as
 /// zero, and its pages with the guard, read from the descriptor it wrote.
@@ -180,11 +248,13 @@ pub struct Placed {
 
 impl Placed {
     /// Nothing placed.
-    pub const NONE: Placed = Placed {
-        ptr: ptr::null_mut(),
-        zeroed: false,
-        pages: 0,
-    };
+    pub exec const NONE: Placed
+        ensures
+            Self::NONE.pages == 0,
+            Self::NONE.ptr@.addr == 0,
+    {
+        Placed { ptr: ptr::null_mut(), zeroed: false, pages: 0 }
+    }
 }
 
 /// A copy of a descriptor for callers outside the lock (tests, stats).
@@ -220,8 +290,38 @@ pub struct HugeStats {
 }
 
 impl HugeStats {
+    /// Room to count one more extent of `pages` in `state`.
+    pub open spec fn can_add(&self, state: RunState, pages: usize) -> bool {
+        match state {
+            RunState::Active => self.runs < usize::MAX && self.run_pages + pages <= usize::MAX,
+            RunState::Empty => self.empty < usize::MAX && self.empty_pages + pages <= usize::MAX,
+            RunState::Purged => self.purged < usize::MAX && self.purged_pages + pages <= usize::MAX,
+        }
+    }
+
     /// Count one extent of `pages` in `state`.
-    fn add(&mut self, state: RunState, pages: usize) {
+    fn add(&mut self, state: RunState, pages: usize)
+        requires
+            old(self).can_add(state, pages),
+        ensures
+            *final(self) == match state {
+                RunState::Active => HugeStats {
+                    runs: (old(self).runs + 1) as usize,
+                    run_pages: (old(self).run_pages + pages) as usize,
+                    ..*old(self)
+                },
+                RunState::Empty => HugeStats {
+                    empty: (old(self).empty + 1) as usize,
+                    empty_pages: (old(self).empty_pages + pages) as usize,
+                    ..*old(self)
+                },
+                RunState::Purged => HugeStats {
+                    purged: (old(self).purged + 1) as usize,
+                    purged_pages: (old(self).purged_pages + pages) as usize,
+                    ..*old(self)
+                },
+            },
+    {
         match state {
             RunState::Active => {
                 self.runs += 1;
@@ -238,15 +338,48 @@ impl HugeStats {
         }
     }
 
-    /// Uncount one extent of `pages` in `state`.
-    fn sub(&mut self, state: RunState, pages: usize) {
+    /// An extent of `pages` in `state` is there to uncount.
+    pub open spec fn can_sub(&self, state: RunState, pages: usize) -> bool {
+        match state {
+            RunState::Active => self.runs >= 1 && self.run_pages >= pages,
+            RunState::Empty => self.empty >= 1 && self.empty_pages >= pages,
+            RunState::Purged => self.purged >= 1 && self.purged_pages >= pages,
+        }
+    }
+
+    /// Uncount one extent of `pages` in `state`. Verified callers have the
+    /// extent counted, so they never reach the underflow abort.
+    fn sub(&mut self, state: RunState, pages: usize)
+        requires
+            old(self).can_sub(state, pages),
+        ensures
+            *final(self) == match state {
+                RunState::Active => HugeStats {
+                    runs: (old(self).runs - 1) as usize,
+                    run_pages: (old(self).run_pages - pages) as usize,
+                    ..*old(self)
+                },
+                RunState::Empty => HugeStats {
+                    empty: (old(self).empty - 1) as usize,
+                    empty_pages: (old(self).empty_pages - pages) as usize,
+                    ..*old(self)
+                },
+                RunState::Purged => HugeStats {
+                    purged: (old(self).purged - 1) as usize,
+                    purged_pages: (old(self).purged_pages - pages) as usize,
+                    ..*old(self)
+                },
+            },
+    {
         // A count going below zero means the extents and the counters
         // disagree; the release profile does not check overflow, so the
         // subtractions are explicit.
-        let sub = |x: usize, y: usize| {
-            x.checked_sub(y)
-                .unwrap_or_else(|| huge_count_underflow(state))
-        };
+        let sub = |x: usize, y: usize| -> (r: usize)
+            requires
+                x >= y,
+            ensures
+                r == x - y,
+            { x.checked_sub(y).unwrap_or_else(|| -> (r: usize) requires false { huge_count_underflow(state) }) };
         match state {
             RunState::Active => {
                 self.runs = sub(self.runs, 1);
@@ -264,17 +397,27 @@ impl HugeStats {
     }
 }
 
+// The two aborts below are unreachable from verified code: their callers'
+// preconditions rule out the bad byte and the underflow.
 #[cold]
 #[inline(never)]
-fn bad_run_state_byte(v: u8) -> ! {
+fn bad_run_state_byte(v: u8) -> !
+    requires
+        false,
+{
     panic!("huge: run state byte {v:#x} is not a run state")
 }
 
 #[cold]
 #[inline(never)]
-fn huge_count_underflow(state: RunState) -> ! {
+fn huge_count_underflow(state: RunState) -> !
+    requires
+        false,
+{
     panic!("huge: {state:?} extent count underflow")
 }
+
+} // verus!
 
 /// What a purge walk's flushes settled: extents made `Purged` and whether
 /// a discard failed.
@@ -283,6 +426,15 @@ struct Tally {
     purged: usize,
     failed: bool,
 }
+
+verus! {
+
+// `Set`, opaque: `Inner` holds the free-page set, which the proofs here do
+// not read.
+#[cfg(verus_keep_ghost)]
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExSet(Set);
 
 struct Inner {
     /// Free pages below `next_page`.
@@ -294,7 +446,225 @@ struct Inner {
     empty_head: *mut HugeDesc,
     empty_tail: *mut HugeDesc,
     stats: HugeStats,
+    /// Ghost: the permission to every live descriptor.
+    #[allow(dead_code)]
+    descs: Tracked<Map<*mut HugeDesc, PointsTo<HugeDesc>>>,
+    /// Ghost: the `Empty` list, head first.
+    #[allow(dead_code)]
+    elist: Ghost<Seq<*mut HugeDesc>>,
+    /// Ghost: every live descriptor (the keys of `descs`), in no order.
+    #[allow(dead_code)]
+    all: Ghost<Seq<*mut HugeDesc>>,
+    /// Ghost: the region's page count (`Huge::npages`), fixed at creation.
+    #[allow(dead_code)]
+    np: Ghost<usize>,
+    /// Ghost: the region's page shift (`Huge::lg_page`), fixed at creation.
+    #[allow(dead_code)]
+    lg: Ghost<u32>,
+    /// Ghost: the authority of the `Active` descriptors' extents
+    /// ([`run_loc`]).
+    #[allow(dead_code)]
+    runs: Tracked<GhostSetAuth<(int, int)>>,
+    /// Ghost: the authority of the `Active` descriptors' pages
+    /// ([`page_loc`]).
+    #[allow(dead_code)]
+    pgs: Tracked<GhostSetAuth<int>>,
 }
+
+/// Pages of the descriptors in `l`.
+spec fn epages(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> int
+    decreases l.len(),
+{
+    if l.len() == 0 {
+        0
+    } else {
+        descs[l[0]].value().pages + epages(l.drop_first(), descs)
+    }
+}
+
+/// A descriptor's fields make sense below the high-water mark: a valid
+/// state, at least one page, and no page at or past `next_page`.
+spec fn desc_ok(v: HugeDesc, next_page: usize) -> bool {
+    &&& v.state <= 2
+    &&& v.pages >= 1
+    &&& v.start + v.pages <= next_page
+}
+
+/// Every live descriptor's state byte is a run state ([`desc_ok`]'s first
+/// clause), so [`HugeDesc::state`] aborts on none of them.
+spec fn states_ok(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
+    forall|x: *mut HugeDesc| #[trigger] descs.contains_key(x) ==> descs[x].value().state <= 2
+}
+
+/// An `Active` descriptor is a run: its pages are the usable pages and
+/// the guard after them, and `usable` is the usable pages' bytes, for
+/// pages of `2^lg` bytes ([`Huge::take`] writes it so).
+spec fn run_ok(v: HugeDesc, lg: u32) -> bool {
+    v.state == RunState::Active as u8 ==> v.pages > GUARD_PAGES && v.usable == (v.pages - GUARD_PAGES) * pow2(lg as nat)
+}
+
+/// Every permission in `descs` is for its key, initialised and non-null,
+/// and the descriptor lies in the metadata region ([`alloc_desc`]).
+spec fn perms_ok(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
+    forall|d: *mut HugeDesc| #[trigger] descs.contains_key(d) ==> {
+        &&& descs[d].ptr() == d
+        &&& descs[d].is_init()
+        &&& d@.addr != 0
+        &&& desc_in_meta(d)
+    }
+}
+
+/// The 48 bytes of the descriptor at `d` are metadata
+/// ([`Regions::in_meta`]).
+pub open spec fn desc_in_meta(d: *mut HugeDesc) -> bool {
+    crate::layout::process_regions().in_meta(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
+}
+
+/// The authority of the live runs' extents: one per
+/// process, the huge allocator's.
+pub uninterp spec fn run_loc() -> vstd::resource::Loc;
+
+/// The authority of the live runs' pages.
+pub uninterp spec fn page_loc() -> vstd::resource::Loc;
+
+/// Entry `i` of the `Empty` list: a live `Empty` descriptor linked to its
+/// neighbours.
+spec fn enode(elist: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, i: int) -> bool {
+    let d = elist[i];
+    &&& descs.contains_key(d)
+    &&& descs[d].value().state == RunState::Empty as u8
+    &&& descs[d].value().prev == (if i > 0 { elist[i - 1] } else { ptr::null_mut::<HugeDesc>() })
+    &&& descs[d].value().next == (if i + 1 < elist.len() { elist[i + 1] } else { ptr::null_mut::<HugeDesc>() })
+}
+
+/// The `Empty` list runs from `head` to `tail` through `elist`.
+spec fn elist_ok(
+    head: *mut HugeDesc,
+    tail: *mut HugeDesc,
+    elist: Seq<*mut HugeDesc>,
+    descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>,
+) -> bool {
+    &&& elist.len() == 0 ==> head == ptr::null_mut::<HugeDesc>() && tail == ptr::null_mut::<HugeDesc>()
+    &&& elist.len() > 0 ==> head == elist[0] && tail == elist[elist.len() - 1]
+    &&& forall|i: int| 0 <= i < elist.len() ==> #[trigger] enode(elist, descs, i)
+    &&& elist.no_duplicates()
+}
+
+/// `a` and `b` are the same descriptor apart from the list links.
+spec fn same_but_links(a: HugeDesc, b: HugeDesc) -> bool {
+    &&& a.start == b.start
+    &&& a.pages == b.pages
+    &&& a.arena == b.arena
+    &&& a.state == b.state
+    &&& a.usable == b.usable
+    &&& a.dirty_at == b.dirty_at
+}
+
+/// `descs2` has the permissions of `descs1`, and the descriptors differ
+/// at most in their list links.
+spec fn links_only(descs1: Map<*mut HugeDesc, PointsTo<HugeDesc>>, descs2: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
+    &&& descs2.dom() == descs1.dom()
+    &&& perms_ok(descs2)
+    &&& forall|x: *mut HugeDesc| #[trigger] descs1.contains_key(x) ==> same_but_links(descs1[x].value(), descs2[x].value())
+}
+
+/// The table keys of an extent: its first page, and its last page too
+/// when it is free and longer than a page (so a free finds both
+/// neighbours).
+spec fn is_key(v: HugeDesc, k: int) -> bool {
+    k == v.start || (v.state != RunState::Active as u8 && v.pages > 1 && k == v.start + v.pages - 1)
+}
+
+/// The table maps every key of `v` to `d`.
+spec fn keyed(t: Table, v: HugeDesc, d: *mut HugeDesc) -> bool {
+    &&& t.lookup(v.start as usize) == Some(d)
+    &&& (v.state != RunState::Active as u8 && v.pages > 1) ==> t.lookup((v.start + v.pages - 1) as usize) == Some(d)
+}
+
+/// Two extents share no page.
+spec fn apart(a: HugeDesc, b: HugeDesc) -> bool {
+    a.start + a.pages <= b.start || b.start + b.pages <= a.start
+}
+
+/// `v` is the `Active` run with extent `e`, `(start, pages)`.
+spec fn run_at(v: HugeDesc, e: (int, int)) -> bool {
+    &&& v.state == RunState::Active as u8
+    &&& v.start == e.0
+    &&& v.pages == e.1
+}
+
+/// `v` is an `Active` run with page `k`.
+spec fn run_page(v: HugeDesc, k: int) -> bool {
+    &&& v.state == RunState::Active as u8
+    &&& v.start <= k < v.start + v.pages
+}
+
+/// The extents of the `Active` descriptors in `descs`: what the extents'
+/// authority holds ([`Inner::wf`]).
+spec fn active_runs(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> vstd::set::Set<(int, int)> {
+    descs.dom().filter(|d: *mut HugeDesc| descs[d].value().state == RunState::Active as u8).map(
+        |d: *mut HugeDesc| (descs[d].value().start as int, descs[d].value().pages as int),
+    )
+}
+
+/// The pages of the `Active` descriptors in `descs`: what the pages'
+/// authority holds ([`Inner::wf`]). A descriptor's pages are below `2^33`.
+spec fn active_pages(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> vstd::set::Set<int> {
+    vstd::set_lib::set_int_range(0, 0x2_0000_0000).filter(
+        |k: int| exists|d: *mut HugeDesc| #[trigger] descs.contains_key(d) && run_page(descs[d].value(), k),
+    )
+}
+
+/// No two free extents touch: a free extent never ends where another (or
+/// itself) starts, so every free stretch of pages is one extent.
+spec fn coalesced(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
+    forall|d1: *mut HugeDesc, d2: *mut HugeDesc|
+        #[trigger] descs.contains_key(d1) && #[trigger] descs.contains_key(d2) && descs[d1].value().state
+            != RunState::Active as u8 && descs[d2].value().state != RunState::Active as u8 ==> descs[d1].value().start
+            + descs[d1].value().pages != descs[d2].value().start
+}
+
+/// What an extent adds to tally `k`: its count (`k` 0 to 2) or its pages
+/// (3 to 5) when its state is `k % 3`, and its table keys (6).
+spec fn weight(v: HugeDesc, k: int) -> int {
+    if k < 3 {
+        if v.state as int == k { 1 } else { 0 }
+    } else if k < 6 {
+        if v.state as int == k - 3 { v.pages as int } else { 0 }
+    } else {
+        if v.state != RunState::Active as u8 && v.pages > 1 { 2 } else { 1 }
+    }
+}
+
+/// The sum of `weight(_, k)` over the descriptors in `l`.
+spec fn tally(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, k: int) -> int
+    decreases l.len(),
+{
+    if l.len() == 0 {
+        0
+    } else {
+        weight(descs[l[0]].value(), k) + tally(l.drop_first(), descs, k)
+    }
+}
+
+/// The counter `k` of `s`, numbered as in [`weight`].
+spec fn stat(s: HugeStats, k: int) -> int {
+    if k == 0 {
+        s.runs as int
+    } else if k == 1 {
+        s.empty as int
+    } else if k == 2 {
+        s.purged as int
+    } else if k == 3 {
+        s.run_pages as int
+    } else if k == 4 {
+        s.empty_pages as int
+    } else {
+        s.purged_pages as int
+    }
+}
+
+} // verus!
 
 // SAFETY: the raw pointers address the metadata region, which is process
 // global; the `Lock` serialises every access.
@@ -373,34 +743,189 @@ fn free_desc(meta: &Meta, d: *mut HugeDesc) {
     meta.free(d as *mut u8, Layout::new::<HugeDesc>());
 }
 
+verus! {
+
 impl Inner {
+    /// The invariant of the huge lock: the table is well formed and every
+    /// descriptor it or the `Empty` list names is live and consistent;
+    /// the live descriptors (`all`) are the extents, pairwise disjoint,
+    /// each under its keys in the table and nowhere else, and the counters
+    /// are their tallies, whose pages sum to `next_page`; the run
+    /// authorities (`runs`, `pgs`) hold the `Active` extents and their pages;
+    /// and no two free extents touch.
+    spec fn wf(&self) -> bool {
+        &&& self.table.wf()
+        &&& perms_ok(self.descs@)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_ok(self.descs@[d].value(), self.next_page)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> run_ok(self.descs@[d].value(), self.lg@)
+        &&& forall|k: usize| #[trigger] self.table.lookup(k) matches Some(d) ==> self.descs@.contains_key(d)
+        &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
+        &&& self.next_page <= self.np@ <= u32::MAX
+        &&& self.stats.empty == self.elist@.len()
+        &&& self.stats.empty_pages == epages(self.elist@, self.descs@)
+        &&& self.stats.run_pages + self.stats.empty_pages + self.stats.purged_pages == self.next_page
+        &&& self.stats.next_page == self.next_page
+        // Implied by the tallies, an extent having a page or more; stated
+        // for the readers that bound the counts.
+        &&& self.stats.runs + self.stats.empty + self.stats.purged <= self.next_page
+        &&& self.all@.no_duplicates()
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) <==> self.all@.contains(d)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> keyed(self.table, self.descs@[d].value(), d)
+        &&& forall|k: usize| #[trigger] self.table.lookup(k) matches Some(d) ==> is_key(self.descs@[d].value(), k as int)
+        &&& forall|d1: *mut HugeDesc, d2: *mut HugeDesc|
+            #[trigger] self.descs@.contains_key(d1) && #[trigger] self.descs@.contains_key(d2) && d1 != d2 ==> apart(
+                self.descs@[d1].value(),
+                self.descs@[d2].value(),
+            )
+        &&& forall|k: int| 0 <= k < 6 ==> #[trigger] stat(self.stats, k) == tally(self.all@, self.descs@, k)
+        &&& self.table.spec_count() == tally(self.all@, self.descs@, 6)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) && self.descs@[d].value().state == RunState::Empty as u8
+            ==> self.elist@.contains(d)
+        &&& self.runs@.id() == run_loc()
+        &&& self.pgs@.id() == page_loc()
+        &&& self.runs@@ == active_runs(self.descs@)
+        &&& self.pgs@@ == active_pages(self.descs@)
+        &&& coalesced(self.descs@)
+    }
+
+    /// Huge free extents are maximally coalesced: in every value `wf`
+    /// admits, no two free extents (`Empty` or
+    /// `Purged`) touch, so a free extent's neighbours are runs, the
+    /// high-water mark or the region's start. `Huge::audit` checks the same
+    /// at run time ("adjacent free extents").
+    proof fn theorem_coalesced(&self, d1: *mut HugeDesc, d2: *mut HugeDesc)
+        requires
+            self.wf(),
+            self.descs@.contains_key(d1),
+            self.descs@.contains_key(d2),
+            self.descs@[d1].value().state != RunState::Active as u8,
+            self.descs@[d2].value().state != RunState::Active as u8,
+        ensures
+            self.descs@[d1].value().start + self.descs@[d1].value().pages != self.descs@[d2].value().start,
+    {
+    }
+
+    /// Guard pages are never handed out, for huge runs: in every value
+    /// `wf` admits, the usable pages of a live run (`Active`, the pages before
+    /// its [`GUARD_PAGES`]) share no page with the guard pages of any live
+    /// run, its own included: each run's guard follows its usable pages
+    /// (`run_ok`) and live extents are pairwise apart.
+    proof fn theorem_run_guards(&self, d1: *mut HugeDesc, d2: *mut HugeDesc)
+        requires
+            self.wf(),
+            self.descs@.contains_key(d1),
+            self.descs@.contains_key(d2),
+            self.descs@[d1].value().state == RunState::Active as u8,
+            self.descs@[d2].value().state == RunState::Active as u8,
+        ensures
+            ({
+                let (v1, v2) = (self.descs@[d1].value(), self.descs@[d2].value());
+                &&& v1.pages > GUARD_PAGES
+                &&& v2.pages > GUARD_PAGES
+                &&& crate::layout::disjoint(
+                    v1.start as int,
+                    v1.pages - GUARD_PAGES,
+                    v2.start + v2.pages - GUARD_PAGES,
+                    GUARD_PAGES as int,
+                )
+            }),
+    {
+        assert(run_ok(self.descs@[d1].value(), self.lg@));
+        assert(run_ok(self.descs@[d2].value(), self.lg@));
+        if d1 != d2 {
+            assert(apart(self.descs@[d1].value(), self.descs@[d2].value()));
+        }
+    }
+
+    /// What a table lookup needs: a well-formed table whose entries are live
+    /// descriptors (true under `wf`, and while a caller has extents out of
+    /// the table).
+    spec fn lookups_live(&self) -> bool {
+        &&& self.table.wf()
+        &&& perms_ok(self.descs@)
+        &&& forall|k: usize| #[trigger] self.table.lookup(k) matches Some(d) ==> self.descs@.contains_key(d)
+    }
+
+    /// Everything but the descriptors' links and the list is as in `o`.
+    spec fn frame(&self, o: &Inner) -> bool {
+        &&& self.free == o.free
+        &&& self.table == o.table
+        &&& self.next_page == o.next_page
+        &&& self.stats == o.stats
+        &&& self.np == o.np
+        &&& self.lg == o.lg
+        &&& self.all == o.all
+        &&& self.runs == o.runs
+        &&& self.pgs == o.pgs
+        &&& links_only(o.descs@, self.descs@)
+    }
+
     /// The descriptor at `d`.
     #[inline(always)]
-    fn desc(&self, d: *mut HugeDesc) -> &HugeDesc {
-        // SAFETY: `d` is a live descriptor of this allocator: in the table,
-        // the `Empty` list, or just written by its holder under the lock.
-        unsafe { &*d }
+    fn desc(&self, d: *mut HugeDesc) -> (r: &HugeDesc)
+        requires
+            perms_ok(self.descs@),
+            self.descs@.contains_key(d),
+        ensures
+            *r == self.descs@[d].value(),
+    {
+        ptr_ref(d, Tracked(self.descs.borrow().tracked_borrow(d)))
     }
 
     /// The descriptor at `d`, to write.
     #[inline(always)]
-    fn desc_mut(&mut self, d: *mut HugeDesc) -> &mut HugeDesc {
-        // SAFETY: as `desc`; the huge lock, which `&mut self` stands for,
-        // serialises every access to it.
-        unsafe { &mut *d }
+    fn desc_mut(&mut self, d: *mut HugeDesc) -> (r: &mut HugeDesc)
+        requires
+            perms_ok(old(self).descs@),
+            old(self).descs@.contains_key(d),
+        ensures
+            *r == old(self).descs@[d].value(),
+            final(self).descs@ == old(self).descs@.insert(d, final(self).descs@[d]),
+            final(self).descs@[d].ptr() == d,
+            final(self).descs@[d].is_init(),
+            final(self).descs@[d].value() == *final(r),
+            *final(self) == (Inner { descs: final(self).descs, ..*old(self) }),
+    {
+        ptr_mut_ref(d, Tracked(self.descs.borrow_mut().tracked_borrow_mut(d)))
     }
 
     /// Enter `d`, an initialised descriptor not in the table, into the
     /// table and the counters: a run under its start page, a free extent
     /// under its first and last page so that a free finds both
     /// neighbours. The free bitmap and the `Empty` list are the caller's.
-    fn add_extent(&mut self, d: *mut HugeDesc) {
+    fn add_extent(&mut self, d: *mut HugeDesc)
+        requires
+            old(self).table.wf(),
+            old(self).table.spec_count() + weight(old(self).descs@[d].value(), 6) < old(self).table.spec_cap(),
+            perms_ok(old(self).descs@),
+            old(self).descs@.contains_key(d),
+            ({
+                let v = old(self).descs@[d].value();
+                &&& v.state <= 2
+                &&& old(self).table.lookup(v.start as usize) is None
+                &&& (v.state != RunState::Active as u8 && v.pages > 1) ==> old(self).table.lookup(
+                    (v.start + v.pages - 1) as usize,
+                ) is None
+                &&& old(self).stats.can_add(state_of(v.state), v.pages as usize)
+            }),
+        ensures
+            final(self).table.wf(),
+            final(self).table.spec_count() == old(self).table.spec_count() + weight(old(self).descs@[d].value(), 6),
+            final(self).table.spec_cap() == old(self).table.spec_cap(),
+            forall|k: usize| #[trigger] final(self).table.lookup(k) == if is_key(old(self).descs@[d].value(), k as int) {
+                Some(d)
+            } else {
+                old(self).table.lookup(k)
+            },
+            forall|k: int| 0 <= k < 6 ==> #[trigger] stat(final(self).stats, k) == stat(old(self).stats, k) + weight(
+                old(self).descs@[d].value(),
+                k,
+            ),
+            final(self).stats.next_page == old(self).stats.next_page,
+            *final(self) == (Inner { table: final(self).table, stats: final(self).stats, ..*old(self) }),
+    {
         // `d` is a live descriptor owned by this allocator.
-        let (start, pages, state) = (
-            self.desc(d).start(),
-            self.desc(d).pages(),
-            self.desc(d).state(),
-        );
+        let (start, pages, state) = (self.desc(d).start(), self.desc(d).pages(), self.desc(d).state());
         self.table.insert(start, d);
         if state.is_free() && pages > 1 {
             self.table.insert(start + pages - 1, d);
@@ -412,13 +937,38 @@ impl Inner {
     /// and the counters. `d` itself, its list links and the free bitmap
     /// are untouched, so the caller can enter it again with new bounds or
     /// [`retire`](Inner::retire) it.
-    fn drop_extent(&mut self, d: *mut HugeDesc) {
+    fn drop_extent(&mut self, d: *mut HugeDesc)
+        requires
+            old(self).table.wf(),
+            perms_ok(old(self).descs@),
+            old(self).descs@.contains_key(d),
+            ({
+                let v = old(self).descs@[d].value();
+                &&& v.state <= 2
+                &&& old(self).table.lookup(v.start as usize) == Some(d)
+                &&& (v.state != RunState::Active as u8 && v.pages > 1) ==> old(self).table.lookup(
+                    (v.start + v.pages - 1) as usize,
+                ) == Some(d)
+                &&& old(self).stats.can_sub(state_of(v.state), v.pages as usize)
+            }),
+        ensures
+            final(self).table.wf(),
+            final(self).table.spec_count() == old(self).table.spec_count() - weight(old(self).descs@[d].value(), 6),
+            final(self).table.spec_cap() == old(self).table.spec_cap(),
+            forall|k: usize| #[trigger] final(self).table.lookup(k) == if is_key(old(self).descs@[d].value(), k as int) {
+                None
+            } else {
+                old(self).table.lookup(k)
+            },
+            forall|k: int| 0 <= k < 6 ==> #[trigger] stat(final(self).stats, k) == stat(old(self).stats, k) - weight(
+                old(self).descs@[d].value(),
+                k,
+            ),
+            final(self).stats.next_page == old(self).stats.next_page,
+            *final(self) == (Inner { table: final(self).table, stats: final(self).stats, ..*old(self) }),
+    {
         // As `add_extent`.
-        let (start, pages, state) = (
-            self.desc(d).start(),
-            self.desc(d).pages(),
-            self.desc(d).state(),
-        );
+        let (start, pages, state) = (self.desc(d).start(), self.desc(d).pages(), self.desc(d).state());
         self.table.remove(start);
         if state.is_free() && pages > 1 {
             self.table.remove(start + pages - 1);
@@ -428,7 +978,10 @@ impl Inner {
 
     /// Give a dropped descriptor back to `meta`, leaving the `Empty` list
     /// first when it is a member (every `Empty` extent is; a freed run's
-    /// descriptor still reads `Active` here and is in no list).
+    /// descriptor still reads `Active` here and is in no list). Trusted
+    /// for now (`external_body`): it hands the block back to `Meta`, whose
+    /// allocation calls Verus does not check yet.
+    #[verifier::external_body]
     fn retire(&mut self, meta: &Meta, d: *mut HugeDesc) {
         // `d` is live and about to be discarded.
         if self.desc(d).state() == RunState::Empty {
@@ -438,7 +991,25 @@ impl Inner {
     }
 
     /// Append to the `Empty` list; `d.dirty_at` must be the newest.
-    fn link_tail(&mut self, d: *mut HugeDesc) {
+    fn link_tail(&mut self, d: *mut HugeDesc)
+        requires
+            perms_ok(old(self).descs@),
+            elist_ok(old(self).empty_head, old(self).empty_tail, old(self).elist@, old(self).descs@),
+            old(self).descs@.contains_key(d),
+            old(self).descs@[d].value().state == RunState::Empty as u8,
+            !old(self).elist@.contains(d),
+        ensures
+            final(self).frame(old(self)),
+            final(self).elist@ == old(self).elist@.push(d),
+            elist_ok(final(self).empty_head, final(self).empty_tail, final(self).elist@, final(self).descs@),
+    {
+        let ghost l = self.elist@;
+        let ghost d0 = self.descs@;
+        proof {
+            if l.len() > 0 {
+                assert(enode(l, d0, l.len() - 1));
+            }
+        }
         // `d` is live and not in the list.
         self.desc_mut(d).prev = self.empty_tail;
         self.desc_mut(d).next = ptr::null_mut();
@@ -448,10 +1019,52 @@ impl Inner {
             self.desc_mut(self.empty_tail).next = d;
         }
         self.empty_tail = d;
+        proof {
+            let nl = l.push(d);
+            self.elist@ = nl;
+            assert forall|i: int| 0 <= i < nl.len() implies #[trigger] enode(nl, self.descs@, i) by {
+                if i < l.len() {
+                    assert(enode(l, d0, i));
+                    assert(nl[i] == l[i]);
+                    if i + 1 < l.len() {
+                        assert(l[i] != l[l.len() - 1]) by {
+                            assert(l.no_duplicates());
+                        }
+                    }
+                }
+            }
+            assert(nl.no_duplicates());
+            assert(self.descs@.dom() =~= d0.dom());
+            assert forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) implies same_but_links(
+                d0[x].value(),
+                self.descs@[x].value(),
+            ) by {}
+        }
     }
 
     /// Insert `d` right after `after`, which is in the list.
-    fn link_after(&mut self, after: *mut HugeDesc, d: *mut HugeDesc) {
+    fn link_after(&mut self, after: *mut HugeDesc, d: *mut HugeDesc)
+        requires
+            perms_ok(old(self).descs@),
+            elist_ok(old(self).empty_head, old(self).empty_tail, old(self).elist@, old(self).descs@),
+            old(self).elist@.contains(after),
+            old(self).descs@.contains_key(d),
+            old(self).descs@[d].value().state == RunState::Empty as u8,
+            !old(self).elist@.contains(d),
+        ensures
+            final(self).frame(old(self)),
+            final(self).elist@ == old(self).elist@.insert(old(self).elist@.index_of(after) + 1, d),
+            elist_ok(final(self).empty_head, final(self).empty_tail, final(self).elist@, final(self).descs@),
+    {
+        let ghost l = self.elist@;
+        let ghost d0 = self.descs@;
+        let ghost j = l.index_of(after);
+        proof {
+            assert(enode(l, d0, j));
+            if j + 1 < l.len() {
+                assert(enode(l, d0, j + 1));
+            }
+        }
         // Both are live; `after` is linked, `d` is not.
         self.desc_mut(d).prev = after;
         self.desc_mut(d).next = self.desc(after).next;
@@ -461,10 +1074,52 @@ impl Inner {
             self.desc_mut(self.desc(after).next).prev = d;
         }
         self.desc_mut(after).next = d;
+        proof {
+            let nl = l.insert(j + 1, d);
+            self.elist@ = nl;
+            assert forall|i: int| 0 <= i < nl.len() implies #[trigger] enode(nl, self.descs@, i) by {
+                if i <= j {
+                    assert(nl[i] == l[i]);
+                    assert(enode(l, d0, i));
+                } else if i > j + 1 {
+                    assert(nl[i] == l[i - 1]);
+                    assert(enode(l, d0, i - 1));
+                }
+            }
+            assert(nl.no_duplicates());
+            assert(self.descs@.dom() =~= d0.dom());
+            assert forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) implies same_but_links(
+                d0[x].value(),
+                self.descs@[x].value(),
+            ) by {}
+        }
     }
 
     /// Take `d` out of the `Empty` list.
-    fn unlink(&mut self, d: *mut HugeDesc) {
+    fn unlink(&mut self, d: *mut HugeDesc)
+        requires
+            perms_ok(old(self).descs@),
+            elist_ok(old(self).empty_head, old(self).empty_tail, old(self).elist@, old(self).descs@),
+            old(self).elist@.contains(d),
+        ensures
+            final(self).frame(old(self)),
+            final(self).elist@ == old(self).elist@.remove(old(self).elist@.index_of(d)),
+            elist_ok(final(self).empty_head, final(self).empty_tail, final(self).elist@, final(self).descs@),
+            final(self).descs@[d].value().prev == ptr::null_mut::<HugeDesc>(),
+            final(self).descs@[d].value().next == ptr::null_mut::<HugeDesc>(),
+    {
+        let ghost l = self.elist@;
+        let ghost d0 = self.descs@;
+        let ghost j = l.index_of(d);
+        proof {
+            assert(enode(l, d0, j));
+            if j > 0 {
+                assert(enode(l, d0, j - 1));
+            }
+            if j + 1 < l.len() {
+                assert(enode(l, d0, j + 1));
+            }
+        }
         // `d` is live and in the list.
         if self.desc(d).prev.is_null() {
             self.empty_head = self.desc(d).next;
@@ -478,9 +1133,31 @@ impl Inner {
         }
         self.desc_mut(d).prev = ptr::null_mut();
         self.desc_mut(d).next = ptr::null_mut();
+        proof {
+            let nl = l.remove(j);
+            self.elist@ = nl;
+            assert forall|i: int| 0 <= i < nl.len() implies #[trigger] enode(nl, self.descs@, i) by {
+                if i < j {
+                    assert(nl[i] == l[i]);
+                    assert(enode(l, d0, i));
+                } else {
+                    assert(nl[i] == l[i + 1]);
+                    assert(enode(l, d0, i + 1));
+                }
+            }
+            assert(nl.no_duplicates());
+            assert(self.descs@.dom() =~= d0.dom());
+            assert forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) implies same_but_links(
+                d0[x].value(),
+                self.descs@[x].value(),
+            ) by {}
+        }
     }
 
     /// The free extent starting at `page`, which must be a set free bit.
+    /// Trusted for now (`external_body`): its proof reads the free-page
+    /// set, which Verus does not check yet.
+    #[verifier::external_body]
     fn extent_at(&self, page: usize) -> *mut HugeDesc {
         let d = self.table.get(page);
         // Table entries are live descriptors.
@@ -490,13 +1167,28 @@ impl Inner {
         d
     }
 
-    /// Neighbouring free extent ending exactly at `page`, if any.
-    fn free_before(&self, page: usize) -> *mut HugeDesc {
+    /// Neighbouring free extent ending exactly at `page`, if any: a free
+    /// extent of a page or more keyed in the table that ends there is it.
+    fn free_before(&self, page: usize) -> (r: *mut HugeDesc)
+        requires
+            states_ok(self.descs@),
+            self.lookups_live(),
+        ensures
+            r@.addr != 0 ==> {
+                &&& self.descs@.contains_key(r)
+                &&& self.descs@[r].value().state != RunState::Active as u8
+                &&& self.descs@[r].value().start + self.descs@[r].value().pages == page
+            },
+            forall|x: *mut HugeDesc|
+                #[trigger] self.descs@.contains_key(x) && self.descs@[x].value().state != RunState::Active as u8
+                    && self.descs@[x].value().pages >= 1 && self.descs@[x].value().start + self.descs@[x].value().pages == page
+                    && keyed(self.table, self.descs@[x].value(), x) ==> r == x,
+    {
         if page == 0 {
             return ptr::null_mut();
         }
         let d = self.table.get(page - 1);
-        // As `extent_at`.
+        // A non-null entry is in the table, so its descriptor is live.
         if !d.is_null() && self.desc(d).state().is_free() && self.desc(d).end() == page {
             d
         } else {
@@ -504,10 +1196,24 @@ impl Inner {
         }
     }
 
-    /// Neighbouring free extent starting exactly at `page`, if any.
-    fn free_after(&self, page: usize) -> *mut HugeDesc {
+    /// Neighbouring free extent starting exactly at `page`, if any: a free
+    /// extent keyed in the table that starts there is it.
+    fn free_after(&self, page: usize) -> (r: *mut HugeDesc)
+        requires
+            states_ok(self.descs@),
+            self.lookups_live(),
+        ensures
+            r@.addr != 0 ==> {
+                &&& self.descs@.contains_key(r)
+                &&& self.descs@[r].value().state != RunState::Active as u8
+                &&& self.descs@[r].value().start == page
+            },
+            forall|x: *mut HugeDesc|
+                #[trigger] self.descs@.contains_key(x) && self.descs@[x].value().state != RunState::Active as u8
+                    && self.descs@[x].value().start == page && keyed(self.table, self.descs@[x].value(), x) ==> r == x,
+    {
         let d = self.table.get(page);
-        // As `extent_at`.
+        // As `free_before`.
         if !d.is_null() && self.desc(d).state().is_free() && self.desc(d).start() == page {
             d
         } else {
@@ -515,6 +1221,8 @@ impl Inner {
         }
     }
 }
+
+} // verus!
 
 /// Where [`Huge::find`] put a run: its first page, its length in pages
 /// (guard included) and the free extent the pages come from, null for
@@ -572,6 +1280,15 @@ impl Huge {
                     next_page: 0,
                     table_cap: 0,
                 },
+                // The ghost model: `Huge::new` is outside `verus!`, so
+                // nothing proves `Inner::wf` of it here.
+                descs: Tracked::assume_new(),
+                elist: Ghost::assume_new(),
+                all: Ghost::assume_new(),
+                np: Ghost::assume_new(),
+                lg: Ghost::assume_new(),
+                runs: Tracked::assume_new(),
+                pgs: Tracked::assume_new(),
             }),
         })
     }

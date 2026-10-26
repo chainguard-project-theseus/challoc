@@ -1,0 +1,6 @@
+# Temporary seams: Set is opaque until class/sets.rs is verified, retire
+# until Meta's allocation calls are, and extent_at until the free-page
+# set is.
+Set	allocator invariant	Verus
+Inner::retire	allocator invariant	Verus
+Inner::extent_at	allocator invariant	Verus

@@ -7,23 +7,13 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `HugeDesc` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Meta` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Table::storage` | external_body | allocator invariant | Verus | trusted |
 | `Table::release` | external_body | allocator invariant | Verus | trusted |
 
-## `HugeDesc`
-
-src/huge/table.rs:34. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-pub struct ExHugeDesc(HugeDesc);
-```
-
 ## `Meta`
 
-src/huge/table.rs:39. Kind: ext_type_spec. Category: allocator invariant.
+src/huge/table.rs:33. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -32,12 +22,12 @@ pub struct ExMeta(Meta);
 
 ## `Table::storage`
 
-src/huge/table.rs:339. Kind: external_body. Category: allocator invariant.
+src/huge/table.rs:333. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Zeroed storage for `1 << lg_cap` entries, all empty, with the permission for each entry ([`Own`]).
 
-Body mints Tracked at line 353; mints Tracked at line 357.
+Body mints Tracked at line 347; mints Tracked at line 351.
 
 ```rust
 fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
@@ -51,7 +41,7 @@ fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, boo
 
 ## `Table::release`
 
-src/huge/table.rs:368. Kind: external_body. Category: allocator invariant.
+src/huge/table.rs:362. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Give the storage back if it was binned, with `own`, the table's permissions to its entries, which the caller (`ensure`) takes out of it first and drops the table afterwards.
