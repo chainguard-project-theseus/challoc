@@ -8,10 +8,11 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `addr_to_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `<*mut T...s_null` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 
 ## `addr_to_ptr`
 
-src/vspec/addr.rs:23. Kind: external_body. Category: raw pointer (internal).
+src/vspec/addr.rs:24. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `addr as *mut u8`: a pointer to `addr` (Verus supports only the other direction of the cast), [`addr_ptr`], with [`cast_provenance`].
@@ -23,4 +24,20 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
         p == addr_ptr(addr),
         p@.provenance == cast_provenance(),
     opens_invariants none
+```
+
+## `<*mut T>::is_null`
+
+src/vspec/addr.rs:35. Kind: assume_spec. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `<*mut T>::is_null`: the address is zero.
+
+```rust
+pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: *mut T) -> (r: bool)
+    ensures
+        r == (p@.addr == 0),
+    opens_invariants none
+    no_unwind
+;
 ```
