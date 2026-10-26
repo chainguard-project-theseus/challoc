@@ -3,19 +3,22 @@
 
 use super::MAX_EMPTY_PASSES;
 use crate::slab::State;
+use crate::sys;
 
 #[cold]
 #[inline(never)]
 pub(super) fn never_committed(class: usize, slab: usize) -> ! {
-    panic!("invalid free: class {class} slab {slab} was never allocated")
+    sys::abort_pending(format_args!(
+        "invalid free: class {class} slab {slab} was never allocated"
+    ))
 }
 
 #[cold]
 #[inline(never)]
 pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16) -> ! {
-    panic!(
+    sys::abort_pending(format_args!(
         "heap inconsistency: class {class} group {group}: owner word says arena {word}, slab {slab}'s descriptor says arena {desc}"
-    )
+    ))
 }
 
 /// A `Fresh` or `Purged` slab selected by a refill had a bit set before
@@ -33,9 +36,9 @@ pub(super) fn zero_slab_had_bits_set(
     got: u64,
     expect: u64,
 ) -> ! {
-    panic!(
+    sys::abort_fmt(format_args!(
         "class {class} slab {slab} (arena {arena}) is {state:?} with live {live} but word {word} of its bitmap had bits set before the refill's claim: claimed {got:#x}, expected {expect:#x}"
-    )
+    ))
 }
 
 /// The `free` check's abort (design section 4): the slot's bit is clear,
@@ -45,7 +48,9 @@ pub(super) fn zero_slab_had_bits_set(
 #[cold]
 #[inline(never)]
 pub(super) fn guard_free(p: usize, class: usize, slab: usize) -> ! {
-    panic!("invalid free of {p:#x} (class {class} slab {slab}): guard slab")
+    sys::abort_fmt(format_args!(
+        "invalid free of {p:#x} (class {class} slab {slab}): guard slab"
+    ))
 }
 
 /// A release into a `Fresh` slab: handed to an arena but not committed
@@ -54,25 +59,25 @@ pub(super) fn guard_free(p: usize, class: usize, slab: usize) -> ! {
 #[cold]
 #[inline(never)]
 pub(super) fn release_into_fresh_slab(p: usize, class: usize, slab: usize) -> ! {
-    panic!(
+    sys::abort_pending(format_args!(
         "invalid free of {p:#x} (class {class} slab {slab}): the slab has never been allocated from"
-    )
+    ))
 }
 
 #[cold]
 #[inline(never)]
 pub(super) fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
-    panic!(
+    sys::abort_fmt(format_args!(
         "invalid or double free of {p:#x} (class {class} slab {slab} slot {slot}): slot is not allocated"
-    )
+    ))
 }
 
 #[cold]
 #[inline(never)]
 pub(super) fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> ! {
-    panic!(
+    sys::abort_fmt(format_args!(
         "slot {p:#x} (class {class}) belongs to arena {owner} but was released through arena {arena}"
-    )
+    ))
 }
 
 #[cold]
@@ -86,21 +91,25 @@ pub(super) fn reservation_unmet(
     set: usize,
     nslots: usize,
 ) -> ! {
-    panic!(
+    sys::abort_fmt(format_args!(
         "class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt"
-    )
+    ))
 }
 
 #[cold]
 #[inline(never)]
 pub(super) fn invalid_pointer(p: usize, class: usize, why: &str) -> ! {
-    panic!("invalid free of {p:#x} (class {class}): {why}")
+    sys::abort_fmt(format_args!(
+        "invalid free of {p:#x} (class {class}): {why}"
+    ))
 }
 
 #[cold]
 #[inline(never)]
 pub(super) fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
-    panic!("double free of {p:#x} (class {class} slab {slab} slot {slot})")
+    sys::abort_fmt(format_args!(
+        "double free of {p:#x} (class {class} slab {slab} slot {slot})"
+    ))
 }
 
 /// A slab count of `ClassStats` went below zero: the sets and the counts
@@ -108,5 +117,5 @@ pub(super) fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> !
 #[cold]
 #[inline(never)]
 pub(super) fn slab_count_underflow(which: &str) -> ! {
-    panic!("class: {which} slab count underflow")
+    sys::abort_fmt(format_args!("class: {which} slab count underflow"))
 }

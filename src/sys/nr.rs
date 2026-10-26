@@ -31,6 +31,10 @@ pub const TABLE: &[(&str, usize)] = &[
     ("getrandom", GETRANDOM),
     ("mseal", MSEAL),
     ("sched_getaffinity", SCHED_GETAFFINITY),
+    ("sched_setaffinity", SCHED_SETAFFINITY),
+    ("sched_setscheduler", SCHED_SETSCHEDULER),
+    ("getpriority", GETPRIORITY),
+    ("setpriority", SETPRIORITY),
 ];
 
 #[cfg(target_arch = "x86_64")]
@@ -49,9 +53,13 @@ mod arch {
     pub const RT_SIGPROCMASK: usize = 14;
     pub const MADVISE: usize = 28;
     pub const GETPID: usize = 39;
+    pub const GETPRIORITY: usize = 140;
+    pub const SETPRIORITY: usize = 141;
+    pub const SCHED_SETSCHEDULER: usize = 144;
     pub const PRCTL: usize = 157;
     pub const GETTID: usize = 186;
     pub const FUTEX: usize = 202;
+    pub const SCHED_SETAFFINITY: usize = 203;
     pub const SCHED_GETAFFINITY: usize = 204;
     pub const CLOCK_GETTIME: usize = 228;
     pub const EXIT_GROUP: usize = 231;
@@ -75,10 +83,14 @@ mod arch {
     pub const EXIT_GROUP: usize = 94;
     pub const FUTEX: usize = 98;
     pub const CLOCK_GETTIME: usize = 113;
+    pub const SCHED_SETSCHEDULER: usize = 119;
+    pub const SCHED_SETAFFINITY: usize = 122;
     pub const SCHED_GETAFFINITY: usize = 123;
     pub const TGKILL: usize = 131;
     pub const RT_SIGACTION: usize = 134;
     pub const RT_SIGPROCMASK: usize = 135;
+    pub const SETPRIORITY: usize = 140;
+    pub const GETPRIORITY: usize = 141;
     pub const PRCTL: usize = 167;
     pub const GETPID: usize = 172;
     pub const GETTID: usize = 178;

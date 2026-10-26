@@ -6,6 +6,7 @@ use super::abort::wrong_arena;
 use super::{ClassState, Pick, SlabTable};
 use crate::purge;
 use crate::slab::{SlabDesc, State};
+use crate::sys;
 
 impl SlabTable {
     /// Tests: [`check_located`] for a pointer not yet located (`p` must be
@@ -116,7 +117,6 @@ impl ClassState {
     /// [`check_fresh_slab_is_zero`](ClassState::check_fresh_slab_is_zero)'s
     /// abort, inlined into it.
     #[inline(always)]
-    #[track_caller]
     fn fresh_slab_dirty(
         &self,
         slab: usize,
@@ -126,7 +126,7 @@ impl ClassState {
         bm: &crate::bitmap::AtomicBitmap<'_>,
     ) -> ! {
         let cls = self.class();
-        panic!(
+        sys::abort_fmt(format_args!(
             "check_zero: class {} slab {slab} (arena {}) is Fresh before its first claim but slot {slot} at {:#x} reads {word:#x} ({} of {} bits set, watermark {}, descriptor at {:#x})",
             self.class,
             self.arena,
@@ -135,14 +135,13 @@ impl ClassState {
             cls.nslots(),
             self.table().committed_slabs(),
             desc_ptr_addr(self.desc(slab))
-        )
+        ))
     }
 
     /// [`check_shadow`](ClassState::check_shadow)'s abort, inlined into it.
     #[inline(always)]
-    #[track_caller]
     fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> ! {
-        panic!(
+        sys::abort_pending(format_args!(
             "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
             self.class,
             self.arena,
@@ -151,7 +150,7 @@ impl ClassState {
             d.live(),
             d.arena(),
             d.dirty_at()
-        )
+        ))
     }
 }
 
@@ -199,13 +198,13 @@ pub(super) fn fresh_with_live(
     desc: &SlabDesc,
     set: usize,
 ) -> ! {
-    panic!(
+    sys::abort_fmt(format_args!(
         "check_zero: class {class} slab {slab} (arena {arena}) is Fresh with live {} ({set} bits set, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
         desc.arena(),
         desc.dirty_at(),
         desc_ptr_addr(desc)
-    )
+    ))
 }
 
 /// `check_zero` invariant: a release reached a slab that reads `Fresh`.
@@ -218,13 +217,13 @@ pub(super) fn release_into_fresh(
     desc: &SlabDesc,
     n: usize,
 ) -> ! {
-    panic!(
+    sys::abort_pending(format_args!(
         "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
         desc.arena(),
         desc.dirty_at(),
         desc_ptr_addr(desc)
-    )
+    ))
 }
 
 /// The `check_zero` abort: a slot handed out as zero has a dirty word.
@@ -243,8 +242,8 @@ fn dirty_zero_slot(
 ) -> ! {
     let advice = purge::advice_name();
     let (state, live, owner, set, nslots, _) = now;
-    panic!(
+    sys::abort_fmt(format_args!(
         "check_zero: slot {p:#x} (class {class}, size {size}, slab {}, arena {arena}) was handed out as zero from a {:?} slab but its word at offset {off} reads {word:#x} (purge advice {advice}; descriptor at {:#x} now {state:?} live {live} owner {owner}, {set} of {nslots} bits set, pick of {} slots)",
         pick.slab, pick.state, now.5, pick.n
-    )
+    ))
 }

@@ -192,7 +192,9 @@ impl FeatureLine {
             buf: [0; Self::CAP],
             len: 0,
         };
-        let _ = write!(line, "{features}");
+        // The value, not the reference: Verus specifies `Display` per type,
+        // and has nothing for `&T`.
+        let _ = write!(line, "{}", *features);
         line.buf[line.len] = 0;
         line
     }
