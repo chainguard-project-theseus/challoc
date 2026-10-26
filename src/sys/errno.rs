@@ -6,6 +6,10 @@
 //! that convention into a `Result` without touching libc's `errno`, which
 //! `free` must leave untouched.
 
+use vstd::prelude::*;
+
+verus! {
+
 /// A Linux `errno` value. Only the codes the allocator inspects are named;
 /// anything else is carried through as its raw number.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -27,7 +31,14 @@ impl Errno {
     pub const EROFS: Errno = Errno(30);
     pub const ENOSYS: Errno = Errno(38);
     pub const ETIMEDOUT: Errno = Errno(110);
+}
 
+} // verus!
+
+// Outside `verus!`: inside it, rustc places these names elsewhere in
+// `.rodata`, which moves every PC-relative offset in `.text`
+// (`scripts/codegen-diff.sh` reports them reloc-only).
+impl Errno {
     /// Short symbolic name for diagnostics. Unknown codes print as a number.
     pub const fn name(self) -> &'static str {
         // An `if` chain over the constants: Verus does not match on a
@@ -80,6 +91,8 @@ impl core::fmt::Display for Errno {
     }
 }
 
+verus! {
+
 /// Largest `errno` the kernel will ever return, per `include/linux/err.h`.
 pub const MAX_ERRNO: usize = 4095;
 
@@ -88,13 +101,28 @@ pub const MAX_ERRNO: usize = 4095;
 /// Values in `-MAX_ERRNO..=-1` (as a signed word) are errors; everything
 /// else, including addresses with the top bit clear or set, is success.
 #[inline(always)]
-pub const fn decode(ret: usize) -> Result<usize, Errno> {
+pub const fn decode(ret: usize) -> (r: Result<usize, Errno>)
+    ensures
+        ret <= usize::MAX - MAX_ERRNO ==> r == Ok::<usize, Errno>(ret),
+        ret > usize::MAX - MAX_ERRNO ==> (r matches Err(e) && 1 <= e.0 <= MAX_ERRNO),
+{
     if ret > usize::MAX - MAX_ERRNO {
-        Err(Errno((ret as isize).wrapping_neg() as i32))
+        #[cfg_attr(verus_keep_ghost, verifier::truncate)]
+        let word = ret as isize;
+        proof {
+            assert(-4096 < word < 0) by (bit_vector)
+                requires
+                    word == (#[verifier::truncate] (ret as isize)),
+                    ret > 0xFFFF_FFFF_FFFF_F000usize,
+            ;
+        }
+        Err(Errno(word.wrapping_neg() as i32))
     } else {
         Ok(ret)
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

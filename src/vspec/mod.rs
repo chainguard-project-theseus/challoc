@@ -17,6 +17,8 @@ pub(crate) mod core_int;
 pub(crate) mod layout;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod ptr;
+#[cfg(verus_keep_ghost)]
+pub(crate) mod sys;
 
 pub(crate) mod slice;
 pub(crate) mod word;
