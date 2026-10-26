@@ -51,6 +51,7 @@ use vstd::raw_ptr::PointsTo;
 #[cfg(verus_keep_ghost)]
 use vstd::raw_ptr::{PtrData, ptr_mut_from_data};
 use vstd::resource::Loc;
+use vstd::resource::ghost_var::GhostVarAuth;
 use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSubset};
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::bits::u64_trailing_zeros;
@@ -109,6 +110,16 @@ pub(crate) struct TableInner {
     pub(super) sloc: Ghost<Loc>,
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) seen: Tracked<GhostPersistentSubset<int>>,
+    /// Ghost: `next_slab`, as one half of a ghost variable whose other
+    /// half the watermark's invariant holds with the watermark
+    /// ([`WatermarkPred`]), and the variable's location, fixed at `new`.
+    /// `take_group` updates both halves together when it stores the
+    /// watermark, so the watermark is `next_slab` whenever the lock is
+    /// free.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) wloc: Ghost<Loc>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) wm: Tracked<GhostVarAuth<usize>>,
     /// A copy of the watermark the `free` fast path reads from its
     /// per-class line (`heap::ClassLine`), stored right after the
     /// watermark itself, so it is never ahead of it; null until
@@ -178,6 +189,8 @@ impl TableInner {
         &&& self.mirror_inv == o.mirror_inv
         &&& self.sloc == o.sloc
         &&& self.seen == o.seen
+        &&& self.wloc == o.wloc
+        &&& self.wm == o.wm
     }
 
     /// The guard count stays below the slabs handed out, which stay below
@@ -190,7 +203,8 @@ impl TableInner {
     /// [`SlabTable::mirror_watermark`] has set the watermark copy's
     /// pointer, it holds the copy's invariant (`take_group` stores into
     /// it). Its persistent owner-word witness markers cover every slab
-    /// below `next_slab`.
+    /// below `next_slab`, and its half of the watermark's ghost variable
+    /// is `next_slab`.
     pub(super) open spec fn inv(self) -> bool {
         &&& self.guards <= self.next_slab
         &&& self.next_slab <= usize::MAX >> 12
@@ -209,6 +223,8 @@ impl TableInner {
             && i.namespace() == committed_ns())
         &&& self.seen@.id() == self.sloc@
         &&& owner_marks(0, self.next_slab as int).subset_of(self.seen@@)
+        &&& self.wm@.id() == self.wloc@
+        &&& self.wm@@ == self.next_slab
     }
 }
 
@@ -218,8 +234,10 @@ impl TableInner {
 /// descriptor permission, and no watermark copy.
 ///
 /// Verified holders: `guards` changes nothing. `take_group` moves
-/// `next_slab` to the end of the group it hands out and takes the group's
-/// markers and descriptor permissions, which its proof shows keeps every
+/// `next_slab` to the end of the group it hands out, takes the group's
+/// markers and descriptor permissions, and updates its half of the
+/// watermark's ghost variable to the new `next_slab` as it stores the
+/// watermark, which its proof shows keeps every
 /// conjunct on the hand-out (a `?` return after a partial commit keeps
 /// them through `Lazy::ensure`'s postcondition, not asserted there:
 /// Verus checks no invariant at the guard's drop); `mirror_watermark` sets the copy's
@@ -241,7 +259,8 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 ;
 
 /// Assumption (`lock.rs`): the commit lock's ghost geometry, marker
-/// authorities and descriptor array never change. No holder writes them:
+/// authorities, descriptor array and the location of the watermark's
+/// ghost variable never change. No holder writes them:
 /// the verified ones (`take_group`, `mirror_watermark`, `commit_run`,
 /// `commit_slab`, `guards`) by their code, which Verus does not check at
 /// the guard's drop, and the test helper `corrupt_owner_word` only
@@ -250,7 +269,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
     ensures
         #[trigger] lock_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
             && v.sb == init.sb && v.mloc == init.mloc && v.dbase == init.dbase && v.dstride == init.dstride
-            && v.sloc == init.sloc),
+            && v.sloc == init.sloc && v.wloc == init.wloc),
 ;
 
 /// Offset of class `class`'s descriptor array, bitmap and owner array
@@ -441,23 +460,28 @@ pub type CommittedInv = AtomicInvariant<(int, usize), UsizePerm, CommittedPred>;
 
 /// A table's watermark invariant: [`CommittedPred`]'s, keyed also by the
 /// location of the table's owner-word witness markers, with a persistent
-/// set of them that has every slab's below the watermark. `take_group`,
-/// its one writer, stores the end of the group it hands out, after that
-/// group's owner word. A load returns a copy of the set
+/// set of them that has every slab's below the watermark, and by the
+/// location of a ghost variable whose half here is the watermark's value
+/// (the commit lock holds the other half, equal to `next_slab`:
+/// [`TableInner::inv`]). `take_group`, its one writer, stores the end of
+/// the group it hands out, after that group's owner word, and updates the
+/// variable to it. A load returns a copy of the set
 /// (`vspec::atom::load_usize_seen`).
 pub struct WatermarkPred;
 
-impl InvariantPredicate<(int, usize, Loc), SeenVal> for WatermarkPred {
-    open spec fn inv(k: (int, usize, Loc), v: SeenVal) -> bool {
+impl InvariantPredicate<(int, usize, Loc, Loc), SeenVal> for WatermarkPred {
+    open spec fn inv(k: (int, usize, Loc, Loc), v: SeenVal) -> bool {
         &&& v.0.id() == k.0
         &&& v.0.value() <= k.1
         &&& v.1.id() == k.2
         &&& owner_marks(0, v.0.value() as int).subset_of(v.1@)
+        &&& v.2.id() == k.3
+        &&& v.2@ == v.0.value()
     }
 }
 
 /// The invariant of a table's watermark.
-pub type WatermarkInv = AtomicInvariant<(int, usize, Loc), SeenVal, WatermarkPred>;
+pub type WatermarkInv = AtomicInvariant<(int, usize, Loc, Loc), SeenVal, WatermarkPred>;
 
 /// The pointer to the owner word at `addr`, of the provenance an address
 /// cast picks up ([`perm_at`]): what [`SlabTable::owner_word`] returns for
@@ -948,7 +972,7 @@ impl SlabTable {
         &&& self.mark_auth@.id() == mark_loc(self.class as int)
         &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
         &&& self.perms_ok()
-        &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs, self.spec_sloc())
+        &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs, self.spec_sloc(), lock_init(self.inner.0).wloc@)
         &&& self.committed_inv@.namespace() == committed_ns()
     }
 
@@ -1420,6 +1444,10 @@ impl SlabTable {
         let ghost sloc = smarks.id();
         let tracked seen0 = smarks.empty().persist();
         let tracked seen1 = seen0.duplicate();
+        // The ghost variable that ties the watermark to `next_slab`: both
+        // start at 0, one half for the commit lock, one for the watermark.
+        let tracked (wauth, wvar) = GhostVarAuth::<usize>::new(0);
+        let ghost wloc = wauth.id();
         let ghost lgg = u64_trailing_zeros(group as u64) as u8;
         let ghost ng = (nslabs + group - 1) / (group as int);
         proof {
@@ -1479,6 +1507,8 @@ impl SlabTable {
                 fresh: Tracked(imarks),
                 dperms: Tracked(dps),
                 seen: Tracked(seen0),
+                wloc: Ghost(wloc),
+                wm: Tracked(wauth),
                 mirror_inv: Tracked(None),
             },
             Ghost(rank_table(class as int)),
@@ -1499,9 +1529,10 @@ impl SlabTable {
             assert(crate::layout::guard_geom(class as int) == (geo.glg, geo.gmask));
         }
         // The watermark, with its invariant (0, at most any slab count).
-        let tracked committed_inv = WatermarkInv::new((usize_id(&committed_slabs), nslabs, sloc), (cperm, seen1), committed_ns());
+        let tracked committed_inv = WatermarkInv::new((usize_id(&committed_slabs), nslabs, sloc, wloc), (cperm, seen1, wvar), committed_ns());
         proof {
-            assert(committed_inv.constant() == (usize_id(&committed_slabs), nslabs, sloc));
+            assert(lock_init(inner.0).wloc@ == wloc);
+            assert(committed_inv.constant() == (usize_id(&committed_slabs), nslabs, sloc, wloc));
             assert(committed_inv.namespace() == committed_ns());
         }
         Some(SlabTable {
@@ -3127,17 +3158,22 @@ impl SlabTable {
             let gr = gi.group@;
             vstd::arithmetic::div_mod::lemma_mod_adds(s as int, gr as int, gr as int);
             vstd::arithmetic::div_mod::lemma_mod_self_0(gr as int);
-            assert(gi.inv());
         }
         proof {
             use_type_invariant(&*self);
         }
+        // The watermark becomes `end`, the new `next_slab`, with both
+        // halves of the ghost variable that ties the two.
         vstd::open_atomic_invariant!(self.committed_inv.borrow() => v => {
             store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut v.0));
             proof {
                 v.1 = gi.seen.borrow().duplicate();
+                gi.wm.borrow_mut().update(&mut v.2, end);
             }
         });
+        proof {
+            assert(gi.inv());
+        }
         if !gi.mirror.is_null() {
             let tracked mi = gi.mirror_inv.borrow().tracked_unwrap();
             // SAFETY: `mirror_watermark`'s caller keeps the copy alive as
