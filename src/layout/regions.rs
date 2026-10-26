@@ -739,9 +739,8 @@ impl Regions {
     ///
     /// Trusted for now (`external_body`): its body reads the class entry
     /// through `class_entry` (a raw pointer into [`CLASSES`]' table, which
-    /// is `class_table()` once the allocator is published) and `class_base`
-    /// through `get_unchecked`, neither of which Verus has a specification
-    /// for.
+    /// is `class_table()` once the allocator is published), which Verus has
+    /// no specification for.
     /// [`Regions::lemma_slot_of`] and [`Regions::lemma_slot_addr_found`]
     /// are the two halves of the proof of this contract.
     #[verifier::external_body]
@@ -774,7 +773,7 @@ impl Regions {
         // SAFETY: `c < NCLASSES` was just checked; both arrays have
         // `NCLASSES` entries.
         let cls = unsafe { class_entry(c) };
-        let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(c) });
+        let rel = p.wrapping_sub(unsafe { *crate::vspec::slice::array_get_unchecked(&self.class_base, c) });
         if rel >= self.region_len() {
             return None;
         }

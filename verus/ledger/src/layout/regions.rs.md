@@ -11,7 +11,7 @@ file.
 
 ## `Regions::slab_slot`
 
-src/layout/regions.rs:749. Kind: external_body. Category: raw pointer (internal).
+src/layout/regions.rs:748. Kind: external_body. Category: raw pointer (internal).
 Tool: Verus. Status: trusted.
 
 > Slab-slot lookup of design section 2, the whole of the `free` fast path's classification: `Some((class, slab, slot))` when `p` is exactly a slot start inside a class region, `None` for anything else (a gap, a mid-slot address, the huge or metadata region, or outside every reservation).
