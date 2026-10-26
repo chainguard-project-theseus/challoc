@@ -9,9 +9,10 @@
 # The verus package is pinned to the release whose vstd Cargo.toml pins
 # (bump both together), and it brings the rust stream (rust-1.99) and
 # z3 that release runs with, so this file installs no rust-1.98: the two
-# cannot be installed together. The check runs on x86_64 only: the package has no
-# aarch64 cross target (`--target aarch64-unknown-linux-gnu`); the
-# package's arm64 build verifies natively (verus/README.md). git reads the
+# cannot be installed together. The package has no aarch64 cross target
+# (`--target aarch64-unknown-linux-gnu`), so `verus-arm64` runs the same
+# steps natively on an arm64 runner, so Verus also checks the code behind
+# `cfg(target_arch = "aarch64")`. git reads the
 # base revision's verus/FLOOR; build-base is build.rs's C++ compiler.
 version: 1
 
@@ -33,7 +34,8 @@ checks:
       - &counter-tests
         name: counter tests
         cmd: [cargo, test, --locked, --manifest-path, verus/count/Cargo.toml]
-      - name: seam ledger, proofs and coverage floor
+      - &verus-step
+        name: seam ledger, proofs and coverage floor
         cmd:
           - sh
           - -c
@@ -41,6 +43,19 @@ checks:
           # (CHAINGUARD_BASE_REVISION, a reserved variable); a run without
           # one fails rather than skip the comparison.
           - make verus VERUS_BASE="${CHAINGUARD_BASE_REVISION:?no base revision to compare verus/FLOOR with}"
+
+  # The same on aarch64: the package's arm64 build, run natively.
+  verus-arm64:
+    description: >-
+      make verus on aarch64, natively: the seam ledger check, cargo verus
+      verify over the aarch64 build of challoc, and the coverage floor.
+    trigger: [presubmit]
+    resources: large-arm64
+    timeout: 45m
+    network: *crates
+    steps:
+      - *counter-tests
+      - *verus-step
 
   # On main, squash-merged, the commit before the one under test is the
   # base; verus/count fails when it does not resolve.

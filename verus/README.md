@@ -30,11 +30,11 @@ stale, breaks a proof or lowers the verified share fails CI.
 The check gets Verus from the `verus` package, release
 `0.2026.10.18.7d82994`, which matches Cargo.toml's
 `vstd = "=0.0.0-2026-10-18-0147"` and brings the toolchain it runs with
-(the `rust-1.99` stream, 1.99.1) and z3. The check runs on x86_64 only:
-the package has no aarch64 cross target, so `--target
-aarch64-unknown-linux-gnu` cannot be verified from an x86_64 host. The
-package also has an arm64 build, which verifies natively with the same
-results. To run it on this machine instead:
+(the `rust-1.99` stream, 1.99.1) and z3. The package has no aarch64 cross
+target, so `--target aarch64-unknown-linux-gnu` cannot be verified from
+an x86_64 host; a second check, `verus-arm64`, runs the same steps
+natively on an arm64 runner with the package's arm64 build. To run it on
+this machine instead:
 
 1. Download the release for this machine from
    <https://github.com/verus-lang/verus/releases/tag/release/0.2026.10.18.7d82994>
