@@ -22,6 +22,7 @@ pub(crate) mod sys;
 
 pub(crate) mod slice;
 pub(crate) mod word;
+pub(crate) mod zero;
 
 verus! {
 

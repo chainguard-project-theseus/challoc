@@ -28,6 +28,9 @@ use crate::vspec::ptr::ptr_add;
 use crate::vspec::word::WordPerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::word::word_addr;
+use crate::vspec::zero::ZeroRaw;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::zero::axiom_zero_word;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::Loc;
@@ -1376,6 +1379,82 @@ pub open spec fn chunked_span(l1: int, stride: int) -> int {
     if l1 == 0 { 0 } else { (65 * l1 - 1) * stride + 1 }
 }
 
+/// The first byte of row `r` of a chunked view at `addr` with row stride
+/// `stride` words.
+pub open spec fn row_addr(addr: int, r: int, stride: int) -> int {
+    addr + 8 * (r * stride)
+}
+
+/// The bytes of the words of a chunked view at `addr` with `rows` rows of
+/// stride `stride` words: eight from [`row_addr`] for each row `r`
+/// ([`TwoLevelBitmap::from_raw_chunked`] takes their permission).
+pub open spec fn chunked_bytes(addr: int, rows: int, stride: int) -> Set<int> {
+    Set::range(addr, addr + 8 * (rows * stride)).filter(|a: int| exists|r: int| 0 <= r < rows && #[trigger] row_addr(addr, r, stride) <= a < row_addr(addr, r, stride) + 8)
+}
+
+/// The eight bytes of the word at `a`.
+pub open spec fn word_bytes(a: int) -> Set<int> {
+    Set::range(a, a + 8)
+}
+
+/// `m` holds the word at offset `k` from `p`, which lies inside the
+/// allocation `p` points into, initialised to 0 (what
+/// `TwoLevelBitmap::ok` asks of a fresh view's words).
+spec fn zero_at(m: Map<int, PointsTo<u64>>, p: *mut u64, k: int) -> bool {
+    &&& m.contains_key(k)
+    &&& crate::vspec::ptr::in_alloc(p, k * vstd::layout::size_of::<u64>())
+    &&& m[k].ptr() == ptr_add(p, k as usize)
+    &&& m[k].is_init()
+    &&& m[k].value() == 0
+}
+
+/// The word permissions of rows `lo..hi` of a view at `p` with row
+/// stride `s` words, each 0: row `i`'s word is at offset `i * s`, and its
+/// permission is made from the eight bytes of `z` there
+/// ([`axiom_zero_word`]). Rows are `s >= 1` words apart, so their bytes
+/// are disjoint and each split leaves the later rows' bytes in `z`.
+proof fn zero_rows(tracked z: ZeroRaw, p: *mut u64, s: int, lo: int, hi: int) -> (tracked m: Map<int, PointsTo<u64>>)
+    requires
+        0 <= lo <= hi,
+        s >= 1,
+        p@.addr != 0,
+        p@.addr as int % 8 == 0,
+        z.provenance() == p@.provenance,
+        lo < hi ==> p@.addr + 8 * ((hi - 1) * s) + 8 <= usize::MAX,
+        lo < hi ==> crate::vspec::ptr::in_alloc(p, 8 * ((hi - 1) * s)),
+        forall|i: int| lo <= i < hi ==> #[trigger] word_bytes(p@.addr + 8 * (i * s)).subset_of(z.dom()),
+    ensures
+        forall|i: int| lo <= i < hi ==> #[trigger] zero_at(m, p, i * s),
+    decreases hi - lo,
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::layout::layout_of_primitives};
+    if lo >= hi {
+        return Map::tracked_empty();
+    }
+    let k = lo * s;
+    assert(0 <= k <= (hi - 1) * s) by (nonlinear_arith)
+        requires 0 <= lo < hi, s >= 1, k == lo * s;
+    let tracked (w, rest) = z.split(word_bytes(p@.addr + 8 * k));
+    crate::vspec::ptr::axiom_ptr_add_addr(p, k as usize);
+    let q = ptr_add(p, k as usize);
+    let tracked word = axiom_zero_word(w, q);
+    assert forall|i: int| lo + 1 <= i < hi implies #[trigger] word_bytes(p@.addr + 8 * (i * s)).subset_of(rest.dom()) by {
+        lemma_mul_cancel(i, lo, s);
+        assert(word_bytes(p@.addr + 8 * (i * s)).subset_of(z.dom()));
+    }
+    let tracked mut m = zero_rows(rest, p, s, lo + 1, hi);
+    let ghost m1 = m;
+    m.tracked_insert(k, word);
+    assert forall|i: int| lo <= i < hi implies #[trigger] zero_at(m, p, i * s) by {
+        if i == lo {
+        } else {
+            lemma_mul_cancel(i, lo, s);
+            assert(zero_at(m1, p, i * s));
+        }
+    }
+    m
+}
+
 /// Row of level-0 word `w` in a chunked view.
 pub open spec fn l0_row(w: int) -> int {
     65 * (w / 64) + 1 + w % 64
@@ -2080,14 +2159,20 @@ impl TwoLevelBitmap {
     /// `u64`s for as long as the set is used, must be zeroed, and must not be
     /// accessed by anything else while the set exists.
     ///
-    /// Trusted: the view's word permissions (`perms`), each word zero, stand
-    /// for that safety contract, which Verus does not check.
-    #[verifier::external_body]
-    pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> (r: TwoLevelBitmap)
+    /// The view's word permissions come from `words`, the permission to
+    /// those bytes with the fact that they read as zero
+    /// ([`zero_rows`]). The view takes `words` (ghost), so no two views a
+    /// verified caller builds hold one word (an unverified caller's
+    /// `Tracked::assume_new()` is taken on trust).
+    pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64, Tracked(words): Tracked<ZeroRaw>) -> (r: TwoLevelBitmap)
         requires
             ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64) * 8 <= isize::MAX,
-            // `u64`'s alignment (8 on both targets).
+            words.is_range(ptr@.addr as int, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
+            words.provenance() == ptr@.provenance,
+            // `u64`'s alignment (8 on both targets): a permission to
+            // misaligned bytes would otherwise become aligned `PointsTo<u64>`s.
             ptr@.addr as int % 8 == 0,
+            // A permission at address 0 proves `false` (`PointsTo::is_nonnull`).
             ptr@.addr != 0,
             ptr@.addr + 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64) <= usize::MAX,
             crate::vspec::ptr::in_alloc(ptr, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
@@ -2096,6 +2181,19 @@ impl TwoLevelBitmap {
             r.place() == (ptr@.addr as int, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
     {
         let l0_words = nbits.div_ceil(64);
+        let ghost l1 = (l0_words as int + 63) / 64;
+        let ghost n = l1 + l0_words;
+        proof {
+            assert forall|i: int| 0 <= i < n implies #[trigger] word_bytes(ptr@.addr + 8 * (i * 1)).subset_of(words.dom()) by {
+                broadcast use vstd::set_lib::range_set_properties;
+            }
+        }
+        let tracked perms = zero_rows(words, ptr, 1, 0, n);
+        proof {
+            assert forall|k: int| #![trigger perms.contains_key(k)] #![trigger perms[k]] 0 <= k < n implies zero_at(perms, ptr, k) by {
+                assert(zero_at(perms, ptr, k * 1));
+            }
+        }
         TwoLevelBitmap {
             nbits,
             l0_words,
@@ -2104,7 +2202,7 @@ impl TwoLevelBitmap {
             ptr,
             stride: 1,
             chunked: false,
-            perms: Tracked::assume_new(),
+            perms: Tracked(perms),
         }
     }
 
@@ -2120,19 +2218,24 @@ impl TwoLevelBitmap {
     /// else while the set exists. Words between the view's own are
     /// somebody else's.
     ///
-    /// Trusted, as [`from_raw`](TwoLevelBitmap::from_raw): the view's word
-    /// permissions, each word zero, stand for the safety contract. The rows
+    /// As [`from_raw`](TwoLevelBitmap::from_raw): the view's word
+    /// permissions come from `words`, the permission to the bytes of its
+    /// rows' words ([`chunked_bytes`]) with the fact that they read as
+    /// zero ([`zero_rows`]), and the view takes `words` (ghost). The rows
     /// lie inside the allocation `ptr` points into (`ptr.add` reaches
-    /// them), which the caller states.
-    #[verifier::external_body]
+    /// them), which the caller states: `words` covers only the view's own
+    /// words.
     pub const unsafe fn from_raw_chunked(
         nbits: usize,
         ptr: *mut u64,
         stride: usize,
+        Tracked(words): Tracked<ZeroRaw>,
     ) -> (r: TwoLevelBitmap)
         requires
             stride >= 1,
             65 * ((((nbits as int) + 63) / 64 + 63) / 64) * (stride as int) * 8 <= isize::MAX,
+            words.dom() == chunked_bytes(ptr@.addr as int, 65 * ((((nbits as int) + 63) / 64 + 63) / 64), stride as int),
+            words.provenance() == ptr@.provenance,
             // `u64`'s alignment, as `from_raw` requires.
             ptr@.addr as int % 8 == 0,
             ptr@.addr != 0,
@@ -2143,6 +2246,30 @@ impl TwoLevelBitmap {
             r.place() == (ptr@.addr as int, 8 * chunked_span((((nbits as int) + 63) / 64 + 63) / 64, stride as int)),
     {
         let l0_words = nbits.div_ceil(64);
+        let ghost l1 = (l0_words as int + 63) / 64;
+        let ghost (rows, s) = (65 * l1, stride as int);
+        proof {
+            broadcast use vstd::set_lib::range_set_properties;
+            assert forall|i: int| 0 <= i < rows implies #[trigger] word_bytes(ptr@.addr + 8 * (i * s)).subset_of(words.dom()) by {
+                assert(i * s + 1 <= rows * s) by (nonlinear_arith) requires 0 <= i < rows, s >= 1;
+                assert forall|a: int| #[trigger] word_bytes(ptr@.addr + 8 * (i * s)).contains(a) implies words.dom().contains(a) by {
+                    assert(row_addr(ptr@.addr as int, i, s) <= a < row_addr(ptr@.addr as int, i, s) + 8);
+                }
+            }
+            if rows > 0 {
+                assert((rows - 1) * s + 1 == chunked_span(l1, s));
+            }
+        }
+        let tracked perms = zero_rows(words, ptr, s, 0, rows);
+        proof {
+            assert forall|j: int| #![trigger l1_row(j)] 0 <= j < l1 implies zero_at(perms, ptr, l1_row(j) * s) by {
+                assert(0 <= l1_row(j) < rows);
+            }
+            assert forall|w: int| #![trigger l0_row(w)] 0 <= w < l0_words implies zero_at(perms, ptr, l0_row(w) * s) by {
+                assert(w / 64 < l1);
+                assert(0 <= l0_row(w) < rows);
+            }
+        }
         debug_assert!(stride >= 1);
         TwoLevelBitmap {
             nbits,
@@ -2152,7 +2279,7 @@ impl TwoLevelBitmap {
             ptr,
             stride,
             chunked: true,
-            perms: Tracked::assume_new(),
+            perms: Tracked(perms),
         }
     }
 
@@ -3914,7 +4041,8 @@ mod tests {
         let mut storage = vec![0u64; TwoLevelBitmap::words_needed(nbits)];
         // SAFETY: the vector is zeroed, sized by `words_needed`, and lives
         // exactly as long as the bitmap in the same struct.
-        let bm = unsafe { TwoLevelBitmap::from_raw(nbits, storage.as_mut_ptr()) };
+        let bm =
+            unsafe { TwoLevelBitmap::from_raw(nbits, storage.as_mut_ptr(), Tracked::assume_new()) };
         Owned {
             _storage: storage,
             bm,
@@ -4006,7 +4134,9 @@ mod tests {
         let mut views: Vec<TwoLevelBitmap> = sizes
             .iter()
             .enumerate()
-            .map(|(v, &n)| unsafe { TwoLevelBitmap::from_raw_chunked(n, base.add(v), stride) })
+            .map(|(v, &n)| unsafe {
+                TwoLevelBitmap::from_raw_chunked(n, base.add(v), stride, Tracked::assume_new())
+            })
             .collect();
         let mut models: Vec<Vec<bool>> = sizes.iter().map(|&n| vec![false; n]).collect();
         let mut dense: Vec<Owned> = sizes.iter().map(|&n| owned(n)).collect();
