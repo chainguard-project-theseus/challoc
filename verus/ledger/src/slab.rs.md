@@ -9,6 +9,7 @@ file.
 |---|---|---|---|---|
 | `bad_state_byte` | external_body | panic/abort | Verus | trusted |
 | `desc_stride` | external_body | core library | Kani | trusted |
+| `SlabDesc::init` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...b_live` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `bad_state_byte`
@@ -38,9 +39,27 @@ pub fn desc_stride(class: usize) -> (r: usize)
         r == stride_of(class as int),
 ```
 
+## `SlabDesc::init`
+
+src/slab.rs:301. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> Initialise the descriptor of a slab handed to `arena`: `Fresh`, no live slots, through `p`, the descriptor's permission (ghost).
+
+```rust
+pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
+    requires
+        old(p).id() == desc_id(self),
+    ensures
+        final(p).id() == old(p).id(),
+        final(p).state() == state_byte(State::Fresh),
+        final(p).dirty() == 0,
+        final(p).arena() == arena,
+```
+
 ## `SlabDesc::sub_live`
 
-src/slab.rs:359. Kind: external_body. Category: atomics primitive.
+src/slab.rs:372. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.
