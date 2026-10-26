@@ -438,6 +438,50 @@ proof fn lemma_quarter(lg: nat)
     vstd::arithmetic::power2::lemma2_to64();
 }
 
+/// Every class size is a multiple of the quantum: `(i + 1) * QUANTUM` for
+/// the linear classes, and a multiple of `2^(lg - 2)`, at least four
+/// quanta, above them.
+pub proof fn lemma_class_size_quantum(i: int)
+    requires
+        0 <= i < NCLASSES,
+    ensures
+        spec_class_size(i) % (QUANTUM as int) == 0,
+{
+    let q = QUANTUM as int;
+    if i < LINEAR_CLASSES as int {
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(i + 1, q);
+    } else {
+        vstd::arithmetic::power2::lemma2_to64();
+        let g = (i - LINEAR_CLASSES as int) / 4;
+        let k = (i - LINEAR_CLASSES as int) % 4;
+        let lg = (LG_LINEAR_MAX as int + g) as nat;
+        lemma_quarter(lg);
+        let b = vstd::arithmetic::power2::pow2(lg) as int;
+        let qq = vstd::arithmetic::power2::pow2((lg - 2) as nat) as int;
+        // `QUANTUM` is `2^(LG_LINEAR_MAX - 3)`, and `2^(lg - 2)` that times
+        // `2^(g + 1)`.
+        let lq = (LG_LINEAR_MAX - 3) as nat;
+        assert(q == vstd::arithmetic::power2::pow2(lq));
+        vstd::arithmetic::power2::lemma_pow2_adds(lq, (g + 1) as nat);
+        assert((lq + (g + 1)) as nat == (lg - 2) as nat);
+        let m = vstd::arithmetic::power2::pow2((g + 1) as nat) as int;
+        assert(qq == q * m);
+        assert(spec_class_size(i) == b + (k + 1) * (b / 4));
+        let s = spec_class_size(i);
+        assert(s == b + (k + 1) * qq);
+        assert(s == (k + 5) * qq) by (nonlinear_arith)
+            requires
+                s == b + (k + 1) * qq,
+                b == 4 * qq,
+        ;
+        assert((k + 5) * qq == (k + 5) * m * q) by (nonlinear_arith)
+            requires
+                qq == q * m,
+        ;
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic((k + 5) * m, q);
+    }
+}
+
 /// The class sizes grow strictly with the class number.
 pub proof fn lemma_class_size_mono(i: int, j: int)
     requires
@@ -1302,6 +1346,11 @@ pub use regions::{Kind, LG_HUGE_PREFERRED, Regions};
 #[cfg(test)]
 pub use regions::{
     LG_HUGE_MIN, LG_META_MIN, LG_REGION_MIN, LG_REGION_PREFERRED, MAX_SEALED, Mapping,
+};
+#[cfg(verus_keep_ghost)]
+pub use regions::{
+    disjoint, guard_slab, huge_block, lemma_aligned_down, lemma_mod_lin3, lemma_pow2_divides_pow2,
+    process_regions,
 };
 
 #[cfg(test)]

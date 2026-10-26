@@ -123,7 +123,7 @@ pub const fn slab_mask(&self) -> (r: usize)
 
 ## `ClassTable`
 
-src/layout/mod.rs:925. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:969. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The size-class table in use, indexed by class number: [`BASE_CLASSES`] with the slab geometry of the classes below the kernel page raised to the page by [`adopt_page_geometry`] once at init.
@@ -134,7 +134,7 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ## `ClassTable::new`
 
-src/layout/mod.rs:932. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:976. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -143,7 +143,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ## `ClassTable::table`
 
-src/layout/mod.rs:947. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:991. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The table, for verified code.

@@ -90,6 +90,7 @@ use crate::layout::{self, NCLASSES, Regions};
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
+use vstd::prelude::verus;
 
 /// The crate version as a NUL-terminated static string (`"0.1.0"`; the
 /// soname's major, design 13.6, follows its major); with `challoc_features`
@@ -113,6 +114,18 @@ static STATE: AtomicU32 = AtomicU32::new(UNINIT);
 /// Thread id of the initialising thread while the state is `INITIALISING`,
 /// so a re-entrant call from it can be told apart from a concurrent one.
 static INIT_TID: AtomicU32 = AtomicU32::new(0);
+
+verus! {
+
+/// The allocator is published: `init` has built the process's `Shared`
+/// and the class table and stored `READY`, after which neither changes.
+/// A fact rather than a value, so that it travels in contracts at no cost:
+/// the readers of the class table that need it published
+/// (`layout::Regions::slab_slot`, `Regions::classify`) require it.
+/// Uninterpreted.
+pub uninterp spec fn ready() -> bool;
+
+} // verus!
 
 /// Storage for a value built in place at init and immutable afterwards.
 struct Global<T>(UnsafeCell<MaybeUninit<T>>);
