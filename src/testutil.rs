@@ -142,6 +142,8 @@ impl TestShared {
                 self.config,
                 self.guards,
                 self.pac,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             )
         });
         unsafe { &*p }

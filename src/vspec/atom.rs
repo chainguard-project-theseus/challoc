@@ -47,9 +47,9 @@
 //!   `mirror_watermark` makes each copy's invariant from its permission;
 //!   that the permission it is handed is its copy's, moved into place
 //!   with it, is a premise of its caller (`Shared::init`, unverified);
-//! - [`usize_id_at`] names the atomic a pointer points at, for as long as
-//!   it stays in place: the class lines' copies live in the `Shared`,
-//!   which never moves (`Shared::init`'s contract).
+//! - [`usize_id_at`] names the atomic a pointer [`usize_ptr`] made points
+//!   at, for as long as it stays in place: the class lines' copies live in
+//!   the `Shared`, which never moves (`Shared::init`'s contract).
 
 use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
@@ -117,8 +117,27 @@ pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm):
     a.store(v, ordering)
 }
 
-/// The identity ([`usize_id`]) of the atomic `usize` at `p`.
+/// The identity ([`usize_id`]) of the atomic `usize` at `p`: what a
+/// pointer [`usize_ptr`] made from a reference to it points at.
 pub uninterp spec fn usize_id_at(p: *const AtomicUsize) -> int;
+
+/// `a as *const AtomicUsize`: a pointer to the atomic, which names it
+/// ([`usize_id_at`]). Trusted: Verus has no reference-to-pointer cast.
+/// The pointer names `a` for as long as `a` stays where it is, which is
+/// the caller's to keep (`SlabTable::mirror_watermark`'s safety contract;
+/// the class lines live in a `Shared`, which never moves: `Shared::init`'s
+/// contract).
+#[inline(always)]
+#[verifier::external_body]
+pub(crate) fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
+    ensures
+        usize_id_at(r) == usize_id(a),
+        r@.addr != 0,
+    opens_invariants none
+    no_unwind
+{
+    a
+}
 
 /// `(*p).store(v, ordering)` through a pointer to an atomic, with the
 /// permission of the atomic it names (it panics for an `Acquire` or

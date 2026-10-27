@@ -599,6 +599,8 @@ fn init() {
             config,
             features.guard_install,
             features.pac,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
