@@ -11,6 +11,7 @@ file.
 | `desc_stride` | external_body | core library | Kani | trusted |
 | `SlabDesc::init` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...e_held` | external_body | atomics primitive | loom/GenMC | trusted |
+| `SlabDes...y_held` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes..._state` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...b_live` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...rty_at` | external_body | atomics primitive | loom/GenMC | trusted |
@@ -73,9 +74,22 @@ fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, De
         perm_for(*m, k, self) ==> r == m[k].state(),
 ```
 
+## `SlabDesc::dirty_held`
+
+src/slab.rs:367. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> [`dirty_at`](SlabDesc::dirty_at) read by a holder of `m`, as [`state_held`](SlabDesc::state_held): the stamp the permission under `k` records when that is this descriptor's.
+
+```rust
+pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u64)
+    ensures
+        perm_for(*m, k, self) ==> r == m[k].dirty(),
+```
+
 ## `SlabDesc::set_state`
 
-src/slab.rs:364. Kind: external_body. Category: atomics primitive.
+src/slab.rs:382. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Only ever called with the class lock held, which holds `p`, the descriptor's permission (ghost), which records the new state.
@@ -93,7 +107,7 @@ pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabDesc::sub_live`
 
-src/slab.rs:419. Kind: external_body. Category: atomics primitive.
+src/slab.rs:437. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.
@@ -104,7 +118,7 @@ pub fn sub_live(&self, n: usize) -> usize
 
 ## `SlabDesc::set_dirty_at`
 
-src/slab.rs:437. Kind: external_body. Category: atomics primitive.
+src/slab.rs:455. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).
