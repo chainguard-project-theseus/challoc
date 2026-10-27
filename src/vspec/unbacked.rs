@@ -3,7 +3,8 @@
 //! it. `meta::Meta::owning` takes the metadata region's, which
 //! `layout::Regions::reserve_owning` hands out with the reservation.
 //! Committing the range turns the token into the permission to its bytes
-//! ([`Unbacked::commit`]).
+//! ([`Unbacked::commit`]); a lazily committed table's owner takes its
+//! permission before the commit ([`Unbacked::into_lazy`]).
 
 #[cfg(verus_keep_ghost)]
 use crate::vspec::addr::cast_provenance;
@@ -14,6 +15,20 @@ use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
 
 verus! {
+
+/// The byte at `a` is committed: `mprotect` made a range holding it
+/// readable and writable (`meta::commit_range` returned `Ok`, the one
+/// place that states it). Uninterpreted. It stays true because
+/// `commit_range` is private to `meta` and commits only metadata-region
+/// bytes, nothing makes a committed metadata byte `PROT_NONE` again, and
+/// the metadata region is unmapped only by tests (`Regions::release`, the
+/// test region's `Drop`).
+pub uninterp spec fn committed(a: int) -> bool;
+
+/// Every byte of `[a, a + len)` is [`committed`].
+pub open spec fn committed_range(a: int, len: int) -> bool {
+    forall|x: int| a <= x < a + len ==> #[trigger] committed(x)
+}
 
 /// Ghost token: this process owns the `len` reserved, uncommitted bytes
 /// at `addr`, and nothing else does. The unverified
@@ -74,22 +89,25 @@ impl Unbacked {
         Unbacked { addr: self.addr, len: self.len + next.len }
     }
 
-    /// The permission to the bytes, once they are committed, and the token
-    /// that they read as zero. Trusted for two kernel facts, with a premise
-    /// its callers keep and nothing checks: call it only after `mprotect`
-    /// made a range holding this one readable and writable
-    /// (`meta::commit_range` returned `Ok`). Then `mprotect(2)`: the range
+    /// The permission to the bytes, once they are committed
+    /// ([`committed_range`]), and the token that they read as zero.
+    /// Trusted for two kernel facts. `mprotect(2)`: the range
     /// is ordinary memory this process owns, addressed through
     /// integer-to-pointer casts. And `mmap(2)`: a private anonymous mapping
     /// reads as zero until it is first written, which this range never
     /// was, because an `Unbacked` token stands for bytes that have been
     /// `PROT_NONE` since their reservation mapped them (no permission to
-    /// them exists before this call consumes the token). Its one call
-    /// site is `meta::Inner::commit_bump_to`, after its successful commit
-    /// of `[committed, want)`, a range holding the token's: it takes the
-    /// part past the deferred tables.
+    /// them exists before this call consumes the token). Its callers:
+    /// `meta::Inner::commit_bump_to`, after its successful commit of
+    /// `[committed, want)`, for the part past the deferred tables; and
+    /// `meta::Inner::reserve_committed`'s two paths, for the table they
+    /// have just committed. Not at address 0: a permission there proves
+    /// `false` (`PointsTo::is_nonnull`).
     #[verifier::external_body]
     pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
+        requires
+            self.addr() > 0,
+            committed_range(self.addr(), self.len()),
         ensures
             r.0.is_range(self.addr(), self.len()),
             r.0.provenance() == cast_provenance(),
@@ -112,10 +130,7 @@ impl Unbacked {
     /// the object side's `committed`), which the owner's first
     /// `Meta::commit` makes writable with the deferred commit
     /// (`Inner::flush`) before the table is used, the same premise.
-    /// `meta::Inner::reserve_committed` passes the same two tokens after it
-    /// has committed them itself (`Inner::flush` or `Inner::commit`
-    /// returned `Ok`), so there the premise holds on return. Not at
-    /// address 0: a permission there proves `false`
+    /// Not at address 0: a permission there proves `false`
     /// (`PointsTo::is_nonnull`). The zero token is [`Unbacked::commit`]'s
     /// `mmap(2)` fact, on the same premise: the bytes have been `PROT_NONE`
     /// since their reservation mapped them, so each reads as zero once its
