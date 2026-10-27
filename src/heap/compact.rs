@@ -261,7 +261,7 @@ impl Heap {
     /// Whether `class` in `arena` is worth compacting (design 6.4).
     pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
         let cs = shared.owner(arena).class(class);
-        let (holes, capacity) = cs.holes();
+        let (holes, capacity) = cs.holes(vstd::prelude::Tracked::assume_new());
         holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
             && holes * COMPACT_MIN_RATIO >= capacity
     }

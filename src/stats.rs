@@ -420,7 +420,7 @@ impl ArenaStats {
 
 /// The current figures of one class state (one lock hold).
 pub fn collect_bin(cs: &ClassState) -> BinStats {
-    let (s, curregs) = cs.bin_stats();
+    let (s, curregs) = cs.bin_stats(Tracked::assume_new());
     let cls = cs.class();
     let (compacted, compact_on, compact_off, gate_refill) = cs.compaction_stats();
     BinStats {

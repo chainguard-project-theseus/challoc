@@ -2218,19 +2218,19 @@ fn guard_slab_faults_when_supported() {
 fn bin_stats_counts_every_curregs_clamp() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
-    let (_, curregs) = cs.bin_stats();
+    let (_, curregs) = cs.bin_stats(Tracked::assume_new());
     assert_eq!((curregs, cs.clamped()), (0, 0));
     // No slab committed, so the capacity is zero: a `claimed` ahead of
     // `released` (the window `bin_stats` documents) is clamped to it and
     // the clamp is counted.
     cs.claimed.store(3, Ordering::Relaxed);
-    let (_, curregs) = cs.bin_stats();
+    let (_, curregs) = cs.bin_stats(Tracked::assume_new());
     assert_eq!((curregs, cs.clamped()), (0, 1));
-    let (_, curregs) = cs.bin_stats();
+    let (_, curregs) = cs.bin_stats(Tracked::assume_new());
     assert_eq!((curregs, cs.clamped()), (0, 2));
     // Caught up: no clamp, the count stays.
     cs.released.store(3, Ordering::Relaxed);
-    let (_, curregs) = cs.bin_stats();
+    let (_, curregs) = cs.bin_stats(Tracked::assume_new());
     assert_eq!((curregs, cs.clamped()), (0, 2));
 }
 
