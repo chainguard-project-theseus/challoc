@@ -7,15 +7,43 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Shared` | external_body type | allocator invariant | Verus | trusted |
+| `ClassLine` | ext_type_spec | allocator invariant | Verus | trusted |
+| `ThreadKey` | ext_type_spec | allocator invariant | Verus | trusted |
+| `Tcaches` | ext_type_spec | allocator invariant | Verus | trusted |
+| `policy::Policy` | ext_type_spec | allocator invariant | Verus | trusted |
 
-## `Shared`
+## `ClassLine`
 
-src/heap/shared.rs:53. Kind: external_body type. Category: allocator invariant.
+src/heap/shared.rs:158. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
-> Process-wide allocator state that every heap works against: the regions, one [`SlabTable`] per class, arena 0, the metadata allocator, the huge allocator, the arena and explicit-cache registries and the thread-exit key.
+```rust
+pub struct ExClassLine(ClassLine);
+```
+
+## `ThreadKey`
+
+src/heap/shared.rs:164. Kind: ext_type_spec. Category: allocator invariant.
+Tool: Verus. Status: trusted.
 
 ```rust
-pub struct Shared
+pub struct ExThreadKey(ThreadKey);
+```
+
+## `Tcaches`
+
+src/heap/shared.rs:170. Kind: ext_type_spec. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+```rust
+pub struct ExTcaches(Tcaches);
+```
+
+## `crate::policy::Policy`
+
+src/heap/shared.rs:176. Kind: ext_type_spec. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+```rust
+pub struct ExPolicy(crate::policy::Policy);
 ```

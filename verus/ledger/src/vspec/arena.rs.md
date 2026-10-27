@@ -7,12 +7,31 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `Atomic:...::load` | assume_spec | atomics primitive | loom/GenMC | trusted |
 | `Atomic:...>::new` | assume_spec | atomics primitive | loom/GenMC | trusted |
 | `axiom_a...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 
+## `core::sync::atomic::Atomic::<*mut T>::load`
+
+src/vspec/arena.rs:12. Kind: assume_spec. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> `AtomicPtr::load`, which vstd does not specify: any pointer.
+
+```rust
+pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
+    a: &core::sync::atomic::Atomic<*mut T>,
+    order: core::sync::atomic::Ordering,
+) -> *mut T
+    requires
+        !(order is Release),
+        !(order is AcqRel),
+;
+```
+
 ## `core::sync::atomic::Atomic::<*mut T>::new`
 
-src/vspec/arena.rs:11. Kind: assume_spec. Category: atomics primitive.
+src/vspec/arena.rs:22. Kind: assume_spec. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `AtomicPtr::new`, which vstd does not specify.
@@ -23,7 +42,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut
 
 ## `axiom_arena_stats_lock_inv`
 
-src/vspec/arena.rs:24. Kind: axiom. Category: allocator invariant.
+src/vspec/arena.rs:35. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the value of an arena's statistics lock keeps the accounting identities (`ArenaStats::identities`) while the lock is free.

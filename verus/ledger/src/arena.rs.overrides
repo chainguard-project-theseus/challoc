@@ -14,3 +14,21 @@ A_LAST_EXIT_PURGE	core library	Kani
 axiom_arena_layout	core library	Kani
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arena_assemble	raw pointer (internal)	none (assumption)
+# `core`'s tuple and `bool` order, as documented.
+key_less	core library	Kani
+# `Arenas`'s byte offsets and layout, which the build checks with `fits`.
+AR_TABLE	core library	Kani
+AR_BOUND	core library	Kani
+AR_LOCK	core library	Kani
+AR_COUNT	core library	Kani
+AR_AUTO	core library	Kani
+AR_SPARE	core library	Kani
+AR_INVS	core library	Kani
+AR_COUNT_INV	core library	Kani
+AR_SPARE_INV	core library	Kani
+axiom_arenas_layout	core library	Kani
+# Joining typed field permissions into the struct's: no vstd counterpart.
+axiom_arenas_assemble	raw pointer (internal)	none (assumption)
+# The creation lock's invariant, assumed of its unverified writers
+# (create, materialise, build) until they are verified.
+axiom_arenas_lock_inv	allocator invariant	none (assumption)

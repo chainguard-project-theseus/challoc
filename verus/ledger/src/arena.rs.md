@@ -18,10 +18,23 @@ file.
 | `A_LAST_EXIT_PURGE` | external_body const | core library | Kani | trusted |
 | `axiom_arena_layout` | axiom | core library | Kani | trusted |
 | `axiom_a...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `key_less` | external_body | core library | Kani | trusted |
+| `AR_TABLE` | external_body const | core library | Kani | trusted |
+| `AR_BOUND` | external_body const | core library | Kani | trusted |
+| `AR_LOCK` | external_body const | core library | Kani | trusted |
+| `AR_COUNT` | external_body const | core library | Kani | trusted |
+| `AR_AUTO` | external_body const | core library | Kani | trusted |
+| `AR_SPARE` | external_body const | core library | Kani | trusted |
+| `AR_INVS` | external_body const | core library | Kani | trusted |
+| `AR_COUNT_INV` | external_body const | core library | Kani | trusted |
+| `AR_SPARE_INV` | external_body const | core library | Kani | trusted |
+| `axiom_arenas_layout` | axiom | core library | Kani | trusted |
+| `axiom_a...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_a...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
 
 ## `axiom_array_layout`
 
-src/arena.rs:295. Kind: axiom. Category: core library.
+src/arena.rs:296. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
 > An array of `N` `T`s is `N` `T`s back to back, aligned as one: the size and alignment the Rust reference gives arrays.
@@ -38,7 +51,7 @@ pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
 
 ## `A_INDEX`
 
-src/arena.rs:466. Kind: external_body const. Category: core library.
+src/arena.rs:467. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -47,7 +60,7 @@ const A_INDEX: usize = core::mem::offset_of!(Arena, index);
 
 ## `A_DECAY_NS`
 
-src/arena.rs:468. Kind: external_body const. Category: core library.
+src/arena.rs:469. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -56,7 +69,7 @@ const A_DECAY_NS: usize = core::mem::offset_of!(Arena, decay_ns);
 
 ## `A_SETS`
 
-src/arena.rs:470. Kind: external_body const. Category: core library.
+src/arena.rs:471. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -65,7 +78,7 @@ const A_SETS: usize = core::mem::offset_of!(Arena, sets);
 
 ## `A_SETS_PERM`
 
-src/arena.rs:472. Kind: external_body const. Category: core library.
+src/arena.rs:473. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -74,7 +87,7 @@ const A_SETS_PERM: usize = core::mem::offset_of!(Arena, sets_perm);
 
 ## `A_CLASSES`
 
-src/arena.rs:474. Kind: external_body const. Category: core library.
+src/arena.rs:475. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -83,7 +96,7 @@ const A_CLASSES: usize = core::mem::offset_of!(Arena, classes);
 
 ## `A_LARGE`
 
-src/arena.rs:476. Kind: external_body const. Category: core library.
+src/arena.rs:477. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -92,7 +105,7 @@ const A_LARGE: usize = core::mem::offset_of!(Arena, large);
 
 ## `A_STATS`
 
-src/arena.rs:478. Kind: external_body const. Category: core library.
+src/arena.rs:479. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -101,7 +114,7 @@ const A_STATS: usize = core::mem::offset_of!(Arena, stats);
 
 ## `A_LAST_EXIT_PURGE`
 
-src/arena.rs:480. Kind: external_body const. Category: core library.
+src/arena.rs:481. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -110,7 +123,7 @@ const A_LAST_EXIT_PURGE: usize = core::mem::offset_of!(Arena, last_exit_purge);
 
 ## `axiom_arena_layout`
 
-src/arena.rs:488. Kind: axiom. Category: core library.
+src/arena.rs:489. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Arena`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size, and a class state is not empty (a zero-sized one would leave its array outside any allocation, as far as `in_alloc` knows).
@@ -139,7 +152,7 @@ axiom fn axiom_arena_layout()
 
 ## `axiom_arena_assemble`
 
-src/arena.rs:783. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:784. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arena` at `p` (`Arena::split`'s parts and class states, every one initialised), as the `Arena`: the value of each field is what its permission holds.
@@ -181,5 +194,197 @@ axiom fn axiom_arena_assemble(
         a.value().large == parts.large.value(),
         a.value().stats == parts.stats.value(),
         a.value().last_exit_purge == parts.last_exit_purge.value(),
+;
+```
+
+## `key_less`
+
+src/arena.rs:1695. Kind: external_body. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `a < b` on `(u32, bool)`: [`key_lt`].
+
+```rust
+fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
+    ensures
+        r == key_lt(a, b),
+```
+
+## `AR_TABLE`
+
+src/arena.rs:1706. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
+```
+
+## `AR_BOUND`
+
+src/arena.rs:1708. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
+```
+
+## `AR_LOCK`
+
+src/arena.rs:1710. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
+```
+
+## `AR_COUNT`
+
+src/arena.rs:1712. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
+```
+
+## `AR_AUTO`
+
+src/arena.rs:1714. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
+```
+
+## `AR_SPARE`
+
+src/arena.rs:1716. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
+```
+
+## `AR_INVS`
+
+src/arena.rs:1718. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
+```
+
+## `AR_COUNT_INV`
+
+src/arena.rs:1720. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
+```
+
+## `AR_SPARE_INV`
+
+src/arena.rs:1722. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
+```
+
+## `axiom_arenas_layout`
+
+src/arena.rs:1730. Kind: axiom. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Arenas`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`) by the size, and neither array's element empty (as for `Arena`'s class states).
+
+```rust
+axiom fn axiom_arenas_layout()
+    ensures
+        field_fits::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(AR_TABLE, AR_BOUND as int),
+        0 < size_of::<AtomicPtr<Arena>>(),
+        MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX,
+        field_fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK as int),
+        0 < size_of::<AtomicU32>(),
+        MAX_ARENAS * size_of::<AtomicU32>() <= isize::MAX,
+        // Over several lines, as in `axiom_arena_layout`.
+        field_fits::<
+            Arenas,
+            Lock<Created>,
+        >(AR_LOCK, AR_SPARE as int),
+        field_fits::<Arenas, PAtomicPtr<Arena>>(AR_SPARE, AR_COUNT as int),
+        field_fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO as int),
+        field_fits::<Arenas, u32>(AR_AUTO, AR_INVS as int),
+        field_fits::<Arenas, Tracked<Map<int, BoundInv>>>(AR_INVS, AR_COUNT_INV as int),
+        field_fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, AR_SPARE_INV as int),
+        field_fits::<Arenas, Tracked<SpareInv>>(AR_SPARE_INV, size_of::<Arenas>() as int),
+        size_of::<Arenas>() <= isize::MAX,
+;
+```
+
+## `axiom_arenas_lock_inv`
+
+src/arena.rs:1799. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The creation lock's invariant ([`Created::ok`]): `n` is at most [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`, and no published entry at or above it.
+
+```rust
+pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
+    ensures
+        #[trigger] lock_inv(v) == v.ok(),
+;
+```
+
+## `axiom_arenas_assemble`
+
+src/arena.rs:1952. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
+
+```rust
+axiom fn axiom_arenas_assemble(
+    tracked parts: ArenasParts,
+    tracked tables: Map<int, PointsTo<AtomicPtr<Arena>>>,
+    tracked bounds: Map<int, PointsTo<AtomicU32>>,
+    tracked pad: PointsToRaw,
+    p: *mut Arenas,
+) -> (tracked a: PointsTo<Arenas>)
+    requires
+        parts.at(p),
+        tables_at(tables, p),
+        bounds_at(bounds, p),
+        arenas_pad_covers(pad, p),
+        pad.provenance() == p@.provenance,
+        parts.lock.is_init(),
+        parts.count.is_init(),
+        parts.auto.is_init(),
+        parts.invs.is_init(),
+        parts.count_inv.is_init(),
+        parts.spare.is_init(),
+        parts.spare_inv.is_init(),
+        elems_init(tables, 0, MAX_ARENAS as int),
+        elems_init(bounds, 0, MAX_ARENAS as int),
+        parts.lock.value().rank() == rank_arenas(),
+        parts.count_inv.value()@.constant().count == count_id(&parts.count.value()),
+        forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] parts.count_inv.value()@.constant().entries[i] == entry_id(&tables[i].value()),
+        parts.count_inv.value()@.namespace() == narenas_ns(),
+        lock_init(parts.lock.value()).half@.id() == parts.count_inv.value()@.constant().snap,
+        lock_init(parts.lock.value()).n == parts.auto.value(),
+        parts.spare_inv.value()@.constant() == parts.spare.value().id(),
+        parts.spare_inv.value()@.namespace() == spare_ns(),
+    ensures
+        a.ptr() == p,
+        a.is_init(),
+        a.value().lock == parts.lock.value(),
+        a.value().count == parts.count.value(),
+        a.value().auto == parts.auto.value(),
+        forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] a.value().table[i] == tables[i].value(),
+        forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] a.value().bound[i] == bounds[i].value(),
+        a.value().invs == parts.invs.value(),
+        a.value().count_inv == parts.count_inv.value(),
+        a.value().spare == parts.spare.value(),
+        a.value().spare_inv == parts.spare_inv.value(),
 ;
 ```

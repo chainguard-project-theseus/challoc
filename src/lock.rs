@@ -222,6 +222,12 @@ pub closed spec fn lock_rs_only() -> bool {
     true
 }
 
+/// The arena creation lock (`arena::Arenas`'s), below the class locks:
+/// a build takes the class, slab-set and metadata locks under it.
+pub open spec fn rank_arenas() -> int {
+    0x200_0000
+}
+
 /// The class lock of class `c` (below `0x100`) of arena `i`
 /// (`class::ClassState`), below the slab table locks.
 pub open spec fn rank_class(i: int, c: int) -> int {
