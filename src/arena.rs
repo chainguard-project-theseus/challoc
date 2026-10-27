@@ -37,10 +37,11 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use crate::class::{ClassState, SetTable, SlabTable};
 use crate::heap::Shared;
 use crate::layout::{NCLASSES, Regions};
-use crate::lock::Lock;
-use crate::meta::Meta;
+use crate::lock::{Lock, LockOrder};
+use crate::meta::{Meta, MetaClaim};
 use crate::stats::ArenaStats;
-use vstd::prelude::{Ghost, Seq, Tracked, int, verus};
+use vstd::prelude::*;
+use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_write, ptr_ref};
 use vstd::resource::Loc;
 use vstd::resource::map::GhostPersistentPointsTo;
 
@@ -80,6 +81,10 @@ pub struct Arena {
     /// (`class/`), a separate metadata object so that `Arena` keeps its
     /// size and the offsets of everything allocated after it.
     sets: *const SetTable,
+    /// Ghost: the permission to the table at `sets`, frozen by `init`
+    /// (the class states' sets share it).
+    #[allow(dead_code)]
+    sets_perm: Tracked<&'static PointsTo<SetTable>>,
     pub classes: [ClassState; NCLASSES],
     /// Live huge runs allocated through this arena and their pages (guard
     /// included), kept by `Shared::alloc_huge` / `free_huge` since the huge
@@ -144,10 +149,38 @@ pub(crate) unsafe fn elem_at<T>(base: *mut T, i: usize, n: usize) -> *mut T {
     unsafe { base.add(i) }
 }
 
+verus! {
+
+/// The permission to storage under construction while it is held:
+/// [`Arena::init`] takes it out and hands it back built. A struct rather
+/// than a bare `Option` so that Verus treats a `&mut` to it as ghost.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct Held<T> {
+    pub tracked perm: Option<PointsTo<T>>,
+}
+
+/// The permissions to the fields of an `Arena` under construction but
+/// its class states, which are a map of their own, element by element.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+tracked struct ArenaParts {
+    tracked index: PointsTo<u16>,
+    tracked decay_ns: PointsTo<AtomicU64>,
+    tracked sets: PointsTo<*const SetTable>,
+    tracked sets_perm: PointsTo<Tracked<&'static PointsTo<SetTable>>>,
+    tracked large: PointsTo<AtomicU64>,
+    tracked stats: PointsTo<Lock<ArenaStats>>,
+    tracked last_exit_purge: PointsTo<AtomicU64>,
+}
+
+} // verus!
+
 // Byte offsets of `Arena`'s fields.
 const A_INDEX: usize = core::mem::offset_of!(Arena, index);
 const A_DECAY_NS: usize = core::mem::offset_of!(Arena, decay_ns);
 const A_SETS: usize = core::mem::offset_of!(Arena, sets);
+const A_SETS_PERM: usize = core::mem::offset_of!(Arena, sets_perm);
 const A_CLASSES: usize = core::mem::offset_of!(Arena, classes);
 const A_LARGE: usize = core::mem::offset_of!(Arena, large);
 const A_STATS: usize = core::mem::offset_of!(Arena, stats);
@@ -168,7 +201,8 @@ pub(crate) const fn fits<S, T>(off: usize, next: usize) -> bool {
 const _: () = assert!(
     fits::<Arena, u16>(A_INDEX, A_DECAY_NS)
         && fits::<Arena, AtomicU64>(A_DECAY_NS, A_SETS)
-        && fits::<Arena, *const SetTable>(A_SETS, A_CLASSES)
+        && fits::<Arena, *const SetTable>(A_SETS, A_SETS_PERM)
+        && fits::<Arena, Tracked<&'static PointsTo<SetTable>>>(A_SETS_PERM, A_CLASSES)
         && fits::<Arena, [ClassState; NCLASSES]>(A_CLASSES, A_LARGE)
         && NCLASSES as u128 * core::mem::size_of::<ClassState>() as u128 <= isize::MAX as u128
         && fits::<Arena, AtomicU64>(A_LARGE, A_STATS)
@@ -184,49 +218,81 @@ const _: () = assert!(
         && core::mem::align_of::<[ClassState; NCLASSES]>() == core::mem::align_of::<ClassState>()
 );
 
-/// The in-place writes of [`Arena::init`], each to the field it names.
+/// The in-place writes of [`Arena::init`], each through the permission
+/// to the field it writes.
 impl Arena {
     /// `index` and `decay_ns`.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_head(this: *mut Arena, index: u16, decay_ns: u64) {
+    unsafe fn put_head(
+        this: *mut Arena,
+        index: u16,
+        decay_ns: u64,
+        _parts: Tracked<&mut ArenaParts>,
+    ) {
         // SAFETY: the fields of `init`'s storage.
         unsafe {
-            ptr::write(field_at(this, A_INDEX), index);
-            ptr::write(field_at(this, A_DECAY_NS), AtomicU64::new(decay_ns));
+            ptr_mut_write(field_at(this, A_INDEX), Tracked::assume_new(), index);
+            ptr_mut_write(
+                field_at(this, A_DECAY_NS),
+                Tracked::assume_new(),
+                AtomicU64::new(decay_ns),
+            );
         }
     }
 
-    /// Storage for the slab set table from `meta`, null when it is full.
+    /// Storage for the slab set table from `meta`, null when it is full,
+    /// with the permission to its bytes and the claim [`Meta::free`] takes
+    /// back with them.
+    // The tracked result is part of the signature.
+    #[allow(clippy::type_complexity)]
     #[inline(always)]
-    fn alloc_sets(meta: &Meta) -> *mut SetTable {
-        meta.alloc(core::alloc::Layout::new::<SetTable>()) as *mut SetTable
+    fn alloc_sets(meta: &Meta) -> (*mut SetTable, Tracked<(PointsToRaw, MetaClaim)>) {
+        let (p, blk) = meta.alloc_raw(core::alloc::Layout::new::<SetTable>());
+        (p as *mut SetTable, blk)
     }
 
-    /// `sets_ptr` into the field.
+    /// `sets_ptr` into the field and its frozen permission `perm` into
+    /// `sets_perm`.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_sets(this: *mut Arena, sets_ptr: *mut SetTable) {
-        // SAFETY: the field of `init`'s storage.
+    unsafe fn put_sets(
+        this: *mut Arena,
+        sets_ptr: *mut SetTable,
+        perm: Tracked<&'static PointsTo<SetTable>>,
+        _sets: Tracked<&mut PointsTo<*const SetTable>>,
+        _sets_perm: Tracked<&mut PointsTo<Tracked<&'static PointsTo<SetTable>>>>,
+    ) {
+        // SAFETY: the fields of `init`'s storage.
         unsafe {
-            ptr::write(field_at(this, A_SETS), sets_ptr as *const SetTable);
+            ptr_mut_write(
+                field_at(this, A_SETS),
+                Tracked::assume_new(),
+                sets_ptr as *const SetTable,
+            );
+            ptr_mut_write(field_at(this, A_SETS_PERM), Tracked::assume_new(), perm);
         }
     }
 
-    /// `cs` into `classes[c]`.
+    /// `cs` into `classes[c]`, through the permission `slot` to it.
     ///
     /// # Safety
     /// `this` is `init`'s storage and `c < NCLASSES`.
     #[inline(always)]
-    unsafe fn put_class(this: *mut Arena, c: usize, cs: ClassState) {
+    unsafe fn put_class(
+        this: *mut Arena,
+        c: usize,
+        cs: ClassState,
+        _slot: Tracked<&mut PointsTo<ClassState>>,
+    ) {
         // SAFETY: element `c` of the field.
         unsafe {
             let classes: *mut ClassState = field_at(this, A_CLASSES);
-            ptr::write(elem_at(classes, c, NCLASSES), cs);
+            ptr_mut_write(elem_at(classes, c, NCLASSES), Tracked::assume_new(), cs);
         }
     }
 
@@ -235,37 +301,56 @@ impl Arena {
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_tail(this: *mut Arena, index: u16) {
+    unsafe fn put_tail(this: *mut Arena, index: u16, _parts: Tracked<&mut ArenaParts>) {
         // SAFETY: the fields of `init`'s storage.
         unsafe {
-            ptr::write(field_at(this, A_LARGE), AtomicU64::new(0));
-            ptr::write(
+            ptr_mut_write(
+                field_at(this, A_LARGE),
+                Tracked::assume_new(),
+                AtomicU64::new(0),
+            );
+            ptr_mut_write(
                 field_at(this, A_STATS),
+                Tracked::assume_new(),
                 Lock::new(ArenaStats::empty(index), Ghost::assume_new()),
             );
-            ptr::write(field_at(this, A_LAST_EXIT_PURGE), AtomicU64::new(0));
+            ptr_mut_write(
+                field_at(this, A_LAST_EXIT_PURGE),
+                Tracked::assume_new(),
+                AtomicU64::new(0),
+            );
         }
     }
 
-    /// Initialise `this` in place as arena `index` over `tables`. Returns
-    /// `false` if the metadata region cannot hold the slab sets, leaving
-    /// `this` unusable until a later `init` over the same storage
-    /// succeeds.
+    /// Initialise `this` in place as arena `index` over the class tables
+    /// from `tables` on (their frozen permissions in `tperms`), through the
+    /// permission to its storage in `slot`, which is handed back
+    /// initialised. Returns `false` if the metadata region cannot hold the
+    /// slab sets, leaving `this` unusable until a later `init` over the
+    /// same storage succeeds: `slot` gets the storage back uninitialised,
+    /// and the slab set table object, when the sets themselves did not
+    /// fit, goes back to `meta`.
     ///
     /// # Safety
     /// `this` must point to writable storage for an `Arena` that nothing
-    /// else reads until this returns `true`; `tables` must outlive it.
+    /// else reads until this returns `true`; the `NCLASSES` tables from
+    /// `tables` must outlive it.
+    // The ghost arguments are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn init(
         this: *mut Arena,
         meta: &Meta,
         regions: &Regions,
-        tables: &[SlabTable; NCLASSES],
+        tables: *mut SlabTable,
+        _tperms: Tracked<&'static Map<int, PointsTo<SlabTable>>>,
         index: u16,
         decay_ns: u64,
+        _slot: Tracked<&mut Held<Arena>>,
+        ord: Tracked<&mut LockOrder>,
     ) -> bool {
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            Arena::put_head(this, index, decay_ns);
+            Arena::put_head(this, index, decay_ns, Tracked::assume_new());
             #[cfg(test)]
             if FAIL_INIT
                 .compare_exchange(
@@ -278,52 +363,61 @@ impl Arena {
             {
                 return false;
             }
-            let sets_ptr = Arena::alloc_sets(meta);
+            let (sets_ptr, _blk) = Arena::alloc_sets(meta);
             if sets_ptr.is_null() {
                 return false;
             }
-            match SetTable::new(
+            let sets_perm = match SetTable::new(
                 meta,
                 regions,
                 Ghost::assume_new(),
                 Tracked::assume_new(),
-                Tracked::assume_new(),
+                ord,
             ) {
                 Some(sets) => {
-                    ptr::write(sets_ptr, sets);
-                    Arena::put_sets(this, sets_ptr);
+                    ptr_mut_write(sets_ptr, Tracked::assume_new(), sets);
+                    let perm: Tracked<&'static PointsTo<SetTable>> = Tracked::assume_new();
+                    Arena::put_sets(
+                        this,
+                        sets_ptr,
+                        perm,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
+                    perm
                 }
                 None => {
                     meta.free(
                         sets_ptr as *mut u8,
                         core::alloc::Layout::new::<SetTable>(),
-                        vstd::prelude::Tracked::assume_new(),
+                        Tracked::assume_new(),
                     );
                     return false;
                 }
-            }
-            for (c, table) in tables.iter().enumerate() {
+            };
+            for c in 0..NCLASSES {
+                let tp = elem_at(tables, c, NCLASSES);
                 match ClassState::new(
                     meta,
                     regions,
-                    core::ptr::from_ref(table).cast_mut(),
+                    tp,
                     Tracked::assume_new(),
                     Ghost::assume_new(),
                     Ghost::assume_new(),
                     index,
                     sets_ptr,
-                    Tracked::assume_new(),
+                    sets_perm,
                     Tracked::assume_new(),
                 ) {
                     Some(cs) => {
-                        Arena::put_class(this, c, cs);
+                        Arena::put_class(this, c, cs, Tracked::assume_new());
                     }
                     None => {
                         return false;
                     }
                 }
             }
-            Arena::put_tail(this, index);
+            Arena::put_tail(this, index, Tracked::assume_new());
         }
         true
     }
@@ -360,17 +454,13 @@ impl Arena {
     }
 
     /// The statistics stored by the last `epoch`.
-    pub fn stats(&self) -> ArenaStats {
-        *self
-            .stats
-            .lock(Tracked::assume_new(), Tracked::assume_new())
+    pub fn stats(&self, ord: Tracked<&mut LockOrder>) -> ArenaStats {
+        *self.stats.lock(ord, Tracked::assume_new())
     }
 
     /// Store the statistics of an `epoch`.
-    pub fn store_stats(&self, s: &ArenaStats) {
-        *self
-            .stats
-            .lock(Tracked::assume_new(), Tracked::assume_new()) = *s;
+    pub fn store_stats(&self, s: &ArenaStats, ord: Tracked<&mut LockOrder>) {
+        *self.stats.lock(ord, Tracked::assume_new()) = *s;
     }
 
     /// The statistics lock, for the fork handlers (a leaf: no lock is
@@ -383,8 +473,8 @@ impl Arena {
     #[inline]
     /// The arena's slab set table (fork handlers, tests).
     pub fn sets(&self) -> &SetTable {
-        // SAFETY: written by `init` to a live, never-freed metadata object.
-        unsafe { &*self.sets }
+        // Written by `init` to a live, never-freed metadata object.
+        ptr_ref(self.sets, Tracked::assume_new())
     }
 
     pub fn index(&self) -> u16 {
@@ -819,9 +909,12 @@ impl Arenas {
                 p,
                 &shared.meta,
                 &shared.regions,
-                shared.tables(),
+                shared.tables().as_ptr().cast_mut(),
+                Tracked::assume_new(),
                 index,
                 shared.default_decay_ns(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
             )
         };
         if !ok {
