@@ -524,27 +524,51 @@ fn thp_nohuge_ranges(_m: &[usize]) -> Result<Reading, c_int> {
 }
 
 fn stats_allocated(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(stats::snapshot(shared()).totals.allocated))
+    Ok(Size(
+        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
+            .totals
+            .allocated,
+    ))
 }
 
 fn stats_active(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(stats::snapshot(shared()).totals.active))
+    Ok(Size(
+        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
+            .totals
+            .active,
+    ))
 }
 
 fn stats_metadata(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(stats::snapshot(shared()).totals.metadata))
+    Ok(Size(
+        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
+            .totals
+            .metadata,
+    ))
 }
 
 fn stats_resident(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(stats::snapshot(shared()).totals.resident))
+    Ok(Size(
+        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
+            .totals
+            .resident,
+    ))
 }
 
 fn stats_mapped(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(stats::snapshot(shared()).totals.mapped))
+    Ok(Size(
+        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
+            .totals
+            .mapped,
+    ))
 }
 
 fn stats_retained(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(stats::snapshot(shared()).totals.retained))
+    Ok(Size(
+        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
+            .totals
+            .retained,
+    ))
 }
 
 fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int> {
@@ -1307,12 +1331,20 @@ fn ms_of(ns: u64) -> isize {
 /// range check, which they fail).
 fn arena_stats(shared: &Shared, i: usize) -> Result<ArenaStats, c_int> {
     if i == ARENAS_ALL as usize {
-        return Ok(stats::arena_stats_all(shared));
+        return Ok(stats::arena_stats_all(
+            shared,
+            vstd::prelude::Tracked::assume_new(),
+        ));
     }
     if i == ARENAS_DESTROYED {
         return Ok(ArenaStats::empty(ARENAS_DESTROYED as u16));
     }
-    stats::arena_stats(shared, arena_index(i)?).ok_or(ENOENT)
+    stats::arena_stats(
+        shared,
+        arena_index(i)?,
+        vstd::prelude::Tracked::assume_new(),
+    )
+    .ok_or(ENOENT)
 }
 
 /// Return the calling thread's cached slots before a purge so the purge
@@ -1360,8 +1392,8 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             // A write reads back the number its own refresh stored, not a
             // later writer's.
             let e = match io.write::<u64>()? {
-                Some(_) => stats::epoch(shared),
-                None => stats::snapshot(shared).epoch,
+                Some(_) => stats::epoch(shared, vstd::prelude::Tracked::assume_new()),
+                None => stats::snapshot(shared, vstd::prelude::Tracked::assume_new()).epoch,
             };
             io.read(e)
         }
