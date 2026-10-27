@@ -120,7 +120,7 @@ fn calloc_flag_is_honest_about_memory() {
 fn thread_exit_flushes_and_frees_the_heap() {
     let s = shared();
     let c = class_of(64).unwrap();
-    let meta_before = s.meta.stats().allocated;
+    let meta_before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
     let leaked = Arc::new(AtomicUsize::new(0));
     let mut handles = Vec::new();
     for t in 0..16u8 {
@@ -150,7 +150,10 @@ fn thread_exit_flushes_and_frees_the_heap() {
     }
     assert_eq!(live(s, c), leaked.load(Ordering::Relaxed));
     // Heaps and caches went back to the metadata allocator.
-    assert_eq!(s.meta.stats().allocated, meta_before);
+    assert_eq!(
+        s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
+        meta_before
+    );
     assert_eq!(
         s.arena0.classes[c].desc(0).state(),
         crate::slab::State::Active
@@ -162,13 +165,16 @@ fn creating_and_exited_sentinels_are_served_directly() {
     let s = shared();
     std::thread::spawn(move || {
         let c = class_of(32).unwrap();
-        let meta_before = s.meta.stats().allocated;
+        let meta_before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
         // Inside heap creation: no heap, served from the slab bitmap.
         tls::set(TLS_CREATING as *mut c_void);
         let p = alloc(s, c);
         assert!(!p.is_null());
         assert_eq!(tls::get() as usize, TLS_CREATING);
-        assert_eq!(s.meta.stats().allocated, meta_before);
+        assert_eq!(
+            s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
+            meta_before
+        );
         assert_eq!(live(s, c), 1);
         free(s, p);
         assert_eq!(live(s, c), 0);
@@ -184,7 +190,7 @@ fn creating_and_exited_sentinels_are_served_directly() {
         } else {
             assert_eq!(raw, h);
         }
-        assert!(s.meta.stats().allocated > meta_before);
+        assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated > meta_before);
         free(s, p);
         // Run the destructor by hand (glibc clears the key's value
         // before calling it, so do the same to avoid a second run at
@@ -198,7 +204,10 @@ fn creating_and_exited_sentinels_are_served_directly() {
         );
         unsafe { heap_destructor(h) };
         assert_eq!(tls::get() as usize, TLS_EXITED);
-        assert_eq!(s.meta.stats().allocated, meta_before);
+        assert_eq!(
+            s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
+            meta_before
+        );
         assert_eq!(live(s, c), 0);
         // The slab went `Empty` when everything was released, so its
         // memory is dirty and the flag must say so.
@@ -206,7 +215,10 @@ fn creating_and_exited_sentinels_are_served_directly() {
         assert!(!q.is_null());
         assert!(!zero || is_zero(q, 32));
         assert_eq!(tls::get() as usize, TLS_EXITED);
-        assert_eq!(s.meta.stats().allocated, meta_before);
+        assert_eq!(
+            s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
+            meta_before
+        );
         free(s, q);
         assert_eq!(live(s, c), 0);
         // The key holds no value now, so thread exit runs no destructor.
@@ -228,7 +240,7 @@ fn key_registration_failure_is_served_directly() {
     let p = s.alloc_direct(&s.arena0, c).0 as usize;
     assert_ne!(p, 0);
     std::thread::spawn(move || {
-        let meta_before = s.meta.stats().allocated;
+        let meta_before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
         let bound_before = s.arenas.bound(0);
         assert!(tls::get().is_null());
         FAIL_SETSPECIFIC.store(crate::sys::gettid() as u32, Ordering::Relaxed);
@@ -236,7 +248,10 @@ fn key_registration_failure_is_served_directly() {
         assert_eq!(FAIL_SETSPECIFIC.load(Ordering::Relaxed), 0, "set never ran");
         assert!(tls::get().is_null(), "no heap, and none half-registered");
         assert_eq!(live(s, c), 0);
-        assert_eq!(s.meta.stats().allocated, meta_before);
+        assert_eq!(
+            s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
+            meta_before
+        );
         assert_eq!(s.arenas.bound(0), bound_before);
         // The next call registers a heap as usual.
         let q = alloc(s, c);

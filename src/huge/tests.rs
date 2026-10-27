@@ -957,7 +957,7 @@ fn table_grows_and_lookups_survive_backward_shift() {
     }
     h.audit();
     assert_eq!(h.stats(Tracked::assume_new()).empty, 1);
-    let ms = env.meta.stats();
+    let ms = env.meta.stats(vstd::prelude::Tracked::assume_new());
     assert!(
         ms.allocated < h.stats(Tracked::assume_new()).table_cap * 16 + 4096,
         "descriptors leaked: {ms:?}"

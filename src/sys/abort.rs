@@ -166,6 +166,19 @@ pub fn abort_fmt(args: fmt::Arguments<'_>) -> !
     die()
 }
 
+/// [`abort_fmt`] at an integrity check: a test of allocator state that no
+/// verified invariant constrains failed ([`super::integrity_aborts`]).
+/// Trusted: the call, which needs [`super::may_abort`], under the narrower
+/// [`super::may_abort_corrupt`].
+#[verifier::external_body]
+#[inline(always)]
+pub fn abort_integrity(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort_corrupt(),
+{
+    abort_fmt(args)
+}
+
 /// [`abort_fmt`] at a resource failure: a resource the allocator needs
 /// failed it (a system call that returns an error, such as an `madvise`,
 /// or metadata the reservation or the kernel cannot supply), which nothing

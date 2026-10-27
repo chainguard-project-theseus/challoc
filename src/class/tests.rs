@@ -1241,7 +1241,7 @@ fn works_for_every_class() {
             1
         );
     }
-    let s = env.meta.stats();
+    let s = env.meta.stats(vstd::prelude::Tracked::assume_new());
     // The tables are reservations or, at this layout's sizes, eager carves.
     assert!(s.reserved + s.eager > 0 && s.committed > 0);
 }
@@ -1296,12 +1296,19 @@ fn metadata_exhaustion_is_reported_not_fatal() {
 #[test]
 fn set_table_of_many_classes_touches_one_page_per_slab_size() {
     let env = Env::new();
-    let before = env.meta.stats().committed;
+    let before = env
+        .meta
+        .stats(vstd::prelude::Tracked::assume_new())
+        .committed;
     let sets = env.sets();
     // The set tables commit nothing of their own; the ones small enough to
     // be carved from the object side (`meta::EAGER_MAX`) bring at most
     // their alignment padding and one chunk's rounding into the count.
-    let slack = env.meta.stats().committed - before;
+    let slack = env
+        .meta
+        .stats(vstd::prelude::Tracked::assume_new())
+        .committed
+        - before;
     assert!(
         slack < crate::meta::COMMIT_CHUNK + SET_GROUPS * env.regions.page_size(),
         "reservation only, slack {slack}"
@@ -1939,7 +1946,12 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     // Descriptors live in the metadata region and got committed too.
     let d = cs.desc(0) as *const SlabDesc as usize;
     assert!(env.regions.in_meta(d));
-    assert!(env.meta.stats().committed >= page_size());
+    assert!(
+        env.meta
+            .stats(vstd::prelude::Tracked::assume_new())
+            .committed
+            >= page_size()
+    );
 }
 
 /// `check_zero` on a healthy heap: every
