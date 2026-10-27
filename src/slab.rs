@@ -319,6 +319,24 @@ impl SlabDesc {
         State::from_u8(self.state.load(Ordering::Relaxed))
     }
 
+    /// [`state`](SlabDesc::state) read by a holder of `m`, the permissions
+    /// a class lock value holds.
+    #[inline(always)]
+    pub fn state_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> State {
+        State::from_u8(self.state_byte_held(Ghost(k), Tracked(m)))
+    }
+
+    /// The `state` byte, as [`state_held`](SlabDesc::state_held). No
+    /// contract: while `set_state` and `set_dirty_at` take any
+    /// permission, the one under `k` need not record this byte.
+    // `k` and `m` name the permission its holder has (ghost).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> u8 {
+        self.state.load(Ordering::Relaxed)
+    }
+
     /// Only ever called with the class lock held, which holds `_p`, the
     /// descriptor's permission (ghost).
     #[inline]

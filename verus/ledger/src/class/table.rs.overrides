@@ -7,3 +7,6 @@ axiom_fresh_words	allocator invariant	none (assumption)
 # Zero bytes as plain atomics, valid for every bit pattern.
 axiom_zero_desc	raw pointer (internal)	none (assumption)
 axiom_zero_owner	raw pointer (internal)	none (assumption)
+# Temporary seam, provable in Verus: the descriptor borrow, until its
+# proof shows the permission is the descriptor's.
+SlabTable::desc_unchecked	raw pointer (internal)	Verus
