@@ -133,17 +133,22 @@ pub struct ClassStats {
     pub nonfull: usize,
 }
 
-} // verus!
-
 impl ClassStats {
     /// Slabs that can hold live slots (neither `Empty` nor `Purged`):
     /// jemalloc's `curslabs`, and the slab count behind `active` and the
     /// compaction gate's capacity.
     #[inline]
-    pub fn curslabs(&self) -> usize {
+    pub fn curslabs(&self) -> (r: usize)
+        requires
+            self.empty + self.purged <= self.committed,
+        ensures
+            r == self.committed - self.empty - self.purged,
+    {
         self.committed - self.empty - self.purged
     }
 }
+
+} // verus!
 
 /// xorshift64 step for `slot_randomize` (the state must not be zero; the
 /// heap seeds it so). Not a cryptographic generator: the key randomises
@@ -645,6 +650,24 @@ mod tptr {
             }
             vstd::raw_ptr::ptr_ref(self.p, self.perm)
         }
+
+        /// The first class's table and the permissions to all of them
+        /// ([`tables_ok`]), from the pointer to it.
+        #[cfg_attr(not(test), allow(dead_code))]
+        #[inline(always)]
+        pub(super) fn tables(&self) -> (r: (*mut SlabTable, Tracked<&'static Map<int, PointsTo<SlabTable>>>))
+            requires
+                index_of(*self) == 0,
+            ensures
+                tables_ok(*r.1@, r.0),
+        {
+            proof {
+                use_type_invariant(self);
+                crate::vspec::ptr::axiom_ptr_add_addr(self.base@, 0);
+                assert(self.p@ == self.base@@);
+            }
+            (self.p, Tracked(*self.tables.borrow()))
+        }
     }
 
     } // verus!
@@ -1012,6 +1035,35 @@ impl Inner {
         self.purged.ensure(meta, page, slab, Tracked(ord))
     }
 
+    /// The idle slabs are among the committed ones, which are among the
+    /// class's.
+    proof fn lemma_counts(&self)
+        requires
+            self.inv(),
+        ensures
+            self.stats.empty + self.stats.purged <= self.stats.committed <= self.nbits(),
+    {
+        broadcast use vstd::set_lib::range_set_properties;
+        let e = self.empty.map@;
+        let p = self.purged.map@;
+        let c = self.committed@;
+        assert(e.disjoint(p)) by {
+            assert forall|s: nat| !(e.contains(s) && p.contains(s)) by {
+                assert(self.slab_ok(s));
+            }
+        }
+        assert((e + p).subset_of(c)) by {
+            assert forall|s: nat| #[trigger] (e + p).contains(s) implies c.contains(s) by {
+                assert(self.slab_ok(s));
+            }
+        }
+        vstd::set_lib::lemma_set_disjoint_lens(e, p);
+        vstd::set_lib::lemma_len_subset(e + p, c);
+        let r = vstd::set::Set::<nat>::range(0, self.nbits());
+        assert(c.subset_of(r));
+        vstd::set_lib::lemma_len_subset(c, r);
+    }
+
     fn set_partial(&mut self, slab: usize)
         requires
             old(self).inv(),
@@ -1212,6 +1264,51 @@ impl ClassState {
     }
 }
 
+/// A class region's slots all have numbers in a `usize`: `nslabs` slabs of
+/// at most `1 << lg_slab / size` slots each.
+proof fn lemma_slots_fit(t: SlabTable)
+    requires
+        t.inv(),
+    ensures
+        (t.spec_nslabs() as int) * (class_table()[t.spec_class() as int].nslots as int) <= usize::MAX,
+        (t.spec_nslabs() as int) * ((1usize << class_table()[t.spec_class() as int].lg_slab) as int) <= usize::MAX,
+        (t.spec_nslabs() as int) * ((1usize << class_table()[t.spec_class() as int].lg_slab) as int) <= 0x200_0000_0000_0000,
+        (t.spec_nslabs() as int) * (class_table()[t.spec_class() as int].nslots as int) <= 0x200_0000_0000_0000,
+{
+    broadcast use {table::lemma_spec_nslabs, table::lemma_spec_class};
+    let c = class_table()[t.spec_class() as int];
+    let lg = c.lg_slab as usize;
+    let n = t.spec_nslabs();
+    let m = (usize::MAX - t.base) as usize;
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, m);
+    let m57 = ((1usize << 57usize) - t.base) as usize;
+    assert((1usize << 57usize) == 0x200_0000_0000_0000usize) by (bit_vector);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, m57);
+    let l8 = c.lg_slab;
+    assert((1usize << l8) == (1usize << lg)) by (bit_vector)
+        requires lg == l8 as usize;
+    let p = (1usize << lg) as int;
+    assert(n as int * p <= usize::MAX);
+    assert((c.nslots as int) <= p) by (nonlinear_arith)
+        requires (c.nslots as int) * (c.size as int) <= p, c.size >= 1;
+    assert((n as int) * (c.nslots as int) <= (n as int) * p) by (nonlinear_arith)
+        requires (c.nslots as int) <= p, n >= 0;
+}
+
+/// [`Inner::lemma_counts`] wherever the invariant is known: the idle
+/// counts are at most the committed count, which is at most the class's
+/// slab count.
+broadcast proof fn lemma_inv_counts(v: Inner)
+    ensures
+        #[trigger] v.inv() ==> v.stats.empty + v.stats.purged <= v.stats.committed <= v.nbits(),
+{
+    if v.inv() {
+        v.lemma_counts();
+    }
+}
+
 /// Values that agree as [`Inner::same_sets`] says agree on the invariant
 /// ([`Inner::lemma_same_sets`]), wherever [`Inner::same_sets`] is known.
 broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
@@ -1395,6 +1492,26 @@ impl ClassState {
         self.table.get()
     }
 
+    /// Every class's table and the frozen permissions to them
+    /// ([`tables_ok`]), from class 0's state: what
+    /// [`Arena::init`](crate::arena::Arena::init) builds another arena's
+    /// states over.
+    // Only the tests call it in ordinary builds: `Arenas::build` passes
+    // `Shared::tables` and assumed permissions.
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[inline(always)]
+    pub(crate) fn tables(&self) -> (r: (*mut SlabTable, Tracked<&'static Map<int, PointsTo<SlabTable>>>))
+        requires
+            self.spec_class() == 0,
+        ensures
+            tables_ok(*r.1@, r.0),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        self.table.tables()
+    }
+
     #[inline]
     pub fn class(&self) -> (r: &'static Class)
         ensures
@@ -1442,17 +1559,20 @@ impl ClassState {
     pub fn is_guard_slab(&self, slab: usize) -> bool {
         self.table().is_guard_slab(slab)
     }
+
+    /// [`SlabTable::committed_slabs`]: slabs of every arena.
+    #[inline]
+    pub fn committed_slabs(&self) -> (r: usize)
+        ensures
+            r <= self.spec_nslabs(),
+    {
+        self.table().committed_slabs()
+    }
 }
 
 } // verus!
 
 impl ClassState {
-    /// [`SlabTable::committed_slabs`]: slabs of every arena.
-    #[inline]
-    pub fn committed_slabs(&self) -> usize {
-        self.table().committed_slabs()
-    }
-
     /// [`SlabTable::desc`].
     #[inline]
     pub fn desc(&self, slab: usize) -> &SlabDesc {
@@ -2209,7 +2329,11 @@ impl ClassState {
             self.on_live_zero(slab);
         }
     }
+}
 
+verus! {
+
+impl ClassState {
     /// This arena's slab counts; `guards` is the class-wide count from the
     /// table, since guard slabs belong to no arena.
     #[cfg(test)]
@@ -2229,13 +2353,35 @@ impl ClassState {
     /// is counted (`clamped`); the count cannot tell the legitimate
     /// transient from a bookkeeping bug, the reader of the bins table can.
     /// `ord` is the caller's lock-order token (ghost) for the class lock.
-    pub fn bin_stats(&self, ord: Tracked<&mut LockOrder>) -> (ClassStats, usize) {
+    pub fn bin_stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (ClassStats, usize))
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            r.0.empty + r.0.purged <= r.0.committed <= self.spec_nslabs(),
+            (r.0.committed as int) * (class_table()[self.spec_class() as int].nslots as int) <= usize::MAX,
+            // The clamp: no more slots out than the live-capable slabs hold.
+            (r.1 as int) <= ((r.0.committed - r.0.empty - r.0.purged) as int) * (class_table()[self.spec_class() as int].nslots as int),
+            *final(ord) == *old(ord),
+    {
+        broadcast use {axiom_class_lock, axiom_class_lock_inv, lemma_inv_counts};
+        proof {
+            use_type_invariant(self);
+            lemma_slots_fit(table_at(self.table));
+        }
         let released = self.released.load(Ordering::Relaxed);
-        let g = self.inner.lock(ord, Tracked::assume_new());
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut s = g.stats;
         let claimed = self.claimed.load(Ordering::Relaxed);
         drop(g);
-        s.guards = self.table().guards(Tracked::assume_new());
+        s.guards = self.table().guards(Tracked(ord));
+        proof {
+            let k = class_table()[self.spec_class() as int].nslots as int;
+            assert((s.committed as int) * k <= (self.spec_nslabs() as int) * k) by (nonlinear_arith)
+                requires s.committed <= self.spec_nslabs(), k >= 0;
+            assert(((s.committed - s.empty - s.purged) as int) * k <= (s.committed as int) * k) by (nonlinear_arith)
+                requires s.empty + s.purged <= s.committed, k >= 0;
+        }
         let cap = s.curslabs() * self.class().nslots();
         let out = claimed.wrapping_sub(released) as usize;
         let curregs = if out > cap {
@@ -2318,12 +2464,37 @@ impl ClassState {
     /// cache and no program, and those slabs' total slot count. The
     /// compaction gate in `heap/` reads this; one lock hold. `ord` is the
     /// caller's lock-order token (ghost) for the class lock.
-    pub fn holes(&self, ord: Tracked<&mut LockOrder>) -> (usize, usize) {
-        let (s, curregs) = self.bin_stats(ord);
+    pub fn holes(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (usize, usize))
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+            r.0 <= r.1,
+            (r.1 as int) <= (self.spec_nslabs() as int) * (class_table()[self.spec_class() as int].nslots as int),
+            // Room for `holes * COMPACT_MIN_RATIO` (32) in `heap::compact`.
+            r.1 <= usize::MAX / 32,
+    {
+        proof {
+            use_type_invariant(self);
+            lemma_slots_fit(table_at(self.table));
+        }
+        let (s, curregs) = self.bin_stats(Tracked(ord));
+        proof {
+            let k = class_table()[self.spec_class() as int].nslots as int;
+            assert(((s.committed - s.empty - s.purged) as int) * k <= (s.committed as int) * k) by (nonlinear_arith)
+                requires s.empty + s.purged <= s.committed, k >= 0;
+            assert((s.committed as int) * k <= (self.spec_nslabs() as int) * k) by (nonlinear_arith)
+                requires s.committed <= self.spec_nslabs(), k >= 0;
+        }
         let capacity = s.curslabs() * self.class().nslots();
         (capacity.saturating_sub(curregs), capacity)
     }
+}
 
+} // verus!
+
+impl ClassState {
     /// Tests: whether `slab` is in this arena's partial, empty and purged
     /// sets.
     #[cfg(test)]

@@ -318,6 +318,15 @@ pub(crate) fn live(s: &Shared, c: usize) -> usize {
         .sum()
 }
 
+/// Class 0's state hands out the pointer to the first class table, the one
+/// `Shared::tables` returns (`ClassState::tables`).
+#[test]
+fn class_zero_state_points_at_the_class_tables() {
+    let s = shared();
+    let (tables, _) = s.arena0.classes[0].tables();
+    assert_eq!(tables.cast_const(), s.tables().as_ptr());
+}
+
 #[test]
 fn default_caps_follow_the_design_table() {
     for (c, cls) in CLASSES.iter().enumerate() {
