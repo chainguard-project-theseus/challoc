@@ -9,13 +9,10 @@ file.
 |---|---|---|---|---|
 | `axiom_c...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_class_lock` | axiom | allocator invariant | none (assumption) | trusted |
-| `ClassSt...locked` | external_body | raw pointer (internal) | Verus | trusted |
-| `ClassSt...locked` | external_body | raw pointer (internal) | Verus | trusted |
-| `ClassSt...locked` | external_body | raw pointer (internal) | Verus | trusted |
 
 ## `axiom_class_lock_inv`
 
-src/class/mod.rs:1210. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1249. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -29,7 +26,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ## `axiom_class_lock`
 
-src/class/mod.rs:1221. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1260. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with, and the value's arena, table and owned-slab record's location are the ones `new` set.
@@ -40,37 +37,4 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
         #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
             && v.oauth@.id() == init.oauth@.id()),
 ;
-```
-
-## `ClassState::state_locked`
-
-src/class/mod.rs:1483. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> The state of slab `slab`'s descriptor `d`, read under this arena's class lock (`g`) through the permission `g` holds for it.
-
-```rust
-fn state_locked(&self, g: &Inner, d: &SlabDesc, slab: usize) -> State
-```
-
-## `ClassState::set_state_locked`
-
-src/class/mod.rs:1495. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> `SlabDesc::set_state` on slab `slab`'s descriptor `d` under this arena's class lock (`g`), through the permission `g` holds for it.
-
-```rust
-fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, slab: usize, s: State)
-```
-
-## `ClassState::set_dirty_locked`
-
-src/class/mod.rs:1509. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> `SlabDesc::set_dirty_at` on slab `slab`'s descriptor `d` under this arena's class lock (`g`), through the permission `g` holds for it.
-
-```rust
-fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, slab: usize, ns: u64)
 ```
