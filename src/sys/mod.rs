@@ -642,14 +642,25 @@ mod linux {
         decode(unsafe { raw::syscall2(nr::MUNMAP, addr, len) }).map(|_| ())
     }
 
-    /// `mprotect(2)`.
+    /// The kernel answered an `mprotect(addr, len, prot)` with success:
+    /// the word `raw::syscall3` returned for it is not an error. It says
+    /// only that; `vspec::unbacked::committed` says what a successful
+    /// `PROT_READ | PROT_WRITE` one does to the bytes.
+    pub closed spec fn mprotect_ok(addr: usize, len: usize, prot: i32) -> bool {
+        exists|w: usize| #[trigger] raw::returned3(nr::MPROTECT, addr, len, prot as isize as usize, w) && w <= usize::MAX - MAX_ERRNO
+    }
+
+    /// `mprotect(2)`. On `Ok` the kernel answered with success
+    /// ([`mprotect_ok`]).
     ///
     /// # Safety
     /// Removing permissions from memory in use faults later accesses.
     #[inline]
-    pub unsafe fn mprotect(addr: usize, len: usize, prot: i32) -> Result<(), Errno>
+    pub unsafe fn mprotect(addr: usize, len: usize, prot: i32) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
+        ensures
+            r is Ok ==> mprotect_ok(addr, len, prot),
     {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MPROTECT, addr, len, prot as isize as usize) })

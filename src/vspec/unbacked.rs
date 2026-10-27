@@ -16,14 +16,16 @@ use vstd::raw_ptr::PointsToRaw;
 
 verus! {
 
-/// The byte at `a` is committed: `mprotect` made a range holding it
-/// readable and writable (`meta::commit_range` returned `Ok`, the one
-/// place that states it). Uninterpreted. It stays true because
-/// `commit_range` is private to `meta` and commits only metadata-region
-/// bytes, nothing makes a committed metadata byte `PROT_NONE` again, and
-/// the metadata region is unmapped only by tests (`Regions::release`, the
-/// test region's `Drop`).
-pub uninterp spec fn committed(a: int) -> bool;
+/// The byte at `a` was committed: the kernel answered with success an
+/// `mprotect` that made a range holding it readable and writable
+/// (`sys::mprotect_ok` with `meta::PROT_RW`). Timeless: every such call
+/// establishes it, including the class tables' and the huge allocator's
+/// commits of bytes they later make `PROT_NONE` again. What it means for
+/// an [`Unbacked`] token's bytes is [`Unbacked::commit`]'s kernel fact,
+/// whose premise covers the timelessness.
+pub open spec fn committed(a: int) -> bool {
+    exists|addr: usize, len: usize| #[trigger] crate::sys::mprotect_ok(addr, len, crate::meta::PROT_RW) && addr <= a < addr + len
+}
 
 /// Every byte of `[a, a + len)` is [`committed`].
 pub open spec fn committed_range(a: int, len: int) -> bool {
@@ -91,13 +93,19 @@ impl Unbacked {
 
     /// The permission to the bytes, once they are committed
     /// ([`committed_range`]), and the token that they read as zero.
-    /// Trusted for two kernel facts. `mprotect(2)`: the range
-    /// is ordinary memory this process owns, addressed through
+    /// Trusted for two kernel facts, with one premise. `mprotect(2)`: a
+    /// range a successful `PROT_READ | PROT_WRITE` call covered
+    /// ([`committed`]) is ordinary memory this process owns, addressed through
     /// integer-to-pointer casts. And `mmap(2)`: a private anonymous mapping
     /// reads as zero until it is first written, which this range never
     /// was, because an `Unbacked` token stands for bytes that have been
     /// `PROT_NONE` since their reservation mapped them (no permission to
-    /// them exists before this call consumes the token). Its callers:
+    /// them exists before this call consumes the token). The premise:
+    /// nothing has made the token's bytes `PROT_NONE` or unmapped them
+    /// since that call. `Unbacked` tokens exist only for the metadata
+    /// region (`meta::Meta::owning`, from `Regions::reserve_owning`), whose
+    /// committed bytes nothing downgrades and which only tests unmap
+    /// (`Regions::release`, the test region's `Drop`). Its callers:
     /// `meta::Inner::commit_bump_to`, after its successful commit of
     /// `[committed, want)`, for the part past the deferred tables; and
     /// `meta::Inner::reserve_committed`'s two paths, for the table they

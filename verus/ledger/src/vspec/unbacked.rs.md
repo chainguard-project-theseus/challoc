@@ -12,7 +12,7 @@ file.
 
 ## `Unbacked::commit`
 
-src/vspec/unbacked.rs:107. Kind: external_body proof. Category: platform/kernel fact.
+src/vspec/unbacked.rs:115. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes, once they are committed ([`committed_range`]), and the token that they read as zero.
@@ -31,7 +31,7 @@ pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
 
 ## `Unbacked::into_lazy`
 
-src/vspec/unbacked.rs:140. Kind: external_body proof. Category: platform/kernel fact.
+src/vspec/unbacked.rs:148. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of a lazily committed table, still uncommitted, and the token that they read as zero.
