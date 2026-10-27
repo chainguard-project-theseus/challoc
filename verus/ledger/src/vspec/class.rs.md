@@ -8,10 +8,11 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_class_table_wf` | axiom | allocator invariant | Kani | trusted |
+| `mem::drop` | assume_spec | core library | Kani | trusted |
 
 ## `axiom_class_table_wf`
 
-src/vspec/class.rs:11. Kind: axiom. Category: allocator invariant.
+src/vspec/class.rs:12. Kind: axiom. Category: allocator invariant.
 Tool: Kani. Status: trusted.
 
 > Every entry of the class table is well formed and has its class's size: the facts [`crate::layout::ClassTable::table`] returns with every read, available to proofs that do not read the table themselves (same trust).
@@ -24,4 +25,15 @@ pub broadcast axiom fn axiom_class_table_wf(i: int)
         #[trigger] crate::layout::class_table()[i].wf(),
         crate::layout::class_table()[i].size == crate::layout::spec_class_size(i),
 ;
+```
+
+## `core::mem::drop`
+
+src/vspec/class.rs:21. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `core::mem::drop`: runs `x`'s destructor (for a lock guard, the unlock).
+
+```rust
+pub assume_specification<T>[ core::mem::drop ](x: T);
 ```
