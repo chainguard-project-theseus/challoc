@@ -1,10 +1,10 @@
 //! Purge and the decay walk over the `empty` set (design section 8).
 
 use super::abort::slab_count_underflow;
-use super::{ClassState, Inner};
+use super::{ClassState, Inner, SlabTable};
 use crate::lock::LockOrder;
 use crate::purge::{Batch, Curve, Left, Pieces, STEPS, Settle};
-use crate::slab::State;
+use crate::slab::{DescPerm, State};
 use vstd::prelude::*;
 
 /// The older of two `dirty_at` stamps where 0 means "none yet": the fold
@@ -22,13 +22,30 @@ verus! {
 /// `dirty_at` among the survivors (`min_nonzero`), and whether a discard
 /// failed. It settles the walk's batch ([`Settle`], through
 /// [`ClassState::settle`]).
+// Ghost fields that only the proofs read.
+#[allow(dead_code)]
 struct Tally {
     purged: usize,
     oldest: u64,
     failed: bool,
+    /// Ghost: the page group size.
+    spp: Ghost<usize>,
+    /// Ghost: the slab states of the lock value the walk started from.
+    states: Ghost<Map<nat, State>>,
+    /// Ghost: the end of the last page group pushed (0 before the first).
+    end: Ghost<usize>,
+    /// Ghost: the last slab visited (-1 before the first).
+    last: Ghost<int>,
+    /// Ghost: no member of the empty set lies above it.
+    top: Ghost<int>,
+    /// Ghost: the walk pushes every slab it visits.
+    full: Ghost<bool>,
+    /// Ghost: the empty count of the lock value the walk started from.
+    e0: Ghost<int>,
     /// Ghost: the bytes reported discarded ([`Settle::bytes`]).
-    #[allow(dead_code)]
     bytes: Ghost<int>,
+    /// Ghost: the slabs `Empty` in a range reported not discarded.
+    refused: Ghost<Set<nat>>,
 }
 
 impl Tally {
@@ -37,7 +54,20 @@ impl Tally {
         ensures
             t.bytes@ == 0,
     {
-        Tally { purged: 0, oldest: 0, failed: false, bytes: Ghost(0) }
+        Tally {
+            purged: 0,
+            oldest: 0,
+            failed: false,
+            spp: Ghost(0),
+            states: Ghost(Map::empty()),
+            end: Ghost(0),
+            last: Ghost(-1),
+            top: Ghost(0),
+            full: Ghost(false),
+            e0: Ghost(0),
+            bytes: Ghost(0),
+            refused: Ghost(Set::empty()),
+        }
     }
 }
 
@@ -71,10 +101,10 @@ impl Settle for Tally {
         addr: usize,
         len: usize,
         done: bool,
-        _piece: Ghost<int>,
-        _pend: Ghost<Pieces>,
+        piece: Ghost<int>,
+        pend: Ghost<Pieces>,
     ) {
-        o.settle(c, addr, len, done, self);
+        o.settle(c, addr, len, done, self, piece, pend);
     }
 }
 
@@ -144,7 +174,14 @@ impl ClassState {
             .lock(Tracked::assume_new(), Tracked::assume_new());
         let mut v = PurgeOlder {
             cutoff,
-            p: Purger::new(spp),
+            p: Purger::new(
+                spp,
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+            ),
         };
         self.walk_empty(&mut g, &mut v);
         v.p.batch.flush(&mut v.p.t, self, &mut g);
@@ -186,7 +223,17 @@ impl ClassState {
     /// [`push_group`]: ClassState::push_group
     // Verus needs a loop with an invariant.
     #[allow(clippy::while_let_loop)]
-    fn settle(&self, g: &mut Inner, addr: usize, len: usize, done: bool, t: &mut Tally) {
+    #[allow(clippy::too_many_arguments)]
+    fn settle(
+        &self,
+        g: &mut Inner,
+        addr: usize,
+        len: usize,
+        done: bool,
+        t: &mut Tally,
+        _piece: Ghost<int>,
+        _pend: Ghost<Pieces>,
+    ) {
         let slab_size = self.class().slab_size();
         let first = (addr - self.slab_addr(0)) / slab_size;
         t.failed |= !done;
@@ -252,6 +299,7 @@ impl ClassState {
             total: 0,
             weighted: 0,
             oldest: 0,
+            last: Ghost::assume_new(),
         };
         self.walk_empty(&mut g, &mut h);
         // The cgroup policy's retention cap (design 11): this walk's share
@@ -274,7 +322,14 @@ impl ClassState {
             curve,
             cut,
             keep,
-            p: Purger::new(spp),
+            p: Purger::new(
+                spp,
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+            ),
         };
         self.walk_empty(&mut g, &mut v);
         v.p.batch.flush(&mut v.p.t, self, &mut g);
@@ -301,7 +356,13 @@ impl ClassState {
     /// arena in one hold of both class locks.
     // Verus needs a loop with an invariant.
     #[allow(clippy::while_let_loop)]
-    fn page_group_is_idle(&self, slab: usize, spp: usize) -> bool {
+    fn page_group_is_idle(
+        &self,
+        _g: Ghost<Inner>,
+        _dperms: Tracked<&Map<nat, DescPerm>>,
+        slab: usize,
+        spp: usize,
+    ) -> bool {
         let first = slab & !(spp - 1);
         let committed = self.table().committed_slabs();
         let mut slabs = first..first + spp;
@@ -381,7 +442,14 @@ struct Purger {
 
 impl Purger {
     #[inline(always)]
-    fn new(spp: usize) -> Purger {
+    fn new(
+        spp: usize,
+        _t: Ghost<SlabTable>,
+        _states: Ghost<Map<nat, State>>,
+        _full: Ghost<bool>,
+        _e0: Ghost<int>,
+        _top: Ghost<int>,
+    ) -> Purger {
         Purger {
             spp,
             pushed: 0,
@@ -390,13 +458,20 @@ impl Purger {
         }
     }
 
+    /// `slab` is in a page group already pushed: the walk moves past it.
+    #[inline(always)]
+    fn skip(&mut self, _cs: &ClassState, _g: Ghost<Inner>, _slab: Ghost<int>) {}
+
     /// Visit `slab` (stamped `dirty_at`), at or past the page groups
     /// pushed: push its page group when `purge` holds and the group is
     /// idle, else keep it and fold its stamp into `oldest`.
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64, purge: bool) {
         let spp = self.spp;
-        if purge && (spp == 1 || cs.page_group_is_idle(slab, spp)) {
+        if purge
+            && (spp == 1
+                || cs.page_group_is_idle(Ghost::assume_new(), Tracked::assume_new(), slab, spp))
+        {
             self.pushed = cs.push_group(g, slab, spp, &mut self.batch, &mut self.t);
         } else {
             self.t.oldest = min_nonzero(self.t.oldest, dirty_at);
@@ -415,6 +490,7 @@ impl EmptyVisitor for PurgeOlder {
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64) {
         if slab < self.p.pushed {
+            self.p.skip(cs, Ghost::assume_new(), Ghost::assume_new());
             return;
         }
         let purge = dirty_at <= self.cutoff;
@@ -431,6 +507,9 @@ struct Histogram<'a> {
     total: usize,
     weighted: u64,
     oldest: u64,
+    /// Ghost: the last slab visited (-1 before the first).
+    #[allow(dead_code)]
+    last: Ghost<int>,
 }
 
 impl EmptyVisitor for Histogram<'_> {
@@ -458,6 +537,7 @@ impl EmptyVisitor for PurgeCurve<'_> {
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64) {
         if slab < self.p.pushed {
+            self.p.skip(cs, Ghost::assume_new(), Ghost::assume_new());
             return;
         }
         let step = self.curve.step(self.now, dirty_at);
