@@ -8,10 +8,11 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `set_errno` | external_body | FFI/syscall | none (assumption) | trusted |
+| `get_errno` | external_body | FFI/syscall | none (assumption) | trusted |
 
 ## `set_errno`
 
-src/vspec/errno.rs:35. Kind: external_body. Category: FFI/syscall.
+src/vspec/errno.rs:36. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: writes `e` to the calling thread's `errno` through libc's pointer.
@@ -20,4 +21,15 @@ Tool: none (assumption). Status: trusted.
 pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
     ensures
         final(errno).val() == e,
+```
+
+## `get_errno`
+
+src/vspec/errno.rs:50. Kind: external_body. Category: FFI/syscall.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: reads the calling thread's `errno` through libc's pointer.
+
+```rust
+pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> c_int
 ```

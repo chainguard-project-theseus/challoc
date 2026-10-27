@@ -11,6 +11,7 @@ use crate::lock::{Lock, LockHeld, LockOrder, Padded};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{RawLock, lock_inv, rank_state};
 use crate::sys::{self, Timespec};
+use crate::vspec::errno::{get_errno, set_errno};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
@@ -248,13 +249,9 @@ pub fn start(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
         g.exited = false;
         (g.stack, g.thread.take())
     };
-    // SAFETY: `__errno_location` returns this thread's `errno`.
-    let errno = unsafe { ::libc::__errno_location() };
-    let saved_errno = unsafe { *errno };
+    let saved_errno = get_errno(Tracked::assume_new());
     let (stack, thread) = create(shared, stack, previous, Tracked::assume_new());
-    // SAFETY: `errno` is this thread's `errno` slot (above), valid for
-    // the life of the thread.
-    unsafe { *errno = saved_errno };
+    set_errno(saved_errno, Tracked::assume_new());
     #[cfg(test)]
     if thread.is_some() {
         let hook = BEFORE_PUBLISH.lock().unwrap().take();
