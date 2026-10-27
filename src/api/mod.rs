@@ -162,7 +162,11 @@ pub axiom fn axiom_published() -> (tracked r: &'static Published)
 
 } // verus!
 
-/// Storage for a value built in place at init and immutable afterwards.
+/// Storage for a value built in place once: at init and immutable
+/// afterwards (`SHARED`), or completed and built at the feature line's
+/// first request ([`FEATURES`], [`FEATURE_LINE`], [`build_line`]). Read
+/// and written through its storage's pointer ([`shared_storage_ptr`],
+/// [`features_ptr`], [`line_ptr`]).
 struct Global<T>(UnsafeCell<MaybeUninit<T>>);
 
 // SAFETY: written exactly once, by the initialising thread before it
@@ -173,15 +177,6 @@ unsafe impl<T> Sync for Global<T> {}
 impl<T> Global<T> {
     const fn new() -> Self {
         Global(UnsafeCell::new(MaybeUninit::uninit()))
-    }
-
-    /// # Safety
-    /// The value must have been initialised and `READY` observed with an
-    /// acquire load on this thread.
-    #[inline(always)]
-    unsafe fn get(&self) -> &T {
-        // SAFETY: guaranteed by the caller.
-        unsafe { (*self.0.get()).assume_init_ref() }
     }
 }
 
@@ -212,12 +207,105 @@ fn fork_slot() -> &'static AtomicU64 {
     &FORK_SIGMASK
 }
 
+// The operations on `STATE` and `LINE_STATE`, one function each: every
+// access to the two atomics outside the tests is one of these.
+
+/// `STATE.load(Acquire)`.
+#[inline(always)]
+fn state_load() -> u32 {
+    STATE.load(Ordering::Acquire)
+}
+
+/// `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)`
+/// when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value
+/// it has otherwise, left unchanged.
+#[inline(always)]
+fn state_claim() -> Result<u32, u32> {
+    STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)
+}
+
+/// `STATE`'s `READY` store, `Release`.
+#[inline(always)]
+fn state_publish() {
+    STATE.store(READY, Ordering::Release);
+}
+
+/// An acquire load of `STATE`.
+#[inline(always)]
+fn load_state() -> u32 {
+    state_load()
+}
+
+/// `LINE_STATE.load(ordering)` (it panics for a `Release` or `AcqRel`
+/// ordering).
+#[inline(always)]
+fn line_load(ordering: Ordering) -> u8 {
+    LINE_STATE.load(ordering)
+}
+
+/// `LINE_STATE.compare_exchange(current, new, success, failure)`: `Ok`
+/// with the previous value, `current`, when it held it and now holds
+/// `new`; otherwise `Err` with the value it holds, unchanged (the strong
+/// form never fails spuriously). It panics for a `Release` or `AcqRel`
+/// failure ordering.
+#[inline(always)]
+fn line_compare_exchange(
+    current: u8,
+    new: u8,
+    success: Ordering,
+    failure: Ordering,
+) -> Result<u8, u8> {
+    LINE_STATE.compare_exchange(current, new, success, failure)
+}
+
+/// `LINE_STATE.store(v, ordering)` (it panics for an `Acquire` or
+/// `AcqRel` ordering).
+#[inline(always)]
+fn line_store(v: u8, ordering: Ordering) {
+    LINE_STATE.store(v, ordering)
+}
+
+/// An acquire load of `LINE_STATE`.
+#[inline(always)]
+fn load_line() -> u8 {
+    line_load(Ordering::Acquire)
+}
+
+/// `LINE_STATE`'s exchange from `LINE_UNBUILT` to `LINE_BUILDING`; the
+/// winner is the line's only writer until [`publish_line`].
+#[inline(always)]
+fn claim_line() -> Result<u8, u8> {
+    line_compare_exchange(
+        LINE_UNBUILT,
+        LINE_BUILDING,
+        Ordering::Acquire,
+        Ordering::Acquire,
+    )
+}
+
+/// The `LINE_READY` store, `Release`, after the build.
+#[inline(always)]
+fn publish_line() {
+    line_store(LINE_READY, Ordering::Release);
+}
+
+/// `SHARED` as a reference, through a permission to its storage (a
+/// placeholder here, unverified).
+///
+/// # Safety
+/// The value must have been initialised and `READY` observed with an
+/// acquire load on this thread.
+#[inline(always)]
+unsafe fn shared_ref() -> &'static Shared {
+    vstd::raw_ptr::ptr_ref(shared_storage_ptr(), Tracked::assume_new())
+}
+
 /// The process's allocator state, initialising it on first use.
 #[inline(always)]
 pub fn shared() -> &'static Shared {
-    if STATE.load(Ordering::Acquire) == READY {
+    if load_state() == READY {
         // SAFETY: `READY` was published after init with a release store.
-        return unsafe { SHARED.get() };
+        return unsafe { shared_ref() };
     }
     init_slow()
 }
@@ -227,9 +315,9 @@ pub fn shared() -> &'static Shared {
 /// ours and must not trigger init.
 #[inline(always)]
 pub fn shared_if_ready() -> Option<&'static Shared> {
-    if STATE.load(Ordering::Acquire) == READY {
+    if load_state() == READY {
         // SAFETY: as in `shared`.
-        Some(unsafe { SHARED.get() })
+        Some(unsafe { shared_ref() })
     } else {
         None
     }
@@ -294,32 +382,25 @@ fn feature_line_ready() {
 /// for the thread building it.
 #[inline(always)]
 fn line_ready() {
-    if LINE_STATE.load(Ordering::Acquire) == LINE_READY {
+    if load_line() == LINE_READY {
         return;
     }
-    if LINE_STATE
-        .compare_exchange(
-            LINE_UNBUILT,
-            LINE_BUILDING,
-            Ordering::Acquire,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
+    if claim_line().is_ok() {
         // SAFETY: `READY` observed; this thread won the exchange, so it is
         // the only writer, and readers wait for `LINE_READY`.
         unsafe { build_line() };
-        LINE_STATE.store(LINE_READY, Ordering::Release);
+        publish_line();
         return;
     }
-    while LINE_STATE.load(Ordering::Acquire) != LINE_READY {
+    while load_line() != LINE_READY {
         core::hint::spin_loop();
     }
 }
 
 /// Complete the probed features' THP size table if init skipped it and
 /// build the feature line into [`FEATURE_LINE`] (`feature_line_ready`'s
-/// build).
+/// build), through permissions to the two statics (placeholders here,
+/// unverified).
 ///
 /// # Safety
 /// `READY` observed, and the calling thread won `LINE_STATE`'s exchange
@@ -327,25 +408,24 @@ fn line_ready() {
 /// readers wait for `LINE_READY`.
 #[inline(always)]
 unsafe fn build_line() {
-    // SAFETY: guaranteed by the caller; init wrote the features.
-    let f = unsafe { &mut *features_ptr() };
+    // Init wrote the features.
+    let f = vstd::raw_ptr::ptr_mut_ref(features_ptr(), Tracked::assume_new());
     if !f.thp_sizes {
         f.thp = crate::sys::thp_host::probe(f.page_size);
         f.thp_sizes = true;
     }
-    // SAFETY: guaranteed by the caller.
-    unsafe { line_ptr().write(FeatureLine::build(f)) };
+    vstd::raw_ptr::ptr_mut_write(line_ptr(), Tracked::assume_new(), FeatureLine::build(f));
 }
 
 /// The feature line [`build_line`] wrote before the release store of
-/// `LINE_READY`.
+/// `LINE_READY`, through a permission to it (a placeholder here,
+/// unverified).
 ///
 /// # Safety
 /// `LINE_READY` observed.
 #[inline(always)]
 unsafe fn published_line() -> &'static FeatureLine {
-    // SAFETY: guaranteed by the caller.
-    unsafe { &*line_ptr() }
+    vstd::raw_ptr::ptr_ref(line_ptr(), Tracked::assume_new())
 }
 
 /// The feature line (`Features`'s `Display`, built at its first request).
@@ -376,14 +456,30 @@ pub fn is_ready() -> bool {
     STATE.load(Ordering::Acquire) == READY
 }
 
+/// `STATE`'s compare-exchange from `UNINIT` to `INITIALISING`, which
+/// [`init_slow`] runs: nothing stores `UNINIT` or `INITIALISING`
+/// elsewhere, so the exchange succeeds once per process.
+#[inline(always)]
+fn claim_init() -> Result<u32, u32> {
+    state_claim()
+}
+
+/// Publish `READY` once `init` is done.
+#[inline(always)]
+fn publish_ready() {
+    state_publish();
+}
+
+/// The first caller runs `init` and publishes `READY`; a concurrent one
+/// waits for it; the initialising thread re-entering aborts.
 #[cold]
 #[inline(never)]
 fn init_slow() -> &'static Shared {
-    match STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire) {
+    match claim_init() {
         Ok(_) => {
             INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
             init();
-            STATE.store(READY, Ordering::Release);
+            publish_ready();
         }
         Err(READY) => {}
         Err(_) => {
@@ -392,13 +488,13 @@ fn init_slow() -> &'static Shared {
             if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
                 sys::abort("allocation during initialisation (re-entrant init)");
             }
-            while STATE.load(Ordering::Acquire) != READY {
+            while load_state() != READY {
                 core::hint::spin_loop();
             }
         }
     }
     // SAFETY: `READY` observed (or published by this thread).
-    unsafe { SHARED.get() }
+    unsafe { shared_ref() }
 }
 
 /// Never-committed ranges of the reservations sealed at init (design 10
@@ -678,7 +774,7 @@ extern "C" fn fork_child() {
 /// finishes when the handler returns; a second build in between writes
 /// the same bytes.)
 fn feature_line_fork_child() {
-    let _ = LINE_STATE.compare_exchange(
+    let _ = line_compare_exchange(
         LINE_BUILDING,
         LINE_UNBUILT,
         Ordering::Relaxed,

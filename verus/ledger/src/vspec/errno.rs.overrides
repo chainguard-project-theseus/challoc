@@ -1,0 +1,2 @@
+# libc's errno pointer, which Verus does not model.
+set_errno	FFI/syscall	none (assumption)

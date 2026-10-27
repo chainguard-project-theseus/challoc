@@ -11,6 +11,7 @@ pub(crate) mod addr;
 pub(crate) mod atom;
 pub(crate) mod byte;
 pub(crate) mod check;
+pub(crate) mod errno;
 // Specifications only: Verus alone compiles these.
 #[cfg(verus_keep_ghost)]
 pub(crate) mod arena;
@@ -38,6 +39,7 @@ pub(crate) mod ptr;
 pub(crate) mod sys;
 
 pub(crate) mod once;
+pub(crate) mod print;
 pub(crate) mod slice;
 pub(crate) mod unbacked;
 pub(crate) mod word;
