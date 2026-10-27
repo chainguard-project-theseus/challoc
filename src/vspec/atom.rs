@@ -43,8 +43,10 @@
 //!   [`store_usize_at`]); vstd's own specification of
 //!   `AtomicUsize::store` would let verified code store without the
 //!   permission, and none does. The class lines' copies are made with
-//!   `AtomicUsize::new` today, so their permissions and invariants are
-//!   premises of `mirror_watermark`'s caller (`Shared::init`, unverified);
+//!   their permissions by [`new_usize`] (`SlabTable::new_mirror`), and
+//!   `mirror_watermark` makes each copy's invariant from its permission;
+//!   that the permission it is handed is its copy's, moved into place
+//!   with it, is a premise of its caller (`Shared::init`, unverified);
 //! - [`usize_id_at`] names the atomic a pointer points at, for as long as
 //!   it stays in place: the class lines' copies live in the `Shared`,
 //!   which never moves (`Shared::init`'s contract).
