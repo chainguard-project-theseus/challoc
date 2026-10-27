@@ -349,6 +349,12 @@ impl Set {
         &&& perm@.value().nslabs[g as int] == n
     }
 
+    /// The set is on its own table, which holds its claim to its
+    /// uncommitted pages ([`Lazy::claimed`]).
+    pub(crate) open spec fn own_claimed(&self) -> bool {
+        self.store matches Store::Own(l) && l.claimed()
+    }
+
     /// What [`Set::ensure`] needs to commit up to `slab` with `page`: for
     /// an own table, its claim to its uncommitted pages
     /// ([`Lazy::claimed`]), the process's page (`Lazy::ensure`), at most

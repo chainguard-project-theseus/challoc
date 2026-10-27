@@ -30,13 +30,13 @@ pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
         #[trigger] lock_inv(v) == v.wf(),
 ;
 
-/// Assumption: the huge state's ghost page count and page shift never
-/// change after `Huge::new` sets them. They are ghost fields set only in
-/// `Huge::new`: verified code never assigns them, and no unverified code
-/// does.
+/// Assumption: the huge state's ghost page count, page shift and `Meta`
+/// identity never change after `Huge::new` sets them. They are ghost
+/// fields set only in `Huge::new`: verified code never assigns them, and
+/// no unverified code does.
 pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: crate::huge::Inner)
     ensures
-        #[trigger] lock_frame(a, b) ==> a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg(),
+        #[trigger] lock_frame(a, b) ==> a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg() && a.spec_mid() == b.spec_mid(),
 ;
 
 } // verus!

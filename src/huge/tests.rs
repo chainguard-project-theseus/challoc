@@ -1487,3 +1487,70 @@ fn placeable_matches_alloc_on_an_empty_region() {
         }
     }
 }
+
+/// Every source file under `src/`, as `(path relative to src/, text)`.
+fn src_files(
+    dir: &std::path::Path,
+    rel: &str,
+    out: &mut Vec<(std::string::String, std::string::String)>,
+) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = std::string::String::from(path.file_name().unwrap().to_str().unwrap());
+        let sub = if rel.is_empty() {
+            name
+        } else {
+            std::format!("{rel}/{name}")
+        };
+        if path.is_dir() {
+            src_files(&path, &sub, out);
+        } else if sub.ends_with(".rs") {
+            out.push((sub, std::fs::read_to_string(&path).unwrap()));
+        }
+    }
+}
+
+/// The two zero axioms trust premises the proof does not state, so their
+/// one caller is pinned: they are defined in huge/mod.rs and used only in
+/// `zero_run`'s body (its four calls).
+#[test]
+fn zero_axioms_called_from_zero_run_only() {
+    let mut files = Vec::new();
+    src_files(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        "",
+        &mut files,
+    );
+    // Split, so this test's own source does not match.
+    let needles = [
+        ["axiom_fresh_anon", "_zero("].concat(),
+        ["axiom_discarded", "_zero("].concat(),
+    ];
+    let mut calls = 0;
+    for (rel, text) in &files {
+        let mut in_zero_run = false;
+        for line in text.lines() {
+            let t = line.trim();
+            if t.starts_with("proof fn zero_run(") {
+                in_zero_run = true;
+            } else if in_zero_run && line == "}" {
+                in_zero_run = false;
+            }
+            if t.starts_with("//") || !needles.iter().any(|n| t.contains(n.as_str())) {
+                continue;
+            }
+            if rel == "huge/mod.rs" && t.starts_with("axiom fn ") {
+                continue;
+            }
+            assert!(
+                rel == "huge/mod.rs" && in_zero_run,
+                "{rel}: got = a zero axiom used outside zero_run ({t}), want = zero_run only"
+            );
+            calls += 1;
+        }
+    }
+    assert_eq!(
+        calls, 4,
+        "zero axiom calls in zero_run: got = {calls}, want = 4"
+    );
+}

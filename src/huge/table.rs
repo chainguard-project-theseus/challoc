@@ -788,6 +788,7 @@ impl Table {
             old(self).lookup(key) is Some,
         ensures
             final(self).wf(),
+            final(self).spec_mid() == old(self).spec_mid(),
             final(self).spec_count() == old(self).spec_count() - 1,
             final(self).spec_cap() == old(self).spec_cap(),
             forall|k: usize|
@@ -831,6 +832,7 @@ impl Table {
                 shifting(self.view(), lg, i as int, j as int, v0, key),
             invariant
                 self.storage_ok(),
+                self.spec_mid() == old(self).spec_mid(),
                 self.lg_cap == lg,
                 self.count == old(self).count,
                 cap == self.spec_cap(),
