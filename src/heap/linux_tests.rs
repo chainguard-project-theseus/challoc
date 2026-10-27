@@ -623,7 +623,10 @@ fn changed_arena_child() {
         ..Config::DEFAULT
     })
     .build();
-    assert_eq!(s.arenas.create(s), Some(1));
+    assert_eq!(
+        s.arenas.create(s, vstd::prelude::Tracked::assume_new()),
+        Some(1)
+    );
     let c = class_of(64).unwrap();
     let (a0, a1) = (s.arena(0).unwrap(), s.arena(1).unwrap());
     // Two slots per slab: neither release empties its slab or reopens

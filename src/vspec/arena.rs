@@ -1,10 +1,14 @@
-//! Specifications for `arena.rs`: the invariant of its statistics lock.
+//! Specifications for `arena.rs`: `AtomicPtr::new`, and the invariant of
+//! its statistics lock.
 
 use vstd::prelude::*;
 
 use crate::lock::lock_inv;
 
 verus! {
+
+/// `AtomicPtr::new`, which vstd does not specify.
+pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut T) -> core::sync::atomic::Atomic<*mut T>;
 
 /// Assumption (`lock.rs`): the value of an arena's statistics lock keeps
 /// the accounting identities (`ArenaStats::identities`) while the lock is

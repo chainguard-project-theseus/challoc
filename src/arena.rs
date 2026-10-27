@@ -47,16 +47,26 @@ use crate::purge::Left;
 use crate::stats::ArenaStats;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::arena::axiom_arena_stats_lock_inv;
+use crate::vspec::count::CountPerm;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::count::{count_id, wrap32};
+use crate::vspec::entry::EntryPerm;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::entry::entry_id;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::zero::ZeroRaw;
+use vstd::atomic::{PAtomicPtr, PermissionPtr};
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_keep_ghost)]
 use vstd::layout::{align_of, size_of};
 use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_write, ptr_ref};
 use vstd::resource::Loc;
-use vstd::resource::map::GhostPersistentPointsTo;
+use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
+use vstd::resource::map::{GhostMapAuth, GhostPersistentPointsTo};
+use vstd::resource::set::{GhostSetAuth, GhostSingleton};
 
 verus! {
 
@@ -76,13 +86,13 @@ pub uninterp spec fn process_pub_loc() -> Loc;
 
 } // verus!
 
+verus! {
+
 /// Arena indices are the 12-bit `MALLOCX_ARENA` field; 4096 itself is
 /// `MALLCTL_ARENAS_ALL`.
 pub const MAX_ARENAS: usize = 4096;
 /// `MALLCTL_ARENAS_ALL`.
 pub const ARENAS_ALL: u32 = 4096;
-
-verus! {
 
 /// One arena (design 13.3): a class state per size class and a decay
 /// period. Built in place because the states borrow the tables.
@@ -1270,6 +1280,18 @@ impl Arena {
         self.index
     }
 
+    /// The class state of `class`: [`Arena::class`]'s result.
+    pub closed spec fn spec_class_state(&self, class: int) -> ClassState {
+        self.classes[class]
+    }
+
+    /// The locations of the arena's class states' owned-slab records
+    /// (`ClassState::spec_oloc`), by class: what the registry's record of
+    /// a published arena keeps of it ([`Published`]).
+    pub open spec fn spec_olocs(&self) -> Seq<Loc> {
+        Seq::new(NCLASSES as nat, |c: int| self.spec_class_state(c).spec_oloc())
+    }
+
     /// The decay period in nanoseconds (`purge::NEVER` when purging is off).
     #[inline]
     pub fn decay_ns(&self) -> u64 {
@@ -1384,6 +1406,8 @@ impl Arena {
     }
 }
 
+verus! {
+
 /// The arena registry. Index 0 is `Shared::arena0`; the rest live in the
 /// metadata region. `count` is the number of indices in use: the automatic
 /// ones from init plus every `create` since, published with a release
@@ -1391,23 +1415,219 @@ impl Arena {
 /// unmaterialised, see [`Arenas::get`]).
 ///
 /// `repr(C)`: the fields lie in declaration order, so the layout
-/// assertion below holds on every compiler.
+/// assertion below holds on every compiler. The three ghost fields at the
+/// end have no bytes.
 #[repr(C)]
 pub struct Arenas {
     table: [AtomicPtr<Arena>; MAX_ARENAS],
     /// Thread heaps currently homed on each arena (`assign`/`bind` add,
     /// `unbind` subtracts); explicit caches are not counted.
     bound: [AtomicU32; MAX_ARENAS],
-    /// Creation lock; the value is `count` for the writer.
-    lock: Lock<u32>,
+    /// Creation lock; the value is `count` for the writer ([`Created`]).
+    lock: Lock<Created>,
     /// The storage of a build whose `Arena::init` failed, for the next
     /// build to reuse: a reservation is never freed, so a retry under
     /// metadata pressure would otherwise strand one per attempt. Null
-    /// when there is none; only touched under `lock`.
-    spare: AtomicPtr<Arena>,
+    /// when there is none; only touched under `lock`, inside its
+    /// invariant ([`SparePred`]).
+    spare: PAtomicPtr<Arena>,
     count: AtomicU32,
     /// Indices below this are automatic (`narenas`).
     auto: u32,
+    /// Ghost (no bytes): the invariant of each bound count
+    /// ([`BoundPred`]), one per index.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    invs: Tracked<Map<int, BoundInv>>,
+    /// Ghost (no bytes): the registry's invariant, over `count` and the
+    /// table entries ([`NarenasPred`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    count_inv: Tracked<NarenasInv>,
+    /// Ghost (no bytes): the invariant of `spare` ([`SparePred`]), which
+    /// holds its permission and the permission to the storage it names.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    spare_inv: Tracked<SpareInv>,
+}
+
+/// The registry as the creation lock's holder knows it: the arena count
+/// and the published table entries, each the arena at its index (a
+/// [`GhostVar`] in the lock's value, [`Created`], agreeing with the
+/// [`GhostVarAuth`] in the registry's invariant, [`NarenasPred`]).
+pub type Snap = (u32, Map<int, Arena>);
+
+/// The creation lock's value: `n`, the next explicit index (the arena
+/// count, which only the holder writes), and, as a ghost, the holder's
+/// half of the registry's [`Snap`]. No bytes beyond `n`: `half` is
+/// zero-sized.
+pub struct Created {
+    n: u32,
+    /// Ghost (no bytes): the holder's half of the registry's snapshot.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    half: Tracked<GhostVar<Snap>>,
+}
+
+/// What the registry's invariant ([`NarenasPred`]) is about: the arena
+/// count ([`count_id`]), each table entry ([`entry_id`], by index), the
+/// location of the snapshot's halves ([`Snap`]), the location of the
+/// published arenas' persistent record ([`Published`]) and arena 0, which
+/// `Arenas::init` publishes.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct RegKey {
+    pub count: int,
+    pub entries: Seq<int>,
+    pub snap: Loc,
+    pub pubs: Loc,
+    pub arena0: Arena,
+}
+
+/// What the registry's invariant holds: the arena count's permission,
+/// each table entry's, the frozen permission of each published arena, the
+/// snapshot's authority, and the authority of the published arenas'
+/// record with each published arena's persistent entry, frozen.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct RegVal {
+    pub tracked count: CountPerm,
+    pub tracked entries: Map<int, EntryPerm<Arena>>,
+    pub tracked arenas: Map<int, &'static PointsTo<Arena>>,
+    pub tracked auth: GhostVarAuth<Snap>,
+    pub tracked pmap: GhostMapAuth<int, Seq<Loc>>,
+    pub tracked pubs: Map<int, &'static Published>,
+}
+
+/// Table entry `i` in the registry's invariant: its permission is for the
+/// entry the key names, and the entry is null when the snapshot has no
+/// arena at `i`, or else the address of that arena, initialised, at index
+/// `i`, whose frozen permission the invariant holds, with its frozen
+/// persistent record.
+pub open spec fn entry_ok(k: RegKey, v: RegVal, i: int) -> bool {
+    &&& v.entries.contains_key(i)
+    &&& v.entries[i].id() == k.entries[i]
+    &&& if v.entries[i].value()@.addr == 0 {
+        !v.auth@.1.contains_key(i)
+    } else {
+        &&& v.auth@.1.contains_key(i)
+        &&& v.arenas.contains_key(i)
+        &&& v.arenas[i].ptr() == v.entries[i].value()
+        &&& v.arenas[i].is_init()
+        &&& v.arenas[i].value() == v.auth@.1[i]
+        &&& v.auth@.1[i].spec_index() == i
+        &&& v.pubs.contains_key(i)
+        &&& v.pubs[i].id() == k.pubs
+        &&& v.pubs[i].key() == i
+        &&& v.pubs[i].value() == v.auth@.1[i].spec_olocs()
+    }
+}
+
+/// The registry's invariant (the arena count's), about the atomics and
+/// the snapshot location of the key: the count's permission's value is at
+/// most [`MAX_ARENAS`] and is the snapshot's count, and every table entry
+/// is [`entry_ok`]: null, or a built arena at its index, which the
+/// snapshot names; the snapshot names no index beyond the table. The
+/// record of published arenas is the snapshot's map, and has arena 0.
+pub struct NarenasPred;
+
+impl InvariantPredicate<RegKey, RegVal> for NarenasPred {
+    open spec fn inv(k: RegKey, v: RegVal) -> bool {
+        &&& v.count.id() == k.count
+        &&& v.count.value() <= MAX_ARENAS
+        &&& v.auth.id() == k.snap
+        &&& v.auth@.0 == v.count.value()
+        &&& forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] entry_ok(k, v, i)
+        &&& forall|i: int| #[trigger] v.auth@.1.contains_key(i) ==> 0 <= i < MAX_ARENAS
+        &&& v.pmap.id() == k.pubs
+        &&& v.pmap@.dom() == v.auth@.1.dom()
+        &&& v.auth@.1.contains_key(0)
+        &&& v.auth@.1[0] == k.arena0
+    }
+}
+
+/// The registry's invariant.
+pub type NarenasInv = AtomicInvariant<RegKey, RegVal, NarenasPred>;
+
+/// The permission to `spare`: vstd's `PermissionPtr`, which is not `Send`
+/// (it names a raw pointer type), in a value an atomic invariant can hold.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct SparePerm {
+    pub tracked p: PermissionPtr<Arena>,
+}
+
+/// What the spare storage's invariant holds: the permission to `spare`
+/// and, when `spare` is not null, the permission to the storage it names.
+pub type SpareVal = (SparePerm, Option<PointsTo<Arena>>);
+
+/// The spare storage's invariant, about the atomic whose identity is the
+/// key: null holds no storage, and any other value is the address of an
+/// uninitialised `Arena`'s storage, clear of the end of the address
+/// space, whose permission the invariant holds (what [`Arena::init`]
+/// needs).
+pub struct SparePred;
+
+impl InvariantPredicate<int, SpareVal> for SparePred {
+    open spec fn inv(k: int, v: SpareVal) -> bool {
+        &&& v.0.p.id() == k
+        &&& if v.0.p.value()@.addr == 0 {
+            v.1 is None
+        } else {
+            &&& v.1 matches Some(q)
+            &&& q.ptr() == v.0.p.value()
+            &&& q.is_uninit()
+            &&& q.ptr()@.addr + size_of::<Arena>() <= usize::MAX
+        }
+    }
+}
+
+/// The invariant of the spare storage.
+pub type SpareInv = AtomicInvariant<int, SpareVal, SparePred>;
+
+/// What one bound count is about: the counter ([`count_id`]) and the
+/// ghost set of the tickets of the heaps homed on its arena.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct BoundKey {
+    pub id: int,
+    pub loc: Loc,
+}
+
+/// A thread heap's ticket for arena `arena`: `tok` is one element of the
+/// arena's ticket set ([`BoundPred`]). Handed out by [`Arenas::assign`]
+/// and [`Arenas::bind`] and used up by [`Arenas::unbind`].
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct Homed {
+    pub tracked tok: GhostSingleton<int>,
+    pub ghost arena: int,
+}
+
+/// What a bound count's invariant holds: the counter's permission, the
+/// authority over the arena's tickets, and a bound above every ticket
+/// (where the next fresh one comes from).
+pub type BoundVal = (CountPerm, GhostSetAuth<int>, Ghost<int>);
+
+/// A bound count's invariant: the counter is the number of tickets out
+/// for its arena, as a `u32` wraps it ([`wrap32`]).
+pub struct BoundPred;
+
+impl InvariantPredicate<BoundKey, BoundVal> for BoundPred {
+    open spec fn inv(k: BoundKey, v: BoundVal) -> bool {
+        &&& v.0.id() == k.id
+        &&& v.1.id() == k.loc
+        &&& forall|t: int| #[trigger] v.1@.contains(t) ==> t < v.2@
+        &&& v.0.value() == wrap32(v.1@.len() as int)
+    }
+}
+
+/// The invariant of one bound count.
+pub type BoundInv = AtomicInvariant<BoundKey, BoundVal, BoundPred>;
+
+} // verus!
+
+// SAFETY: a ghost permission: it lives only in a `Tracked` (the
+// `spare_inv` invariant), which has no bytes at run time, so no pointer
+// moves between threads with it. Over two lines: `verus/seams.sh` reads a
+// one-line `impl ... {}` as an `impl` whose block opens at the next brace.
+#[rustfmt::skip]
+unsafe impl Send for SparePerm {
 }
 
 // Byte offsets of `Arenas`'s fields.
@@ -1417,21 +1637,28 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
+const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
+const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
+const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 // `Arenas`'s layout: each field at its offset, aligned, and ending by the
 // next one's offset, the last by the size. `Arenas` is `repr(C)`, which
 // fixes the fields in declaration order (the table, the bound counts,
-// `lock`, `spare`, `count`, `auto`), so this holds on every compiler.
+// `lock`, `spare`, `count`, `auto`, then the three zero-sized ghosts), so
+// this holds on every compiler.
 const _: () = assert!(
     fits::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(AR_TABLE, AR_BOUND)
         && MAX_ARENAS as u128 * core::mem::size_of::<AtomicPtr<Arena>>() as u128
             <= isize::MAX as u128
         && fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK)
         && MAX_ARENAS as u128 * core::mem::size_of::<AtomicU32>() as u128 <= isize::MAX as u128
-        && fits::<Arenas, Lock<u32>>(AR_LOCK, AR_SPARE)
-        && fits::<Arenas, AtomicPtr<Arena>>(AR_SPARE, AR_COUNT)
+        && fits::<Arenas, Lock<Created>>(AR_LOCK, AR_SPARE)
+        && fits::<Arenas, PAtomicPtr<Arena>>(AR_SPARE, AR_COUNT)
         && fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO)
-        && fits::<Arenas, u32>(AR_AUTO, core::mem::size_of::<Arenas>())
+        && fits::<Arenas, u32>(AR_AUTO, AR_INVS)
+        && fits::<Arenas, Tracked<Map<int, BoundInv>>>(AR_INVS, AR_COUNT_INV)
+        && fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, AR_SPARE_INV)
+        && fits::<Arenas, Tracked<SpareInv>>(AR_SPARE_INV, core::mem::size_of::<Arenas>())
         && core::mem::size_of::<Arenas>() <= isize::MAX as usize
 );
 
@@ -1447,6 +1674,24 @@ const _: () = assert!(
         && core::mem::align_of::<[AtomicU32; MAX_ARENAS]>() == core::mem::align_of::<AtomicU32>()
 );
 
+verus! {
+
+/// The permissions to the fields of an `Arenas` under construction but
+/// its two arrays, which are maps of their own, element by element.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+tracked struct ArenasParts {
+    tracked lock: PointsTo<Lock<Created>>,
+    tracked count: PointsTo<AtomicU32>,
+    tracked auto: PointsTo<u32>,
+    tracked invs: PointsTo<Tracked<Map<int, BoundInv>>>,
+    tracked count_inv: PointsTo<Tracked<NarenasInv>>,
+    tracked spare: PointsTo<PAtomicPtr<Arena>>,
+    tracked spare_inv: PointsTo<Tracked<SpareInv>>,
+}
+
+} // verus!
+
 /// `a < b` on `(u32, bool)`: lexicographic, `false < true`, as `core`
 /// documents tuple and `bool` order.
 #[inline(always)]
@@ -1454,105 +1699,182 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> bool {
     a < b
 }
 
-/// The in-place writes of [`Arenas::init`], each to the field it names.
+/// The in-place writes of [`Arenas::init`], each through the permission
+/// to the field it writes.
 impl Arenas {
-    /// `lock`, `count` and `auto`, from the automatic count `auto`.
+    /// `lock`, `count` and `auto`, from the automatic count `auto`; the
+    /// count's permission.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_head(this: *mut Arenas, auto: u32) {
+    unsafe fn put_head(
+        this: *mut Arenas,
+        auto: u32,
+        half: Tracked<GhostVar<Snap>>,
+        _parts: Tracked<&mut ArenasParts>,
+    ) -> Tracked<CountPerm> {
         // SAFETY: the fields of `init`'s storage.
         unsafe {
-            ptr::write(
+            ptr_mut_write(
                 field_at(this, AR_LOCK),
-                Lock::new(auto, Ghost::assume_new()),
+                Tracked::assume_new(),
+                Lock::new(Created { n: auto, half }, Ghost::assume_new()),
             );
-            ptr::write(field_at(this, AR_COUNT), AtomicU32::new(auto));
-            ptr::write(field_at(this, AR_AUTO), auto);
+            let (c, perm) = crate::vspec::count::new(auto);
+            ptr_mut_write(field_at(this, AR_COUNT), Tracked::assume_new(), c);
+            ptr_mut_write(field_at(this, AR_AUTO), Tracked::assume_new(), auto);
+            perm
         }
     }
 
-    /// Entry `i` of `table`, null, and of `bound`, a count of 0.
+    /// Entry `i` of `table`, null, and of `bound`, a new count of 0,
+    /// through the permissions to them; the count's and the entry's
+    /// permissions.
     ///
     /// # Safety
     /// `this` is `init`'s storage and `i < MAX_ARENAS`.
+    #[allow(clippy::type_complexity)]
     #[inline(always)]
-    unsafe fn put_entry(this: *mut Arenas, i: usize) {
+    unsafe fn put_entry(
+        this: *mut Arenas,
+        i: usize,
+        _t: Tracked<&mut PointsTo<AtomicPtr<Arena>>>,
+        _b: Tracked<&mut PointsTo<AtomicU32>>,
+    ) -> Tracked<(CountPerm, EntryPerm<Arena>)> {
         // SAFETY: element `i` of each array field.
         unsafe {
             let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
             let bound: *mut AtomicU32 = field_at(this, AR_BOUND);
-            ptr::write(
-                elem_at(table, i, MAX_ARENAS),
-                AtomicPtr::new(ptr::null_mut()),
-            );
-            ptr::write(elem_at(bound, i, MAX_ARENAS), AtomicU32::new(0));
+            let (e, _eperm) = crate::vspec::entry::new(ptr::null_mut());
+            ptr_mut_write(elem_at(table, i, MAX_ARENAS), Tracked::assume_new(), e);
+            let (c, _cperm) = crate::vspec::count::new(0);
+            ptr_mut_write(elem_at(bound, i, MAX_ARENAS), Tracked::assume_new(), c);
+            Tracked::assume_new()
         }
     }
 
-    /// `arena0` into entry 0 of `table`.
+    /// `arena0` into entry 0 of `table`, through the permission to it.
     ///
     /// # Safety
     /// `this` is `init`'s storage, its entry 0 written.
     #[inline(always)]
-    unsafe fn put_arena0(this: *mut Arenas, arena0: *mut Arena) {
+    unsafe fn put_arena0(
+        this: *mut Arenas,
+        arena0: *mut Arena,
+        _t: Tracked<&PointsTo<AtomicPtr<Arena>>>,
+        e: Tracked<&mut EntryPerm<Arena>>,
+    ) {
         // SAFETY: element 0 of the field, written by `put_entry`.
         unsafe {
             let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
-            (*elem_at(table, 0, MAX_ARENAS)).store(arena0, Ordering::Release);
+            crate::vspec::entry::store(
+                ptr_ref(elem_at(table, 0, MAX_ARENAS), Tracked::assume_new()),
+                arena0,
+                Ordering::Release,
+                e,
+            );
         }
     }
 
-    /// `spare`, null.
+    /// The ghost `invs` and `count_inv` (no bytes), through the
+    /// permissions to them.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_spare(this: *mut Arenas) {
-        // SAFETY: the field of `init`'s storage.
+    unsafe fn put_invs(
+        this: *mut Arenas,
+        invs: Tracked<Map<int, BoundInv>>,
+        count_inv: Tracked<NarenasInv>,
+        _parts: Tracked<&mut ArenasParts>,
+    ) {
+        // SAFETY: the fields of `init`'s storage.
         unsafe {
-            ptr::write(
-                field_at(this, AR_SPARE),
-                AtomicPtr::<Arena>::new(ptr::null_mut()),
+            ptr_mut_write(field_at(this, AR_INVS), Tracked::assume_new(), invs);
+            ptr_mut_write(
+                field_at(this, AR_COUNT_INV),
+                Tracked::assume_new(),
+                count_inv,
             );
         }
     }
+
+    /// `spare`, null, and the ghost `spare_inv` over it ([`SparePred`]:
+    /// no storage yet), through the permissions to them.
+    ///
+    /// # Safety
+    /// `this` is `init`'s storage.
+    #[inline(always)]
+    unsafe fn put_spare(this: *mut Arenas, _parts: Tracked<&mut ArenasParts>) {
+        let (spare, _sperm) = PAtomicPtr::<Arena>::new(ptr::null_mut());
+        let inv: Tracked<SpareInv> = Tracked::assume_new();
+        // SAFETY: the fields of `init`'s storage.
+        unsafe {
+            ptr_mut_write(field_at(this, AR_SPARE), Tracked::assume_new(), spare);
+            ptr_mut_write(field_at(this, AR_SPARE_INV), Tracked::assume_new(), inv);
+        }
+    }
+}
+
+/// The arena a non-null registry entry points at, read through `perm`,
+/// the frozen permission the registry's invariant holds for the entry.
+///
+/// # Safety
+/// None beyond the contract: `perm` is the permission to the arena at `p`.
+#[inline(always)]
+unsafe fn arena_ref(p: *mut Arena, perm: Tracked<&PointsTo<Arena>>, _index: Ghost<u16>) -> &Arena {
+    ptr_ref(p, perm)
 }
 
 /// An arena's bound count went below zero: a heap was unbound twice, or
 /// never bound.
 #[cold]
 #[inline(never)]
-#[track_caller]
 fn unbind_unbound(index: u16) -> ! {
-    panic!("arena {index}: unbinding a heap that was never bound")
+    crate::sys::abort_pending(format_args!(
+        "arena {index}: unbinding a heap that was never bound"
+    ))
 }
 
 impl Arenas {
     /// Initialise `this` in place with `arena0` at index 0 and `narenas`
-    /// automatic indices (clamped to `1..=MAX_ARENAS`).
+    /// automatic indices (clamped to `1..=MAX_ARENAS`), through the
+    /// permission to its storage in `slot`; `a0` is arena 0's frozen
+    /// permission.
     ///
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
     /// this returns; `arena0` must outlive the registry.
-    pub unsafe fn init(this: *mut Arenas, arena0: *mut Arena, narenas: u32) {
+    pub unsafe fn init(
+        this: *mut Arenas,
+        arena0: *mut Arena,
+        narenas: u32,
+        _a0: Tracked<&'static PointsTo<Arena>>,
+        _slot: Tracked<&mut Held<Arenas>>,
+    ) {
         let auto = narenas.clamp(1, MAX_ARENAS as u32);
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            Arenas::put_head(this, auto);
+            let _nperm = Arenas::put_head(this, auto, Tracked::assume_new(), Tracked::assume_new());
             for i in 0..MAX_ARENAS {
-                Arenas::put_entry(this, i);
+                let _ce = Arenas::put_entry(this, i, Tracked::assume_new(), Tracked::assume_new());
             }
-            Arenas::put_arena0(this, arena0);
-            Arenas::put_spare(this);
+            Arenas::put_arena0(this, arena0, Tracked::assume_new(), Tracked::assume_new());
+            Arenas::put_invs(
+                this,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
+            Arenas::put_spare(this, Tracked::assume_new());
         }
     }
 
     /// Number of arena indices in use (`arenas.narenas`).
     #[inline]
     pub fn count(&self) -> u32 {
-        self.count.load(Ordering::Acquire)
+        crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked::assume_new())
     }
 
     /// Number of automatic arenas (`opt.narenas` as applied).
@@ -1570,12 +1892,19 @@ impl Arenas {
     /// nothing else ever bound) never builds a second arena and never
     /// pays the `multi_arena` routing on `free`. The caller undoes the
     /// binding with [`Arenas::unbind`] when the heap is destroyed.
-    pub fn assign(&self) -> u16 {
+    ///
+    /// With the arena, the heap's ticket for it ([`Homed`]) and, as a
+    /// ghost, the `(bound, unbuilt)` keys read under the lock.
+    #[allow(clippy::type_complexity)]
+    pub fn assign(
+        &self,
+        ord: Tracked<&mut LockOrder>,
+    ) -> (u16, Tracked<Homed>, Ghost<Seq<(u32, bool)>>) {
         if self.auto == 1 {
-            self.count_in(0);
-            return 0;
+            let t = self.count_in(0);
+            return (0, t, Ghost::assume_new());
         }
-        let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
+        let _g = self.lock.lock(ord, Tracked::assume_new());
         let mut best = 0usize;
         // (bound heaps, not yet built): the smallest wins.
         let mut best_key = (u32::MAX, true);
@@ -1592,25 +1921,27 @@ impl Arenas {
                 }
             }
         }
-        self.count_in(best);
-        best as u16
+        let t = self.count_in(best);
+        (best as u16, t, Ghost::assume_new())
     }
 
     /// `bound[i]`.
     #[inline(always)]
     fn load_bound(&self, i: usize) -> u32 {
-        self.bound[i].load(Ordering::Relaxed)
+        crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked::assume_new())
     }
 
-    /// `bound[i] += 1`.
+    /// `bound[i] += 1`, with a fresh ticket for arena `i`.
     #[inline(always)]
-    fn count_in(&self, i: usize) {
-        self.bound[i].fetch_add(1, Ordering::Relaxed);
+    fn count_in(&self, i: usize) -> Tracked<Homed> {
+        crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());
+        Tracked::assume_new()
     }
 
     /// Count a thread heap as homed on `index` (`thread.arena` moving a
-    /// heap to an arena `assign` did not pick).
-    pub fn bind(&self, index: u16) {
+    /// heap to an arena `assign` did not pick): a fresh ticket for the
+    /// arena, which the heap keeps while it is counted there.
+    pub fn bind(&self, index: u16) -> Tracked<Homed> {
         self.count_in(index as usize)
     }
 
@@ -1620,26 +1951,40 @@ impl Arenas {
     /// (`Heap::try_rehome`). Two heaps racing for one idle arena cannot
     /// both win, so a rehome never stacks a second heap on an arena. A
     /// plain load first: a busy arena (xmalloc's live producers) is
-    /// refused without taking its counter's line exclusive.
-    pub fn try_bind_idle(&self, index: u16) -> bool {
+    /// refused without taking its counter's line exclusive. On success, a
+    /// fresh ticket for the arena, as `bind` gives; on failure a
+    /// placeholder the caller drops.
+    pub fn try_bind_idle(&self, index: u16) -> (bool, Tracked<Homed>) {
         let i = index as usize;
         if self.load_bound(i) != 0 {
-            return false;
+            return (false, Tracked::assume_new());
         }
         self.bind_if_idle(i)
     }
 
     /// `bound[i]`'s compare-and-swap from 0 to 1.
     #[inline(always)]
-    fn bind_if_idle(&self, i: usize) -> bool {
-        self.bound[i]
-            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
+    fn bind_if_idle(&self, i: usize) -> (bool, Tracked<Homed>) {
+        let r = crate::vspec::count::compare_exchange(
+            &self.bound[i],
+            0,
+            1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            Tracked::assume_new(),
+        );
+        (r.is_ok(), Tracked::assume_new())
     }
 
-    /// A thread heap homed on `index` is destroyed or moves away.
-    pub fn unbind(&self, index: u16) {
-        let prev = self.bound[index as usize].fetch_sub(1, Ordering::Relaxed);
+    /// A thread heap homed on `index` is destroyed or moves away: its
+    /// ticket `t` is used up.
+    pub fn unbind(&self, index: u16, _t: Tracked<Homed>) {
+        let prev = crate::vspec::count::fetch_sub(
+            &self.bound[index as usize],
+            1,
+            Ordering::Relaxed,
+            Tracked::assume_new(),
+        );
         if prev == 0 {
             unbind_unbound(index);
         }
@@ -1650,22 +1995,32 @@ impl Arenas {
         self.load_bound(index as usize)
     }
 
-    /// Arena `index` if it exists. An automatic index whose arena has not
-    /// been built yet is built here (cold); an explicit index that
-    /// `create` has not handed out, or one beyond the table, is `None`.
+    /// Arena `index` if it exists, with its persistent record
+    /// ([`Published`]). An automatic index whose arena has not been built
+    /// yet is built here (cold); an explicit index that `create` has not
+    /// handed out, or one beyond the table, is `None`.
+    #[allow(clippy::type_complexity)]
     #[inline]
-    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena> {
+    pub fn get<'a>(
+        &'a self,
+        shared: &'a Shared,
+        index: u16,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Option<(&'a Arena, Tracked<&'static Published>)> {
         let i = index as usize;
         if i >= MAX_ARENAS {
             return None;
         }
-        let p = self.table[i].load(Ordering::Acquire);
+        let p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked::assume_new());
         if !p.is_null() {
             // SAFETY: arenas are never freed; the pointer was published
             // after `Arena::init` with a release store.
-            return Some(unsafe { &*p });
+            return Some((
+                unsafe { arena_ref(p, Tracked::assume_new(), Ghost::assume_new()) },
+                Tracked::assume_new(),
+            ));
         }
-        self.materialise(shared, index)
+        self.materialise(shared, index, ord)
     }
 
     /// Arena `index` if it has been built, without building it.
@@ -1674,34 +2029,55 @@ impl Arenas {
         if i >= MAX_ARENAS {
             return None;
         }
-        let p = self.table[i].load(Ordering::Acquire);
+        let p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked::assume_new());
         // SAFETY: as in `get`.
         if p.is_null() {
             None
         } else {
-            Some(unsafe { &*p })
+            Some(unsafe { arena_ref(p, Tracked::assume_new(), Ghost::assume_new()) })
         }
     }
 
+    #[allow(clippy::type_complexity)]
     #[cold]
     #[inline(never)]
-    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena> {
+    fn materialise<'a>(
+        &'a self,
+        shared: &'a Shared,
+        index: u16,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Option<(&'a Arena, Tracked<&'static Published>)> {
         if index as u32 >= self.auto {
             return None;
         }
-        let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
-        let p = self.table[index as usize].load(Ordering::Acquire);
+        let _g = self.lock.lock(ord, Tracked::assume_new());
+        let p = crate::vspec::entry::load(
+            &self.table[index as usize],
+            Ordering::Acquire,
+            Tracked::assume_new(),
+        );
         if !p.is_null() {
             // SAFETY: as in `get`.
-            return Some(unsafe { &*p });
+            return Some((
+                unsafe { arena_ref(p, Tracked::assume_new(), Ghost::assume_new()) },
+                Tracked::assume_new(),
+            ));
         }
-        self.build(shared, index)
+        self.build(shared, index, Tracked::assume_new(), Tracked::assume_new())
     }
 
     /// Build arena `index` in the metadata region and publish it. Called
-    /// with the creation lock held and the slot known to be empty.
-    fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena> {
-        let mut p = self.spare.swap(ptr::null_mut(), Ordering::Relaxed);
+    /// with the creation lock held and the slot known to be empty; `h` is
+    /// the lock's half of the registry's snapshot.
+    #[allow(clippy::type_complexity)]
+    fn build<'a>(
+        &'a self,
+        shared: &'a Shared,
+        index: u16,
+        _h: Tracked<&mut GhostVar<Snap>>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Option<(&'a Arena, Tracked<&'static Published>)> {
+        let mut p = self.spare.swap(Tracked::assume_new(), ptr::null_mut());
         if p.is_null() {
             let layout = core::alloc::Layout::new::<Arena>();
             // Never freed, so a reservation (page aligned, which covers the
@@ -1725,30 +2101,48 @@ impl Arenas {
                 index,
                 shared.default_decay_ns(),
                 Tracked::assume_new(),
-                Tracked::assume_new(),
+                ord,
             )
         };
         if !ok {
-            self.spare.store(p, Ordering::Relaxed);
+            self.spare.store(Tracked::assume_new(), p);
             return None;
         }
         shared.set_multi_arena();
-        self.table[index as usize].store(p, Ordering::Release);
+        crate::vspec::entry::store(
+            &self.table[index as usize],
+            p,
+            Ordering::Release,
+            Tracked::assume_new(),
+        );
         // SAFETY: just built and published.
-        Some(unsafe { &*p })
+        Some((
+            unsafe { arena_ref(p, Tracked::assume_new(), Ghost::assume_new()) },
+            Tracked::assume_new(),
+        ))
     }
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
     /// metadata region is full.
-    pub fn create(&self, shared: &Shared) -> Option<u16> {
-        let mut g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
-        let index = *g;
+    pub fn create(&self, shared: &Shared, ord: Tracked<&mut LockOrder>) -> Option<u16> {
+        let mut g = self.lock.lock(ord, Tracked::assume_new());
+        let index = g.n;
         if index as usize >= MAX_ARENAS {
             return None;
         }
-        self.build(shared, index as u16)?;
-        *g = index + 1;
-        self.count.store(index + 1, Ordering::Release);
+        self.build(
+            shared,
+            index as u16,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )?;
+        g.n = index + 1;
+        crate::vspec::count::store(
+            &self.count,
+            index + 1,
+            Ordering::Release,
+            Tracked::assume_new(),
+        );
         Some(index as u16)
     }
 

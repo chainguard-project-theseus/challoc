@@ -2289,7 +2289,10 @@ fn free_flags_gain_the_route_bit_with_a_second_arena() {
     let s = shared();
     assert_eq!(s.free_flags(), s.push_flags());
     assert!(!s.multi_arena());
-    let _ = s.arenas.create(s).unwrap();
+    let _ = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     assert!(s.multi_arena());
     assert_eq!(s.free_flags(), s.push_flags() | FREE_ROUTE);
     assert_eq!(s.push_flags() & FREE_ROUTE, 0);
@@ -2426,10 +2429,16 @@ fn arena_registry_creates_and_looks_up() {
     assert!(s.arena(4095).is_none());
     assert!(s.arenas.get_existing(1).is_none());
     for _ in 0..8 {
-        assert_eq!(s.arenas.assign(), 0);
+        assert_eq!(s.arenas.assign(vstd::prelude::Tracked::assume_new()).0, 0);
     }
-    let a1 = s.arenas.create(s).unwrap();
-    let a2 = s.arenas.create(s).unwrap();
+    let a1 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
+    let a2 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     assert_eq!((a1, a2), (1, 2));
     assert_eq!(s.arenas.count(), 3);
     assert!(s.multi_arena());
@@ -2443,7 +2452,7 @@ fn arena_registry_creates_and_looks_up() {
     let seen: Vec<u16> = s.arenas.iter().map(|a| a.index()).collect();
     assert_eq!(seen, [0, 1, 2]);
     // Still assigning 0: created arenas are explicit, not automatic.
-    assert_eq!(s.arenas.assign(), 0);
+    assert_eq!(s.arenas.assign(vstd::prelude::Tracked::assume_new()).0, 0);
     a.set_decay_ms(-1);
     assert_eq!(a.decay_ns(), crate::purge::NEVER);
     assert_ne!(s.decay_ns(), crate::purge::NEVER);
@@ -2464,11 +2473,18 @@ fn failed_arena_build_leaves_its_storage_to_the_next() {
     // reservation right after its build, so `top` names it.
     s.meta.set_eager_for_test(false);
     crate::arena::FAIL_INIT.store(&s.meta as *const _ as usize, Relaxed);
-    assert!(s.arenas.create(s).is_none());
+    assert!(
+        s.arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .is_none()
+    );
     assert_eq!(crate::arena::FAIL_INIT.load(Relaxed), 0, "init never ran");
     let stranded = s.meta.top();
     assert_eq!(s.arenas.count(), 1);
-    let i = s.arenas.create(s).unwrap();
+    let i = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     assert_eq!(i, 1);
     assert_eq!(
         s.arena(i).unwrap() as *const Arena as usize,
@@ -2505,7 +2521,11 @@ fn failed_arena_init_frees_its_set_table_object() {
         )
         .unwrap();
     let allocated = s.meta.stats().allocated;
-    assert!(s.arenas.create(s).is_none());
+    assert!(
+        s.arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .is_none()
+    );
     assert_eq!(s.meta.stats().allocated, allocated);
 }
 
@@ -2543,7 +2563,11 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
     assert_eq!(t.heap().arena(), 1);
     assert_eq!(s.arenas.bound(1), 2);
     // Explicit arenas and explicit caches take no part in it.
-    assert!(s.arenas.create(s).is_some_and(|i| i == 3));
+    assert!(
+        s.arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .is_some_and(|i| i == 3)
+    );
     assert_eq!(s.arenas.bound(3), 0);
     let before = s.arenas.bound(0);
     let tc = s.tcaches.create(s, 0).unwrap();
@@ -2737,7 +2761,10 @@ fn rehoming_only_takes_an_idle_automatic_arena() {
     assert_eq!(w3.heap().arena(), 0);
     assert_eq!(s.arenas.bound(1), 0);
     // An explicit arena is never a target.
-    let x = s.arenas.create(s).unwrap();
+    let x = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     assert!(x as u32 >= s.arenas.auto());
     let w4 = TestHeap::new(s);
     let (e1, _) = w4.heap().alloc_in(s, x, c);
@@ -2936,8 +2963,14 @@ fn default_narenas_is_resolved_at_init() {
 #[allow(clippy::forget_non_drop)]
 fn foreign_frees_share_one_flush_only_cache_per_class() {
     let s = shared();
-    let a1 = s.arenas.create(s).unwrap();
-    let a2 = s.arenas.create(s).unwrap();
+    let a1 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
+    let a2 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
     assert_eq!(h.arena(), 0);
@@ -3090,7 +3123,10 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
 #[test]
 fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     let s = shared();
-    let a1 = s.arenas.create(s).unwrap();
+    let a1 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
     let c = class_with(64 * 1024);
@@ -3166,7 +3202,10 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
 #[test]
 fn set_arena_swaps_cache_arrays() {
     let s = shared();
-    let a1 = s.arenas.create(s).unwrap();
+    let a1 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
     let c = class_with(64);
@@ -3627,8 +3666,14 @@ fn an_others_node_for_the_home_arena_aborts() {
 #[allow(clippy::forget_non_drop)]
 fn others_nodes_iterate_newest_first_and_survive_freeing() {
     let s = shared();
-    let a1 = s.arenas.create(s).unwrap();
-    let a2 = s.arenas.create(s).unwrap();
+    let a1 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
+    let a2 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
     assert_eq!(Heap::nodes(h.others).count(), 0);
@@ -3949,7 +3994,10 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
 #[test]
 fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     let s = shared();
-    let a1 = s.arenas.create(s).unwrap();
+    let a1 = s
+        .arenas
+        .create(s, vstd::prelude::Tracked::assume_new())
+        .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
     let c = class_with(64);

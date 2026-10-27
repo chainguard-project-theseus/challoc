@@ -1217,7 +1217,10 @@ mod tests {
         .build();
         assert_eq!(s.arenas.count(), 2);
         assert!(s.arenas.get_existing(1).is_none());
-        assert_eq!(s.arenas.create(s), Some(2));
+        assert_eq!(
+            s.arenas.create(s, vstd::prelude::Tracked::assume_new()),
+            Some(2)
+        );
         assert_eq!(s.arenas.count(), 3);
         assert!(s.arenas.get_existing(1).is_none());
         let c32 = class_with(32);
@@ -1251,7 +1254,10 @@ mod tests {
     fn arenas_split_by_owner_and_sum_to_the_totals() {
         let s = shared();
         let t = TestHeap::new(s);
-        let a1 = s.arenas.create(s).expect("arena 1");
+        let a1 = s
+            .arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .expect("arena 1");
         assert_eq!(a1, 1);
         let c32 = class_with(32);
         let p0 = t.alloc(c32);
@@ -1321,7 +1327,9 @@ mod tests {
         // More arenas widen the window between the first arena's store
         // and the totals' store.
         for _ in 0..15 {
-            s.arenas.create(s).expect("arena");
+            s.arenas
+                .create(s, vstd::prelude::Tracked::assume_new())
+                .expect("arena");
         }
         let stop = AtomicBool::new(false);
         // Stops the traffic thread even if a round panics, so a failure
