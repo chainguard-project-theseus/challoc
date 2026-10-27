@@ -174,6 +174,19 @@ impl Shared {
     {
     }
 
+    /// The process statistics lock's rank in the lock order (`lock.rs`).
+    /// Trusted until `Shared::init` is verified, as [`Shared::lemma_wf`]
+    /// is (the same temporary seam): `init` is to create the lock at that
+    /// rank.
+    #[verifier::external_body]
+    pub(crate) proof fn lemma_ranks(&self)
+        requires
+            self.wf(),
+        ensures
+            self.stats.rank() == crate::lock::rank_stats(),
+    {
+    }
+
     /// A second arena is being built (`Arenas::build`).
     pub fn set_multi_arena(&self) {
         self.free_flags.fetch_or(FREE_ROUTE, Ordering::Relaxed);

@@ -11,7 +11,7 @@ file.
 
 ## `commit_range`
 
-src/meta.rs:1721. Kind: external_body. Category: platform/kernel fact.
+src/meta.rs:1720. Kind: external_body. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Make `[addr, addr + len)` readable and writable.
