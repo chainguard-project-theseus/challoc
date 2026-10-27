@@ -461,8 +461,9 @@ impl Model<'_> {
                 break;
             }
             let slab = &sh.slabs[s as usize];
-            // `if desc.live() >= cls.nslots() { if desc.state() == State::Active
-            // && self.table().bits(s).is_full() { g.clear_partial(s); } } else { take }`
+            // `if desc.live() >= cls.nslots() { if desc.state() == State::Active {
+            // let (full, seen) = bits(s).is_full_seen(); if full { g.clear_partial_full(s, seen); } } }
+            // else { take }`
             if slab.live >= NSLOTS {
                 if slab.state == St::Active && slab.bits == FULL {
                     sh.partial[a] &= !(1 << s);
