@@ -154,6 +154,15 @@ impl ZeroRaw {
         ZeroRaw { raw: PointsToRaw::empty(provenance) }
     }
 
+    /// The permission, giving up the zero token.
+    pub proof fn into_raw(tracked self) -> (tracked r: PointsToRaw)
+        ensures
+            r.dom() == self.dom(),
+            r.provenance() == self.provenance(),
+    {
+        self.raw
+    }
+
     /// The bytes in `range`, and the rest (`PointsToRaw::split`).
     pub proof fn split(tracked self, range: Set<int>) -> (tracked r: (ZeroRaw, ZeroRaw))
         requires

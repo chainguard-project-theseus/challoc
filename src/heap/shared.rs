@@ -147,6 +147,42 @@ impl Shared {
     pub open spec fn built_at(p: *mut Shared) -> Shared {
         shared_at(p)
     }
+
+    /// The value is as [`Shared::init`] built it and the allocator is
+    /// published (a `&Shared` is handed out only from `READY` on). Assumed
+    /// by every verified function that takes a `&Shared`. Uninterpreted, a
+    /// temporary seam with [`Shared::lemma_wf`]: `Shared::init`'s proof is
+    /// to define it (the value it builds, and `api::ready`) and to prove the
+    /// facts the lemma states.
+    pub uninterp spec fn wf(&self) -> bool;
+
+    /// [`Shared::wf`] unfolded, for the rest of the crate: the process's
+    /// well-formed, separated regions and its metadata allocator. Trusted
+    /// until `Shared::init` is verified (a temporary seam): the statement
+    /// is a subset of what that proof is to establish of the process's
+    /// `Shared`. The unit tests build further `Shared`s
+    /// (`testutil::TestShared`) and hand them to unverified code only.
+    #[verifier::external_body]
+    pub(crate) proof fn lemma_wf(&self)
+        requires
+            self.wf(),
+        ensures
+            self.regions.wf(),
+            self.regions == crate::layout::process_regions(),
+            self.regions.separated(),
+            self.meta.is_process(),
+    {
+    }
+
+    /// A second arena is being built (`Arenas::build`).
+    pub fn set_multi_arena(&self) {
+        self.free_flags.fetch_or(FREE_ROUTE, Ordering::Relaxed);
+    }
+
+    /// The decay period new arenas start with (`dirty_decay_ms`).
+    pub fn default_decay_ns(&self) -> u64 {
+        crate::purge::decay_ns_from_ms(self.config.dirty_decay_ms)
+    }
 }
 
 // The field types of `Shared` that are not specified yet, opaque to
@@ -1200,11 +1236,6 @@ impl Shared {
         self.push_flags & PUSH_ZERO != 0
     }
 
-    /// A second arena is being built (`Arenas::build`).
-    pub fn set_multi_arena(&self) {
-        self.free_flags.fetch_or(FREE_ROUTE, Ordering::Relaxed);
-    }
-
     /// The cache GC period the periodic tick uses: `gc_interval_ns`,
     /// or 0 (GC every tick) while the cgroup policy is in its immediate
     /// band (design 11).
@@ -1215,11 +1246,6 @@ impl Shared {
         } else {
             self.gc_interval_ns
         }
-    }
-
-    /// The decay period new arenas start with (`dirty_decay_ms`).
-    pub fn default_decay_ns(&self) -> u64 {
-        crate::purge::decay_ns_from_ms(self.config.dirty_decay_ms)
     }
 
     /// Arena 0's decay period in nanoseconds (`purge::NEVER` when purging

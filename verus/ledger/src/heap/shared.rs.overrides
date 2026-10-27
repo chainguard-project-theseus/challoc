@@ -6,3 +6,6 @@ ClassLine	allocator invariant	Verus
 Tcaches	allocator invariant	Verus
 crate::policy::Policy	allocator invariant	Verus
 ThreadKey	allocator invariant	Verus
+# Temporary seam (S1): Shared::init's proof (PR 37) defines Shared::built
+# and proves these consequences of it.
+Shared::lemma_wf	allocator invariant	Verus

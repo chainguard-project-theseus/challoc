@@ -65,7 +65,7 @@ axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)
 
 ## `Huge::check_zero`
 
-src/huge/mod.rs:4282. Kind: external_body. Category: allocator invariant.
+src/huge/mod.rs:4284. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The `check_zero` debug mode: the first and last word of every usable page of a run reported zero must read zero.
