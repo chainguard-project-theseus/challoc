@@ -1,2 +1,3 @@
-# A temporary seam while `ArenaStats` is opaque: true of any value.
-axiom_arena_stats_lock_inv	allocator invariant	Verus
+# A lock's invariant: its writers are `Arena::init` (`ArenaStats::empty`)
+# and `Arena::store_stats`; `stats::collect_into` is the unverified caller.
+axiom_arena_stats_lock_inv	allocator invariant	none (assumption)

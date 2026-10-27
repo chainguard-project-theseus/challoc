@@ -45,7 +45,9 @@ use crate::heap::Shared;
 use crate::huge::{GUARD_PAGES, HugeStats};
 use crate::layout::{NBINS, NCLASSES};
 use crate::meta::MetaStats;
-use vstd::prelude::{Tracked, verus};
+use vstd::prelude::*;
+
+verus! {
 
 /// One `(arena, class)` pair (`stats.arenas.<i>.bins.<j>.*` and the
 /// `arenas.bin.<j>.*` geometry).
@@ -105,7 +107,12 @@ impl BinStats {
     // Only the tests call it: the sums add the fields themselves.
     #[allow(dead_code)]
     #[inline]
-    pub fn allocated(&self) -> usize {
+    pub fn allocated(&self) -> (r: usize)
+        requires
+            self.curregs * self.size <= usize::MAX,
+        ensures
+            r == self.curregs * self.size,
+    {
         self.curregs * self.size
     }
 
@@ -113,7 +120,12 @@ impl BinStats {
     // Only the tests call it: the sums add the fields themselves.
     #[allow(dead_code)]
     #[inline]
-    pub fn active(&self) -> usize {
+    pub fn active(&self) -> (r: usize)
+        requires
+            self.curslabs * self.slab_size <= usize::MAX,
+        ensures
+            r == self.curslabs * self.slab_size,
+    {
         self.curslabs * self.slab_size
     }
 
@@ -121,7 +133,12 @@ impl BinStats {
     // Only the tests call it: the sums add the fields themselves.
     #[allow(dead_code)]
     #[inline]
-    pub fn dirty(&self) -> usize {
+    pub fn dirty(&self) -> (r: usize)
+        requires
+            self.empty_slabs * self.slab_size <= usize::MAX,
+        ensures
+            r == self.empty_slabs * self.slab_size,
+    {
         self.empty_slabs * self.slab_size
     }
 
@@ -129,8 +146,50 @@ impl BinStats {
     // Only the tests call it: the sums add the fields themselves.
     #[allow(dead_code)]
     #[inline]
-    pub fn retained(&self) -> usize {
+    pub fn retained(&self) -> (r: usize)
+        requires
+            self.purged_slabs * self.slab_size <= usize::MAX,
+        ensures
+            r == self.purged_slabs * self.slab_size,
+    {
         self.purged_slabs * self.slab_size
+    }
+
+    /// Every sum the merge of `o` into `self` forms fits its type.
+    pub open spec fn can_add(self, o: BinStats) -> bool {
+        &&& self.curregs + o.curregs <= usize::MAX
+        &&& self.curslabs + o.curslabs <= usize::MAX
+        &&& self.nonfull_slabs + o.nonfull_slabs <= usize::MAX
+        &&& self.empty_slabs + o.empty_slabs <= usize::MAX
+        &&& self.purged_slabs + o.purged_slabs <= usize::MAX
+        &&& self.refilled + o.refilled <= u64::MAX
+        &&& self.compacted + o.compacted <= u64::MAX
+        &&& self.compact_on + o.compact_on <= u64::MAX
+        &&& self.compact_off + o.compact_off <= u64::MAX
+        &&& self.gate_refill + o.gate_refill <= u64::MAX
+        &&& self.clamped + o.clamped <= u64::MAX
+    }
+
+    /// `o` merged into `self`: the geometry from `o` where `self` has none,
+    /// every count summed.
+    pub open spec fn merged(self, o: BinStats) -> BinStats {
+        let g = if self.size == 0 { o } else { self };
+        BinStats {
+            size: g.size,
+            nregs: g.nregs,
+            slab_size: g.slab_size,
+            curregs: (self.curregs + o.curregs) as usize,
+            curslabs: (self.curslabs + o.curslabs) as usize,
+            nonfull_slabs: (self.nonfull_slabs + o.nonfull_slabs) as usize,
+            empty_slabs: (self.empty_slabs + o.empty_slabs) as usize,
+            purged_slabs: (self.purged_slabs + o.purged_slabs) as usize,
+            refilled: (self.refilled + o.refilled) as u64,
+            compacted: (self.compacted + o.compacted) as u64,
+            compact_on: (self.compact_on + o.compact_on) as u64,
+            compact_off: (self.compact_off + o.compact_off) as u64,
+            gate_refill: (self.gate_refill + o.gate_refill) as u64,
+            clamped: (self.clamped + o.clamped) as u64,
+        }
     }
 }
 
@@ -182,24 +241,21 @@ pub struct ArenaStats {
     pub bins: [BinStats; NCLASSES],
 }
 
-verus! {
-
-/// `ArenaStats`, opaque: `arena.rs` keeps one in each arena's statistics
-/// lock and copies it in and out, and states nothing about its figures.
-#[verifier::external_type_specification]
-#[verifier::external_body]
-// Never constructed: it only names `ArenaStats` to the verifier.
-#[allow(dead_code)]
-pub struct ExArenaStats(ArenaStats);
-
-/// `ArenaStats::empty`: an `ArenaStats`; nothing is claimed about it.
-pub assume_specification[ ArenaStats::empty ](index: u16) -> ArenaStats;
-
-} // verus!
-
 impl ArenaStats {
     /// All zero, for `index`.
-    pub const fn empty(index: u16) -> ArenaStats {
+    pub const fn empty(index: u16) -> (r: ArenaStats)
+        ensures
+            r.index == index,
+            r.small_allocated == 0,
+            r.large_allocated == 0,
+            r.large_runs == 0,
+            r.small_active == 0 && r.small_dirty == 0 && r.small_retained == 0,
+            r.large_active == 0 && r.large_dirty == 0 && r.large_retained == 0,
+            r.huge_dirty == 0 && r.huge_retained == 0 && r.metadata == 0,
+            r.resident == 0 && r.retained == 0 && r.mapped == 0,
+            r.identities(),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c] == BinStats::EMPTY,
+    {
         ArenaStats {
             index,
             small_allocated: 0,
@@ -226,7 +282,12 @@ impl ArenaStats {
 
     /// `allocated` for this arena: small plus large.
     #[inline]
-    pub fn allocated(&self) -> usize {
+    pub fn allocated(&self) -> (r: usize)
+        requires
+            self.small_allocated + self.large_allocated <= usize::MAX,
+        ensures
+            r == self.small_allocated + self.large_allocated,
+    {
         self.small_allocated + self.large_allocated
     }
 
@@ -234,8 +295,29 @@ impl ArenaStats {
     // Only the tests call it: the sums add the fields themselves.
     #[allow(dead_code)]
     #[inline]
-    pub fn active(&self) -> usize {
+    pub fn active(&self) -> (r: usize)
+        requires
+            self.small_active + self.large_active <= usize::MAX,
+        ensures
+            r == self.small_active + self.large_active,
+    {
         self.small_active + self.large_active
+    }
+
+    /// The accounting identities of one arena's figures (module doc), as
+    /// [`collect_arena_with`] forms them: small and large `allocated`
+    /// within their `active`, `resident` and `retained` the sums of their
+    /// parts and `mapped` theirs. Every part is a natural, so they give
+    /// `resident >= active + metadata`, `active >= allocated` and
+    /// `mapped == resident + retained`. They are the invariant of each
+    /// arena's statistics lock (`vspec::arena::axiom_arena_stats_lock_inv`).
+    pub open spec fn identities(self) -> bool {
+        &&& self.small_allocated <= self.small_active
+        &&& self.large_allocated <= self.large_active
+        &&& self.resident == self.small_active + self.large_active + self.small_dirty + self.large_dirty
+            + self.huge_dirty + self.metadata
+        &&& self.retained == self.small_retained + self.large_retained + self.huge_retained
+        &&& self.mapped == self.resident + self.retained
     }
 }
 
@@ -260,21 +342,59 @@ impl Totals {
         mapped: 0,
     };
 
+    /// The accounting identities of the totals (module doc):
+    /// `resident >= active + metadata`, `active >= allocated` and
+    /// `mapped == resident + retained`. They hold for the sum of any
+    /// figures that satisfy [`ArenaStats::identities`] when that sum
+    /// fits.
+    pub open spec fn identities(self) -> bool {
+        &&& self.allocated <= self.active
+        &&& self.active + self.metadata <= self.resident
+        &&& self.mapped == self.resident + self.retained
+    }
+
     /// The accounting identities every snapshot satisfies:
     /// `resident >= active >= allocated` and `mapped == resident + retained`.
     #[cfg(test)]
-    pub fn identities_hold(&self) -> bool {
-        self.resident >= self.active
-            && self.active >= self.allocated
-            && self.mapped == self.resident + self.retained
+    pub fn identities_hold(&self) -> (r: bool)
+        requires
+            self.resident + self.retained <= usize::MAX,
+        ensures
+            r == (self.resident >= self.active && self.active >= self.allocated && self.mapped == self.resident
+                + self.retained),
+    {
+        self.resident >= self.active && self.active >= self.allocated && self.mapped == self.resident + self.retained
     }
 
-    /// Add arena `a`'s figures ([`fig_add`]).
-    fn add_arena(&mut self, a: &ArenaStats) {
-        self.allocated = fig_add(
-            self.allocated,
-            fig_add(a.small_allocated, a.large_allocated),
-        );
+    /// Every sum [`Totals::add_arena`] forms fits its type.
+    pub open spec fn can_add_arena(self, a: ArenaStats) -> bool {
+        &&& a.small_allocated + a.large_allocated <= usize::MAX
+        &&& a.small_active + a.large_active <= usize::MAX
+        &&& self.allocated + a.small_allocated + a.large_allocated <= usize::MAX
+        &&& self.active + a.small_active + a.large_active <= usize::MAX
+        &&& self.metadata + a.metadata <= usize::MAX
+        &&& self.resident + a.resident <= usize::MAX
+        &&& self.retained + a.retained <= usize::MAX
+        &&& self.mapped + a.mapped <= usize::MAX
+    }
+
+    /// Add arena `a`'s figures. The sums are exact when they fit
+    /// ([`fig_add`]).
+    fn add_arena(&mut self, a: &ArenaStats)
+        ensures
+            old(self).can_add_arena(*a) ==> {
+                &&& final(self).allocated == old(self).allocated + a.small_allocated + a.large_allocated
+                &&& final(self).active == old(self).active + a.small_active + a.large_active
+                &&& final(self).metadata == old(self).metadata + a.metadata
+                &&& final(self).resident == old(self).resident + a.resident
+                &&& final(self).retained == old(self).retained + a.retained
+                &&& final(self).mapped == old(self).mapped + a.mapped
+            },
+            // `allocated` alone, whether or not the other sums fit.
+            old(self).allocated + a.small_allocated + a.large_allocated <= usize::MAX ==> final(self).allocated
+                == old(self).allocated + a.small_allocated + a.large_allocated,
+    {
+        self.allocated = fig_add(self.allocated, fig_add(a.small_allocated, a.large_allocated));
         self.active = fig_add(self.active, fig_add(a.small_active, a.large_active));
         self.metadata = fig_add(self.metadata, a.metadata);
         self.resident = fig_add(self.resident, a.resident);
@@ -286,26 +406,37 @@ impl Totals {
 /// `a + b` for a statistics figure, as the build computes it: a panic on
 /// overflow where overflow checks are on (the tests), wrapping where they
 /// are off (the shipped library). The figures are counters the slow paths
-/// keep in atomics and lock-protected words, which nothing bounds; the
-/// sum is exact whenever it fits.
+/// keep in atomics and lock-protected words that no verified invariant
+/// bounds, so their sums cannot be proved to fit; the sum is exact
+/// whenever it does. Trusted: the spec is `+`'s.
+#[verifier::external_body]
 #[inline(always)]
 #[track_caller]
-pub(crate) fn fig_add(a: usize, b: usize) -> usize {
+pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
+    ensures
+        a + b <= usize::MAX ==> r == a + b,
+{
     a + b
 }
+
+/// `a + b` for a statistics counter; see [`fig_add`].
+#[verifier::external_body]
+#[inline(always)]
+#[track_caller]
+pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
+    ensures
+        a + b <= u64::MAX ==> r == a + b,
+{
+    a + b
+}
+
+} // verus!
 
 /// `a * b` for a statistics figure; see [`fig_add`].
 #[inline(always)]
 #[track_caller]
 pub(crate) fn fig_mul(a: usize, b: usize) -> usize {
     a * b
-}
-
-/// `a + b` for a statistics counter; see [`fig_add`].
-#[inline(always)]
-#[track_caller]
-pub(crate) fn fig_add64(a: u64, b: u64) -> u64 {
-    a + b
 }
 
 /// The usable pages of an arena's `runs` live huge runs in `pages` pages,
@@ -331,6 +462,8 @@ fn huge_usable_pages(index: u16, runs: usize, pages: usize) -> usize {
 fn huge_pages_short(index: u16, runs: usize, pages: usize) -> ! {
     panic!("stats: arena {index}: {runs} huge runs in {pages} pages")
 }
+
+verus! {
 
 /// What an [`epoch`] stores in `Shared`: the totals plus the raw huge and
 /// metadata counters for `malloc_stats_print`.
@@ -370,14 +503,52 @@ impl Snapshot {
             eager: 0,
         },
     };
+
+    /// What every stored snapshot satisfies (the `shared.stats` lock's
+    /// invariant, [`axiom_snapshot_lock_inv`]): with up to 256 arenas the
+    /// totals' identities hold. Past that they hold when the true sums
+    /// fit (always, for the address space they describe, but not proved).
+    pub open spec fn inv(self) -> bool {
+        self.narenas <= 256 ==> self.totals.identities()
+    }
 }
+
+/// Assumption (`lock.rs`): the value of the process statistics lock
+/// (`Shared::stats`) satisfies [`Snapshot::inv`] while the lock is free.
+/// Its writers: `Shared::init` creates the lock with `Snapshot::EMPTY`
+/// (all zero, so `inv` holds), and `collect_into` stores each epoch's
+/// snapshot; Verus checks neither yet, nor `snapshot`, which only reads.
+/// The fork handlers take and release the raw lock without touching the
+/// value, and nothing calls `get_unlocked` on it. What is left is the
+/// claim that the lock protects `inv`.
+pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
+    ensures
+        #[trigger] crate::lock::lock_inv(v) == v.inv(),
+;
 
 impl ArenaStats {
     /// Add every figure of `o` to `self` (the `MALLCTL_ARENAS_ALL` merge
     /// of `stats.arenas.4096.*`). The bin geometry (`size`, `nregs`,
     /// `slab_size`) is the same for every arena and is taken from `o`
     /// where `self` has none yet.
-    pub fn add(&mut self, o: &ArenaStats) {
+    pub fn add(&mut self, o: &ArenaStats)
+        ensures
+            final(self).index == old(self).index,
+            old(self).can_add(*o) ==> old(self).is_merge(*o, *final(self)),
+            // The byte figures, whether or not the counts fit.
+            old(self).bytes_fit(*o) ==> old(self).bytes_merged(*o, *final(self)),
+            // Each sum the exact `allocated` needs, whether or not the
+            // others fit.
+            old(self).small_allocated + o.small_allocated <= usize::MAX ==> final(self).small_allocated
+                == old(self).small_allocated + o.small_allocated,
+            old(self).large_allocated + o.large_allocated <= usize::MAX ==> final(self).large_allocated
+                == old(self).large_allocated + o.large_allocated,
+            old(self).large_runs + o.large_runs <= usize::MAX ==> final(self).large_runs == old(self).large_runs
+                + o.large_runs,
+            forall|c: int|
+                0 <= c < NCLASSES && old(self).bins[c].curregs + o.bins[c].curregs <= usize::MAX
+                    ==> #[trigger] final(self).bins[c].curregs == old(self).bins[c].curregs + o.bins[c].curregs,
+    {
         self.small_allocated = fig_add(self.small_allocated, o.small_allocated);
         self.small_active = fig_add(self.small_active, o.small_active);
         self.small_dirty = fig_add(self.small_dirty, o.small_dirty);
@@ -396,7 +567,23 @@ impl ArenaStats {
         self.resident = fig_add(self.resident, o.resident);
         self.retained = fig_add(self.retained, o.retained);
         self.mapped = fig_add(self.mapped, o.mapped);
-        for c in 0..NCLASSES {
+        for c in 0..NCLASSES
+            invariant
+                self.index == old(self).index,
+                old(self).can_add(*o) ==> old(self).scalars_merged(*o, *self),
+                old(self).bytes_fit(*o) ==> old(self).bytes_merged(*o, *self),
+                old(self).can_add(*o) ==> forall|j: int| 0 <= j < c ==> #[trigger] self.bins[j] == old(self).bins[j].merged(o.bins[j]),
+                forall|j: int| c <= j < NCLASSES ==> #[trigger] self.bins[j] == old(self).bins[j],
+                old(self).small_allocated + o.small_allocated <= usize::MAX ==> self.small_allocated
+                    == old(self).small_allocated + o.small_allocated,
+                old(self).large_allocated + o.large_allocated <= usize::MAX ==> self.large_allocated
+                    == old(self).large_allocated + o.large_allocated,
+                old(self).large_runs + o.large_runs <= usize::MAX ==> self.large_runs == old(self).large_runs
+                    + o.large_runs,
+                forall|j: int|
+                    0 <= j < c && old(self).bins[j].curregs + o.bins[j].curregs <= usize::MAX
+                        ==> #[trigger] self.bins[j].curregs == old(self).bins[j].curregs + o.bins[j].curregs,
+        {
             let (b, ob) = (&mut self.bins[c], &o.bins[c]);
             if b.size == 0 {
                 b.size = ob.size;
@@ -414,9 +601,104 @@ impl ArenaStats {
             b.compact_off = fig_add64(b.compact_off, ob.compact_off);
             b.gate_refill = fig_add64(b.gate_refill, ob.gate_refill);
             b.clamped = fig_add64(b.clamped, ob.clamped);
+            proof {
+                if old(self).can_add(*o) {
+                    assert(old(self).bins[c as int].can_add(o.bins[c as int]));
+                }
+            }
         }
     }
+
+    /// Every byte figure's sum [`ArenaStats::add`] forms fits a `usize`.
+    pub open spec fn bytes_fit(self, o: ArenaStats) -> bool {
+        &&& self.small_allocated + o.small_allocated <= usize::MAX
+        &&& self.small_active + o.small_active <= usize::MAX
+        &&& self.small_dirty + o.small_dirty <= usize::MAX
+        &&& self.small_retained + o.small_retained <= usize::MAX
+        &&& self.large_allocated + o.large_allocated <= usize::MAX
+        &&& self.large_active + o.large_active <= usize::MAX
+        &&& self.large_dirty + o.large_dirty <= usize::MAX
+        &&& self.large_retained + o.large_retained <= usize::MAX
+        &&& self.huge_dirty + o.huge_dirty <= usize::MAX
+        &&& self.huge_retained + o.huge_retained <= usize::MAX
+        &&& self.metadata + o.metadata <= usize::MAX
+        &&& self.resident + o.resident <= usize::MAX
+        &&& self.retained + o.retained <= usize::MAX
+        &&& self.mapped + o.mapped <= usize::MAX
+    }
+
+    /// `r` has every byte figure of `self` and `o` summed.
+    pub open spec fn bytes_merged(self, o: ArenaStats, r: ArenaStats) -> bool {
+        &&& r.small_allocated == self.small_allocated + o.small_allocated
+        &&& r.small_active == self.small_active + o.small_active
+        &&& r.small_dirty == self.small_dirty + o.small_dirty
+        &&& r.small_retained == self.small_retained + o.small_retained
+        &&& r.large_allocated == self.large_allocated + o.large_allocated
+        &&& r.large_active == self.large_active + o.large_active
+        &&& r.large_dirty == self.large_dirty + o.large_dirty
+        &&& r.large_retained == self.large_retained + o.large_retained
+        &&& r.huge_dirty == self.huge_dirty + o.huge_dirty
+        &&& r.huge_retained == self.huge_retained + o.huge_retained
+        &&& r.metadata == self.metadata + o.metadata
+        &&& r.resident == self.resident + o.resident
+        &&& r.retained == self.retained + o.retained
+        &&& r.mapped == self.mapped + o.mapped
+    }
+
+    /// Every sum [`ArenaStats::add`] forms fits its type.
+    pub open spec fn can_add(self, o: ArenaStats) -> bool {
+        &&& self.small_allocated + o.small_allocated <= usize::MAX
+        &&& self.small_active + o.small_active <= usize::MAX
+        &&& self.small_dirty + o.small_dirty <= usize::MAX
+        &&& self.small_retained + o.small_retained <= usize::MAX
+        &&& self.large_allocated + o.large_allocated <= usize::MAX
+        &&& self.large_active + o.large_active <= usize::MAX
+        &&& self.large_dirty + o.large_dirty <= usize::MAX
+        &&& self.large_retained + o.large_retained <= usize::MAX
+        &&& self.large_runs + o.large_runs <= usize::MAX
+        &&& self.huge_dirty + o.huge_dirty <= usize::MAX
+        &&& self.huge_retained + o.huge_retained <= usize::MAX
+        &&& self.metadata + o.metadata <= usize::MAX
+        &&& self.pactive + o.pactive <= usize::MAX
+        &&& self.pdirty + o.pdirty <= usize::MAX
+        &&& self.pmuzzy + o.pmuzzy <= usize::MAX
+        &&& self.resident + o.resident <= usize::MAX
+        &&& self.retained + o.retained <= usize::MAX
+        &&& self.mapped + o.mapped <= usize::MAX
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.bins[c].can_add(o.bins[c])
+    }
+
+    /// `r` is `self` with every figure of `o` added, bins aside.
+    pub open spec fn scalars_merged(self, o: ArenaStats, r: ArenaStats) -> bool {
+        &&& r.index == self.index
+        &&& r.small_allocated == self.small_allocated + o.small_allocated
+        &&& r.small_active == self.small_active + o.small_active
+        &&& r.small_dirty == self.small_dirty + o.small_dirty
+        &&& r.small_retained == self.small_retained + o.small_retained
+        &&& r.large_allocated == self.large_allocated + o.large_allocated
+        &&& r.large_active == self.large_active + o.large_active
+        &&& r.large_dirty == self.large_dirty + o.large_dirty
+        &&& r.large_retained == self.large_retained + o.large_retained
+        &&& r.large_runs == self.large_runs + o.large_runs
+        &&& r.huge_dirty == self.huge_dirty + o.huge_dirty
+        &&& r.huge_retained == self.huge_retained + o.huge_retained
+        &&& r.metadata == self.metadata + o.metadata
+        &&& r.pactive == self.pactive + o.pactive
+        &&& r.pdirty == self.pdirty + o.pdirty
+        &&& r.pmuzzy == self.pmuzzy + o.pmuzzy
+        &&& r.resident == self.resident + o.resident
+        &&& r.retained == self.retained + o.retained
+        &&& r.mapped == self.mapped + o.mapped
+    }
+
+    /// `r` is `o` merged into `self` ([`ArenaStats::add`]).
+    pub open spec fn is_merge(self, o: ArenaStats, r: ArenaStats) -> bool {
+        &&& self.scalars_merged(o, r)
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c] == self.bins[c].merged(o.bins[c])
+    }
 }
+
+} // verus!
 
 /// The current figures of one class state (one lock hold).
 pub fn collect_bin(cs: &ClassState) -> BinStats {

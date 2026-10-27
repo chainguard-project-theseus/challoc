@@ -1200,14 +1200,18 @@ impl Arena {
         ((w >> 32) as usize, (w & (Self::LARGE_RUN - 1)) as usize)
     }
 
-    /// The statistics stored by the last `epoch`.
+    /// The statistics stored by the last `epoch`: they satisfy the
+    /// accounting identities (the lock's invariant).
     pub fn stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: ArenaStats)
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_arena_stats(0)),
         ensures
+            r.identities(),
             *final(ord) == *old(ord),
     {
+        broadcast use axiom_arena_stats_lock_inv;
+
         proof {
             use_type_invariant(self);
         }
@@ -1219,6 +1223,7 @@ impl Arena {
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_arena_stats(0)),
+            s.identities(),
         ensures
             *final(ord) == *old(ord),
     {
@@ -1226,6 +1231,8 @@ impl Arena {
 
         proof {
             use_type_invariant(self);
+            // The value this holder leaves satisfies the lock's invariant.
+            assert(crate::lock::lock_inv(*s));
         }
         *self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare())) = *s;
     }
