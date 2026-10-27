@@ -2214,7 +2214,7 @@ impl ClassState {
     /// table, since guard slabs belong to no arena.
     #[cfg(test)]
     pub fn stats(&self) -> ClassStats {
-        self.bin_stats().0
+        self.bin_stats(Tracked::assume_new()).0
     }
 
     /// The slab counts and `curregs` (slots out of this arena's bitmaps:
@@ -2228,11 +2228,10 @@ impl ClassState {
     /// which keeps `active >= allocated` exact for `stats.rs`. Every clamp
     /// is counted (`clamped`); the count cannot tell the legitimate
     /// transient from a bookkeeping bug, the reader of the bins table can.
-    pub fn bin_stats(&self) -> (ClassStats, usize) {
+    /// `ord` is the caller's lock-order token (ghost) for the class lock.
+    pub fn bin_stats(&self, ord: Tracked<&mut LockOrder>) -> (ClassStats, usize) {
         let released = self.released.load(Ordering::Relaxed);
-        let g = self
-            .inner
-            .lock(Tracked::assume_new(), Tracked::assume_new());
+        let g = self.inner.lock(ord, Tracked::assume_new());
         let mut s = g.stats;
         let claimed = self.claimed.load(Ordering::Relaxed);
         drop(g);
@@ -2257,7 +2256,7 @@ impl ClassState {
     /// Slots out of this arena's bitmaps (see [`ClassState::bin_stats`]).
     #[cfg(test)]
     pub fn curregs(&self) -> usize {
-        self.bin_stats().1
+        self.bin_stats(Tracked::assume_new()).1
     }
 
     /// Slots ever claimed from this arena's slabs of the class (wrapping).
@@ -2317,9 +2316,10 @@ impl ClassState {
     /// `(holes, capacity)`: the free slots of the slabs that can hold live
     /// slots (neither `Empty` nor `Purged`), i.e. slots that are in no
     /// cache and no program, and those slabs' total slot count. The
-    /// compaction gate in `heap/` reads this; one lock hold.
-    pub fn holes(&self) -> (usize, usize) {
-        let (s, curregs) = self.bin_stats();
+    /// compaction gate in `heap/` reads this; one lock hold. `ord` is the
+    /// caller's lock-order token (ghost) for the class lock.
+    pub fn holes(&self, ord: Tracked<&mut LockOrder>) -> (usize, usize) {
+        let (s, curregs) = self.bin_stats(ord);
         let capacity = s.curslabs() * self.class().nslots();
         (capacity.saturating_sub(curregs), capacity)
     }

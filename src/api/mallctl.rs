@@ -1111,7 +1111,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             u.size = cls.nslots() * cls.size();
             if verbose && let Some(a) = shared.arenas.get_existing(d.arena()) {
                 let cs = a.class(class);
-                let (st, curregs) = cs.bin_stats();
+                let (st, curregs) = cs.bin_stats(vstd::prelude::Tracked::assume_new());
                 u.bin_nregs = st.curslabs() * cls.nslots();
                 u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
                 if let Some(s) = cs.lowest_partial(vstd::prelude::Tracked::assume_new()) {
