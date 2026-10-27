@@ -1368,7 +1368,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             // The old state, before the write changes it.
             io.read(purge::background::present())?;
             if let Some(on) = on {
-                purge::background::request(on);
+                purge::background::request(on, vstd::prelude::Tracked::assume_new());
                 if on && !purge::background::present() && !purge::background::start(shared) {
                     return Err(EAGAIN);
                 }
