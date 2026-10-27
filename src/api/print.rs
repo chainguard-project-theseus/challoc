@@ -652,7 +652,7 @@ fn hist_line<W: Write>(
 }
 
 fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result {
-    let snap = stats::collect(shared);
+    let snap = stats::collect(shared, vstd::prelude::Tracked::assume_new());
     if !o.no_general {
         text_general(out, shared, &snap)?;
     }
@@ -662,7 +662,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         let n = shared.arenas.count() as usize;
         for i in 0..n {
             if let Some(a) = stats::arena_at(shared, i) {
-                let s = stats::collect_arena(shared, a);
+                let s = stats::collect_arena(shared, a, vstd::prelude::Tracked::assume_new());
                 text_arena(out, a, &s, !o.no_bins)?;
             }
         }
@@ -851,7 +851,7 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// `implementation`, then [`json_general`] and the `stats.arenas` object of
 /// [`json_arena`]s, each under its option letter as in [`text_report`].
 fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result {
-    let snap = stats::collect(shared);
+    let snap = stats::collect(shared, vstd::prelude::Tracked::assume_new());
     writeln!(out, "{{")?;
     writeln!(out, "\t\"jemalloc\": {{")?;
     writeln!(out, "\t\t\"version\": \"{VERSION_STR}\",")?;
@@ -866,7 +866,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         let n = shared.arenas.count() as usize;
         for i in 0..n {
             if let Some(a) = stats::arena_at(shared, i) {
-                let s = stats::collect_arena(shared, a);
+                let s = stats::collect_arena(shared, a, vstd::prelude::Tracked::assume_new());
                 if !first {
                     writeln!(out, ",")?;
                 }
@@ -955,11 +955,15 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     let n = shared.arenas.count() as usize;
     for i in 0..n {
         if let Some(a) = stats::arena_at(shared, i) {
-            let s = stats::collect_arena(shared, a);
+            let s = stats::collect_arena(shared, a, vstd::prelude::Tracked::assume_new());
             xml_heap(out, a.index() as usize, &s)?;
         }
     }
-    let all = stats::collect_all(shared);
+    let all = stats::collect_all(
+        shared,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     // The two `iter().map(..).sum()`s over `bins[..NBINS]` and
     // `bins[NBINS..]`, as one indexed loop.
     let (mut count, mut large) = (0usize, 0usize);
@@ -1024,7 +1028,7 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result {
     let n = shared.arenas.count() as usize;
     for i in 0..n {
         if let Some(a) = stats::arena_at(shared, i) {
-            let s = stats::collect_arena(shared, a);
+            let s = stats::collect_arena(shared, a, vstd::prelude::Tracked::assume_new());
             writeln!(sink, "Arena {}:", a.index())?;
             writeln!(
                 sink,
@@ -1034,7 +1038,11 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result {
             writeln!(sink, "in use bytes     = {:>10}", s.small_allocated)?;
         }
     }
-    let all = stats::collect_all(shared);
+    let all = stats::collect_all(
+        shared,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     writeln!(sink, "Total (incl. mmap):")?;
     writeln!(sink, "system bytes     = {:>10}", all.resident)?;
     writeln!(sink, "in use bytes     = {:>10}", all.allocated())?;

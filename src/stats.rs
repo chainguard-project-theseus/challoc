@@ -44,6 +44,7 @@ use crate::class::ClassState;
 use crate::heap::Shared;
 use crate::huge::{GUARD_PAGES, HugeStats};
 use crate::layout::{NBINS, NCLASSES};
+use crate::lock::LockOrder;
 use crate::meta::MetaStats;
 use vstd::prelude::*;
 
@@ -701,7 +702,7 @@ impl ArenaStats {
 } // verus!
 
 /// The current figures of one class state (one lock hold).
-pub fn collect_bin(cs: &ClassState) -> BinStats {
+pub fn collect_bin(cs: &ClassState, _ord: Tracked<&mut LockOrder>) -> BinStats {
     let (s, curregs) = cs.bin_stats(Tracked::assume_new());
     let cls = cs.class();
     let (compacted, compact_on, compact_off, gate_refill) = cs.compaction_stats();
@@ -725,16 +726,19 @@ pub fn collect_bin(cs: &ClassState) -> BinStats {
 
 /// The current figures of `arena`. `huge` and `meta` are the process-wide
 /// counters the caller read (they are folded into arena 0 only).
+/// `pg` is ghost: the pages its load of the `large` word returned.
 fn collect_arena_with(
     shared: &Shared,
     arena: &Arena,
     huge: &HugeStats,
     meta: &MetaStats,
+    _pg: Tracked<&mut Ghost<int>>,
+    _ord: Tracked<&mut LockOrder>,
 ) -> ArenaStats {
     let page = shared.regions.page_size();
     let mut a = ArenaStats::empty(arena.index());
     for c in 0..NCLASSES {
-        a.bins[c] = collect_bin(arena.class_at(c));
+        a.bins[c] = collect_bin(arena.class_at(c), Tracked::assume_new());
         let bin = &a.bins[c];
         if c < NBINS {
             let (al, ac, di, re) = (
@@ -790,18 +794,22 @@ pub(crate) fn arena_at(shared: &Shared, i: usize) -> Option<&Arena> {
 }
 
 /// The current figures of `arena`, not stored.
-pub fn collect_arena(shared: &Shared, arena: &Arena) -> ArenaStats {
+pub fn collect_arena(shared: &Shared, arena: &Arena, _ord: Tracked<&mut LockOrder>) -> ArenaStats {
     collect_arena_with(
         shared,
         arena,
         &shared.huge.stats(Tracked::assume_new()),
         &shared.meta.stats(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
     )
 }
 
 /// Read every counter once; store the result per arena and in `Shared`
 /// when `store` is set. Returns the snapshot (with the new epoch number
-/// when stored, the current one otherwise).
+/// when stored, the current one otherwise). `rd` is ghost: the figures
+/// of each arena it found, in index order, and the pages each one's
+/// `large` word load returned.
 ///
 /// The process statistics lock is held across the whole collection, so
 /// one collection is published at a time: concurrent `epoch`s never leave
@@ -809,7 +817,12 @@ pub fn collect_arena(shared: &Shared, arena: &Arena) -> ArenaStats {
 /// snapshot never sees the arenas of a collection whose totals are not
 /// stored yet. It nests outside the class, slab table, huge, metadata and
 /// per-arena statistics locks the collection takes (design section 9).
-fn collect_into(shared: &Shared, store: bool) -> Snapshot {
+fn collect_into(
+    shared: &Shared,
+    store: bool,
+    _rd: Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>,
+    _ord: Tracked<&mut LockOrder>,
+) -> Snapshot {
     let mut g = shared
         .stats
         .lock(Tracked::assume_new(), Tracked::assume_new());
@@ -820,7 +833,14 @@ fn collect_into(shared: &Shared, store: bool) -> Snapshot {
     let n = shared.arenas.count();
     for i in 0..n as usize {
         if let Some(arena) = arena_at(shared, i) {
-            let a = collect_arena_with(shared, arena, &huge, &meta);
+            let a = collect_arena_with(
+                shared,
+                arena,
+                &huge,
+                &meta,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             totals.add_arena(&a);
             narenas += 1;
             if store {
@@ -848,17 +868,17 @@ fn collect_into(shared: &Shared, store: bool) -> Snapshot {
 
 /// `epoch`: refresh every arena's stored [`ArenaStats`] and the process
 /// [`Snapshot`]. Returns the new epoch number.
-pub fn epoch(shared: &Shared) -> u64 {
-    collect_into(shared, true).epoch
+pub fn epoch(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> u64 {
+    collect_into(shared, true, Tracked::assume_new(), Tracked::assume_new()).epoch
 }
 
 /// The current totals without storing them (for `malloc_stats_print`).
-pub fn collect(shared: &Shared) -> Snapshot {
-    collect_into(shared, false)
+pub fn collect(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> Snapshot {
+    collect_into(shared, false, Tracked::assume_new(), Tracked::assume_new())
 }
 
 /// The snapshot stored by the last [`epoch`] (all zero before the first).
-pub fn snapshot(shared: &Shared) -> Snapshot {
+pub fn snapshot(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> Snapshot {
     *shared
         .stats
         .lock(Tracked::assume_new(), Tracked::assume_new())
@@ -867,7 +887,11 @@ pub fn snapshot(shared: &Shared) -> Snapshot {
 /// The [`ArenaStats`] stored by the last [`epoch`] for arena `index`, or
 /// `None` if the arena does not exist. An arena created since the last
 /// epoch reports zeros.
-pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats> {
+pub fn arena_stats(
+    shared: &Shared,
+    index: u16,
+    _ord: Tracked<&mut LockOrder>,
+) -> Option<ArenaStats> {
     Some(
         shared
             .arenas
@@ -879,7 +903,7 @@ pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats> {
 /// `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`): every existing arena's
 /// stored figures summed, all from one `epoch` (the process statistics
 /// lock keeps one from storing midway). Its `index` is 4096.
-pub fn arena_stats_all(shared: &Shared) -> ArenaStats {
+pub fn arena_stats_all(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> ArenaStats {
     let _published = shared
         .stats
         .lock(Tracked::assume_new(), Tracked::assume_new());
@@ -894,15 +918,28 @@ pub fn arena_stats_all(shared: &Shared) -> ArenaStats {
 }
 
 /// Every existing arena's *current* figures summed, not stored (for
-/// `mallinfo` and `malloc_stats`, which glibc defines as live).
-pub fn collect_all(shared: &Shared) -> ArenaStats {
+/// `mallinfo` and `malloc_stats`, which glibc defines as live). `rd` is
+/// ghost: the figures of each arena it found, in index order, and the
+/// pages each one's `large` word load returned.
+pub fn collect_all(
+    shared: &Shared,
+    _rd: Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>,
+    _ord: Tracked<&mut LockOrder>,
+) -> ArenaStats {
     let huge = shared.huge.stats(Tracked::assume_new());
     let meta = shared.meta.stats();
     let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
     let n = shared.arenas.count();
     for i in 0..n as usize {
         if let Some(arena) = arena_at(shared, i) {
-            let a = collect_arena_with(shared, arena, &huge, &meta);
+            let a = collect_arena_with(
+                shared,
+                arena,
+                &huge,
+                &meta,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             all.add(&a);
         }
     }
@@ -933,9 +970,9 @@ mod tests {
     #[test]
     fn identities_hold_through_the_lifecycle() {
         let s = shared();
-        assert_eq!(snapshot(s), Snapshot::EMPTY);
-        assert_eq!(epoch(s), 1);
-        let first = snapshot(s);
+        assert_eq!(snapshot(s, Tracked::assume_new()), Snapshot::EMPTY);
+        assert_eq!(epoch(s, Tracked::assume_new()), 1);
+        let first = snapshot(s, Tracked::assume_new());
         assert_eq!(first.epoch, 1);
         assert_eq!(first.narenas, 1);
         assert_eq!(first.totals.allocated, 0);
@@ -972,14 +1009,19 @@ mod tests {
         );
 
         // Frozen until the next epoch; `collect` sees the live figures.
-        assert_eq!(snapshot(s), first);
-        assert_eq!(arena_stats(s, 0).unwrap().small_allocated, 0);
-        assert!(collect(s).totals.allocated > 0);
-        assert_eq!(collect(s).epoch, 1);
+        assert_eq!(snapshot(s, Tracked::assume_new()), first);
+        assert_eq!(
+            arena_stats(s, 0, Tracked::assume_new())
+                .unwrap()
+                .small_allocated,
+            0
+        );
+        assert!(collect(s, Tracked::assume_new()).totals.allocated > 0);
+        assert_eq!(collect(s, Tracked::assume_new()).epoch, 1);
 
-        assert_eq!(epoch(s), 2);
-        let a = arena_stats(s, 0).unwrap();
-        let tot = snapshot(s).totals;
+        assert_eq!(epoch(s, Tracked::assume_new()), 2);
+        let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
+        let tot = snapshot(s, Tracked::assume_new()).totals;
         assert_eq!(a.index, 0);
         let b16 = a.bins[c16];
         assert_eq!(
@@ -1047,7 +1089,7 @@ mod tests {
         assert_eq!(tot.retained, 0);
         assert!(tot.identities_hold(), "{tot:?}");
         assert_eq!(
-            collect(s).totals,
+            collect(s, Tracked::assume_new()).totals,
             tot,
             "nothing moved: live and stored agree"
         );
@@ -1059,9 +1101,9 @@ mod tests {
         t.free(h);
         t.free(pm);
         t.flush_all();
-        assert_eq!(epoch(s), 3);
-        let a = arena_stats(s, 0).unwrap();
-        let tot = snapshot(s).totals;
+        assert_eq!(epoch(s, Tracked::assume_new()), 3);
+        let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
+        let tot = snapshot(s, Tracked::assume_new()).totals;
         assert_eq!((tot.allocated, tot.active), (0, 0));
         let b16 = a.bins[c16];
         assert_eq!(
@@ -1097,9 +1139,9 @@ mod tests {
 
         // Purge: dirty becomes retained; resident falls back to metadata.
         assert!(crate::purge::purge_all(s, Tracked::assume_new(), Tracked::assume_new()) > 0);
-        assert_eq!(epoch(s), 4);
-        let a = arena_stats(s, 0).unwrap();
-        let tot = snapshot(s).totals;
+        assert_eq!(epoch(s, Tracked::assume_new()), 4);
+        let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
+        let tot = snapshot(s, Tracked::assume_new()).totals;
         assert_eq!((a.small_dirty, a.large_dirty, a.huge_dirty), (0, 0, 0));
         assert_eq!(a.small_retained + a.large_retained + a.huge_retained, dirty);
         assert_eq!(a.bins[c16].purged_slabs, 1);
@@ -1139,7 +1181,7 @@ mod tests {
                     let cs = s.arena0.class(c);
                     assert_eq!(cs.curregs(), live(s, c), "class {c} at step {step}");
                     assert!(cs.curregs() >= held[k].len(), "the cache's slots count too");
-                    let bin = collect_bin(cs);
+                    let bin = collect_bin(cs, Tracked::assume_new());
                     assert_eq!(bin.curregs, cs.curregs());
                     assert!(bin.curregs <= bin.curslabs * bin.nregs);
                 }
@@ -1155,9 +1197,9 @@ mod tests {
             let cs = s.arena0.class(c);
             assert_eq!(cs.curregs(), 0);
             assert_eq!(live(s, c), 0);
-            assert_eq!(collect_bin(cs).curslabs, 0);
+            assert_eq!(collect_bin(cs, Tracked::assume_new()).curslabs, 0);
         }
-        let tot = collect(s).totals;
+        let tot = collect(s, Tracked::assume_new()).totals;
         assert_eq!(tot.allocated, 0);
         assert!(tot.identities_hold(), "{tot:?}");
     }
@@ -1185,13 +1227,13 @@ mod tests {
         let (q2, _) = s.alloc_direct(a2, c32);
         assert!(!p0.is_null() && !p2.is_null() && !q2.is_null());
 
-        let live = collect(s);
-        epoch(s);
-        let snap = snapshot(s);
+        let live = collect(s, Tracked::assume_new());
+        epoch(s, Tracked::assume_new());
+        let snap = snapshot(s, Tracked::assume_new());
         assert_eq!((live.narenas, snap.narenas), (2, 2));
-        assert!(arena_stats(s, 1).is_none());
-        let s0 = arena_stats(s, 0).unwrap();
-        let s2 = arena_stats(s, 2).unwrap();
+        assert!(arena_stats(s, 1, Tracked::assume_new()).is_none());
+        let s0 = arena_stats(s, 0, Tracked::assume_new()).unwrap();
+        let s2 = arena_stats(s, 2, Tracked::assume_new()).unwrap();
         assert_eq!((s0.index, s2.index), (0, 2));
         assert_eq!((s0.bins[c32].curregs, s2.bins[c32].curregs), (1, 2));
         let size = CLASSES[c32].size();
@@ -1220,12 +1262,12 @@ mod tests {
         assert!(!h1.is_null());
         let usable = s.huge.usable_for(size).unwrap();
 
-        epoch(s);
-        let snap = snapshot(s);
+        epoch(s, Tracked::assume_new());
+        let snap = snapshot(s, Tracked::assume_new());
         assert_eq!(snap.narenas, 2);
-        let s0 = arena_stats(s, 0).unwrap();
-        let s1 = arena_stats(s, 1).unwrap();
-        assert!(arena_stats(s, 2).is_none());
+        let s0 = arena_stats(s, 0, Tracked::assume_new()).unwrap();
+        let s1 = arena_stats(s, 1, Tracked::assume_new()).unwrap();
+        assert!(arena_stats(s, 2, Tracked::assume_new()).is_none());
         assert_eq!((s0.index, s1.index), (0, 1));
         assert_eq!(s0.bins[c32].curslabs, 1);
         assert_eq!(s1.bins[c32].curslabs, 1);
@@ -1250,9 +1292,9 @@ mod tests {
         t.free(p1);
         t.free(p0);
         t.flush_all();
-        epoch(s);
-        let s0 = arena_stats(s, 0).unwrap();
-        let s1 = arena_stats(s, 1).unwrap();
+        epoch(s, Tracked::assume_new());
+        let s0 = arena_stats(s, 0, Tracked::assume_new()).unwrap();
+        let s1 = arena_stats(s, 1, Tracked::assume_new()).unwrap();
         assert_eq!((s1.large_runs, s1.large_allocated), (0, 0));
         assert_eq!(
             s0.huge_dirty,
@@ -1261,7 +1303,7 @@ mod tests {
         assert_eq!(s1.huge_dirty, 0);
         assert_eq!(s1.bins[c32].empty_slabs, 1);
         assert_eq!(s0.bins[c32].empty_slabs, 1);
-        let tot = snapshot(s).totals;
+        let tot = snapshot(s, Tracked::assume_new()).totals;
         assert_eq!(tot.resident, s0.resident + s1.resident);
         assert!(tot.identities_hold(), "{tot:?}");
         t.destroy();
@@ -1313,11 +1355,11 @@ mod tests {
                     for _ in 0..2 {
                         w.spawn(|| {
                             go.wait();
-                            epoch(s);
+                            epoch(s, Tracked::assume_new());
                         });
                     }
                 });
-                let snap = snapshot(s);
+                let snap = snapshot(s, Tracked::assume_new());
                 let mut sum = Totals::EMPTY;
                 for a in s.arenas.iter() {
                     sum.add_arena(&a.stats(Tracked::assume_new()));
