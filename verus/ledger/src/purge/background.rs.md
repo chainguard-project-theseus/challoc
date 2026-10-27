@@ -12,7 +12,7 @@ file.
 
 ## `axiom_state_lock_inv`
 
-src/purge/background.rs:61. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:62. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: every holder of the state lock leaves the stack's end in range and no thread published that has exited, so the lock's invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first start; after it, a reservation of `STACK_SIZE` bytes, which `Meta::reserve` places below `va_limit`) and `exited ==> !present` (a thread that found the request withdrawn and exited before its `start` published it stays unpublished).
@@ -26,7 +26,7 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:678. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:675. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_lock`] is the raw lock of [`STATE`].
