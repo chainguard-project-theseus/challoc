@@ -142,12 +142,12 @@ pub const PUSH_ZERO: u8 = 2;
 /// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
 /// `false`; never set on x86_64.
 pub const PUSH_PAC: u8 = 4;
+verus! {
+
 /// `Shared::free_flags` bit, never in `push_flags`: more than one arena
 /// exists, so plain `free` compares the slot's owner word with the heap's
 /// home arena before pushing.
 pub const FREE_ROUTE: u8 = 8;
-
-verus! {
 
 /// The process's regions are well formed and separated: a heap exists
 /// only once the `Shared` is published, and [`Regions::from_parts`],

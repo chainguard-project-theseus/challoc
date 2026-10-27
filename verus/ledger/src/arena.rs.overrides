@@ -29,6 +29,8 @@ AR_SPARE_INV	core library	Kani
 axiom_arenas_layout	core library	Kani
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arenas_assemble	raw pointer (internal)	none (assumption)
-# The creation lock's invariant, assumed of its unverified writers
-# (create, materialise, build) until they are verified.
+# The creation lock's invariant (lock_inv is uninterpreted); its writers
+# are verified.
 axiom_arenas_lock_inv	allocator invariant	none (assumption)
+# The creation lock's frame, as lock.rs's other frame axioms.
+axiom_arenas_lock_frame	allocator invariant	none (assumption)

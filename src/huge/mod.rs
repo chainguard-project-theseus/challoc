@@ -2154,7 +2154,9 @@ proof fn lemma_took_extents(g0: Inner, g1: Inner, t: Take)
 /// descriptors.
 ///
 /// The proof's solver cost moves with unrelated items elsewhere in the
-/// crate; the rlimit leaves it headroom.
+/// crate; its own solver instance (`spinoff_prover`) keeps them out of
+/// its context, and the rlimit leaves it headroom.
+#[verifier::spinoff_prover]
 #[verifier::rlimit(40)]
 proof fn lemma_took_tally(g0: Inner, g1: Inner, t: Take, k: int)
     requires
