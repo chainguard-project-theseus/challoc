@@ -12,7 +12,7 @@ file.
 
 ## `Reserved`
 
-src/layout/regions.rs:1892. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:1914. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation that [`try_reserve`] obtained from the kernel.
@@ -23,7 +23,7 @@ pub tracked struct Reserved
 
 ## `entry_barrier`
 
-src/layout/regions.rs:2266. Kind: external_body. Category: inline asm.
+src/layout/regions.rs:2288. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.

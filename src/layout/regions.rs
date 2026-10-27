@@ -388,6 +388,28 @@ impl Regions {
         ;
     }
 
+    /// What `Shared::init` needs of its regions beyond [`wf`] and
+    /// [`separated`]: a metadata region `Meta::owning` accepts (page
+    /// multiples, non-empty, at a non-zero address below the metadata
+    /// limit, a page of at least `MIN_ALIGN`) and a huge region `Huge::new`
+    /// accepts (1 to `u32::MAX` pages, below the limit). A premise of
+    /// `init`'s caller (`api::init`, unverified), which reserves them
+    /// (`Regions::reserve_owning`).
+    ///
+    /// [`wf`]: Regions::wf
+    /// [`separated`]: Regions::separated
+    pub open spec fn ready(self) -> bool {
+        let page = 1usize << self.lg_page;
+        &&& page >= crate::meta::MIN_ALIGN
+        &&& self.meta_base > 0
+        &&& self.meta_base % page == 0
+        &&& self.meta_len % page == 0
+        &&& self.meta_len > 0
+        &&& self.meta_base + self.meta_len <= crate::meta::va_limit()
+        &&& 0 < self.huge_len >> self.lg_page <= u32::MAX
+        &&& self.huge_base + self.huge_len <= crate::meta::va_limit()
+    }
+
     /// Slabs in class `c`'s region ([`Regions::nslabs`]).
     pub open spec fn spec_nslabs(self, c: int) -> int {
         ((1usize << self.lg_region) >> class_table()[c].lg_slab) as int
