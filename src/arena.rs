@@ -1323,6 +1323,23 @@ impl Arena {
         self.last_exit_purge.store(now.max(1), Ordering::Relaxed);
         true
     }
+
+    /// Class state for `class`, with the bounds check: the accessor for the
+    /// cold walks (the statistics), whose proofs then do not depend on the
+    /// fast paths' [`Arena::class`].
+    pub fn class_at(&self, class: usize) -> (r: &ClassState)
+        requires
+            class < NCLASSES,
+        ensures
+            r.spec_class() == class,
+            *r == self.spec_class_state(class as int),
+            r.spec_arena() == self.spec_index(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        &self.classes[class]
+    }
 }
 
 } // verus!
@@ -1335,13 +1352,6 @@ impl Arena {
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
         unsafe { self.classes.get_unchecked(class) }
-    }
-
-    /// Class state for `class`, with the bounds check: the accessor for the
-    /// cold walks (the statistics), whose proofs then do not depend on the
-    /// fast paths' [`Arena::class`].
-    pub fn class_at(&self, class: usize) -> &ClassState {
-        &self.classes[class]
     }
 
     /// Change the decay period; `-1` turns purging off. Takes effect at the

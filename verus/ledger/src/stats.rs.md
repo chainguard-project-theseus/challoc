@@ -8,12 +8,13 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `fig_add` | external_body | core library | Kani | trusted |
+| `fig_mul` | external_body | core library | Kani | trusted |
 | `fig_add64` | external_body | core library | Kani | trusted |
 | `axiom_s...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `fig_add`
 
-src/stats.rs:416. Kind: external_body. Category: core library.
+src/stats.rs:479. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
@@ -24,9 +25,22 @@ pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
         a + b <= usize::MAX ==> r == a + b,
 ```
 
+## `fig_mul`
+
+src/stats.rs:490. Kind: external_body. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `a * b` for a statistics figure; see [`fig_add`].
+
+```rust
+pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
+    ensures
+        a * b <= usize::MAX ==> r == a * b,
+```
+
 ## `fig_add64`
 
-src/stats.rs:427. Kind: external_body. Category: core library.
+src/stats.rs:501. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a + b` for a statistics counter; see [`fig_add`].
@@ -39,10 +53,10 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 
 ## `axiom_snapshot_lock_inv`
 
-src/stats.rs:527. Kind: axiom. Category: allocator invariant.
+src/stats.rs:600. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Assumption (`lock.rs`): the value of the process statistics lock (`Shared::stats`) satisfies [`Snapshot::inv`] while the lock is free.
+> The snapshot an `epoch` stores satisfies [`Snapshot::inv`].
 
 ```rust
 pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)

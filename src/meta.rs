@@ -1019,22 +1019,21 @@ impl Meta {
             .reserve_committed(len, align)
     }
 
-    pub fn stats(&self, Tracked(_ord): Tracked<&mut LockOrder>) -> (r: MetaStats)
+    pub fn stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: MetaStats)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
         ensures
             r.identities(),
             r.len <= va_limit(),
+            *final(ord) == *old(ord),
     {
         broadcast use axiom_meta_lock_inv;
         proof {
             use_type_invariant(self);
         }
 
-        let tracked mut ord = axiom_meta_order();
-        self.inner
-            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()))
-            .stats()
+        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).stats()
     }
 
     /// The lock's rank in the lock order.

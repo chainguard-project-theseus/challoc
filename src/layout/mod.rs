@@ -1353,6 +1353,8 @@ const _: () = assert!(MAX_SLAB_WORDS == max_slab_words());
 
 mod regions;
 
+#[cfg(all(verus_keep_ghost, not(test)))]
+pub use regions::LG_REGION_PREFERRED;
 pub use regions::{Kind, LG_HUGE_PREFERRED, Regions};
 #[cfg(test)]
 pub use regions::{
