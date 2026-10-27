@@ -392,14 +392,14 @@ axiom fn axiom_arenas_assemble(
 
 ## `axiom_arenas_lock_frame`
 
-src/arena.rs:3014. Kind: axiom. Category: allocator invariant.
+src/arena.rs:3018. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Assumption (`lock.rs`): the creation lock's value keeps the snapshot half's location and never goes below the count it was created with (the automatic count, `Arenas::type_inv`).
+> Assumption (`lock.rs`): what the creation lock's value keeps from the value it was created with is exactly the snapshot half's location and a count at or above the one it was created with (the automatic count, `Arenas::type_inv`).
 
 ```rust
 broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
     ensures
-        #[trigger] lock_frame(init, v) ==> v.n >= init.n && v.half@.id() == init.half@.id(),
+        #[trigger] lock_frame(init, v) == (v.n >= init.n && v.half@.id() == init.half@.id()),
 ;
 ```

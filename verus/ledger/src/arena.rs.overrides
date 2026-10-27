@@ -32,5 +32,6 @@ axiom_arenas_assemble	raw pointer (internal)	none (assumption)
 # The creation lock's invariant (lock_inv is uninterpreted); its writers
 # are verified.
 axiom_arenas_lock_inv	allocator invariant	none (assumption)
-# The creation lock's frame, as lock.rs's other frame axioms.
+# The creation lock's frame (lock_frame is uninterpreted), stated with ==
+# as the class lock's; its writers are verified against it.
 axiom_arenas_lock_frame	allocator invariant	none (assumption)

@@ -3005,15 +3005,19 @@ impl Arenas {
 
 verus! {
 
-/// Assumption (`lock.rs`): the creation lock's value keeps the snapshot
-/// half's location and never goes below the count it was created with
-/// (the automatic count, `Arenas::type_inv`). Its writers keep both:
-/// `Arenas::create` raises `n` by one and updates the half in place
-/// (`GhostVarAuth::update` keeps its location), and `Arenas::build`
-/// updates the half in place.
+/// Assumption (`lock.rs`): what the creation lock's value keeps from the
+/// value it was created with is exactly the snapshot half's location and
+/// a count at or above the one it was created with (the automatic count,
+/// `Arenas::type_inv`). Its writers are verified against it: the value
+/// `Arenas::init` creates the lock with keeps it trivially, and
+/// `Arenas::create` (which raises `n` by one and updates the half in
+/// place, `GhostVarAuth::update` keeping its location) and
+/// `Arenas::materialise` (whose `build` updates the half in place) assert
+/// it after `build`; their early returns leave the value as it was (for a
+/// failed `build`, by `build`'s ensures).
 broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
     ensures
-        #[trigger] lock_frame(init, v) ==> v.n >= init.n && v.half@.id() == init.half@.id(),
+        #[trigger] lock_frame(init, v) == (v.n >= init.n && v.half@.id() == init.half@.id()),
 ;
 
 impl Arenas {
@@ -3153,6 +3157,8 @@ impl Arenas {
             // The lock's invariant again: an automatic index is below the
             // count (the frame keeps the count at or above `auto`).
             assert(lock_inv(*c));
+            // And its frame: `build` kept the half's location.
+            assert(lock_frame(lock_init(self.lock), *c));
         }
         r
     }
@@ -3377,6 +3383,8 @@ impl Arenas {
 
             // The lock's invariant again: arena `index` is below the count.
             assert(lock_inv(*c));
+            // And its frame: the count went up, the half kept its location.
+            assert(lock_frame(lock_init(self.lock), *c));
         }
         Some(index as u16)
     }
