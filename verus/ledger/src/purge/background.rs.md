@@ -26,7 +26,7 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:672. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:678. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_lock`] is the raw lock of [`STATE`].
