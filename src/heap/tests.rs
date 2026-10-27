@@ -376,7 +376,7 @@ fn default_caps_follow_the_design_table() {
 #[test]
 fn heap_starts_with_the_sentinel_and_allocates_caches_lazily() {
     let s = shared();
-    let before = s.meta.stats().allocated;
+    let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
     let t = TestHeap::new(s);
     for c in 0..NCLASSES {
         assert!(t.heap().cache(c).is_none());
@@ -395,12 +395,15 @@ fn heap_starts_with_the_sentinel_and_allocates_caches_lazily() {
     assert_eq!(t.heap().slow_ticks(), 1);
     // Only the heap and one stack came from the metadata region (both
     // rounded up to a metadata bin).
-    let meta_used = s.meta.stats().allocated - before;
+    let meta_used = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated - before;
     assert!(meta_used >= core::mem::size_of::<Heap>() + 8 * CAP);
     assert!(meta_used <= 4096 + 8 * CAP, "{meta_used}");
     t.free(p);
     t.destroy();
-    assert_eq!(s.meta.stats().allocated, before);
+    assert_eq!(
+        s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
+        before
+    );
     assert_eq!(live(s, c), 0);
 }
 
@@ -2499,7 +2502,7 @@ fn failed_arena_build_leaves_its_storage_to_the_next() {
 fn failed_arena_init_frees_its_set_table_object() {
     let s = shared();
     s.meta.set_eager_for_test(false);
-    let st = s.meta.stats();
+    let st = s.meta.stats(vstd::prelude::Tracked::assume_new());
     if st.reserved != 0 {
         // Init put tables on the reservation side (no eager tables on
         // this host), so `writable` no longer locates the object side's
@@ -2520,13 +2523,16 @@ fn failed_arena_init_frees_its_set_table_object() {
             vstd::prelude::Tracked::assume_new(),
         )
         .unwrap();
-    let allocated = s.meta.stats().allocated;
+    let allocated = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
     assert!(
         s.arenas
             .create(s, vstd::prelude::Tracked::assume_new())
             .is_none()
     );
-    assert_eq!(s.meta.stats().allocated, allocated);
+    assert_eq!(
+        s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
+        allocated
+    );
 }
 
 /// `narenas:3`: a new heap is bound to the automatic arena with the
@@ -3053,9 +3059,9 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     s.free_direct(a1, c, d);
     assert_eq!(a.classes[c].stats().empty, per_refill);
     // Destroying the heap frees the nodes too.
-    let before = s.meta.stats().allocated;
+    let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
     unsafe { Heap::destroy(t.h, s) };
-    assert!(s.meta.stats().allocated < before);
+    assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < before);
     core::mem::forget(t);
 }
 
@@ -3143,11 +3149,11 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     assert_eq!(s.arena(a1).unwrap().classes[c].stats().committed, 1);
     // A foreign arena named explicitly, through a heap that caches
     // nothing of that class there: no node, no cache, right arena.
-    let before = s.meta.stats().allocated;
+    let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
     let (q, _) = h.alloc_in(s, 0, c);
     assert_eq!(s.classify_free(q), Ok((c, 0)));
     assert_eq!(
-        s.meta.stats().allocated,
+        s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
         before,
         "no others node for an uncached class"
     );
@@ -3158,7 +3164,10 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     h.free(s, d);
     h.free(s, p);
     h.free(s, q);
-    assert_eq!(s.meta.stats().allocated, before);
+    assert_eq!(
+        s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
+        before
+    );
     assert_eq!(h.stats().deallocated, 3 * 64 * 1024);
     assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, 1);
     assert_eq!(s.arena0.classes[c].stats().empty, 1);
@@ -3179,11 +3188,11 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
     h.free(s, p);
     let before = h.stats();
     assert_eq!((before.allocated, before.deallocated), (128, 64));
-    let meta_before = s.meta.stats().allocated;
+    let meta_before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
     h.drop_home_caches(s);
     assert!(h.cache(c).is_none());
     assert!(
-        s.meta.stats().allocated < meta_before,
+        s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < meta_before,
         "the stack was freed"
     );
     let after = h.stats();
@@ -3722,9 +3731,9 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
         }
     );
     // `destroy` frees each node as the walk hands it over.
-    let before = s.meta.stats().allocated;
+    let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
     unsafe { Heap::destroy(t.h, s) };
-    assert!(s.meta.stats().allocated < before);
+    assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < before);
     core::mem::forget(t);
 }
 

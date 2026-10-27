@@ -39,7 +39,7 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 
 ## `axiom_snapshot_lock_inv`
 
-src/stats.rs:525. Kind: axiom. Category: allocator invariant.
+src/stats.rs:527. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the value of the process statistics lock (`Shared::stats`) satisfies [`Snapshot::inv`] while the lock is free.

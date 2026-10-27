@@ -44,9 +44,9 @@
 use core::alloc::Layout;
 use core::ptr;
 
-use crate::lock::{Lock, RawLock};
+use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{LockOrder, axiom_meta_order, lock_init, rank_meta};
+use crate::lock::{axiom_meta_order, lock_init, rank_meta};
 use crate::sys::Errno;
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
@@ -1019,7 +1019,7 @@ impl Meta {
             .reserve_committed(len, align)
     }
 
-    pub fn stats(&self) -> (r: MetaStats)
+    pub fn stats(&self, Tracked(_ord): Tracked<&mut LockOrder>) -> (r: MetaStats)
         requires
             crate::sys::may_syscall(),
         ensures
@@ -3629,7 +3629,7 @@ mod tests {
         assert_eq!(m.base(), b.base);
         assert_eq!(m.top(), b.base + b.len);
         assert_eq!(
-            m.stats(),
+            m.stats(Tracked::assume_new()),
             MetaStats {
                 len: 1 << 20,
                 ..MetaStats::default()
@@ -3646,7 +3646,7 @@ mod tests {
         assert!(!p.is_null());
         assert_eq!(p as usize, b.base, "first object sits at the base");
         assert_eq!(p as usize % CACHE_LINE, 0);
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(s.committed, chunk(), "one chunk committed");
         assert_eq!(s.allocated, 256, "200 rounds up to the 256 bin");
         assert_eq!(s.bumped, 256);
@@ -3659,11 +3659,14 @@ mod tests {
         let r = m.alloc(layout(16, 16));
         assert_eq!(q as usize, b.base + 256);
         assert_eq!(r as usize, b.base + 272);
-        assert_eq!(m.stats().committed, chunk());
+        assert_eq!(m.stats(Tracked::assume_new()).committed, chunk());
         // Crossing the chunk boundary commits the next one.
         let big = m.alloc(layout(MAX_BINNED, 64));
         assert!(!big.is_null());
-        assert_eq!(m.stats().committed, align_up(MAX_BINNED + 512, chunk()));
+        assert_eq!(
+            m.stats(Tracked::assume_new()).committed,
+            align_up(MAX_BINNED + 512, chunk())
+        );
         unsafe { core::slice::from_raw_parts_mut(big, MAX_BINNED) }.fill(1);
     }
 
@@ -3675,19 +3678,19 @@ mod tests {
         let a = m.alloc(l);
         let c = m.alloc(l);
         let d = m.alloc(layout(1000, 8));
-        let bumped = m.stats().bumped;
+        let bumped = m.stats(Tracked::assume_new()).bumped;
         free(&m, a, l);
         free(&m, c, l);
-        assert_eq!(m.stats().allocated, 1024);
+        assert_eq!(m.stats(Tracked::assume_new()).allocated, 1024);
         // Same bin: last freed comes back first, nothing new is bumped.
         assert_eq!(m.alloc(l), c);
         assert_eq!(m.alloc(l), a);
-        assert_eq!(m.stats().bumped, bumped);
+        assert_eq!(m.stats(Tracked::assume_new()).bumped, bumped);
         // Different bin: not served from that list.
         free(&m, a, l);
         let e = m.alloc(layout(200, 8));
         assert_ne!(e, a);
-        assert!(m.stats().bumped > bumped);
+        assert!(m.stats(Tracked::assume_new()).bumped > bumped);
         free(&m, d, layout(1000, 8));
         assert_eq!(m.alloc(layout(1000, 8)), d);
         // alloc_zeroed scrubs a reused block but leaves fresh ones alone.
@@ -3744,8 +3747,8 @@ mod tests {
             16 * page_size() / 1024,
             "16 pages hold exactly that many 1 KiB objects"
         );
-        assert_eq!(m.stats().committed, 16 * page_size());
-        assert_eq!(m.stats().bumped, 16 * page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).committed, 16 * page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).bumped, 16 * page_size());
         assert!(m.alloc(layout(1, 1)).is_null());
         assert_eq!(
             reserve(&m, page_size(), page_size()),
@@ -3775,12 +3778,12 @@ mod tests {
         assert_eq!(r2 % (8 * page_size()), 0);
         assert!(r2 + page_size() <= r1);
         assert_eq!(m.top(), r2);
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(s.reserved, end - r2);
         assert_eq!(s.committed, 0, "reservations are uncommitted");
         // Commit part of r1, write into it.
         commit(&m, r1 + page_size(), page_size()).unwrap();
-        assert_eq!(m.stats().committed, page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).committed, page_size());
         unsafe { core::slice::from_raw_parts_mut((r1 + page_size()) as *mut u8, page_size()) }
             .fill(7);
         // A small reserve_committed is zero and writable, and (eager) sits
@@ -3794,7 +3797,7 @@ mod tests {
         let sl = unsafe { core::slice::from_raw_parts_mut(r3 as *mut u8, 2 * page_size()) };
         assert!(sl.iter().all(|&x| x == 0));
         sl.fill(9);
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(
             s.committed,
             page_size() + align_up(2 * page_size(), chunk()),
@@ -3808,13 +3811,13 @@ mod tests {
         while !m.alloc(layout(page_size(), 8)).is_null() {
             n += 1;
         }
-        assert_eq!(m.stats().bumped, m.top() - b.base);
+        assert_eq!(m.stats(Tracked::assume_new()).bumped, m.top() - b.base);
         assert_eq!(n, (m.top() - b.base) / page_size() - 2);
         assert_eq!(reserve(&m, page_size(), page_size()), None);
         assert_eq!(reserve_table(&m, page_size(), page_size()), None);
         // Object side writable exactly up to the reservation boundary;
         // committed counts r1's page, r3 and the objects' chunks.
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(s.writable, page_size() + (m.top() - b.base));
         assert_eq!(s.committed, page_size() + (m.top() - b.base));
     }
@@ -3833,22 +3836,25 @@ mod tests {
             end - EAGER_MAX - page_size(),
             "larger than EAGER_MAX: from the top"
         );
-        assert_eq!(m.stats().eager, 0);
-        assert_eq!(m.stats().reserved, EAGER_MAX + page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).eager, 0);
+        assert_eq!(
+            m.stats(Tracked::assume_new()).reserved,
+            EAGER_MAX + page_size()
+        );
         commit(&m, big, page_size()).unwrap();
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!((s.committed, s.writable), (page_size(), page_size()));
         m.set_eager_for_test(false);
         let small = reserve_table(&m, page_size(), page_size()).unwrap();
         assert_eq!(small, big - page_size(), "eager off: from the top too");
-        assert_eq!(m.stats().eager, 0);
+        assert_eq!(m.stats(Tracked::assume_new()).eager, 0);
         let c = m.reserve_committed(3 * page_size(), page_size()).unwrap();
         assert_eq!(c, small - 3 * page_size());
-        assert_eq!(m.stats().committed, 4 * page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).committed, 4 * page_size());
         m.set_eager_for_test(true);
         let e = reserve_table(&m, page_size(), page_size()).unwrap();
         assert_eq!(e, b.base, "eager on again: from the base");
-        assert_eq!(m.stats().eager, page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).eager, page_size());
     }
 
     /// Eager tables, objects and more tables interleave on the object side
@@ -3879,7 +3885,7 @@ mod tests {
         );
         let t3 = reserve_table(&m, EAGER_MAX, page_size()).unwrap();
         assert!(t3 >= o2 as usize + 1024);
-        let before = m.stats();
+        let before = m.stats(Tracked::assume_new());
         assert_eq!(before.eager, 3 * page_size() + page_size() + EAGER_MAX);
         assert_eq!(before.bumped, t3 + EAGER_MAX - b.base);
         assert!(before.writable >= before.bumped && before.writable.is_multiple_of(page_size()));
@@ -3887,7 +3893,7 @@ mod tests {
         // The owner's commits: writable does not move, committed counts.
         commit(&m, t1, page_size()).unwrap();
         commit(&m, t3 + EAGER_MAX - page_size(), page_size()).unwrap();
-        let after = m.stats();
+        let after = m.stats(Tracked::assume_new());
         assert_eq!(after.writable, before.writable);
         assert_eq!(after.committed, before.committed + 2 * page_size());
         // Every byte of every table is writable and zero.
@@ -3898,7 +3904,7 @@ mod tests {
             sl[len - 1] = 1;
         }
         // Identities.
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert!(s.allocated + s.eager <= s.bumped && s.bumped <= s.writable && s.writable <= s.len);
         assert!(s.bumped + s.reserved <= s.len);
     }
@@ -3920,7 +3926,7 @@ mod tests {
         let t1 = reserve_table(&m, 10 * page_size(), page_size()).unwrap();
         assert_eq!(t1, b.base);
         assert_eq!(
-            m.stats().writable,
+            m.stats(Tracked::assume_new()).writable,
             align_up(10 * page_size(), chunk()).min(12 * page_size())
         );
         // 3 more do not: not eagerly (past `top`), not as a reservation
@@ -3935,7 +3941,7 @@ mod tests {
         assert_eq!(reserve_table(&m, page_size(), page_size()), None);
         let l = layout(16, 8);
         assert!(m.alloc(l).is_null());
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(
             (s.bumped, s.eager, s.reserved, s.writable),
             (
@@ -3948,7 +3954,7 @@ mod tests {
         assert_eq!(s.committed, 0, "nothing asked for yet");
         commit(&m, t1, 10 * page_size()).unwrap();
         commit(&m, t2, 2 * page_size()).unwrap();
-        assert_eq!(m.stats().committed, 12 * page_size());
+        assert_eq!(m.stats(Tracked::assume_new()).committed, 12 * page_size());
     }
 
     /// The host policy: eager carving is on under the default `thp:never`
@@ -3971,7 +3977,7 @@ mod tests {
         assert_eq!(reserve(&m, 9 * page_size(), page_size()), None);
         assert_eq!(reserve(&m, usize::MAX, page_size()), None);
         assert_eq!(reserve(&m, page_size(), 1 << 40), None);
-        assert_eq!(m.stats().reserved, 0);
+        assert_eq!(m.stats(Tracked::assume_new()).reserved, 0);
         assert_eq!(m.top(), b.base + b.len);
         assert_eq!(reserve(&m, 8 * page_size(), page_size()), Some(b.base));
         assert_eq!(m.alloc(layout(1, 1)), ptr::null_mut());
@@ -4080,7 +4086,7 @@ mod tests {
                 free(&m, p, l);
                 expect_allocated -= BINS[bin_for(l).unwrap()] as usize;
             }
-            let st = m.stats();
+            let st = m.stats(Tracked::assume_new());
             assert_eq!(st.allocated, expect_allocated);
             assert!(st.allocated <= st.bumped && st.bumped <= st.committed);
             assert!(st.committed <= st.len && st.committed.is_multiple_of(page_size()));
@@ -4090,13 +4096,13 @@ mod tests {
         for (p, l, _) in live.drain(..) {
             free(&m, p, l);
         }
-        assert_eq!(m.stats().allocated, 0);
-        let bumped = m.stats().bumped;
+        assert_eq!(m.stats(Tracked::assume_new()).allocated, 0);
+        let bumped = m.stats(Tracked::assume_new()).bumped;
         for l in &layouts {
             assert!(!m.alloc(*l).is_null());
         }
         assert_eq!(
-            m.stats().bumped,
+            m.stats(Tracked::assume_new()).bumped,
             bumped,
             "everything came from the free lists"
         );
@@ -4138,7 +4144,7 @@ mod tests {
                 });
             }
         });
-        assert_eq!(m.stats().allocated, 0);
+        assert_eq!(m.stats(Tracked::assume_new()).allocated, 0);
         assert!(!m.raw_lock().is_locked());
     }
 
@@ -4188,7 +4194,7 @@ mod tests {
             tables.push((reserve_table(&m, len, page_size()).unwrap(), len));
         }
         assert_eq!(writable_ranges(b.base, b.len), vec![], "carves alone");
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         let (last, last_len) = tables[19];
         assert_eq!(s.writable, align_up(last + last_len - b.base, chunk()));
         assert_eq!(s.committed, s.writable - s.eager, "the chunk slack only");
@@ -4198,19 +4204,22 @@ mod tests {
             vec![(b.base, b.base + s.writable)],
             "one commit covers every table carved so far"
         );
-        assert_eq!(m.stats().committed, s.committed + page_size());
-        assert_eq!(m.stats().writable, s.writable);
+        assert_eq!(
+            m.stats(Tracked::assume_new()).committed,
+            s.committed + page_size()
+        );
+        assert_eq!(m.stats(Tracked::assume_new()).writable, s.writable);
         for &(t, len) in &tables {
             unsafe { core::ptr::write_volatile((t + len - 1) as *mut u8, 1) };
         }
         // More carves, then an object past them: one commit again.
         let t = reserve_table(&m, EAGER_MAX, page_size()).unwrap();
-        let before = m.stats();
+        let before = m.stats(Tracked::assume_new());
         assert_eq!(writable_ranges(b.base, b.len).len(), 1);
         assert!(writable_ranges(b.base, b.len)[0].1 < t + EAGER_MAX);
         let o = m.alloc(layout(1000, 8));
         assert_eq!(o as usize, t + EAGER_MAX, "the object follows the table");
-        let after = m.stats();
+        let after = m.stats(Tracked::assume_new());
         assert_eq!(
             writable_ranges(b.base, b.len),
             vec![(b.base, b.base + after.writable)]
@@ -4246,7 +4255,7 @@ mod tests {
         // The object side's frontier: the chunks through the small table's
         // end (one chunk under 4 KiB pages, four pages under 64 KiB pages).
         let front = align_up(small + 3 * page_size() - b.base, chunk());
-        let st = m.stats();
+        let st = m.stats(Tracked::assume_new());
         assert_eq!(
             st.committed,
             front + page_size(),
@@ -4331,7 +4340,7 @@ mod tests {
             unsafe { core::ptr::write_volatile(t as *mut u64, i as u64 + 1) };
             tables.push((t, len));
         }
-        let s = m.stats();
+        let s = m.stats(Tracked::assume_new());
         assert_eq!(s.reserved, 0, "nothing on the reservation side");
         assert_eq!(
             s.eager,

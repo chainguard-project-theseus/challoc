@@ -459,9 +459,11 @@ fn huge_usable_pages(index: u16, runs: usize, pages: usize) -> usize {
 /// The abort of [`huge_usable_pages`].
 #[cold]
 #[inline(never)]
-#[track_caller]
 fn huge_pages_short(index: u16, runs: usize, pages: usize) -> ! {
-    panic!("stats: arena {index}: {runs} huge runs in {pages} pages")
+    crate::sys::abort_integrity(format_args!(
+        "stats: arena {}: {runs} huge runs in {pages} pages",
+        index
+    ))
 }
 
 verus! {
@@ -799,7 +801,7 @@ pub fn collect_arena(shared: &Shared, arena: &Arena, _ord: Tracked<&mut LockOrde
         shared,
         arena,
         &shared.huge.stats(Tracked::assume_new()),
-        &shared.meta.stats(),
+        &shared.meta.stats(Tracked::assume_new()),
         Tracked::assume_new(),
         Tracked::assume_new(),
     )
@@ -827,7 +829,7 @@ fn collect_into(
         .stats
         .lock(Tracked::assume_new(), Tracked::assume_new());
     let huge = shared.huge.stats(Tracked::assume_new());
-    let meta = shared.meta.stats();
+    let meta = shared.meta.stats(Tracked::assume_new());
     let mut totals = Totals::EMPTY;
     let mut narenas: u32 = 0;
     let n = shared.arenas.count();
@@ -927,7 +929,7 @@ pub fn collect_all(
     _ord: Tracked<&mut LockOrder>,
 ) -> ArenaStats {
     let huge = shared.huge.stats(Tracked::assume_new());
-    let meta = shared.meta.stats();
+    let meta = shared.meta.stats(Tracked::assume_new());
     let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
     let n = shared.arenas.count();
     for i in 0..n as usize {
@@ -985,7 +987,7 @@ mod tests {
         assert_eq!(first.totals.retained, 0);
         assert_eq!(first.totals.mapped, first.totals.resident);
         assert!(first.totals.identities_hold());
-        assert_eq!(first.meta, s.meta.stats());
+        assert_eq!(first.meta, s.meta.stats(Tracked::assume_new()));
 
         let t = TestHeap::new(s);
         let c16 = class_with(16);
@@ -1084,7 +1086,7 @@ mod tests {
         assert_eq!(a.mapped, a.resident);
         assert_eq!(tot.allocated, a.small_allocated + a.large_allocated);
         assert_eq!(tot.active, a.small_active + a.large_active);
-        assert_eq!(tot.metadata, s.meta.stats().committed);
+        assert_eq!(tot.metadata, s.meta.stats(Tracked::assume_new()).committed);
         assert_eq!(tot.resident, tot.active + tot.metadata);
         assert_eq!(tot.retained, 0);
         assert!(tot.identities_hold(), "{tot:?}");
