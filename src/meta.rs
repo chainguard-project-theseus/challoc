@@ -985,6 +985,18 @@ impl Meta {
         ensures
             r matches Some(s) ==> s % align == 0 && s > 0 && self.holds(s as int, len as int),
     {
+        self.reserve_committed_raw(len, align).0
+    }
+
+    /// [`reserve_committed`](Meta::reserve_committed), with the permission
+    /// to the range's bytes and the token that they read as zero.
+    pub fn reserve_committed_raw(&self, len: usize, align: usize) -> (r: (Option<usize>, Tracked<ZeroRaw>))
+        requires
+            crate::sys::may_syscall(),
+            is_pow2(align),
+        ensures
+            r.0 matches Some(s) ==> s % align == 0 && s > 0 && self.holds(s as int, len as int),
+    {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
@@ -3056,7 +3068,7 @@ impl Inner {
     /// [`Meta::reserve_committed`] under the lock.
     #[verifier::spinoff_prover]
     #[verifier::rlimit(60)]
-    fn reserve_committed(&mut self, len: usize, align: usize) -> (r: Option<usize>)
+    fn reserve_committed(&mut self, len: usize, align: usize) -> (r: (Option<usize>, Tracked<ZeroRaw>))
         requires
             crate::sys::may_syscall(),
             old(self).wf(),
@@ -3067,11 +3079,9 @@ impl Inner {
             final(self).pages_id() == old(self).pages_id(),
             final(self).base == old(self).base,
             final(self).len == old(self).len,
-            r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
-            r matches Some(s) ==> old(self).base <= s && s + len <= old(self).base + old(self).len,
+            r.0 matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
+            r.0 matches Some(s) ==> old(self).base <= s && s + len <= old(self).base + old(self).len,
     {
-        // The table's tokens are dropped: `Meta::reserve_committed` hands
-        // out only the address.
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         if self.eager_ok(len) {
             let (bump, frontier, stats) = (self.bump, self.frontier, self.stats);
@@ -3094,7 +3104,7 @@ impl Inner {
                         self.pages.borrow_mut().delete(c);
                         assert(self.pages_wf());
                     }
-                    return Some(p);
+                    return (Some(p), Tracked(ZeroRaw::empty(cast_provenance())));
                 }
                 // The kernel refused the commit: undo the carve (nothing
                 // has seen it) and try the reservation side, as when the
@@ -3134,7 +3144,9 @@ impl Inner {
         let old_top = self.top;
         let old_reserved = self.stats.reserved;
         let tracked mut given = Unbacked::empty(0);
-        let start = self.reserve(len, align, Tracked(&mut claim), Tracked(&mut given))?;
+        let Some(start) = self.reserve(len, align, Tracked(&mut claim), Tracked(&mut given)) else {
+            return (None, Tracked(ZeroRaw::empty(cast_provenance())));
+        };
         proof {
             lemma_sub_mod_noop(old_top as int, start as int, self.page as int);
             vstd::arithmetic::div_mod::lemma_small_mod(0, self.page as nat);
@@ -3155,9 +3167,9 @@ impl Inner {
                 assert(self.pages@@ =~= m0);
                 assert(self.pages_wf());
             }
-            return None;
+            return (None, Tracked(ZeroRaw::empty(cast_provenance())));
         }
-        Some(start)
+        (Some(start), Tracked(ZeroRaw::empty(cast_provenance())))
     }
 
     fn stats(&self) -> (r: MetaStats)
