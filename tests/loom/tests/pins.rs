@@ -46,7 +46,7 @@ const PINS: &[(&str, &[&str])] = &[
             "fence(Ordering::SeqCst);",
             "kick();",
             "let seq = SEQ.load(Ordering::SeqCst);",
-            "let deadline = super::decay(shared, now);",
+            "let deadline = super::decay(shared, now, Tracked::assume_new());",
             "let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };",
         ],
     ),

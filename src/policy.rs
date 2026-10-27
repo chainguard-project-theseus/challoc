@@ -59,7 +59,9 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
+use crate::lock::LockOrder;
 use crate::purge::NEVER;
+use crate::stats::fig_add64;
 use crate::sys::cgroup::{Cgroup, LEVELS, UNLIMITED};
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::{
@@ -856,24 +858,26 @@ impl Policy {
 /// `Empty` bytes held by every class of every arena and by the huge
 /// allocator: one lock hold per class that has an `Empty` slab (the
 /// lock-free `oldest_empty` says which), one for the huge allocator.
-pub fn empty_bytes(shared: &Shared) -> u64 {
+/// The sums are [`fig_add64`], which wraps as `+` does in the shipped
+/// build (overflow checks are off in release).
+pub fn empty_bytes(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> u64 {
     let mut total = 0u64;
     // `shared.arenas.iter()`, spelled out with an index: Verus does not
     // specify the iterator.
     let n = shared.arenas.count() as usize;
     for i in 0..n {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
-            total += arena.empty_bytes() as u64;
+            total = fig_add64(total, arena.empty_bytes(Tracked::assume_new()) as u64);
         }
     }
-    total + shared.huge.empty_bytes(Tracked::assume_new()) as u64
+    fig_add64(total, shared.huge.empty_bytes(Tracked::assume_new()) as u64)
 }
 
 /// Evaluate the table against the cgroup record after a sample. Without a
 /// limit this is a few loads; with one it sums the `Empty` bytes and
 /// publishes the outcome on `shared.policy`, waking a background thread
 /// when the band changed or a full purge is owed.
-pub fn evaluate(shared: &Shared) {
+pub fn evaluate(shared: &Shared, _ord: Tracked<&mut LockOrder>) {
     let Some(cg) = shared.cgroup() else {
         return;
     };
@@ -889,7 +893,7 @@ pub fn evaluate(shared: &Shared) {
         }
         return;
     }
-    let retention = empty_bytes(shared);
+    let retention = empty_bytes(shared, Tracked::assume_new());
     let changed = p.apply(b, limit, retention, cg.rises().0);
     // The purge side's mirror of "under 70% of a known limit", read at
     // each batch flush for the advice (the module doc): the band as just

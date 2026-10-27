@@ -734,7 +734,7 @@ fn collect_arena_with(
     let page = shared.regions.page_size();
     let mut a = ArenaStats::empty(arena.index());
     for c in 0..NCLASSES {
-        a.bins[c] = collect_bin(arena.class(c));
+        a.bins[c] = collect_bin(arena.class_at(c));
         let bin = &a.bins[c];
         if c < NBINS {
             let (al, ac, di, re) = (
@@ -1096,7 +1096,7 @@ mod tests {
         let dirty = a.small_dirty + a.large_dirty + a.huge_dirty;
 
         // Purge: dirty becomes retained; resident falls back to metadata.
-        assert!(crate::purge::purge_all(s) > 0);
+        assert!(crate::purge::purge_all(s, Tracked::assume_new(), Tracked::assume_new()) > 0);
         assert_eq!(epoch(s), 4);
         let a = arena_stats(s, 0).unwrap();
         let tot = snapshot(s).totals;

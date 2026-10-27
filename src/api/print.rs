@@ -445,7 +445,7 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
         c => write!(out, " retention_cap {c}")?,
     }
     // Out of the `writeln!`, read before the line is formatted.
-    let empty_bytes = crate::policy::empty_bytes(shared);
+    let empty_bytes = crate::policy::empty_bytes(shared, vstd::prelude::Tracked::assume_new());
     writeln!(
         out,
         " keep {}% empty_bytes {} full_purges {}{} thp {}",
@@ -747,7 +747,7 @@ fn json_general<W: Write>(
     let cg = shared.cgroup_now();
     cg.sample(crate::sys::now_coarse_ns());
     // Out of the `writeln!`, as in `policy_line`.
-    let empty_bytes = crate::policy::empty_bytes(shared);
+    let empty_bytes = crate::policy::empty_bytes(shared, vstd::prelude::Tracked::assume_new());
     writeln!(
         out,
         "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}, \"failed_discards\": {}, \"failed_discard_bytes\": {}}},",

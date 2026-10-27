@@ -661,7 +661,12 @@ impl Heap {
                 && let Some(a) = shared.arenas.get_existing(arena)
                 && a.take_exit_purge(now_ns())
             {
-                crate::purge::purge_arena(shared, arena);
+                crate::purge::purge_arena(
+                    shared,
+                    arena,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
             }
         }
         shared.meta.free(
@@ -1186,7 +1191,7 @@ impl Heap {
                 self.last_gc = now;
                 self.gc(shared);
             }
-            crate::purge::on_tick(shared, now, ALLOC);
+            crate::purge::on_tick(shared, now, ALLOC, vstd::prelude::Tracked::assume_new());
         }
     }
 }
