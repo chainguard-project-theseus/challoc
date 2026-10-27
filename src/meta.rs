@@ -989,13 +989,21 @@ impl Meta {
     }
 
     /// [`reserve_committed`](Meta::reserve_committed), with the permission
-    /// to the range's bytes and the token that they read as zero.
+    /// to the range's bytes rounded up to whole words ([`words_up`]),
+    /// committed, and the token that they read as zero (a [`ZeroRaw`]):
+    /// an eager table's from the [`Carve`] `Inner::reserve_eager` hands
+    /// back, a reservation's from the `Unbacked` token `Inner::reserve`
+    /// carved for it, as [`reserve_table`](Meta::reserve_table) builds
+    /// them, here after the commit, which takes the pages' claim (none is
+    /// handed out).
     pub fn reserve_committed_raw(&self, len: usize, align: usize) -> (r: (Option<usize>, Tracked<ZeroRaw>))
         requires
             crate::sys::may_syscall(),
             is_pow2(align),
         ensures
             r.0 matches Some(s) ==> s % align == 0 && s > 0 && self.holds(s as int, len as int),
+            r.0 matches Some(s) ==> r.1@.is_range(s as int, words_up(len as int)) && len <= words_up(len as int),
+            r.1@.provenance() == cast_provenance(),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
@@ -3081,6 +3089,8 @@ impl Inner {
             final(self).len == old(self).len,
             r.0 matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
             r.0 matches Some(s) ==> old(self).base <= s && s + len <= old(self).base + old(self).len,
+            r.0 matches Some(s) ==> 0 < s && r.1@.is_range(s as int, words_up(len as int)) && len <= words_up(len as int),
+            r.1@.provenance() == cast_provenance(),
     {
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         if self.eager_ok(len) {
@@ -3099,12 +3109,25 @@ impl Inner {
                 }
                 if self.flush().is_ok() {
                     self.stats.committed += align_up(len.max(1), self.page);
+                    let tracked mut z = ZeroRaw::empty(cast_provenance());
                     proof {
                         let tracked c = carve.claim.take();
                         self.pages.borrow_mut().delete(c);
                         assert(self.pages_wf());
+                        // The table's committed part and its deferred part,
+                        // which the flush just committed
+                        // ([`Unbacked::into_lazy`]'s premise), as for
+                        // [`Meta::reserve_table`].
+                        let tracked Carve { raw, zero: hz, lazy: u, .. } = carve;
+                        let l = if len == 0 { 1usize } else { len };
+                        let tracked (lraw, lz) = u.into_lazy();
+                        let tracked (mine, mine_z) = carved_table(raw, hz, lraw, lz, b0, lo0, p as int, e);
+                        lemma_align_bits(l, pre.page, (l + (pre.page - 1)) as usize);
+                        lemma_words_up_fit(pre.page, tlen as int, len as int);
+                        let tracked table = keep_prefix(mine, p as int, p + words_up(len as int), e);
+                        z = ZeroRaw::axiom_new(table, mine_z);
                     }
-                    return (Some(p), Tracked(ZeroRaw::empty(cast_provenance())));
+                    return (Some(p), Tracked(z));
                 }
                 // The kernel refused the commit: undo the carve (nothing
                 // has seen it) and try the reservation side, as when the
@@ -3151,6 +3174,7 @@ impl Inner {
             lemma_sub_mod_noop(old_top as int, start as int, self.page as int);
             vstd::arithmetic::div_mod::lemma_small_mod(0, self.page as nat);
         }
+        let ghost cm = claim@;
         if self.commit(start, old_top - start, Ghost(true), Tracked(&mut claim)).is_err() {
             self.top = old_top;
             self.stats.reserved = old_reserved;
@@ -3169,7 +3193,11 @@ impl Inner {
             }
             return (None, Tracked(ZeroRaw::empty(cast_provenance())));
         }
-        (Some(start), Tracked(ZeroRaw::empty(cast_provenance())))
+        // The reservation's permission, from the `Unbacked` token
+        // `Inner::reserve` carved for it, now committed
+        // ([`Unbacked::into_lazy`]'s premise), as for
+        // [`Meta::reserve_table`].
+        (Some(start), Tracked(reserved_table(given, cm, len, pre.page, old_top)))
     }
 
     fn stats(&self) -> (r: MetaStats)

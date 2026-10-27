@@ -130,7 +130,10 @@ impl ZeroRaw {
     /// `fresh_zero` together, fresh memory above the bump pointer that
     /// nothing has written, and the deferred part from one
     /// `Unbacked::into_lazy`) or a reservation's (both from one
-    /// `Unbacked::into_lazy`).
+    /// `Unbacked::into_lazy`). `meta::Inner::reserve_committed` does the
+    /// same for the tables it commits at once, where the only step between
+    /// the carve and the pairing is the commit itself (`Inner::flush` or
+    /// `Inner::commit`), which writes none of the bytes.
     #[verifier::external_body]
     pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
         requires

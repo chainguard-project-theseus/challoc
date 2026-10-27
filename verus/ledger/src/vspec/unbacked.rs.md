@@ -28,7 +28,7 @@ pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
 
 ## `Unbacked::into_lazy`
 
-src/vspec/unbacked.rs:122. Kind: external_body proof. Category: platform/kernel fact.
+src/vspec/unbacked.rs:125. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of a lazily committed table, still uncommitted, and the token that they read as zero.
