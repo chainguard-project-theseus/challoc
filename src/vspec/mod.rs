@@ -13,6 +13,8 @@ pub(crate) mod byte;
 pub(crate) mod check;
 // Specifications only: Verus alone compiles these.
 #[cfg(verus_keep_ghost)]
+pub(crate) mod arena;
+#[cfg(verus_keep_ghost)]
 pub(crate) mod class;
 #[cfg(verus_keep_ghost)]
 mod config;

@@ -250,6 +250,12 @@ pub open spec fn rank_meta() -> int {
     0x700_0000
 }
 
+/// The statistics lock of arena `i` (`arena::Arena`'s), above the
+/// metadata lock: a leaf, under which no lock is taken.
+pub open spec fn rank_arena_stats(i: int) -> int {
+    0x900_0000 + i
+}
+
 /// Above every lock's rank ([`RawLock::new`] requires it): a
 /// [`LockOrder::spare`] allows nothing.
 pub open spec fn rank_spare() -> int {
