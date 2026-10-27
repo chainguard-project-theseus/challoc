@@ -642,11 +642,9 @@ impl Meta {
 
     /// [`alloc`](Meta::alloc), with the permission to the object's
     /// `layout.size()` bytes and the [`MetaClaim`] that [`free`](Meta::free)
-    /// takes back with them. Trusted for now (`external_body`): its proof
-    /// splits the bin's block as [`alloc_zeroed`](Meta::alloc_zeroed) does.
+    /// takes back with them.
     // The tracked results are part of the signature.
     #[allow(clippy::type_complexity)]
-    #[verifier::external_body]
     pub fn alloc_raw(&self, layout: Layout) -> (r: (*mut u8, Tracked<(PointsToRaw, MetaClaim)>))
         requires
             crate::sys::may_syscall(),
@@ -659,6 +657,11 @@ impl Meta {
             r.0 as usize != 0 ==> r.1@.0.provenance() == r.0@.provenance,
             r.0 as usize != 0 ==> r.1@.1.of(self.live_id(), r.0, layout),
     {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+        proof {
+            use_type_invariant(self);
+        }
+
         assert!(
             layout.align() <= MAX_ALIGN,
             "meta: alignment too large for an object"
@@ -673,6 +676,9 @@ impl Meta {
             .alloc(bin);
         let tracked (raw, mc, _fz) = blk;
         let tracked MetaClaim { claim, .. } = mc;
+        proof {
+            lemma_align_in_bin(layout, bin);
+        }
         // The bin's slack past `layout.size()` goes with the claim.
         let tracked (obj, mc) = split_block(raw, claim, p, layout, bin, self.live_id());
         (p, Tracked((obj, mc)))
@@ -1047,11 +1053,13 @@ impl Meta {
         &&& a + len <= self.spec_base() + self.spec_len()
     }
 
-    /// This allocator is the process's: its claims to reserved pages are
-    /// the process's ([`process_pages_id`]), and so is its page
-    /// ([`process_page`]), in which the lazily committed tables commit
-    /// (`class::sets::Lazy`).
+    /// This allocator is the process's: its region is the process's
+    /// metadata region, its claims to reserved pages are the process's
+    /// ([`process_pages_id`]), and so is its page ([`process_page`]), in
+    /// which the lazily committed tables commit (`class::sets::Lazy`).
     pub open spec fn is_process(&self) -> bool {
+        &&& self.spec_base() == crate::layout::process_regions().meta_base
+        &&& self.spec_len() == crate::layout::process_regions().meta_len
         &&& self.pages_id() == process_pages_id()
         &&& self.page() == process_page()
     }
