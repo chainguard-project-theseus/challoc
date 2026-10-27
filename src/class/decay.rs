@@ -198,8 +198,8 @@ impl ClassState {
                 t.oldest = min_nonzero(t.oldest, d.dirty_at());
                 continue;
             }
-            d.set_state(State::Purged, Tracked::assume_new());
-            d.set_dirty_at(0, Tracked::assume_new());
+            self.set_state_locked(g, d, s, State::Purged);
+            self.set_dirty_locked(g, d, s, 0);
             // Spelled out, not `empty_take` and `purged_add`: paired that
             // way the two stores reorder, and the release build of
             // unrelated code then changes shape (how it addresses two
