@@ -1704,7 +1704,7 @@ pub(crate) proof fn lemma_consts()
 }
 
 /// `PROT_READ | PROT_WRITE`.
-const PROT_RW: i32 = 3;
+pub const PROT_RW: i32 = 3;
 
 } // verus!
 
@@ -1713,10 +1713,9 @@ const _: () = assert!(PROT_RW == crate::sys::PROT_READ | crate::sys::PROT_WRITE)
 verus! {
 
 /// Make `[addr, addr + len)` readable and writable. On `Ok` its bytes are
-/// [`committed`](crate::vspec::unbacked::committed). Trusted for that
-/// kernel fact (`mprotect(2)` returned 0 for `PROT_READ | PROT_WRITE`),
-/// which [`Unbacked::commit`] requires.
-#[verifier::external_body]
+/// [`committed`](crate::vspec::unbacked::committed): the kernel answered
+/// this `PROT_READ | PROT_WRITE` `mprotect` with success
+/// (`sys::mprotect_ok`), which [`Unbacked::commit`] requires.
 fn commit_range(addr: usize, len: usize) -> (r: Result<(), Errno>)
     requires
         crate::sys::may_syscall(),

@@ -1,5 +1,7 @@
-# The kernel's `mprotect` and `mmap` contracts: committed bytes of a
-# fresh private anonymous mapping are this process's and read as zero.
+# The kernel's `mprotect` and `mmap` contracts: a successful
+# `mprotect(PROT_READ | PROT_WRITE)` that covered a token's bytes left them
+# this process's, readable and writable (never downgraded or unmapped
+# since: tokens cover only metadata-region bytes), and they read as zero.
 Unbacked::commit	platform/kernel fact	none (assumption)
 # Page protection is not modeled: a lazily committed table's owner reads
 # and writes only the pages it has committed.
