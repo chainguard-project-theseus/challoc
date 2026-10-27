@@ -111,7 +111,10 @@ impl Unbacked {
     /// `Inner::reserve_eager` just carved of an eager table (its bytes past
     /// the object side's `committed`), which the owner's first
     /// `Meta::commit` makes writable with the deferred commit
-    /// (`Inner::flush`) before the table is used, the same premise. Not at
+    /// (`Inner::flush`) before the table is used, the same premise.
+    /// `meta::Inner::reserve_committed` passes the same two tokens after it
+    /// has committed them itself (`Inner::flush` or `Inner::commit`
+    /// returned `Ok`), so there the premise holds on return. Not at
     /// address 0: a permission there proves `false`
     /// (`PointsTo::is_nonnull`). The zero token is [`Unbacked::commit`]'s
     /// `mmap(2)` fact, on the same premise: the bytes have been `PROT_NONE`
