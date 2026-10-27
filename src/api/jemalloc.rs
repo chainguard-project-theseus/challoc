@@ -350,7 +350,7 @@ pub fn get_defrag_hint(p: *const u8) -> c_int {
     if slabcur == Some(slab) {
         return 0;
     }
-    let (st, mut curregs) = cs.bin_stats();
+    let (st, mut curregs) = cs.bin_stats(vstd::prelude::Tracked::assume_new());
     let mut curslabs = st.curslabs();
     if let Some(dc) = slabcur.and_then(|s| t.desc_if_committed(s)) {
         // Take the current slab out of the average, as jemalloc does.
