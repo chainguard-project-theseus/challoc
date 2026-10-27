@@ -1,2 +1,3 @@
+abort_integrity	panic/abort	Kani
 abort_kernel	panic/abort	Kani
 abort_pending	panic/abort	Kani

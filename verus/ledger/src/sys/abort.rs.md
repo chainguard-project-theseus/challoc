@@ -7,12 +7,26 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `abort_integrity` | external_body | panic/abort | Kani | trusted |
 | `abort_kernel` | external_body | panic/abort | Kani | trusted |
 | `abort_pending` | external_body | panic/abort | Kani | trusted |
 
+## `abort_integrity`
+
+src/sys/abort.rs:175. Kind: external_body. Category: panic/abort.
+Tool: Kani. Status: trusted.
+
+> [`abort_fmt`] at an integrity check: a test of allocator state that no verified invariant constrains failed ([`super::integrity_aborts`]).
+
+```rust
+pub fn abort_integrity(args: fmt::Arguments<'_>) -> !
+    requires
+        crate::sys::may_abort_corrupt(),
+```
+
 ## `abort_kernel`
 
-src/sys/abort.rs:177. Kind: external_body. Category: panic/abort.
+src/sys/abort.rs:190. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`abort_fmt`] at a resource failure: a resource the allocator needs failed it (a system call that returns an error, such as an `madvise`, or metadata the reservation or the kernel cannot supply), which nothing the program does rules out ([`super::kernel_aborts`]).
@@ -25,7 +39,7 @@ pub fn abort_kernel(args: fmt::Arguments<'_>) -> !
 
 ## `abort_pending`
 
-src/sys/abort.rs:191. Kind: external_body. Category: panic/abort.
+src/sys/abort.rs:204. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > [`abort_fmt`] at a check of the free paths that fires on an invalid free, and on a valid one only if allocator state is corrupt (the watermark, the live count, the slab state, the owner word; [`super::pending_aborts`]).
