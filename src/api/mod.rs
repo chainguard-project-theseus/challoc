@@ -994,7 +994,11 @@ mod tests {
                     continue;
                 }
                 let is_lock = |ty: &str| ty.contains("Lock<") || ty.contains("RawLock");
-                if let Some(rest) = decl.strip_prefix("static ") {
+                // `exec static` is how `verus!` spells a static.
+                if let Some(rest) = decl
+                    .strip_prefix("static ")
+                    .or_else(|| decl.strip_prefix("exec static "))
+                {
                     if let Some((name, ty)) = rest.split_once(':')
                         && is_lock(ty)
                     {

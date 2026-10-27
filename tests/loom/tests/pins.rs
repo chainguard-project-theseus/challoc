@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-/// `(file under the repository root, lines in order)`.
+/// `(file under the repository root, lines in order)`. A verified
+/// function's signature line ends before its `requires` (no `{`).
 const PINS: &[(&str, &[&str])] = &[
     // The free, `F` in tests/loom/src/background.rs.
     (
@@ -33,11 +34,11 @@ const PINS: &[(&str, &[&str])] = &[
         "src/purge/background.rs",
         &[
             "PRESENT.load(Ordering::Relaxed)",
-            "pub fn wake() {",
+            "pub fn wake()",
             "fence(Ordering::SeqCst);",
             "if present() {",
             "kick();",
-            "fn kick() {",
+            "fn kick()",
             "SEQ.fetch_add(1, Ordering::SeqCst);",
             "let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };",
             "PRESENT.store(g.present, Ordering::Relaxed);",

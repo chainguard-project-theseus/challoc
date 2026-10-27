@@ -34,7 +34,7 @@ fn lock_slow(&self)
 
 ## `axiom_entry`
 
-src/lock.rs:329. Kind: axiom. Category: allocator invariant.
+src/lock.rs:335. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (an entry point): the calling thread holds no allocator lock.
@@ -49,7 +49,7 @@ pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `axiom_below_huge`
 
-src/lock.rs:340. Kind: axiom. Category: allocator invariant.
+src/lock.rs:346. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise: the calling thread holds only allocator locks ranked below the huge lock.
@@ -64,7 +64,7 @@ pub(crate) axiom fn axiom_below_huge<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `axiom_meta_order`
 
-src/lock.rs:351. Kind: axiom. Category: allocator invariant.
+src/lock.rs:357. Kind: axiom. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Premise: the calling thread holds only allocator locks ranked below the metadata lock ([`rank_meta`]).
@@ -79,7 +79,7 @@ pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `wait`
 
-src/lock.rs:362. Kind: external_body. Category: FFI/syscall.
+src/lock.rs:368. Kind: external_body. Category: FFI/syscall.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -90,7 +90,7 @@ fn wait(state: &AtomicU32, val: u32)
 
 ## `wake`
 
-src/lock.rs:373. Kind: external_body. Category: FFI/syscall.
+src/lock.rs:379. Kind: external_body. Category: FFI/syscall.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -101,7 +101,7 @@ fn wake(state: &AtomicU32)
 
 ## `axiom_acquired`
 
-src/lock.rs:444. Kind: axiom. Category: allocator invariant.
+src/lock.rs:450. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`axiom_held`], for a holder of the raw lock): a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -117,7 +117,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ## `axiom_held`
 
-src/lock.rs:459. Kind: axiom. Category: allocator invariant.
+src/lock.rs:465. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a holder of the raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token lends the permission of `l`'s cell for as long as the token stays borrowed, and the value satisfies [`lock_inv`] and keeps [`lock_frame`], as at [`axiom_acquired`].
@@ -136,12 +136,12 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ## `cell_ref`
 
-src/lock.rs:709. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:715. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 717.
+Body mints Tracked at line 723.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -155,12 +155,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:724. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:730. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 734.
+Body mints Tracked at line 740.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -176,7 +176,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:744. Kind: external_body. Category: atomics primitive.
+src/lock.rs:750. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 ```rust

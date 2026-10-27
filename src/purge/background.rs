@@ -8,8 +8,14 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::{Lock, LockHeld, LockOrder, Padded};
+#[cfg(verus_keep_ghost)]
+use crate::lock::{RawLock, lock_inv, rank_state};
 use crate::sys::{self, Timespec};
-use vstd::prelude::{Ghost, Tracked};
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked, verus};
+
+verus! {
 
 /// Stack size including the guard page below it.
 pub const STACK_SIZE: usize = 256 * 1024;
@@ -34,25 +40,58 @@ struct State {
     thread: Option<::libc::pthread_t>,
 }
 
-static STATE: Lock<State> = Lock::new(
-    State {
+/// Assumption: every holder of the state lock leaves the stack's end in
+/// range and no thread published that has exited, so the lock's
+/// invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first
+/// start; after it, a reservation of `STACK_SIZE` bytes, which
+/// `Meta::reserve` places below `va_limit`) and `exited ==> !present`
+/// (a thread that found the request withdrawn and exited before its
+/// `start` published it stays unpublished). The verified holder that
+/// writes the value, `fork_child` (the fork child's writer through
+/// `Lock::get_unlocked`), asserts it after clearing `present` and
+/// `exited`; `request` writes nothing under it. The unverified holders
+/// are trusted to keep it: `start` writes `stack` and sets `present` only
+/// to `thread.is_some() && !exited` (it clears `exited` only while
+/// nothing is present), the thread's exit in `main` sets `present` false
+/// and `exited` true, and `start_requested` and `auto_tick` write nothing
+/// under it. Verus checks nothing when a guard is released, so this is
+/// the claim. The test-only readers (`join_exited`, `stack`, `thread`)
+/// never write `stack`, `present` or `exited`, and no other code touches
+/// the value.
+broadcast axiom fn axiom_state_lock_inv(v: State)
+    ensures
+        #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
+;
+
+exec static STATE: Lock<State>
+    ensures
+        STATE.spec_raw() == state_lock(),
+        STATE.rank() == rank_state(),
+{
+    proof {
+        axiom_state_lock_inv(State { present: false, creating: false, exited: false, stack: 0, thread: None });
+    }
+    let l = Lock::new(State {
         present: false,
         creating: false,
         exited: false,
         stack: 0,
         thread: None,
-    },
-    Ghost::assume_new(),
-);
+    }, Ghost(rank_state()));
+    proof {
+        axiom_state_lock(l);
+    }
+    l
+}
 /// Mirror of `STATE.present` for the lock-free check on every tick.
-static PRESENT: AtomicBool = AtomicBool::new(false);
+exec static PRESENT: AtomicBool = AtomicBool::new(false);
 /// `background_thread:true` (or, later, `mallctl("background_thread")`).
-static REQUESTED: AtomicBool = AtomicBool::new(false);
+exec static REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Futex word the thread sleeps on; bumped by [`wake`]. On a line of its
 /// own: [`wake`]'s `fetch_add` runs while the thread is present, and the
 /// statics placed next to it (`api::STATE`) are read by every `malloc`
 /// and `free`.
-static SEQ: Padded<AtomicU32> = Padded(AtomicU32::new(0));
+exec static SEQ: Padded<AtomicU32> = Padded(AtomicU32::new(0));
 
 /// Lazy start (the default, `background_thread` unset): nothing is
 /// requested, but [`auto_tick`] requests and starts the thread once the
@@ -60,20 +99,20 @@ static SEQ: Padded<AtomicU32> = Padded(AtomicU32::new(0));
 /// [`AUTO_HOLD_NS`]. Cleared by an explicit [`request`] and for good by
 /// [`AUTO_TRIES`] lazy starts that failed (a sandbox that refuses
 /// `clone`, a thread limit the process sits at).
-static AUTO: AtomicBool = AtomicBool::new(false);
+exec static AUTO: AtomicBool = AtomicBool::new(false);
 /// Lazy starts that failed so far.
-static AUTO_FAILS: AtomicU32 = AtomicU32::new(0);
+exec static AUTO_FAILS: AtomicU32 = AtomicU32::new(0);
 /// Coarse time before which [`auto_tick`] does not look again.
-static AUTO_NEXT: AtomicU64 = AtomicU64::new(0);
+exec static AUTO_NEXT: AtomicU64 = AtomicU64::new(0);
 /// Coarse time of the first look of the current stretch at or above
 /// [`AUTO_FLOOR`]; 0 when the last look was below it.
-static AUTO_SINCE: AtomicU64 = AtomicU64::new(0);
+exec static AUTO_SINCE: AtomicU64 = AtomicU64::new(0);
 /// The low-water mark of the dirty bytes since the fork that made this
 /// process, starting from the dirty bytes at the fork (0 in a process
 /// that never forked): what a fork child inherited is not its own, and
 /// only what it adds above the inherited set (as that set decays) counts
 /// towards a start.
-static AUTO_BASE: AtomicU64 = AtomicU64::new(0);
+exec static AUTO_BASE: AtomicU64 = AtomicU64::new(0);
 
 /// Dirty bytes that start the thread at the first look.
 pub const AUTO_BURST: u64 = 64 << 20;
@@ -91,6 +130,9 @@ pub const AUTO_CHECK_NS: u64 = 100_000_000;
 pub const AUTO_TRIES: u32 = 3;
 /// The least time between a failed lazy start and the next look.
 pub const AUTO_RETRY_NS: u64 = 1_000_000_000;
+
+} // verus!
+
 /// Run once by the next `start` that creates a thread, after the
 /// creation and before the thread is published, for tests.
 #[cfg(test)]
@@ -103,6 +145,8 @@ pub static UNTIMED_WAITS: AtomicU32 = AtomicU32::new(0);
 /// tests.
 #[cfg(test)]
 pub static EXITS: AtomicU32 = AtomicU32::new(0);
+
+verus! {
 
 #[inline]
 pub fn present() -> bool {
@@ -132,11 +176,17 @@ pub fn auto() -> bool {
 /// next periodic tick creates it; a running thread that finds the
 /// request withdrawn exits at its next wake-up. An explicit answer
 /// either way disarms the lazy start.
-pub fn request(on: bool, ord: Tracked<&mut LockOrder>) {
+pub fn request(on: bool, Tracked(ord): Tracked<&mut LockOrder>)
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_state()),
+    ensures
+        *final(ord) == *old(ord),
+{
     {
         // Under the state lock, so a failing lazy start (`start_requested`)
         // cannot withdraw this request after it was made.
-        let _g = state().lock(ord, Tracked::assume_new());
+        let _g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         AUTO.store(false, Ordering::Relaxed);
         REQUESTED.store(on, Ordering::Relaxed);
     }
@@ -149,7 +199,10 @@ pub fn request(on: bool, ord: Tracked<&mut LockOrder>) {
 
 /// Bump the futex word and wake the thread if it is waiting. Cheap
 /// enough for the rare "first `Empty` slab of a class" transition.
-pub fn wake() {
+pub fn wake()
+    requires
+        crate::sys::may_syscall(),
+{
     // Store buffering with `start`: the caller stored what the thread
     // must see (a first `oldest_empty`, a decay period) and this loads
     // `PRESENT`, while `start` stores `PRESENT` and the thread, after
@@ -164,11 +217,16 @@ pub fn wake() {
     }
 }
 
-fn kick() {
+fn kick()
+    requires
+        crate::sys::may_syscall(),
+{
     SEQ.fetch_add(1, Ordering::SeqCst);
     // SAFETY: `SEQ` is a live, aligned `u32`.
     let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };
 }
+
+} // verus!
 
 /// Create the thread if it does not exist. `true` if one exists on
 /// return; `false` if creation failed or is in progress on another
@@ -309,12 +367,22 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool) {
     }
 }
 
+verus! {
+
 /// Whether `own` dirty bytes at `now` start the thread: at once from
 /// [`AUTO_BURST`]; from [`AUTO_FLOOR`] once every look for
 /// [`AUTO_HOLD_NS`] has seen at least that much. Updates the stretch,
-/// `since` (the start of the current one, 0 for none).
-pub(crate) fn auto_due(own: u64, now: u64, since: &AtomicU64) -> bool {
+/// `since` (the start of the current one, 0 for none). Whatever `since`
+/// holds, a burst starts the thread and less than the floor does not.
+pub(crate) fn auto_due(own: u64, now: u64, since: &AtomicU64) -> (r: bool)
+    ensures
+        own >= AUTO_BURST ==> r,
+        own < AUTO_FLOOR ==> !r,
+{
     if own >= AUTO_BURST {
+        proof {
+            assert(AUTO_FLOOR < AUTO_BURST) by (compute);
+        }
         return true;
     }
     if own < AUTO_FLOOR {
@@ -328,6 +396,8 @@ pub(crate) fn auto_due(own: u64, now: u64, since: &AtomicU64) -> bool {
     }
     now.saturating_sub(start) >= AUTO_HOLD_NS
 }
+
+} // verus!
 
 /// The one allocator whose ticks the lazy start looks at, for tests:
 /// `AUTO` is process-wide and the unit tests tick many fixtures at once.
@@ -584,23 +654,65 @@ fn detach_from_starter() {
     }
 }
 
-/// `&STATE`.
+verus! {
+
+/// The state lock, as [`fork_lock`] takes it: [`STATE`]'s raw lock.
+/// Uninterpreted (Verus does not read statics in specifications);
+/// `STATE`'s postcondition pins it ([`axiom_state_lock`]).
+pub uninterp spec fn state_lock() -> RawLock;
+
+/// Assumption: [`state_lock`] is the raw lock of [`STATE`]. Called once,
+/// in `STATE`'s initialiser, for the lock it builds: a static is one
+/// object, initialised once (at compile time), so every read of it
+/// returns that lock. Private: in this module `STATE` is the only
+/// `Lock<State>` (`State` is private too) and the only lock of rank
+/// [`rank_state`], which the requirement pins (`purge::tests::
+/// state_lock_axiom_names_the_one_state_lock` checks the three by name).
+axiom fn axiom_state_lock(l: Lock<State>)
+    requires
+        l.rank() == rank_state(),
+    ensures
+        l.spec_raw() == state_lock(),
+;
+
+/// `&STATE`: its raw lock is [`state_lock`] and its rank the one `STATE`
+/// is created with (the static's postcondition).
 #[inline(always)]
-fn state() -> &'static Lock<State> {
+fn state() -> (r: &'static Lock<State>)
+    ensures
+        r.spec_raw() == state_lock(),
+        r.rank() == rank_state(),
+{
     &STATE
 }
 
-/// Take the state lock (fork prepare, after the metadata lock); the
-/// token is the hold, and `ord` (a root) is raised to its rank.
-pub fn fork_lock(ord: Tracked<&mut LockOrder>) -> Tracked<LockHeld> {
-    state().raw().lock_held(ord)
+/// Take the state lock (fork prepare, last: after the arena statistics
+/// locks); the token is the hold, and `ord` (a root) is raised to its
+/// rank.
+pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>)
+    requires
+        crate::sys::may_syscall(),
+        old(ord).root(),
+        old(ord).allows(rank_state()),
+    ensures
+        t@.held() == state_lock(),
+        final(ord).root(),
+        final(ord).top() == rank_state(),
+{
+    state().raw().lock_held(Tracked(ord))
 }
 
 /// Release the state lock (fork parent and child, before the others),
 /// handing back the token of the hold.
-pub fn fork_unlock(t: Tracked<LockHeld>) {
-    state().raw().unlock_held(t)
+pub fn fork_unlock(Tracked(t): Tracked<LockHeld>)
+    requires
+        crate::sys::may_syscall(),
+        t.held() == state_lock(),
+{
+    state().raw().unlock_held(Tracked(t))
 }
+
+} // verus!
 
 /// Whether the state lock is held (for the fork handler tests).
 #[cfg(test)]
@@ -608,16 +720,25 @@ pub fn is_locked() -> bool {
     STATE.raw().is_locked()
 }
 
+verus! {
+
 /// The child has no background thread and, per design 8.1, does not
 /// get one until it asks again or, under the lazy start, until it holds
 /// enough dirty memory of its own: the dirty bytes at the fork are the
 /// baseline ([`set_fork_base`], after the locks are released). Called
 /// with the state lock held by this thread (`fork_prepare` took it;
-/// `held` is the hold).
-pub fn fork_child(held: Tracked<&mut LockHeld>) {
+/// `held` is the hold). Leaves the state's lock invariant true, so the
+/// value the child's next locker reads is consistent.
+pub fn fork_child(Tracked(held): Tracked<&mut LockHeld>)
+    requires
+        old(held).held() == state_lock(),
+    ensures
+        *final(held) == *old(held),
+{
     // SAFETY: the forking thread holds the lock; the child is single
     // threaded.
-    let st = unsafe { state().get_unlocked(held) };
+    let st = unsafe { state().get_unlocked(Tracked(held)) };
+    let ghost before = *st;
     st.present = false;
     st.creating = false;
     st.exited = false;
@@ -626,6 +747,11 @@ pub fn fork_child(held: Tracked<&mut LockHeld>) {
     // kernel never clears in this process); the stack is kept and is
     // free to reuse, nothing runs on the child's copy of it.
     st.thread = None;
+    proof {
+        axiom_state_lock_inv(before);
+        axiom_state_lock_inv(*st);
+        assert(lock_inv(*st));
+    }
     PRESENT.store(false, Ordering::Relaxed);
     REQUESTED.store(false, Ordering::Relaxed);
     AUTO_NEXT.store(0, Ordering::Relaxed);
@@ -637,3 +763,5 @@ pub fn fork_child(held: Tracked<&mut LockHeld>) {
 pub fn set_fork_base(inherited: u64) {
     AUTO_BASE.store(inherited, Ordering::Relaxed);
 }
+
+} // verus!

@@ -1,0 +1,4 @@
+# The state lock's invariant and the name of its raw lock: premises
+# about the unverified holders and the one static.
+axiom_state_lock_inv	allocator invariant	none (assumption)
+axiom_state_lock	allocator invariant	none (assumption)
