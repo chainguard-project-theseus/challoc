@@ -1,2 +1,8 @@
-# A temporary seam: opaque until its fields and invariant are specified.
-Shared	allocator invariant	Verus
+# Temporary seams: `Shared`'s field types that are not specified yet,
+# opaque until the PRs that specify them (ClassLine with the hot set,
+# ThreadKey and Tcaches with heap/shared.rs and heap/tcaches.rs, Policy
+# with the policy queries).
+ClassLine	allocator invariant	Verus
+Tcaches	allocator invariant	Verus
+crate::policy::Policy	allocator invariant	Verus
+ThreadKey	allocator invariant	Verus

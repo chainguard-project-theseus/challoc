@@ -1381,7 +1381,7 @@ impl SlabTable {
                     requires group >= 1, nslabs >= 1;
                 vstd::arithmetic::div_mod::lemma_div_is_ordered(nslabs + group - 1, nslabs * group, group as int);
                 vstd::arithmetic::div_mod::lemma_div_multiples_vanish(nslabs as int, group as int);
-                assert((nslabs * group) / (group as int) == nslabs);
+                assert((nslabs * group) / (group as int) == nslabs) by { vstd::arithmetic::mul::lemma_mul_is_commutative(nslabs as int, group as int); }
                 assert((nslabs + group - 1) / (group as int) <= (nslabs * group) / (group as int));
             }
             lemma_mask_shape(guard_interval);
