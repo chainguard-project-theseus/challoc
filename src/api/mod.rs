@@ -580,7 +580,7 @@ extern "C" fn fork_prepare() {
             a.stats_raw_lock().lock_held(Tracked::assume_new());
         }
     }
-    purge::background::fork_lock();
+    purge::background::fork_lock(Tracked::assume_new());
     // Every allocator lock is held, so no other forking thread can touch
     // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
     save_sigmask(mask);
@@ -606,7 +606,7 @@ fn fork_release() {
     // Written by the `fork_prepare` that paired with this release, and
     // still ours because every lock is held until the unlocks below.
     let mask = saved_sigmask();
-    purge::background::fork_unlock();
+    purge::background::fork_unlock(Tracked::assume_new());
     // Arenas cannot appear while the creation lock is held, so this is the
     // same set `fork_prepare` locked, in reverse. Each `for i in
     // (0..n).rev()` is spelled as a countdown, and `a.classes[c]` as
@@ -658,7 +658,7 @@ extern "C" fn fork_parent() {
 /// releasing them is exactly right. Before that, with everything still
 /// locked, the background thread is marked absent (design 8.1).
 extern "C" fn fork_child() {
-    purge::background::fork_child();
+    purge::background::fork_child(Tracked::assume_new());
     shared().cgroup_fork_child();
     feature_line_fork_child();
     fork_release();
@@ -1070,7 +1070,7 @@ mod tests {
         let _serial = crate::testutil::global_state();
         let s = shared();
         assert!(!tasks().iter().any(|n| n == "challoc-bg"));
-        purge::background::request(true);
+        purge::background::request(true, Tracked::assume_new());
         assert!(
             purge::background::start(s),
             "background thread did not start"
@@ -1154,7 +1154,7 @@ mod tests {
         // Withdraw the request: the kick wakes the thread and it exits
         // there; the exit is asynchronous, so wait for it, bounded, and
         // join it.
-        purge::background::request(false);
+        purge::background::request(false, Tracked::assume_new());
         let mut stopped = false;
         for _ in 0..400 {
             if !purge::background::present() {
@@ -1265,7 +1265,7 @@ mod tests {
         purge::on_tick(s, t1 + AUTO_HOLD_NS + 2, true);
         let held = purge::background::present();
         let armed = purge::background::auto();
-        purge::background::request(false);
+        purge::background::request(false, Tracked::assume_new());
         let disarmed = !purge::background::auto();
         for _ in 0..400 {
             if !purge::background::present() {
@@ -1343,7 +1343,7 @@ mod tests {
                 let first = none_before && s.huge.oldest_empty() != 0;
                 hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
             }));
-        purge::background::request(true);
+        purge::background::request(true, Tracked::assume_new());
         let started = purge::background::start(s);
         let mut purged = false;
         if started && hook_state.load(Ordering::SeqCst) == 3 {
@@ -1362,7 +1362,7 @@ mod tests {
             s.free_huge(page);
         }
         s.set_decay_ms((old_ns / 1_000_000) as i64);
-        purge::background::request(false);
+        purge::background::request(false, Tracked::assume_new());
         for _ in 0..400 {
             if !purge::background::present() {
                 break;
@@ -1405,7 +1405,7 @@ mod tests {
             Some(std::boxed::Box::new(move || {
                 // No panics here: unwinding out of `start` would leave the
                 // state marked as creating for every later test.
-                purge::background::request(false);
+                purge::background::request(false, Tracked::assume_new());
                 for _ in 0..1000 {
                     if purge::background::EXITS.load(Ordering::SeqCst) != exits {
                         exited_seen.store(true, Ordering::SeqCst);
@@ -1414,16 +1414,16 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
             }));
-        purge::background::request(true);
+        purge::background::request(true, Tracked::assume_new());
         purge::background::start(s);
         purge::background::BEFORE_PUBLISH.lock().unwrap().take();
         let present_after_exit = purge::background::present();
         // Asked again, the thread must come back: a stale `present` would
         // make `start` return at once with no thread running.
-        purge::background::request(true);
+        purge::background::request(true, Tracked::assume_new());
         let restarted = purge::background::start(s);
         let exits_before_stop = purge::background::EXITS.load(Ordering::SeqCst);
-        purge::background::request(false);
+        purge::background::request(false, Tracked::assume_new());
         let mut stopped = false;
         for _ in 0..400 {
             if purge::background::EXITS.load(Ordering::SeqCst) != exits_before_stop
@@ -1467,7 +1467,7 @@ mod tests {
         let _serial = crate::testutil::global_state();
         let s = shared();
         assert!(!purge::background::present());
-        purge::background::request(true);
+        purge::background::request(true, Tracked::assume_new());
         assert!(
             purge::background::start(s),
             "background thread did not start"
@@ -1475,9 +1475,9 @@ mod tests {
         let stack = purge::background::stack();
         assert_ne!(stack, 0);
         for cycle in 0..8 {
-            purge::background::request(false);
+            purge::background::request(false, Tracked::assume_new());
             wait_absent();
-            purge::background::request(true);
+            purge::background::request(true, Tracked::assume_new());
             assert!(purge::background::start(s), "restart {cycle} failed");
             assert!(purge::background::present());
             assert_eq!(
@@ -1486,7 +1486,7 @@ mod tests {
                 "restart {cycle} took a new stack"
             );
         }
-        purge::background::request(false);
+        purge::background::request(false, Tracked::assume_new());
         wait_absent();
         assert!(purge::background::join_exited());
         assert!(purge::background::thread().is_none());
