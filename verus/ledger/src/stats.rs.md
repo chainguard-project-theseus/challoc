@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `ArenaStats` | ext_type_spec | allocator invariant | Verus | trusted |
+| `ArenaStats::empty` | assume_spec | allocator invariant | Verus | trusted |
 
 ## `ArenaStats`
 
@@ -18,4 +19,15 @@ Tool: Verus. Status: trusted.
 
 ```rust
 pub struct ExArenaStats(ArenaStats);
+```
+
+## `ArenaStats::empty`
+
+src/stats.rs:196. Kind: assume_spec. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+> `ArenaStats::empty`: an `ArenaStats`; nothing is claimed about it.
+
+```rust
+pub assume_specification[ ArenaStats::empty ](index: u16) -> ArenaStats;
 ```

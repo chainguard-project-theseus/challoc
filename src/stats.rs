@@ -192,6 +192,9 @@ verus! {
 #[allow(dead_code)]
 pub struct ExArenaStats(ArenaStats);
 
+/// `ArenaStats::empty`: an `ArenaStats`; nothing is claimed about it.
+pub assume_specification[ ArenaStats::empty ](index: u16) -> ArenaStats;
+
 } // verus!
 
 impl ArenaStats {

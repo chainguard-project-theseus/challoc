@@ -1,0 +1,16 @@
+# The build checks the array layout at each instance used (the const
+# assertion after `Arena`'s layout).
+axiom_array_layout	core library	Kani
+# Byte offsets (`offset_of!`, which Verus cannot evaluate), and the
+# layout the build checks with `fits`.
+A_INDEX	core library	Kani
+A_DECAY_NS	core library	Kani
+A_SETS	core library	Kani
+A_SETS_PERM	core library	Kani
+A_CLASSES	core library	Kani
+A_LARGE	core library	Kani
+A_STATS	core library	Kani
+A_LAST_EXIT_PURGE	core library	Kani
+axiom_arena_layout	core library	Kani
+# Joining typed field permissions into the struct's: no vstd counterpart.
+axiom_arena_assemble	raw pointer (internal)	none (assumption)
