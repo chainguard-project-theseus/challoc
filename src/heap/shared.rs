@@ -56,7 +56,7 @@ pub struct Shared {
     /// class's line as a reference, and LLVM builds its address as
     /// `Shared + class * 64` plus the array's offset, one more `add`
     /// whenever that offset is not zero.
-    pub(super) lines: [ClassLine; NCLASSES],
+    pub(crate) lines: [ClassLine; NCLASSES],
     /// The one byte the `free` fast path loads for its dispatch:
     /// [`push_flags`](Shared::push_flags) plus [`FREE_ROUTE`], set once a
     /// second arena exists. Until then every slab and every heap is arena
@@ -75,7 +75,7 @@ pub struct Shared {
     /// (`superblock`, `lg_stride`): after `Regions` it would sit on its own
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
-    pub(super) free_flags: AtomicU8,
+    pub(crate) free_flags: AtomicU8,
     /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
     /// (`double_free_scan`, design 6.3 step 3: every push compares the
     /// slot against the top four cache entries and aborts on a match) and
@@ -87,13 +87,13 @@ pub struct Shared {
     /// and zero in the default configuration on every host (all three
     /// options default to off), so the fast path tests one byte and takes
     /// one predicted branch.
-    pub(super) push_flags: u8,
+    pub(crate) push_flags: u8,
     /// `!(regions.region_len() - 1)`: the bits of an offset from a class
     /// base that put it past the class region, read by the sized check
     /// ([`ClassLine::sized_ok`]) on the line `push_flags` is on.
-    pub(super) region_hi: usize,
+    pub(crate) region_hi: usize,
     pub regions: Regions,
-    tables: [SlabTable; NCLASSES],
+    pub(crate) tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
     pub meta: Meta,
     pub huge: Huge,
@@ -109,7 +109,7 @@ pub struct Shared {
     /// under a small cgroup limit). Read back by `opt.*` and the report,
     /// and on the slow paths for the cache ladder (`cache_cap`).
     pub config: Config,
-    pub(super) key: ThreadKey,
+    pub(crate) key: ThreadKey,
     pub arenas: Arenas,
     pub tcaches: Tcaches,
     /// Process-wide statistics as of the last `epoch` (`stats.rs`).
@@ -120,7 +120,7 @@ pub struct Shared {
     /// by discovery and by the rate-limited sampler on slow paths, read by
     /// `stats.cgroup.*` and the reports. Last, well away from the lines the
     /// fast paths read.
-    cgroup: crate::sys::cgroup::Deferred,
+    pub(crate) cgroup: crate::sys::cgroup::Deferred,
 }
 
 /// The address of the process's `Shared` storage (`api`'s `SHARED`).
@@ -428,7 +428,7 @@ const _: () = assert!(
 pub static FAIL_SETSPECIFIC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// The `pthread_key` whose destructor tears down a thread's heap.
-pub(super) struct ThreadKey {
+pub struct ThreadKey {
     key: libc::pthread_key_t,
     valid: bool,
 }
@@ -725,11 +725,10 @@ impl Shared {
         unsafe { ptr_mut_write(field_at(this, S_HUGE), ph, h) }
     }
 
-    /// `gc_interval_ns`, then the arena registry over `arena0` (`_a0`,
+    /// `gc_interval_ns`, then the arena registry over `arena0` (`a0`,
     /// its frozen permission) and the explicit-cache table, each built in
-    /// place; `gc_interval_ns` and the table through the permissions to
-    /// their fields, the registry's (`_pa`) for once `Arenas::init` takes
-    /// one.
+    /// place through the permissions to their fields (the registry's is
+    /// `pa`, which `Arenas::init` takes).
     ///
     /// # Safety
     /// `this` is `init`'s storage, `arena0` its arena 0, built.
@@ -740,17 +739,17 @@ impl Shared {
         this: *mut Shared,
         gc_interval_ns: u64,
         arena0: *mut Arena,
-        _a0: Tracked<&'static PointsTo<Arena>>,
+        a0: Tracked<&'static PointsTo<Arena>>,
         narenas: u32,
         pg: Tracked<&mut PointsTo<u64>>,
-        _pa: Tracked<&mut Held<Arenas>>,
+        pa: Tracked<&mut Held<Arenas>>,
         pt: Tracked<&mut PointsTo<Tcaches>>,
     ) {
         // SAFETY: the fields of `init`'s storage, through their
         // permissions; `arena0` is inside the same `Shared`.
         unsafe {
             ptr_mut_write(field_at(this, S_GC_INTERVAL_NS), pg, gc_interval_ns);
-            Arenas::init(field_at(this, S_ARENAS), arena0, narenas);
+            Arenas::init(field_at(this, S_ARENAS), arena0, narenas, a0, pa);
             Tcaches::init(field_at(this, S_TCACHES), pt);
         }
     }
@@ -1098,7 +1097,10 @@ impl Shared {
         if index == 0 {
             return Some(&self.arena0);
         }
-        self.arenas.get(self, index)
+        match self.arenas.get(self, index, Tracked::assume_new()) {
+            Some((a, _)) => Some(a),
+            None => None,
+        }
     }
 
     /// Arena `index`, which must exist: the index came from a slab or run

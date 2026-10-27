@@ -7,11 +7,23 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `Atomic:...>::new` | assume_spec | atomics primitive | loom/GenMC | trusted |
 | `axiom_a...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
+
+## `core::sync::atomic::Atomic::<*mut T>::new`
+
+src/vspec/arena.rs:11. Kind: assume_spec. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> `AtomicPtr::new`, which vstd does not specify.
+
+```rust
+pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut T) -> core::sync::atomic::Atomic<*mut T>;
+```
 
 ## `axiom_arena_stats_lock_inv`
 
-src/vspec/arena.rs:20. Kind: axiom. Category: allocator invariant.
+src/vspec/arena.rs:24. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the value of an arena's statistics lock keeps the accounting identities (`ArenaStats::identities`) while the lock is free.

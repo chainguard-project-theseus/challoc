@@ -1133,7 +1133,10 @@ mod tests {
         let _serial = crate::testutil::global_state();
         let s = shared();
         // A second arena so the handlers have more than arena 0 to cover.
-        let extra = s.arenas.create(s).unwrap();
+        let extra = s
+            .arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .unwrap();
         let arenas = [0, extra];
         crate::testutil::in_fork_child("fork handlers", 60_000, || {
             assert_locks(s, &arenas, false);

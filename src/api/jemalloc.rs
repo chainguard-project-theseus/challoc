@@ -575,7 +575,10 @@ mod tests {
     #[test]
     fn mallocx_routes_arenas_and_caches() {
         let s = shared();
-        let lua = s.arenas.create(s).expect("arenas.create");
+        let lua = s
+            .arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .expect("arenas.create");
         let c = crate::layout::class_of(300).unwrap();
         // Default cache, explicit arena.
         let p = mallocx(300, mallocx_arena(lua) as c_int);
@@ -641,7 +644,10 @@ mod tests {
         use crate::heap;
         use crate::layout::class_of;
         let s = shared();
-        let lua = s.arenas.create(s).expect("arenas.create");
+        let lua = s
+            .arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .expect("arenas.create");
         assert!(s.multi_arena());
         let c = class_of(200).unwrap();
         let size = crate::layout::CLASSES[c].size();
@@ -862,7 +868,10 @@ mod tests {
     fn get_defrag_hint_follows_the_utilization_data() {
         use crate::api::mallctl::utilization;
         let s = shared();
-        let a = s.arenas.create(s).expect("arenas.create");
+        let a = s
+            .arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .expect("arenas.create");
         let flags = (mallocx_arena(a) | MALLOCX_TCACHE_NONE) as c_int;
         let c = crate::layout::class_of(100).unwrap();
         let cls = &CLASSES[c];
