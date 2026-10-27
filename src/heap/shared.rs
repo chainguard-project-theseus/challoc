@@ -1066,7 +1066,7 @@ impl Shared {
             self.policy.rebase_high_rises(cg.rises().0);
         });
         if ran {
-            crate::policy::evaluate(self);
+            crate::policy::evaluate(self, Tracked::assume_new());
         }
         ran
     }

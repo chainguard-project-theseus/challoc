@@ -794,7 +794,11 @@ pub fn malloc_trim(_pad: usize) -> c_int {
     if let Some(h) = heap::existing_heap(shared) {
         h.flush_all(shared);
     }
-    (crate::purge::purge_all(shared) > 0) as c_int
+    (crate::purge::purge_all(
+        shared,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    ) > 0) as c_int
 }
 
 // ---------------------------------------------------------------------------

@@ -473,7 +473,9 @@ fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int> {
 
 fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int> {
     tracked()?;
-    Ok(Size(crate::policy::empty_bytes(shared()) as usize))
+    Ok(Size(
+        crate::policy::empty_bytes(shared(), vstd::prelude::Tracked::assume_new()) as usize,
+    ))
 }
 
 fn cgroup_full_purges(_m: &[usize]) -> Result<Reading, c_int> {
@@ -1369,7 +1371,10 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             io.read(purge::background::present())?;
             if let Some(on) = on {
                 purge::background::request(on, vstd::prelude::Tracked::assume_new());
-                if on && !purge::background::present() && !purge::background::start(shared) {
+                if on
+                    && !purge::background::present()
+                    && !purge::background::start(shared, vstd::prelude::Tracked::assume_new())
+                {
                     return Err(EAGAIN);
                 }
             }
@@ -1400,9 +1405,19 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             flush_caller(shared);
             let i = at(mib, 1);
             if all_arenas(shared, i) {
-                purge::purge_all(shared);
+                purge::purge_all(
+                    shared,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
             } else {
-                purge::purge_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
+                purge::purge_arena(
+                    shared,
+                    arena_index(i)?,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                )
+                .ok_or(ENOENT)?;
             }
             Ok(())
         }
@@ -1411,9 +1426,15 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             let now = sys::now_coarse_ns();
             let i = at(mib, 1);
             if all_arenas(shared, i) {
-                purge::decay(shared, now);
+                purge::decay(shared, now, vstd::prelude::Tracked::assume_new());
             } else {
-                purge::decay_arena(shared, arena_index(i)?, now).ok_or(ENOENT)?;
+                purge::decay_arena(
+                    shared,
+                    arena_index(i)?,
+                    now,
+                    vstd::prelude::Tracked::assume_new(),
+                )
+                .ok_or(ENOENT)?;
             }
             Ok(())
         }
@@ -1424,7 +1445,13 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 return Err(EFAULT);
             }
             flush_caller(shared);
-            purge::purge_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
+            purge::purge_arena(
+                shared,
+                arena_index(i)?,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+            .ok_or(ENOENT)?;
             Ok(())
         }
         ArenaDirtyDecayMs => {

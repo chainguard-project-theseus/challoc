@@ -813,10 +813,24 @@ mod tests {
             empty_before >= 1,
             "the Lua arena's slab should be Empty after the flush"
         );
-        let purged = crate::purge::purge_arena(s, lua).unwrap();
+        let purged = crate::purge::purge_arena(
+            s,
+            lua,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
+        .unwrap();
         assert!(purged >= empty_before);
         assert_eq!(lua_arena.classes[c].stats().empty, 0);
-        assert!(crate::purge::purge_arena(s, 4000).is_none());
+        assert!(
+            crate::purge::purge_arena(
+                s,
+                4000,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_none()
+        );
     }
 
     #[test]

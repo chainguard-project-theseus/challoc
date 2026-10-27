@@ -77,7 +77,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     let t0 = free_at(s, p);
     assert!(t0 > 0);
     assert_eq!(s.huge.stats(Tracked::assume_new()).empty, 1);
-    assert!(crate::purge::decay(s, t0 + 2 * S).is_some());
+    assert!(crate::purge::decay(s, t0 + 2 * S, Tracked::assume_new()).is_some());
     assert_eq!(
         (
             s.huge.stats(Tracked::assume_new()).empty,
@@ -86,7 +86,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
         (1, 0)
     );
     assert_eq!(
-        crate::purge::decay(s, t0 + 10 * S),
+        crate::purge::decay(s, t0 + 10 * S, Tracked::assume_new()),
         None,
         "the window ends: purged"
     );
@@ -127,12 +127,12 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     );
     // One step in (10 ms of a 2 s window): a walk that purges nothing.
     assert_eq!(
-        crate::purge::decay(s, t0 + 2 * S / 200),
+        crate::purge::decay(s, t0 + 2 * S / 200, Tracked::assume_new()),
         Some(t0 + 2 * 2 * S / 200)
     );
     assert_eq!(s.huge.stats(Tracked::assume_new()).empty, 1);
     assert_eq!(
-        crate::purge::decay(s, t0 + 2 * S),
+        crate::purge::decay(s, t0 + 2 * S, Tracked::assume_new()),
         None,
         "the 2 s window ends: purged"
     );
@@ -177,7 +177,10 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
             .state,
         RunState::Purged
     );
-    assert_eq!(crate::purge::decay(s, u64::MAX / 2), None);
+    assert_eq!(
+        crate::purge::decay(s, u64::MAX / 2, Tracked::assume_new()),
+        None
+    );
 
     // Set to -1: never, while arena 0 still decays.
     let s = TestShared::with(Config {
@@ -191,7 +194,10 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert_eq!(s.decay_ns(), 10 * S);
     let p = s.alloc_huge(size, 16, 0).0;
     let t0 = free_at(s, p);
-    assert_eq!(crate::purge::decay(s, t0 + 1000 * S), None);
+    assert_eq!(
+        crate::purge::decay(s, t0 + 1000 * S, Tracked::assume_new()),
+        None
+    );
     assert_eq!(
         (
             s.huge.stats(Tracked::assume_new()).empty,
@@ -200,7 +206,11 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
         (1, 0),
         "never purged by decay"
     );
-    assert_eq!(crate::purge::purge_all(s), 1, "malloc_trim still purges it");
+    assert_eq!(
+        crate::purge::purge_all(s, Tracked::assume_new(), Tracked::assume_new()),
+        1,
+        "malloc_trim still purges it"
+    );
     assert_eq!(
         (
             s.huge.stats(Tracked::assume_new()).empty,
@@ -2376,7 +2386,7 @@ fn cgroup_policy_drives_gc_interval_and_decay_period() {
         s.policy.effective_decay_ns(s.decay_ns()),
         effective_decay_ns(s.decay_ns(), at_init)
     );
-    assert_eq!(crate::policy::empty_bytes(s), 0);
+    assert_eq!(crate::policy::empty_bytes(s, Tracked::assume_new()), 0);
     let l = 512u64 << 20;
     s.policy.apply(band(l, l * 95 / 100), l, 0, 0);
     assert_eq!(s.gc_interval(), 0);
@@ -2392,7 +2402,7 @@ fn cgroup_policy_drives_gc_interval_and_decay_period() {
     // A decay pass with a pending full purge consumes it.
     s.policy.apply(band(l, l * 8 / 10), l, 0, 1);
     assert!(s.policy.full_purge_pending());
-    let _ = crate::purge::decay(s, now_ns());
+    let _ = crate::purge::decay(s, now_ns(), Tracked::assume_new());
     assert!(!s.policy.full_purge_pending());
     assert_eq!(s.policy.full_purges(), 1);
     s.policy
