@@ -10,6 +10,7 @@ file.
 | `WordPerm` | external_body type | atomics primitive | loom/GenMC | trusted |
 | `fetch_or` | external_body | atomics primitive | loom/GenMC | trusted |
 | `store` | external_body | atomics primitive | loom/GenMC | trusted |
+| `load` | external_body | atomics primitive | loom/GenMC | trusted |
 | `fetch_and` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `WordPerm`
@@ -62,9 +63,28 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
     no_unwind
 ```
 
+## `load`
+
+src/vspec/word.rs:96. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> `w.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
+
+```rust
+pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>) -> (r: u64)
+    requires
+        perm.addr() == word_addr(w),
+        !(ordering is Release),
+        !(ordering is AcqRel),
+    ensures
+        r == perm.value(),
+    opens_invariants none
+    no_unwind
+```
+
 ## `fetch_and`
 
-src/vspec/word.rs:93. Kind: external_body. Category: atomics primitive.
+src/vspec/word.rs:113. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `w.fetch_and(v, ordering)`.

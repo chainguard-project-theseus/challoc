@@ -168,8 +168,6 @@ pub(super) fn fresh_with_live(
     ))
 }
 
-} // verus!
-
 /// `check_zero` invariant: a release reached a slab that reads `Fresh`.
 #[cold]
 #[inline(never)]
@@ -179,7 +177,10 @@ pub(super) fn release_into_fresh(
     arena: u16,
     desc: &SlabDesc,
     n: usize,
-) -> ! {
+) -> !
+    requires
+        crate::sys::may_abort_pending(),
+{
     sys::abort_pending(format_args!(
         "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
@@ -188,6 +189,8 @@ pub(super) fn release_into_fresh(
         desc_ptr_addr(desc)
     ))
 }
+
+} // verus!
 
 /// The `check_zero` abort: a slot handed out as zero has a dirty word.
 #[cold]
@@ -289,7 +292,7 @@ impl ClassState {
     #[verifier::external_body]
     pub(super) fn check_shadow(&self, slab: usize, at: &str)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_pending(),
     {
         let d = self.desc(slab);
         let (state, shadow) = d.state_bytes();
