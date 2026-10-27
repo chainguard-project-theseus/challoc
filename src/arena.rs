@@ -42,7 +42,8 @@ use crate::layout::{NCLASSES, Regions};
 use crate::lock::{Lock, LockOrder};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{
-    lock_frame, lock_init, lock_inv, rank_arena_stats, rank_arenas, rank_meta, rank_sets,
+    lock_frame, lock_init, lock_inv, rank_arena_stats, rank_arenas, rank_class, rank_meta,
+    rank_sets,
 };
 use crate::meta::{Meta, MetaClaim};
 use crate::purge::Left;
@@ -1362,24 +1363,35 @@ impl Arena {
             .store(crate::purge::decay_ns_from_ms(ms), Ordering::Relaxed);
         crate::purge::note_decay_changed();
     }
+}
 
+verus! {
+
+impl Arena {
     /// Decay step over every class (see `ClassState::decay_with`) with
     /// the period the cgroup policy gives this arena and its keep ratio
     /// for the retention cap (design 11): the earliest next deadline,
     /// `None` when nothing is `Empty`; `NEVER` does nothing.
-    pub fn decay_with(
-        &self,
-        now: u64,
-        decay_ns: u64,
-        keep16: u32,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> Option<u64> {
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
         if decay_ns == crate::purge::NEVER {
             return None;
         }
         let mut next: Option<u64> = None;
-        for cs in self.classes.iter() {
-            if let Some(d) = cs.decay_with(now, decay_ns, keep16, Tracked::assume_new()) {
+        for cs in self.classes.iter()
+            invariant
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
+        {
+            if let Some(d) = cs.decay_with(now, decay_ns, keep16, Tracked(ord)) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
         }
@@ -1388,13 +1400,28 @@ impl Arena {
 
     /// `Empty` bytes over every class (one lock hold per class that has
     /// any), for the cgroup policy's retention figure.
-    pub fn empty_bytes(&self, _ord: Tracked<&mut LockOrder>) -> usize {
+    pub fn empty_bytes(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            r <= NCLASSES * 0x200_0000_0000_0000,
+            *final(ord) == *old(ord),
+    {
         let mut sum = 0usize;
         let mut c = 0;
-        while c < NCLASSES {
+        while c < NCLASSES
+            invariant
+                crate::sys::may_syscall(),
+                c <= NCLASSES,
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
+                sum <= c * 0x200_0000_0000_0000,
+            decreases NCLASSES - c,
+        {
             let cs = &self.classes[c];
             if cs.oldest_empty() != 0 {
-                sum += cs.empty_bytes(Tracked::assume_new());
+                sum += cs.empty_bytes(Tracked(ord));
             }
             c += 1;
         }
@@ -1402,23 +1429,80 @@ impl Arena {
     }
 
     /// Purge every `Empty` slab of every class whatever its age. Returns
-    /// how many were purged. `left` is ghost: what the purge left
-    /// ([`Left`]).
-    pub fn purge_all(
-        &self,
-        _left: Tracked<&mut Ghost<Left>>,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> usize {
+    /// how many were purged. `left` gets the bytes discarded, nonzero iff
+    /// a slab was purged, and every class of this arena, none with an
+    /// `Empty` slab in the lock value its purge released unless it has
+    /// several slabs per page or `madvise` refused the slab's range
+    /// ([`Left::clean`]).
+    pub fn purge_all(&self, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            r <= NCLASSES * 0x2000_0000_0000,
+            *final(ord) == *old(ord),
+            (r > 0) == (final(left)@.bytes > 0),
+            final(left)@.arenas == set![self.spec_index() as int],
+            final(left)@.covers(),
+            !final(left)@.huge,
+            final(left)@.clean(),
+    {
+        proof {
+            use_type_invariant(self);
+            *left = Ghost(
+                Left {
+                    bytes: 0,
+                    arenas: set![self.spec_index() as int],
+                    classes: Set::empty(),
+                    slabs: ISet::empty(),
+                    huge: false,
+                    extents: ISet::empty(),
+                    refused: ISet::empty(),
+                    refused_extents: ISet::empty(),
+                },
+            );
+        }
         let mut sum = 0usize;
         let mut c = 0;
-        while c < NCLASSES {
+        while c < NCLASSES
+            invariant
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                c <= NCLASSES,
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
+                sum <= c * 0x2000_0000_0000,
+                (sum > 0) == (left@.bytes > 0),
+                left@.arenas == set![self.spec_index() as int],
+                forall|a: int, k: int| #[trigger] left@.classes.contains((a, k))
+                    <==> a == self.spec_index() && 0 <= k < c,
+                !left@.huge,
+                left@.clean(),
+            decreases NCLASSES - c,
+        {
             let cs = &self.classes[c];
-            sum += cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
+            cs.nslabs_fit();
+            let tracked mut lc = Ghost(Left::none());
+            sum += cs.purge_empty(u64::MAX, Tracked(&mut lc), Tracked(ord));
+            proof {
+                use_type_invariant(self);
+                let l0 = left@;
+                *left = Ghost(l0.join(lc@));
+                assert forall|a: int, k: int| #[trigger] left@.classes.contains((a, k))
+                    <==> a == self.spec_index() && 0 <= k < c + 1 by {
+                    assert(l0.classes.contains((a, k)) <==> a == self.spec_index() && 0 <= k < c);
+                }
+                assert(left@.arenas =~= set![self.spec_index() as int]);
+                Left::lemma_join(l0, lc@);
+            }
             c += 1;
         }
         sum
     }
 }
+
+} // verus!
 
 verus! {
 

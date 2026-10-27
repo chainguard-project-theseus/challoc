@@ -1576,9 +1576,9 @@ impl Inner {
     /// committed slabs are exactly the owned ones that left `Fresh` (a
     /// slab `next_fresh_slab` commits is made `Active` by `take` in the
     /// same lock hold); a partial slab is `Active`; the `empty` and
-    /// `purged` sets are exactly the owned slabs in those states; and a
-    /// guard slab is uncommitted and, when owned, `Fresh` (its descriptor
-    /// stays zero).
+    /// `purged` sets are exactly the owned slabs in those states; an
+    /// `Empty` slab's `dirty_at` stamp is not 0; and a guard slab is
+    /// uncommitted and, when owned, `Fresh` (its descriptor stays zero).
     spec fn slab_core(&self, s: nat) -> bool {
         &&& self.committed@.contains(s) ==> self.owns(s)
         &&& self.committed@.contains(s) ==> self.st(s) != State::Fresh
@@ -1586,6 +1586,7 @@ impl Inner {
         &&& self.partial.map@.contains(s) ==> self.owns(s) && self.st(s) == State::Active
         &&& self.empty.map@.contains(s) == (self.owns(s) && self.st(s) == State::Empty)
         &&& self.purged.map@.contains(s) == (self.owns(s) && self.st(s) == State::Purged)
+        &&& self.owns(s) && self.st(s) == State::Empty ==> self.dirty@[s] != 0
         &&& self.table@.spec_is_guard(s as usize) ==> !self.committed@.contains(s)
             && (self.owns(s) ==> self.st(s) == State::Fresh)
     }
@@ -1964,6 +1965,23 @@ impl ClassState {
         table_at(self.table).spec_nslabs()
     }
 
+    /// A class region has at most `2^45` slabs: it ends below `2^57` and
+    /// its slabs are 4 KiB or more. No code: a proof step for callers
+    /// that hold the state by reference.
+    #[inline(always)]
+    pub fn nslabs_fit(&self)
+        ensures
+            self.spec_nslabs() <= 0x2000_0000_0000,
+    {
+        proof {
+            use_type_invariant(self);
+            let t = table_at(self.table);
+            let (n, b, lg) = (t.nslabs, t.base, class_table()[t.class as int].lg_slab);
+            assert(n <= ((1usize << 57) - b) as usize >> lg && 12 <= lg <= 22 && b < 1usize << 57 ==> n <= 0x2000_0000_0000)
+                by (bit_vector);
+        }
+    }
+
     /// The class number.
     pub closed spec fn spec_class(&self) -> usize {
         self.class as usize
@@ -2057,13 +2075,12 @@ broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
 /// `SlabTable::take_group` under it); `ClassState::new` proves it of the
 /// value it creates the lock with, `lowest_partial` and `is_partial`
 /// only read the value, and the refill's lock hold (`plan`, with `take`)
-/// keeps it by their postconditions. The unverified holders are the
-/// release path (`reopen`, `on_live_zero`), the purge and decay walks
-/// (`decay.rs`), `bin_stats`, and the tests, but for those that break the
-/// counts on purpose to reach an abort. Each of them writes an owned
-/// slab's state and stamp only through the bridges (`set_state_locked`,
-/// `set_dirty_locked`; `on_live_zero` and the decay walk's purge,
-/// `settle`), which write the descriptor through the permission the value
+/// keeps it by their postconditions, as do the release path (`reopen`,
+/// `on_live_zero`) and the purge and decay walks (`decay.rs`). The
+/// unverified holders are the tests, but for those that break the counts
+/// on purpose to reach an abort. Each of them writes an owned slab's
+/// state and stamp only through the bridges (`set_state_locked`,
+/// `set_dirty_locked`), which write the descriptor through the permission the value
 /// holds and update the ghost state and stamp with it: verified, so they
 /// keep `Inner::descs` when their callers meet their preconditions, which
 /// nothing checks at these unverified call sites. None of them updates the other ghost fields (`committed`,
@@ -2452,7 +2469,19 @@ impl ClassState {
     /// [`set_dirty_locked`]: ClassState::set_dirty_locked
     #[allow(unused_variables)]
     #[inline(always)]
-    fn dirty_locked(&self, g: &Inner, d: &SlabDesc, slab: usize) -> u64 {
+    fn dirty_locked(&self, g: &Inner, d: &SlabDesc, slab: usize) -> (r: u64)
+        requires
+            g.descs(),
+            g.table@ == self.spec_table(),
+            *d == desc_at(self.spec_table(), slab),
+        ensures
+            g.owns(slab as nat) ==> r == g.dirty@[slab as nat],
+    {
+        proof {
+            if g.owns(slab as nat) {
+                g.lemma_desc(slab as nat);
+            }
+        }
         d.dirty_held(Ghost(slab as nat), Tracked(g.dperms.borrow()))
     }
 
@@ -4498,6 +4527,8 @@ impl ClassState {
             }
             let desc = self.desc(slab);
             if desc.live() == 0 && self.state_locked(&*g, desc, slab) == State::Active {
+                // Never 0: an `Empty` slab's stamp is not 0
+                // (`Inner::slab_core`).
                 let now = crate::sys::now_coarse_ns().max(1);
                 let ghost g0 = g@;
                 proof {
