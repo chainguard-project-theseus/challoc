@@ -45,6 +45,7 @@ use crate::lock::{lock_init, lock_inv, rank_arena_stats, rank_arenas, rank_meta,
 use crate::meta::{Meta, MetaClaim};
 use crate::purge::Left;
 use crate::stats::ArenaStats;
+use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::arena::axiom_arena_stats_lock_inv;
 use crate::vspec::count::CountPerm;
@@ -3041,7 +3042,11 @@ impl Arenas {
         if index as u32 >= self.auto {
             return None;
         }
-        let _g = self.lock.lock(ord, Tracked::assume_new());
+        let mut g = self.lock.lock(ord, Tracked::assume_new());
+        // The lock's value, for its half of the snapshot ([`Created`]);
+        // read only by the proof.
+        #[allow(unused_variables)]
+        let c = &mut *g;
         let p = crate::vspec::entry::load(
             &self.table[index as usize],
             Ordering::Acquire,
@@ -3068,16 +3073,21 @@ impl Arenas {
         _h: Tracked<&mut GhostVar<Snap>>,
         ord: Tracked<&mut LockOrder>,
     ) -> Option<(&'a Arena, Tracked<&'static Published>)> {
-        let mut p = self.spare.swap(Tracked::assume_new(), ptr::null_mut());
+        let mut p;
+        let null = ptr::null_mut();
+        p = self.spare.swap(Tracked::assume_new(), null);
         if p.is_null() {
             let layout = core::alloc::Layout::new::<Arena>();
             // Never freed, so a reservation (page aligned, which covers the
             // 128-byte class state alignment) rather than an object.
-            p = shared.meta.reserve_committed(
-                layout.size(),
-                layout.align().max(shared.regions.page_size()),
-            )? as *mut Arena;
+            let align = layout.align().max(shared.regions.page_size());
+            let (s, _raw) = shared.meta.reserve_committed_raw(layout.size(), align);
+            let s = s?;
+            p = addr_to_ptr(s) as *mut Arena;
         }
+        // The class tables, from arena 0's states, which were built over
+        // them.
+        let (tables, tperms) = shared.arena0.classes[0].tables();
         // SAFETY: exclusively owned storage of the right size and
         // alignment, fresh or left by a failed build (never published;
         // `init` writes every field); the tables live in `Shared` for the
@@ -3087,8 +3097,8 @@ impl Arenas {
                 p,
                 &shared.meta,
                 &shared.regions,
-                shared.tables().as_ptr().cast_mut(),
-                Tracked::assume_new(),
+                tables,
+                tperms,
                 index,
                 shared.default_decay_ns(),
                 Tracked::assume_new(),
@@ -3121,13 +3131,15 @@ impl Arenas {
         if index as usize >= MAX_ARENAS {
             return None;
         }
+        // The lock's value, with its half of the snapshot ([`Created`]).
+        let c = &mut *g;
         self.build(
             shared,
             index as u16,
             Tracked::assume_new(),
             Tracked::assume_new(),
         )?;
-        g.n = index + 1;
+        c.n = index + 1;
         crate::vspec::count::store(
             &self.count,
             index + 1,

@@ -653,7 +653,6 @@ mod tptr {
 
         /// The first class's table and the permissions to all of them
         /// ([`tables_ok`]), from the pointer to it.
-        #[cfg_attr(not(test), allow(dead_code))]
         #[inline(always)]
         pub(super) fn tables(&self) -> (r: (*mut SlabTable, Tracked<&'static Map<int, PointsTo<SlabTable>>>))
             requires
@@ -1496,9 +1495,6 @@ impl ClassState {
     /// ([`tables_ok`]), from class 0's state: what
     /// [`Arena::init`](crate::arena::Arena::init) builds another arena's
     /// states over.
-    // Only the tests call it in ordinary builds: `Arenas::build` passes
-    // `Shared::tables` and assumed permissions.
-    #[cfg_attr(not(test), allow(dead_code))]
     #[inline(always)]
     pub(crate) fn tables(&self) -> (r: (*mut SlabTable, Tracked<&'static Map<int, PointsTo<SlabTable>>>))
         requires
