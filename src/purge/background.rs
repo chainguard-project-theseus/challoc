@@ -235,7 +235,7 @@ fn kick()
 /// `errno` is preserved: this runs from `free`'s slow path (design
 /// section 1 promises `free` leaves `errno` alone) and glibc's
 /// `pthread_create` / `pthread_join` may set it on their way.
-pub fn start(shared: &Shared) -> bool {
+pub fn start(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
     let (stack, previous) = {
         let mut g = state().lock(Tracked::assume_new(), Tracked::assume_new());
         if g.present {
@@ -251,7 +251,7 @@ pub fn start(shared: &Shared) -> bool {
     // SAFETY: `__errno_location` returns this thread's `errno`.
     let errno = unsafe { ::libc::__errno_location() };
     let saved_errno = unsafe { *errno };
-    let (stack, thread) = create(shared, stack, previous);
+    let (stack, thread) = create(shared, stack, previous, Tracked::assume_new());
     // SAFETY: `errno` is this thread's `errno` slot (above), valid for
     // the life of the thread.
     unsafe { *errno = saved_errno };
@@ -293,8 +293,8 @@ pub fn start(shared: &Shared) -> bool {
 /// than [`AUTO_RETRY_NS`] later, up to [`AUTO_TRIES`] failures in all,
 /// after which it is off for good. An explicit request stays, and the
 /// next tick tries again.
-pub fn start_requested(shared: &Shared) -> bool {
-    if start(shared) {
+pub fn start_requested(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
+    if start(shared, Tracked::assume_new()) {
         return true;
     }
     let g = state().lock(Tracked::assume_new(), Tracked::assume_new());
@@ -327,7 +327,7 @@ pub fn start_requested(shared: &Shared) -> bool {
 /// rare next to it.
 #[cold]
 #[inline(never)]
-pub fn auto_tick(shared: &Shared, now: u64, alloc: bool) {
+pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, _ord: Tracked<&mut LockOrder>) {
     if !auto() {
         return;
     }
@@ -348,7 +348,7 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool) {
     {
         return;
     }
-    let dirty = crate::policy::empty_bytes(shared);
+    let dirty = crate::policy::empty_bytes(shared, Tracked::assume_new());
     let base = AUTO_BASE.load(Ordering::Relaxed).min(dirty);
     AUTO_BASE.store(base, Ordering::Relaxed);
     if !auto_due(dirty - base, now, &AUTO_SINCE) {
@@ -363,7 +363,7 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool) {
         REQUESTED.store(true, Ordering::Relaxed);
     }
     if alloc {
-        start_requested(shared);
+        start_requested(shared, Tracked::assume_new());
     }
 }
 
@@ -438,6 +438,7 @@ fn create(
     shared: &Shared,
     stack: usize,
     previous: Option<::libc::pthread_t>,
+    _ord: Tracked<&mut LockOrder>,
 ) -> (usize, Option<::libc::pthread_t>) {
     let page = shared.regions.page_size();
     // The TLS slot is parked on `TLS_CREATING` for the pthread calls:
@@ -609,8 +610,8 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
             return core::ptr::null_mut();
         }
         let now = sys::now_coarse_ns();
-        super::sample(shared, now);
-        let deadline = super::decay(shared, now);
+        super::sample(shared, now, Tracked::assume_new());
+        let deadline = super::decay(shared, now, Tracked::assume_new());
         // `deadline.map(|deadline| ..)`, spelled as a `match`.
         let timeout = match deadline {
             Some(deadline) => {

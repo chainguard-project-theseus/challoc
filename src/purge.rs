@@ -48,6 +48,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::arena::Arena;
 use crate::heap::Shared;
+use crate::lock::LockOrder;
 pub use crate::policy::Advice;
 use crate::sys;
 use vstd::prelude::*;
@@ -1915,6 +1916,38 @@ impl Decayer {
     }
 }
 
+/// What an explicit purge left (ghost), for the purges' contracts: each
+/// purge is to set it from the lock values it releases, just before each
+/// release, so that to a caller it is only a value those contracts
+/// constrain.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct Left {
+    /// Bytes `madvise` took and a flush reported discarded
+    /// ([`Batch::sent`]), every batch summed.
+    pub bytes: int,
+    /// Arenas whose every class was purged.
+    pub arenas: Set<int>,
+    /// `(arena, class)` of every class lock the purge took and released.
+    pub classes: Set<(int, int)>,
+    /// `(arena, class, slab)` of every slab `Empty` in a class lock value
+    /// the purge released.
+    pub slabs: ISet<(int, int, int)>,
+    /// Whether the purge took and released the huge lock.
+    pub huge: bool,
+    /// The addresses of the descriptors of the extents `Empty` in the huge
+    /// lock value the purge released (none when `huge` is false).
+    pub extents: ISet<int>,
+    /// `(arena, class, slab)` of every slab of a range `madvise` refused in
+    /// the purge (a flush reported it not discarded), `Empty` when the
+    /// refusal was reported: memory the program locked (`mlock`).
+    pub refused: ISet<(int, int, int)>,
+    /// The addresses of the descriptors of the extents of a range
+    /// `madvise` refused in the purge, `Empty` when the refusal was
+    /// reported.
+    pub refused_extents: ISet<int>,
+}
+
 } // verus!
 
 /// Run every decay walk that is due at `now` (coarse monotonic
@@ -1925,22 +1958,25 @@ impl Decayer {
 /// Never inlined, so `Heap::tick` (through `on_tick`) and
 /// `background::main` keep a call here rather than a copy of the loop.
 #[inline(never)]
-pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
+pub fn decay(shared: &Shared, now: u64, _ord: Tracked<&mut LockOrder>) -> Option<u64> {
     // Design 11: a `memory.events` `high` rise owes one full purge, run
     // before the walks so they see the survivors (none, normally).
     let policy = &shared.policy;
     if policy.take_full_purge() {
-        purge_all(shared);
+        purge_all(shared, Tracked::assume_new(), Tracked::assume_new());
     }
     let keep16 = policy.keep16();
     let mut next: Option<u64> = None;
     let count = arena_count(shared);
     for i in 0..count {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
-            next = earliest(next, decay_one(shared, arena, now, keep16));
+            next = earliest(
+                next,
+                decay_one(shared, arena, now, keep16, Tracked::assume_new()),
+            );
         }
     }
-    next = earliest(next, decay_huge(shared, now, keep16));
+    next = earliest(next, decay_huge(shared, now, keep16, Tracked::assume_new()));
     next
 }
 
@@ -1948,29 +1984,46 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
 /// the huge extents, which belong to no single arena's sets) that are due
 /// at `now`, on the periods and keep ratio [`decay`] gives them. `None`
 /// if the arena does not exist.
-pub fn decay_arena(shared: &Shared, index: u16, now: u64) -> Option<()> {
+pub fn decay_arena(
+    shared: &Shared,
+    index: u16,
+    now: u64,
+    _ord: Tracked<&mut LockOrder>,
+) -> Option<()> {
     let arena = shared.arenas.get_existing(index)?;
     let keep16 = shared.policy.keep16();
-    decay_one(shared, arena, now, keep16);
+    decay_one(shared, arena, now, keep16, Tracked::assume_new());
     if index == 0 {
-        decay_huge(shared, now, keep16);
+        decay_huge(shared, now, keep16, Tracked::assume_new());
     }
     Some(())
 }
 
 /// One arena's walks on its own period, scaled by the policy's band.
-fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32) -> Option<u64> {
+fn decay_one(
+    shared: &Shared,
+    arena: &Arena,
+    now: u64,
+    keep16: u32,
+    _ord: Tracked<&mut LockOrder>,
+) -> Option<u64> {
     arena.decay_with(
         now,
         shared.policy.effective_decay_ns(arena.decay_ns()),
         keep16,
+        Tracked::assume_new(),
     )
 }
 
 /// The huge allocator's walk. It is shared by every arena: its own period
 /// when `huge_dirty_decay_ms` is set, else arena 0's (design 7), scaled by
 /// the policy's band.
-fn decay_huge(shared: &Shared, now: u64, keep16: u32) -> Option<u64> {
+fn decay_huge(
+    shared: &Shared,
+    now: u64,
+    keep16: u32,
+    _ord: Tracked<&mut LockOrder>,
+) -> Option<u64> {
     let decay_ns = shared.policy.effective_decay_ns(shared.huge_decay_ns());
     if decay_ns == NEVER {
         return None;
@@ -2003,13 +2056,18 @@ fn arena_count(shared: &Shared) -> usize {
 /// Purge every `Empty` slab of every arena and every huge extent
 /// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
 /// purge: the memory is wanted back now). Returns how many were purged.
-pub fn purge_all(shared: &Shared) -> usize {
+/// `left` is ghost: what the purge left ([`Left`]).
+pub fn purge_all(
+    shared: &Shared,
+    _left: Tracked<&mut Ghost<Left>>,
+    _ord: Tracked<&mut LockOrder>,
+) -> usize {
     let _explicit = Explicit::enter();
     let mut n: usize = 0;
     let count = arena_count(shared);
     for i in 0..count {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
-            n += arena.purge_all();
+            n += arena.purge_all(Tracked::assume_new(), Tracked::assume_new());
         }
     }
     n + shared.huge.purge_empty(u64::MAX, Tracked::assume_new())
@@ -2017,11 +2075,17 @@ pub fn purge_all(shared: &Shared) -> usize {
 
 /// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
 /// age (plus, for arena 0, the huge extents, which belong to no single
-/// arena's sets), eagerly. `None` if the arena does not exist.
-pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
+/// arena's sets), eagerly. `None` if the arena does not exist. `left` is
+/// ghost: what the purge left ([`Left`]).
+pub fn purge_arena(
+    shared: &Shared,
+    index: u16,
+    _left: Tracked<&mut Ghost<Left>>,
+    _ord: Tracked<&mut LockOrder>,
+) -> Option<usize> {
     let _explicit = Explicit::enter();
     let arena = shared.arenas.get_existing(index)?;
-    let mut n = arena.purge_all();
+    let mut n = arena.purge_all(Tracked::assume_new(), Tracked::assume_new());
     if index == 0 {
         n += shared.huge.purge_empty(u64::MAX, Tracked::assume_new());
     }
@@ -2036,17 +2100,20 @@ pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
 /// lock held (`pthread_join`'s TLS teardown, the stack cache trim) and
 /// `pthread_create` takes that lock again. Such a tick purges in the
 /// foreground and leaves the start to the next allocation's tick.
-pub fn on_tick(shared: &Shared, now: u64, alloc: bool) {
-    sample(shared, now);
+pub fn on_tick(shared: &Shared, now: u64, alloc: bool, _ord: Tracked<&mut LockOrder>) {
+    sample(shared, now, Tracked::assume_new());
     if background::present() {
         return;
     }
-    if alloc && background::requested() && background::start_requested(shared) {
+    if alloc
+        && background::requested()
+        && background::start_requested(shared, Tracked::assume_new())
+    {
         return;
     }
-    if decay(shared, now).is_some() {
+    if decay(shared, now, Tracked::assume_new()).is_some() {
         // Dirty memory is still waiting: the lazy start's look.
-        background::auto_tick(shared, now, alloc);
+        background::auto_tick(shared, now, alloc, Tracked::assume_new());
     }
 }
 
@@ -2054,7 +2121,7 @@ pub fn on_tick(shared: &Shared, now: u64, alloc: bool) {
 /// of the coarse clock, and the policy evaluated on the sample that was
 /// taken; nothing at all when the cgroup is untracked or the window has
 /// not passed. Slow paths only (the periodic tick, the background thread).
-fn sample(shared: &Shared, now: u64) {
+fn sample(shared: &Shared, now: u64, _ord: Tracked<&mut LockOrder>) {
     if shared.discover_cgroup_if_due(now) {
         return;
     }
@@ -2065,7 +2132,7 @@ fn sample(shared: &Shared, now: u64) {
         None => false,
     };
     if sampled {
-        crate::policy::evaluate(shared);
+        crate::policy::evaluate(shared, Tracked::assume_new());
     }
 }
 

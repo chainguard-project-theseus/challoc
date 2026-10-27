@@ -2,7 +2,8 @@
 
 use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
-use crate::purge::{Batch, Curve, Pieces, STEPS, Settle};
+use crate::lock::LockOrder;
+use crate::purge::{Batch, Curve, Left, Pieces, STEPS, Settle};
 use crate::slab::State;
 use vstd::prelude::*;
 
@@ -131,7 +132,12 @@ impl ClassState {
     /// a slab whose discard fails stays `Empty` (the next purge retries
     /// it). Recomputes `oldest_empty` from the survivors. Returns the
     /// number purged.
-    pub fn purge_empty(&self, cutoff: u64) -> usize {
+    pub fn purge_empty(
+        &self,
+        cutoff: u64,
+        _left: Tracked<&mut Ghost<Left>>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> usize {
         let spp = self.table().slabs_per_page();
         let mut g = self
             .inner
@@ -227,7 +233,13 @@ impl ClassState {
     /// a failed one leaves its slabs `Empty` and backs the gate off
     /// (`Decayer::back_off`). Recomputes `oldest_empty` from the
     /// survivors. Returns the number purged.
-    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
+    fn purge_curve(
+        &self,
+        now: u64,
+        curve: &Curve,
+        keep16: u32,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> usize {
         let spp = self.table().slabs_per_page();
         let mut g = self
             .inner
@@ -323,20 +335,31 @@ impl ClassState {
     /// lock only when a walk is due.
     #[cfg(test)]
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
-        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
+        self.decay_with(
+            now,
+            decay_ns,
+            crate::policy::KEEP_ALL,
+            Tracked::assume_new(),
+        )
     }
 
     /// [`decay`](ClassState::decay) with the cgroup policy's keep ratio
     /// (design 11): the walk keeps at most `keep16 / 65536` of its `Empty`
     /// slabs on top of the curve's allowance.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
+    pub fn decay_with(
+        &self,
+        now: u64,
+        decay_ns: u64,
+        keep16: u32,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Option<u64> {
         self.gate.decay(now, decay_ns, |now, curve| {
-            self.purge_curve(now, curve, keep16);
+            self.purge_curve(now, curve, keep16, Tracked::assume_new());
         })
     }
 
     /// Bytes of this arena's `Empty` slabs of the class (one lock hold).
-    pub fn empty_bytes(&self) -> usize {
+    pub fn empty_bytes(&self, _ord: Tracked<&mut LockOrder>) -> usize {
         self.inner
             .lock(Tracked::assume_new(), Tracked::assume_new())
             .stats

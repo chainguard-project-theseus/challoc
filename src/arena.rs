@@ -43,6 +43,7 @@ use crate::lock::{Lock, LockOrder};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{rank_arena_stats, rank_meta, rank_sets};
 use crate::meta::{Meta, MetaClaim};
+use crate::purge::Left;
 use crate::stats::ArenaStats;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::arena::axiom_arena_stats_lock_inv;
@@ -1310,6 +1311,13 @@ impl Arena {
         unsafe { self.classes.get_unchecked(class) }
     }
 
+    /// Class state for `class`, with the bounds check: the accessor for the
+    /// cold walks (the statistics), whose proofs then do not depend on the
+    /// fast paths' [`Arena::class`].
+    pub fn class_at(&self, class: usize) -> &ClassState {
+        &self.classes[class]
+    }
+
     /// Change the decay period; `-1` turns purging off. Takes effect at the
     /// next periodic tick, or at once for a background thread, which is
     /// woken to recompute its deadline.
@@ -1323,13 +1331,19 @@ impl Arena {
     /// the period the cgroup policy gives this arena and its keep ratio
     /// for the retention cap (design 11): the earliest next deadline,
     /// `None` when nothing is `Empty`; `NEVER` does nothing.
-    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
+    pub fn decay_with(
+        &self,
+        now: u64,
+        decay_ns: u64,
+        keep16: u32,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Option<u64> {
         if decay_ns == crate::purge::NEVER {
             return None;
         }
         let mut next: Option<u64> = None;
         for cs in self.classes.iter() {
-            if let Some(d) = cs.decay_with(now, decay_ns, keep16) {
+            if let Some(d) = cs.decay_with(now, decay_ns, keep16, Tracked::assume_new()) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
         }
@@ -1338,13 +1352,13 @@ impl Arena {
 
     /// `Empty` bytes over every class (one lock hold per class that has
     /// any), for the cgroup policy's retention figure.
-    pub fn empty_bytes(&self) -> usize {
+    pub fn empty_bytes(&self, _ord: Tracked<&mut LockOrder>) -> usize {
         let mut sum = 0usize;
         let mut c = 0;
         while c < NCLASSES {
             let cs = &self.classes[c];
             if cs.oldest_empty() != 0 {
-                sum += cs.empty_bytes();
+                sum += cs.empty_bytes(Tracked::assume_new());
             }
             c += 1;
         }
@@ -1352,13 +1366,18 @@ impl Arena {
     }
 
     /// Purge every `Empty` slab of every class whatever its age. Returns
-    /// how many were purged.
-    pub fn purge_all(&self) -> usize {
+    /// how many were purged. `left` is ghost: what the purge left
+    /// ([`Left`]).
+    pub fn purge_all(
+        &self,
+        _left: Tracked<&mut Ghost<Left>>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> usize {
         let mut sum = 0usize;
         let mut c = 0;
         while c < NCLASSES {
             let cs = &self.classes[c];
-            sum += cs.purge_empty(u64::MAX);
+            sum += cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
             c += 1;
         }
         sum
