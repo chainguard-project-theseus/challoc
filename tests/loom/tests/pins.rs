@@ -24,7 +24,7 @@ const PINS: &[(&str, &[&str])] = &[
             "let oldest = self.oldest_empty();",
             "if oldest == 0 {",
             "return None;",
-            "pub fn note_empty() {",
+            "pub fn note_empty()",
             "background::wake();",
         ],
     ),
