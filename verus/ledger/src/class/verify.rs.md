@@ -8,12 +8,13 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `fresh_with_live` | external_body | panic/abort | Verus | trusted |
+| `ClassSt...k_zero` | external_body | raw pointer (internal) | Verus | trusted |
 | `ClassState:...lab_is_zero` | external_body | panic/abort | Verus | trusted |
 | `ClassState::check_shadow` | external_body | panic/abort | Verus | trusted |
 
 ## `fresh_with_live`
 
-src/class/verify.rs:183. Kind: external_body. Category: panic/abort.
+src/class/verify.rs:152. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > `check_zero` invariant: a slab with live slots was `Fresh` at selection.
@@ -30,9 +31,32 @@ pub(super) fn fresh_with_live(
         crate::sys::may_abort(),
 ```
 
+## `ClassState::check_zero`
+
+src/class/verify.rs:231. Kind: external_body. Category: raw pointer (internal).
+Tool: Verus. Status: trusted.
+
+> The `check_zero` debug mode: the first and last word of every slot of a pick reported zero must read zero.
+
+```rust
+pub(super) fn check_zero(
+    &self,
+    slots: &[*mut u8],
+    pick: &Pick,
+    Tracked(toks): Tracked<&mut super::SlotToks>,
+    Ghost(key): Ghost<int>,
+)
+    requires
+        crate::sys::may_abort(),
+        super::slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
+        old(toks).holds(self.spec_table(), slots@, key, 0, slots@.len() as int),
+    ensures
+        *final(toks) == *old(toks),
+```
+
 ## `ClassState::check_fresh_slab_is_zero`
 
-src/class/verify.rs:257. Kind: external_body. Category: panic/abort.
+src/class/verify.rs:267. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > `check_zero`: the first word of every slot of a `Fresh` slab must read zero before its first claim; a dirty one means the memory was written before this table ever handed the slab out.
@@ -45,7 +69,7 @@ pub(super) fn check_fresh_slab_is_zero(&self, slab: usize)
 
 ## `ClassState::check_shadow`
 
-src/class/verify.rs:280. Kind: external_body. Category: panic/abort.
+src/class/verify.rs:290. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > `check_zero`: abort when `slab`'s state byte disagrees with its shadow, i.e.

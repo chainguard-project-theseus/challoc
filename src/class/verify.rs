@@ -38,37 +38,6 @@ impl ClassState {
         }
     }
 
-    /// The `check_zero` debug mode: the first and
-    /// last word of every slot of a pick reported zero must read zero.
-    /// Aborts with everything the C-level assertion cannot say: the class,
-    /// slab, the slab's state when the refill selected it (`Fresh` blames
-    /// the commit path, `Purged` the discard path), the arena, the discard
-    /// backend and the offending word.
-    #[cold]
-    #[inline(never)]
-    // `toks` holds the slots' tokens from key `key` on (ghost and tracked
-    // state).
-    #[allow(unused_variables)]
-    pub(super) fn check_zero(
-        &self,
-        slots: &[*mut u8],
-        pick: &Pick,
-        toks: Tracked<&mut super::SlotToks>,
-        key: Ghost<int>,
-    ) {
-        let size = self.class().size();
-        for &p in slots {
-            for &off in &[0, size - 8] {
-                // SAFETY: `p` is a slot this claim just reserved in a
-                // committed slab; slots are at least 16 bytes and 8-aligned.
-                let word = unsafe { read_word(p, off) };
-                if word != 0 {
-                    self.dirty_word(pick, size, p, off, word);
-                }
-            }
-        }
-    }
-
     /// [`check_zero`](ClassState::check_zero)'s abort, inlined into it:
     /// gathers the slab's state for [`dirty_zero_slot`].
     #[inline(always)]
@@ -245,6 +214,47 @@ fn dirty_zero_slot(
 verus! {
 
 impl ClassState {
+    /// The `check_zero` debug mode: the first and
+    /// last word of every slot of a pick reported zero must read zero.
+    /// Aborts with everything the C-level assertion cannot say: the class,
+    /// slab, the slab's state when the refill selected it (`Fresh` blames
+    /// the commit path, `Purged` the discard path), the arena, the discard
+    /// backend and the offending word. `toks` holds the slots' tokens from
+    /// key `key` on, which it leaves as they are. A temporary seam
+    /// (`external_body`, body unchanged): its reads of the slots need permissions to
+    /// the slots' memory, which the claim does not hand out yet.
+    #[cold]
+    #[inline(never)]
+    // `toks` and `key` are read only by the specification (ghost).
+    #[allow(unused_variables)]
+    #[verifier::external_body]
+    pub(super) fn check_zero(
+        &self,
+        slots: &[*mut u8],
+        pick: &Pick,
+        Tracked(toks): Tracked<&mut super::SlotToks>,
+        Ghost(key): Ghost<int>,
+    )
+        requires
+            crate::sys::may_abort(),
+            super::slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
+            old(toks).holds(self.spec_table(), slots@, key, 0, slots@.len() as int),
+        ensures
+            *final(toks) == *old(toks),
+    {
+        let size = self.class().size();
+        for &p in slots {
+            for &off in &[0, size - 8] {
+                // SAFETY: `p` is a slot this claim just reserved in a
+                // committed slab; slots are at least 16 bytes and 8-aligned.
+                let word = unsafe { read_word(p, off) };
+                if word != 0 {
+                    self.dirty_word(pick, size, p, off, word);
+                }
+            }
+        }
+    }
+
     /// `check_zero`: the first word of every slot of a `Fresh` slab must
     /// read zero before its first claim; a dirty one means the memory was
     /// written before this table ever handed the slab out. A temporary

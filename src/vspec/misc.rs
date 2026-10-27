@@ -1,7 +1,7 @@
 //! Specifications of the derived `PartialEq` of four enums verified code
 //! compares: `config::Thp` and `sys::thp_host::ThpSetting` (`thp.rs`),
 //! `huge::RunState`, and `slab::State` (`class::ClassState::take`); and of
-//! `fence` and `AtomicU32::as_ptr`.
+//! `fence`, `AtomicU32::as_ptr` and `Option::as_deref_mut`.
 
 use vstd::prelude::*;
 
@@ -64,5 +64,15 @@ pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic:
 /// syscall argument. Nothing is claimed about it; the verified callers
 /// only pass it to the kernel and never dereference it.
 pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::sync::atomic::Atomic<u32>) -> *mut u32;
+
+} // verus!
+
+verus! {
+
+/// `Option::as_deref_mut`: a reborrow of the contents. Nothing is claimed
+/// about the result; its callers (`ClassState::claim_with` and
+/// `ClassState::finish`) only pass the reference on, to `finish` and to
+/// `xorshift`.
+pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
 
 } // verus!

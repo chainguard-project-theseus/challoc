@@ -1,2 +1,3 @@
 # Trusted aborts: Verus does not model the formatted message.
 zero_slab_had_bits_set	panic/abort	Verus
+reservation_unmet	panic/abort	Verus
