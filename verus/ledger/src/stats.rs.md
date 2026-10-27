@@ -13,7 +13,7 @@ file.
 
 ## `fig_add`
 
-src/stats.rs:415. Kind: external_body. Category: core library.
+src/stats.rs:416. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
@@ -26,7 +26,7 @@ pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
 
 ## `fig_add64`
 
-src/stats.rs:426. Kind: external_body. Category: core library.
+src/stats.rs:427. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a + b` for a statistics counter; see [`fig_add`].
@@ -39,7 +39,7 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 
 ## `axiom_snapshot_lock_inv`
 
-src/stats.rs:524. Kind: axiom. Category: allocator invariant.
+src/stats.rs:525. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the value of the process statistics lock (`Shared::stats`) satisfies [`Snapshot::inv`] while the lock is free.

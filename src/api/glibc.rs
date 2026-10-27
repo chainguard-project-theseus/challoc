@@ -73,7 +73,11 @@ pub fn mallopt(_param: c_int, _value: c_int) -> c_int {
 /// `mallinfo2()`.
 pub fn mallinfo2() -> MallInfo2 {
     let shared = super::shared();
-    let all = stats::collect_all(shared);
+    let all = stats::collect_all(
+        shared,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     let page = shared.regions.page_size();
     let arena = all.resident.saturating_sub(all.large_allocated);
     let uordblks = all.small_allocated;
