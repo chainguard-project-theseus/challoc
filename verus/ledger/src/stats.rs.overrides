@@ -1,5 +1,7 @@
-# A temporary seam: opaque until the statistics are specified
-# (the accounting identities `ArenaStats::identities_hold` checks).
-ArenaStats	allocator invariant	Verus
-# A temporary seam, with the opaque type: no figure is claimed.
-ArenaStats::empty	allocator invariant	Verus
+# `+` on a figure no verified invariant bounds: exact when the sum fits,
+# checkable against `core` (overflow checks on or off).
+fig_add	core library	Kani
+fig_add64	core library	Kani
+# A lock's invariant: its writers (`Shared::init`, `collect_into`) are
+# not verified yet.
+axiom_snapshot_lock_inv	allocator invariant	none (assumption)
