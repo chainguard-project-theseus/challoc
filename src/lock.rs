@@ -256,6 +256,12 @@ pub open spec fn rank_arena_stats(i: int) -> int {
     0x900_0000 + i
 }
 
+/// The background thread's state lock (`purge::background`), above the
+/// statistics locks: `fork_prepare` takes it last.
+pub open spec fn rank_state() -> int {
+    0xA00_0000
+}
+
 /// Above every lock's rank ([`RawLock::new`] requires it): a
 /// [`LockOrder::spare`] allows nothing.
 pub open spec fn rank_spare() -> int {

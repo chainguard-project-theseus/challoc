@@ -10,6 +10,8 @@ file.
 | `PartialEqSpec...r config::Thp` | spec_impl | core library | Kani | trusted |
 | `PartialEqSpec...t::ThpSetting` | spec_impl | core library | Kani | trusted |
 | `PartialEqSpec...uge::RunState` | spec_impl | core library | Kani | trusted |
+| `fence` | assume_spec | core library | Kani | trusted |
+| `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | trusted |
 
 ## `PartialEqSpecImpl for config::Thp`
 
@@ -60,4 +62,31 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
         *self == *other
     }
 }
+```
+
+## `core::sync::atomic::fence`
+
+src/vspec/misc.rs:45. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `core::sync::atomic::fence`: panics on `Relaxed` only, and has no effect Verus models (Verus's memory model is sequentially consistent; the ordering it adds is checked by the loom models in `tests/loom`, not here).
+
+```rust
+pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic::Ordering)
+    requires
+        !(order is Relaxed),
+    opens_invariants none
+    no_unwind
+;
+```
+
+## `core::sync::atomic::Atomic::<u32>::as_ptr`
+
+src/vspec/misc.rs:55. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `AtomicU32::as_ptr`: the address of the atomic's value, for a futex syscall argument.
+
+```rust
+pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::sync::atomic::Atomic<u32>) -> *mut u32;
 ```

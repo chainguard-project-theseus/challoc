@@ -1,6 +1,6 @@
 //! Specifications of the derived `PartialEq` of three enums verified code
 //! compares: `config::Thp` and `sys::thp_host::ThpSetting` (`thp.rs`), and
-//! `huge::RunState`.
+//! `huge::RunState`; and of `fence` and `AtomicU32::as_ptr`.
 
 use vstd::prelude::*;
 
@@ -37,5 +37,21 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
         *self == *other
     }
 }
+
+/// `core::sync::atomic::fence`: panics on `Relaxed` only, and has no
+/// effect Verus models (Verus's memory model is sequentially consistent;
+/// the ordering it adds is checked by the loom models in `tests/loom`, not
+/// here).
+pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic::Ordering)
+    requires
+        !(order is Relaxed),
+    opens_invariants none
+    no_unwind
+;
+
+/// `AtomicU32::as_ptr`: the address of the atomic's value, for a futex
+/// syscall argument. Nothing is claimed about it; the verified callers
+/// only pass it to the kernel and never dereference it.
+pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::sync::atomic::Atomic<u32>) -> *mut u32;
 
 } // verus!
