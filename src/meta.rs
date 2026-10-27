@@ -57,6 +57,8 @@ use crate::vspec::layout::{layout_align, layout_ok, layout_size};
 use crate::vspec::meta::{axiom_meta_lock_frame, axiom_meta_lock_inv};
 use crate::vspec::unbacked::Unbacked;
 #[cfg(verus_keep_ghost)]
+use crate::vspec::unbacked::committed_range;
+#[cfg(verus_keep_ghost)]
 use crate::vspec::zero::axiom_wrote_zero;
 use crate::vspec::zero::{ZeroRaw, Zeroed};
 #[cfg(verus_keep_ghost)]
@@ -934,7 +936,7 @@ impl Meta {
         let tracked mut given = Unbacked::empty(0);
         (
             g.reserve(len, align, Tracked(&mut *claim), Tracked(&mut given)),
-            Tracked(reserved_table(given, claim@, len, g2.page, g2.top)),
+            Tracked(reserved_table(given, claim@, len, g2.page, g2.top, false)),
         )
     }
 
@@ -1003,6 +1005,7 @@ impl Meta {
         ensures
             r.0 matches Some(s) ==> s % align == 0 && s > 0 && self.holds(s as int, len as int),
             r.0 matches Some(s) ==> r.1@.is_range(s as int, words_up(len as int)) && len <= words_up(len as int),
+            r.0 matches Some(s) ==> committed_range(s as int, words_up(len as int)),
             r.1@.provenance() == cast_provenance(),
     {
         broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
@@ -1710,10 +1713,16 @@ const _: () = assert!(PROT_RW == crate::sys::PROT_READ | crate::sys::PROT_WRITE)
 
 verus! {
 
-/// Make `[addr, addr + len)` readable and writable.
-fn commit_range(addr: usize, len: usize) -> Result<(), Errno>
+/// Make `[addr, addr + len)` readable and writable. On `Ok` its bytes are
+/// [`committed`](crate::vspec::unbacked::committed). Trusted for that
+/// kernel fact (`mprotect(2)` returned 0 for `PROT_READ | PROT_WRITE`),
+/// which [`Unbacked::commit`] requires.
+#[verifier::external_body]
+fn commit_range(addr: usize, len: usize) -> (r: Result<(), Errno>)
     requires
         crate::sys::may_syscall(),
+    ensures
+        r is Ok ==> committed_range(addr as int, len as int),
 {
     // SAFETY: the range is inside our own PROT_NONE reservation and nothing
     // is mapped over it; adding permissions cannot invalidate anything.
@@ -2134,6 +2143,7 @@ impl Inner {
         &&& self.base + self.len <= va_limit()
         &&& self.base <= self.bump <= self.frontier <= self.top <= self.base + self.len
         &&& self.base <= self.committed <= self.frontier
+        &&& committed_range(self.base as int, self.committed - self.base)
         &&& self.committed % self.page == 0
         &&& self.frontier % self.page == 0
         &&& self.top % self.page == 0
@@ -2389,6 +2399,7 @@ impl Inner {
             final(self).raw_wf(),
             r is Err ==> *final(self) == *old(self),
             r is Ok && old(self).chunked(end) && old(self).frontier <= end ==> final(self).frontier == end,
+            r is Ok ==> committed_range(old(self).committed as int, final(self).committed - old(self).committed),
             r matches Ok(delta) ==> {
                 &&& final(self).frontier == old(self).frontier + delta
                 &&& final(self).committed == final(self).frontier
@@ -2447,6 +2458,7 @@ impl Inner {
             final(self).region_wf(),
             final(self).raw_wf(),
             r is Err ==> *final(self) == *old(self),
+            r is Ok ==> committed_range(old(self).committed as int, old(self).frontier - old(self).committed),
             r is Ok ==> {
                 &&& final(self).frontier == old(self).frontier
                 &&& final(self).committed == final(self).frontier
@@ -3007,6 +3019,7 @@ impl Inner {
             r is Ok ==> final(claim)@ == old(claim)@.remove_keys(set_int_range(addr as int, addr + len)),
             // A range on the reservation side was committed by `commit_range`.
             r is Ok && old(self).top <= addr ==> final(self).top_committed == old(self).top_committed + len,
+            r is Ok ==> committed_range(addr as int, len as int),
     {
         let ghost m = self.pages@@;
         let ghost range = set_int_range(addr as int, addr + len);
@@ -3090,6 +3103,7 @@ impl Inner {
             r.0 matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
             r.0 matches Some(s) ==> old(self).base <= s && s + len <= old(self).base + old(self).len,
             r.0 matches Some(s) ==> 0 < s && r.1@.is_range(s as int, words_up(len as int)) && len <= words_up(len as int),
+            r.0 matches Some(s) ==> committed_range(s as int, words_up(len as int)),
             r.1@.provenance() == cast_provenance(),
     {
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
@@ -3115,12 +3129,11 @@ impl Inner {
                         self.pages.borrow_mut().delete(c);
                         assert(self.pages_wf());
                         // The table's committed part and its deferred part,
-                        // which the flush just committed
-                        // ([`Unbacked::into_lazy`]'s premise), as for
+                        // which the flush just committed, as for
                         // [`Meta::reserve_table`].
                         let tracked Carve { raw, zero: hz, lazy: u, .. } = carve;
                         let l = if len == 0 { 1usize } else { len };
-                        let tracked (lraw, lz) = u.into_lazy();
+                        let tracked (lraw, lz) = u.commit();
                         let tracked (mine, mine_z) = carved_table(raw, hz, lraw, lz, b0, lo0, p as int, e);
                         lemma_align_bits(l, pre.page, (l + (pre.page - 1)) as usize);
                         lemma_words_up_fit(pre.page, tlen as int, len as int);
@@ -3194,10 +3207,9 @@ impl Inner {
             return (None, Tracked(ZeroRaw::empty(cast_provenance())));
         }
         // The reservation's permission, from the `Unbacked` token
-        // `Inner::reserve` carved for it, now committed
-        // ([`Unbacked::into_lazy`]'s premise), as for
+        // `Inner::reserve` carved for it, now committed, as for
         // [`Meta::reserve_table`].
-        (Some(start), Tracked(reserved_table(given, cm, len, pre.page, old_top)))
+        (Some(start), Tracked(reserved_table(given, cm, len, pre.page, old_top, true)))
     }
 
     fn stats(&self) -> (r: MetaStats)
@@ -3322,11 +3334,20 @@ proof fn keep_prefix(tracked raw: PointsToRaw, lo: int, mid: int, hi: int) -> (t
 /// `[s, top)`, where `given` is the `Unbacked` token `Inner::reserve`
 /// carved for it and `cm` the claim it recorded: the permission to its
 /// first `words_up(len)` bytes, which read as zero
-/// ([`Unbacked::into_lazy`]); and the claim holds the table rounded up to
-/// whole pages, all on the reservation side. Any other `given` gives
-/// nothing.
-proof fn reserved_table(tracked given: Unbacked, cm: Map<int, bool>, len: usize, page: usize, top: usize) -> (tracked z: ZeroRaw)
+/// ([`Unbacked::into_lazy`], or [`Unbacked::commit`] when the caller has
+/// `committed` the range, `Inner::reserve_committed`); and the
+/// claim holds the table rounded up to whole pages, all on the reservation
+/// side. Any other `given` gives nothing.
+proof fn reserved_table(
+    tracked given: Unbacked,
+    cm: Map<int, bool>,
+    len: usize,
+    page: usize,
+    top: usize,
+    committed: bool,
+) -> (tracked z: ZeroRaw)
     requires
+        committed ==> committed_range(given.addr(), given.len()),
         MIN_ALIGN <= page,
         page <= va_limit(),
         page & sub(page, 1) == 0,
@@ -3363,7 +3384,7 @@ proof fn reserved_table(tracked given: Unbacked, cm: Map<int, bool>, len: usize,
         // The claim is `[s, top)`, whole pages holding the table.
         lemma_align_up_fit(len, page, top - s);
         lemma_claim_range(cm, s, s + align_up_spec(len, page), top as int, true);
-        let tracked (raw, gz) = given.into_lazy();
+        let tracked (raw, gz) = if committed { given.commit() } else { given.into_lazy() };
         ZeroRaw::axiom_new(keep_prefix(raw, s, s + words_up(len as int), top as int), gz)
     } else {
         ZeroRaw::empty(cast_provenance())
