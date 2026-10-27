@@ -7,18 +7,18 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `axiom_arena...ts_lock_inv` | axiom | allocator invariant | Verus | trusted |
+| `axiom_a...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_arena_stats_lock_inv`
 
-src/vspec/arena.rs:13. Kind: axiom. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/vspec/arena.rs:20. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
-> Every `ArenaStats` an arena's statistics lock may hold satisfies the lock's invariant: the lock keeps no invariant of its value, which is opaque (`stats::ExArenaStats`).
+> Assumption (`lock.rs`): the value of an arena's statistics lock keeps the accounting identities (`ArenaStats::identities`) while the lock is free.
 
 ```rust
 pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
     ensures
-        #[trigger] lock_inv(v),
+        #[trigger] lock_inv(v) == v.identities(),
 ;
 ```

@@ -6,13 +6,20 @@ use crate::lock::lock_inv;
 
 verus! {
 
-/// Every `ArenaStats` an arena's statistics lock may hold satisfies the
-/// lock's invariant: the lock keeps no invariant of its value, which is
-/// opaque (`stats::ExArenaStats`). Trusted as every `lock_inv` axiom is;
-/// it says nothing of the figures, so it is true of any value.
+/// Assumption (`lock.rs`): the value of an arena's statistics lock keeps
+/// the accounting identities (`ArenaStats::identities`) while the lock is
+/// free. Its writers: `Arena::init` creates the lock with
+/// `ArenaStats::empty` (verified: `Lock::new` requires the invariant and
+/// `empty` ensures the identities), and `Arena::store_stats` stores a
+/// value it requires them of (verified). `Arena::stats` only reads. The
+/// caller Verus does not check is `stats::collect_into`, which stores
+/// what `collect_arena_with` computes; its sums are exact only when no
+/// figure wraps. The fork handlers take and release the raw lock without
+/// touching the value, and nothing calls `get_unlocked` on it. What is
+/// left is the claim that the lock protects the identities.
 pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
     ensures
-        #[trigger] lock_inv(v),
+        #[trigger] lock_inv(v) == v.identities(),
 ;
 
 } // verus!

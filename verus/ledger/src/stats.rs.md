@@ -7,27 +7,46 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `ArenaStats` | ext_type_spec | allocator invariant | Verus | trusted |
-| `ArenaStats::empty` | assume_spec | allocator invariant | Verus | trusted |
+| `fig_add` | external_body | core library | Kani | trusted |
+| `fig_add64` | external_body | core library | Kani | trusted |
+| `axiom_s...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 
-## `ArenaStats`
+## `fig_add`
 
-src/stats.rs:193. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/stats.rs:415. Kind: external_body. Category: core library.
+Tool: Kani. Status: trusted.
 
-> `ArenaStats`, opaque: `arena.rs` keeps one in each arena's statistics lock and copies it in and out, and states nothing about its figures.
+> `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
 
 ```rust
-pub struct ExArenaStats(ArenaStats);
+pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
+    ensures
+        a + b <= usize::MAX ==> r == a + b,
 ```
 
-## `ArenaStats::empty`
+## `fig_add64`
 
-src/stats.rs:196. Kind: assume_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/stats.rs:426. Kind: external_body. Category: core library.
+Tool: Kani. Status: trusted.
 
-> `ArenaStats::empty`: an `ArenaStats`; nothing is claimed about it.
+> `a + b` for a statistics counter; see [`fig_add`].
 
 ```rust
-pub assume_specification[ ArenaStats::empty ](index: u16) -> ArenaStats;
+pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
+    ensures
+        a + b <= u64::MAX ==> r == a + b,
+```
+
+## `axiom_snapshot_lock_inv`
+
+src/stats.rs:524. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Assumption (`lock.rs`): the value of the process statistics lock (`Shared::stats`) satisfies [`Snapshot::inv`] while the lock is free.
+
+```rust
+pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
+    ensures
+        #[trigger] crate::lock::lock_inv(v) == v.inv(),
+;
 ```
