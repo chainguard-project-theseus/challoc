@@ -1558,7 +1558,7 @@ pub(crate) proof fn lemma_align_bits(x: usize, a: usize, y: usize)
 }
 
 /// [`align_up`]'s postcondition, of the spec function.
-proof fn lemma_align_up(x: usize, a: usize)
+pub(crate) proof fn lemma_align_up(x: usize, a: usize)
     requires
         a > 0,
         a & sub(a, 1) == 0,
