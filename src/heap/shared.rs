@@ -8,7 +8,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
-use crate::arena::{Arena, Arenas, elem_at, field_at, fits};
+use crate::arena::{Arena, Arenas, Held, elem_at, field_at, fits};
 use crate::class::SlabTable;
 use crate::config::Config;
 use crate::huge::{Huge, RunState};
@@ -18,14 +18,17 @@ use crate::meta::Meta;
 use crate::policy::Policy;
 use crate::stats::Snapshot;
 use crate::sys::cgroup::{Cgroup, Deferred};
-use crate::vspec::atom::UsizePerm;
+use crate::vspec::atom::{UsizePerm, usize_ptr};
+use crate::vspec::once::{Once, Step};
 use crate::vspec::unbacked::Unbacked;
 use vstd::prelude::Ghost;
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
 use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use vstd::map::Map;
 use vstd::prelude::{Tracked, verus};
+use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
@@ -123,6 +126,14 @@ pub struct Shared {
 /// The address of the process's `Shared` storage (`api`'s `SHARED`).
 /// Uninterpreted.
 pub uninterp spec fn shared_storage() -> *mut Shared;
+
+/// The permission to the whole `Shared` [`Shared::init`] built, frozen, once
+/// it has: what `init` hands back to its caller, which publishes it.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct Built {
+    pub tracked perm: Option<&'static PointsTo<Shared>>,
+}
 
 } // verus!
 
@@ -574,20 +585,42 @@ const _: () = assert!(
         && core::mem::align_of::<[SlabTable; NCLASSES]>() == core::mem::align_of::<SlabTable>()
 );
 
-/// The in-place writes of [`Shared::init`], each to the field it names.
+/// The type of [`Shared::stats`]: named, so that the permission parameter
+/// of [`Shared::put_tail`] does not read as a lock field to
+/// `api::tests::lock_inventory`.
+type StatsLock = Lock<Snapshot>;
+
+/// The in-place writes of [`Shared::init`], each to the field it names,
+/// through the permission to that field. The callers here are
+/// unverified and pass `Tracked::assume_new()` for every permission.
 impl Shared {
+    /// The permission to `init`'s storage, uninitialised, for `_once`,
+    /// the process's token of this step (its `vspec::once::Step` variant
+    /// comes with the proof of `init`).
+    #[inline(always)]
+    fn begin(_this: *mut Shared, _once: Tracked<Once>) -> Tracked<PointsTo<Shared>> {
+        Tracked::assume_new()
+    }
+
     /// `meta` and `regions`; the metadata allocator, written.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_head<'a>(this: *mut Shared, meta: Meta, regions: Regions) -> &'a Meta {
-        // SAFETY: the fields of `init`'s storage.
+    unsafe fn put_head<'a>(
+        this: *mut Shared,
+        meta: Meta,
+        regions: Regions,
+        _pm: Tracked<&'a mut Held<Meta>>,
+        pr: Tracked<&mut PointsTo<Regions>>,
+    ) -> &'a Meta {
+        // SAFETY: the fields of `init`'s storage, through their
+        // permissions; never moved.
         unsafe {
             let meta_ptr = field_at(this, S_META);
-            ptr::write(meta_ptr, meta);
-            ptr::write(field_at(this, S_REGIONS), regions);
-            &*meta_ptr
+            ptr_mut_write(meta_ptr, Tracked::assume_new(), meta);
+            ptr_mut_write(field_at(this, S_REGIONS), pr, regions);
+            ptr_ref(meta_ptr, Tracked::assume_new())
         }
     }
 
@@ -597,26 +630,40 @@ impl Shared {
     /// # Safety
     /// `this` is `init`'s storage, its regions written.
     #[inline(always)]
-    unsafe fn put_flags<'a>(this: *mut Shared, flags: u8, region_hi: usize) -> &'a Regions {
-        // SAFETY: the fields of `init`'s storage.
+    unsafe fn put_flags<'a>(
+        this: *mut Shared,
+        flags: u8,
+        region_hi: usize,
+        pf: Tracked<&mut PointsTo<u8>>,
+        ph: Tracked<&mut PointsTo<usize>>,
+        pa: Tracked<&mut PointsTo<AtomicU8>>,
+        pr: Tracked<&'a PointsTo<Regions>>,
+    ) -> &'a Regions {
+        // SAFETY: the fields of `init`'s storage, through their
+        // permissions.
         unsafe {
-            ptr::write(field_at(this, S_PUSH_FLAGS), flags);
-            ptr::write(field_at(this, S_REGION_HI), region_hi);
-            ptr::write(field_at(this, S_FREE_FLAGS), AtomicU8::new(flags));
-            &*field_at(this, S_REGIONS)
+            ptr_mut_write(field_at(this, S_PUSH_FLAGS), pf, flags);
+            ptr_mut_write(field_at(this, S_REGION_HI), ph, region_hi);
+            ptr_mut_write(field_at(this, S_FREE_FLAGS), pa, AtomicU8::new(flags));
+            ptr_ref(field_at(this, S_REGIONS), pr)
         }
     }
 
-    /// `t` into `tables[c]`.
+    /// `t` into `tables[c]`, through the permission `pt` to it.
     ///
     /// # Safety
     /// `this` is `init`'s storage and `c < NCLASSES`.
     #[inline(always)]
-    unsafe fn put_table(this: *mut Shared, c: usize, t: SlabTable) {
-        // SAFETY: element `c` of the field.
+    unsafe fn put_table(
+        this: *mut Shared,
+        c: usize,
+        t: SlabTable,
+        pt: Tracked<&mut PointsTo<SlabTable>>,
+    ) {
+        // SAFETY: element `c` of the field, through its permission.
         unsafe {
             let tables: *mut SlabTable = field_at(this, S_TABLES);
-            ptr::write(elem_at(tables, c, NCLASSES), t)
+            ptr_mut_write(elem_at(tables, c, NCLASSES), pt, t)
         }
     }
 
@@ -630,16 +677,21 @@ impl Shared {
         unsafe { field_at(this, S_TABLES) }
     }
 
-    /// `l` into `lines[c]`.
+    /// `l` into `lines[c]`, through the permission `pl` to it.
     ///
     /// # Safety
     /// `this` is `init`'s storage and `c < NCLASSES`.
     #[inline(always)]
-    unsafe fn put_line(this: *mut Shared, c: usize, l: ClassLine) {
-        // SAFETY: element `c` of the field.
+    unsafe fn put_line(
+        this: *mut Shared,
+        c: usize,
+        l: ClassLine,
+        pl: Tracked<&mut PointsTo<ClassLine>>,
+    ) {
+        // SAFETY: element `c` of the field, through its permission.
         unsafe {
             let lines: *mut ClassLine = field_at(this, S_LINES);
-            ptr::write(elem_at(lines, c, NCLASSES), l)
+            ptr_mut_write(elem_at(lines, c, NCLASSES), pl, l)
         }
     }
 
@@ -663,76 +715,107 @@ impl Shared {
         unsafe { field_at(this, S_ARENA0) }
     }
 
-    /// `h` into `huge`.
+    /// `h` into `huge`, through the permission `ph` to it.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_huge(this: *mut Shared, h: Huge) {
-        // SAFETY: the field of `init`'s storage.
-        unsafe { ptr::write(field_at(this, S_HUGE), h) }
+    unsafe fn put_huge(this: *mut Shared, h: Huge, ph: Tracked<&mut PointsTo<Huge>>) {
+        // SAFETY: the field of `init`'s storage, through its permission.
+        unsafe { ptr_mut_write(field_at(this, S_HUGE), ph, h) }
     }
 
-    /// `gc_interval_ns`, then the arena registry over `arena0` and the
-    /// explicit-cache table, each built in place.
+    /// `gc_interval_ns`, then the arena registry over `arena0` (`_a0`,
+    /// its frozen permission) and the explicit-cache table, each built in
+    /// place; `gc_interval_ns` and the table through the permissions to
+    /// their fields, the registry's (`_pa`) for once `Arenas::init` takes
+    /// one.
     ///
     /// # Safety
     /// `this` is `init`'s storage, `arena0` its arena 0, built.
     #[inline(always)]
+    // The permissions, one per field written, are ghost.
+    #[allow(clippy::too_many_arguments)]
     unsafe fn put_registries(
         this: *mut Shared,
         gc_interval_ns: u64,
         arena0: *mut Arena,
+        _a0: Tracked<&'static PointsTo<Arena>>,
         narenas: u32,
+        pg: Tracked<&mut PointsTo<u64>>,
+        _pa: Tracked<&mut Held<Arenas>>,
+        pt: Tracked<&mut PointsTo<Tcaches>>,
     ) {
-        // SAFETY: the fields of `init`'s storage.
+        // SAFETY: the fields of `init`'s storage, through their
+        // permissions; `arena0` is inside the same `Shared`.
         unsafe {
-            ptr::write(field_at(this, S_GC_INTERVAL_NS), gc_interval_ns);
+            ptr_mut_write(field_at(this, S_GC_INTERVAL_NS), pg, gc_interval_ns);
             Arenas::init(field_at(this, S_ARENAS), arena0, narenas);
-            Tcaches::init(field_at(this, S_TCACHES));
+            Tcaches::init(field_at(this, S_TCACHES), pt);
         }
     }
 
-    /// `cgroup` into the field; the record, written.
+    /// `cgroup` into the field, through the permission `pc` to it; the
+    /// record, written.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_cgroup<'a>(this: *mut Shared, cgroup: Deferred) -> &'a Deferred {
-        // SAFETY: the field of `init`'s storage.
+    unsafe fn put_cgroup(
+        this: *mut Shared,
+        cgroup: Deferred,
+        pc: Tracked<&mut PointsTo<Deferred>>,
+    ) -> &Deferred {
+        // SAFETY: the field of `init`'s storage, through its permission;
+        // never moved.
         unsafe {
             let cgroup_ptr = field_at(this, S_CGROUP);
-            ptr::write(cgroup_ptr, cgroup);
-            &*cgroup_ptr
+            ptr_mut_write(cgroup_ptr, pc, cgroup);
+            ptr_ref(cgroup_ptr, Tracked::assume_new())
         }
     }
 
-    /// `policy` into the field; the policy, written.
+    /// `policy` into the field, through the permission `pp` to it; the
+    /// policy, written.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_policy<'a>(this: *mut Shared, policy: Policy) -> &'a Policy {
-        // SAFETY: the field of `init`'s storage.
+    unsafe fn put_policy(
+        this: *mut Shared,
+        policy: Policy,
+        pp: Tracked<&mut PointsTo<Policy>>,
+    ) -> &Policy {
+        // SAFETY: the field of `init`'s storage, through its permission;
+        // never moved.
         unsafe {
             let policy_ptr = field_at(this, S_POLICY);
-            ptr::write(policy_ptr, policy);
-            &*policy_ptr
+            ptr_mut_write(policy_ptr, pp, policy);
+            ptr_ref(policy_ptr, Tracked::assume_new())
         }
     }
 
-    /// `config`, the thread-exit key and the statistics snapshot.
+    /// `config`, the thread-exit key and the statistics snapshot, each
+    /// through the permission to its field.
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_tail(this: *mut Shared, config: Config) {
-        // SAFETY: the fields of `init`'s storage.
+    unsafe fn put_tail(
+        this: *mut Shared,
+        config: Config,
+        pc: Tracked<&mut PointsTo<Config>>,
+        pk: Tracked<&mut PointsTo<ThreadKey>>,
+        ps: Tracked<&mut PointsTo<StatsLock>>,
+    ) {
+        // SAFETY: the fields of `init`'s storage, through their
+        // permissions.
         unsafe {
-            ptr::write(field_at(this, S_CONFIG), config);
-            ptr::write(field_at(this, S_KEY), ThreadKey::create());
-            ptr::write(
+            ptr_mut_write(field_at(this, S_CONFIG), pc, config);
+            ptr_mut_write(field_at(this, S_KEY), pk, ThreadKey::create());
+            ptr_mut_write(
                 field_at(this, S_STATS),
+                ps,
                 Lock::new(Snapshot::EMPTY, Ghost::assume_new()),
             );
         }
@@ -765,6 +848,8 @@ impl Shared {
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
     /// VMA per guard, see `class/`).
+    // The last two arguments are ghost.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn init(
         this: *mut Shared,
         regions: Regions,
@@ -772,6 +857,8 @@ impl Shared {
         config: Config,
         guard_install: bool,
         pac: bool,
+        _steps: Tracked<Map<Step, Once>>,
+        _built: Tracked<&mut Built>,
     ) -> bool {
         let mut config = config;
         config.narenas = config.effective_narenas(ncpus());
@@ -782,6 +869,7 @@ impl Shared {
         };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
+        let _perm = Shared::begin(this, Tracked::assume_new());
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
             let meta = Shared::put_head(
@@ -793,6 +881,8 @@ impl Shared {
                     space,
                 ),
                 regions,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
             );
             let regions = Shared::put_flags(
                 this,
@@ -807,6 +897,10 @@ impl Shared {
                         0
                     }),
                 !(regions.region_len() - 1),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
             );
             for c in 0..NCLASSES {
                 match SlabTable::new(
@@ -819,7 +913,7 @@ impl Shared {
                     Tracked::assume_new(),
                 ) {
                     Some(t) => {
-                        Shared::put_table(this, c, t);
+                        Shared::put_table(this, c, t, Tracked::assume_new());
                     }
                     None => return false,
                 }
@@ -827,13 +921,13 @@ impl Shared {
             let tables = Shared::tables_ptr(this);
             let lines = Shared::lines_ptr(this);
             for c in 0..NCLASSES {
-                let table = &*elem_at(tables, c, NCLASSES);
+                let table = ptr_ref(elem_at(tables, c, NCLASSES), Tracked::assume_new());
                 let (line, perm) = ClassLine::of(regions, table, c);
-                Shared::put_line(this, c, line);
-                let line = &*elem_at(lines, c, NCLASSES);
+                Shared::put_line(this, c, line, Tracked::assume_new());
+                let line = ptr_ref(elem_at(lines, c, NCLASSES), Tracked::assume_new());
                 // The `Shared` never moves (this function's contract), and
                 // `perm` is the copy's, moved into place with it.
-                table.mirror_watermark(&raw const line.committed, perm, Tracked::assume_new());
+                table.mirror_watermark(usize_ptr(&line.committed), perm, Tracked::assume_new());
             }
             let arena0 = Shared::arena0_ptr(this);
             if !Arena::init(
@@ -861,11 +955,20 @@ impl Shared {
                     // `huge_dirty_decay_ms:0`: a freed run is purged at
                     // once rather than at the next decay pass (design 7).
                     h.set_purge_on_free(config.huge_dirty_decay_ms == Some(0));
-                    Shared::put_huge(this, h)
+                    Shared::put_huge(this, h, Tracked::assume_new())
                 }
                 None => return false,
             }
-            Shared::put_registries(this, GC_INTERVAL_NS, arena0, config.narenas);
+            Shared::put_registries(
+                this,
+                GC_INTERVAL_NS,
+                arena0,
+                Tracked::assume_new(),
+                config.narenas,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             // Design 11: discovery waits for the first tick `DEFER_NS` into
             // the process's life (or the first read of the figures), so a
             // short-lived process never reads the files; `thp:always` needs
@@ -879,6 +982,7 @@ impl Shared {
                 } else {
                     Deferred::now(Cgroup::discover(false))
                 },
+                Tracked::assume_new(),
             );
             // Design 11: under an effective limit below 1 GiB a configured
             // `thp:always` is forced to `never` in the stored configuration
@@ -902,12 +1006,19 @@ impl Shared {
             if thp_forced {
                 config.thp = crate::config::Thp::Never;
             }
-            let policy = Shared::put_policy(this, Policy::new(rises, thp_forced));
+            let policy =
+                Shared::put_policy(this, Policy::new(rises, thp_forced), Tracked::assume_new());
             // Applied once on the discovery sample, so the band and the cap
             // are published before the first 10 ms window closes (nothing
             // is `Empty` yet: retention 0).
             policy.apply(band, limit, 0, rises);
-            Shared::put_tail(this, config);
+            Shared::put_tail(
+                this,
+                config,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         true
     }
