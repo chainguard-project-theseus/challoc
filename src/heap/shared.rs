@@ -828,15 +828,12 @@ impl Shared {
             let lines = Shared::lines_ptr(this);
             for c in 0..NCLASSES {
                 let table = &*elem_at(tables, c, NCLASSES);
-                let (line, _perm) = ClassLine::of(regions, table, c);
+                let (line, perm) = ClassLine::of(regions, table, c);
                 Shared::put_line(this, c, line);
                 let line = &*elem_at(lines, c, NCLASSES);
-                // The `Shared` never moves (this function's contract).
-                table.mirror_watermark(
-                    &raw const line.committed,
-                    Tracked::assume_new(),
-                    Tracked::assume_new(),
-                );
+                // The `Shared` never moves (this function's contract), and
+                // `perm` is the copy's, moved into place with it.
+                table.mirror_watermark(&raw const line.committed, perm, Tracked::assume_new());
             }
             let arena0 = Shared::arena0_ptr(this);
             if !Arena::init(
