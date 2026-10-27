@@ -30,6 +30,10 @@ use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
+use crate::vspec::errno::{ThreadErrno, set_errno};
+use crate::vspec::print::base_slab_sizes;
+use vstd::prelude::Tracked;
+use vstd::raw_ptr::ptr_ref;
 
 /// `void (*write_cb)(void *cbopaque, const char *s)`.
 pub type WriteCb = Option<unsafe extern "C" fn(*mut c_void, *const c_char)>;
@@ -162,7 +166,8 @@ struct Opts {
     no_bins: bool,
 }
 
-/// Byte `i` of the caller's option string.
+/// Byte `i` of the caller's option string, read through a permission to
+/// it (a placeholder here, unverified).
 ///
 /// # Safety
 /// `opts + i` is a readable byte of the caller's string.
@@ -171,7 +176,8 @@ struct Opts {
 #[allow(clippy::unnecessary_cast)]
 unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8 {
     // SAFETY: guaranteed by the caller.
-    unsafe { opts.add(i).read() as u8 }
+    let q = unsafe { opts.add(i) };
+    *ptr_ref(q, Tracked::assume_new()) as u8
 }
 
 impl Opts {
@@ -297,12 +303,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     if let Some((lo, hi)) = crate::layout::page_sized_classes() {
         // Design 3: on a kernel whose page is larger than a class's table
         // slab, the class's slab is the page.
-        let base = |f: fn(usize, usize) -> usize| {
-            (lo..=hi)
-                .map(|c| crate::layout::BASE_CLASSES[c].slab_size())
-                .reduce(f)
-                .unwrap_or(0)
-        };
+        let (base_min, base_max) = base_slab_sizes(lo, hi);
         writeln!(
             out,
             "Page-sized slabs: classes {}..{} ({}..{} bytes) at {} bytes ({}..{} in the table)",
@@ -311,8 +312,8 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
             CLASSES.table()[lo].size(),
             CLASSES.table()[hi].size(),
             CLASSES.table()[lo].slab_size(),
-            base(usize::min),
-            base(usize::max)
+            base_min,
+            base_max
         )?;
     }
     let t = &snap.totals;
@@ -991,10 +992,13 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
 /// glibc's `malloc_info(options, stream)`: the `<malloc version="1">`
 /// document with one `<heap>` per arena and the totals. `options` must be
 /// 0 and `stream` non-null, else `-1` with `errno = EINVAL`, as in glibc.
-pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
+pub fn malloc_info(
+    options: c_int,
+    stream: *mut libc::FILE,
+    errno: Tracked<&mut ThreadErrno>,
+) -> c_int {
     if options != 0 || stream.is_null() {
-        // SAFETY: `__errno_location` returns the calling thread's `errno`.
-        unsafe { *libc::__errno_location() = crate::sys::Errno::EINVAL.0 };
+        set_errno(crate::sys::Errno::EINVAL.0, errno);
         return -1;
     }
     let shared = super::shared();
@@ -1054,7 +1058,9 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
-        super::malloc_info(options, stream)
+        // Unverified: the `errno` token is a placeholder until the export
+        // is verified.
+        super::malloc_info(options, stream, vstd::prelude::Tracked::assume_new())
     }
 
     #[unsafe(no_mangle)]
@@ -1605,7 +1611,7 @@ mod tests {
         let big = malloc(1 << 20);
         let f = unsafe { libc::tmpfile() };
         assert!(!f.is_null());
-        assert_eq!(malloc_info(0, f), 0);
+        assert_eq!(malloc_info(0, f, Tracked::assume_new()), 0);
         unsafe { libc::rewind(f) };
         let mut buf = std::vec![0u8; 1 << 16];
         let n = unsafe { libc::fread(buf.as_mut_ptr() as *mut c_void, 1, buf.len(), f) };
@@ -1626,9 +1632,12 @@ mod tests {
             xml.matches("<heap nr=").count(),
             xml.matches("</heap>").count()
         );
-        assert_eq!(malloc_info(1, f), -1);
+        assert_eq!(malloc_info(1, f, Tracked::assume_new()), -1);
         assert_eq!(unsafe { *libc::__errno_location() }, 22);
-        assert_eq!(malloc_info(0, core::ptr::null_mut()), -1);
+        assert_eq!(
+            malloc_info(0, core::ptr::null_mut(), Tracked::assume_new()),
+            -1
+        );
         free(big);
         for p in live {
             free(p);
