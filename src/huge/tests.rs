@@ -272,7 +272,10 @@ fn free_and_reuse_prefers_the_lowest_address() {
     assert_eq!(env.page_of(e), 15);
     assert!(zero);
     // Purge makes the hole zero again.
-    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     assert_eq!(
         h.lookup(8, Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
@@ -465,7 +468,10 @@ fn purged_and_empty_merge_to_empty() {
             .pages,
         8
     );
-    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     assert_eq!(
         h.lookup(0, Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
@@ -759,7 +765,7 @@ fn decay_purges_the_oldest_extents_along_the_curve() {
         env.free(&h, p);
     }
     assert!(h.oldest_empty() > 0);
-    assert!(h.purge_empty(u64::MAX, Tracked::assume_new()) >= 1);
+    assert!(h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()) >= 1);
     assert_eq!(h.oldest_empty(), 0);
     assert_eq!(h.stats(Tracked::assume_new()).empty, 0);
     h.audit();
@@ -788,12 +794,21 @@ fn purge_respects_the_cutoff_in_fifo_order() {
     }
     assert!(times[0] < times[1] && times[1] < times[2]);
     assert_eq!(h.oldest_dirty_at(), Some(times[0]));
-    assert_eq!(h.purge_empty(times[0] - 1, Tracked::assume_new()), 0);
-    assert_eq!(h.purge_empty(times[1], Tracked::assume_new()), 2);
+    assert_eq!(
+        h.purge_empty(times[0] - 1, Tracked::assume_new(), Tracked::assume_new()),
+        0
+    );
+    assert_eq!(
+        h.purge_empty(times[1], Tracked::assume_new(), Tracked::assume_new()),
+        2
+    );
     h.audit();
     assert_eq!(h.oldest_dirty_at(), Some(times[2]));
     assert_eq!(h.stats(Tracked::assume_new()).purged, 2);
-    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), 1);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
     assert_eq!(
         h.stats(Tracked::assume_new()),
         HugeStats {
@@ -1055,7 +1070,7 @@ fn randomised_model_check() {
                 } else {
                     now_ns().saturating_sub(5)
                 };
-                h.purge_empty(cutoff, Tracked::assume_new());
+                h.purge_empty(cutoff, Tracked::assume_new(), Tracked::assume_new());
                 h.audit();
             }
             _ => {}
@@ -1080,7 +1095,10 @@ fn randomised_model_check() {
     let st = h.stats(Tracked::assume_new());
     assert_eq!(st.runs, 0);
     assert_eq!(st.empty + st.purged, 1);
-    assert_eq!(h.purge_empty(u64::MAX, Tracked::assume_new()), st.empty);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        st.empty
+    );
     assert_eq!(h.stats(Tracked::assume_new()).purged_pages, st.next_page);
 }
 
@@ -1191,7 +1209,7 @@ fn placement_is_the_lowest_fit() {
                 None => nulls += 1,
             }
         } else if r == 19 {
-            h.purge_empty(u64::MAX, Tracked::assume_new());
+            h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
             h.audit();
         } else {
             let i = xorshift(&mut rng) as usize % live.len();
@@ -1302,7 +1320,7 @@ fn prior_state_names_the_source_of_the_pages() {
         "fresh",
         "pages past the extent's end"
     );
-    h.purge_empty(u64::MAX, Tracked::assume_new());
+    h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(h.prior_state(0, ext, Tracked::assume_new()), "Purged");
     env.free(&h, q);
     h.audit();

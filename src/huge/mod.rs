@@ -2748,6 +2748,51 @@ impl Inner {
         }
     }
 
+    /// The conjuncts of `wf` that `Huge::take` reads directly, for a caller
+    /// that hides `wf`: all but `coalesced`, `free_marked` and `free_exact`,
+    /// which `take` passes on to its lemmas as `wf` itself.
+    proof fn lemma_wf_for_take(&self)
+        requires
+            self.wf(),
+        ensures
+            self.table.wf(),
+            perms_ok(self.descs@),
+            forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_ok(self.descs@[d].value(), self.next_page),
+            forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> run_ok(self.descs@[d].value(), self.lg@),
+            forall|k: usize| #[trigger] self.table.lookup(k) matches Some(d) ==> self.descs@.contains_key(d),
+            elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@),
+            self.next_page <= self.np@ <= u32::MAX,
+            self.stats.empty == self.elist@.len(),
+            self.stats.empty_pages == epages(self.elist@, self.descs@),
+            self.stats.run_pages + self.stats.empty_pages + self.stats.purged_pages == self.next_page,
+            self.stats.next_page == self.next_page,
+            self.stats.runs + self.stats.empty + self.stats.purged <= self.next_page,
+            forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) <==> self.all@.contains(d),
+            forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> keyed(self.table, self.descs@[d].value(), d),
+            forall|k: usize| #[trigger] self.table.lookup(k) matches Some(d) ==> is_key(self.descs@[d].value(), k as int),
+            forall|d1: *mut HugeDesc, d2: *mut HugeDesc|
+                #[trigger] self.descs@.contains_key(d1) && #[trigger] self.descs@.contains_key(d2) && d1 != d2 ==> apart(
+                    self.descs@[d1].value(),
+                    self.descs@[d2].value(),
+                ),
+            forall|k: int| 0 <= k < 6 ==> #[trigger] stat(self.stats, k) == tally(self.all@, self.descs@, k),
+            self.table.spec_count() == tally(self.all@, self.descs@, 6),
+            forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) && self.descs@[d].value().state == RunState::Empty as u8
+                ==> self.elist@.contains(d),
+            forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@),
+            self.free.map.wf(),
+            self.free.map.spec_nbits() == self.np@,
+            self.free.own_claimed(),
+            self.table.spec_mid() == self.mid@,
+            self.free.l1_words <= 0x1_0000_0000,
+            self.all@.no_duplicates(),
+            self.runs@.id() == run_loc(),
+            self.pgs@.id() == page_loc(),
+            self.runs@@ == active_runs(self.descs@),
+            self.pgs@@ == active_pages(self.descs@),
+    {
+    }
+
     /// Huge free extents are maximally coalesced: in every value `wf`
     /// admits, no two free extents (`Empty` or
     /// `Purged`) touch, so a free extent's neighbours are runs, the
@@ -4591,9 +4636,14 @@ impl Huge {
             r.0 ==> r.1@.addr() == self.base + p.start * self.spec_page()
                 && r.1@.len() == (p.pages - GUARD_PAGES) * self.spec_page(),
     {
-        // The lists' pairwise distinctness is most of the solver's work if
-        // left open; only the `all` step below needs it.
+        // The lists' pairwise distinctness and `index_of`'s choice are
+        // most of the solver's work if left open; only the steps that name
+        // a list position reveal them.
         hide(Seq::no_duplicates);
+        hide(Seq::index_of);
+        // `wf` unfolds into a quantifier per conjunct over every descriptor
+        // map in scope; take reads only those `lemma_wf_for_take` states.
+        hide(Inner::wf);
         let Placement { start: s, pages: need, ext } = p;
         proof {
             use_type_invariant(self);
@@ -4623,6 +4673,7 @@ impl Huge {
         let ghost mut s2 = st0;
         let ghost mut vr = ve;
         proof {
+            old(g).lemma_wf_for_take();
             // The table's keys lie inside their extents, which end at the
             // mark; `ext`'s pages belong to no other extent.
             assert(keys_inside(t0, d0, old_mark as int)) by {
@@ -4734,6 +4785,7 @@ impl Huge {
                     }
                     assert(!d0.contains_key(spare));
                     assert(!l0.contains(spare)) by {
+                        reveal(Seq::index_of);
                         if l0.contains(spare) {
                             assert(enode(l0, d0, l0.index_of(spare)));
                         }
@@ -4809,6 +4861,7 @@ impl Huge {
                     assert(same_but_links(ve, g.descs@[ext].value()));
                     assert(g.all@ == a0 || g.all@ == a0.push(spare));
                     assert(g.all@.contains(ext)) by {
+                        reveal(Seq::index_of);
                         if g.all@ != a0 {
                             assert(g.all@[a0.index_of(ext)] == ext);
                         }
@@ -4816,6 +4869,7 @@ impl Huge {
                     if ve.state == RunState::Empty as u8 {
                         assert(l0.contains(ext));
                         assert(g.elist@.contains(ext)) by {
+                            reveal(Seq::index_of);
                             if g.elist@ != l0 {
                                 assert(g.elist@ == l0.insert(l0.index_of(ext) + 1, spare));
                                 assert(g.elist@[l0.index_of(ext)] == ext);
@@ -4923,6 +4977,7 @@ impl Huge {
                 }
                 assert(g.all@ =~= t.all_after(a0)) by {
                     reveal(Seq::no_duplicates);
+                    reveal(Seq::index_of);
                 }
                 assert(g.elist@ == t.elist_after(l0));
                 assert(g.table.wf());
@@ -5282,7 +5337,13 @@ impl Huge {
     /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`; an extent
     /// whose discard fails stays `Empty` in its place (the next purge
     /// retries it). Returns the number purged, at most `u32::MAX`.
-    pub fn purge_empty(&self, cutoff: u64, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    /// `left` is ghost: what the purge left (`purge::Left`).
+    pub fn purge_empty(
+        &self,
+        cutoff: u64,
+        Tracked(_left): Tracked<&mut Ghost<purge::Left>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: usize)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),

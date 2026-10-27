@@ -1386,7 +1386,8 @@ mod tests {
             purge::background::join_exited();
         }
         purge::background::set_auto(None);
-        s.huge.purge_empty(u64::MAX, Tracked::assume_new());
+        s.huge
+            .purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
         s.set_decay_ms((old_ns / 1_000_000) as i64);
 
         assert!(!clean, "nothing dirty started the thread");
@@ -1424,7 +1425,8 @@ mod tests {
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
         // Nothing else `Empty` in the huge allocator, so the free in the
         // hook is its first.
-        s.huge.purge_empty(u64::MAX, Tracked::assume_new());
+        s.huge
+            .purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
         // 0: the hook did not run; 1: the thread never slept without a
         // deadline; 2: the free was not the first `Empty`; 3: ready.
         let hook_state = Arc::new(AtomicU8::new(0));
