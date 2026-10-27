@@ -7,14 +7,33 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `Shared::lemma_wf` | external_body proof | allocator invariant | Verus | trusted |
 | `ClassLine` | ext_type_spec | allocator invariant | Verus | trusted |
 | `ThreadKey` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Tcaches` | ext_type_spec | allocator invariant | Verus | trusted |
 | `policy::Policy` | ext_type_spec | allocator invariant | Verus | trusted |
 
+## `Shared::lemma_wf`
+
+src/heap/shared.rs:166. Kind: external_body proof. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+> [`Shared::wf`] unfolded, for the rest of the crate: the process's well-formed, separated regions and its metadata allocator.
+
+```rust
+pub(crate) proof fn lemma_wf(&self)
+    requires
+        self.wf(),
+    ensures
+        self.regions.wf(),
+        self.regions == crate::layout::process_regions(),
+        self.regions.separated(),
+        self.meta.is_process(),
+```
+
 ## `ClassLine`
 
-src/heap/shared.rs:158. Kind: ext_type_spec. Category: allocator invariant.
+src/heap/shared.rs:194. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -23,7 +42,7 @@ pub struct ExClassLine(ClassLine);
 
 ## `ThreadKey`
 
-src/heap/shared.rs:164. Kind: ext_type_spec. Category: allocator invariant.
+src/heap/shared.rs:200. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -32,7 +51,7 @@ pub struct ExThreadKey(ThreadKey);
 
 ## `Tcaches`
 
-src/heap/shared.rs:170. Kind: ext_type_spec. Category: allocator invariant.
+src/heap/shared.rs:206. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -41,7 +60,7 @@ pub struct ExTcaches(Tcaches);
 
 ## `crate::policy::Policy`
 
-src/heap/shared.rs:176. Kind: ext_type_spec. Category: allocator invariant.
+src/heap/shared.rs:212. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
