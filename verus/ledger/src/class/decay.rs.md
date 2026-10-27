@@ -11,7 +11,7 @@ file.
 
 ## `Tally::settle`
 
-src/class/decay.rs:67. Kind: external_body. Category: allocator invariant.
+src/class/decay.rs:97. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -22,7 +22,7 @@ fn settle(
     addr: usize,
     len: usize,
     done: bool,
-    _piece: Ghost<int>,
-    _pend: Ghost<Pieces>,
+    piece: Ghost<int>,
+    pend: Ghost<Pieces>,
 )
 ```
