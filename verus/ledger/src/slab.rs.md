@@ -10,6 +10,7 @@ file.
 | `bad_state_byte` | external_body | panic/abort | Verus | trusted |
 | `desc_stride` | external_body | core library | Kani | trusted |
 | `SlabDesc::init` | external_body | atomics primitive | loom/GenMC | trusted |
+| `SlabDes...e_held` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...b_live` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `bad_state_byte`
@@ -57,9 +58,20 @@ pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
         final(p).arena() == arena,
 ```
 
+## `SlabDesc::state_byte_held`
+
+src/slab.rs:336. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> The `state` byte, as [`state_held`](SlabDesc::state_held).
+
+```rust
+fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> u8
+```
+
 ## `SlabDesc::sub_live`
 
-src/slab.rs:372. Kind: external_body. Category: atomics primitive.
+src/slab.rs:390. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.

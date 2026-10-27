@@ -47,7 +47,7 @@ use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use vstd::arithmetic::power2::pow2;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
-use vstd::raw_ptr::PointsTo;
+use vstd::raw_ptr::{PointsTo, ptr_ref};
 #[cfg(verus_keep_ghost)]
 use vstd::raw_ptr::{PtrData, ptr_mut_from_data};
 use vstd::resource::Loc;
@@ -381,6 +381,10 @@ pub struct SlabTable {
     pub(super) slot_auth: Tracked<GhostSetAuth<int>>,
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) word_invs: Tracked<&'static Map<int, WordInv>>,
+    /// Ghost (no bytes): the permissions, frozen, that
+    /// [`SlabTable::bits_unchecked`] (trusted) borrows the bitmap words
+    /// through. `new` leaves the map empty.
+    pub(super) word_perms: Tracked<&'static Map<int, PointsTo<AtomicU64>>>,
     /// Ghost (no bytes): the authority of the bitmap words' markers
     /// (`bitmap.rs`, "Slot tokens"), which record which slabs `init` has
     /// run on.
@@ -1556,6 +1560,7 @@ impl SlabTable {
             _tail: [0; TABLE_TAIL],
             slot_auth: Tracked(slot_auth),
             word_invs: Tracked(vstd::modes::tracked_static_ref(word_invs)),
+            word_perms: Tracked(vstd::modes::tracked_static_ref(Map::tracked_empty())),
             mark_auth: Tracked(mark_auth),
             desc_perms: Tracked(dmap),
             owner_invs: Tracked(vstd::modes::tracked_static_ref(oinvs)),
@@ -2419,17 +2424,24 @@ impl SlabTable {
     }
 
     /// Number of slabs (including guard slabs) handed to an arena: their
-    /// descriptors, bits and owner words exist (see the field).
+    /// descriptors, bits and owner words exist (see the field). An
+    /// `Acquire` load of the watermark, read inside its invariant
+    /// ([`WatermarkPred`]).
     #[inline]
     pub fn committed_slabs(&self) -> usize {
-        self.watermark(Ordering::Acquire)
+        load_usize_seen(
+            &self.committed_slabs,
+            Ordering::Acquire,
+            &self.committed_inv,
+        )
+        .0
     }
 
-    /// `committed_slabs.load(order)`: the hand-out watermark, the one load
-    /// of it outside [`take_group`]'s check, which reads it under the
-    /// commit lock.
+    /// `committed_slabs.load(order)`: the hand-out watermark, as the
+    /// queries and the `free` fast path load it (`Relaxed`; see
+    /// [`desc_if_committed`]).
     ///
-    /// [`take_group`]: SlabTable::take_group
+    /// [`desc_if_committed`]: SlabTable::desc_if_committed
     #[inline(always)]
     fn watermark(&self, order: Ordering) -> usize {
         self.committed_slabs.load(order)
@@ -2506,19 +2518,35 @@ impl SlabTable {
     pub fn is_handed_out(&self, slab: usize) -> bool {
         slab < self.watermark(Ordering::Relaxed)
     }
+}
 
-    /// Descriptor of `slab` without a watermark check.
+verus! {
+
+impl SlabTable {
+    /// Descriptor of `slab` without a watermark check, through its
+    /// permission ([`SlabTable::perms_ok`]). A temporary seam
+    /// (`external_body`) until its proof lands.
     ///
     /// # Safety
     /// `slab` must be below a value `committed_slabs` has held: descriptors
     /// up to that count are committed and initialised (or zero, for guard
     /// slabs) before the watermark moves.
     #[inline(always)]
-    unsafe fn desc_unchecked(&self, slab: usize) -> &SlabDesc {
-        // SAFETY: guaranteed by the caller.
-        unsafe { &*((self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc) }
+    #[verifier::external_body]
+    unsafe fn desc_unchecked(&self, slab: usize) -> (r: &SlabDesc)
+        requires
+            slab < self.spec_nslabs(),
+        ensures
+            *r == desc_at(*self, slab),
+    {
+        let p = addr_to_ptr(self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc;
+        ptr_ref(p, Tracked(self.desc_perms.borrow().tracked_borrow(slab as int)))
     }
+}
 
+} // verus!
+
+impl SlabTable {
     /// The slot bits of a handed-out slab (design section 4). Aborts for a
     /// slab that was never handed out.
     #[inline]
@@ -3323,10 +3351,10 @@ impl SlabTable {
 
     /// The view of `slab`'s bits: words `first / 64 ..` of the class
     /// bitmap at `bits_base`, with `first = slab * slab_bits`, which the
-    /// table's word invariants are for. A temporary seam (`external_body`,
-    /// the code as it was): the view is built from a raw slice, which the
-    /// word permissions would make verifiable; this function is on the free
-    /// path, and a later proof PR verifies it with its callers.
+    /// table's word invariants are for, borrowed through the words'
+    /// permissions (`word_perms`). A temporary seam (`external_body`): the
+    /// proof that the permissions are the words' lands with the PR that
+    /// mints them.
     ///
     /// # Safety
     /// As [`desc_unchecked`](SlabTable::desc_unchecked).
@@ -3343,27 +3371,23 @@ impl SlabTable {
     {
         let nbits = self.slab_bits as usize;
         let first = slab * nbits;
-        let word = (self.bits_base + (first / 64) * 8) as *const AtomicU64;
+        let ghost j0 = first as int / 64;
+        let word = addr_to_ptr(self.bits_base + (first / 64) * 8) as *const AtomicU64;
         if nbits >= 64 {
             debug_assert!(first % 64 == 0);
-            // SAFETY: the reservation holds `nslabs * slab_bits` bits and
-            // the group's words were committed before the watermark moved.
-            AtomicBitmap::from_words(
-                unsafe { core::slice::from_raw_parts(word, nbits / 64) },
-                Ghost::assume_new(),
-                Ghost::assume_new(),
-                Tracked::assume_new(),
-            )
+            // The group's words were committed before the watermark moved
+            // (the caller's premise). `word_perms` is passed on as it is:
+            // a `Tracked(..)` built here would be one more distinct
+            // `Tracked` type under `Heap::flush`.
+            // SAFETY: the `nbits / 64` words are consecutive words of the
+            // class bitmap, one reservation from `bits_base`, so one
+            // allocation.
+            let words = unsafe { crate::vspec::slice::slice_from_perms(word, nbits / 64, Ghost(j0), self.word_perms) };
+            AtomicBitmap::from_words(words, Ghost(first as int), Ghost(self.spec_slots()), self.word_invs)
         } else {
-            // SAFETY: as above, one word.
-            AtomicBitmap::sub_word(
-                unsafe { &*word },
-                (first % 64) as u32,
-                nbits,
-                Ghost::assume_new(),
-                Ghost::assume_new(),
-                Tracked::assume_new(),
-            )
+            // As above, one word.
+            let w = ptr_ref(word, Tracked((*self.word_perms.borrow()).tracked_borrow(j0)));
+            AtomicBitmap::sub_word(w, (first % 64) as u32, nbits, Ghost(first as int), Ghost(self.spec_slots()), self.word_invs)
         }
     }
 }

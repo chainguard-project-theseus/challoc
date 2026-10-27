@@ -1469,32 +1469,55 @@ impl ClassState {
     fn owner_locked(&self, g: &Inner, slab: usize) -> u16 {
         self.table().owner(slab)
     }
+}
 
+verus! {
+
+impl ClassState {
     /// The state of slab `slab`'s descriptor `d`, read under this arena's
-    /// class lock (`g`).
+    /// class lock (`g`) through the permission `g` holds for it. A
+    /// temporary seam (`external_body`) until its proof lands.
     #[allow(unused_variables)]
     #[inline(always)]
+    #[verifier::external_body]
     fn state_locked(&self, g: &Inner, d: &SlabDesc, slab: usize) -> State {
-        d.state()
+        d.state_held(Ghost(slab as nat), Tracked(g.dperms.borrow()))
     }
 
     /// `SlabDesc::set_state` on slab `slab`'s descriptor `d` under this
-    /// arena's class lock (`g`). Callers never pass `Fresh`: an owned slab
-    /// that left `Fresh` does not return to it.
+    /// arena's class lock (`g`), through the permission `g` holds for it.
+    /// Callers never pass `Fresh`: an owned slab that left `Fresh` does
+    /// not return to it. A temporary seam (`external_body`) until its
+    /// proof lands.
     #[allow(unused_variables)]
     #[inline(always)]
+    #[verifier::external_body]
     fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, slab: usize, s: State) {
-        d.set_state(s, Tracked::assume_new());
+        let tracked mut p = g.dperms.borrow_mut().tracked_remove(slab as nat);
+        d.set_state(s, Tracked(&mut p));
+        proof {
+            g.dperms.borrow_mut().tracked_insert(slab as nat, p);
+        }
     }
 
     /// `SlabDesc::set_dirty_at` on slab `slab`'s descriptor `d` under this
-    /// arena's class lock (`g`).
+    /// arena's class lock (`g`), through the permission `g` holds for it.
+    /// A temporary seam (`external_body`) until its proof lands.
     #[allow(unused_variables)]
     #[inline(always)]
+    #[verifier::external_body]
     fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, slab: usize, ns: u64) {
-        d.set_dirty_at(ns, Tracked::assume_new());
+        let tracked mut p = g.dperms.borrow_mut().tracked_remove(slab as nat);
+        d.set_dirty_at(ns, Tracked(&mut p));
+        proof {
+            g.dperms.borrow_mut().tracked_insert(slab as nat, p);
+        }
     }
+}
 
+} // verus!
+
+impl ClassState {
     /// Claim up to `out.len()` slots, lowest address first, writing slot
     /// pointers to `out[..n]`. Each lock hold reserves from up to
     /// [`MAX_PICKS`] slabs (see [`plan`]); the loop repeats only when a

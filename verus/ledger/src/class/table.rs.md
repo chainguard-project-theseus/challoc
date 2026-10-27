@@ -14,6 +14,7 @@ file.
 | `axiom_zero_owner` | axiom | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_slot_loc` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_f..._words` | axiom | allocator invariant | none (assumption) | trusted |
+| `SlabTab...hecked` | external_body | raw pointer (internal) | Verus | trusted |
 | `SlabTab...hecked` | external_body | raw pointer (internal) | RefinedRust | trusted |
 
 ## `axiom_table_lock_inv`
@@ -48,7 +49,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 
 ## `store_owner`
 
-src/class/table.rs:825. Kind: external_body. Category: atomics primitive.
+src/class/table.rs:829. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `(*w).store(arena, Relaxed)` of the owner word of hand-out group `group` of `t`, through its permission `perm`: the permission holds `arena` ([`u16_value`], as `vspec::atom::load_u16_at` reads it back), and from here on [`slab_owner`] of every slab of the group is `arena`.
@@ -81,7 +82,7 @@ unsafe fn store_owner(
 
 ## `axiom_zero_desc`
 
-src/class/table.rs:2009. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2014. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the 16 bytes at `addr`, which read as zero (`z`, a piece of the descriptor array `Meta::reserve_table` returned), are a `SlabDesc`, initialised: plain atomics, valid for every bit pattern (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw permissions do not track byte values).
@@ -103,7 +104,7 @@ axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int) -> (tracked r: (PointsTo
 
 ## `axiom_zero_owner`
 
-src/class/table.rs:2025. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2030. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of the owner array `Meta::reserve_table` returned), are an `AtomicU16`, initialised (valid for every bit pattern), as [`axiom_zero_desc`].
@@ -123,7 +124,7 @@ axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo
 
 ## `axiom_slot_loc`
 
-src/class/table.rs:2049. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:2054. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process, so the authority it makes is the class's ([`slot_loc`]), and so is its marker authority (`mloc`, [`mark_loc`]).
@@ -140,7 +141,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 
 ## `axiom_fresh_words`
 
-src/class/table.rs:2067. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:2072. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the permissions of the `n` words of the class bitmap at `base`, each holding zero: `z`, the bitmap's reservation from `Meta::reserve_table`, reads as zero over them.
@@ -155,14 +156,27 @@ axiom fn axiom_fresh_words(tracked z: ZeroRaw, base: usize, n: nat, c: int, trac
         forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n ==> r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
 ```
 
+## `SlabTable::desc_unchecked`
+
+src/class/table.rs:2536. Kind: external_body. Category: raw pointer (internal).
+Tool: Verus. Status: trusted.
+
+> Descriptor of `slab` without a watermark check, through its permission ([`SlabTable::perms_ok`]).
+
+```rust
+unsafe fn desc_unchecked(&self, slab: usize) -> (r: &SlabDesc)
+    requires
+        slab < self.spec_nslabs(),
+    ensures
+        *r == desc_at(*self, slab),
+```
+
 ## `SlabTable::bits_unchecked`
 
-src/class/table.rs:3337. Kind: external_body. Category: raw pointer (internal).
+src/class/table.rs:3365. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
-> The view of `slab`'s bits: words `first / 64 ..` of the class bitmap at `bits_base`, with `first = slab * slab_bits`, which the table's word invariants are for.
-
-Body mints Ghost at line 3353; mints Ghost at line 3354; mints Tracked at line 3355; mints Ghost at line 3363; mints Ghost at line 3364; mints Tracked at line 3365.
+> The view of `slab`'s bits: words `first / 64 ..` of the class bitmap at `bits_base`, with `first = slab * slab_bits`, which the table's word invariants are for, borrowed through the words' permissions (`word_perms`).
 
 ```rust
 unsafe fn bits_unchecked(&self, slab: usize) -> (r: AtomicBitmap<'_>)
