@@ -353,6 +353,24 @@ impl SlabDesc {
         self.state.load(Ordering::Relaxed)
     }
 
+    /// [`dirty_at`](SlabDesc::dirty_at) read by a holder of `m`, as
+    /// [`state_held`](SlabDesc::state_held): the stamp the permission
+    /// under `k` records when that is this descriptor's. Trusted
+    /// ([`DescPerm`]): every write of the stamp (`init`, `set_dirty_at`)
+    /// takes this descriptor's permission and records the value written
+    /// in it; only the unit tests pass a permission they made up
+    /// (`Tracked::assume_new()`).
+    // `k` and `m` are read only by the specification (ghost).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u64)
+        ensures
+            perm_for(*m, k, self) ==> r == m[k].dirty(),
+    {
+        self.dirty_at.load(Ordering::Relaxed)
+    }
+
     /// Only ever called with the class lock held, which holds `p`, the
     /// descriptor's permission (ghost), which records the new state.
     /// Trusted ([`DescPerm`]): the two relaxed stores write the byte the
