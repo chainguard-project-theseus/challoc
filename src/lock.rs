@@ -228,6 +228,13 @@ pub open spec fn rank_arenas() -> int {
     0x200_0000
 }
 
+/// The process statistics lock (`heap::Shared::stats`): held across
+/// `epoch`'s scan, which takes the class, slab table, huge, metadata and
+/// arena statistics locks.
+pub open spec fn rank_stats() -> int {
+    0x280_0000
+}
+
 /// The class lock of class `c` (below `0x100`) of arena `i`
 /// (`class::ClassState`), below the slab table locks.
 pub open spec fn rank_class(i: int, c: int) -> int {
@@ -284,8 +291,8 @@ pub open spec fn rank_spare() -> int {
 /// rank, for the code under the guard; [`RawLock::lock_held`] raises a
 /// root in place. Every function that may take a lock takes its caller's
 /// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
-/// (the exceptions are `meta::Meta`'s methods, [`axiom_meta_order`], and
-/// `huge::Huge::usable_size`, [`axiom_entry`]). The fields are private to
+/// (the exceptions are `meta::Meta`'s methods but `Meta::stats`,
+/// [`axiom_meta_order`], and `huge::Huge::usable_size`, [`axiom_entry`]). The fields are private to
 /// this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
@@ -357,9 +364,9 @@ pub(crate) axiom fn axiom_below_huge<'a>() -> (tracked o: LockOrder<'a>)
 
 /// Premise: the calling thread holds only allocator locks ranked below the
 /// metadata lock ([`rank_meta`]). Stands in for the token `meta::Meta`'s
-/// methods would take from their callers: none of them passes one yet,
-/// which would change the signatures of about 20 of them. Its uses are
-/// the acquisitions in `Meta`'s methods.
+/// methods would take from their callers: only `Meta::stats` takes one so
+/// far, and the others would change about 20 signatures. Its uses are
+/// the acquisitions in the other `Meta` methods.
 pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.allows(rank_meta()),

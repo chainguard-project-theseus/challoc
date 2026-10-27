@@ -1,7 +1,8 @@
-# `+` on a figure no verified invariant bounds: exact when the sum fits,
+# `+` and `*` on a figure no verified invariant bounds: exact when it fits,
 # checkable against `core` (overflow checks on or off).
 fig_add	core library	Kani
 fig_add64	core library	Kani
-# A lock's invariant: its writers (`Shared::init`, `collect_into`) are
-# not verified yet.
+fig_mul	core library	Kani
+# A lock's invariant: its writer `Shared::init` (`Snapshot::EMPTY`) is
+# not verified yet; `collect_into` asserts it.
 axiom_snapshot_lock_inv	allocator invariant	none (assumption)

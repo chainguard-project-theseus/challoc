@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `Shared::lemma_wf` | external_body proof | allocator invariant | Verus | trusted |
+| `Shared:..._ranks` | external_body proof | allocator invariant | Verus | trusted |
 | `ClassLine` | ext_type_spec | allocator invariant | Verus | trusted |
 | `ThreadKey` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Tcaches` | ext_type_spec | allocator invariant | Verus | trusted |
@@ -31,9 +32,24 @@ pub(crate) proof fn lemma_wf(&self)
         self.meta.is_process(),
 ```
 
+## `Shared::lemma_ranks`
+
+src/heap/shared.rs:182. Kind: external_body proof. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+> The process statistics lock's rank in the lock order (`lock.rs`).
+
+```rust
+pub(crate) proof fn lemma_ranks(&self)
+    requires
+        self.wf(),
+    ensures
+        self.stats.rank() == crate::lock::rank_stats(),
+```
+
 ## `ClassLine`
 
-src/heap/shared.rs:194. Kind: ext_type_spec. Category: allocator invariant.
+src/heap/shared.rs:207. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -42,7 +58,7 @@ pub struct ExClassLine(ClassLine);
 
 ## `ThreadKey`
 
-src/heap/shared.rs:200. Kind: ext_type_spec. Category: allocator invariant.
+src/heap/shared.rs:213. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -51,7 +67,7 @@ pub struct ExThreadKey(ThreadKey);
 
 ## `Tcaches`
 
-src/heap/shared.rs:206. Kind: ext_type_spec. Category: allocator invariant.
+src/heap/shared.rs:219. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -60,7 +76,7 @@ pub struct ExTcaches(Tcaches);
 
 ## `crate::policy::Policy`
 
-src/heap/shared.rs:212. Kind: ext_type_spec. Category: allocator invariant.
+src/heap/shared.rs:225. Kind: ext_type_spec. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
