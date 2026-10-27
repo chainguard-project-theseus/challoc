@@ -541,10 +541,10 @@ impl Heap {
     /// (`Arenas::assign`; `destroy` releases the binding). Null if the
     /// region is exhausted. Does not touch TLS or the thread key.
     pub fn create(shared: &Shared) -> *mut Heap {
-        let arena = shared.arenas.assign();
+        let (arena, ticket, _) = shared.arenas.assign(vstd::prelude::Tracked::assume_new());
         let h = Self::create_detached(shared, arena);
         if h.is_null() {
-            shared.arenas.unbind(arena);
+            shared.arenas.unbind(arena, ticket);
         } else {
             // SAFETY: fresh, exclusively owned.
             unsafe { mark_bound(h) };
@@ -613,7 +613,9 @@ impl Heap {
         // read for the exit purge).
         let bound = heap.bound;
         if bound {
-            shared.arenas.unbind(heap.arena);
+            shared
+                .arenas
+                .unbind(heap.arena, vstd::prelude::Tracked::assume_new());
             heap.bound = false;
             heap.rehome = false;
         }
@@ -817,8 +819,10 @@ impl Heap {
         }
         self.arena = arena;
         if self.bound {
-            shared.arenas.unbind(old);
-            shared.arenas.bind(arena);
+            shared
+                .arenas
+                .unbind(old, vstd::prelude::Tracked::assume_new());
+            let _ticket = shared.arenas.bind(arena);
         }
     }
 
@@ -918,7 +922,7 @@ impl Heap {
             || to == self.arena
             || shared.arenas.bound(to) != 0
             || !self.other_caches(shared, to, false).is_null()
-            || !shared.arenas.try_bind_idle(to)
+            || !shared.arenas.try_bind_idle(to).0
         {
             return false;
         }
@@ -941,7 +945,9 @@ impl Heap {
         }
         self.arena = to;
         self.rehome = false;
-        shared.arenas.unbind(old);
+        shared
+            .arenas
+            .unbind(old, vstd::prelude::Tracked::assume_new());
         true
     }
 

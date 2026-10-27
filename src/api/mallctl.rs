@@ -1424,7 +1424,10 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             // `newp` may carry extent hooks, which challoc has no use for.
             // A read that would fail must not leave an arena behind.
             io.verify_read::<c_uint>()?;
-            let i = shared.arenas.create(shared).ok_or(EAGAIN)?;
+            let i = shared
+                .arenas
+                .create(shared, vstd::prelude::Tracked::assume_new())
+                .ok_or(EAGAIN)?;
             io.read(i as c_uint)
         }
         ArenasLookup => {
@@ -1972,7 +1975,10 @@ mod tests {
         free_huge_run(s);
         s.policy.apply(Band::Immediate, 512 << 20, 0, 0);
         // Only arena 0's call walks the huge extents.
-        let a = s.arenas.create(s).unwrap();
+        let a = s
+            .arenas
+            .create(s, vstd::prelude::Tracked::assume_new())
+            .unwrap();
         decay(s, a);
         assert_eq!(
             (

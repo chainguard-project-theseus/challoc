@@ -11,6 +11,8 @@ pub(crate) mod addr;
 pub(crate) mod atom;
 pub(crate) mod byte;
 pub(crate) mod check;
+pub(crate) mod count;
+pub(crate) mod entry;
 pub(crate) mod errno;
 // Specifications only: Verus alone compiles these.
 #[cfg(verus_keep_ghost)]
