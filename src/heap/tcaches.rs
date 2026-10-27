@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::lock::Lock;
 use vstd::prelude::{Ghost, Tracked};
+use vstd::raw_ptr::{PointsTo, ptr_mut_write};
 
 use super::{Heap, Shared};
 
@@ -56,17 +57,17 @@ impl Tcaches {
     /// # Safety
     /// `this` must point to writable storage that nothing else reads until
     /// this returns.
-    pub unsafe fn init(this: *mut Tcaches) {
-        // SAFETY: the caller guarantees `this` is writable and unaliased.
-        unsafe {
-            ptr::write(
-                this,
-                Tcaches {
-                    lock: Lock::new((), Ghost::assume_new()),
-                    table: EMPTY_TABLE,
-                },
-            )
-        };
+    pub unsafe fn init(this: *mut Tcaches, perm: Tracked<&mut PointsTo<Tcaches>>) {
+        // Through the permission to the storage, which the caller makes
+        // writable and unaliased.
+        ptr_mut_write(
+            this,
+            perm,
+            Tcaches {
+                lock: Lock::new((), Ghost::assume_new()),
+                table: EMPTY_TABLE,
+            },
+        );
     }
 
     /// The table lock, for the fork handlers. It is the outermost
