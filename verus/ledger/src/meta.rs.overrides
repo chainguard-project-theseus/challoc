@@ -1,0 +1,3 @@
+# mprotect(2) returning 0 for PROT_READ | PROT_WRITE commits the range:
+# the one source of vspec::unbacked::committed.
+commit_range	platform/kernel fact	none (assumption)
