@@ -2033,15 +2033,29 @@ fn decay_huge(
         .decay_with(now, decay_ns, keep16, Tracked::assume_new())
 }
 
+verus! {
+
 /// The earlier of two optional deadlines; either one when the other is
 /// `None`.
 #[inline(always)]
-fn earliest(next: Option<u64>, d: Option<u64>) -> Option<u64> {
+fn earliest(next: Option<u64>, d: Option<u64>) -> (r: Option<u64>)
+    ensures
+        d is None ==> r == next,
+        d matches Some(x) ==> r == Some(match next {
+            Some(n) => if n < x { n } else { x },
+            None => x,
+        }),
+{
     match d {
-        Some(d) => Some(next.map_or(d, |n| n.min(d))),
+        Some(d) => Some(next.map_or(d, |n: u64| -> (m: u64)
+            ensures
+                m == if n < d { n } else { d },
+            { n.min(d) })),
         None => next,
     }
 }
+
+} // verus!
 
 /// Arena indices to visit: [`crate::arena::Arenas::count`], which never
 /// exceeds the table (`create` stops at [`MAX_ARENAS`]; the clamp is
@@ -2136,10 +2150,15 @@ fn sample(shared: &Shared, now: u64, _ord: Tracked<&mut LockOrder>) {
     }
 }
 
+verus! {
+
 /// A class or the huge allocator went from no `Empty` slab to one: wake a
 /// background thread that may be sleeping without a deadline.
 #[inline]
-pub fn note_empty() {
+pub fn note_empty()
+    requires
+        crate::sys::may_syscall(),
+{
     background::wake();
 }
 
@@ -2147,11 +2166,12 @@ pub fn note_empty() {
 /// run time): wake a background thread whose deadline was computed with
 /// the old period, so a shorter period takes effect now rather than at
 /// the next wake-up.
-pub fn note_decay_changed() {
+pub fn note_decay_changed()
+    requires
+        crate::sys::may_syscall(),
+{
     background::wake();
 }
-
-verus! {
 
 /// Issue `advice` on `[addr, addr + len)`, which is free (the [`Batch`]
 /// invariant; this is the one place the batch's ranges reach the

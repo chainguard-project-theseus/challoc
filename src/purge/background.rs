@@ -634,6 +634,8 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
     }
 }
 
+verus! {
+
 /// The thread inherits the scheduling of whichever thread created it, and
 /// under the lazy start that is any allocating thread: a worker pinned to
 /// one CPU, niced or real-time. Run on the new thread, this puts it on
@@ -641,7 +643,13 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
 /// main thread (the thread whose id is the pid) instead. Best effort:
 /// what the kernel refuses (raising priority past `RLIMIT_NICE`, leaving
 /// `SCHED_IDLE`, a main thread that has exited) stays as inherited.
-fn detach_from_starter() {
+///
+/// Raw syscalls on the calling thread (pid argument 0) and reads of the
+/// main thread's settings, all into locals; nothing is claimed.
+fn detach_from_starter()
+    requires
+        crate::sys::may_syscall(),
+{
     let _ = sys::sched_set_other();
     let pid = sys::getpid();
     // Zeroed: glibc's wrapper zeroes the bytes the kernel does not store.
@@ -654,8 +662,6 @@ fn detach_from_starter() {
         let _ = sys::setpriority(0, nice);
     }
 }
-
-verus! {
 
 /// The state lock, as [`fork_lock`] takes it: [`STATE`]'s raw lock.
 /// Uninterpreted (Verus does not read statics in specifications);
