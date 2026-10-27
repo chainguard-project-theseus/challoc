@@ -2084,7 +2084,9 @@ pub fn purge_all(
             n += arena.purge_all(Tracked::assume_new(), Tracked::assume_new());
         }
     }
-    n + shared.huge.purge_empty(u64::MAX, Tracked::assume_new())
+    n + shared
+        .huge
+        .purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new())
 }
 
 /// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
@@ -2101,7 +2103,9 @@ pub fn purge_arena(
     let arena = shared.arenas.get_existing(index)?;
     let mut n = arena.purge_all(Tracked::assume_new(), Tracked::assume_new());
     if index == 0 {
-        n += shared.huge.purge_empty(u64::MAX, Tracked::assume_new());
+        n += shared
+            .huge
+            .purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
     }
     Some(n)
 }
