@@ -1169,7 +1169,7 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
         Kind::Slab { class, slab, slot } => {
             let t = shared.table(class as usize);
             if t.is_allocated(slab as usize, slot as usize) {
-                Some(t.owner(slab as usize))
+                Some(t.owner(slab as usize).0)
             } else {
                 None
             }

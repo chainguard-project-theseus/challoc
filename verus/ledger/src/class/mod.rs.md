@@ -137,6 +137,8 @@ Tool: Verus. Status: trusted.
 
 > `take`'s debug checks: the slab's owner word and its descriptor's arena name this arena.
 
+Body mints Ghost at line 3947; mints Tracked at line 3947.
+
 ```rust
 fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize)
     requires

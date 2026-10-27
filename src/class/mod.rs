@@ -2367,8 +2367,8 @@ impl ClassState {
     /// arena's class lock (`g`).
     #[allow(unused_variables)]
     #[inline(always)]
-    fn owner_locked(&self, g: &Inner, slab: usize) -> u16 {
-        self.table().owner(slab)
+    fn owner_locked(&self, g: &Inner, slab: usize, pubw: Tracked<&'static Published>) -> u16 {
+        self.table().owner(slab).0
     }
 }
 
@@ -3943,8 +3943,8 @@ impl ClassState {
             crate::sys::may_abort(),
     {
         if cfg!(debug_assertions) {
-            let owner = self.table().owner(slab);
-            let arena = desc.arena();
+            let owner = self.table().owner(slab).0;
+            let arena = desc.arena_held(Ghost::assume_new(), Tracked::assume_new());
             debug_assert!(
                 owner == self.arena,
                 "take: slab {slab} state {:?} live {live}: owner {owner}, not arena {}",
@@ -4088,7 +4088,12 @@ impl ClassState {
     /// already reserved it again. Modelled at `model::Model::step_release`,
     /// `protocol::Release::LockLiveZero` (the lock) and `OnLiveZero` (the
     /// owner test and the transition).
-    fn on_live_zero(&self, slab: usize) {
+    fn on_live_zero(
+        &self,
+        slab: usize,
+        pubw: Tracked<&'static Published>,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
         let mut first = false;
         {
             let mut g = self
@@ -4098,7 +4103,7 @@ impl ClassState {
                 self.check_shadow(slab, "on_live_zero");
             }
             // A slab of another arena is no business of this arena's sets.
-            if self.owner_locked(&g, slab) != self.arena {
+            if self.owner_locked(&g, slab, pubw) != self.arena {
                 return;
             }
             let desc = self.desc(slab);
@@ -4126,21 +4131,46 @@ impl ClassState {
     /// per word. Aborts on a pointer that is not an allocated slot of this
     /// class, or one whose slab belongs to another arena (the caller routes
     /// by the descriptor's arena; a miss here means a cache was mis-keyed).
-    pub fn release(&self, ptrs: &[*mut u8]) {
-        let n = self.release_owned(ptrs);
+    ///
+    /// `bag` holds the slot tokens of the batch, whose addresses are
+    /// distinct ([`release_owned`]); the released ones go back to their
+    /// bitmap words.
+    ///
+    /// [`release_owned`]: ClassState::release_owned
+    pub fn release_with(
+        &self,
+        ptrs: &[*mut u8],
+        _bag: Tracked<GhostSubset<int>>,
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
+    ) {
+        let n = self.release_owned(ptrs, Tracked::assume_new(), pubw, ord);
         if n != ptrs.len() {
             let p = ptrs[n];
             let (slab, _) = self.locate(p);
             wrong_arena(
                 p as usize,
                 self.class as usize,
-                self.table().owner(slab),
+                self.table().owner(slab).0,
                 self.arena,
             );
         }
     }
 
-    /// [`release`] of the longest prefix of `ptrs` whose slabs this arena
+    /// Tests: [`release_with`] without the slot tokens.
+    ///
+    /// [`release_with`]: ClassState::release_with
+    #[cfg(test)]
+    pub(crate) fn release(&self, ptrs: &[*mut u8]) {
+        self.release_with(
+            ptrs,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+    }
+
+    /// [`release_with`] of the longest prefix of `ptrs` whose slabs this arena
     /// owns, returning its length (`ptrs.len()` when every slab is ours).
     /// The batch is grouped by slab (`Heap::flush`'s bucket pass; a sorted
     /// batch is one such grouping), so a slab's pointers are contiguous and
@@ -4162,10 +4192,16 @@ impl ClassState {
     /// Modelled at `model::Model::step_release`, `protocol::Release::FetchAnd`
     /// (the `fetch_and` and the double-free check) and `SubLive`.
     ///
-    /// [`release`]: ClassState::release
+    /// [`release_with`]: ClassState::release_with
     // Hot free path: the counter keeps the codegen as measured.
     #[allow(clippy::explicit_counter_loop)]
-    pub fn release_owned(&self, ptrs: &[*mut u8]) -> usize {
+    pub fn release_owned(
+        &self,
+        ptrs: &[*mut u8],
+        _bag: Tracked<&mut GhostSubset<int>>,
+        pubw: Tracked<&'static Published>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> usize {
         let mut local = [0u64; MAX_SLAB_WORDS];
         let mut cur_slab = usize::MAX;
         let (mut lo_w, mut hi_w) = (usize::MAX, 0usize);
@@ -4177,12 +4213,22 @@ impl ClassState {
             let (slab, slot) = self.locate(p);
             if slab != cur_slab {
                 if count != 0 {
-                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen);
+                    self.release_slab(
+                        cur_slab,
+                        &mut local,
+                        lo_w,
+                        hi_w,
+                        count,
+                        &mut reopen,
+                        Tracked::assume_new(),
+                        pubw,
+                        Tracked::assume_new(),
+                    );
                     count = 0;
                     lo_w = usize::MAX;
                     hi_w = 0;
                 }
-                if self.table().owner(slab) != self.arena {
+                if self.table().owner(slab).0 != self.arena {
                     end = i;
                     break;
                 }
@@ -4227,9 +4273,19 @@ impl ClassState {
             i += 1;
         }
         if count != 0 {
-            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen);
+            self.release_slab(
+                cur_slab,
+                &mut local,
+                lo_w,
+                hi_w,
+                count,
+                &mut reopen,
+                Tracked::assume_new(),
+                pubw,
+                Tracked::assume_new(),
+            );
         }
-        self.reopen(&mut reopen);
+        self.reopen(&mut reopen, pubw, Tracked::assume_new());
         if end != 0 {
             self.released.fetch_add(end as u64, Ordering::Relaxed);
         }
@@ -4241,6 +4297,8 @@ impl ClassState {
     /// off the slab's `live`.
     // Hot free path: indexing keeps the codegen as measured.
     #[allow(clippy::needless_range_loop)]
+    // The extra arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
     fn release_slab(
         &self,
         slab: usize,
@@ -4249,24 +4307,43 @@ impl ClassState {
         hi: usize,
         count: usize,
         reopen: &mut Reopen,
+        _toks: Tracked<&mut GhostSubset<int>>,
+        pubw: Tracked<&'static Published>,
+        _ord: Tracked<&mut LockOrder>,
     ) {
         for w in lo..=hi {
             let mask = local[w];
             if mask != 0 {
                 local[w] = 0;
-                self.release_word(slab, w, mask, reopen);
+                self.release_word(
+                    slab,
+                    w,
+                    mask,
+                    reopen,
+                    Tracked::assume_new(),
+                    pubw,
+                    Tracked::assume_new(),
+                );
             }
         }
-        self.dec_live(slab, count);
+        self.dec_live(slab, count, pubw, Tracked::assume_new());
     }
 
     /// Release the slots of `mask` in `word` of `slab`. The `live` update
     /// is separate so a batch can do one per slab.
-    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen) {
-        let (prev, was_full) = self
-            .table()
-            .bits(slab)
-            .release(word, mask, Tracked::assume_new());
+    // The extra arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
+    fn release_word(
+        &self,
+        slab: usize,
+        word: usize,
+        mask: u64,
+        reopen: &mut Reopen,
+        tok: Tracked<&mut GhostSubset<int>>,
+        pubw: Tracked<&'static Published>,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
+        let (prev, was_full) = self.table().bits(slab).release(word, mask, tok);
         if prev & mask != mask {
             let bad = (mask & !prev).trailing_zeros() as usize;
             let slot = word * 64 + bad;
@@ -4278,7 +4355,7 @@ impl ClassState {
             );
         }
         if was_full && !reopen.push(slab) {
-            self.reopen(reopen);
+            self.reopen(reopen, pubw, Tracked::assume_new());
             reopen.push(slab);
         }
     }
@@ -4289,7 +4366,12 @@ impl ClassState {
     /// taking it from there sets its partial bit itself. Modelled at
     /// `model::Model::step_release`, `protocol::Release::LockReopen` (the
     /// lock) and `Reopen` (the state and owner test per slab).
-    fn reopen(&self, reopen: &mut Reopen) {
+    fn reopen(
+        &self,
+        reopen: &mut Reopen,
+        pubw: Tracked<&'static Published>,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
         if reopen.len == 0 {
             return;
         }
@@ -4302,7 +4384,7 @@ impl ClassState {
             // gone `Empty` (in `dec_live`); only an `Active` slab of this
             // arena goes back into the partial set.
             if self.state_locked(&g, self.desc(slab), slab) == State::Active
-                && self.owner_locked(&g, slab) == self.arena
+                && self.owner_locked(&g, slab, pubw) == self.arena
             {
                 g.set_partial(slab);
             }
@@ -4310,7 +4392,13 @@ impl ClassState {
         reopen.len = 0;
     }
 
-    fn dec_live(&self, slab: usize, n: usize) {
+    fn dec_live(
+        &self,
+        slab: usize,
+        n: usize,
+        pubw: Tracked<&'static Published>,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
         if purge::check_zero() {
             self.check_shadow(slab, "release");
             if self.desc(slab).state() == State::Fresh {
@@ -4318,7 +4406,7 @@ impl ClassState {
             }
         }
         if self.desc(slab).sub_live(n) == n {
-            self.on_live_zero(slab);
+            self.on_live_zero(slab, pubw, Tracked::assume_new());
         }
     }
 }

@@ -439,6 +439,24 @@ impl SlabDesc {
         self.arena.load(Ordering::Relaxed)
     }
 
+    /// [`arena`](SlabDesc::arena) read by a holder of `m`, the permissions
+    /// a class lock value holds: the arena the permission under `k`
+    /// records when that is this descriptor's. Trusted ([`DescPerm`]):
+    /// every write of the arena (`init`) takes this descriptor's
+    /// permission and records the value written in it; only the unit tests
+    /// write it otherwise (`set_arena`, a corrupt descriptor) or pass a
+    /// permission they made up (`Tracked::assume_new()`).
+    // `k` and `m` are read only by the specification (ghost).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u16)
+        ensures
+            perm_for(*m, k, self) ==> r == m[k].arena(),
+    {
+        self.arena.load(Ordering::Relaxed)
+    }
+
     /// Tests: overwrite the slab's arena (a corrupt descriptor).
     #[cfg(test)]
     pub fn set_arena(&self, arena: u16) {

@@ -13,6 +13,7 @@ file.
 | `SlabDes...e_held` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...y_held` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes..._state` | external_body | atomics primitive | loom/GenMC | trusted |
+| `SlabDes...a_held` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...b_live` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...rty_at` | external_body | atomics primitive | loom/GenMC | trusted |
 
@@ -105,9 +106,22 @@ pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
         final(p).arena() == old(p).arena(),
 ```
 
+## `SlabDesc::arena_held`
+
+src/slab.rs:453. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> [`arena`](SlabDesc::arena) read by a holder of `m`, the permissions a class lock value holds: the arena the permission under `k` records when that is this descriptor's.
+
+```rust
+pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u16)
+    ensures
+        perm_for(*m, k, self) ==> r == m[k].arena(),
+```
+
 ## `SlabDesc::sub_live`
 
-src/slab.rs:470. Kind: external_body. Category: atomics primitive.
+src/slab.rs:488. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.
@@ -118,7 +132,7 @@ pub fn sub_live(&self, n: usize) -> usize
 
 ## `SlabDesc::set_dirty_at`
 
-src/slab.rs:488. Kind: external_body. Category: atomics primitive.
+src/slab.rs:506. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).

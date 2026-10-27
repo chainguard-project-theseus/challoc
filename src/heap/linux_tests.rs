@@ -653,7 +653,7 @@ fn changed_arena_child() {
     assert!(!p0.is_null() && !q0.is_null() && !p1.is_null() && !q1.is_null());
     let t = s.table(c);
     let (slab0, _) = t.locate(p0);
-    assert_eq!((t.owner(t.locate(p1).0), t.owner(slab0)), (1, 0));
+    assert_eq!((t.owner(t.locate(p1).0).0, t.owner(slab0).0), (1, 0));
     let cs = a1.class(c) as *const crate::class::ClassState as usize;
     let hi = cs + core::mem::size_of::<crate::class::ClassState>();
     FLIP_LO.store(cs, Ordering::Relaxed);
