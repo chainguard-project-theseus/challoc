@@ -53,6 +53,7 @@ use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsTo;
+use vstd::resource::ghost_var::GhostVar;
 use vstd::resource::set::GhostPersistentSubset;
 
 verus! {
@@ -142,18 +143,21 @@ pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering
 }
 
 /// What the invariant of a [`load_usize_seen`] atomic holds: the atomic's
-/// permission and a persistent set, the record of what a reader that
-/// loaded the value may rely on (for a class table's watermark, the
-/// owner words stored below it: `class::table::WatermarkPred`).
-pub type SeenVal = (UsizePerm, GhostPersistentSubset<int>);
+/// permission, a persistent set, the record of what a reader that loaded
+/// the value may rely on, and one half of a ghost variable, whose other
+/// half the writer keeps (for a class table's watermark, the owner words
+/// stored below it, and the watermark's value, which the commit lock's
+/// half ties to `next_slab`: `class::table::WatermarkPred`).
+pub type SeenVal = (UsizePerm, GhostPersistentSubset<int>, GhostVar<usize>);
 
 /// `a.load(ordering)` inside `inv`, an invariant that holds `a`'s
-/// permission with a persistent set ([`SeenVal`]): the permission's value,
-/// so a value the predicate admits, and a copy of the set the invariant
-/// held with it, frozen. The ordering is `Acquire`: the set records what
-/// the writer did before its `Release` store of the value (the owner words
-/// `take_group` stores before the watermark), which a weaker load need not
-/// observe.
+/// permission with a persistent set and a ghost variable's half
+/// ([`SeenVal`]): the permission's value, so a value the predicate
+/// admits, and a copy of the set the invariant held with it, frozen (the
+/// ghost variable stays in the invariant). The ordering is `Acquire`: the
+/// set records what the writer did before its `Release` store of the
+/// value (the owner words `take_group` stores before the watermark), which
+/// a weaker load need not observe.
 ///
 /// It is what opening `inv` around a load through the permission, then
 /// duplicating the set (`GhostPersistentSubset::duplicate`) and freezing
