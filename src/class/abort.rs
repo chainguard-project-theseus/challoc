@@ -6,15 +6,21 @@ use crate::slab::State;
 use crate::sys;
 use vstd::prelude::*;
 
+verus! {
+
+/// A slab at or above the watermark: never handed out, so a pointer into
+/// it was never allocated. A pending check (`sys::may_abort_pending`): the
+/// caller's pointer is not tied to an allocation.
 #[cold]
 #[inline(never)]
-pub(super) fn never_committed(class: usize, slab: usize) -> ! {
+pub(super) fn never_committed(class: usize, slab: usize) -> !
+    requires
+        crate::sys::may_abort_pending(),
+{
     sys::abort_pending(format_args!(
         "invalid free: class {class} slab {slab} was never allocated"
     ))
 }
-
-verus! {
 
 /// A slab's owner word and its descriptor name different arenas: one of
 /// them is corrupt. A pending check (`sys::may_abort_pending`): no

@@ -39,7 +39,7 @@ use crate::vspec::once::Once;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::once::Step;
 #[cfg(verus_keep_ghost)]
-use crate::vspec::word::WordPerm;
+use crate::vspec::word::{WordPerm, word_addr};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::zero::ZeroRaw;
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
@@ -381,9 +381,9 @@ pub struct SlabTable {
     pub(super) slot_auth: Tracked<GhostSetAuth<int>>,
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) word_invs: Tracked<&'static Map<int, WordInv>>,
-    /// Ghost (no bytes): the permissions, frozen, that
-    /// [`SlabTable::bits_unchecked`] (trusted) borrows the bitmap words
-    /// through. `new` leaves the map empty.
+    /// Ghost (no bytes): a permission for each bitmap word, made by `new`
+    /// and frozen ([`SlabTable::perms_ok`]), which
+    /// [`SlabTable::bits_unchecked`] borrows the words through.
     pub(super) word_perms: Tracked<&'static Map<int, PointsTo<AtomicU64>>>,
     /// Ghost (no bytes): the authority of the bitmap words' markers
     /// (`bitmap.rs`, "Slot tokens"), which record which slabs `init` has
@@ -602,10 +602,23 @@ pub open spec fn perm_at<T>(p: PointsTo<T>, addr: int) -> bool {
     &&& p.is_init()
 }
 
-// The sizes [`axiom_zero_desc`] and [`axiom_zero_owner`] make a value of
-// (Verus checks them against the compiler's).
+/// `m` holds the permission of each of the `n` words of a class bitmap
+/// at `base`: initialised, at its address, to the word that address
+/// names ([`word_addr`]). Opaque (`SlabTable::bits_unchecked` reads it),
+/// so that the type invariant's check in `SlabTable::new` does not
+/// instantiate it.
+#[verifier::opaque]
+spec fn words_perms_ok(m: Map<int, PointsTo<AtomicU64>>, base: int, n: int) -> bool {
+    forall|j: int| #![trigger m.contains_key(j)] #![trigger m[j]] 0 <= j < n
+        ==> m.contains_key(j) && perm_at(m[j], base + 8 * j) && word_addr(&m[j].value()) == base + 8 * j
+}
+
+// The sizes [`axiom_zero_desc`], [`axiom_zero_owner`] and
+// [`axiom_fresh_words`] make a value of (Verus checks them against the
+// compiler's).
 global layout SlabDesc is size == 16, align == 16;
 global layout AtomicU16 is size == 2, align == 2;
+global layout AtomicU64 is size == 8, align == 8;
 
 /// The descriptor of `slab` in `t`'s descriptor array: the one its
 /// permission ([`SlabTable::perms_ok`]) is to. Names a descriptor so
@@ -995,7 +1008,10 @@ impl SlabTable {
     /// reservations: to descriptor `s` at `desc_base + s * desc_stride`
     /// (the descriptor [`desc_id`] names there), and to owner word `g` at
     /// `owners_base + 2 * g` (held by the word's invariant,
-    /// [`owner_inv_at`]), for every slab and hand-out group of the region.
+    /// [`owner_inv_at`]), for every slab and hand-out group of the region;
+    /// and, made from the bitmap's reservation, to bitmap word `j` at
+    /// `bits_base + 8 * j`, the word whose identity ([`word_addr`]) is that
+    /// address, for every word of the bitmap.
     pub(super) closed spec fn perms_ok(&self) -> bool {
         &&& forall|s: int| 0 <= s < self.nslabs
             ==> desc_id(&(#[trigger] self.desc_perms@[s]).value()) == self.desc_base + s * (self.desc_stride as int)
@@ -1003,6 +1019,7 @@ impl SlabTable {
             && perm_at(self.desc_perms@[s], self.desc_base + s * (self.desc_stride as int))
         &&& forall|g: int| #![trigger self.owner_invs@.contains_key(g)] #![trigger self.owner_invs@[g]] 0 <= g < self.spec_ngroups() ==> self.owner_invs@.contains_key(g)
             && owner_inv_at(self.owner_invs@[g], self.owners_base as int, self.class as int, self.lg_group, self.group, self.nslabs, self.spec_sloc(), g)
+        &&& words_perms_ok(*self.word_perms@, self.bits_base as int, self.spec_nwords())
     }
 
     /// The class bitmap's slot tokens (`bitmap.rs`, "Slot tokens"): bits of
@@ -1430,7 +1447,7 @@ impl SlabTable {
             lemma_round_words(stagger as int, nb);
             assert(Set::<int>::range(bits_base as int, bits_base + 8 * nwords).subset_of(braw.dom()));
         }
-        let tracked perms = axiom_fresh_words(braw, bits_base, nwords as nat, class as int, words_once);
+        let tracked (perms, wperms) = fresh_words(braw, bits_base, bits.spec_base(), align, nwords as nat, class as int, words_once);
         let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, slots, bits_base, nwords as nat);
         // The permissions to every descriptor and owner word, made from
         // the two reservations (`SlabTable::perms_ok`).
@@ -1560,7 +1577,7 @@ impl SlabTable {
             _tail: [0; TABLE_TAIL],
             slot_auth: Tracked(slot_auth),
             word_invs: Tracked(vstd::modes::tracked_static_ref(word_invs)),
-            word_perms: Tracked(vstd::modes::tracked_static_ref(Map::tracked_empty())),
+            word_perms: Tracked(vstd::modes::tracked_static_ref(wperms)),
             mark_auth: Tracked(mark_auth),
             desc_perms: Tracked(dmap),
             owner_invs: Tracked(vstd::modes::tracked_static_ref(oinvs)),
@@ -2066,16 +2083,54 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 /// byte values. One permission per word: `z` is used up, and so is
 /// `once`, the token of class `c`'s step (`vspec::once`; its premises as
 /// for [`axiom_slot_loc`]). The words end in the address space
-/// (required): a permission's `addr` is a `usize`.
+/// (required): a permission's `addr` is a `usize`. With each word's
+/// value permission (`WordPerm`), the permission to borrow the word
+/// itself (`r.1`, as [`axiom_zero_owner`] makes an owner word's: eight
+/// aligned zero bytes are an `AtomicU64`, initialised, valid for every
+/// bit pattern), at the address the value permission names
+/// ([`word_addr`]).
 // `z` and `once` are read only by the requires (ghost).
 #[allow(unused_variables)]
-axiom fn axiom_fresh_words(tracked z: ZeroRaw, base: usize, n: nat, c: int, tracked once: Once) -> (tracked r: Map<int, WordPerm>)
+axiom fn axiom_fresh_words(tracked z: ZeroRaw, base: usize, n: nat, c: int, tracked once: Once)
+    -> (tracked r: (Map<int, WordPerm>, Map<int, PointsTo<AtomicU64>>))
     requires
         Set::<int>::range(base as int, base + 8 * n).subset_of(z.dom()),
+        z.provenance() == cast_provenance(),
+        0 < base,
+        base % 8 == 0,
         base + 8 * n <= usize::MAX,
         once.step() == Step::FreshWords(c),
     ensures
-        forall|j: int| #![trigger r.contains_key(j)] #![trigger r[j]] 0 <= j < n ==> r.contains_key(j) && r[j].addr() == base + 8 * j && r[j].value() == 0;
+        forall|j: int| #![trigger r.0.contains_key(j)] #![trigger r.0[j]] 0 <= j < n ==> r.0.contains_key(j) && r.0[j].addr() == base + 8 * j && r.0[j].value() == 0,
+        words_perms_ok(r.1, base as int, n as int);
+
+/// [`axiom_fresh_words`] for the class bitmap at `base`, a whole number of
+/// words into its reservation at `start`, aligned to `align`: the words
+/// are aligned. Its own function, so that `SlabTable::new`'s
+/// proof does not carry the alignment facts.
+proof fn fresh_words(tracked z: ZeroRaw, base: usize, start: usize, align: usize, n: nat, c: int, tracked once: Once)
+    -> (tracked r: (Map<int, WordPerm>, Map<int, PointsTo<AtomicU64>>))
+    requires
+        Set::<int>::range(base as int, base + 8 * n).subset_of(z.dom()),
+        z.provenance() == cast_provenance(),
+        crate::meta::is_pow2(align),
+        align >= 64,
+        start % align == 0,
+        0 < start <= base,
+        (base - start) % 8 == 0,
+        base + 8 * n <= usize::MAX,
+        once.step() == Step::FreshWords(c),
+    ensures
+        forall|j: int| #![trigger r.0.contains_key(j)] #![trigger r.0[j]] 0 <= j < n ==> r.0.contains_key(j) && r.0[j].addr() == base + 8 * j && r.0[j].value() == 0,
+        words_perms_ok(r.1, base as int, n as int),
+{
+    crate::meta::lemma_pow2_bits(align);
+    assert(start % align == 0 && align & sub(align, 1) == 0 && align >= 64 ==> start % 8 == 0) by (bit_vector);
+    assert(base % 8 == 0) by {
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(start as int, base - start, 8);
+    }
+    axiom_fresh_words(z, base, n, c, once)
+}
 
 /// The class bitmap's words fit in its reservation rounded up to a whole
 /// word: `st` bytes of stagger (a whole number of words), then the bytes
@@ -2422,19 +2477,24 @@ impl SlabTable {
             (*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed)
         };
     }
+}
 
+verus! {
+
+impl SlabTable {
     /// Number of slabs (including guard slabs) handed to an arena: their
     /// descriptors, bits and owner words exist (see the field). An
     /// `Acquire` load of the watermark, read inside its invariant
     /// ([`WatermarkPred`]).
     #[inline]
-    pub fn committed_slabs(&self) -> usize {
-        load_usize_seen(
-            &self.committed_slabs,
-            Ordering::Acquire,
-            &self.committed_inv,
-        )
-        .0
+    pub fn committed_slabs(&self) -> (r: usize)
+        ensures
+            r <= self.spec_nslabs(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        load_usize_seen(&self.committed_slabs, Ordering::Acquire, &self.committed_inv).0
     }
 
     /// `committed_slabs.load(order)`: the hand-out watermark, as the
@@ -2443,14 +2503,15 @@ impl SlabTable {
     ///
     /// [`desc_if_committed`]: SlabTable::desc_if_committed
     #[inline(always)]
-    fn watermark(&self, order: Ordering) -> usize {
+    fn watermark(&self, order: Ordering) -> usize
+        requires
+            // `core`'s load panics for these two.
+            !(order is Release),
+            !(order is AcqRel),
+    {
         self.committed_slabs.load(order)
     }
-}
 
-verus! {
-
-impl SlabTable {
     /// Guard slabs committed so far. `ord` is the caller's lock-order
     /// token for the commit lock.
     pub fn guards(&self, Tracked(ord): Tracked<&mut LockOrder>) -> usize
@@ -2470,17 +2531,6 @@ impl SlabTable {
 } // verus!
 
 impl SlabTable {
-    /// Descriptor of a handed-out slab. Aborts for a slab that was never
-    /// handed out rather than faulting on its `PROT_NONE` descriptor page.
-    #[inline]
-    pub fn desc(&self, slab: usize) -> &SlabDesc {
-        if slab >= self.committed_slabs() {
-            never_committed(self.class as usize, slab);
-        }
-        // SAFETY: `slab` is below the acquire-loaded watermark.
-        unsafe { self.desc_unchecked(slab) }
-    }
-
     /// Descriptor of `slab` if it has been handed out, `None` otherwise:
     /// no abort, for queries.
     ///
@@ -2523,41 +2573,68 @@ impl SlabTable {
 verus! {
 
 impl SlabTable {
+    /// Descriptor of a handed-out slab. Aborts for a slab that was never
+    /// handed out rather than faulting on its `PROT_NONE` descriptor page.
+    #[inline]
+    pub fn desc(&self, slab: usize) -> (r: &SlabDesc)
+        requires
+            crate::sys::may_abort_pending(),
+        ensures
+            *r == desc_at(*self, slab),
+    {
+        if slab >= self.committed_slabs() {
+            never_committed(self.class as usize, slab);
+        }
+        // SAFETY: `slab` is below the acquire-loaded watermark.
+        unsafe { self.desc_unchecked(slab) }
+    }
+
     /// Descriptor of `slab` without a watermark check, through its
-    /// permission ([`SlabTable::perms_ok`]). A temporary seam
-    /// (`external_body`) until its proof lands.
+    /// permission ([`SlabTable::perms_ok`]).
     ///
     /// # Safety
     /// `slab` must be below a value `committed_slabs` has held: descriptors
     /// up to that count are committed and initialised (or zero, for guard
     /// slabs) before the watermark moves.
     #[inline(always)]
-    #[verifier::external_body]
     unsafe fn desc_unchecked(&self, slab: usize) -> (r: &SlabDesc)
         requires
             slab < self.spec_nslabs(),
         ensures
             *r == desc_at(*self, slab),
     {
+        proof {
+            use_type_invariant(self);
+            let d = self.desc_stride as int;
+            assert(slab * d <= self.nslabs * d) by (nonlinear_arith)
+                requires slab < self.nslabs, d >= 0;
+            assert(self.desc_perms@.contains_key(slab as int));
+        }
         let p = addr_to_ptr(self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc;
         ptr_ref(p, Tracked(self.desc_perms.borrow().tracked_borrow(slab as int)))
     }
-}
 
-} // verus!
-
-impl SlabTable {
     /// The slot bits of a handed-out slab (design section 4). Aborts for a
     /// slab that was never handed out.
     #[inline]
-    pub fn bits(&self, slab: usize) -> AtomicBitmap<'_> {
+    pub fn bits(&self, slab: usize) -> (r: AtomicBitmap<'_>)
+        requires
+            crate::sys::may_abort_pending(),
+        ensures
+            bits_shape(r, class_table()[self.spec_class() as int].slab_bits as usize),
+            bits_ghost(r, *self, slab),
+    {
         if slab >= self.committed_slabs() {
             never_committed(self.class as usize, slab);
         }
         // SAFETY: `slab` is below the acquire-loaded watermark.
         unsafe { self.bits_unchecked(slab) }
     }
+}
 
+} // verus!
+
+impl SlabTable {
     /// The `free` check's bit (design section 4): whether `slot` of `slab`
     /// is marked allocated (or cached). One relaxed load of the bitmap
     /// word, no bounds checks.
@@ -3352,16 +3429,14 @@ impl SlabTable {
     /// The view of `slab`'s bits: words `first / 64 ..` of the class
     /// bitmap at `bits_base`, with `first = slab * slab_bits`, which the
     /// table's word invariants are for, borrowed through the words'
-    /// permissions (`word_perms`). A temporary seam (`external_body`): the
-    /// proof that the permissions are the words' lands with the PR that
-    /// mints them.
+    /// permissions ([`SlabTable::perms_ok`]), which make them the words
+    /// those invariants are keyed by.
     ///
     /// # Safety
     /// As [`desc_unchecked`](SlabTable::desc_unchecked).
     #[inline]
     // Hot bitmap lookup: left as written.
     #[allow(clippy::manual_is_multiple_of)]
-    #[verifier::external_body]
     unsafe fn bits_unchecked(&self, slab: usize) -> (r: AtomicBitmap<'_>)
         requires
             slab < self.spec_nslabs(),
@@ -3369,11 +3444,42 @@ impl SlabTable {
             bits_shape(r, class_table()[self.spec_class() as int].slab_bits as usize),
             bits_ghost(r, *self, slab),
     {
+        proof {
+            use_type_invariant(self);
+            self.lemma_slots_wf();
+            self.lemma_bits_fit(slab);
+            reveal(words_perms_ok);
+        }
         let nbits = self.slab_bits as usize;
         let first = slab * nbits;
         let ghost j0 = first as int / 64;
+        let ghost sl = self.spec_slots();
+        proof {
+            assert(self.word_perms@.contains_key(j0));
+        }
         let word = addr_to_ptr(self.bits_base + (first / 64) * 8) as *const AtomicU64;
         if nbits >= 64 {
+            let ghost k = nbits / 64;
+            proof {
+                let (n, sb) = (self.nslabs as int, nbits as int);
+                assert(first % 64 == 0) by {
+                    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(slab as int * (sb / 64), 64);
+                    assert(first == slab as int * (sb / 64) * 64) by (nonlinear_arith)
+                        requires first == slab * sb, sb == (sb / 64) * 64;
+                }
+                assert(j0 + k <= self.spec_nwords()) by {
+                    assert(first + sb <= n * sb) by (nonlinear_arith)
+                        requires slab < n, first == slab * sb, sb >= 0;
+                }
+                assert(vstd::layout::size_of::<AtomicU64>() == 8);
+                assert(word@.addr + k * 8 <= usize::MAX);
+                assert forall|i: int| #![trigger self.word_perms@.contains_key(j0 + i)] #![trigger self.word_perms@[j0 + i]] 0 <= i < k implies self.word_perms@.contains_key(j0 + i)
+                    && self.word_perms@[j0 + i].is_init()
+                    && self.word_perms@[j0 + i].ptr() == ptr_mut_from_data::<AtomicU64>(
+                        PtrData { addr: (word@.addr + 8 * i) as usize, provenance: word@.provenance, metadata: () }) by {
+                    assert(self.word_perms@.contains_key(j0 + i));
+                }
+            }
             debug_assert!(first % 64 == 0);
             // The group's words were committed before the watermark moved
             // (the caller's premise). `word_perms` is passed on as it is:
@@ -3383,11 +3489,54 @@ impl SlabTable {
             // class bitmap, one reservation from `bits_base`, so one
             // allocation.
             let words = unsafe { crate::vspec::slice::slice_from_perms(word, nbits / 64, Ghost(j0), self.word_perms) };
+            proof {
+                assert forall|i: int| 0 <= i < words@.len() implies #[trigger] crate::bitmap::word_ok(words@[i], first / 64 + i, sl, *self.word_invs@) by {
+                    assert(self.word_perms@.contains_key(j0 + i));
+                    assert(self.word_invs@.contains_key(j0 + i));
+                }
+            }
             AtomicBitmap::from_words(words, Ghost(first as int), Ghost(self.spec_slots()), self.word_invs)
         } else {
             // As above, one word.
             let w = ptr_ref(word, Tracked((*self.word_perms.borrow()).tracked_borrow(j0)));
+            proof {
+                assert(self.word_invs@.contains_key(j0));
+                // A sub-word slab's bits do not cross a word: `slab_bits` is
+                // a power of two below 64 (`Class::wf`), which `first`, a
+                // multiple of it, keeps.
+                let (s, f) = (nbits, first);
+                assert(crate::layout::LINE_BITS >= 64);
+                crate::meta::lemma_pow2_bits(s);
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(slab as int, s as int);
+                assert(f % 64 + s <= 64) by (bit_vector)
+                    requires f % s == 0, s & sub(s, 1) == 0, 0 < s, s < 64;
+            }
             AtomicBitmap::sub_word(w, (first % 64) as u32, nbits, Ghost(first as int), Ghost(self.spec_slots()), self.word_invs)
+        }
+    }
+
+    /// Slab `slab`'s bits are inside the class bitmap's bits, at most
+    /// `2^42` of them, and every bit of the bitmap is in one of its words.
+    proof fn lemma_bits_fit(&self, slab: usize)
+        requires
+            self.inv(),
+            slab < self.nslabs,
+        ensures
+            1 <= self.slab_bits,
+            0 <= slab * (self.slab_bits as int),
+            slab * (self.slab_bits as int) + self.slab_bits <= self.nslabs * (self.slab_bits as int),
+            self.nslabs * (self.slab_bits as int) <= 0x400_0000_0000,
+            forall|b: int| 0 <= b < self.nslabs * (self.slab_bits as int) ==> #[trigger] (b / 64) < self.spec_nwords(),
+    {
+        let (n, sb) = (self.nslabs as int, self.slab_bits as int);
+        assert(crate::layout::MAX_SLAB_WORDS * 64 <= 0x1_0000);
+        assert(0 <= slab * sb && slab * sb + sb <= n * sb) by (nonlinear_arith)
+            requires slab < n, sb >= 0;
+        assert(n * sb <= 0x400_0000 * 0x1_0000) by (nonlinear_arith)
+            requires 0 <= n <= 0x400_0000, 0 <= sb <= 0x1_0000;
+        assert forall|b: int| 0 <= b < n * sb implies #[trigger] (b / 64) < self.spec_nwords() by {
+            vstd::arithmetic::div_mod::lemma_div_is_ordered(b, n * sb - 1, 64);
+            vstd::arithmetic::div_mod::lemma_div_plus_one(n * sb - 1, 64);
         }
     }
 }

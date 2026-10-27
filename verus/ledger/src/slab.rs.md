@@ -11,7 +11,9 @@ file.
 | `desc_stride` | external_body | core library | Kani | trusted |
 | `SlabDesc::init` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...e_held` | external_body | atomics primitive | loom/GenMC | trusted |
+| `SlabDes..._state` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...b_live` | external_body | atomics primitive | loom/GenMC | trusted |
+| `SlabDes...rty_at` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `bad_state_byte`
 
@@ -26,7 +28,7 @@ fn bad_state_byte(v: u8) -> !
 
 ## `desc_stride`
 
-src/slab.rs:245. Kind: external_body. Category: core library.
+src/slab.rs:251. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Descriptor stride for `class` in bytes.
@@ -42,7 +44,7 @@ pub fn desc_stride(class: usize) -> (r: usize)
 
 ## `SlabDesc::init`
 
-src/slab.rs:301. Kind: external_body. Category: atomics primitive.
+src/slab.rs:307. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Initialise the descriptor of a slab handed to `arena`: `Fresh`, no live slots, through `p`, the descriptor's permission (ghost).
@@ -60,22 +62,60 @@ pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabDesc::state_byte_held`
 
-src/slab.rs:336. Kind: external_body. Category: atomics primitive.
+src/slab.rs:349. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
-> The `state` byte, as [`state_held`](SlabDesc::state_held).
+> The `state` byte, as [`state_held`](SlabDesc::state_held): the state the permission under `k` records when that is this descriptor's.
 
 ```rust
-fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> u8
+fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u8)
+    ensures
+        perm_for(*m, k, self) ==> r == m[k].state(),
+```
+
+## `SlabDesc::set_state`
+
+src/slab.rs:364. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> Only ever called with the class lock held, which holds `p`, the descriptor's permission (ghost), which records the new state.
+
+```rust
+pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
+    requires
+        old(p).id() == desc_id(self),
+    ensures
+        final(p).id() == old(p).id(),
+        final(p).state() == state_byte(s),
+        final(p).dirty() == old(p).dirty(),
+        final(p).arena() == old(p).arena(),
 ```
 
 ## `SlabDesc::sub_live`
 
-src/slab.rs:390. Kind: external_body. Category: atomics primitive.
+src/slab.rs:419. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.
 
 ```rust
 pub fn sub_live(&self, n: usize) -> usize
+```
+
+## `SlabDesc::set_dirty_at`
+
+src/slab.rs:437. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).
+
+```rust
+pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)
+    requires
+        old(p).id() == desc_id(self),
+    ensures
+        final(p).id() == old(p).id(),
+        final(p).state() == old(p).state(),
+        final(p).dirty() == ns,
+        final(p).arena() == old(p).arena(),
 ```

@@ -130,8 +130,9 @@ pub struct SlabDesc {
 /// holder of the lock that protects them. Not `Copy`, and its fields are
 /// private to this module, which has no constructor: the one source is
 /// the trusted `class::table::axiom_zero_desc`, once per descriptor of a
-/// class table (it uses up the descriptor's zero bytes). `init` requires
-/// it to be its descriptor's; `set_state` and `set_dirty_at` do not yet.
+/// class table (it uses up the descriptor's zero bytes), but for the unit
+/// tests' `Tracked::assume_new()`. `init`,
+/// `set_state` and `set_dirty_at` require it to be their descriptor's.
 // Ghost: for the specifications of the descriptor accessors.
 #[allow(dead_code)]
 pub tracked struct DescPerm {
@@ -168,6 +169,11 @@ impl DescPerm {
 /// `axiom_zero_desc` ties it to the descriptor's address when it mints
 /// the permissions.
 pub uninterp spec fn desc_id(d: &SlabDesc) -> usize;
+
+/// `m` holds a permission for `d` under key `k`.
+pub open spec fn perm_for(m: Map<nat, DescPerm>, k: nat, d: &SlabDesc) -> bool {
+    m.contains_key(k) && m[k].id() == desc_id(d)
+}
 
 const fn strides_of(classes: &[Class; NCLASSES]) -> (out: [u32; NCLASSES])
     requires
@@ -320,27 +326,50 @@ impl SlabDesc {
     }
 
     /// [`state`](SlabDesc::state) read by a holder of `m`, the permissions
-    /// a class lock value holds.
+    /// a class lock value holds: the state the permission under `k`
+    /// records when that is this descriptor's.
     #[inline(always)]
-    pub fn state_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> State {
+    pub fn state_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: State)
+        ensures
+            perm_for(*m, k, self) ==> state_byte(r) == m[k].state(),
+    {
         State::from_u8(self.state_byte_held(Ghost(k), Tracked(m)))
     }
 
-    /// The `state` byte, as [`state_held`](SlabDesc::state_held). No
-    /// contract: while `set_state` and `set_dirty_at` take any
-    /// permission, the one under `k` need not record this byte.
-    // `k` and `m` name the permission its holder has (ghost).
+    /// The `state` byte, as [`state_held`](SlabDesc::state_held): the
+    /// state the permission under `k` records when that is this
+    /// descriptor's. Trusted ([`DescPerm`]): every write of the byte
+    /// (`init`, `set_state`) takes this descriptor's permission and
+    /// records the value written in it; only the unit tests pass a
+    /// permission they made up (`Tracked::assume_new()`).
+    // `k` and `m` are read only by the specification (ghost).
     #[allow(unused_variables)]
     #[inline(always)]
     #[verifier::external_body]
-    fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> u8 {
+    fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u8)
+        ensures
+            perm_for(*m, k, self) ==> r == m[k].state(),
+    {
         self.state.load(Ordering::Relaxed)
     }
 
-    /// Only ever called with the class lock held, which holds `_p`, the
-    /// descriptor's permission (ghost).
+    /// Only ever called with the class lock held, which holds `p`, the
+    /// descriptor's permission (ghost), which records the new state.
+    /// Trusted ([`DescPerm`]): the two relaxed stores write the byte the
+    /// permission records, and its shadow.
+    // `p` is read only by the specification (ghost).
+    #[allow(unused_variables)]
     #[inline]
-    pub fn set_state(&self, s: State, _p: Tracked<&mut DescPerm>) {
+    #[verifier::external_body]
+    pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
+        requires
+            old(p).id() == desc_id(self),
+        ensures
+            final(p).id() == old(p).id(),
+            final(p).state() == state_byte(s),
+            final(p).dirty() == old(p).dirty(),
+            final(p).arena() == old(p).arena(),
+    {
         self.state.store(s as u8, Ordering::Relaxed);
         self.shadow.store(s as u8 + 1, Ordering::Relaxed);
     }
@@ -398,10 +427,22 @@ impl SlabDesc {
         self.dirty_at.load(Ordering::Relaxed)
     }
 
-    /// Only ever called with the class lock held, which holds `_p`, as
-    /// [`set_state`](SlabDesc::set_state).
+    /// Only ever called with the class lock held, which holds `p`, as
+    /// [`set_state`](SlabDesc::set_state). Trusted ([`DescPerm`]): the
+    /// relaxed store writes the stamp the permission records.
+    // `p` is read only by the specification (ghost).
+    #[allow(unused_variables)]
     #[inline]
-    pub fn set_dirty_at(&self, ns: u64, _p: Tracked<&mut DescPerm>) {
+    #[verifier::external_body]
+    pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)
+        requires
+            old(p).id() == desc_id(self),
+        ensures
+            final(p).id() == old(p).id(),
+            final(p).state() == old(p).state(),
+            final(p).dirty() == ns,
+            final(p).arena() == old(p).arena(),
+    {
         self.dirty_at.store(ns, Ordering::Relaxed);
     }
 
