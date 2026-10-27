@@ -46,9 +46,6 @@ verus! {
 /// then the line-aligned tables and arena 0's class states, so the locks
 /// inside `meta` and `huge` (taken on heap creation and huge allocations)
 /// never share a cache line with them.
-///
-/// Opaque to Verus (`external_body`) until its fields are specified.
-#[verifier::external_body]
 #[repr(C)]
 pub struct Shared {
     /// What the `free` and sized `free` fast paths read per class, one
@@ -134,6 +131,49 @@ pub uninterp spec fn shared_storage() -> *mut Shared;
 pub tracked struct Built {
     pub tracked perm: Option<&'static PointsTo<Shared>>,
 }
+
+/// The `Shared` built in place at `p` ([`Shared::init`]), as far as the
+/// fields verified code reads go. Uninterpreted: no axiom ties it to
+/// memory yet.
+pub uninterp spec fn shared_at(p: *mut Shared) -> Shared;
+
+impl Shared {
+    /// [`shared_storage`], for modules outside `heap`.
+    pub open spec fn storage() -> *mut Shared {
+        shared_storage()
+    }
+
+    /// [`shared_at`], for modules outside `heap`.
+    pub open spec fn built_at(p: *mut Shared) -> Shared {
+        shared_at(p)
+    }
+}
+
+// The field types of `Shared` that are not specified yet, opaque to
+// Verus: nothing verified reads inside them.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `ClassLine` to the verifier.
+#[allow(dead_code)]
+pub struct ExClassLine(ClassLine);
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `ThreadKey` to the verifier.
+#[allow(dead_code)]
+pub struct ExThreadKey(ThreadKey);
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `Tcaches` to the verifier.
+#[allow(dead_code)]
+pub struct ExTcaches(Tcaches);
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `Policy` to the verifier.
+#[allow(dead_code)]
+pub struct ExPolicy(crate::policy::Policy);
 
 } // verus!
 
