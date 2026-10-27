@@ -18,6 +18,7 @@ use crate::meta::Meta;
 use crate::policy::Policy;
 use crate::stats::Snapshot;
 use crate::sys::cgroup::{Cgroup, Deferred};
+use crate::vspec::atom::UsizePerm;
 use crate::vspec::unbacked::Unbacked;
 use vstd::prelude::Ghost;
 
@@ -183,12 +184,15 @@ const _: () = assert!(core::mem::size_of::<ClassLine>() == crate::layout::CLASS_
 const _: () = assert!(core::mem::offset_of!(Shared, lines) == 0);
 
 impl ClassLine {
-    fn of(regions: &Regions, table: &SlabTable, class: usize) -> ClassLine {
+    /// The line of class `class`, with the permission of its watermark copy
+    /// ([`SlabTable::new_mirror`]), for [`SlabTable::mirror_watermark`].
+    fn of(regions: &Regions, table: &SlabTable, class: usize) -> (ClassLine, Tracked<UsizePerm>) {
         let cls = &CLASSES.table()[class];
-        ClassLine {
+        let (committed, perm) = table.new_mirror();
+        let line = ClassLine {
             class_base: regions.class_base[class],
             bits_base: table.bits_base(),
-            committed: AtomicUsize::new(0),
+            committed,
             owners_base: table.owners_base(),
             inv: inverse_of_odd_part_u64(cls.size()),
             nslots: cls.nslots as u64,
@@ -200,7 +204,8 @@ impl ClassLine {
             lg_group: table.lg_group(),
             lg_guard: cls.lg_slab + table.slabs_per_page().trailing_zeros() as u8,
             _pad: [0; 2],
-        }
+        };
+        (line, perm)
     }
 
     /// Tests: the line's fields as `(class_base, bits_base, watermark copy,
@@ -823,11 +828,9 @@ impl Shared {
             let lines = Shared::lines_ptr(this);
             for c in 0..NCLASSES {
                 let table = &*elem_at(tables, c, NCLASSES);
-                Shared::put_line(this, c, ClassLine::of(regions, table, c));
-            }
-            for c in 0..NCLASSES {
+                let (line, _perm) = ClassLine::of(regions, table, c);
+                Shared::put_line(this, c, line);
                 let line = &*elem_at(lines, c, NCLASSES);
-                let table = &*elem_at(tables, c, NCLASSES);
                 // The `Shared` never moves (this function's contract).
                 table.mirror_watermark(
                     &raw const line.committed,
