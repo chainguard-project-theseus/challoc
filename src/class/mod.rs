@@ -1667,6 +1667,20 @@ impl ClassState {
         r
     }
 
+    /// The `dirty_at` stamp of slab `slab`'s descriptor `d`, read under
+    /// this arena's class lock (`g`) through the permission `g` holds, as
+    /// [`state_locked`] reads the state. Every write of a stamp goes
+    /// through that permission ([`set_dirty_locked`], `take_group`'s
+    /// `init`).
+    ///
+    /// [`state_locked`]: ClassState::state_locked
+    /// [`set_dirty_locked`]: ClassState::set_dirty_locked
+    #[allow(unused_variables)]
+    #[inline(always)]
+    fn dirty_locked(&self, g: &Inner, d: &SlabDesc, slab: usize) -> u64 {
+        d.dirty_held(Ghost(slab as nat), Tracked(g.dperms.borrow()))
+    }
+
     /// `SlabDesc::set_state` on owned slab `slab`'s descriptor `d` under
     /// this arena's class lock (`g`), through the permission `g` holds for
     /// it, with the ghost state updated to match (the write side of

@@ -145,12 +145,14 @@ impl ClassState {
         let mut next = g.empty.map.lowest_set();
         while let Some(slab) = next {
             let desc = self.desc(slab);
-            assert!(
-                desc.state() == State::Empty && desc.live() == 0,
-                "class {}: slab {slab} in the empty set is not empty",
-                self.class
-            );
-            v.visit(self, g, slab, desc.dirty_at());
+            if !(desc.state() == State::Empty && desc.live() == 0) {
+                crate::sys::abort_pending(format_args!(
+                    "class {}: slab {slab} in the empty set is not empty",
+                    self.class
+                ));
+            }
+            let dirty_at = self.dirty_locked(g, desc, slab);
+            v.visit(self, g, slab, dirty_at);
             next = g.empty.map.lowest_set_from(slab + 1);
         }
     }
@@ -244,11 +246,11 @@ impl ClassState {
                 None => break,
             };
             let d = self.desc(s);
-            if d.state() != State::Empty {
+            if self.state_locked(g, d, s) != State::Empty {
                 continue;
             }
             if !done {
-                t.oldest = min_nonzero(t.oldest, d.dirty_at());
+                t.oldest = min_nonzero(t.oldest, self.dirty_locked(g, d, s));
                 continue;
             }
             self.set_state_locked(g, d, s, State::Purged);
@@ -376,7 +378,10 @@ impl ClassState {
             }
             let d = self.desc(s);
             if !(d.arena() == self.arena
-                && matches!(d.state(), State::Fresh | State::Empty | State::Purged))
+                && matches!(
+                    d.state_held(Ghost::assume_new(), Tracked::assume_new()),
+                    State::Fresh | State::Empty | State::Purged
+                ))
             {
                 return false;
             }
