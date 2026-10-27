@@ -1,6 +1,7 @@
 //! The `errno` model: one ghost resource, [`ThreadErrno`], stands for the
 //! calling thread's `errno` during one C call; [`set_errno`] is the only
-//! write and takes it `&mut`.
+//! write through a token and takes it `&mut`, and [`get_errno`] the only
+//! read through one.
 
 use core::ffi::c_int;
 use vstd::prelude::*;
@@ -38,6 +39,17 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
 {
     // SAFETY: `__errno_location` returns the calling thread's `errno`.
     unsafe { *::libc::__errno_location() = e };
+}
+
+/// Trusted: reads the calling thread's `errno` through libc's pointer.
+/// Nothing is claimed about the value: libc calls in trusted code may
+/// have written `errno` since challoc's last write, which `val()` does
+/// not track.
+#[verifier::external_body]
+#[inline(always)]
+pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> c_int {
+    // SAFETY: `__errno_location` returns the calling thread's `errno`.
+    unsafe { *::libc::__errno_location() }
 }
 
 } // verus!
