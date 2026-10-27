@@ -2376,16 +2376,27 @@ impl SlabTable {
 verus! {
 
 impl SlabTable {
+    /// A watermark copy for this table's class line (`heap::ClassLine`):
+    /// a new atomic at 0, with its permission, for
+    /// [`mirror_watermark`](SlabTable::mirror_watermark) to keep it up.
+    pub(crate) fn new_mirror(&self) -> (r: (AtomicUsize, Tracked<UsizePerm>))
+        ensures
+            r.1@.id() == usize_id(&r.0),
+            r.1@.value() == 0,
+    {
+        new_usize(0)
+    }
+
     /// Keep `*mirror` equal to the hand-out watermark from now on: it is
     /// set to the current value here and stored after the watermark at
     /// every hand-out, under the commit lock, so a reader of the copy never
     /// sees a value the watermark has not held (`heap::ClassLine`).
     /// `inv` is the copy's invariant, which bounds it by the slab count
-    /// ([`CommittedPred`]): the watermark is read, `Acquire`, inside its own
-    /// invariant ([`WatermarkPred`], `vspec::atom::load_usize_seen`), which
-    /// bounds it the same way, and every store into the copy (here and in
-    /// [`take_group`]) is one of a watermark value, inside it. `ord` is the
-    /// caller's lock-order token for the commit lock. Premise of the caller
+    /// ([`CommittedPred`]): the value set here is `next_slab`, which the
+    /// watermark equals while the lock is held ([`WatermarkPred`]), and
+    /// every store into the copy (here and in [`take_group`]) is one of a
+    /// watermark value, inside it. `ord` is the caller's lock-order token
+    /// for the commit lock. Premise of the caller
     /// (`Shared::init`, unverified): `inv` is the one invariant of the copy
     /// at `mirror`, which no other table is handed.
     ///
@@ -2413,12 +2424,20 @@ impl SlabTable {
         }
         let tracked mut under = LockOrder::spare();
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
-        let (wm, _) = load_usize_seen(&self.committed_slabs, Ordering::Acquire, &self.committed_inv);
+        let gi = &mut *g;
+        // While the lock is held the watermark is `next_slab` (its
+        // invariant holds the other half of the ghost variable that ties
+        // the two), so at most the slab count.
+        let wm = gi.next_slab;
+        vstd::open_atomic_invariant!(self.committed_inv.borrow() => v => {
+            proof {
+                gi.wm.borrow().agree(&v.2);
+            }
+        });
         vstd::open_atomic_invariant!(inv => perm => {
             // SAFETY: guaranteed by the caller.
             unsafe { store_usize_at(mirror, wm, Ordering::Release, Tracked(&mut perm)) };
         });
-        let gi = &mut *g;
         gi.mirror = mirror;
         proof {
             gi.mirror_inv = Tracked(Some(inv));
