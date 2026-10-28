@@ -8,10 +8,12 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_published` | axiom | allocator invariant | none (assumption) | trusted |
+| `LinePerm` | external_body type | atomics primitive | loom/GenMC | trusted |
+| `StatePerm` | external_body type | atomics primitive | loom/GenMC | trusted |
 
 ## `axiom_published`
 
-src/api/mod.rs:156. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:164. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the frozen permissions, for a thread that knows the allocator is published ([`ready`]): a `&'static` reference to a `Published`.
@@ -23,4 +25,26 @@ pub axiom fn axiom_published() -> (tracked r: &'static Published)
     ensures
         r.ok(),
 ;
+```
+
+## `LinePerm`
+
+src/api/mod.rs:182. Kind: external_body type. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> Ghost permission to `LINE_STATE`: its current [`value`](LinePerm::value).
+
+```rust
+pub tracked struct LinePerm
+```
+
+## `StatePerm`
+
+src/api/mod.rs:266. Kind: external_body type. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> Ghost permission to `STATE`: its current [`value`](StatePerm::value).
+
+```rust
+pub tracked struct StatePerm
 ```
