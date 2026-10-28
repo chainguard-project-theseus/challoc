@@ -977,6 +977,24 @@ impl RunToken {
             GUARD_PAGES < self.npages(),
     {
     }
+
+    /// Two run tokens hold disjoint page ranges.
+    pub proof fn lemma_apart(tracked &mut self, tracked other: &RunToken)
+        requires
+            old(self).wf(),
+            other.wf(),
+        ensures
+            final(self).wf(),
+            final(self).start() == old(self).start(),
+            final(self).npages() == old(self).npages(),
+            final(self).start() + final(self).npages() <= other.start() || other.start() + other.npages() <= final(self).start(),
+    {
+        self.pages.disjoint(&other.pages);
+        let lo = if self.start() < other.start() { other.start() } else { self.start() };
+        if lo < self.start() + self.npages() && lo < other.start() + other.npages() {
+            assert(self.pages@.contains(lo) && other.pages@.contains(lo));
+        }
+    }
 }
 
 /// `tok` is the token of a live run starting at page `page`.

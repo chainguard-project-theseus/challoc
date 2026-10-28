@@ -58,6 +58,8 @@ use crate::lock::{rank_arena_stats, rank_class, rank_stats};
 use crate::meta::MetaStats;
 use vstd::prelude::*;
 
+pub mod ledger;
+
 verus! {
 
 /// One `(arena, class)` pair (`stats.arenas.<i>.bins.<j>.*` and the
