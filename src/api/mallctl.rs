@@ -74,8 +74,12 @@ use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::cbuf::CCall;
 use Op::*;
 use Reading::*;
-use vstd::prelude::{Ghost, Tracked, verus};
+use vstd::prelude::*;
 use vstd::raw_ptr::ptr_ref;
+#[cfg(verus_keep_ghost)]
+use vstd::string::*;
+
+verus! {
 
 // `mallctl`'s return codes as `c_int`; the numbers live in `sys::errno`.
 const EPERM: c_int = Errno::EPERM.0;
@@ -84,6 +88,8 @@ const EAGAIN: c_int = Errno::EAGAIN.0;
 const EFAULT: c_int = Errno::EFAULT.0;
 const EINVAL: c_int = Errno::EINVAL.0;
 
+} // verus!
+
 /// `version`: jemalloc's `<major>.<minor>.<bugfix>-<nrev>-g<gid>` shape,
 /// so parsers that split on `-` and `.` (tikv-jemalloc-ctl, Redis's
 /// `mem_allocator` line) work; the "gid" says who this really is.
@@ -91,6 +97,8 @@ pub const VERSION_STR: &str = "5.3.0-0-gchalloc";
 const VERSION_CSTR: &[u8] = b"5.3.0-0-gchalloc\0";
 const _: () = assert!(VERSION_CSTR.len() == VERSION_STR.len() + 1);
 const EMPTY_CSTR: &[u8] = b"\0";
+
+verus! {
 
 /// Longest MIB (`stats.arenas.<i>.bins.<j>.curregs` has 6 components).
 pub const MAX_MIB: usize = 8;
@@ -119,6 +127,8 @@ enum Op {
     UtilQuery,
     UtilBatchQuery,
 }
+
+} // verus!
 
 /// `MALLCTL_ARENAS_DESTROYED` (4097 in both shipped headers): jemalloc's
 /// merged statistics of the arenas destroyed so far. challoc never
@@ -149,6 +159,8 @@ enum Reading {
     /// `uint64_t *` (`thread.allocatedp`, `thread.deallocatedp`).
     U64Ptr(*const u64),
 }
+
+verus! {
 
 /// A read-only key's implementation, by name: [`call`] runs it with the
 /// MIB (for its numeric components) and returns the answer or an error
@@ -216,6 +228,8 @@ enum Reader {
     OptValue,
 }
 
+} // verus!
+
 /// `read(mib)`: the reader's function, called directly.
 #[inline(always)]
 fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int> {
@@ -281,6 +295,8 @@ fn shared() -> &'static Shared {
     super::shared()
 }
 
+verus! {
+
 /// One node of the name tree. A node named [`NUMERIC`] is the only child
 /// of its parent and matches any decimal component, which becomes the MIB
 /// entry.
@@ -304,7 +320,10 @@ enum Entry {
 
 impl Node {
     /// The children of a directory; none for a key.
-    fn children(&self) -> &'static [Node] {
+    fn children(&self) -> (r: &'static [Node])
+        ensures
+            r@ == spec_children(*self),
+    {
         match self.entry {
             Entry::Dir(children) => children,
             _ => &[],
@@ -312,19 +331,14 @@ impl Node {
     }
 }
 
-const NUMERIC: &str = "*";
+// The lifetime is spelled out, as for `VERSION_STR`.
+#[allow(clippy::redundant_static_lifetimes)]
+const NUMERIC: &'static str = "*";
 
 const fn op(name: &'static str, o: Op) -> Node {
     Node {
         name,
         entry: Entry::Op(o),
-    }
-}
-
-const fn stat(name: &'static str, read: Reader) -> Node {
-    Node {
-        name,
-        entry: Entry::Read(read),
     }
 }
 
@@ -338,6 +352,16 @@ const fn dir(name: &'static str, children: &'static [Node]) -> Node {
 const fn num(children: &'static [Node]) -> Node {
     dir(NUMERIC, children)
 }
+
+/// A read-only key, answered by its reader ([`Reader`]).
+const fn stat(name: &'static str, read: Reader) -> Node {
+    Node {
+        name,
+        entry: Entry::Read(read),
+    }
+}
+
+} // verus!
 
 /// One `opt.<key>` node per [`KEYS`] entry, in order, each read by `read`
 /// ([`Reader::OptValue`]). The loop also tests `out`'s length, which is
@@ -746,15 +770,82 @@ static ROOT: [Node; 12] = [
 // Name and MIB resolution.
 // ---------------------------------------------------------------------------
 
+verus! {
+
+/// The decimal value of the digits `s` (`strtoumax(.., 10)` without the
+/// overflow clamp).
+spec fn decimal(s: Seq<u8>) -> int
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        0
+    } else {
+        decimal(s.drop_last()) * 10 + (s.last() - 48)
+    }
+}
+
+/// Every byte of `s` is `0`..`9`.
+spec fn all_digits(s: Seq<u8>) -> bool {
+    forall|i: int| 0 <= i < s.len() ==> 48 <= #[trigger] s[i] <= 57
+}
+
+/// Digits spell a non-negative number that only grows as digits are
+/// appended.
+proof fn lemma_decimal_grows(s: Seq<u8>, j: int)
+    requires
+        all_digits(s),
+        0 <= j <= s.len(),
+    ensures
+        0 <= decimal(s.subrange(0, j)) <= decimal(s),
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        let d = s.drop_last();
+        assert(all_digits(d)) by {
+            assert forall|i: int| 0 <= i < d.len() implies 48 <= #[trigger] d[i] <= 57 by {
+                assert(d[i] == s[i]);
+            }
+        }
+        lemma_decimal_grows(d, d.len() as int);
+        assert(d.subrange(0, d.len() as int) =~= d);
+        if j < s.len() {
+            lemma_decimal_grows(d, j);
+            assert(d.subrange(0, j) =~= s.subrange(0, j));
+        } else {
+            assert(s.subrange(0, j) =~= s);
+        }
+        assert(48 <= s[s.len() - 1] <= 57);
+    } else {
+        assert(s.subrange(0, j) =~= s);
+    }
+}
+
 /// The first component of a dotted name and the rest after its dot, if
 /// there is a dot.
-fn split_component(name: &[u8]) -> (&[u8], Option<&[u8]>) {
-    // `match name.iter().position(|&b| b == b'.')`, spelled out with an
-    // index.
+fn split_component(name: &[u8]) -> (r: (&[u8], Option<&[u8]>))
+    ensures
+        forall|j: int| 0 <= j < r.0@.len() ==> #[trigger] r.0@[j] != 46,
+        r.1 is None ==> r.0@ == name@,
+        r.1 matches Some(t) ==> name@ == r.0@ + seq![46u8] + t@,
+{
+    // `match name.iter().position(|&b| b == b'.')`, spelled out: Verus
+    // does not specify `Iterator::position`.
     let mut i = 0;
-    while i < name.len() {
+    while i < name.len()
+        invariant
+            i <= name@.len(),
+            forall|j: int| 0 <= j < i ==> #[trigger] name@[j] != 46,
+        decreases name@.len() - i,
+    {
         if name[i] == b'.' {
-            return (&name[..i], Some(&name[i + 1..]));
+            let r = (&name[..i], Some(&name[i + 1..]));
+            proof {
+                assert(name@ =~= name@.subrange(0, i as int) + seq![46u8] + name@.subrange(
+                    i + 1,
+                    name@.len() as int,
+                ));
+            }
+            return r;
         }
         i += 1;
     }
@@ -764,50 +855,446 @@ fn split_component(name: &[u8]) -> (&[u8], Option<&[u8]>) {
 /// A decimal component (jemalloc parses these with `strtoumax(.., 10)`):
 /// its value, or `None` when it is empty, holds a byte that is not a
 /// digit, or does not fit a `size_t`.
-// Verus does not support `?` on `Option` here.
-#[allow(clippy::question_mark)]
-fn parse_index(s: &[u8]) -> Option<usize> {
+fn parse_index(s: &[u8]) -> (r: Option<usize>)
+    ensures
+        r is Some <==> s@.len() > 0 && all_digits(s@) && decimal(s@) <= usize::MAX,
+        r matches Some(v) ==> v == decimal(s@),
+{
     if s.is_empty() {
         return None;
     }
     let mut v: usize = 0;
-    // `for &b in s`, spelled out with an index.
+    // `for &b in s`, spelled out with an index for the invariant.
     let mut k = 0;
-    while k < s.len() {
+    while k < s.len()
+        invariant
+            k <= s@.len(),
+            all_digits(s@.subrange(0, k as int)),
+            v == decimal(s@.subrange(0, k as int)),
+        decreases s@.len() - k,
+    {
         let b = s[k];
         if !b.is_ascii_digit() {
             return None;
         }
-        // `v.checked_mul(10)?.checked_add(..)?`, each `?` spelled out.
+        let ghost next = s@.subrange(0, k + 1);
+        proof {
+            assert(next.drop_last() =~= s@.subrange(0, k as int));
+            assert(all_digits(next));
+        }
+        // `v.checked_mul(10)?.checked_add(..)?`, each `?` spelled out so
+        // the proof can say why the overflow means no number fits.
         let Some(t) = v.checked_mul(10) else {
+            proof {
+                if all_digits(s@) {
+                    lemma_decimal_grows(s@, k + 1);
+                }
+            }
             return None;
         };
         let Some(w) = t.checked_add((b - b'0') as usize) else {
+            proof {
+                if all_digits(s@) {
+                    lemma_decimal_grows(s@, k + 1);
+                }
+            }
             return None;
         };
         v = w;
         k += 1;
     }
+    proof {
+        assert(s@.subrange(0, k as int) =~= s@);
+    }
     Some(v)
+}
+
+/// The node is the numeric wildcard [`NUMERIC`].
+spec fn numeric(n: Node) -> bool {
+    n.name.spec_bytes() == NUMERIC.spec_bytes()
 }
 
 /// `n.name == NUMERIC`.
 #[inline(always)]
-fn is_numeric(n: &Node) -> bool {
+fn is_numeric(n: &Node) -> (r: bool)
+    ensures
+        r == numeric(*n),
+{
     bytes_is(n.name.as_bytes(), NUMERIC.as_bytes())
 }
 
-/// [`ROOT`]: both traversals start from it.
+/// The nodes of [`ROOT`]: uninterpreted, since the static's initialiser
+/// lies outside `verus!`. [`root`] returns them, so both traversals start
+/// from the same tree.
+uninterp spec fn root_nodes() -> Seq<Node>;
+
+/// [`ROOT`]. Trusted: the address of a static outside `verus!`, whose
+/// initialiser Verus does not see. It claims only that every call
+/// returns the same nodes, [`root_nodes`].
+#[verifier::external_body]
 #[inline(always)]
-fn root() -> &'static [Node] {
+fn root() -> (r: &'static [Node])
+    ensures
+        r@ == root_nodes(),
+{
     &ROOT
+}
+
+/// The children of `n`, as [`Node::children`] returns them.
+spec fn spec_children(n: Node) -> Seq<Node> {
+    match n.entry {
+        Entry::Dir(children) => children@,
+        _ => Seq::empty(),
+    }
+}
+
+/// The child of `nodes` at MIB entry `i`, as [`child_by_index`] finds it:
+/// the lone numeric node for any `i`, else the child at index `i`.
+spec fn step(nodes: Seq<Node>, i: usize) -> Option<Node> {
+    if nodes.len() == 1 && numeric(nodes[0]) {
+        Some(nodes[0])
+    } else if i < nodes.len() {
+        Some(nodes[i as int])
+    } else {
+        None
+    }
+}
+
+/// The node the MIB `mib` names below `nodes` ([`mib_to_node`]'s walk):
+/// each entry picks a child with [`step`], and the next entry looks among
+/// that child's children. `None` for an empty MIB or a bad entry.
+spec fn resolve(nodes: Seq<Node>, mib: Seq<usize>) -> Option<Node>
+    decreases mib.len(),
+{
+    if mib.len() == 0 {
+        None
+    } else {
+        match step(nodes, mib[0]) {
+            None => None,
+            Some(n) => if mib.len() == 1 {
+                Some(n)
+            } else {
+                resolve(spec_children(n), mib.drop_first())
+            },
+        }
+    }
+}
+
+/// The child of `nodes` that component `c` names with MIB entry `i`
+/// ([`child`]'s match): under a lone numeric node, `c` is a decimal
+/// number and `i` its value; otherwise `i` indexes a child named `c`.
+spec fn names(nodes: Seq<Node>, c: Seq<u8>, i: usize) -> Option<Node> {
+    if nodes.len() == 1 && numeric(nodes[0]) {
+        if c.len() > 0 && all_digits(c) && i == decimal(c) {
+            Some(nodes[0])
+        } else {
+            None
+        }
+    } else if i < nodes.len() && nodes[i as int].name.spec_bytes() == c {
+        Some(nodes[i as int])
+    } else {
+        None
+    }
+}
+
+/// The node the components `comps` name below `nodes` when `mib` is their
+/// MIB ([`name_to_mib`]'s walk): one entry per component, each matched by
+/// [`names`] among the children of the node before it.
+spec fn walk(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>) -> Option<Node>
+    decreases mib.len(),
+{
+    if mib.len() == 0 || comps.len() != mib.len() {
+        None
+    } else {
+        match names(nodes, comps[0], mib[0]) {
+            None => None,
+            Some(n) => if mib.len() == 1 {
+                Some(n)
+            } else {
+                walk(spec_children(n), comps.drop_first(), mib.drop_first())
+            },
+        }
+    }
+}
+
+/// The components joined with dots.
+spec fn join(comps: Seq<Seq<u8>>) -> Seq<u8>
+    decreases comps.len(),
+{
+    if comps.len() <= 1 {
+        if comps.len() == 1 {
+            comps[0]
+        } else {
+            Seq::empty()
+        }
+    } else {
+        comps[0] + seq![46u8] + join(comps.drop_first())
+    }
+}
+
+/// `comps` are the dotted components of `name`: at least one, none
+/// holding a dot, joined back into `name`. They are unique
+/// ([`lemma_split_unique`]).
+spec fn split(name: Seq<u8>, comps: Seq<Seq<u8>>) -> bool {
+    &&& comps.len() >= 1
+    &&& forall|k: int, j: int|
+        0 <= k < comps.len() && 0 <= j < comps[k].len() ==> #[trigger] comps[k][j] != 46
+    &&& join(comps) == name
+}
+
+/// The sibling list the entry `mib[j]` picks a child from: `nodes` for
+/// the first entry, then the children of each node the entries before it
+/// reach.
+spec fn level(nodes: Seq<Node>, mib: Seq<usize>, j: int) -> Seq<Node>
+    decreases j,
+{
+    if j <= 0 {
+        nodes
+    } else {
+        match step(nodes, mib[0]) {
+            Some(n) => level(spec_children(n), mib.drop_first(), j - 1),
+            None => Seq::empty(),
+        }
+    }
+}
+
+/// A name's walk follows the MIB's resolution: a matched component is a
+/// [`step`] to the same child.
+proof fn lemma_walk_resolves(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>)
+    requires
+        walk(nodes, comps, mib) is Some,
+    ensures
+        resolve(nodes, mib) == walk(nodes, comps, mib),
+    decreases mib.len(),
+{
+    if mib.len() > 1 {
+        let n = names(nodes, comps[0], mib[0])->Some_0;
+        lemma_walk_resolves(spec_children(n), comps.drop_first(), mib.drop_first());
+    }
+}
+
+/// Entry `j` of `mib` is the one component `j` of `comps` names: at a
+/// numeric level, the component's decimal value; otherwise the index of
+/// a child named by the component.
+spec fn entry_named(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>, j: int) -> bool {
+    let l = level(nodes, mib, j);
+    &&& l.len() == 1 && numeric(l[0]) ==> comps[j].len() > 0 && all_digits(comps[j]) && mib[j]
+        == decimal(comps[j])
+    &&& !(l.len() == 1 && numeric(l[0])) ==> mib[j] < l.len() && l[mib[j] as int].name.spec_bytes()
+        == comps[j]
+}
+
+/// Along a name's walk, every entry is the one its component names.
+proof fn lemma_walk_entries(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>, j: int)
+    requires
+        walk(nodes, comps, mib) is Some,
+        0 <= j < mib.len(),
+    ensures
+        entry_named(nodes, comps, mib, j),
+    decreases j,
+{
+    if j > 0 {
+        let n = names(nodes, comps[0], mib[0])->Some_0;
+        lemma_walk_entries(spec_children(n), comps.drop_first(), mib.drop_first(), j - 1);
+    }
+}
+
+/// Extending a walk by one component matched among the last node's
+/// children.
+proof fn lemma_walk_push(
+    nodes: Seq<Node>,
+    comps: Seq<Seq<u8>>,
+    mib: Seq<usize>,
+    last: Node,
+    c: Seq<u8>,
+    i: usize,
+)
+    requires
+        walk(nodes, comps, mib) == Some(last),
+        names(spec_children(last), c, i) is Some,
+    ensures
+        walk(nodes, comps.push(c), mib.push(i)) == names(spec_children(last), c, i),
+    decreases mib.len(),
+{
+    let n = names(nodes, comps[0], mib[0])->Some_0;
+    assert(comps.push(c)[0] == comps[0]);
+    assert(mib.push(i)[0] == mib[0]);
+    assert(names(nodes, comps.push(c)[0], mib.push(i)[0]) == Some(n));
+    if mib.len() == 1 {
+        assert(n == last);
+        assert(comps.push(c).drop_first() =~= seq![c]);
+        assert(mib.push(i).drop_first() =~= seq![i]);
+        assert(seq![c][0] == c && seq![i][0] == i);
+        assert(walk(spec_children(last), seq![c], seq![i]) == names(spec_children(last), c, i));
+    } else {
+        lemma_walk_push(spec_children(n), comps.drop_first(), mib.drop_first(), last, c, i);
+        assert(comps.push(c).drop_first() =~= comps.drop_first().push(c));
+        assert(mib.push(i).drop_first() =~= mib.drop_first().push(i));
+        assert(walk(spec_children(n), comps.push(c).drop_first(), mib.push(i).drop_first())
+            == names(spec_children(last), c, i));
+    }
+}
+
+/// Joining one more component appends a dot and the component.
+proof fn lemma_join_push(comps: Seq<Seq<u8>>, c: Seq<u8>)
+    requires
+        comps.len() >= 1,
+    ensures
+        join(comps.push(c)) == join(comps) + seq![46u8] + c,
+    decreases comps.len(),
+{
+    assert(comps.push(c)[0] == comps[0]);
+    if comps.len() == 1 {
+        assert(comps.push(c).drop_first() =~= seq![c]);
+        assert(seq![c][0] == c);
+        assert(join(seq![c]) == c);
+        assert(join(comps) == comps[0]);
+    } else {
+        let rest = comps.drop_first();
+        lemma_join_push(rest, c);
+        assert(comps.push(c).drop_first() =~= rest.push(c));
+        assert(join(comps.push(c)) == comps[0] + seq![46u8] + join(rest.push(c)));
+        assert(join(comps) == comps[0] + seq![46u8] + join(rest));
+        assert(join(comps.push(c)) =~= join(comps) + seq![46u8] + c);
+    }
+}
+
+/// A name splits into its components one way only.
+proof fn lemma_split_unique(name: Seq<u8>, a: Seq<Seq<u8>>, b: Seq<Seq<u8>>)
+    requires
+        split(name, a),
+        split(name, b),
+    ensures
+        a == b,
+    decreases a.len(),
+{
+    // The first component is `name` up to its first dot (or all of it).
+    let (x, y) = (a[0], b[0]);
+    assert forall|j: int| 0 <= j < x.len() implies #[trigger] x[j] != 46 by {
+        assert(a[0][j] != 46);
+    }
+    assert forall|j: int| 0 <= j < y.len() implies #[trigger] y[j] != 46 by {
+        assert(b[0][j] != 46);
+    }
+    assert(x.len() <= name.len() && name.subrange(0, x.len() as int) =~= x) by {
+        if a.len() > 1 {
+            assert(name =~= x + (seq![46u8] + join(a.drop_first())));
+        }
+    }
+    assert(y.len() <= name.len() && name.subrange(0, y.len() as int) =~= y) by {
+        if b.len() > 1 {
+            assert(name =~= y + (seq![46u8] + join(b.drop_first())));
+        }
+    }
+    // A shorter first component is followed by a dot, inside the longer.
+    if x.len() < y.len() {
+        assert(a.len() > 1);
+        assert(name =~= x + (seq![46u8] + join(a.drop_first())));
+        assert(name[x.len() as int] == 46);
+        assert(y[x.len() as int] == name[x.len() as int]);
+    }
+    if y.len() < x.len() {
+        assert(b.len() > 1);
+        assert(name =~= y + (seq![46u8] + join(b.drop_first())));
+        assert(name[y.len() as int] == 46);
+        assert(x[y.len() as int] == name[y.len() as int]);
+    }
+    assert(x =~= y);
+    if a.len() == 1 || b.len() == 1 {
+        // One side is a single component: `name` has no dot, so neither
+        // has a second.
+        if a.len() > 1 {
+            assert(name =~= x + (seq![46u8] + join(a.drop_first())));
+            assert(name[x.len() as int] == 46);
+            assert(name.len() == y.len());
+        }
+        if b.len() > 1 {
+            assert(name =~= y + (seq![46u8] + join(b.drop_first())));
+            assert(name[y.len() as int] == 46);
+            assert(name.len() == x.len());
+        }
+        assert(a =~= b);
+    } else {
+        let rest = name.subrange(x.len() + 1int, name.len() as int);
+        assert(name =~= x + (seq![46u8] + join(a.drop_first())));
+        assert(name =~= y + (seq![46u8] + join(b.drop_first())));
+        assert(join(a.drop_first()) =~= rest);
+        assert(join(b.drop_first()) =~= rest);
+        assert forall|k: int, j: int|
+            0 <= k < a.drop_first().len() && 0 <= j < a.drop_first()[k].len() implies
+            #[trigger] a.drop_first()[k][j] != 46 by {
+            assert(a[k + 1][j] != 46);
+        }
+        assert forall|k: int, j: int|
+            0 <= k < b.drop_first().len() && 0 <= j < b.drop_first()[k].len() implies
+            #[trigger] b.drop_first()[k][j] != 46 by {
+            assert(b[k + 1][j] != 46);
+        }
+        lemma_split_unique(rest, a.drop_first(), b.drop_first());
+        assert(a =~= seq![x] + a.drop_first());
+        assert(b =~= seq![y] + b.drop_first());
+    }
+}
+
+/// Resolving a MIB whose first `k` entries name `n` continues among `n`'s
+/// children.
+proof fn lemma_resolve_split(nodes: Seq<Node>, mib: Seq<usize>, k: int, n: Node)
+    requires
+        1 <= k < mib.len(),
+        resolve(nodes, mib.take(k)) == Some(n),
+    ensures
+        resolve(nodes, mib) == resolve(spec_children(n), mib.skip(k)),
+    decreases k,
+{
+    assert(mib.take(k)[0] == mib[0]);
+    if k == 1 {
+        assert(mib.skip(1) =~= mib.drop_first());
+    } else {
+        let m = step(nodes, mib[0])->Some_0;
+        assert(mib.take(k).drop_first() =~= mib.drop_first().take(k - 1));
+        assert(mib.skip(k) =~= mib.drop_first().skip(k - 1));
+        lemma_resolve_split(spec_children(m), mib.drop_first(), k - 1, n);
+    }
+}
+
+/// **MIB round-trip.** If `name` splits into `comps` and `walk` matches
+/// them to `n` with the MIB `mib` (what [`name_to_mib`] returns), the MIB
+/// resolves to `n` (so [`mib_to_node`] returns it), the split is the only
+/// one, and every entry is the one its component names: at a numeric
+/// level (an arena or bin index) the component's decimal value.
+proof fn theorem_mib_round_trip(name: Seq<u8>, comps: Seq<Seq<u8>>, mib: Seq<usize>, n: Node)
+    requires
+        split(name, comps),
+        walk(root_nodes(), comps, mib) == Some(n),
+    ensures
+        resolve(root_nodes(), mib) == Some(n),
+        forall|other: Seq<Seq<u8>>| #[trigger] split(name, other) ==> other == comps,
+        mib.len() == comps.len(),
+        forall|j: int| 0 <= j < mib.len() ==> #[trigger] entry_named(root_nodes(), comps, mib, j),
+{
+    lemma_walk_resolves(root_nodes(), comps, mib);
+    assert forall|other: Seq<Seq<u8>>| #[trigger] split(name, other) implies other == comps by {
+        lemma_split_unique(name, other, comps);
+    }
+    assert forall|j: int| 0 <= j < mib.len() implies #[trigger] entry_named(
+        root_nodes(),
+        comps,
+        mib,
+        j,
+    ) by {
+        lemma_walk_entries(root_nodes(), comps, mib, j);
+    }
 }
 
 /// The child of `nodes` that `comp` names, with its MIB entry: the
 /// number itself under a numeric node, else the child's index.
-fn child(nodes: &'static [Node], comp: &[u8]) -> Option<(usize, &'static Node)> {
+fn child(nodes: &'static [Node], comp: &[u8]) -> (r: Option<(usize, &'static Node)>)
+    ensures
+        r matches Some((i, n)) ==> names(nodes@, comp@, i) == Some(*n),
+{
     // `if let [n] = nodes` and `nodes.iter().position(..).map(..)`,
-    // spelled out with an index.
+    // spelled out: Verus supports neither slice patterns nor
+    // `Iterator::position`.
     if nodes.len() == 1 {
         let n = &nodes[0];
         if is_numeric(n) {
@@ -818,7 +1305,12 @@ fn child(nodes: &'static [Node], comp: &[u8]) -> Option<(usize, &'static Node)> 
         }
     }
     let mut i = 0;
-    while i < nodes.len() {
+    while i < nodes.len()
+        invariant
+            i <= nodes@.len(),
+            !(nodes@.len() == 1 && numeric(nodes@[0])),
+        decreases nodes@.len() - i,
+    {
         if bytes_is(nodes[i].name.as_bytes(), comp) {
             return Some((i, &nodes[i]));
         }
@@ -828,9 +1320,13 @@ fn child(nodes: &'static [Node], comp: &[u8]) -> Option<(usize, &'static Node)> 
 }
 
 /// The child of `nodes` at MIB entry `i`.
-fn child_by_index(nodes: &'static [Node], i: usize) -> Option<&'static Node> {
+fn child_by_index(nodes: &'static [Node], i: usize) -> (r: Option<&'static Node>)
+    ensures
+        r matches Some(n) ==> step(nodes@, i) == Some(*n),
+        r is None <==> step(nodes@, i) is None,
+{
     // `match nodes { [n] if n.name == NUMERIC => .., _ => .. }`, spelled
-    // out.
+    // out (no slice patterns in Verus).
     if nodes.len() == 1 && is_numeric(&nodes[0]) {
         return Some(&nodes[0]);
     }
@@ -839,46 +1335,140 @@ fn child_by_index(nodes: &'static [Node], i: usize) -> Option<&'static Node> {
 
 /// Resolve a dotted name to its MIB. The node reached may be interior
 /// (`mallctlnametomib("arenas")` is valid in jemalloc); using it as a key
-/// is then `ENOENT`. Writes `mib[..len]` only.
-fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, &'static Node), c_int> {
+/// is then `ENOENT`. Writes `mib[..len]` only. The MIB is the name's:
+/// its components match the entries one by one ([`walk`]), and
+/// [`mib_to_node`] maps it back to the same node
+/// ([`theorem_mib_round_trip`]).
+fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'static Node), c_int>)
+    ensures
+        r matches Ok((len, _)) ==> 1 <= len <= MAX_MIB && forall|j: int|
+            len <= j < MAX_MIB ==> #[trigger] final(mib)[j] == old(mib)[j],
+        r matches Ok((len, n)) ==> exists|comps: Seq<Seq<u8>>|
+            #[trigger] split(name@, comps) && walk(
+                root_nodes(),
+                comps,
+                final(mib)@.subrange(0, len as int),
+            ) == Some(*n),
+        r matches Ok((len, n)) ==> resolve(root_nodes(), final(mib)@.subrange(0, len as int))
+            == Some(*n),
+        r matches Err(e) ==> e == ENOENT,
+{
     let mut nodes: &'static [Node] = root();
     let mut rest = name;
     let mut len = 0;
-    loop {
+    // The components matched so far, and the node the last one named.
+    let ghost mut comps: Seq<Seq<u8>> = Seq::empty();
+    let ghost mut last: Node = arbitrary();
+    loop
+        invariant
+            len <= MAX_MIB,
+            forall|j: int| len <= j < MAX_MIB ==> #[trigger] mib[j] == old(mib)[j],
+            comps.len() == len,
+            forall|k: int, j: int|
+                0 <= k < comps.len() && 0 <= j < comps[k].len() ==> #[trigger] comps[k][j] != 46,
+            len == 0 ==> nodes@ == root_nodes() && rest@ == name@,
+            len > 0 ==> walk(root_nodes(), comps, mib@.subrange(0, len as int)) == Some(last)
+                && nodes@ == spec_children(last) && name@ == join(comps) + seq![46u8] + rest@,
+        decreases rest@.len(),
+    {
         if len == MAX_MIB {
             return Err(ENOENT);
         }
         let (comp, tail) = split_component(rest);
         let (i, node) = child(nodes, comp).ok_or(ENOENT)?;
+        let ghost prefix = mib@.subrange(0, len as int);
         mib[len] = i;
         len += 1;
+        proof {
+            assert(mib@.subrange(0, len as int) =~= prefix.push(i));
+            if len == 1 {
+                assert(comps.push(comp@) =~= seq![comp@]);
+                assert(walk(root_nodes(), seq![comp@], seq![i]) == Some(*node));
+            } else {
+                lemma_walk_push(root_nodes(), comps, prefix, last, comp@, i);
+                lemma_join_push(comps, comp@);
+            }
+            assert forall|k: int, j: int|
+                0 <= k < comps.push(comp@).len() && 0 <= j < comps.push(comp@)[k].len()
+                implies #[trigger] comps.push(comp@)[k][j] != 46 by {
+                if k < comps.len() {
+                    assert(comps.push(comp@)[k] == comps[k]);
+                }
+            }
+            comps = comps.push(comp@);
+            last = *node;
+        }
         match tail {
-            None => return Ok((len, node)),
+            None => {
+                proof {
+                    assert(split(name@, comps));
+                    lemma_walk_resolves(root_nodes(), comps, mib@.subrange(0, len as int));
+                }
+                return Ok((len, node));
+            },
             Some(t) => {
                 let Entry::Dir(children) = node.entry else {
                     return Err(ENOENT);
                 };
                 nodes = children;
+                proof {
+                    assert(rest@.len() == comp@.len() + 1 + t@.len());
+                    assert(name@ =~= join(comps) + seq![46u8] + t@);
+                }
                 rest = t;
-            }
+            },
         }
     }
 }
 
-/// The node a MIB names; `ENOENT` for a bad index or an empty MIB.
-fn mib_to_node(mib: &[usize]) -> Result<&'static Node, c_int> {
+/// The node a MIB names; `ENOENT` for a bad index or an empty MIB. It
+/// fails exactly when the MIB resolves to nothing.
+fn mib_to_node(mib: &[usize]) -> (r: Result<&'static Node, c_int>)
+    ensures
+        r matches Ok(n) ==> resolve(root_nodes(), mib@) == Some(*n),
+        r is Err <==> resolve(root_nodes(), mib@) is None,
+        r matches Err(e) ==> e == ENOENT,
+        mib@.len() == 0 ==> r is Err,
+{
     let mut nodes: &'static [Node] = root();
     let mut last: Option<&'static Node> = None;
-    // `for &i in mib`, spelled out with an index.
+    // `for &i in mib`, spelled out with an index for the invariant.
     let mut k = 0;
-    while k < mib.len() {
+    while k < mib.len()
+        invariant
+            k <= mib@.len(),
+            k == 0 ==> last is None && nodes@ == root_nodes(),
+            k > 0 ==> (last matches Some(l) && resolve(root_nodes(), mib@.take(k as int))
+                == Some(*l) && nodes@ == spec_children(*l)),
+        decreases mib@.len() - k,
+    {
+        proof {
+            // A bad entry here leaves the whole MIB unresolved.
+            if k > 0 {
+                lemma_resolve_split(root_nodes(), mib@, k as int, *(last->Some_0));
+                assert(mib@.skip(k as int)[0] == mib@[k as int]);
+            }
+        }
         let n = child_by_index(nodes, mib[k]).ok_or(ENOENT)?;
+        proof {
+            if k > 0 {
+                let l = *(last->Some_0);
+                assert(mib@.take(k + 1).take(k as int) =~= mib@.take(k as int));
+                assert(mib@.take(k + 1).skip(k as int) =~= seq![mib@[k as int]]);
+                lemma_resolve_split(root_nodes(), mib@.take(k + 1), k as int, l);
+            }
+        }
         nodes = n.children();
         last = Some(n);
         k += 1;
     }
+    proof {
+        assert(mib@.take(k as int) =~= mib@);
+    }
     last.ok_or(ENOENT)
 }
+
+} // verus!
 
 /// The name of the key a MIB names; `ENOENT` for an interior node or a
 /// bad index.
@@ -892,25 +1482,54 @@ fn mib_to_key(mib: &[usize]) -> Result<&'static str, c_int> {
     }
 }
 
+verus! {
+
 /// Byte `n` of the caller's name, through the read permission the call's
-/// token `_call` gives (a placeholder here, unverified).
+/// token gives ([`CCall::str_byte`]): the byte its view names, in the
+/// string because no byte before it is the NUL.
 ///
 /// # Safety
 /// `p + n` is a byte of the caller's name, at or before its NUL.
 #[inline(always)]
-unsafe fn name_byte(p: *const u8, n: usize, _call: Tracked<&CCall>) -> u8 {
+unsafe fn name_byte(p: *const u8, n: usize, Tracked(call): Tracked<&CCall>) -> (r: u8)
+    requires
+        call.reads_str(p),
+        call.string().before_nul(n as int),
+    ensures
+        r == call.string().bytes()[n as int],
+{
+    proof {
+        call.string().lemma_in(n as int);
+        crate::vspec::ptr::axiom_ptr_add_addr(p as *mut u8, n);
+    }
     // SAFETY: guaranteed by the caller.
     let q = unsafe { p.add(n) };
-    *ptr_ref(q, Tracked::assume_new())
+    let tracked b = call.str_byte(p, q, n as int);
+    *ptr_ref(q, Tracked(b))
 }
 
 /// The caller's name's first `n` bytes, borrowed for as long as the
-/// call's token is.
+/// call's token is: they are before its NUL, so readable
+/// ([`crate::vspec::cbuf::CStr::wf`]), and no write through the call's
+/// buffers can begin while the slice lives (it would take the token
+/// `&mut`). Nothing is claimed about their values: `from_raw_parts`
+/// states only the length.
 ///
 /// # Safety
 /// The `n` bytes at `p` are readable for the duration of the call.
 #[inline(always)]
-unsafe fn name_bytes(p: *const u8, n: usize, _call: Tracked<&CCall>) -> &[u8] {
+unsafe fn name_bytes(p: *const u8, n: usize, Tracked(call): Tracked<&CCall>) -> (r: &[u8])
+    requires
+        p@.addr != 0,
+        call.reads_str(p),
+        n < call.string().bytes().len(),
+        n < MAX_NAME,
+    ensures
+        r@.len() == n,
+{
+    proof {
+        broadcast use vstd::layout::align_of_u8;
+    }
     // SAFETY: guaranteed by the caller.
     unsafe { core::slice::from_raw_parts(p, n) }
 }
@@ -919,30 +1538,49 @@ unsafe fn name_bytes(p: *const u8, n: usize, _call: Tracked<&CCall>) -> &[u8] {
 /// string of `MAX_NAME` bytes or more.
 ///
 /// `p` is the caller's `name` argument: null, or readable up to and
-/// including its NUL terminator (the `mallctl` contract), read through
-/// the call's token `call`; at most `MAX_NAME` bytes are ever read, and
-/// the slice borrows the caller's memory for as long as the token is
-/// borrowed.
-fn cstr(p: *const c_char, call: Tracked<&CCall>) -> Option<&[u8]> {
+/// including its NUL terminator (the `mallctl` contract, `CArg::Str`),
+/// read through the call's token `call`; at most `MAX_NAME` bytes are
+/// ever read, and the slice borrows the caller's memory for as long as
+/// the token is borrowed.
+fn cstr(p: *const c_char, Tracked(call): Tracked<&CCall>) -> (r: Option<&[u8]>)
+    requires
+        p@.addr != 0 ==> call.reads_str(p as *const u8),
+    ensures
+        r matches Some(s) ==> s@.len() < MAX_NAME,
+        p@.addr == 0 ==> r is None,
+{
     if p.is_null() {
         return None;
     }
-    // An `as` cast, not `cast::<u8>()`; both compile to nothing. The
-    // `allow` is for aarch64, where `c_char` is `u8`.
+    // An `as` cast, not `cast::<u8>()`: Verus specifies it as keeping the
+    // provenance, which the token's string view needs (the `cast` spec
+    // states only the address). Both compile to nothing; the `allow` is
+    // for aarch64, where `c_char` is `u8`.
     #[allow(clippy::unnecessary_cast)]
     let p = p as *const u8;
     let mut n = 0;
     // SAFETY: the caller passes a NUL-terminated name; reads stop at the
     // terminator or the cap.
-    while n < MAX_NAME && unsafe { name_byte(p, n, call) } != 0 {
+    while n < MAX_NAME && unsafe { name_byte(p, n, Tracked(call)) } != 0
+        invariant
+            n <= MAX_NAME,
+            call.reads_str(p),
+            call.string().before_nul(n as int),
+        decreases MAX_NAME - n,
+    {
         n += 1;
     }
     if n == MAX_NAME {
         return None;
     }
+    proof {
+        call.string().lemma_in(n as int);
+    }
     // SAFETY: `n` bytes before the terminator were just read.
-    Some(unsafe { name_bytes(p, n, call) })
+    Some(unsafe { name_bytes(p, n, Tracked(call)) })
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // Value transfer with jemalloc's READ / WRITE / READONLY / WRITEONLY rules.

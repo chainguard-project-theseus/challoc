@@ -18,7 +18,7 @@ file.
 
 ## `axiom_plain_u64`
 
-src/vspec/ptr.rs:80. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:87. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`plain`] for `u64`: every initialised eight bytes are a `u64`, which holds no ghost state.
@@ -32,7 +32,7 @@ pub axiom fn axiom_plain_u64()
 
 ## `core::ptr::read_volatile::<T>`
 
-src/vspec/ptr.rs:91. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
+src/vspec/ptr.rs:98. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::read_volatile`, with the safety contract of the `core` documentation: `src` is valid for reads of `size_of::<T>()` bytes and aligned for `T`, and the bytes are a valid `T`, which [`plain`] asserts for `T` (only `u64`).
@@ -49,7 +49,7 @@ pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
 
 ## `core::ptr::write_bytes::<T>`
 
-src/vspec/ptr.rs:109. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:116. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::write_bytes`, with the safety contract of the `core` documentation: `dst` is non-null and properly aligned and, unless the fill is empty, valid for writes of `count * size_of::<T>()` bytes.
@@ -67,7 +67,7 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 
 ## `axiom_raw_valid`
 
-src/vspec/ptr.rs:134. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/ptr.rs:141. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > A permission to the `len` bytes from `p`, of `p`'s provenance, makes them valid for writes through `p` and, when there are some, puts them inside the allocation `p` is derived from ([`in_alloc`]).
@@ -85,7 +85,7 @@ pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u
 
 ## `axiom_ptr_add_addr`
 
-src/vspec/ptr.rs:155. Kind: external_body proof. Category: core library.
+src/vspec/ptr.rs:162. Kind: external_body proof. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The address [`ptr_add`] stands for: `count` elements past `p`, when that stays inside the allocation `p` points into (the only case in which `<*mut T>::add` is defined, and so the only one verified code reaches), and the address does not wrap (the caller shows it: no allocation does, but `alloc_len` is not tied to the address space).
@@ -103,7 +103,7 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 
 ## `<*mut T>::add`
 
-src/vspec/ptr.rs:170. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:177. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*mut T>::add`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize`, and, when it is not zero, the whole range from `p` to the result is inside the allocation `p` points into ([`in_alloc`]).
@@ -121,7 +121,7 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
 
 ## `<*const T>::add`
 
-src/vspec/ptr.rs:182. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:189. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*const T>::add`, with the safety contract of `<*mut T>::add`: the result is [`ptr_add`] of the pointer as a `*mut T`, back as a `*const T` (`axiom_ptr_add_addr` gives its address).
@@ -139,7 +139,7 @@ pub assume_specification<T>[ <*const T>::add ](p: *const T, count: usize) -> (r:
 
 ## `axiom_array_elem`
 
-src/vspec/ptr.rs:201. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:208. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > Element `i` of a frozen array: a `'static` shared permission to a `[T; N]` gives one to each of its elements, holding that element, at [`ptr_add`] of the array's address as a `*mut T`; and the array's first `i` elements lie inside the allocation it is in, in fewer than `isize::MAX` bytes, so `<*mut T>::add(i)` is defined on that pointer.
