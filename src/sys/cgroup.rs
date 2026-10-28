@@ -1565,8 +1565,12 @@ impl Deferred {
     /// waits for it when `wait` (termination is not claimed: the wait ends
     /// when the other thread's discovery does), and otherwise returns at
     /// once with the record still pending.
+    ///
+    /// `seen` gets the cell's frozen permission when the wait ends on an
+    /// acquire load of `DONE`. [`Deferred::published`] reads the record
+    /// through it.
     #[verifier::exec_allows_no_decreases_clause]
-    pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F) -> bool
+    pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F, Tracked(seen): Tracked<&mut CellSeen>) -> bool
         requires
             crate::sys::may_syscall(),
             forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
@@ -1584,13 +1588,29 @@ impl Deferred {
                 true
             },
             Err(_) => {
-                let tracked mut seen = CellSeen { frozen: None };
-                while wait && self.load_phase(Tracked(&mut seen)) != PHASE_DONE {
+                while wait && self.load_phase(Tracked(seen)) != PHASE_DONE {
                     core::hint::spin_loop();
                 }
                 false
             },
         }
+    }
+
+    /// `seen` holds this record's cell's frozen permission, with a record
+    /// in the cell: the record is published.
+    pub closed spec fn seen_done(&self, seen: CellSeen) -> bool {
+        seen.frozen matches Some(p) && cell_done(*p, self.cell.id())
+    }
+
+    /// The published record, read through the cell's frozen permission
+    /// that `seen` holds ([`Deferred::seen_done`]); no load of the phase.
+    #[verifier::external_body]
+    #[inline]
+    pub fn published(&self, Tracked(seen): Tracked<CellSeen>) -> &Cgroup
+        requires
+            self.seen_done(seen),
+    {
+        self.cell_ref(Tracked(seen.frozen.tracked_unwrap()))
     }
 
     /// The child of a `fork` has only the forking thread: a discovery
@@ -2716,13 +2736,20 @@ mod linux_tests {
         assert!(d.due(born + DEFER_NS));
         let mut seen = None;
         assert!(
-            d.discover(false, |cg| seen = Some((cg.state(), d.get().is_none()))),
+            d.discover(
+                false,
+                |cg| seen = Some((cg.state(), d.get().is_none())),
+                Tracked::assume_new()
+            ),
             "the first call discovers"
         );
         let (state, unpublished) = seen.expect("`found` ran");
         assert!(unpublished, "`found` runs before the record is published");
         assert!(d.get().is_some());
-        assert!(!d.discover(true, |_| ()), "and only the first");
+        assert!(
+            !d.discover(true, |_| (), Tracked::assume_new()),
+            "and only the first"
+        );
         assert!(!d.due(u64::MAX));
         let now = Cgroup::discover(true);
         assert_eq!(state, now.state());
@@ -2738,17 +2765,17 @@ mod linux_tests {
         let e = Deferred::later(born);
         e.phase.store(PHASE_RUNNING, Ordering::Relaxed);
         assert!(
-            !e.discover(false, |_| ()),
+            !e.discover(false, |_| (), Tracked::assume_new()),
             "another thread's discovery under way"
         );
         assert!(e.get().is_none());
         e.fork_child();
         assert!(e.due(born + DEFER_NS), "the child starts it over");
-        assert!(e.discover(false, |_| ()));
+        assert!(e.discover(false, |_| (), Tracked::assume_new()));
         assert_eq!(e.get().unwrap().state(), now.state());
         let off = Deferred::now(Cgroup::discover(false));
         assert_eq!(off.get().unwrap().state(), State::Disabled);
-        assert!(!off.due(u64::MAX) && !off.discover(true, |_| ()));
+        assert!(!off.due(u64::MAX) && !off.discover(true, |_| (), Tracked::assume_new()));
     }
 
     fn read_opt(p: &str) -> Option<String> {

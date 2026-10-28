@@ -2821,6 +2821,67 @@ impl Arenas {
         }
     }
 
+    /// [`Arenas::get_existing`] with the arena's persistent record
+    /// ([`Published`]) from the registry's invariant, the same code. For
+    /// the `free` flush path (`Shared::owner`).
+    #[verifier::external_body]
+    pub fn get_existing_published(&self, index: u16) -> (r: Option<(&Arena, Tracked<&'static Published>)>)
+        ensures
+            r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc() && (self.is_process() ==> w@.id() == process_pub_loc())
+                && w@.key() == index as int && w@.value() == a.spec_olocs(),
+    {
+        let i = index as usize;
+        if i >= MAX_ARENAS {
+            return None;
+        }
+        proof {
+            use_type_invariant(self);
+        }
+        let p;
+        let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        let tracked mut pw: Option<&'static Published> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, i as int));
+            }
+            p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));
+            proof {
+                if p@.addr != 0 {
+                    perm = Some(*v.arenas.tracked_borrow(i as int));
+                    pw = Some(*v.pubs.tracked_borrow(i as int));
+                }
+            }
+        });
+        // SAFETY: a non-null entry of the table.
+        if p.is_null() { None } else { Some((unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }, Tracked(pw.tracked_unwrap()))) }
+    }
+
+    /// Arena 0's persistent record ([`Published`]), from the registry's
+    /// invariant, which has it since `init` (arena 0 is never stored
+    /// again): for `Shared::owner` and `Shared::arena`, which return
+    /// arena 0 without a load of its entry. Ghost, but for the `Tracked`.
+    #[inline(always)]
+    #[verifier::external_body]
+    pub fn published0(&self) -> (r: Tracked<&'static Published>)
+        ensures
+            r@.id() == self.spec_pub_loc(),
+            self.is_process() ==> r@.id() == process_pub_loc(),
+            r@.key() == 0,
+            r@.value() == self.spec_arena0().spec_olocs(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked mut pw: Option<&'static Published> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, 0));
+                pw = Some(*v.pubs.tracked_borrow(0));
+            }
+        });
+        Tracked(pw.tracked_unwrap())
+    }
+
     /// Automatic arenas, as `init` clamped them.
     pub closed spec fn spec_auto(&self) -> int {
         self.auto as int
