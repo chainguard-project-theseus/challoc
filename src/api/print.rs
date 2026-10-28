@@ -33,7 +33,7 @@ use crate::sys::bytes_is;
 use crate::vspec::cbuf;
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::print::base_slab_sizes;
-use vstd::prelude::Tracked;
+use vstd::prelude::*;
 use vstd::raw_ptr::ptr_ref;
 
 /// `void (*write_cb)(void *cbopaque, const char *s)`.
@@ -159,6 +159,8 @@ impl Write for Sink {
     }
 }
 
+verus! {
+
 /// Parsed `opts`.
 struct Opts {
     json: bool,
@@ -167,27 +169,46 @@ struct Opts {
     no_bins: bool,
 }
 
-/// Byte `i` of the caller's option string, read through the permission
-/// the call's token `_cc` gives (a placeholder here, unverified).
+/// Byte `i` of the caller's option string, through the read permission
+/// the call's token gives ([`cbuf::CCall::str_c_byte`]): the byte its view
+/// names, in the string because no byte before it is the NUL.
 ///
 /// # Safety
 /// `opts + i` is a readable byte of the caller's string.
 #[inline(always)]
 // `c_char` is `i8` on x86_64 and `u8` on aarch64: the cast is needed on one.
 #[allow(clippy::unnecessary_cast)]
-unsafe fn opt_byte(opts: *const c_char, i: usize, _cc: Tracked<&cbuf::CCall>) -> u8 {
+unsafe fn opt_byte(opts: *const c_char, i: usize, Tracked(cc): Tracked<&cbuf::CCall>) -> (r: u8)
+    requires
+        cc.reads_str(opts as *const u8),
+        cc.string().before_nul(i as int),
+    ensures
+        r == cc.string().bytes()[i as int],
+{
+    proof {
+        broadcast use vstd::layout::layout_of_primitives, vstd::raw_ptr::axiom_ptr_mut_from_data;
+        cc.string().lemma_in(i as int);
+        crate::vspec::ptr::axiom_ptr_add_addr(opts as *mut c_char, i);
+    }
     // SAFETY: guaranteed by the caller.
     let q = unsafe { opts.add(i) };
-    *ptr_ref(q, Tracked::assume_new()) as u8
+    let tracked b = cc.str_c_byte(opts as *const u8, q, i as int);
+    *ptr_ref(q, Tracked(b)) as u8
 }
 
 impl Opts {
     /// `opts` is the caller's option string: null, or readable up to and
-    /// including its NUL terminator (jemalloc's contract), read through the
-    /// call's token `cc`; at most 64 bytes are read, so a longer string is
-    /// truncated, never overrun.
-    fn parse(opts: *const c_char, cc: Tracked<&cbuf::CCall>) -> Opts {
-        // `Opts::default()`, spelled out.
+    /// including its NUL terminator (jemalloc's contract,
+    /// [`cbuf::CArg::Str`]), read through the call's token `cc`; at most
+    /// 64 bytes are read, so a longer string is truncated, never overrun.
+    fn parse(opts: *const c_char, Tracked(cc): Tracked<&cbuf::CCall>) -> (o: Opts)
+        requires
+            opts@.addr != 0 ==> cc.reads_str(opts as *const u8),
+        ensures
+            opts@.addr == 0 ==> !o.json && !o.no_general && !o.no_arenas && !o.no_bins,
+    {
+        // `Opts::default()`, spelled out: Verus does not see the derived
+        // `Default`.
         let mut o = Opts {
             json: false,
             no_general: false,
@@ -197,10 +218,15 @@ impl Opts {
         if opts.is_null() {
             return o;
         }
-        for i in 0..64 {
+        for i in 0..64
+            invariant_except_break
+                cc.string().before_nul(i as int),
+            invariant
+                cc.reads_str(opts as *const u8),
+        {
             // SAFETY: the caller's NUL-terminated option string; reads stop
             // at the terminator or after 64 bytes.
-            let b = unsafe { opt_byte(opts, i, cc) };
+            let b = unsafe { opt_byte(opts, i, Tracked(cc)) };
             match b {
                 0 => break,
                 b'J' => o.json = true,
@@ -213,6 +239,8 @@ impl Opts {
         o
     }
 }
+
+} // verus!
 
 /// A configuration value's name (`config::Value::Str`, the `thp` key).
 fn word(s: &CStr) -> &str {

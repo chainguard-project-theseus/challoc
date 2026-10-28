@@ -1,0 +1,4 @@
+# The C contract of a string argument: its bytes readable through the
+# token until a write or a call back into C.
+CCall::str_byte	C-program contract	none (assumption)
+CCall::str_c_byte	C-program contract	none (assumption)
