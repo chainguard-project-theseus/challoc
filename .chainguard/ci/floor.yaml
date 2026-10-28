@@ -36,7 +36,7 @@ checks:
     when: &member-branch
       expr: >-
         !has(context.github.pull_request) ||
-        context.github.pull_request.head_repository == "chainguard-dev/challoc"
+        context.github.pull_request.head_repository == "wolfi-dev/challoc"
     identity: challoc-gce
     # The service account ci/floor.sh impersonates; the identity's
     # principal may impersonate it and nothing else.
