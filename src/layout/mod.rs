@@ -1051,17 +1051,22 @@ fn classes_ptr() -> (p: *mut [Class; NCLASSES])
 
 /// Raise the slab of every class whose table slab is smaller than the
 /// kernel page to the page ([`lg_slab_at`]), writing `lg_slab`,
-/// `slab_mask`, `nslots` and `slab_bits` of those classes in [`CLASSES`].
-/// Returns how many
+/// `slab_mask`, `nslots` and `slab_bits` of those classes in [`CLASSES`],
+/// through `perm`, the permission to its storage. Returns how many
 /// classes changed (0 on a 4 KiB kernel, where the table is untouched).
 ///
 /// # Safety
 /// Must be called once, before the allocator is published to any other
 /// thread (`api::init` does, right after the page-size probe), and never
 /// again: nothing may access the table concurrently.
-pub unsafe fn adopt_page_geometry(lg_page: u32) -> usize {
-    // SAFETY: the caller guarantees exclusive access during the call.
-    apply_page_geometry(unsafe { &mut *classes_ptr() }, lg_page)
+pub unsafe fn adopt_page_geometry(
+    lg_page: u32,
+    _perm: Tracked<&mut vstd::raw_ptr::PointsTo<[Class; NCLASSES]>>,
+) -> usize {
+    apply_page_geometry(
+        vstd::raw_ptr::ptr_mut_ref(classes_ptr(), Tracked::assume_new()),
+        lg_page,
+    )
 }
 
 verus! {
