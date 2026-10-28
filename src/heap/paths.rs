@@ -3,6 +3,7 @@
 //! and the crate-facing functions that find the calling thread's heap.
 
 use core::ptr;
+use vstd::prelude::Tracked;
 
 use crate::layout::{CLASSES, NCLASSES};
 use crate::sys::pac;
@@ -96,7 +97,7 @@ impl Heap {
     /// [`FOREIGN`] cache for the class (design 6.3 step 4).
     #[inline(always)]
     pub fn free(&mut self, shared: &Shared, p: *mut u8) {
-        match shared.classify_free(p) {
+        match shared.classify_free(p, Tracked::assume_new()) {
             Ok((class, arena)) => {
                 if arena == self.arena {
                     self.push(shared, class, p)
@@ -125,7 +126,13 @@ impl Heap {
         align: usize,
         arena: u16,
     ) -> (*mut u8, bool) {
-        let (p, zero) = shared.alloc_huge(size, align, arena);
+        let (p, zero, _) = shared.alloc_huge(
+            size,
+            align,
+            arena,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
         }
@@ -137,9 +144,9 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_huge(&mut self, shared: &Shared, page: usize) {
         if shared.zero_on_free() {
-            shared.zero_huge(page);
+            shared.zero_huge(page, Tracked::assume_new());
         }
-        let n = shared.free_huge(page);
+        let n = shared.free_huge(page, Tracked::assume_new(), Tracked::assume_new());
         self.count_uncached_free(n);
     }
 
@@ -209,12 +216,18 @@ impl Heap {
         class: usize,
     ) -> (*mut u8, bool) {
         self.tick::<true>(shared);
-        let Some(a) = shared.arena(arena) else {
+        let Some((a, _)) = shared.arena(arena, Tracked::assume_new()) else {
             return (ptr::null_mut(), false);
         };
         let cache = self.ensure_cache(shared, arena, class);
         if cache.is_null() {
-            let (p, zero) = shared.alloc_direct(a, class);
+            let (p, zero, _) = shared.alloc_direct(
+                a,
+                Tracked::assume_new(),
+                class,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             if !p.is_null() {
                 self.count_direct_alloc(class);
             }
@@ -281,7 +294,7 @@ impl Heap {
         // `ensure_cache` reads its class state for the header (a heap
         // whose first allocation is huge, or whose home moved, may not
         // have built it).
-        let cache = if arena == FOREIGN || shared.arena(arena).is_some() {
+        let cache = if arena == FOREIGN || shared.arena(arena, Tracked::assume_new()).is_some() {
             self.ensure_cache(shared, arena, class)
         } else {
             ptr::null_mut()
@@ -290,7 +303,13 @@ impl Heap {
             self.tick::<false>(shared);
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
-            shared.free_direct(shared.arena_of_slot(class, p), class, p);
+            shared.free_direct(
+                shared.arena_of_slot(class, p),
+                class,
+                p,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             self.count_direct_free(class);
             return;
         }
@@ -443,7 +462,17 @@ pub fn free_sized_fast(
 pub fn alloc(shared: &Shared, class: usize) -> *mut u8 {
     match heap_for_thread(shared) {
         Some(h) => h.alloc(shared, class),
-        None => shared.alloc_direct(&shared.arena0, class).0,
+        None => {
+            shared
+                .alloc_direct(
+                    &shared.arena0,
+                    Tracked::assume_new(),
+                    class,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+                .0
+        }
     }
 }
 
@@ -459,7 +488,17 @@ pub fn alloc(shared: &Shared, class: usize) -> *mut u8 {
 pub fn alloc_declined(shared: &Shared, class: usize) -> *mut u8 {
     match heap_for_thread(shared) {
         Some(h) => h.alloc_slow(shared, class).0,
-        None => shared.alloc_direct(&shared.arena0, class).0,
+        None => {
+            shared
+                .alloc_direct(
+                    &shared.arena0,
+                    Tracked::assume_new(),
+                    class,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+                .0
+        }
     }
 }
 
@@ -469,7 +508,16 @@ pub fn alloc_declined(shared: &Shared, class: usize) -> *mut u8 {
 pub fn alloc_zeroed(shared: &Shared, class: usize) -> (*mut u8, bool) {
     match heap_for_thread(shared) {
         Some(h) => h.alloc_zeroed(shared, class),
-        None => shared.alloc_direct(&shared.arena0, class),
+        None => {
+            let (p, zero, _) = shared.alloc_direct(
+                &shared.arena0,
+                Tracked::assume_new(),
+                class,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
+            (p, zero)
+        }
     }
 }
 
@@ -487,23 +535,29 @@ pub fn free(shared: &Shared, p: *mut u8) {
 /// allocator, through no cache (`MALLOCX_TCACHE_NONE`, or a thread without
 /// a heap). Counted in the thread's statistics when it has a heap.
 pub fn free_direct(shared: &Shared, p: *mut u8) {
-    match shared.classify_free(p) {
+    match shared.classify_free(p, Tracked::assume_new()) {
         Ok((class, arena)) => {
             if shared.zero_on_free() {
                 // SAFETY: `classify_free` verified `p` as an allocated slot
                 // of `class`.
                 unsafe { zero_slot(class, p) };
             }
-            shared.free_direct(arena, class, p);
+            shared.free_direct(
+                arena,
+                class,
+                p,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             if let Some(h) = existing_heap(shared) {
                 h.count_direct_free(class);
             }
         }
         Err(page) => {
             if shared.zero_on_free() {
-                shared.zero_huge(page);
+                shared.zero_huge(page, Tracked::assume_new());
             }
-            let n = shared.free_huge(page);
+            let n = shared.free_huge(page, Tracked::assume_new(), Tracked::assume_new());
             if let Some(h) = existing_heap(shared) {
                 h.count_uncached_free(n);
             }
@@ -514,7 +568,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
 #[cold]
 #[inline(never)]
 pub(super) fn invalid_free(p: usize) -> ! {
-    panic!("invalid free of {p:#x}: not an allocation")
+    crate::sys::abort_fmt(format_args!("invalid free of {p:#x}: not an allocation"))
 }
 
 /// `zero_on_free`: clear the class-size bytes of slot `p`. Called from the

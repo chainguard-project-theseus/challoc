@@ -348,7 +348,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     )?;
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.
-    let cgroup = shared.cgroup_now();
+    let cgroup = shared.cgroup_now(vstd::prelude::Tracked::assume_new());
     cgroup.sample(crate::sys::now_coarse_ns());
     writeln!(out, "{}", cgroup)?;
     policy_line(out, shared)?;
@@ -416,7 +416,10 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     use crate::policy::{Band, FRAC_ONE};
     let p = &shared.policy;
-    if !shared.cgroup_now().tracked() {
+    if !shared
+        .cgroup_now(vstd::prelude::Tracked::assume_new())
+        .tracked()
+    {
         return writeln!(out, "cgroup policy: off (not tracked)");
     }
     write!(out, "cgroup policy: ")?;
@@ -746,7 +749,7 @@ fn json_general<W: Write>(
             None => "none",
         }
     )?;
-    let cg = shared.cgroup_now();
+    let cg = shared.cgroup_now(vstd::prelude::Tracked::assume_new());
     cg.sample(crate::sys::now_coarse_ns());
     // Out of the `writeln!`, as in `policy_line`.
     let empty_bytes = crate::policy::empty_bytes(shared, vstd::prelude::Tracked::assume_new());

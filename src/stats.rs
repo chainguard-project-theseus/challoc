@@ -2071,9 +2071,27 @@ mod tests {
         assert!(s.arenas.get_existing(1).is_none());
         let c32 = class_with(32);
         let a2 = s.arenas.get_existing(2).expect("arena 2");
-        let (p0, _) = s.alloc_direct(s.arenas.get_existing(0).unwrap(), c32);
-        let (p2, _) = s.alloc_direct(a2, c32);
-        let (q2, _) = s.alloc_direct(a2, c32);
+        let (p0, _, _) = s.alloc_direct(
+            s.arenas.get_existing(0).unwrap(),
+            Tracked::assume_new(),
+            c32,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        let (p2, _, _) = s.alloc_direct(
+            a2,
+            Tracked::assume_new(),
+            c32,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        let (q2, _, _) = s.alloc_direct(
+            a2,
+            Tracked::assume_new(),
+            c32,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!p0.is_null() && !p2.is_null() && !q2.is_null());
 
         let live = collect(s, Tracked::assume_new());
@@ -2125,7 +2143,11 @@ mod tests {
         assert_eq!(s1.bins[c32].curslabs, 1);
         assert_eq!(
             s1.bins[c32].curregs,
-            s.arena(1).unwrap().class(c32).curregs()
+            s.arena(1, Tracked::assume_new())
+                .unwrap()
+                .0
+                .class(c32)
+                .curregs()
         );
         assert_eq!((s0.large_runs, s0.large_allocated), (0, 0));
         assert_eq!((s1.large_runs, s1.large_allocated), (1, usable));
