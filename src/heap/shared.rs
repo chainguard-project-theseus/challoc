@@ -1325,7 +1325,12 @@ impl Shared {
     /// Release one slot straight to its slab bitmap through its owning
     /// arena. Aborts unless `p` is an allocated slot of `class` in `arena`.
     pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8) {
-        self.owner(arena).class(class).release(&[p]);
+        self.owner(arena).class(class).release_with(
+            &[p],
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     }
 
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab
@@ -1337,9 +1342,12 @@ impl Shared {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
-                let arena =
-                    self.table(class)
-                        .check_located(slab as usize, slot as usize, p as usize);
+                let arena = self.table(class).check_located(
+                    slab as usize,
+                    slot as usize,
+                    p as usize,
+                    Tracked::assume_new(),
+                );
                 Ok((class, arena))
             }
             Kind::Huge { page } => Err(page),
@@ -1425,7 +1433,7 @@ impl Shared {
     pub(super) fn arena_of_slot(&self, class: usize, p: *mut u8) -> u16 {
         let t = self.table(class);
         let (slab, _) = t.locate(p);
-        t.owner(slab)
+        t.owner(slab).0
     }
 
     /// Release a cache's sorted batch of `class` slots, starting with
@@ -1441,7 +1449,12 @@ impl Shared {
         let mut done = 0;
         let mut a = arena;
         loop {
-            done += self.owner(a).class(class).release_owned(&ptrs[done..]);
+            done += self.owner(a).class(class).release_owned(
+                &ptrs[done..],
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             if done == ptrs.len() {
                 return;
             }
