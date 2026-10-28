@@ -184,6 +184,18 @@ pub open spec fn guard_slab(c: int, slab: int) -> bool {
     guard_of(guard_geom(c).0, guard_geom(c).1, slab as usize)
 }
 
+/// Entries `lo..hi` of `s` are slot starts of class `c` in the process's
+/// regions.
+pub open spec fn slots_in(s: Seq<*mut u8>, c: int, lo: int, hi: int) -> bool {
+    forall|i: int| lo <= i < hi ==> process_regions().is_slot(c, (#[trigger] s[i])@.addr)
+}
+
+/// Entries `lo..hi` of `s` are bit addresses of class `c`
+/// ([`Regions::is_bit_slot`]) in the process's regions.
+pub open spec fn bit_slots_in(s: Seq<*mut u8>, c: int, lo: int, hi: int) -> bool {
+    forall|i: int| lo <= i < hi ==> process_regions().is_bit_slot(c, (#[trigger] s[i])@.addr)
+}
+
 /// What a huge allocation of `size` bytes at `align` (a power of two)
 /// returns: a page start in the process's huge region with `size` bytes
 /// (at least one) of the region from it, a multiple of `align`.
@@ -411,6 +423,16 @@ impl Regions {
     pub open spec fn is_slot(self, c: int, p: usize) -> bool {
         &&& self.is_slot_addr(c, p)
         &&& !guard_slab(c, self.slab_index(c, p))
+    }
+
+    /// [`Regions::is_slot`] with the slot bound relaxed to the bitmap's
+    /// `slab_bits`, padding included: the address of bit `slot` of slab
+    /// `slab`, which is what a claim computes for a bit it won.
+    pub open spec fn is_bit_slot(self, c: int, p: usize) -> bool {
+        &&& 0 <= c < NCLASSES
+        &&& exists|slab: int, slot: int|
+            0 <= slab < self.spec_nslabs(c) && 0 <= slot < class_table()[c].slab_bits
+                && p as int == #[trigger] self.slot_at(c, slab, slot)
     }
 
     /// The slab of slot `slot` of slab `slab` is `slab`.

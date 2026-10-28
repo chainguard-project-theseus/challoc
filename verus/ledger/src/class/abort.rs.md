@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `zero_slab_had_bits_set` | external_body | panic/abort | Verus | trusted |
+| `reservation_unmet` | external_body | panic/abort | Verus | trusted |
 
 ## `zero_slab_had_bits_set`
 
@@ -26,6 +27,27 @@ pub(super) fn zero_slab_had_bits_set(
     word: usize,
     got: u64,
     expect: u64,
+) -> !
+    requires
+        crate::sys::may_abort(),
+```
+
+## `reservation_unmet`
+
+src/class/abort.rs:121. Kind: external_body. Category: panic/abort.
+Tool: Verus. Status: trusted.
+
+> A refill's reservation in a slab was not met after `MAX_EMPTY_PASSES` full scans: `live` no longer bounds the set bits.
+
+```rust
+pub(super) fn reservation_unmet(
+    class: usize,
+    slab: usize,
+    want: usize,
+    got: usize,
+    live: usize,
+    set: usize,
+    nslots: usize,
 ) -> !
     requires
         crate::sys::may_abort(),

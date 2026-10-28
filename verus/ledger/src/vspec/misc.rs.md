@@ -13,6 +13,7 @@ file.
 | `PartialEqSpec...r slab::State` | spec_impl | core library | Kani | trusted |
 | `fence` | assume_spec | core library | Kani | trusted |
 | `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | trusted |
+| `Option::<T>::as_deref_mut` | assume_spec | core library | Kani | trusted |
 
 ## `PartialEqSpecImpl for config::Thp`
 
@@ -107,4 +108,15 @@ Tool: Kani. Status: trusted.
 
 ```rust
 pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::sync::atomic::Atomic<u32>) -> *mut u32;
+```
+
+## `Option::<T>::as_deref_mut`
+
+src/vspec/misc.rs:76. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Option::as_deref_mut`: a reborrow of the contents.
+
+```rust
+pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
 ```
