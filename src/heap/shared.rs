@@ -1877,9 +1877,7 @@ impl Shared {
     /// report) uses.
     pub fn cgroup_now(&self, _ord: Tracked<&mut LockOrder>) -> &crate::sys::cgroup::Cgroup {
         self.discover_cgroup(true, Tracked::assume_new(), Tracked::assume_new());
-        self.cgroup
-            .get()
-            .unwrap_or_else(|| crate::sys::abort("cgroup: discovery did not publish"))
+        self.cgroup.published(Tracked::assume_new())
     }
 
     /// Discover the cgroup if the deferral has run out at `now` (the
@@ -1908,11 +1906,15 @@ impl Shared {
         &self,
         wait: bool,
         _ord: Tracked<&mut LockOrder>,
-        _seen: Tracked<&mut CellSeen>,
+        seen: Tracked<&mut CellSeen>,
     ) -> bool {
-        let ran = self.cgroup.discover(wait, |cg| {
-            self.policy.rebase_high_rises(cg.rises().0);
-        });
+        let ran = self.cgroup.discover(
+            wait,
+            |cg| {
+                self.policy.rebase_high_rises(cg.rises().0);
+            },
+            seen,
+        );
         if ran {
             crate::policy::evaluate(self, Tracked::assume_new());
         }
@@ -1955,7 +1957,7 @@ impl Shared {
 
     /// The registry's record of arena 0 (ghost).
     pub(crate) fn arena0_published(&self) -> Tracked<&'static Published> {
-        Tracked::assume_new()
+        self.arenas.published0()
     }
 
     /// Arena `index`, which must exist: the index came from a slab or run
@@ -1969,8 +1971,8 @@ impl Shared {
         if index == 0 {
             return (&self.arena0, self.arena0_published());
         }
-        match self.arenas.get_existing(index) {
-            Some(a) => (a, Tracked::assume_new()),
+        match self.arenas.get_existing_published(index) {
+            Some(a) => a,
             None => no_such_arena(index),
         }
     }
@@ -2406,8 +2408,13 @@ impl Shared {
         let n = self.huge.usable_size(page, Tracked::assume_new());
         // SAFETY: a live run's usable bytes are committed, writable memory
         // this allocator handed out and the caller is freeing.
-        unsafe { ptr::write_bytes(self.regions.huge_addr(page) as *mut u8, 0, n) };
-        Tracked::assume_new()
+        unsafe {
+            crate::vspec::user::zero_user(
+                crate::vspec::addr::addr_to_ptr(self.regions.huge_addr(page)),
+                n,
+                Tracked::assume_new(),
+            )
+        }
     }
 
     /// Free the huge run starting at `page`. Aborts unless it is a live

@@ -1,0 +1,5 @@
+# Temporary seam, discharged by 41s (the Shared slow paths' proof), which
+# brings the clear's own trusted items with it: `vspec::zero::write_zero`,
+# `axiom_zeroed_bytes` (the byte state a fresh `Zeroed` token sets) and
+# `axiom_cast` (the permission through `addr_to_ptr`'s provenance).
+zero_user	raw pointer (internal)	Verus

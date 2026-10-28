@@ -35,3 +35,7 @@ axiom_arenas_lock_inv	allocator invariant	none (assumption)
 # The creation lock's frame (lock_frame is uninterpreted), stated with ==
 # as the class lock's; its writers are verified against it.
 axiom_arenas_lock_frame	allocator invariant	none (assumption)
+# Temporary seams, discharged by 41s (the Shared slow paths' proof): the
+# record from the registry's invariant, as `get_existing`'s permission is.
+Arenas::get_existing_published	allocator invariant	Verus
+Arenas::published0	allocator invariant	Verus
