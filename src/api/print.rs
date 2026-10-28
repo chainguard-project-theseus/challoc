@@ -30,6 +30,7 @@ use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
+use crate::vspec::cbuf;
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::print::base_slab_sizes;
 use vstd::prelude::Tracked;
@@ -166,15 +167,15 @@ struct Opts {
     no_bins: bool,
 }
 
-/// Byte `i` of the caller's option string, read through a permission to
-/// it (a placeholder here, unverified).
+/// Byte `i` of the caller's option string, read through the permission
+/// the call's token `_cc` gives (a placeholder here, unverified).
 ///
 /// # Safety
 /// `opts + i` is a readable byte of the caller's string.
 #[inline(always)]
 // `c_char` is `i8` on x86_64 and `u8` on aarch64: the cast is needed on one.
 #[allow(clippy::unnecessary_cast)]
-unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8 {
+unsafe fn opt_byte(opts: *const c_char, i: usize, _cc: Tracked<&cbuf::CCall>) -> u8 {
     // SAFETY: guaranteed by the caller.
     let q = unsafe { opts.add(i) };
     *ptr_ref(q, Tracked::assume_new()) as u8
@@ -182,9 +183,10 @@ unsafe fn opt_byte(opts: *const c_char, i: usize) -> u8 {
 
 impl Opts {
     /// `opts` is the caller's option string: null, or readable up to and
-    /// including its NUL terminator (jemalloc's contract); at most 64
-    /// bytes are read, so a longer string is truncated, never overrun.
-    fn parse(opts: *const c_char) -> Opts {
+    /// including its NUL terminator (jemalloc's contract), read through the
+    /// call's token `cc`; at most 64 bytes are read, so a longer string is
+    /// truncated, never overrun.
+    fn parse(opts: *const c_char, cc: Tracked<&cbuf::CCall>) -> Opts {
         // `Opts::default()`, spelled out.
         let mut o = Opts {
             json: false,
@@ -198,7 +200,7 @@ impl Opts {
         for i in 0..64 {
             // SAFETY: the caller's NUL-terminated option string; reads stop
             // at the terminator or after 64 bytes.
-            let b = unsafe { opt_byte(opts, i) };
+            let b = unsafe { opt_byte(opts, i, cc) };
             match b {
                 0 => break,
                 b'J' => o.json = true,
@@ -891,9 +893,9 @@ fn nbins() -> usize {
 
 /// [`malloc_stats_print`] into `target`.
 #[inline(always)]
-fn stats_print(target: Target, opts: *const c_char) {
+fn stats_print(target: Target, opts: *const c_char, _cc: Tracked<&mut cbuf::CCall>) {
     let shared = super::shared();
-    let o = Opts::parse(opts);
+    let o = Opts::parse(opts, Tracked::assume_new());
     let mut sink = Sink::new(target);
     let _ = if o.json {
         json_report(&mut sink, shared, &o)
@@ -905,9 +907,18 @@ fn stats_print(target: Target, opts: *const c_char) {
 
 /// `malloc_stats_print(write_cb, cbopaque, opts)`. The C entry points
 /// take `write_cb` as a [`WriteCallback`] (its ABI is the function
-/// pointer's).
-pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
-    stats_print(Target::Callback(write_cb, cbopaque), opts)
+/// pointer's), and `_cc` is the call's token.
+pub fn malloc_stats_print(
+    write_cb: WriteCallback,
+    cbopaque: *mut c_void,
+    opts: *const c_char,
+    _cc: Tracked<cbuf::CCall>,
+) {
+    stats_print(
+        Target::Callback(write_cb, cbopaque),
+        opts,
+        Tracked::assume_new(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,7 +1071,7 @@ mod exports {
 
     export_pair! {
         fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
-            super::malloc_stats_print(write_cb, cbopaque, opts)
+            super::malloc_stats_print(write_cb, cbopaque, opts, vstd::prelude::Tracked::assume_new())
         }
     }
 
@@ -1084,6 +1095,12 @@ mod tests {
     use std::string::String;
     use std::sync::Mutex;
     use std::vec::Vec;
+
+    /// The entry point as the export wrapper calls it, with a placeholder
+    /// token for the call.
+    fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
+        super::malloc_stats_print(write_cb, cbopaque, opts, Tracked::assume_new())
+    }
 
     static CAPTURE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     /// Held across a whole `report`: the callback appends one chunk at a

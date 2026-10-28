@@ -10,6 +10,7 @@ use vstd::prelude::*;
 pub(crate) mod addr;
 pub(crate) mod atom;
 pub(crate) mod byte;
+pub(crate) mod cbuf;
 pub(crate) mod check;
 pub(crate) mod count;
 pub(crate) mod entry;
