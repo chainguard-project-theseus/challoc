@@ -85,9 +85,9 @@ pub axiom fn axiom_plain_u64()
 /// `core::ptr::read_volatile`, with the safety contract of the `core`
 /// documentation: `src` is valid for reads of `size_of::<T>()` bytes and
 /// aligned for `T`, and the bytes are a valid `T`, which [`plain`] asserts
-/// for `T` (only `u64`). The bytes are initialised: the one caller reads a
-/// huge run, anonymous memory the kernel fills (zero, or what the program
-/// wrote). The value read is not stated.
+/// for `T` (only `u64`). The bytes are initialised: the callers read a
+/// slab slot or a huge run, anonymous memory the kernel fills (zero, or
+/// what the program wrote). The value read is not stated.
 pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
     requires
         plain::<T>(),
@@ -122,8 +122,10 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 /// (`vspec::unbacked::Unbacked::commit`) or as a lazily committed table
 /// (`Unbacked::into_lazy`) and are split and joined from there, all inside
 /// one mapping (the metadata region, the only `Unbacked` token's source),
-/// or as a huge run's usable bytes (`heap::live`'s `axiom_hand_out`,
-/// pages `Huge::prepare` committed, inside the one huge-region mapping),
+/// or as a slot's or a huge run's usable bytes (`heap::live`'s
+/// `axiom_hand_out`: a slot of a committed slab, inside the one class
+/// superblock mapping, or pages `Huge::prepare` committed, inside the one
+/// huge-region mapping),
 /// so one permission's range never spans two allocations. A table's bytes
 /// are writable only once its owner has committed their page, the premise
 /// of `into_lazy`, which a caller of this axiom keeps too.

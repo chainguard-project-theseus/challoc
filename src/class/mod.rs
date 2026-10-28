@@ -123,9 +123,11 @@ pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
 #[cfg(verus_keep_ghost)]
+pub use table::slot_loc;
+#[cfg(verus_keep_ghost)]
 use table::{
     bits_ghost, bits_shape, desc_at, guard_marked, lemma_bit_in_slab, slab_marked, slab_mask_of,
-    slab_owner, slot_loc, slot_owner, words_of,
+    slab_owner, slot_owner, words_of,
 };
 use verify::{fresh_with_live, release_into_fresh};
 #[cfg(verus_keep_ghost)]
@@ -2977,6 +2979,7 @@ impl ClassState {
         loop
             invariant
                 crate::sys::may_abort(),
+                check_zero ==> crate::vspec::user::may_read_user(),
                 0 <= i <= picks@.len(),
                 iter.remaining() == picks@.skip(i).as_ref(),
                 picks_ok(picks@, picks@.len() as int, self.spec_nslabs(), nslots as nat),

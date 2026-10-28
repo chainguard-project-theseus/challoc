@@ -8,13 +8,13 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `fresh_with_live` | external_body | panic/abort | Verus | trusted |
-| `ClassSt...k_zero` | external_body | raw pointer (internal) | Verus | trusted |
+| `ClassState::dirty_word` | external_body | panic/abort | Verus | trusted |
 | `ClassState:...lab_is_zero` | external_body | panic/abort | Verus | trusted |
 | `ClassState::check_shadow` | external_body | panic/abort | Verus | trusted |
 
 ## `fresh_with_live`
 
-src/class/verify.rs:158. Kind: external_body. Category: panic/abort.
+src/class/verify.rs:193. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > `check_zero` invariant: a slab with live slots was `Fresh` at selection.
@@ -31,39 +31,27 @@ pub(super) fn fresh_with_live(
         crate::sys::may_abort(),
 ```
 
-## `ClassState::check_zero`
+## `ClassState::dirty_word`
 
-src/class/verify.rs:240. Kind: external_body. Category: raw pointer (internal).
+src/class/verify.rs:377. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
-> The `check_zero` debug mode: the first and last word of every slot of a pick reported zero must read zero.
-
-Body mints Ghost at line 260; mints Tracked at line 260.
+> [`check_zero`](ClassState::check_zero)'s abort, inlined into it: gathers the slab's state for [`dirty_zero_slot`].
 
 ```rust
-pub(super) fn check_zero(
-    &self,
-    slots: &[*mut u8],
-    pick: &Pick,
-    Tracked(toks): Tracked<&mut super::SlotToks>,
-    Ghost(key): Ghost<int>,
-)
+fn dirty_word(&self, pick: &Pick, size: usize, p: *mut u8, off: usize, word: u64) -> !
     requires
         crate::sys::may_abort(),
-        super::slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
-        old(toks).holds(self.spec_table(), slots@, key, 0, slots@.len() as int),
-    ensures
-        *final(toks) == *old(toks),
 ```
 
 ## `ClassState::check_fresh_slab_is_zero`
 
-src/class/verify.rs:277. Kind: external_body. Category: panic/abort.
+src/class/verify.rs:412. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > `check_zero`: the first word of every slot of a `Fresh` slab must read zero before its first claim; a dirty one means the memory was written before this table ever handed the slab out.
 
-Body mints Ghost at line 286; mints Tracked at line 286.
+Body mints Ghost at line 421; mints Tracked at line 421.
 
 ```rust
 pub(super) fn check_fresh_slab_is_zero(&self, slab: usize)
@@ -73,7 +61,7 @@ pub(super) fn check_fresh_slab_is_zero(&self, slab: usize)
 
 ## `ClassState::check_shadow`
 
-src/class/verify.rs:300. Kind: external_body. Category: panic/abort.
+src/class/verify.rs:435. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > `check_zero`: abort when `slab`'s state byte disagrees with its shadow, i.e.

@@ -11,16 +11,17 @@ file.
 
 ## `axiom_hand_out`
 
-src/heap/live.rs:151. Kind: axiom. Category: allocator invariant.
+src/heap/live.rs:255. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> The permission to the `len` usable bytes of the huge run at `p`, valid through `p`.
+> The permission to the `len` usable bytes of the block at `p`, a slot of a class (`len` its size) or a huge run, valid through `p`.
 
 ```rust
 axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
     requires
         crate::heap::regions_ok(),
-        process_regions().is_huge_block(p@.addr, len),
+        process_regions().is_huge_block(p@.addr, len) || exists|c: int|
+            #[trigger] process_regions().is_slot(c, p@.addr) && len == class_table()[c].size,
     ensures
         m.covers(p@.addr as int, len),
         m.provenance() == p@.provenance,

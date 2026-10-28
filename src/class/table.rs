@@ -1053,6 +1053,16 @@ fn guard_unprotectable(class: &u16, s: &usize) -> !
 
 verus! {
 
+/// The process's regions are well formed and separated
+/// ([`regions_ok`](crate::heap::regions_ok)), as the `regions`
+/// preconditions of [`SlabTable::new`] give. Opaque
+/// ([`SlabTable::lemma_regions_ok`] reads it), so the invariant's users do
+/// not pay for it.
+#[verifier::opaque]
+pub(super) open spec fn regions_held() -> bool {
+    crate::heap::regions_ok()
+}
+
 impl SlabTable {
     /// The geometry `new` sets up and never changes: the class, its slab
     /// bits, the power-of-two page and hand-out groups (a page group no
@@ -1061,10 +1071,11 @@ impl SlabTable {
     /// ends inside the address space and is class `class`'s region of the
     /// process's regions ([`process_regions`]), a guard mask of the shape
     /// `2^k - 1` ([`mask_shape`]), the three arrays inside the address
-    /// space, and the commit lock's rank and fixed ghost geometry. `new`
-    /// proves it from its preconditions, and nothing writes these fields
-    /// afterwards (`committed_slabs` and `inner`'s current value are not
-    /// read here).
+    /// space, the commit lock's rank and fixed ghost geometry, and the
+    /// process's regions well formed and separated ([`regions_held`]).
+    /// `new` proves it from its preconditions, and nothing writes these
+    /// fields afterwards (`committed_slabs` and `inner`'s current value are
+    /// not read here).
     #[verifier::type_invariant]
     pub(super) open spec fn inv(self) -> bool {
         &&& self.class < NCLASSES
@@ -1109,6 +1120,7 @@ impl SlabTable {
         &&& self.perms_ok()
         &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs, self.spec_sloc(), lock_init(self.inner.0).wloc@)
         &&& self.committed_inv@.namespace() == committed_ns()
+        &&& regions_held()
     }
 
     /// The location of the owner words' witness markers ([`OwnerPred`]):
@@ -1269,6 +1281,17 @@ impl SlabTable {
             r@ == Set::<int>::empty(),
     {
         self.mark_auth.borrow().empty().persist()
+    }
+
+    /// The process's regions are well formed and separated
+    /// ([`regions_ok`](crate::heap::regions_ok)): `new` requires it.
+    pub(super) proof fn lemma_regions_ok(&self)
+        requires
+            self.inv(),
+        ensures
+            crate::heap::regions_ok(),
+    {
+        reveal(regions_held);
     }
 
     /// The table covers its class's region of the process's regions,
@@ -1723,6 +1746,7 @@ impl SlabTable {
         // The watermark, with its invariant (0, at most any slab count).
         let tracked committed_inv = WatermarkInv::new((usize_id(&committed_slabs), nslabs, sloc, wloc), (cperm, seen1, wvar), committed_ns());
         proof {
+            reveal(regions_held);
             assert(lock_init(inner.0).wloc@ == wloc);
             assert(committed_inv.constant() == (usize_id(&committed_slabs), nslabs, sloc, wloc));
             assert(committed_inv.namespace() == committed_ns());

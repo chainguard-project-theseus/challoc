@@ -4495,7 +4495,7 @@ impl Huge {
                 blk.mem().covers(base as int, usable_pages * p),
                 blk.mem().provenance() == crate::vspec::addr::cast_provenance(),
                 blk.block(run_ptr),
-                blk.run() == t0,
+                blk.run_opt() == Some(t0),
                 end == base + usable_pages * p,
         {
             proof {
