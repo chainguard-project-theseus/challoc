@@ -80,7 +80,7 @@ unsafe fn store_owner(
 
 ## `axiom_zero_desc`
 
-src/class/table.rs:2048. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2083. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the 16 bytes at `addr`, which read as zero (`z`, a piece of the descriptor array `Meta::reserve_table` returned), are a `SlabDesc`, initialised: plain atomics, valid for every bit pattern (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw permissions do not track byte values).
@@ -102,7 +102,7 @@ axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int) -> (tracked r: (PointsTo
 
 ## `axiom_zero_owner`
 
-src/class/table.rs:2064. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2099. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of the owner array `Meta::reserve_table` returned), are an `AtomicU16`, initialised (valid for every bit pattern), as [`axiom_zero_desc`].
@@ -122,7 +122,7 @@ axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo
 
 ## `axiom_slot_loc`
 
-src/class/table.rs:2088. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:2123. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process, so the authority it makes is the class's ([`slot_loc`]), and so is its marker authority (`mloc`, [`mark_loc`]).
@@ -139,7 +139,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 
 ## `axiom_fresh_words`
 
-src/class/table.rs:2111. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:2146. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the permissions of the `n` words of the class bitmap at `base`, each holding zero: `z`, the bitmap's reservation from `Meta::reserve_table`, reads as zero over them.

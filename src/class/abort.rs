@@ -39,13 +39,18 @@ pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16,
 
 } // verus!
 
+verus! {
+
 /// A `Fresh` or `Purged` slab selected by a refill had a bit set before
 /// its slots were claimed under the lock (`claim_prefix`): `live` no longer
 /// bounds the set bits, so the bitmap or the descriptor is corrupt.
+/// Trusted (`external_body`): Verus does not model the formatted message
+/// (it prints the state with `Debug`).
 #[cold]
 #[inline(never)]
 // The abort message names every field it reports.
 #[allow(clippy::too_many_arguments)]
+#[verifier::external_body]
 pub(super) fn zero_slab_had_bits_set(
     class: usize,
     slab: usize,
@@ -55,11 +60,16 @@ pub(super) fn zero_slab_had_bits_set(
     word: usize,
     got: u64,
     expect: u64,
-) -> ! {
+) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "class {class} slab {slab} (arena {arena}) is {state:?} with live {live} but word {word} of its bitmap had bits set before the refill's claim: claimed {got:#x}, expected {expect:#x}"
     ))
 }
+
+} // verus!
 
 /// The `free` check's abort (design section 4): the slot's bit is clear,
 /// which is an invalid free or a stale double free.

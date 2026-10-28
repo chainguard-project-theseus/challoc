@@ -29,7 +29,7 @@ fn bad_state_byte(v: u8) -> !
 
 ## `desc_stride`
 
-src/slab.rs:251. Kind: external_body. Category: core library.
+src/slab.rs:284. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > Descriptor stride for `class` in bytes.
@@ -45,7 +45,7 @@ pub fn desc_stride(class: usize) -> (r: usize)
 
 ## `SlabDesc::init`
 
-src/slab.rs:307. Kind: external_body. Category: atomics primitive.
+src/slab.rs:340. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Initialise the descriptor of a slab handed to `arena`: `Fresh`, no live slots, through `p`, the descriptor's permission (ghost).
@@ -63,7 +63,7 @@ pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabDesc::state_byte_held`
 
-src/slab.rs:349. Kind: external_body. Category: atomics primitive.
+src/slab.rs:382. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > The `state` byte, as [`state_held`](SlabDesc::state_held): the state the permission under `k` records when that is this descriptor's.
@@ -76,7 +76,7 @@ fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, De
 
 ## `SlabDesc::dirty_held`
 
-src/slab.rs:367. Kind: external_body. Category: atomics primitive.
+src/slab.rs:400. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > [`dirty_at`](SlabDesc::dirty_at) read by a holder of `m`, as [`state_held`](SlabDesc::state_held): the stamp the permission under `k` records when that is this descriptor's.
@@ -89,7 +89,7 @@ pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 
 ## `SlabDesc::set_state`
 
-src/slab.rs:382. Kind: external_body. Category: atomics primitive.
+src/slab.rs:415. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Only ever called with the class lock held, which holds `p`, the descriptor's permission (ghost), which records the new state.
@@ -107,7 +107,7 @@ pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabDesc::sub_live`
 
-src/slab.rs:437. Kind: external_body. Category: atomics primitive.
+src/slab.rs:470. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Subtract `n` from `live`, returning the previous value.
@@ -118,7 +118,7 @@ pub fn sub_live(&self, n: usize) -> usize
 
 ## `SlabDesc::set_dirty_at`
 
-src/slab.rs:455. Kind: external_body. Category: atomics primitive.
+src/slab.rs:488. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).
