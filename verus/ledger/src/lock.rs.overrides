@@ -15,6 +15,9 @@ axiom_meta_order	allocator invariant	Verus
 # Lock-order premise of an entry point that holds no allocator lock
 # (`Huge::usable_size`'s callers).
 axiom_entry	allocator invariant	none (assumption)
+# Lock-order premise inside `ClassState::decay_with`'s walk closure,
+# which cannot carry the caller's token.
+axiom_below_class	allocator invariant	none (assumption)
 # Lock-order premise inside `Huge::decay_with`'s walk closure, which
 # cannot carry the caller's token.
 axiom_below_huge	allocator invariant	none (assumption)

@@ -1,3 +1,0 @@
-# Temporary seam: Tally::settle is trusted until ClassState::settle and the
-# purge walks are verified (class/decay.rs).
-Tally::settle	allocator invariant	Verus

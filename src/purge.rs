@@ -1971,6 +1971,101 @@ pub ghost struct Left {
     pub refused_extents: ISet<int>,
 }
 
+/// Class `c`'s slabs are smaller than the process's page, so a page holds
+/// several (`SlabTable::slabs_per_page`, the class's guard geometry): only
+/// for a page above 64 KiB, which no supported kernel has
+/// (`layout::lg_slab_at`).
+pub open spec fn paged(c: int) -> bool {
+    crate::layout::guard_geom(c).0 != 0
+}
+
+impl Left {
+    /// Nothing purged.
+    pub open spec fn none() -> Left {
+        Left {
+            bytes: 0,
+            arenas: Set::empty(),
+            classes: Set::empty(),
+            slabs: ISet::empty(),
+            huge: false,
+            extents: ISet::empty(),
+            refused: ISet::empty(),
+            refused_extents: ISet::empty(),
+        }
+    }
+
+    /// Two purges' records together.
+    pub open spec fn join(self, o: Left) -> Left {
+        Left {
+            bytes: self.bytes + o.bytes,
+            arenas: self.arenas + o.arenas,
+            classes: self.classes + o.classes,
+            slabs: self.slabs + o.slabs,
+            huge: self.huge || o.huge,
+            extents: self.extents + o.extents,
+            refused: self.refused + o.refused,
+            refused_extents: self.refused_extents + o.refused_extents,
+        }
+    }
+
+    /// An explicit purge's guarantee: no slab was left `Empty` in a class
+    /// lock value released, except in a class with several slabs per page
+    /// (whose page group another slab can keep from being discarded) or in
+    /// a range `madvise` refused, and no huge extent was left `Empty`
+    /// except in a range `madvise` refused; the byte count is not
+    /// negative.
+    pub open spec fn clean(self) -> bool {
+        &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> paged(t.1) || self.refused.contains(t)
+        &&& forall|a: int| #[trigger] self.extents.contains(a) ==> self.refused_extents.contains(a)
+        &&& self.bytes >= 0
+    }
+
+    /// The classes purged are every class of the arenas purged.
+    pub open spec fn covers(self) -> bool {
+        forall|a: int, c: int| #[trigger] self.classes.contains((a, c))
+            <==> self.arenas.contains(a) && 0 <= c < crate::layout::NCLASSES
+    }
+
+    /// Nothing purged is clean and covers.
+    pub proof fn lemma_none()
+        ensures
+            Left::none().clean(),
+            Left::none().covers(),
+    {
+    }
+
+    /// Two clean records join to a clean one, two that cover to one that
+    /// covers.
+    pub proof fn lemma_join(a: Left, b: Left)
+        ensures
+            a.clean() && b.clean() ==> a.join(b).clean(),
+            a.covers() && b.covers() ==> a.join(b).covers(),
+    {
+        let j = a.join(b);
+        if a.clean() && b.clean() {
+            assert forall|x: int| #[trigger] j.extents.contains(x) implies j.refused_extents.contains(x) by {
+                if a.extents.contains(x) {
+                } else {
+                    assert(b.extents.contains(x));
+                }
+            }
+            assert forall|t: (int, int, int)| #[trigger] j.slabs.contains(t) implies paged(t.1) || j.refused.contains(t) by {
+                if a.slabs.contains(t) {
+                } else {
+                    assert(b.slabs.contains(t));
+                }
+            }
+        }
+        if a.covers() && b.covers() {
+            assert forall|x: int, c: int| #[trigger] j.classes.contains((x, c))
+                <==> j.arenas.contains(x) && 0 <= c < crate::layout::NCLASSES by {
+                assert(a.classes.contains((x, c)) <==> a.arenas.contains(x) && 0 <= c < crate::layout::NCLASSES);
+                assert(b.classes.contains((x, c)) <==> b.arenas.contains(x) && 0 <= c < crate::layout::NCLASSES);
+            }
+        }
+    }
+}
+
 } // verus!
 
 /// Run every decay walk that is due at `now` (coarse monotonic
