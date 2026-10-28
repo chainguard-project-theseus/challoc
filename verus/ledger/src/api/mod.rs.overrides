@@ -1,1 +1,4 @@
 axiom_published	allocator invariant	none (assumption)
+# Ghost permissions to the two init-once atomics; their wrappers are the only accesses.
+LinePerm	atomics primitive	loom/GenMC
+StatePerm	atomics primitive	loom/GenMC
