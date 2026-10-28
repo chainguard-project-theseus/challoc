@@ -13,7 +13,9 @@ use crate::arena::Published;
 use crate::arena::process_pub_loc;
 use crate::bitmap::{AtomicBitmap, WordInv};
 #[cfg(verus_keep_ghost)]
-use crate::bitmap::{Slots, fresh_mark, fresh_marks, init_mark, init_marks, words_wf};
+use crate::bitmap::{
+    Slots, fresh_mark, fresh_marks, has_bit, init_mark, init_marks, subset, words_wf,
+};
 use crate::layout::{CLASSES, Class, Regions};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
@@ -727,6 +729,29 @@ pub open spec fn slab_mask_of(slab_bits: usize) -> u64 {
     if slab_bits >= 64 { !0u64 } else { sub(1u64 << (slab_bits as u64), 1u64) }
 }
 
+/// A set bit `b` of a mask inside word `word` of a slab's view is a bit
+/// index below `slab_bits`.
+pub proof fn lemma_bit_in_slab(x: u64, mask: u64, b: u64, slab_bits: usize, word: usize)
+    requires
+        subset(x, mask),
+        subset(mask, slab_mask_of(slab_bits)),
+        b < 64,
+        has_bit(x, b),
+        word < words_of(slab_bits),
+        slab_bits >= 64 ==> slab_bits % 64 == 0,
+    ensures
+        word * 64 + b < slab_bits,
+{
+    if slab_bits >= 64 {
+        assert(word * 64 + 64 <= slab_bits) by (nonlinear_arith)
+            requires word < slab_bits / 64, slab_bits % 64 == 0;
+    } else {
+        let sb = slab_bits as u64;
+        assert(b < sb) by (bit_vector)
+            requires x & !mask == 0u64, mask & !sub(1u64 << sb, 1u64) == 0u64, (x >> b) & 1u64 == 1u64, b < 64, sb < 64;
+    }
+}
+
 
 /// The hand-out group's shift is below 32 (`group`, `1 << lg_group`, is
 /// a `u32`) and the region has at most `2^26` slabs.
@@ -1115,6 +1140,9 @@ impl SlabTable {
             self.spec_slots().wf(),
             self.spec_slots().sb == class_table()[self.spec_class() as int].slab_bits as int,
             self.spec_slots().nslots == class_table()[self.spec_class() as int].nslots as int,
+            self.spec_slots().size == class_table()[self.spec_class() as int].size as int,
+            self.spec_slots().slab_size == (1usize << class_table()[self.spec_class() as int].lg_slab) as int,
+            self.spec_slots().base == process_regions().class_base[self.spec_class() as int] as int,
             self.spec_slots().nbits == self.spec_nslabs() * self.spec_slots().sb,
             self.spec_slots().loc == slot_loc(self.spec_class() as int),
     {
@@ -1125,6 +1153,7 @@ impl SlabTable {
         requires
             self.inv(),
         ensures
+            self.spec_is_guard(slab as usize) == crate::layout::guard_slab(self.spec_class() as int, slab),
             self.spec_is_guard(slab as usize) == self.spec_slots().guard(slab),
     {
     }
@@ -1161,6 +1190,17 @@ impl SlabTable {
             r@ == Set::<int>::empty(),
     {
         self.mark_auth.borrow().empty().persist()
+    }
+
+    /// The table covers its class's region of the process's regions,
+    /// whose base is aligned to its slab and the page (`base_aligned`).
+    pub(super) proof fn lemma_region(&self)
+        requires
+            self.inv(),
+        ensures
+            crate::layout::base_aligned(process_regions().class_base[self.spec_class() as int] as int, self.spec_class() as int, process_regions().lg_page),
+            self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
+    {
     }
 
     /// An empty token of the class bitmap's authority: where a claim's

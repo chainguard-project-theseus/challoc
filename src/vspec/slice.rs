@@ -72,6 +72,15 @@ pub unsafe fn slice_from_perms<T>(
     unsafe { core::slice::from_raw_parts(p, n) }
 }
 
+/// `s.swap(a, b)`: panics unless both indices are in bounds.
+pub assume_specification<T>[ <[T]>::swap ](s: &mut [T], a: usize, b: usize)
+    requires
+        a < old(s)@.len(),
+        b < old(s)@.len(),
+    ensures
+        final(s)@ == old(s)@.update(a as int, old(s)@[b as int]).update(b as int, old(s)@[a as int]),
+;
+
 /// A one-element slice of `*s`.
 pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
     ensures

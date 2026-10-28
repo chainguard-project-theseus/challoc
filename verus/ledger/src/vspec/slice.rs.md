@@ -9,6 +9,7 @@ file.
 |---|---|---|---|---|
 | `array_get_unchecked` | external_body | core library | Kani | trusted |
 | `slice_from_perms` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `<[T]>::swap` | assume_spec | core library | Kani | trusted |
 | `slice::from_ref` | assume_spec | core library | Kani | trusted |
 
 ## `array_get_unchecked`
@@ -61,9 +62,26 @@ pub unsafe fn slice_from_perms<T>(
         forall|i: int| 0 <= i < n ==> #[trigger] r@[i] == perms[j0 + i].value(),
 ```
 
-## `core::slice::from_ref`
+## `<[T]>::swap`
 
 src/vspec/slice.rs:76. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `s.swap(a, b)`: panics unless both indices are in bounds.
+
+```rust
+pub assume_specification<T>[ <[T]>::swap ](s: &mut [T], a: usize, b: usize)
+    requires
+        a < old(s)@.len(),
+        b < old(s)@.len(),
+    ensures
+        final(s)@ == old(s)@.update(a as int, old(s)@[b as int]).update(b as int, old(s)@[a as int]),
+;
+```
+
+## `core::slice::from_ref`
+
+src/vspec/slice.rs:85. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A one-element slice of `*s`.

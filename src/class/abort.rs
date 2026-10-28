@@ -110,8 +110,14 @@ pub(super) fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> ! {
     ))
 }
 
+verus! {
+
+/// A refill's reservation in a slab was not met after `MAX_EMPTY_PASSES`
+/// full scans: `live` no longer bounds the set bits. Trusted
+/// (`external_body`): Verus does not model the formatted message.
 #[cold]
 #[inline(never)]
+#[verifier::external_body]
 pub(super) fn reservation_unmet(
     class: usize,
     slab: usize,
@@ -120,11 +126,16 @@ pub(super) fn reservation_unmet(
     live: usize,
     set: usize,
     nslots: usize,
-) -> ! {
+) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt"
     ))
 }
+
+} // verus!
 
 #[cold]
 #[inline(never)]
