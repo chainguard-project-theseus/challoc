@@ -4,6 +4,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
+use vstd::prelude::Tracked;
 
 use crate::sys::pac;
 
@@ -34,7 +35,7 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
         let shared = &*(*h).shared;
-        Heap::destroy(h, shared);
+        Heap::destroy(h, shared, Tracked::assume_new());
     }
 }
 
@@ -97,7 +98,7 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
         // call is served without one; the next call tries again, as
         // after a failed `Heap::create`.
         // SAFETY: created above and never published.
-        unsafe { Heap::destroy(h, shared) };
+        unsafe { Heap::destroy(h, shared, Tracked::assume_new()) };
         crate::sys::tls::set(ptr::null_mut());
         return None;
     }

@@ -9,7 +9,10 @@ use crate::layout::NCLASSES;
 use crate::sys::pac;
 
 use super::{FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
-use super::{MODE_OFF, MODE_PROBE};
+use super::{MODE_OFF, MODE_PROBE, assert_rekey_flushed};
+use vstd::prelude::verus;
+
+verus! {
 
 /// One thread's cache header for one size class: exactly one cache line,
 /// inline in the heap ([`Heap::caches`]) or in an [`ArenaCaches`](super::ArenaCaches) node,
@@ -64,6 +67,8 @@ pub struct CacheHeader {
     /// kept half's sort in [`Heap::flush`].
     pub(super) unsorted_flushes: u8,
 }
+
+} // verus!
 
 /// Size of a [`CacheHeader`]: one line, so a class's header never shares
 /// a line with another class's.
@@ -193,7 +198,7 @@ impl CacheHeader {
     /// [`Heap::try_rehome`]: the probe restarts from the new arena's
     /// refill counter, and the stack, `cap` and the counters stay.
     pub(super) fn rekey(&mut self, arena: u16, refilled: u32) {
-        assert_eq!(self.len, 0, "heap: re-keying a cache that was not flushed");
+        assert_rekey_flushed(&self.len);
         self.low_water = 0;
         self.zeroed = 0;
         self.run_end = 0;

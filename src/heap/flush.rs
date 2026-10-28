@@ -3,8 +3,12 @@
 //! cache's highest addresses grouped by slab ([`group_by_slab`]) and
 //! aborts on a double free that straddles the split.
 
+use crate::arena::Published;
+use crate::lock::LockOrder;
+use crate::vspec::zero::Zeroed;
 use core::ptr;
-use vstd::prelude::Tracked;
+use vstd::map::Map;
+use vstd::prelude::{Tracked, int};
 
 use crate::arena::Arena;
 use crate::layout::CLASSES;
@@ -26,12 +30,18 @@ impl Heap {
         shared: &Shared,
         cs: &crate::class::ClassState,
         out: &mut [*mut u8],
-    ) -> crate::class::Claim {
+        _toks: Tracked<&mut crate::class::SlotToks>,
+        _pubw: Tracked<&'static Published>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> (crate::class::Claim, Tracked<Map<int, Zeroed>>) {
         if slot_randomize(shared) {
             let rng = self.rng();
-            cs.claim_random(&shared.meta, out, rng)
+            (
+                cs.claim_random(&shared.meta, out, rng),
+                Tracked::assume_new(),
+            )
         } else {
-            cs.claim(&shared.meta, out)
+            (cs.claim(&shared.meta, out), Tracked::assume_new())
         }
     }
 
@@ -72,16 +82,25 @@ impl Heap {
         &mut self,
         shared: &Shared,
         arena: &Arena,
+        _pubw: Tracked<&'static Published>,
         cache: *mut CacheHeader,
         class: usize,
+        _ord: Tracked<&mut LockOrder>,
     ) -> u32 {
         // SAFETY: the cache is empty and has `cap` slots of storage.
         unsafe {
             assert_refill_empty(&self.hdr_ref(cache).len);
             let want = (self.hdr_ref(cache).cap / 2).max(1) as usize;
-            let out = stack_mut(self.hdr_ref(cache).slots, 0, want);
+            let out = stack_mut(self.hdr_ref(cache).slots, 0, want, Tracked::assume_new());
             let cs = arena.class(class);
-            let claim = self.claim(shared, cs, out);
+            let (claim, _) = self.claim(
+                shared,
+                cs,
+                out,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             arena.class(class).note_refill(claim.n);
             out[..claim.n].reverse();
             if shared.pac() {
@@ -168,6 +187,7 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         n: usize,
+        _ord: Tracked<&mut LockOrder>,
     ) {
         if n == 0 {
             return;
@@ -194,7 +214,12 @@ impl Heap {
             // PAC instruction may run unless the probe said yes.
             let addr_mask = if pac { !pac::mask() } else { usize::MAX };
             let key = |e: &*mut u8| (*e as usize) & addr_mask;
-            let all = stack_mut(slots, 0, self.hdr_ref(cache).len as usize);
+            let all = stack_mut(
+                slots,
+                0,
+                self.hdr_ref(cache).len as usize,
+                Tracked::assume_new(),
+            );
             let rest_len = all.len() - n;
             let kept_max;
             let sorted = if pac {
