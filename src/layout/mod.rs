@@ -262,10 +262,6 @@ impl Class {
         &&& d.wrapping_mul(self.inv_odd) == 1
     }
 
-    // The accessors below are trusted (`external_body`) for now: they are
-    // on the `free` path, whose functions are verified last.
-
-    #[verifier::external_body]
     #[inline]
     pub const fn size(&self) -> (r: usize)
         ensures r == self.size,
@@ -273,17 +269,19 @@ impl Class {
         self.size as usize
     }
 
-    #[verifier::external_body]
     #[inline]
     pub const fn slab_size(&self) -> (r: usize)
         requires self.wf(),
         ensures r == 1usize << self.lg_slab, r >= 0x1000,
         opens_invariants none
     {
+        proof {
+            let lg = self.lg_slab;
+            assert((1usize << lg) >= 0x1000) by (bit_vector) requires 12 <= lg <= 22;
+        }
         1 << self.lg_slab
     }
 
-    #[verifier::external_body]
     #[inline]
     pub const fn nslots(&self) -> (r: usize)
         ensures r == self.nslots,
@@ -303,14 +301,22 @@ impl Class {
     /// Slots per [`LG_COMPACT_UNIT`] bytes of slabs (per slab when the slab
     /// is larger): the unit of the compaction thresholds in `heap/`, equal
     /// to `nslots` for every class whose slab is 64 KiB or more.
-    #[verifier::external_body]
     #[inline]
     pub const fn compact_slots(&self) -> (r: usize)
         requires self.wf(),
-        ensures r <= 0x8_0000,
+        ensures
+            r <= 0x8_0000,
+            r == (if (1usize << self.lg_slab) > 0x1_0000usize { (1usize << self.lg_slab) as int } else { 0x1_0000int }) / (self.size as int),
     {
         let unit = 1usize << LG_COMPACT_UNIT;
         let slab = self.slab_size();
+        proof {
+            let lg = self.lg_slab;
+            assert((1usize << lg) <= 0x40_0000) by (bit_vector) requires lg <= 22;
+            assert(unit == 0x1_0000) by (bit_vector) requires unit == 1usize << 16u32;
+            let m = if slab > unit { slab } else { unit };
+            vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(m as int, 8, self.size as int);
+        }
         (if slab > unit { slab } else { unit }) / self.size()
     }
 
@@ -320,7 +326,6 @@ impl Class {
     /// more bits) or one sub-word range (fewer) and a line holds a whole
     /// number of slabs; then raised so that the slabs sharing one line span
     /// at most `1 << LG_GROUP_SPAN` bytes of the region.
-    #[verifier::external_body]
     #[inline]
     pub const fn slab_bits(&self) -> (r: usize)
         ensures r == self.slab_bits,
@@ -331,7 +336,6 @@ impl Class {
     /// Consecutive slabs whose bits fill one bitmap line: the unit in which
     /// `class/` hands slabs to an arena, so that every line has one owner.
     /// A power of two; 1 when a slab's bits are a line or more.
-    #[verifier::external_body]
     #[inline]
     pub const fn slabs_per_line(&self) -> (r: usize)
         requires self.wf(),
@@ -341,6 +345,28 @@ impl Class {
             crate::meta::is_pow2(r),
     {
         let b = self.slab_bits();
+        proof {
+            if b < LINE_BITS {
+                vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(512, 1, b as int);
+                vstd::arithmetic::div_mod::lemma_div_is_ordered(b as int, 512, b as int);
+                vstd::arithmetic::div_mod::lemma_div_by_self(b as int);
+                // `b` is a power of two below the line, so `512 / b` is one.
+                let k = choose|k: nat| k < 64 && b as nat == #[trigger] vstd::arithmetic::power2::pow2(k);
+                vstd::arithmetic::power2::lemma2_to64();
+                if k > 9 {
+                    vstd::arithmetic::power2::lemma_pow2_strictly_increases(9, k);
+                }
+                assert(k < 9);
+                let ku = k as usize;
+                vstd::bits::lemma_usize_shl_is_mul(1, ku);
+                let t = (9 - ku) as usize;
+                assert(512usize / (1usize << ku) == 1usize << t) by (bit_vector)
+                    requires ku < 9, t == (9 - ku) as usize;
+                crate::meta::lemma_is_pow2_shl(t);
+            } else {
+                crate::meta::lemma_is_pow2_one();
+            }
+        }
         if b >= LINE_BITS { 1 } else { LINE_BITS / b }
     }
 
@@ -369,7 +395,6 @@ impl Class {
     ///
     /// `valid` holds exactly when `offset` is the start of one of the slab's
     /// slots, and `slot` is then that slot.
-    #[verifier::external_body]
     #[inline]
     pub const fn slot_of_offset(&self, offset: usize) -> (r: (usize, bool))
         requires self.wf(), offset < (1usize << self.lg_slab),
@@ -385,11 +410,13 @@ impl Class {
         let q = (offset as u32)
             .wrapping_mul(self.inv_odd)
             .rotate_right(self.tz as u32);
+        proof {
+            lemma_slot_test(*self, offset, q);
+        }
         (q as usize, q < self.nslots)
     }
 
     /// `slab_size - 1` (the `slab_mask` field).
-    #[verifier::external_body]
     #[inline]
     pub const fn slab_mask(&self) -> (r: usize)
         ensures r == self.slab_mask,
@@ -397,6 +424,14 @@ impl Class {
     {
         self.slab_mask as usize
     }
+}
+
+/// `a * 1 == a` modulo `2^32`.
+proof fn lemma_wmul_one(a: u32)
+    ensures
+        a.wrapping_mul(1u32) == a,
+{
+    vstd::arithmetic::div_mod::lemma_small_mod(a as nat, 0x1_0000_0000);
 }
 
 /// Multiplication modulo `2^32` is associative.
@@ -408,6 +443,136 @@ proof fn lemma_wmul_assoc(a: u32, b: u32, c: u32)
     vstd::arithmetic::div_mod::lemma_mul_mod_noop_right(a as int, (b as int) * (c as int), m);
     vstd::arithmetic::div_mod::lemma_mul_mod_noop_left((a as int) * (b as int), c as int, m);
     vstd::arithmetic::mul::lemma_mul_is_associative(a as int, b as int, c as int);
+}
+
+/// The rotate of the slot-start test: `q`, `y` rotated right by `t`, is
+/// below a bound of `2^22 >> t` or less only if the low `t` bits of `y`
+/// are clear (they would rotate into the top of `q`), so `y` is `q << t`;
+/// and it is `y >> t` when they are clear.
+proof fn lemma_rotate(y: u32, t: u32, q: u32, bound: u32)
+    requires
+        t < 32,
+        q == crate::vspec::core_int::rotr32(y, t),
+        bound <= 0x40_0000u32 >> t,
+    ensures
+        q < bound ==> y == q << t,
+        (y >> t) << t == y && y >> t < bound ==> q == y >> t,
+{
+    assert(q < bound ==> y == q << t) by (bit_vector)
+        requires
+            t < 32,
+            t == 0 ==> q == y,
+            t != 0 ==> q == (y >> t) | (y << ((32 - t) as u32)),
+            bound <= 0x40_0000u32 >> t,
+    ;
+    assert((y >> t) << t == y && y >> t < bound ==> q == y >> t) by (bit_vector)
+        requires
+            t < 32,
+            t == 0 ==> q == y,
+            t != 0 ==> q == (y >> t) | (y << ((32 - t) as u32)),
+            bound <= 0x40_0000u32 >> t,
+    ;
+}
+
+/// [`Class::slot_of_offset`]'s divisibility test (Granlund and
+/// Montgomery): with `size = d << tz`, `d` odd and `inv_odd` its inverse,
+/// `q` is below `nslots` exactly for the slot starts, and is then the
+/// slot. A slot start `j * size` multiplies to `j << tz`, which rotates
+/// back to `j`; conversely a `q` below `nslots` (at most `2^22 >> tz`)
+/// means the product was `q << tz`, and multiplying it back by `d` gives
+/// the offset as `q * size`, both below `2^22`.
+pub(crate) proof fn lemma_slot_test(c: Class, offset: usize, q: u32)
+    requires
+        c.wf(),
+        offset < (1usize << c.lg_slab),
+        q == crate::vspec::core_int::rotr32((offset as u32).wrapping_mul(c.inv_odd), c.tz as u32),
+    ensures
+        q < c.nslots ==> q * c.size == offset,
+        offset % (c.size as usize) == 0 && offset / (c.size as usize) < c.nslots ==> q < c.nslots,
+{
+    let s = c.size;
+    let t = c.tz as u32;
+    let d = s >> t;
+    let inv = c.inv_odd;
+    let n = c.nslots;
+    let lg = c.lg_slab as usize;
+    assert(MEDIUM_MAX == 0x4_0000);
+    assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+    assert(offset < 0x40_0000) by (bit_vector)
+        requires
+            offset < (1usize << lg),
+            12 <= lg <= 22,
+    ;
+    let o = offset as u32;
+    let y = o.wrapping_mul(inv);
+    // The slot count is at most `2^22 >> t`: `n << t <= n * s <= 2^22`.
+    assert(t <= 18 && (1u32 << t) <= s) by (bit_vector)
+        requires
+            d << t == s,
+            d & 1 == 1,
+            t < 32,
+            s <= 0x4_0000u32,
+            d == s >> t,
+    ;
+    vstd::bits::lemma_u32_pow2_no_overflow(t as nat);
+    vstd::bits::lemma_u32_shl_is_mul(1, t);
+    vstd::bits::lemma_u32_shr_is_div(0x40_0000u32, t);
+    vstd::arithmetic::power2::lemma_pow2_pos(t as nat);
+    let p = vstd::arithmetic::power2::pow2(t as nat) as int;
+    assert(n as int * p <= 0x40_0000) by (nonlinear_arith)
+        requires
+            n as int * s as int <= 0x40_0000,
+            p <= s as int,
+            n >= 1,
+            p > 0,
+    ;
+    vstd::arithmetic::div_mod::lemma_div_is_ordered(n as int * p, 0x40_0000, p);
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(n as int, p);
+    assert(n <= 0x40_0000u32 >> t);
+    lemma_rotate(y, t, q, n);
+    if q < n {
+        // `y` is `q << t`; times `d` it is `o` (`inv * d` is 1) and `q * s`.
+        assert(q.wrapping_mul(s) == (q << t).wrapping_mul(d)) by (bit_vector)
+            requires
+                s == d << t,
+                t < 32,
+        ;
+        lemma_wmul_assoc(o, inv, d);
+        assert(inv.wrapping_mul(d) == d.wrapping_mul(inv)) by (bit_vector);
+        lemma_wmul_one(o);
+        assert(q as int * s as int <= 0x40_0000) by (nonlinear_arith)
+            requires
+                q < n,
+                n as int * s as int <= 0x40_0000,
+                s > 0,
+        ;
+        vstd::arithmetic::div_mod::lemma_small_mod((q as int * s as int) as nat, 0x1_0000_0000);
+    }
+    if offset % (s as usize) == 0 && offset / (s as usize) < n {
+        // `o` is `j * s`, so `y` is `(j << t) * (d * inv)`, `j << t`.
+        let j = (offset / (s as usize)) as u32;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(offset as int, s as int);
+        assert(j as int == offset as int / s as int);
+        vstd::arithmetic::mul::lemma_mul_is_commutative(j as int, s as int);
+        assert(j as int * s as int == offset as int);
+        vstd::arithmetic::div_mod::lemma_small_mod((j as int * s as int) as nat, 0x1_0000_0000);
+        assert(j.wrapping_mul(s) == (j << t).wrapping_mul(d)) by (bit_vector)
+            requires
+                s == d << t,
+                t < 32,
+        ;
+        lemma_wmul_assoc(j << t, d, inv);
+        let u = j << t;
+        lemma_wmul_one(u);
+        assert(y == u);
+        assert(u >> t == j && (u >> t) << t == u) by (bit_vector)
+            requires
+                u == j << t,
+                j < n,
+                n <= 0x40_0000u32 >> t,
+                t < 32,
+        ;
+    }
 }
 
 } // verus!
@@ -532,6 +697,47 @@ pub proof fn lemma_class_size_mono(i: int, j: int)
     } else {
         assert(spec_class_size(i) == (i + 1) * QUANTUM);
         assert(spec_class_size(j) == (j + 1) * QUANTUM);
+    }
+}
+
+/// Above the linear classes, the class before `j` is `j`'s doubling base
+/// `2^lg` plus `k` quarters of it, `k` being `j`'s place in its doubling:
+/// `(4 + k) * 2^(lg - 2)`.
+pub proof fn lemma_class_size_prev(j: int)
+    requires
+        LINEAR_CLASSES <= j < NCLASSES,
+    ensures
+        spec_class_size(j - 1) == (4 + (j - LINEAR_CLASSES as int) % 4)
+            * vstd::arithmetic::power2::pow2((LG_LINEAR_MAX as int + (j - LINEAR_CLASSES as int) / 4 - 2) as nat),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    let i = j - 1;
+    let gj = (j - LINEAR_CLASSES as int) / 4;
+    let kj = (j - LINEAR_CLASSES as int) % 4;
+    let lg = (LG_LINEAR_MAX as int + gj) as nat;
+    lemma_quarter(lg);
+    let b = vstd::arithmetic::power2::pow2(lg) as int;
+    let q = vstd::arithmetic::power2::pow2((lg - 2) as nat) as int;
+    assert(b / 4 == q && b == 4 * q);
+    if j == LINEAR_CLASSES {
+        assert(gj == 0 && kj == 0 && lg == LG_LINEAR_MAX);
+        assert(b == 8 * QUANTUM);
+        assert(spec_class_size(i) == 8 * QUANTUM);
+    } else if kj > 0 {
+        assert((i - LINEAR_CLASSES as int) / 4 == gj && (i - LINEAR_CLASSES as int) % 4 == kj - 1);
+        assert(spec_class_size(i) == b + kj * q);
+        assert(b + kj * q == (4 + kj) * q) by (nonlinear_arith)
+            requires b == 4 * q;
+    } else {
+        // `i` closes the previous doubling at `2 * 2^(lg - 1)`, which is `2^lg`.
+        assert((i - LINEAR_CLASSES as int) / 4 == gj - 1 && (i - LINEAR_CLASSES as int) % 4 == 3);
+        lemma_quarter((lg - 1) as nat);
+        vstd::arithmetic::power2::lemma_pow2_adds((lg - 1) as nat, 1);
+        let b1 = vstd::arithmetic::power2::pow2((lg - 1) as nat) as int;
+        assert(spec_class_size(i) == b1 + 4 * (b1 / 4));
+        assert(2 * b1 == b);
+        assert(b1 / 4 * 4 == b1) by { lemma_quarter((lg - 1) as nat); }
+        assert(spec_class_size(i) == b);
     }
 }
 
@@ -1303,13 +1509,54 @@ exec static SMALL_LOOKUP: [u16; SMALL_LOOKUP_LEN]
 
 const _: () = assert!(NCLASSES * CLASS_STRIDE <= u16::MAX as usize);
 
+verus! {
+
 /// The table entry for `n`: [`class_of`] for a small request, the class
 /// number with the compiler told that the entry is a multiple of the
 /// stride (so that `class * CLASS_STRIDE` folds back into the entry).
 #[inline(always)]
 // Hot size-class lookup: written for the codegen, not the idiom.
 #[allow(clippy::manual_div_ceil, clippy::manual_is_multiple_of)]
-fn small_class(n: usize) -> usize {
+fn small_class(n: usize) -> (r: usize)
+    requires
+        n <= SMALL_MAX,
+    ensures
+        r < NCLASSES && n <= spec_class_size(r as int),
+        classes_below(r as int, n as int),
+    opens_invariants none
+{
+    proof {
+        reveal(classes_below);
+        let q = ((n + QUANTUM - 1) as int) / (QUANTUM as int);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod((n + QUANTUM - 1) as int, QUANTUM as int);
+        vstd::arithmetic::div_mod::lemma_mod_bound((n + QUANTUM - 1) as int, QUANTUM as int);
+        assert(n <= q * QUANTUM) by (nonlinear_arith)
+            requires
+                (n + QUANTUM - 1) as int == QUANTUM * q + ((n + QUANTUM - 1) as int) % (QUANTUM as int),
+                ((n + QUANTUM - 1) as int) % (QUANTUM as int) < QUANTUM;
+        assert(q < SMALL_LOOKUP_LEN);
+        // Every class below the entry's is below `q` quanta, so, a
+        // multiple of the quantum, at most `q - 1` of them: below `n`.
+        // (`SMALL_LOOKUP` cannot be read here; its entry is a class
+        // below `NCLASSES` and `classes_below` it at `q` quanta.)
+        assert forall|j: int| 0 <= j < NCLASSES && #[trigger] spec_class_size(j) < q * QUANTUM implies spec_class_size(j) < n by {
+            lemma_class_size_quantum(j);
+            let s = spec_class_size(j);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(s, QUANTUM as int);
+            let t = s / (QUANTUM as int);
+            assert(s < q * QUANTUM);
+            assert(t * QUANTUM < q * QUANTUM) by (nonlinear_arith)
+                requires s == QUANTUM * t + 0, s < q * QUANTUM;
+            assert(t <= q - 1) by (nonlinear_arith)
+                requires t * QUANTUM < q * QUANTUM, QUANTUM > 0;
+            assert(t * QUANTUM <= (q - 1) * QUANTUM) by (nonlinear_arith)
+                requires t <= q - 1, QUANTUM > 0;
+            assert((q - 1) * QUANTUM < n) by (nonlinear_arith)
+                requires
+                    (n + QUANTUM - 1) as int == QUANTUM * q + ((n + QUANTUM - 1) as int) % (QUANTUM as int),
+                    ((n + QUANTUM - 1) as int) % (QUANTUM as int) >= 0;
+        }
+    }
     let off = SMALL_LOOKUP[(n + QUANTUM - 1) / QUANTUM] as usize;
     // SAFETY: every entry is a class number times the stride
     // (`build_small_lookup`).
@@ -1320,7 +1567,14 @@ fn small_class(n: usize) -> usize {
 /// Class number for a request of at most [`SMALL_MAX`] bytes; `n` must
 /// be in range (the table index is bounds-checked regardless).
 #[inline(always)]
-pub fn class_of_small(n: usize) -> usize {
+pub fn class_of_small(n: usize) -> (r: usize)
+    requires
+        n <= SMALL_MAX,
+    ensures
+        r < NCLASSES && n <= spec_class_size(r as int),
+        classes_below(r as int, n as int),
+    opens_invariants none
+{
     debug_assert!(n <= SMALL_MAX);
     small_class(n)
 }
@@ -1328,19 +1582,100 @@ pub fn class_of_small(n: usize) -> usize {
 /// Class number for a request of `n` bytes, or `None` when `n` is huge.
 /// A zero-byte request maps to class 0 so `malloc(0)` yields a real slot.
 #[inline]
-pub fn class_of(n: usize) -> Option<usize> {
+pub fn class_of(n: usize) -> (r: Option<usize>)
+    ensures
+        r is Some <==> n <= MEDIUM_MAX,
+        r matches Some(c) ==> c < NCLASSES && n <= spec_class_size(c as int),
+        r matches Some(c) ==> classes_below(c as int, n as int),
+    opens_invariants none
+{
+    proof {
+        reveal(classes_below);
+    }
     if n <= SMALL_MAX {
         Some(small_class(n))
     } else if n <= MEDIUM_MAX {
         // Classes in (2^lg, 2^(lg+1)] are 2^lg + k * 2^(lg-2) for k = 1..4.
         let m = n - 1;
+        proof {
+            let mu = m as u64;
+            vstd::std_specs::bits::axiom_u64_leading_zeros(mu);
+            let lz = vstd::std_specs::bits::u64_leading_zeros(mu) as u64;
+            assert(46 <= lz <= 53) by (bit_vector)
+                requires
+                    1024 <= mu < 0x4_0000,
+                    lz <= 64,
+                    lz < 64 ==> (mu >> sub(63u64, lz)) & 1u64 != 0u64,
+                    mu >> sub(64u64, lz) == 0;
+        }
         let lg = usize::BITS - 1 - m.leading_zeros();
         let k = (m >> (lg - 2)) & 3;
+        proof {
+            assert(k <= 3) by (bit_vector)
+                requires k == (m >> sub(lg, 2u32) as usize) & 3usize;
+            // `m` is `2^lg` plus `k` quarters of it plus less than one more:
+            // `n = m + 1` is at most class `c`'s size, `(5 + k) * 2^(lg - 2)`.
+            let mu = m as u64;
+            let lz = vstd::std_specs::bits::u64_leading_zeros(mu) as u64;
+            let l = lg as u64;
+            let ku = k as u64;
+            assert(l == 63 - lz);
+            assert(ku == (mu >> sub(l, 2u64)) & 3u64) by (bit_vector)
+                requires mu == m as u64, ku == k as u64, l == lg as u64, 10 <= l <= 17,
+                    k == (m >> sub(lg, 2u32) as usize) & 3usize;
+            let top = (5 + ku) as u64;
+            assert(mu < top << sub(l, 2u64)) by (bit_vector)
+                requires
+                    46 <= lz <= 53,
+                    l == 63 - lz,
+                    top == 5 + ku,
+                    (mu >> sub(63u64, lz)) & 1u64 != 0u64,
+                    mu >> sub(64u64, lz) == 0,
+                    ku == (mu >> sub(l, 2u64)) & 3u64;
+            vstd::arithmetic::power2::lemma2_to64();
+            if l - 2 < 15 {
+                vstd::arithmetic::power2::lemma_pow2_strictly_increases((l - 2) as nat, 15);
+            }
+            assert(top * vstd::arithmetic::power2::pow2((l - 2) as nat) <= 8 * 0x8000) by (nonlinear_arith)
+                requires top <= 8, vstd::arithmetic::power2::pow2((l - 2) as nat) <= 0x8000;
+            vstd::bits::lemma_u64_shl_is_mul(top, sub(l, 2u64));
+            vstd::bits::lemma_u64_pow2_no_overflow((l - 2) as nat);
+            let q = vstd::arithmetic::power2::pow2((l - 2) as nat) as int;
+            lemma_quarter(l as nat);
+            let c = LINEAR_CLASSES + 4 * (lg - LG_LINEAR_MAX) as usize + k;
+            assert((c - LINEAR_CLASSES) / 4 == lg - LG_LINEAR_MAX && (c - LINEAR_CLASSES) % 4 == k);
+            assert(spec_class_size(c as int) == 4 * q + (k + 1) * q);
+            assert(n <= (5 + k) * q);
+            assert(4 * q + (k + 1) * q == (5 + k) * q) by (nonlinear_arith);
+            // `m` is at least `2^lg` plus `k` quarters, the size of the
+            // class before `c`: every class below `c` is below `n`.
+            let low = (4 + ku) as u64;
+            assert(low << sub(l, 2u64) <= mu) by (bit_vector)
+                requires
+                    46 <= lz <= 53,
+                    l == 63 - lz,
+                    low == 4 + ku,
+                    (mu >> sub(63u64, lz)) & 1u64 != 0u64,
+                    mu >> sub(64u64, lz) == 0,
+                    ku == (mu >> sub(l, 2u64)) & 3u64;
+            assert(low * vstd::arithmetic::power2::pow2((l - 2) as nat) <= 8 * 0x8000) by (nonlinear_arith)
+                requires low <= 8, vstd::arithmetic::power2::pow2((l - 2) as nat) <= 0x8000;
+            vstd::bits::lemma_u64_shl_is_mul(low, sub(l, 2u64));
+            lemma_class_size_prev(c as int);
+            assert(spec_class_size(c - 1) == (4 + k) * q);
+            assert forall|j: int| 0 <= j < c implies #[trigger] spec_class_size(j) < n by {
+                if j < c - 1 {
+                    lemma_class_size_mono(j, c - 1);
+                }
+            }
+        }
         Some(LINEAR_CLASSES + 4 * (lg - LG_LINEAR_MAX) as usize + k)
     } else {
         None
     }
 }
+
+} // verus!
 
 /// Slot size for a request, i.e. `nallocx(n, 0)` for non-huge `n`.
 #[inline]

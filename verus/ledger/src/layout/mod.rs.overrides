@@ -1,11 +1,1 @@
-# The Class accessors are temporary seams: their bodies are on the free
-# path, verified with it.
-Class::size	allocator invariant	Verus
-Class::slab_size	allocator invariant	Verus
-Class::nslots	allocator invariant	Verus
-Class::compact_slots	allocator invariant	Verus
-Class::slab_bits	allocator invariant	Verus
-Class::slabs_per_line	allocator invariant	Verus
-Class::slot_of_offset	allocator invariant	Verus
-Class::slab_mask	allocator invariant	Verus
 ClassTable	UnsafeCell/volatile/transmute	none (assumption)

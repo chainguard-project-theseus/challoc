@@ -307,6 +307,17 @@ const _: () = assert!(core::mem::offset_of!(Shared, lines) == 0);
 
 verus! {
 
+/// What [`ClassLine::guard_word`] loads: `guard_mask | tz << 32 |
+/// lg_guard << 40`, the padding above zero.
+pub(super) open spec fn guard_word_of(guard_mask: u32, tz: u8, lg_guard: u8) -> u64 {
+    (guard_mask as u64) | ((tz as u64) << 32u64) | ((lg_guard as u64) << 40u64)
+}
+
+/// What [`ClassLine::is_guard`] computes.
+pub(super) open spec fn is_guard_spec(rel: usize, gw: u64) -> bool {
+    (vstd::wrapping::usize_specs::wrapping_shr(rel, (gw >> 40u64) as u32) as u32).wrapping_add(1) & (gw as u32) == 0
+}
+
 impl ClassLine {
     /// The line of class `class`, with the permission of its watermark copy
     /// ([`SlabTable::new_mirror`]), for [`SlabTable::mirror_watermark`].
@@ -342,23 +353,6 @@ impl ClassLine {
         };
         (line, perm)
     }
-}
-
-} // verus!
-
-impl ClassLine {
-    /// Tests: the line's fields as `(class_base, bits_base, watermark copy,
-    /// owners_base, lg_group)`.
-    #[cfg(test)]
-    pub(super) fn parts(&self) -> (usize, usize, usize, usize, u8) {
-        (
-            self.class_base,
-            self.bits_base,
-            self.committed.load(Ordering::Relaxed),
-            self.owners_base,
-            self.lg_group,
-        )
-    }
 
     /// The slot-start test ([`Class::slot_of_offset`]) on `rel`, the
     /// offset from the region base: the slot number, or `None` for an
@@ -366,7 +360,14 @@ impl ClassLine {
     ///
     /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
     #[inline(always)]
-    fn slot_start(&self, rel: usize) -> Option<u32> {
+    fn slot_start(&self, rel: usize) -> (r: Option<u32>)
+        ensures
+            ({
+                let q = crate::vspec::core_int::rotr32(((rel as u32) & self.slab_mask).wrapping_mul(self.inv as u32), self.tz as u32);
+                r == if q < self.nslots as u32 { Some(q) } else { None }
+            }),
+        opens_invariants none
+    {
         let slot = ((rel as u32) & self.slab_mask)
             .wrapping_mul(self.inv as u32)
             .rotate_right(self.tz as u32);
@@ -395,7 +396,9 @@ impl ClassLine {
     /// is [`ClassLine::is_guard`] on the guard word. The whole check
     /// accepts exactly what the reference form does
     /// ([`Regions::slot_in_class`] and [`SlabTable::is_guard_slab`];
-    /// `sized_slot_agrees_with_the_reference`).
+    /// `sized_slot_agrees_with_the_reference`). The ensures state the
+    /// computation; that it accepts only slot starts outside guard slabs
+    /// is not proved here.
     ///
     /// The shape is about loads. Each one waits on the size (the class
     /// indexes the line) or the pointer, and in a program whose frees take
@@ -409,7 +412,18 @@ impl ClassLine {
     ///
     /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
     #[inline(always)]
-    fn sized_ok(&self, rel: usize, region_hi: usize) -> bool {
+    fn sized_ok(&self, rel: usize, region_hi: usize) -> (r: bool)
+        requires
+            self._pad[0] == 0 && self._pad[1] == 0,
+        ensures
+            ({
+                let gw = guard_word_of(self.guard_mask, self.tz, self.lg_guard);
+                let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
+                let q = crate::vspec::core_int::rotr64(x.wrapping_mul(self.inv), (gw >> 32u64) as u32);
+                r == (q < self.nslots && !is_guard_spec(rel, gw))
+            }),
+        opens_invariants none
+    {
         let gw = self.guard_word();
         let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
         // `rotate_right` takes its count modulo 64: `tz`, the low byte.
@@ -419,8 +433,21 @@ impl ClassLine {
 
     /// `guard_mask | tz << 32 | lg_guard << 40` (the padding above is
     /// zero), from one 8-byte load.
+    ///
+    /// Trusted: the load reads four fields through one `u64` (the layout
+    /// below, little-endian on x86_64 and aarch64), which Verus has no
+    /// permission for, and on x86_64 it goes through an empty `asm!`
+    /// (the template of `api::shared_base`'s and `class::table::word_index`'s,
+    /// there on aarch64) that leaves the value unchanged.
     #[inline(always)]
-    fn guard_word(&self) -> u64 {
+    #[verifier::external_body]
+    fn guard_word(&self) -> (r: u64)
+        requires
+            self._pad[0] == 0 && self._pad[1] == 0,
+        ensures
+            r == guard_word_of(self.guard_mask, self.tz, self.lg_guard),
+        opens_invariants none
+    {
         // SAFETY: the eight initialised bytes from `guard_mask` to the end
         // of `self`, 8-aligned (asserted below).
         #[allow(unused_mut)]
@@ -449,9 +476,30 @@ impl ClassLine {
     /// whatever this says. `guard_test_agrees_with_the_tables` checks it
     /// against the table for every class.
     #[inline(always)]
-    fn is_guard(rel: usize, gw: u64) -> bool {
+    fn is_guard(rel: usize, gw: u64) -> (r: bool)
+        ensures
+            r == is_guard_spec(rel, gw),
+        opens_invariants none
+    {
         // `wrapping_shr` takes its count modulo 64: `lg_guard`.
         (rel.wrapping_shr((gw >> 40) as u32) as u32).wrapping_add(1) & (gw as u32) == 0
+    }
+}
+
+} // verus!
+
+impl ClassLine {
+    /// Tests: the line's fields as `(class_base, bits_base, watermark copy,
+    /// owners_base, lg_group)`.
+    #[cfg(test)]
+    pub(super) fn parts(&self) -> (usize, usize, usize, usize, u8) {
+        (
+            self.class_base,
+            self.bits_base,
+            self.committed.load(Ordering::Relaxed),
+            self.owners_base,
+            self.lg_group,
+        )
     }
 
     /// Tests: the sized check's 64-bit multiplier.

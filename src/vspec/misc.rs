@@ -1,7 +1,8 @@
 //! Specifications of the derived `PartialEq` of four enums verified code
 //! compares: `config::Thp` and `sys::thp_host::ThpSetting` (`thp.rs`),
 //! `huge::RunState`, and `slab::State` (`class::ClassState::take`); and of
-//! `fence`, `AtomicU32::as_ptr` and `Option::as_deref_mut`.
+//! `fence`, `core::hint::assert_unchecked`, `AtomicU32::as_ptr` and
+//! `Option::as_deref_mut`.
 
 use vstd::prelude::*;
 
@@ -56,6 +57,18 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::slab::State {
 pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic::Ordering)
     requires
         !(order is Relaxed),
+    opens_invariants none
+    no_unwind
+;
+
+/// `core::hint::assert_unchecked`: undefined behaviour unless `cond`
+/// holds (`core`'s safety contract), which this makes a precondition; it
+/// has no effect Verus models. Its one verified caller is
+/// `layout::small_class`, where the condition is the small table's
+/// postcondition.
+pub assume_specification[ core::hint::assert_unchecked ](cond: bool)
+    requires
+        cond,
     opens_invariants none
     no_unwind
 ;

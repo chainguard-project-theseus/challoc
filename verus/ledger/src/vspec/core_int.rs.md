@@ -17,6 +17,8 @@ file.
 | `usize::next_power_of_two` | assume_spec | core library | Kani | trusted |
 | `i64::wrapping_neg` | assume_spec | core library | Kani | trusted |
 | `usize::ilog2` | assume_spec | core library | Kani | trusted |
+| `u32::rotate_right` | assume_spec | core library | Kani | trusted |
+| `u64::rotate_right` | assume_spec | core library | Kani | trusted |
 | `hint::spin_loop` | assume_spec | core library | Kani | trusted |
 
 ## `u64::count_ones`
@@ -149,9 +151,39 @@ pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
 ;
 ```
 
+## `u32::rotate_right`
+
+src/vspec/core_int.rs:85. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `u32::rotate_right`: the bits shifted out at the bottom come back in at the top.
+
+```rust
+pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
+    ensures
+        r == rotr32(x, n),
+    opens_invariants none
+;
+```
+
+## `u64::rotate_right`
+
+src/vspec/core_int.rs:103. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `u64::rotate_right`: the bits shifted out at the bottom come back in at the top (the count is taken modulo 64, as `core` documents).
+
+```rust
+pub assume_specification[ u64::rotate_right ](x: u64, n: u32) -> (r: u64)
+    ensures
+        r == rotr64(x, n),
+    opens_invariants none
+;
+```
+
 ## `core::hint::spin_loop`
 
-src/vspec/core_int.rs:79. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:114. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.
