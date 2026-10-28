@@ -193,6 +193,15 @@ pub open spec fn may_abort_pending() -> bool {
     may_abort() || pending_aborts()
 }
 
+/// The aborts a valid program's free may reach: a resource failure
+/// ([`kernel_aborts`]) and a pending check ([`pending_aborts`]). A function
+/// on the covered free paths requires [`may_abort`] or, in its place,
+/// this, with what a live block gives it (its token, or a fact the token
+/// implies); every other abort it reaches is proved unreachable then.
+pub open spec fn valid_aborts() -> bool {
+    kernel_aborts() && pending_aborts()
+}
+
 } // verus!
 
 // ---- the calling thread's signal mask ------------------------------------

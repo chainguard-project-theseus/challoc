@@ -6,16 +6,18 @@
 //! owner words).
 //!
 //! A permission names the atomic's identity and value, as `word.rs`'s
-//! do a word's; the stores and the `u16` load are `#[verifier::atomic]`
-//! functions (so they can run inside an `open_atomic_invariant!` block),
-//! the watermark load ([`load_usize_seen`]) opens the invariant that holds
-//! the permission itself, each passes the caller's ordering through
+//! do a word's; the stores and the loads through a permission
+//! ([`load_usize`], the `u16` load) are `#[verifier::atomic]` functions
+//! (so they can run inside an `open_atomic_invariant!` block), the
+//! watermark load that hands out a persistent set ([`load_usize_seen`])
+//! opens the invariant that holds the permission itself, each passes the caller's ordering through
 //! unchanged, and `#[inline(always)]` leaves the machine code of the bare
 //! `core` call.
 //!
 //! Trusted:
 //! - each wrapped `core` operation is one atomic operation on the value
-//!   (a load or a store), as `core` documents;
+//!   (a load or a store), as `core` documents, and a load returns the
+//!   value its permission holds;
 //! - the proof model is sequentially consistent: the specifications ignore
 //!   `ordering`, so nothing here proves that `Relaxed`, `Acquire` and
 //!   `Release` are strong enough. The invariants built on these bound values,
@@ -115,6 +117,30 @@ pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm):
     no_unwind
 {
     a.store(v, ordering)
+}
+
+/// `a.load(ordering)`: the permission's value (it panics for a `Release`
+/// or `AcqRel` ordering). For a load inside the invariant that holds the
+/// permission: the value is one the invariant admits, under any ordering
+/// (a class table's watermark, at most its slab count:
+/// `SlabTable::watermark`). It hands out nothing else: inside a
+/// [`SeenVal`] invariant the persistent set stays where it is unless the
+/// load is `Acquire` ([`load_usize_seen`]: only that load is ordered after
+/// the writer's `Release` store).
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub fn load_usize(a: &AtomicUsize, ordering: Ordering, Tracked(perm): Tracked<&UsizePerm>) -> (r: usize)
+    requires
+        perm.id() == usize_id(a),
+        !(ordering is Release),
+        !(ordering is AcqRel),
+    ensures
+        r == perm.value(),
+    opens_invariants none
+    no_unwind
+{
+    a.load(ordering)
 }
 
 /// The identity ([`usize_id`]) of the atomic `usize` at `p`: what a

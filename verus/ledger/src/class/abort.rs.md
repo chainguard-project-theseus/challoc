@@ -34,7 +34,7 @@ pub(super) fn zero_slab_had_bits_set(
 
 ## `reservation_unmet`
 
-src/class/abort.rs:121. Kind: external_body. Category: panic/abort.
+src/class/abort.rs:129. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > A refill's reservation in a slab was not met after `MAX_EMPTY_PASSES` full scans: `live` no longer bounds the set bits.
