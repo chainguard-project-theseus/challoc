@@ -1,10 +1,8 @@
 # Temporary seams: `Shared`'s field types that are not specified yet,
 # opaque until the PRs that specify them (ClassLine with the hot set,
-# ThreadKey and Tcaches with heap/shared.rs and heap/tcaches.rs, Policy
-# with the policy queries).
+# ThreadKey and Tcaches with heap/shared.rs and heap/tcaches.rs).
 ClassLine	allocator invariant	Verus
 Tcaches	allocator invariant	Verus
-crate::policy::Policy	allocator invariant	Verus
 ThreadKey	allocator invariant	Verus
 # Temporary seam (S1): Shared::init's proof (PR 37) defines Shared::built
 # and proves these consequences of it.

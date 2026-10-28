@@ -218,12 +218,6 @@ pub struct ExThreadKey(ThreadKey);
 #[allow(dead_code)]
 pub struct ExTcaches(Tcaches);
 
-#[verifier::external_type_specification]
-#[verifier::external_body]
-// Never constructed: it only names `Policy` to the verifier.
-#[allow(dead_code)]
-pub struct ExPolicy(crate::policy::Policy);
-
 } // verus!
 
 /// Everything the `free` fast path reads for one class, in one 64-byte

@@ -16,7 +16,7 @@ file.
 
 ## `fetch_add`
 
-src/vspec/count.rs:84. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:81. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.fetch_add(v, ordering)`, wrapping.
@@ -35,7 +35,7 @@ pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 
 ## `fetch_sub`
 
-src/vspec/count.rs:101. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:98. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.fetch_sub(v, ordering)`, wrapping.
@@ -54,7 +54,7 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 
 ## `store`
 
-src/vspec/count.rs:119. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:116. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
@@ -74,7 +74,7 @@ pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&
 
 ## `load`
 
-src/vspec/count.rs:138. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:135. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
@@ -93,7 +93,7 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
 
 ## `swap`
 
-src/vspec/count.rs:155. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:152. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.swap(v, ordering)`: the previous value.
@@ -112,7 +112,7 @@ pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&m
 
 ## `compare_exchange`
 
-src/vspec/count.rs:191. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:188. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the counter held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
