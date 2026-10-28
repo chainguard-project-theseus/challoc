@@ -132,12 +132,18 @@ pub(super) fn desc_ptr_addr(d: &SlabDesc) -> usize {
 
 } // verus!
 
-/// The word at `p + off` of a slot `p`, read once.
+/// The word at `p + off` of a slot `p` of class `_c`, read once through
+/// the permission `_m` to it.
 ///
 /// # Safety
 /// `p + off` is an aligned word inside a committed slot.
 #[inline(always)]
-unsafe fn read_word(p: *mut u8, off: usize) -> u64 {
+unsafe fn read_word(
+    p: *mut u8,
+    off: usize,
+    _c: Ghost<int>,
+    _m: Tracked<&crate::vspec::user::UserMem>,
+) -> u64 {
     // SAFETY: guaranteed by the caller.
     unsafe { core::ptr::read_volatile(p.add(off) as *const u64) }
 }
@@ -250,7 +256,8 @@ impl ClassState {
             for &off in &[0, size - 8] {
                 // SAFETY: `p` is a slot this claim just reserved in a
                 // committed slab; slots are at least 16 bytes and 8-aligned.
-                let word = unsafe { read_word(p, off) };
+                let word =
+                    unsafe { read_word(p, off, Ghost::assume_new(), Tracked::assume_new()) };
                 if word != 0 {
                     self.dirty_word(pick, size, p, off, word);
                 }
@@ -276,7 +283,7 @@ impl ClassState {
         for slot in 0..cls.nslots() {
             let p = self.slot_ptr(slab, slot);
             // SAFETY: a slot of a committed slab; the class lock is held.
-            let word = unsafe { read_word(p, 0) };
+            let word = unsafe { read_word(p, 0, Ghost::assume_new(), Tracked::assume_new()) };
             if word != 0 {
                 self.fresh_slab_dirty(slab, slot, p, word, &bm);
             }
