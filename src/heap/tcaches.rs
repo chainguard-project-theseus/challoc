@@ -9,9 +9,9 @@
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::lock::Lock;
 #[cfg(verus_keep_ghost)]
 use crate::lock::rank_tcaches;
+use crate::lock::{Lock, LockOrder};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
@@ -107,7 +107,12 @@ impl Tcaches {
 
     /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
     /// when the table or the metadata region is full.
-    pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16> {
+    pub fn create(
+        &self,
+        shared: &Shared,
+        arena: u16,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Option<u16> {
         let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
         // The first null entry, lowest index first.
         let mut slot = 0;
@@ -117,7 +122,7 @@ impl Tcaches {
                 return None;
             }
         }
-        let h = Heap::create_detached(shared, arena);
+        let (h, _, _) = Heap::create_detached(shared, arena, Tracked::assume_new());
         if h.is_null() {
             return None;
         }
@@ -150,10 +155,10 @@ impl Tcaches {
 
     /// `tcache.flush`: return every cached slot of `id` to its slabs.
     /// `false` if there is no such cache.
-    pub fn flush(&self, shared: &Shared, id: u16) -> bool {
+    pub fn flush(&self, shared: &Shared, id: u16, _ord: Tracked<&mut LockOrder>) -> bool {
         match self.get(id) {
             Some(h) => {
-                h.flush_all(shared);
+                h.flush_all(shared, Tracked::assume_new());
                 true
             }
             None => false,
@@ -162,7 +167,7 @@ impl Tcaches {
 
     /// `tcache.destroy`: flush and free `id`. `false` if there is no such
     /// cache.
-    pub fn destroy(&self, shared: &Shared, id: u16) -> bool {
+    pub fn destroy(&self, shared: &Shared, id: u16, _ord: Tracked<&mut LockOrder>) -> bool {
         let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
         let i = id as usize;
         if i >= MAX_TCACHES {
@@ -174,7 +179,7 @@ impl Tcaches {
         }
         // SAFETY: `p` came from `create_detached` and is now unreachable
         // through the table.
-        unsafe { Heap::destroy(p, shared) };
+        unsafe { Heap::destroy(p, shared, Tracked::assume_new()) };
         true
     }
 

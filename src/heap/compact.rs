@@ -150,7 +150,14 @@ impl Heap {
                         else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(shared, a, cache, class);
+                        len = self.refill(
+                            shared,
+                            a,
+                            Tracked::assume_new(),
+                            cache,
+                            class,
+                            Tracked::assume_new(),
+                        );
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
@@ -215,7 +222,14 @@ impl Heap {
                         else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(shared, a, cache, class);
+                        len = self.refill(
+                            shared,
+                            a,
+                            Tracked::assume_new(),
+                            cache,
+                            class,
+                            Tracked::assume_new(),
+                        );
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
@@ -264,7 +278,12 @@ impl Heap {
     }
 
     /// Whether `class` in `arena` is worth compacting (design 6.4).
-    pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
+    pub(super) fn fragmented(
+        shared: &Shared,
+        arena: u16,
+        class: usize,
+        _ord: Tracked<&mut crate::lock::LockOrder>,
+    ) -> bool {
         let cs = shared.owner(arena).0.class(class);
         let (holes, capacity) = cs.holes(vstd::prelude::Tracked::assume_new());
         holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
@@ -286,11 +305,11 @@ impl Heap {
         let refilled = cs.refilled() as u32;
         let delta = refilled.wrapping_sub(prev_refilled) as usize;
         let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
-            if Self::fragmented(shared, arena, class) {
+            if Self::fragmented(shared, arena, class, Tracked::assume_new()) {
                 cs.note_gate_refill();
             }
             Verdict::Refilling
-        } else if !Self::fragmented(shared, arena, class) {
+        } else if !Self::fragmented(shared, arena, class, Tracked::assume_new()) {
             Verdict::Dense
         } else {
             cs.note_compact_mode(true);
@@ -322,7 +341,7 @@ impl Heap {
         // `cap - len` slots of storage follow them.
         unsafe {
             let arena = self.hdr_ref(cache).arena;
-            if !Self::fragmented(shared, arena, class) {
+            if !Self::fragmented(shared, arena, class, Tracked::assume_new()) {
                 shared.owner(arena).0.class(class).note_compact_mode(false);
                 let h = self.hdr_mut(cache);
                 h.set_mode(MODE_PROBE);
@@ -333,7 +352,14 @@ impl Heap {
             let block = (cap / 4).max(1);
             let len = self.hdr_ref(cache).len as usize;
             if len + block > cap && len > half {
-                self.flush(shared, arena, cache, class, len - half);
+                self.flush(
+                    shared,
+                    arena,
+                    cache,
+                    class,
+                    len - half,
+                    Tracked::assume_new(),
+                );
             }
             let len = self.hdr_ref(cache).len as usize;
             let want = block.min(cap - len);
@@ -341,8 +367,15 @@ impl Heap {
                 return;
             }
             let slots = self.hdr_ref(cache).slots;
-            let out = stack_mut(slots, len, want);
-            let claim = self.claim(shared, shared.owner(arena).0.class(class), out);
+            let out = stack_mut(slots, len, want, Tracked::assume_new());
+            let (claim, _) = self.claim(
+                shared,
+                shared.owner(arena).0.class(class),
+                out,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             let n = claim.n;
             if n == 0 {
                 return;
@@ -352,7 +385,7 @@ impl Heap {
             if shared.pac() {
                 CacheHeader::sign_all(slots, &mut out[..n]);
             }
-            let all = stack_mut(slots, 0, len + n);
+            let all = stack_mut(slots, 0, len + n, Tracked::assume_new());
             if len >= n {
                 // [old..][block] -> [block][old[n..]][old[..n]]
                 let (bottom, rest) = all.split_at_mut(n);

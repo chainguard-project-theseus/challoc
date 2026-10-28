@@ -10,7 +10,13 @@ use crate::layout::NCLASSES;
 
 use crate::arena::field_at;
 
-use super::{CacheHeader, FOREIGN, Heap, Shared};
+use super::{CacheHeader, CachePerms, FOREIGN, Heap, Shared};
+use crate::meta::MetaClaim;
+use vstd::prelude::verus;
+use vstd::prelude::{Ghost, Tracked, int};
+use vstd::raw_ptr::{PointsTo, PointsToRaw};
+
+verus! {
 
 /// A heap's caches for one arena other than its home arena (design 6.2,
 /// `caches[arena]`), allocated from the metadata region the first time the
@@ -40,6 +46,22 @@ pub struct ArenaCaches {
     pub(super) caches: [CacheHeader; NCLASSES],
 }
 
+/// The permissions to an `others` node's block that the heap keeps for
+/// it ([`Heap`]'s `heads`): to the fields of the node's first line that
+/// verified code reads and writes after [`node_link`] stored them,
+/// `arena`, `pad` and `next`; to the rest of the block outside the node's
+/// headers (`rest`); and the block's metadata claim (`claim`).
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct NodeHead {
+    pub arena: PointsTo<u16>,
+    pub next: PointsTo<*mut ArenaCaches>,
+    pub pad: PointsTo<u8>,
+    pub rest: PointsToRaw,
+    pub claim: MetaClaim,
+}
+
+} // verus!
+
 /// A heap's `n`-th `others` node is placed `n % NODE_STAGGER_LINES` cache
 /// lines into its metadata block, so that the node heads a cross-arena
 /// `free` walks (and the stack tops it pushes to) do not share L1 sets:
@@ -66,13 +88,20 @@ pub(super) fn node_block_layout() -> Layout {
 /// # Safety
 /// `node` is the start of a fresh node in a block this heap holds.
 #[inline(always)]
-unsafe fn node_link(node: *mut ArenaCaches, arena: u16, pad: u8, next: &*mut ArenaCaches) {
+unsafe fn node_link(
+    node: *mut ArenaCaches,
+    arena: u16,
+    pad: u8,
+    next: &*mut ArenaCaches,
+    _head: Tracked<PointsToRaw>,
+) -> Tracked<NodeHead> {
     // SAFETY: guaranteed by the caller; each store is to its field.
     unsafe {
         ptr::write(node as *mut u16, arena);
         ptr::write(field_at::<ArenaCaches, u8>(node, 2), pad);
         ptr::write(field_at::<ArenaCaches, *mut ArenaCaches>(node, 8), *next);
     }
+    Tracked::assume_new()
 }
 
 /// The address of node `o`'s `caches` array, computed as `&(*o).caches`
@@ -95,7 +124,16 @@ unsafe fn node_caches_ptr(o: *mut ArenaCaches) -> *mut [CacheHeader; NCLASSES] {
 /// `o` is a live node owned by the heap, and nothing writes its headers
 /// while the reference lives.
 #[inline(always)]
-pub(super) unsafe fn node_caches_detached<'a>(o: *mut ArenaCaches) -> &'a [CacheHeader; NCLASSES] {
+#[allow(
+    clippy::needless_lifetimes,
+    reason = "the permission and the headers share the lifetime in the Verus signature"
+)]
+pub(super) unsafe fn node_caches_detached<'a>(
+    o: *mut ArenaCaches,
+    _perms: Tracked<&'a CachePerms>,
+    _h: Ghost<Heap>,
+    _r: Ghost<int>,
+) -> &'a [CacheHeader; NCLASSES] {
     // SAFETY: guaranteed by the caller.
     unsafe { &*node_caches_ptr(o) }
 }
@@ -108,7 +146,11 @@ pub(super) unsafe fn node_caches_detached<'a>(o: *mut ArenaCaches) -> &'a [Cache
 /// # Safety
 /// `node` is a live node owned by the heap.
 #[inline(always)]
-pub(super) unsafe fn node_set_arena(node: *mut ArenaCaches, arena: u16) {
+pub(super) unsafe fn node_set_arena(
+    node: *mut ArenaCaches,
+    arena: u16,
+    _perm: Tracked<&mut PointsTo<u16>>,
+) {
     // SAFETY: guaranteed by the caller; `arena` is at the node's address.
     unsafe { ptr::write(node as *mut u16, arena) };
 }
@@ -144,7 +186,7 @@ impl Heap {
     /// # Safety
     /// `o` is a live node owned by this heap.
     #[inline(always)]
-    pub(super) unsafe fn node_next(&self, o: *mut ArenaCaches) -> *mut ArenaCaches {
+    pub(super) unsafe fn node_next(&self, o: *mut ArenaCaches, _r: Ghost<int>) -> *mut ArenaCaches {
         // SAFETY: the field is inside the node.
         unsafe { *field_at::<ArenaCaches, *mut ArenaCaches>(o, 8) }
     }
@@ -157,7 +199,7 @@ impl Heap {
     /// # Safety
     /// As for [`Heap::node_next`].
     #[inline(always)]
-    pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches) -> u16 {
+    pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches, _r: Ghost<int>) -> u16 {
         // SAFETY: the field is at the node's address.
         unsafe { *(o as *mut u16) }
     }
@@ -168,7 +210,7 @@ impl Heap {
     /// # Safety
     /// As for [`Heap::node_next`].
     #[inline(always)]
-    pub(super) unsafe fn node_pad(&self, o: *mut ArenaCaches) -> u8 {
+    pub(super) unsafe fn node_pad(&self, o: *mut ArenaCaches, _r: Ghost<int>) -> u8 {
         // SAFETY: the field is inside the node.
         unsafe { *field_at::<ArenaCaches, u8>(o, 2) }
     }
@@ -179,7 +221,11 @@ impl Heap {
     /// # Safety
     /// As for [`Heap::node_next`].
     #[inline(always)]
-    pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches) -> &[CacheHeader; NCLASSES] {
+    pub(super) unsafe fn node_caches(
+        &self,
+        o: *mut ArenaCaches,
+        _r: Ghost<int>,
+    ) -> &[CacheHeader; NCLASSES] {
         // SAFETY: the node is placed and owned by this heap.
         unsafe { &*node_caches_ptr(o) }
     }
@@ -253,10 +299,10 @@ impl Heap {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
             unsafe {
-                if self.node_arena(o) == arena {
+                if self.node_arena(o, Ghost::assume_new()) == arena {
                     return o;
                 }
-                o = self.node_next(o);
+                o = self.node_next(o, Ghost::assume_new());
             }
             n += 1;
         }
@@ -276,7 +322,7 @@ impl Heap {
         // path).
         let node = unsafe { block.add(64 * pad) } as *mut ArenaCaches;
         // SAFETY: as above.
-        unsafe { node_link(node, arena, pad as u8, &self.others) };
+        unsafe { node_link(node, arena, pad as u8, &self.others, Tracked::assume_new()) };
         for c in 0..NCLASSES {
             // SAFETY: `c < NCLASSES`, inside the block.
             let cache = unsafe { Self::node_cache_ptr(node, c) };

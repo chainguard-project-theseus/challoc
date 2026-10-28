@@ -1374,7 +1374,7 @@ fn arena_stats(shared: &Shared, i: usize) -> Result<ArenaStats, c_int> {
 /// can reach the slabs they pin (`malloc_trim` does the same).
 fn flush_caller(shared: &Shared) {
     if let Some(h) = heap::existing_heap(shared) {
-        h.flush_all(shared);
+        h.flush_all(shared, vstd::prelude::Tracked::assume_new());
     }
 }
 
@@ -1581,7 +1581,7 @@ fn ctl(
             let on = io.write_bool()?;
             io.read(h.tcache_enabled(), Tracked::assume_new())?;
             if let Some(on) = on {
-                h.set_tcache_enabled(shared, on);
+                h.set_tcache_enabled(shared, on, vstd::prelude::Tracked::assume_new());
             }
             Ok(())
         }
@@ -1598,7 +1598,7 @@ fn ctl(
             }
             io.read(h.arena() as c_uint, Tracked::assume_new())?;
             if let Some(a) = new {
-                h.set_arena(shared, a as u16);
+                h.set_arena(shared, a as u16, vstd::prelude::Tracked::assume_new());
             }
             Ok(())
         }
@@ -1612,7 +1612,10 @@ fn ctl(
                 Some(h) => h.arena(),
                 None => 0,
             };
-            let t = shared.tcaches.create(shared, home).ok_or(EFAULT)?;
+            let t = shared
+                .tcaches
+                .create(shared, home, vstd::prelude::Tracked::assume_new())
+                .ok_or(EFAULT)?;
             io.read(t as c_uint, Tracked::assume_new())
         }
         TcacheFlush | TcacheDestroy => {
@@ -1622,8 +1625,14 @@ fn ctl(
                 return Err(EFAULT);
             }
             let ok = match op {
-                TcacheFlush => shared.tcaches.flush(shared, t as u16),
-                _ => shared.tcaches.destroy(shared, t as u16),
+                TcacheFlush => {
+                    shared
+                        .tcaches
+                        .flush(shared, t as u16, vstd::prelude::Tracked::assume_new())
+                }
+                _ => shared
+                    .tcaches
+                    .destroy(shared, t as u16, vstd::prelude::Tracked::assume_new()),
             };
             if ok { Ok(()) } else { Err(EFAULT) }
         }

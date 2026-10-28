@@ -235,7 +235,14 @@ impl Heap {
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
-            let len = self.refill(shared, a, cache, class);
+            let len = self.refill(
+                shared,
+                a,
+                Tracked::assume_new(),
+                cache,
+                class,
+                Tracked::assume_new(),
+            );
             if len == 0 {
                 return (ptr::null_mut(), false);
             }
@@ -333,7 +340,14 @@ impl Heap {
                 } else {
                     ((*cache).cap / 2).max(1)
                 };
-                self.flush(shared, arena, cache, class, n as usize);
+                self.flush(
+                    shared,
+                    arena,
+                    cache,
+                    class,
+                    n as usize,
+                    Tracked::assume_new(),
+                );
             }
             // The scan ran above; a flush only removes entries.
             if !Self::push_cache(cache, p, false, shared.pac()) {
