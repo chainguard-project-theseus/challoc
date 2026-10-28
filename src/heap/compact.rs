@@ -19,6 +19,7 @@
 //! never writes below `len`.
 
 use core::ptr;
+use vstd::prelude::Tracked;
 
 use crate::layout::CLASSES;
 use crate::sys::pac;
@@ -144,7 +145,9 @@ impl Heap {
                     let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some(a) = shared.arena(self.hdr_ref(cache).arena) else {
+                        let Some((a, _)) =
+                            shared.arena(self.hdr_ref(cache).arena, Tracked::assume_new())
+                        else {
                             return (ptr::null_mut(), false);
                         };
                         len = self.refill(shared, a, cache, class);
@@ -207,7 +210,9 @@ impl Heap {
                         // the claim came back empty). Refill as the probe
                         // branch does; popping here would wrap `len - 1`.
                         let shared: &Shared = &*self.shared;
-                        let Some(a) = shared.arena(self.hdr_ref(cache).arena) else {
+                        let Some((a, _)) =
+                            shared.arena(self.hdr_ref(cache).arena, Tracked::assume_new())
+                        else {
                             return (ptr::null_mut(), false);
                         };
                         len = self.refill(shared, a, cache, class);
@@ -260,7 +265,7 @@ impl Heap {
 
     /// Whether `class` in `arena` is worth compacting (design 6.4).
     pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
-        let cs = shared.owner(arena).class(class);
+        let cs = shared.owner(arena).0.class(class);
         let (holes, capacity) = cs.holes(vstd::prelude::Tracked::assume_new());
         holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
             && holes * COMPACT_MIN_RATIO >= capacity
@@ -277,7 +282,7 @@ impl Heap {
         class: usize,
         prev_refilled: u32,
     ) -> (u32, Verdict) {
-        let cs = shared.owner(arena).class(class);
+        let cs = shared.owner(arena).0.class(class);
         let refilled = cs.refilled() as u32;
         let delta = refilled.wrapping_sub(prev_refilled) as usize;
         let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
@@ -318,7 +323,7 @@ impl Heap {
         unsafe {
             let arena = self.hdr_ref(cache).arena;
             if !Self::fragmented(shared, arena, class) {
-                shared.owner(arena).class(class).note_compact_mode(false);
+                shared.owner(arena).0.class(class).note_compact_mode(false);
                 let h = self.hdr_mut(cache);
                 h.set_mode(MODE_PROBE);
                 return;
@@ -337,12 +342,12 @@ impl Heap {
             }
             let slots = self.hdr_ref(cache).slots;
             let out = stack_mut(slots, len, want);
-            let claim = self.claim(shared, shared.owner(arena).class(class), out);
+            let claim = self.claim(shared, shared.owner(arena).0.class(class), out);
             let n = claim.n;
             if n == 0 {
                 return;
             }
-            shared.owner(arena).class(class).note_compact(n);
+            shared.owner(arena).0.class(class).note_compact(n);
             out[..n].reverse();
             if shared.pac() {
                 CacheHeader::sign_all(slots, &mut out[..n]);

@@ -6,6 +6,7 @@
 //! ([`Tcache::None`], straight against the slab bitmaps).
 
 use core::ptr;
+use vstd::prelude::Tracked;
 
 use super::Shared;
 
@@ -132,8 +133,12 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
 
 /// One slot of `class` straight from `arena`'s slab bitmaps.
 fn alloc_direct(shared: &Shared, class: usize, arena: u16) -> (*mut u8, bool) {
-    match shared.arena(arena) {
-        Some(a) => shared.alloc_direct(a, class),
+    match shared.arena(arena, Tracked::assume_new()) {
+        Some((a, w)) => {
+            let (p, zero, _) =
+                shared.alloc_direct(a, w, class, Tracked::assume_new(), Tracked::assume_new());
+            (p, zero)
+        }
         None => (ptr::null_mut(), false),
     }
 }
@@ -155,12 +160,16 @@ pub fn alloc_huge(
         },
         (None, _) => crate::heap::existing_heap(shared).map_or(0, |h| h.arena()),
     };
-    if shared.arena(a).is_none() {
+    if shared.arena(a, Tracked::assume_new()).is_none() {
         return (ptr::null_mut(), false);
     }
     match crate::heap::heap_for_thread(shared) {
         Some(h) => h.alloc_huge_in(shared, size, align, a),
-        None => shared.alloc_huge(size, align, a),
+        None => {
+            let (p, zero, _) =
+                shared.alloc_huge(size, align, a, Tracked::assume_new(), Tracked::assume_new());
+            (p, zero)
+        }
     }
 }
 

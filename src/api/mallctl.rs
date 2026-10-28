@@ -1328,7 +1328,7 @@ fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
 /// build option, the name resolves and the read says the facility is off.
 fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
     let s = shared();
-    let cg = s.cgroup_now();
+    let cg = s.cgroup_now(vstd::prelude::Tracked::assume_new());
     if cg.tracked() { Ok(cg) } else { Err(ENOENT) }
 }
 
@@ -1562,10 +1562,12 @@ fn ctl(
                 }
                 return Ok(());
             }
-            let arena = shared.arena(arena_index(i)?).ok_or(ENOENT)?;
-            io.read(ms_of(arena.decay_ns()), Tracked::assume_new())?;
+            let arena = shared
+                .arena(arena_index(i)?, vstd::prelude::Tracked::assume_new())
+                .ok_or(ENOENT)?;
+            io.read(ms_of(arena.0.decay_ns()), Tracked::assume_new())?;
             if let Some(ms) = new {
-                arena.set_decay_ms(ms as i64);
+                arena.0.set_decay_ms(ms as i64);
             }
             Ok(())
         }
@@ -1587,7 +1589,10 @@ fn ctl(
             let h = thread_heap(shared)?;
             let new = io.write::<c_uint>()?;
             if let Some(a) = new
-                && (a as usize >= MAX_ARENAS || shared.arena(a as u16).is_none())
+                && (a as usize >= MAX_ARENAS
+                    || shared
+                        .arena(a as u16, vstd::prelude::Tracked::assume_new())
+                        .is_none())
             {
                 return Err(EFAULT);
             }
@@ -2056,9 +2061,21 @@ mod tests {
             );
         };
         let free_huge_run = |s: &Shared| {
-            let p = s.alloc_huge(300 * 1024, 16, 0).0;
+            let p = s
+                .alloc_huge(
+                    300 * 1024,
+                    16,
+                    0,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                )
+                .0;
             match s.regions.classify(p as usize) {
-                Kind::Huge { page } => s.free_huge(page),
+                Kind::Huge { page } => s.free_huge(
+                    page,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                ),
                 other => panic!("{other:?}"),
             };
             assert_eq!(
@@ -2098,9 +2115,23 @@ mod tests {
         })
         .build();
         let class = CLASSES.len() - 1;
-        let p = s.alloc_direct(&s.arena0, class).0;
+        let p = s
+            .alloc_direct(
+                &s.arena0,
+                vstd::prelude::Tracked::assume_new(),
+                class,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+            .0;
         assert!(!p.is_null());
-        s.free_direct(0, class, p);
+        s.free_direct(
+            0,
+            class,
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(s.arena0.class(class).stats().empty, 1);
         free_huge_run(s);
         s.policy.apply(Band::Immediate, 512 << 20, 0, 0);
@@ -2239,7 +2270,9 @@ mod tests {
         assert_eq!(lazy, 0);
         let _eager: usize = get("stats.cgroup.eager_purges");
         assert_eq!(set("stats.cgroup.purge_advice", 1usize), EPERM);
-        let tracked = shared().cgroup_now().tracked();
+        let tracked = shared()
+            .cgroup_now(vstd::prelude::Tracked::assume_new())
+            .tracked();
         for key in [
             "stats.cgroup.limit",
             "stats.cgroup.high",
@@ -2265,8 +2298,18 @@ mod tests {
             let high: usize = get("stats.cgroup.high");
             let current: usize = get("stats.cgroup.current");
             std::eprintln!("stats.cgroup: limit {limit} high {high} current {current}");
-            assert_eq!(limit, shared().cgroup_now().limit() as usize);
-            assert_eq!(high, shared().cgroup_now().high() as usize);
+            assert_eq!(
+                limit,
+                shared()
+                    .cgroup_now(vstd::prelude::Tracked::assume_new())
+                    .limit() as usize
+            );
+            assert_eq!(
+                high,
+                shared()
+                    .cgroup_now(vstd::prelude::Tracked::assume_new())
+                    .high() as usize
+            );
             assert!(limit == usize::MAX || limit > 0);
             // The policy's keys: the defaults without a limit (the period
             // as configured, no cap), the cap arithmetic with one.
@@ -2708,7 +2751,13 @@ mod tests {
         // Decay period per arena, and for all.
         assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), 250isize), 0);
         assert_eq!(get::<isize>(&std::format!("arena.{a}.dirty_decay_ms")), 250);
-        assert_eq!(s.arena(a as u16).unwrap().decay_ns(), 250_000_000);
+        assert_eq!(
+            s.arena(a as u16, vstd::prelude::Tracked::assume_new())
+                .unwrap()
+                .0
+                .decay_ns(),
+            250_000_000
+        );
         assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), -1isize), 0);
         assert_eq!(get::<isize>(&std::format!("arena.{a}.dirty_decay_ms")), -1);
         assert_eq!(
@@ -2724,19 +2773,21 @@ mod tests {
         // Free everything in the arena, then purge: its Empty slab goes.
         dallocx(p, 0);
         dallocx(h, 0);
-        let arena = s.arena(a as u16).unwrap();
+        let arena = s
+            .arena(a as u16, vstd::prelude::Tracked::assume_new())
+            .unwrap();
         let c = crate::layout::class_of(500).unwrap();
         // The slot sits in this thread's cache for arena `a` until the
         // purge flushes the caller.
-        assert_eq!(arena.classes[c].stats().empty, 0);
+        assert_eq!(arena.0.classes[c].stats().empty, 0);
         assert_eq!(call(&std::format!("arena.{a}.purge")), 0);
-        assert_eq!(arena.classes[c].stats().empty, 0);
+        assert_eq!(arena.0.classes[c].stats().empty, 0);
         // The first refill spanned `cap / 2` slots' worth of slabs (one
         // 128-slot slab at 512 bytes); all of them were flushed and purged.
         let refill_slabs =
             (crate::heap::default_cap(c) as usize / 2).div_ceil(crate::layout::CLASSES[c].nslots());
         assert_eq!(
-            arena.classes[c].stats().purged,
+            arena.0.classes[c].stats().purged,
             refill_slabs,
             "the flushed slabs were purged"
         );
@@ -2797,7 +2848,11 @@ mod tests {
             !again.is_null(),
             "the destroyed arena still serves MALLOCX_ARENA allocations"
         );
-        assert_eq!(s.classify_free(again).map(|x| x.1), Ok(a as u16));
+        assert_eq!(
+            s.classify_free(again, vstd::prelude::Tracked::assume_new())
+                .map(|x| x.1),
+            Ok(a as u16)
+        );
         assert_eq!(
             call(&std::format!("arena.{a}.destroy")),
             0,
@@ -2864,7 +2919,11 @@ mod tests {
         assert_eq!(get::<c_uint>("thread.arena"), a);
         // Plain malloc comes from that arena through the thread's own caches.
         let q = malloc(200);
-        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(a as u16));
+        assert_eq!(
+            s.classify_free(q, vstd::prelude::Tracked::assume_new())
+                .map(|x| x.1),
+            Ok(a as u16)
+        );
         free(q);
         assert_eq!(set("thread.arena", 4000 as c_uint), EFAULT);
         assert_eq!(set("thread.arena", 5000 as c_uint), EFAULT);

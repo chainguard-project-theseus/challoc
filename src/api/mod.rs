@@ -786,7 +786,7 @@ extern "C" fn fork_prepare() {
     // for one this thread's own interrupted code is running, when `fork`
     // is called from a signal handler): the child then starts that one
     // over (`fork_child`), and the parent's finishes as usual.
-    shared().discover_cgroup_for_fork();
+    shared().discover_cgroup_for_fork(vstd::prelude::Tracked::assume_new());
     // Unverified: the signal-mask token is a placeholder until the fork
     // handlers are verified.
     let mask = sys::block_all_signals(Tracked::assume_new());
@@ -1207,7 +1207,11 @@ mod tests {
                 "arena.rs:Arena.stats" => {
                     for &a in arenas {
                         state(
-                            s.arena(a).unwrap().stats_raw_lock().is_locked(),
+                            s.arena(a, vstd::prelude::Tracked::assume_new())
+                                .unwrap()
+                                .0
+                                .stats_raw_lock()
+                                .is_locked(),
                             &std::format!("arena {a} stats"),
                         );
                     }
@@ -1220,7 +1224,12 @@ mod tests {
                     for &a in arenas {
                         for c in 0..NCLASSES {
                             state(
-                                s.arena(a).unwrap().classes[c].raw_lock().is_locked(),
+                                s.arena(a, vstd::prelude::Tracked::assume_new())
+                                    .unwrap()
+                                    .0
+                                    .classes[c]
+                                    .raw_lock()
+                                    .is_locked(),
                                 &std::format!("arena {a} class {c}"),
                             );
                         }
@@ -1229,7 +1238,12 @@ mod tests {
                 "class/sets.rs:SetTable.tables" => {
                     for &a in arenas {
                         state(
-                            s.arena(a).unwrap().sets().raw_lock().is_locked(),
+                            s.arena(a, vstd::prelude::Tracked::assume_new())
+                                .unwrap()
+                                .0
+                                .sets()
+                                .raw_lock()
+                                .is_locked(),
                             &std::format!("arena {a} sets"),
                         );
                     }
@@ -1351,11 +1365,21 @@ mod tests {
         // with nobody else touching the allocator.
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);
-        let (p, _) = s.alloc_huge(8 << 20, 4096, 0);
+        let (p, _, _) = s.alloc_huge(
+            8 << 20,
+            4096,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
-        s.free_huge(page);
+        s.free_huge(
+            page,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         // No check that the run is still `Empty` here: with a 1 ms decay
         // the thread can purge it before this thread runs again (seen on
         // a loaded Docker VM); the loop below is the assertion.
@@ -1506,10 +1530,20 @@ mod tests {
         purge::on_tick(s, t0, true, Tracked::assume_new());
         purge::on_tick(s, t0 + 2 * AUTO_HOLD_NS, true, Tracked::assume_new());
         let clean = purge::background::present();
-        let (p, _) = s.alloc_huge(8 << 20, 4096, 0);
+        let (p, _, _) = s.alloc_huge(
+            8 << 20,
+            4096,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
-        s.free_huge((p as usize - s.regions.huge_base) >> s.regions.lg_page);
+        s.free_huge(
+            (p as usize - s.regions.huge_base) >> s.regions.lg_page,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         let t1 = t0 + 3 * AUTO_HOLD_NS;
         purge::on_tick(s, t1, true, Tracked::assume_new());
         let first = purge::background::present();
@@ -1570,7 +1604,13 @@ mod tests {
         assert!(!purge::background::present());
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);
-        let (p, _) = s.alloc_huge(8 << 20, 4096, 0);
+        let (p, _, _) = s.alloc_huge(
+            8 << 20,
+            4096,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
@@ -1600,7 +1640,11 @@ mod tests {
                     return;
                 }
                 let none_before = s.huge.oldest_empty() == 0;
-                s.free_huge(page);
+                s.free_huge(
+                    page,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
                 let first = none_before && s.huge.oldest_empty() != 0;
                 hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
             }));
@@ -1620,7 +1664,11 @@ mod tests {
         // or hook behind for the other background tests.
         purge::background::BEFORE_PUBLISH.lock().unwrap().take();
         if hook_state.load(Ordering::SeqCst) < 2 {
-            s.free_huge(page);
+            s.free_huge(
+                page,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
         s.set_decay_ms((old_ns / 1_000_000) as i64);
         purge::background::request(false, Tracked::assume_new());

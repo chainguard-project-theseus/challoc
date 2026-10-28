@@ -7,6 +7,7 @@ use core::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::vec::Vec;
+use vstd::prelude::Tracked;
 
 use super::tests::live;
 use crate::testutil::{TestShared, shared, xorshift};
@@ -237,7 +238,15 @@ fn creating_and_exited_sentinels_are_served_directly() {
 fn key_registration_failure_is_served_directly() {
     let s = shared();
     let c = class_of(48).unwrap();
-    let p = s.alloc_direct(&s.arena0, c).0 as usize;
+    let p = s
+        .alloc_direct(
+            &s.arena0,
+            Tracked::assume_new(),
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .0 as usize;
     assert_ne!(p, 0);
     std::thread::spawn(move || {
         let meta_before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
@@ -643,13 +652,40 @@ fn changed_arena_child() {
         Some(1)
     );
     let c = class_of(64).unwrap();
-    let (a0, a1) = (s.arena(0).unwrap(), s.arena(1).unwrap());
+    let (a0, a1) = (
+        s.arena(0, Tracked::assume_new()).unwrap().0,
+        s.arena(1, Tracked::assume_new()).unwrap().0,
+    );
     // Two slots per slab: neither release empties its slab or reopens
     // it, so the only `ClassState` write is the `released` add.
-    let (p1, _) = s.alloc_direct(a1, c);
-    let (q1, _) = s.alloc_direct(a1, c);
-    let (p0, _) = s.alloc_direct(a0, c);
-    let (q0, _) = s.alloc_direct(a0, c);
+    let (p1, _, _) = s.alloc_direct(
+        a1,
+        Tracked::assume_new(),
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    let (q1, _, _) = s.alloc_direct(
+        a1,
+        Tracked::assume_new(),
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    let (p0, _, _) = s.alloc_direct(
+        a0,
+        Tracked::assume_new(),
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    let (q0, _, _) = s.alloc_direct(
+        a0,
+        Tracked::assume_new(),
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!p0.is_null() && !q0.is_null() && !p1.is_null() && !q1.is_null());
     let t = s.table(c);
     let (slab0, _) = t.locate(p0);
@@ -669,7 +705,13 @@ fn changed_arena_child() {
         assert_eq!(libc::sigaction(libc::SIGSEGV, &sa, ptr::null_mut()), 0);
         assert_eq!(libc::mprotect(base as *mut c_void, len, libc::PROT_READ), 0);
     }
-    s.release_routed(1, c, &[p1, p0]);
+    s.release_routed(
+        1,
+        c,
+        &[p1, p0],
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     std::eprintln!(
         "release_routed returned (handler ran: {})",
         FLIP_DONE.load(Ordering::Relaxed)

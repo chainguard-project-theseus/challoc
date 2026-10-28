@@ -2268,7 +2268,7 @@ pub fn on_tick(shared: &Shared, now: u64, alloc: bool, _ord: Tracked<&mut LockOr
 /// taken; nothing at all when the cgroup is untracked or the window has
 /// not passed. Slow paths only (the periodic tick, the background thread).
 fn sample(shared: &Shared, now: u64, _ord: Tracked<&mut LockOrder>) {
-    if shared.discover_cgroup_if_due(now) {
+    if shared.discover_cgroup_if_due(now, Tracked::assume_new()) {
         return;
     }
     // `shared.cgroup().is_some_and(|cg| cg.sample(now))`, spelled out:

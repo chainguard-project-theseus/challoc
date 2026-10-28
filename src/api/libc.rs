@@ -75,7 +75,16 @@ fn einval() -> *mut u8 {
 fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
     match heap::heap_for_thread(shared) {
         Some(h) => h.alloc_huge(shared, size, align),
-        None => shared.alloc_huge(size, align, 0),
+        None => {
+            let (p, zero, _) = shared.alloc_huge(
+                size,
+                align,
+                0,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
+            (p, zero)
+        }
     }
 }
 
@@ -264,7 +273,7 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
     }
     match super::shared_if_ready() {
         Some(shared) => {
-            shared.check_size_hint(p, size, hint);
+            shared.check_size_hint(p, size, hint, vstd::prelude::Tracked::assume_new());
             heap::free(shared, p)
         }
         None => free_before_init(p),
@@ -696,7 +705,7 @@ fn free_usable_slow(p: *mut u8) -> usize {
     let Some(shared) = super::shared_if_ready() else {
         free_before_init(p)
     };
-    let usable = match shared.classify_free(p) {
+    let usable = match shared.classify_free(p, vstd::prelude::Tracked::assume_new()) {
         Ok((class, _)) => CLASSES[class].size(),
         Err(page) => shared
             .huge

@@ -286,7 +286,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
             }
         }
     }
-    shared.check_size_hint(p, size, hint);
+    shared.check_size_hint(p, size, hint, vstd::prelude::Tracked::assume_new());
     mallocx::free(shared, p, f.tcache);
 }
 
@@ -582,12 +582,19 @@ mod tests {
         let c = crate::layout::class_of(300).unwrap();
         // Default cache, explicit arena.
         let p = mallocx(300, mallocx_arena(lua) as c_int);
-        assert_eq!(s.classify_free(p), Ok((c, lua)));
+        assert_eq!(
+            s.classify_free(p, vstd::prelude::Tracked::assume_new()),
+            Ok((c, lua))
+        );
         // rallocx within the class keeps it in the Lua arena; across
         // classes with the arena flag lands there too.
         assert_eq!(rallocx(p, 320, mallocx_arena(lua) as c_int), p);
         let q = rallocx(p, 3000, mallocx_arena(lua) as c_int);
-        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(lua));
+        assert_eq!(
+            s.classify_free(q, vstd::prelude::Tracked::assume_new())
+                .map(|x| x.1),
+            Ok(lua)
+        );
         dallocx(q, mallocx_arena(lua) as c_int);
         // No cache: the live count moves at once.
         let flags = (mallocx_arena(lua) | MALLOCX_TCACHE_NONE) as c_int;
@@ -609,7 +616,7 @@ mod tests {
         assert!(s.tcaches.destroy(s, t));
         // Huge runs record the arena.
         let h = mallocx(2 << 20, mallocx_arena(lua) as c_int);
-        let Err(page) = s.classify_free(h) else {
+        let Err(page) = s.classify_free(h, vstd::prelude::Tracked::assume_new()) else {
             panic!("not huge")
         };
         assert_eq!(
@@ -658,7 +665,10 @@ mod tests {
         let (p, _) = mallocx::alloc(s, c, f.arena, f.tcache);
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
-        assert_eq!(s.classify_free(p), Ok((c, lua)));
+        assert_eq!(
+            s.classify_free(p, vstd::prelude::Tracked::assume_new()),
+            Ok((c, lua))
+        );
         let h = heap::existing_heap(s).unwrap();
         // This thread's automatic arena: whichever `Arenas::assign` gave
         // the test thread (the default is `min(4 * ncpus, 64)` arenas).
@@ -684,7 +694,11 @@ mod tests {
         assert_ne!(q, p);
         assert_eq!(unsafe { *q }, 0xa5);
         // Across classes, plain realloc lands in the caller's home arena.
-        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(home));
+        assert_eq!(
+            s.classify_free(q, vstd::prelude::Tracked::assume_new())
+                .map(|x| x.1),
+            Ok(home)
+        );
         api_libc::free(q);
 
         // Direct path: live count moves at once, no cache involved.
@@ -715,7 +729,7 @@ mod tests {
         // Huge runs record the arena too.
         let (hp, _) = mallocx::alloc_huge(s, 3 << 20, 1, Some(lua), Tcache::Default);
         assert!(!hp.is_null());
-        let Err(page) = s.classify_free(hp) else {
+        let Err(page) = s.classify_free(hp, vstd::prelude::Tracked::assume_new()) else {
             panic!("not huge")
         };
         assert_eq!(
@@ -736,7 +750,10 @@ mod tests {
         let f = Flags::decode(mallocx_tcache(t) | mallocx_arena(lua));
         assert_eq!(f.tcache, Tcache::Explicit(t));
         let (e, _) = mallocx::alloc(s, c, f.arena, f.tcache);
-        assert_eq!(s.classify_free(e), Ok((c, lua)));
+        assert_eq!(
+            s.classify_free(e, vstd::prelude::Tracked::assume_new()),
+            Ok((c, lua))
+        );
         let th = s.tcaches.get(t).unwrap();
         let before = th.cache_in(lua, c).unwrap().len();
         let before_foreign = th.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
@@ -784,7 +801,9 @@ mod tests {
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;
             assert_eq!(unsafe { *p }, i as u8);
-            let (class, arena) = s.classify_free(p).unwrap();
+            let (class, arena) = s
+                .classify_free(p, vstd::prelude::Tracked::assume_new())
+                .unwrap();
             assert_eq!(class, c);
             if i % 2 == 0 {
                 assert_eq!(arena, lua);
@@ -813,8 +832,8 @@ mod tests {
         );
         h.flush_all(s);
         // Per-arena purge covers the Lua arena's slabs only.
-        let lua_arena = s.arena(lua).unwrap();
-        let empty_before = lua_arena.classes[c].stats().empty;
+        let lua_arena = s.arena(lua, vstd::prelude::Tracked::assume_new()).unwrap();
+        let empty_before = lua_arena.0.classes[c].stats().empty;
         assert!(
             empty_before >= 1,
             "the Lua arena's slab should be Empty after the flush"
@@ -827,7 +846,7 @@ mod tests {
         )
         .unwrap();
         assert!(purged >= empty_before);
-        assert_eq!(lua_arena.classes[c].stats().empty, 0);
+        assert_eq!(lua_arena.0.classes[c].stats().empty, 0);
         assert!(
             crate::purge::purge_arena(
                 s,
@@ -890,7 +909,11 @@ mod tests {
             .map(|(_, p)| *p)
             .collect();
         let t = s.table(c);
-        let cs = s.arena(a).unwrap().class(c);
+        let cs = s
+            .arena(a, vstd::prelude::Tracked::assume_new())
+            .unwrap()
+            .0
+            .class(c);
         let mut moved = 0;
         for &p in &live {
             let hint = get_defrag_hint(p);
@@ -961,7 +984,11 @@ mod tests {
             "the utilization query keeps jemalloc's large-extent shape"
         );
         let tm = s.table(cm);
-        let csm = s.arena(a).unwrap().class(cm);
+        let csm = s
+            .arena(a, vstd::prelude::Tracked::assume_new())
+            .unwrap()
+            .0
+            .class(cm);
         let (lone_slab, _) = tm.locate(*big.last().unwrap());
         assert_eq!(tm.desc(lone_slab).live(), 1);
         let lone_hint = get_defrag_hint(*big.last().unwrap());

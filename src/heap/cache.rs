@@ -446,7 +446,7 @@ impl Heap {
         let refilled = if arena == FOREIGN {
             0
         } else {
-            shared.owner(arena).class(class).refilled() as u32
+            shared.owner(arena).0.class(class).refilled() as u32
         };
         let cache = self.cache_slot(shared, arena, class);
         if cache.is_null() {
