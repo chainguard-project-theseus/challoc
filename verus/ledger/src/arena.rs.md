@@ -31,8 +31,6 @@ file.
 | `axiom_arenas_layout` | axiom | core library | Kani | trusted |
 | `axiom_a...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_a...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
-| `Arenas:...blished` | external_body | allocator invariant | Verus | trusted |
-| `Arenas:...lished0` | external_body | allocator invariant | Verus | trusted |
 | `axiom_a..._frame` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_array_layout`
@@ -392,39 +390,9 @@ axiom fn axiom_arenas_assemble(
 ;
 ```
 
-## `Arenas::get_existing_published`
-
-src/arena.rs:2828. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> [`Arenas::get_existing`] with the arena's persistent record ([`Published`]) from the registry's invariant, the same code.
-
-```rust
-pub fn get_existing_published(&self, index: u16) -> (r: Option<(&Arena, Tracked<&'static Published>)>)
-    ensures
-        r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc() && (self.is_process() ==> w@.id() == process_pub_loc())
-            && w@.key() == index as int && w@.value() == a.spec_olocs(),
-```
-
-## `Arenas::published0`
-
-src/arena.rs:2865. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> Arena 0's persistent record ([`Published`]), from the registry's invariant, which has it since `init` (arena 0 is never stored again): for `Shared::owner` and `Shared::arena`, which return arena 0 without a load of its entry.
-
-```rust
-pub fn published0(&self) -> (r: Tracked<&'static Published>)
-    ensures
-        r@.id() == self.spec_pub_loc(),
-        self.is_process() ==> r@.id() == process_pub_loc(),
-        r@.key() == 0,
-        r@.value() == self.spec_arena0().spec_olocs(),
-```
-
 ## `axiom_arenas_lock_frame`
 
-src/arena.rs:3183. Kind: axiom. Category: allocator invariant.
+src/arena.rs:3181. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): what the creation lock's value keeps from the value it was created with is exactly the snapshot half's location and a count at or above the one it was created with (the automatic count, `Arenas::type_inv`).

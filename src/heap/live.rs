@@ -39,7 +39,7 @@ pub tracked struct Live {
     ghost class: int,
     tracked slot: Option<GhostSingleton<int>>,
     tracked run: Option<RunToken>,
-    tracked mem: UserMem,
+    tracked mem: Option<UserMem>,
 }
 
 /// The process's page, in bytes.
@@ -86,18 +86,38 @@ impl Live {
 
     /// The token holds the permission to exactly the block's usable bytes.
     pub closed spec fn mem_ok(self) -> bool {
-        self.mem.covers(self.addr as int, self.len())
+        &&& self.mem matches Some(m) && m.covers(self.addr as int, self.len())
     }
 
-    /// The permission the token holds.
+    /// The permission the token holds (meaningful under [`Live::mem_ok`]).
     pub closed spec fn mem(self) -> UserMem {
-        self.mem
+        self.mem.unwrap()
     }
 
     /// The provenance of the pointers the block's permission is valid
     /// through.
     pub open spec fn prov(self) -> Provenance {
         self.mem().provenance()
+    }
+
+    /// A live block's token holds the permission to its usable bytes.
+    pub proof fn lemma_mem(&self)
+        requires
+            self.wf(),
+        ensures
+            self.mem_ok(),
+            self.mem().covers(self.addr() as int, self.len()),
+    {
+    }
+
+    /// Borrow the permission, for a read of the block's bytes.
+    pub proof fn mem_ref(tracked &self) -> (tracked r: &UserMem)
+        requires
+            self.mem_ok(),
+        ensures
+            *r == self.mem(),
+    {
+        self.mem.tracked_borrow()
     }
 
     /// A live block: a slot of class `class` at `addr` with its slot
@@ -133,24 +153,6 @@ impl Live {
         &&& self.slot_of(c)
     }
 
-    /// A live block's token holds the permission to its usable bytes.
-    pub proof fn lemma_mem(&self)
-        requires
-            self.wf(),
-        ensures
-            self.mem_ok(),
-            self.mem().covers(self.addr() as int, self.len()),
-    {
-    }
-
-    /// Borrow the permission, for a read of the block's bytes.
-    pub proof fn mem_ref(tracked &self) -> (tracked r: &UserMem)
-        ensures
-            *r == self.mem(),
-    {
-        &self.mem
-    }
-
     /// The token of slot `t@` of class `c`, from its slot token, with the
     /// permission to the slot's bytes ([`axiom_hand_out`]).
     pub proof fn from_slot(tracked t: GhostSingleton<int>, c: int, p: *mut u8) -> (tracked r: Live)
@@ -160,14 +162,15 @@ impl Live {
             t@ == p@.addr as int,
             process_regions().is_slot(c, p@.addr),
         ensures
-            r.slot_block(p, c),
+            r.block(p),
+            r.slot_of(c),
             r.slot_tok() == t,
             r.len() == class_table()[c].size,
     {
         let len = class_table()[c].size as int;
         assert(process_regions().is_slot(c, p@.addr) && len == class_table()[c].size);
         let tracked m = axiom_hand_out(p, len);
-        Live { addr: p@.addr, class: c, slot: Some(t), run: None, mem: m }
+        Live { addr: p@.addr, class: c, slot: Some(t), run: None, mem: Some(m) }
     }
 
     /// The token of the run `t` at `p`, whose usable bytes are in the huge
@@ -183,8 +186,9 @@ impl Live {
             r.run_opt() == Some(t),
             r.len() == run_usable(t.npages()),
     {
-        let tracked m = axiom_hand_out(p, run_usable(t.npages()));
-        Live { addr: p@.addr, class: 0, slot: None, run: Some(t), mem: m }
+        let len = run_usable(t.npages());
+        let tracked m = axiom_hand_out(p, len);
+        Live { addr: p@.addr, class: 0, slot: None, run: Some(t), mem: Some(m) }
     }
 
     /// The slot token `self` holds.
@@ -208,22 +212,38 @@ impl Live {
         slot.tracked_unwrap()
     }
 
-    /// The run token the token holds, if any.
-    pub closed spec fn run_opt(self) -> Option<RunToken> {
-        self.run
+    /// The live run that starts at page `page` of the huge region: its
+    /// token, at the page's address, with the permission to its usable
+    /// bytes.
+    pub open spec fn run_block(self, page: int) -> bool {
+        &&& self.wf()
+        &&& self.run_opt() is Some
+        &&& self.run_opt().unwrap().wf()
+        &&& self.run_opt().unwrap().start() == page
+        &&& self.addr() == page_addr(page)
+        &&& self.len() == run_usable(self.run_opt().unwrap().npages())
     }
 
-    /// Take the run token out. The permission to the run's bytes is used
-    /// up with it, as in [`Live::take_slot`].
-    pub proof fn into_run(tracked self) -> (tracked t: RunToken)
+    /// Take the run token out of the token of the run at page `page`. The
+    /// permission to the run's bytes is used up with it, as in
+    /// [`Live::take_slot`].
+    pub proof fn into_run(tracked self, page: int) -> (tracked t: RunToken)
         requires
-            self.run_opt() is Some,
+            self.run_block(page),
         ensures
+            t.wf(),
+            t.start() == page,
             Some(t) == self.run_opt(),
     {
         let tracked Live { addr, class, slot, run, mem } = self;
         run.tracked_unwrap()
     }
+
+    /// The run token the token holds, if any.
+    pub closed spec fn run_opt(self) -> Option<RunToken> {
+        self.run
+    }
+
 }
 
 /// The permission to the `len` usable bytes of the block at `p`, a slot
@@ -267,8 +287,8 @@ axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
         m.provenance() == p@.provenance,
 ;
 
-// Exact stats (`stats::ledger`): which block a token stands for, and
-// that two tokens stand for different blocks.
+// Exact stats: which block a token
+// stands for, and that two tokens stand for different blocks.
 
 /// The block a token stands for, `(slot, x, y)`: a slot of class `x` at
 /// address `y`, or (`!slot`) a run of `y` pages (its guard included)

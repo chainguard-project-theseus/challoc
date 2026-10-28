@@ -10,6 +10,7 @@ file.
 | `ZeroRaw...om_new` | external_body proof | allocator invariant | none (assumption) | trusted |
 | `axiom_zero_word` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_wrote_zero` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
+| `write_zero` | external_body | raw pointer (internal) | none (assumption) | trusted |
 
 ## `ZeroRaw::axiom_new`
 
@@ -63,4 +64,23 @@ pub proof fn axiom_wrote_zero(tracked raw: &PointsToRaw, p: *mut u8, n: usize) -
     ensures
         z.addr() == p@.addr,
         z.len() == n,
+```
+
+## `write_zero`
+
+src/vspec/zero.rs:260. Kind: external_body. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> `write_bytes(p, 0, n)`, returning the token for what it wrote.
+
+Body mints Tracked at line 270.
+
+```rust
+pub unsafe fn write_zero(p: *mut u8, n: usize) -> (z: Tracked<Zeroed>)
+    requires
+        p@.addr != 0,
+        n == 0 || crate::vspec::ptr::valid_writes(p, n as int),
+    ensures
+        z@.addr() == p@.addr,
+        z@.len() == n,
 ```

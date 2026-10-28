@@ -250,4 +250,24 @@ pub open spec fn run_placeable(base: int, pg: int, np: int, size: int, align: in
     &&& exists|q: int| 0 <= q && q + run_need(pg, size) <= np && #[trigger] page_aligned(base, pg, q, align)
 }
 
+/// `write_bytes(p, 0, n)`, returning the token for what it wrote. Its
+/// `requires` is `write_bytes`' contract for `u8` (`vspec::ptr`): `p` is
+/// non-null and, unless `n` is 0, valid for writes of `n` bytes (a `u8`
+/// pointer is always aligned). Trusted for the one fact that contract
+/// does not state: the `n` bytes at `p` read as zero afterwards.
+#[verifier::external_body]
+#[inline(always)]
+pub unsafe fn write_zero(p: *mut u8, n: usize) -> (z: Tracked<Zeroed>)
+    requires
+        p@.addr != 0,
+        n == 0 || crate::vspec::ptr::valid_writes(p, n as int),
+    ensures
+        z@.addr() == p@.addr,
+        z@.len() == n,
+{
+    // SAFETY: the caller's, as for `write_bytes`.
+    unsafe { core::ptr::write_bytes(p, 0, n) };
+    Tracked::assume_new()
+}
+
 } // verus!

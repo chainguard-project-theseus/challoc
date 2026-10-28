@@ -5,3 +5,5 @@ axiom_zero_word	raw pointer (internal)	none (assumption)
 ZeroRaw::axiom_new	allocator invariant	none (assumption)
 # vstd states no effect of write_bytes; the spec records the call.
 axiom_wrote_zero	raw pointer (internal)	none (assumption)
+# vstd states no effect of write_bytes: the bytes read as zero after.
+write_zero	raw pointer (internal)	none (assumption)
