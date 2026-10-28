@@ -36,6 +36,13 @@ pub open spec fn in_alloc<T>(p: *mut T, len: int) -> bool {
 /// it), and verified code uses each one right away.
 pub uninterp spec fn rw_len(prov: Provenance, addr: usize) -> int;
 
+/// How many bytes from `addr` are valid for reads, perhaps only reads,
+/// through a pointer with provenance `prov`: as [`rw_len`], for memory a
+/// C caller hands over read-only (`mallctl`'s `name`, which may be in
+/// `.rodata`; `vspec::cbuf::CStr::wf`). Uninterpreted; only those facts
+/// bound it.
+pub uninterp spec fn r_len(prov: Provenance, addr: usize) -> int;
+
 /// `p` is valid for writes of `len` bytes.
 pub open spec fn valid_writes<T>(p: *mut T, len: int) -> bool {
     0 <= len <= rw_len(p@.provenance, p@.addr)

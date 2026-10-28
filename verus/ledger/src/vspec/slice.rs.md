@@ -7,6 +7,7 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `slice::...'a, T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `array_get_unchecked` | external_body | core library | Kani | trusted |
 | `slice_from_perms` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `<[T]>::swap` | assume_spec | core library | Kani | trusted |
@@ -15,9 +16,28 @@ file.
 | `<[T; N] as c...>::into_iter` | assume_spec | core library | Kani | trusted |
 | `<core::array...rator>::next` | assume_spec | core library | Kani | trusted |
 
+## `core::slice::from_raw_parts::<'a, T>`
+
+src/vspec/slice.rs:19. Kind: assume_spec. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `core::slice::from_raw_parts`, with the safety contract of the `core` documentation that can be stated here: `data` is not null, aligned, and valid for reads of the slice's `len * size_of::<T>()` bytes, at most `isize::MAX`.
+
+```rust
+pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *const T, len: usize) -> (r: &'a [T])
+    requires
+        data@.addr != 0,
+        data@.addr as int % vstd::layout::align_of::<T>() as int == 0,
+        len as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        len as int * vstd::layout::size_of::<T>() <= crate::vspec::ptr::r_len(data@.provenance, data@.addr),
+    ensures
+        r@.len() == len,
+;
+```
+
 ## `array_get_unchecked`
 
-src/vspec/slice.rs:14. Kind: external_body. Category: core library.
+src/vspec/slice.rs:40. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a.get_unchecked(i)` on an array, for the fast paths: vstd's array-to-slice coercion (`vstd::array::array_as_slice`) declares Verus's default invariant mask, `any`, which a function that opens none cannot call.
@@ -34,7 +54,7 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
 
 ## `slice_from_perms`
 
-src/vspec/slice.rs:47. Kind: external_body. Category: raw pointer (internal).
+src/vspec/slice.rs:73. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose permissions `perms` holds from key `j0` on, element `i`'s at key `j0 + i`, at `p`, `p + size_of::<T>()`, ...
@@ -67,7 +87,7 @@ pub unsafe fn slice_from_perms<T>(
 
 ## `<[T]>::swap`
 
-src/vspec/slice.rs:76. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:102. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `s.swap(a, b)`: panics unless both indices are in bounds.
@@ -84,7 +104,7 @@ pub assume_specification<T>[ <[T]>::swap ](s: &mut [T], a: usize, b: usize)
 
 ## `core::slice::from_ref`
 
-src/vspec/slice.rs:85. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:111. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A one-element slice of `*s`.
@@ -98,7 +118,7 @@ pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
 
 ## `core::array::IntoIter<T, N>`
 
-src/vspec/slice.rs:99. Kind: ext_type_spec. Category: core library.
+src/vspec/slice.rs:125. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `core::array::IntoIter`, the iterator `for x in [a, b]` walks.
@@ -109,7 +129,7 @@ pub struct ExArrayIntoIter<T, const N: usize>(core::array::IntoIter<T, N>);
 
 ## `<[T; N] as core::iter::IntoIterator>::into_iter`
 
-src/vspec/slice.rs:105. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:131. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The iterator starts with every element of the array, in order.
@@ -126,7 +146,7 @@ pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator
 
 ## `<core::array::IntoIter<T, N> as core::iter::Iterator>::next`
 
-src/vspec/slice.rs:115. Kind: assume_spec. Category: core library.
+src/vspec/slice.rs:141. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `next` hands out the front element, or `None` once every element has been handed out.
