@@ -103,6 +103,7 @@ use vstd::resource::Loc;
 use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSingleton, GhostSubset};
 
 mod abort;
+mod complete;
 mod decay;
 mod fresh;
 mod sets;
@@ -3649,7 +3650,8 @@ impl ClassState {
     /// completeness): the lock value `g` it left,
     /// with the invariant, both idle sets empty, and each partial slab's
     /// `live` load, kept in `seen`, at `nslots` or more. With the link,
-    /// every committed slab of the arena is then `Active`.
+    /// every committed slab of the arena is then `Active`
+    /// ([`ClassState::lemma_exhausted`]).
     spec fn exhausted(&self, g: Inner, seen: Map<nat, usize>) -> bool {
         &&& g.inv()
         &&& g.nbits() == self.spec_nslabs()
@@ -3667,6 +3669,25 @@ impl ClassState {
     spec fn seen_below(&self, g: Inner, seen: Map<nat, usize>, lim: int) -> bool {
         &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) && x < lim ==> seen.contains_key(x)
         &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) && x < lim ==> seen[x] >= class_table()[self.spec_class() as int].nslots
+    }
+
+    /// In a lock value [`ClassState::exhausted`] describes, every committed
+    /// slab is owned, `Active` and not a guard, and a partial one read
+    /// `live >= nslots`.
+    proof fn lemma_exhausted(&self, g: Inner, seen: Map<nat, usize>, s: nat)
+        requires
+            self.exhausted(g, seen),
+            g.committed@.contains(s),
+        ensures
+            s < self.spec_nslabs(),
+            g.owns(s),
+            g.st(s) == State::Active,
+            !self.spec_table().spec_is_guard(s as usize),
+            g.partial.map@.contains(s) ==> seen.contains_key(s) && seen[s] >= class_table()[self.spec_class() as int].nslots,
+    {
+        assert(g.slab_ok(s));
+        assert(!g.empty.map@.contains(s));
+        assert(!g.purged.map@.contains(s));
     }
 
     /// One lock hold of a refill: reserve up to `want` slots across up to
