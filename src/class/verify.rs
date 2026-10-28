@@ -46,7 +46,16 @@ impl ClassState {
     /// backend and the offending word.
     #[cold]
     #[inline(never)]
-    pub(super) fn check_zero(&self, slots: &[*mut u8], pick: &Pick) {
+    // `toks` holds the slots' tokens from key `key` on (ghost and tracked
+    // state).
+    #[allow(unused_variables)]
+    pub(super) fn check_zero(
+        &self,
+        slots: &[*mut u8],
+        pick: &Pick,
+        toks: Tracked<&mut super::SlotToks>,
+        key: Ghost<int>,
+    ) {
         let size = self.class().size();
         for &p in slots {
             for &off in &[0, size - 8] {

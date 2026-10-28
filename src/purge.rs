@@ -228,6 +228,28 @@ pub fn purged_is_zero() -> bool {
     !LAZY_EVER.load(Ordering::Relaxed)
 }
 
+/// Ghost: the record of one read of [`purged_is_zero`] that returned
+/// true, for the claim that hands out a `Purged` slab's slots as zero.
+/// Not `Copy`, and its field is private to this module: verified code
+/// gets one only from [`purged_zero`].
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct PurgedZero {
+    ghost _read: (),
+}
+
+/// [`purged_is_zero`], with the witness of a true read (`Some` exactly
+/// when it returns true). Trusted: it is the one load of the flag, and the
+/// witness stands for its result.
+#[inline]
+#[verifier::external_body]
+pub fn purged_zero() -> (r: (bool, Tracked<Option<PurgedZero>>))
+    ensures
+        r.0 <==> r.1@ is Some,
+{
+    (purged_is_zero(), Tracked::assume_new())
+}
+
 /// Ghost: a set of bytes by address, such as those a [`Batch`] may
 /// discard ([`Batch::new`]).
 pub type Bytes = spec_fn(int) -> bool;

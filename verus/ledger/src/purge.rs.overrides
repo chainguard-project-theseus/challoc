@@ -1,0 +1,3 @@
+# The flag's one load, with the witness of a true read that the Purged zero
+# claim uses up.
+purged_zero	atomics primitive	loom/GenMC
