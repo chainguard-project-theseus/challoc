@@ -57,7 +57,7 @@ use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{axiom_below_huge, axiom_entry, lock_init, rank_huge, rank_meta};
+use crate::lock::{axiom_below_huge, axiom_entry, lock_frame, lock_init, rank_huge, rank_meta};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, Settle};
 use crate::sys::{self, Errno};
@@ -486,6 +486,7 @@ impl Settle for Tally {
         &&& c.wf()
         &&& c.spec_np() == o.npages
         &&& c.spec_lg() == o.lg_page
+        &&& c.spec_mid() == o.spec_mid()
         &&& c.pgs@@ == self.held@
         &&& forall|x: (int, int)| #[trigger] pend(x) ==> has_piece(o, c, self.vis@, x)
         &&& walked(c.elist@, self.rest@, self.vis@)
@@ -4218,6 +4219,11 @@ impl Huge {
         if !ok {
             free_desc(meta, run, Tracked(desc_raw(run_perm.get())));
             free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())));
+            proof {
+                // The lock's frame: the ghost page count, shift and `Meta`
+                // identity are the ones `new` set.
+                assert(lock_frame(lock_init(self.inner), g@));
+            }
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
 
@@ -4230,6 +4236,11 @@ impl Huge {
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
             self.check_zero(s, usable_pages, prior, arena);
+        }
+        proof {
+            // The lock's frame: the ghost page count, shift and `Meta`
+            // identity are the ones `new` set.
+            assert(lock_frame(lock_init(self.inner), g@));
         }
         proof {
             self.lemma_run_at(s, usable_pages, size, align);
@@ -4629,6 +4640,7 @@ impl Huge {
             final(g).wf(),
             final(g).spec_np() == old(g).spec_np(),
             final(g).spec_lg() == old(g).spec_lg(),
+            final(g).spec_mid() == old(g).spec_mid(),
             final(g).descs@.contains_key(run),
             final(g).descs@[run].value().pages == p.pages,
             final(tok).contains_key(0),
@@ -4984,7 +4996,7 @@ impl Huge {
                 assert(g.elist@ == t.elist_after(l0));
                 assert(g.table.wf());
                 assert(perms_ok(g.descs@));
-                assert(g.next_page == t.nm && g.np == old(g).np);
+                assert(g.next_page == t.nm && g.np == old(g).np && g.mid == old(g).mid);
                 assert(g.free.map.wf() && g.free.map.spec_nbits() == g.np@);
                 assert(elist_ok(g.empty_head, g.empty_tail, g.elist@, g.descs@));
             }
@@ -5420,6 +5432,11 @@ impl Huge {
         proof {
             t.lemma_counts(self, g@);
         }
+        proof {
+            // The lock's frame: the ghost page count, shift and `Meta`
+            // identity are the ones `new` set.
+            assert(lock_frame(lock_init(self.inner), g@));
+        }
         t.purged
     }
 
@@ -5553,6 +5570,7 @@ impl Huge {
             final(g).wf(),
             final(g).spec_np() == old(g).spec_np(),
             final(g).spec_lg() == old(g).spec_lg(),
+            final(g).spec_mid() == old(g).spec_mid(),
             final(g).next_page == old(g).next_page,
             final(g).pgs == old(g).pgs,
             r == old(g).descs@[d].value().pages,
@@ -5857,6 +5875,7 @@ impl Huge {
                     &&& g.wf()
                     &&& g.spec_np() == g0.spec_np()
                     &&& g.spec_lg() == g0.spec_lg()
+                    &&& g.spec_mid() == g0.spec_mid()
                     &&& g.pgs == g0.pgs
                     &&& g.elist@ == g0.elist@.remove(g0.elist@.index_of(dd))
                     &&& g.descs@.dom() == g0.descs@.dom()
@@ -6098,6 +6117,11 @@ impl Huge {
             self.gate.back_off(now);
         }
         self.sync_oldest(&g);
+        proof {
+            // The lock's frame: the ghost page count, shift and `Meta`
+            // identity are the ones `new` set.
+            assert(lock_frame(lock_init(self.inner), g@));
+        }
         t.purged
     }
 
