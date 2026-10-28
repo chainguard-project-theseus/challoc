@@ -31,18 +31,24 @@ pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
         #[trigger] lock_inv(v) == v.wf(),
 ;
 
-/// Assumption: the page size, the region's bounds and the identities of
-/// the ghost records (live objects, unclaimed reserved bytes) never change
-/// after `Meta::owning` sets them. Verified code never assigns `page`,
-/// `base` or `len`, and only inserts and removes records (every `Inner`
-/// method that does keeps `live_id` and `pages_id`), and nothing replaces
-/// the value (`Inner::new` is called only by `Meta::owning`); unverified
-/// code cannot reach the ghost fields and writes none of the three (the
-/// test-only `set_eager_for_test` writes `eager`).
+/// Assumption: what every value the metadata lock holds keeps from the
+/// one `Meta::owning` created it with is exactly the page size, the
+/// region's bounds and the identities of the ghost records (live objects,
+/// unclaimed reserved bytes). Each `Inner` method the lock's holders call
+/// to change the value (`eager_ok`, `reserve_eager`, `alloc`, `free`,
+/// `reserve`, `commit`, `reserve_committed`) ensures
+/// `lock_frame(*old(self), *final(self))`. The holders that keep their
+/// guard (`Meta::alloc_zeroed`, and `Meta::reserve_table` on both its
+/// paths) assert the frame before it drops; the others change the value
+/// only through one of those methods on a temporary guard, which is not
+/// checked beyond the method (Verus checks nothing at a guard's drop).
+/// Nothing replaces the value (`Inner::new` is called only by
+/// `Meta::owning`), and the test-only `set_eager_for_test` writes only
+/// `eager`.
 pub(crate) broadcast axiom fn axiom_meta_lock_frame(a: crate::meta::Inner, b: crate::meta::Inner)
     ensures
-        #[trigger] lock_frame(a, b) ==> a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
-            && a.spec_page() == b.spec_page() && a.spec_base() == b.spec_base() && a.spec_len() == b.spec_len(),
+        #[trigger] lock_frame(a, b) == (a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
+            && a.spec_page() == b.spec_page() && a.spec_base() == b.spec_base() && a.spec_len() == b.spec_len()),
 ;
 
 } // verus!

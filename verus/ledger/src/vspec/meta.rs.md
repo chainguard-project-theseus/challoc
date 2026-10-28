@@ -26,15 +26,15 @@ pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
 
 ## `axiom_meta_lock_frame`
 
-src/vspec/meta.rs:42. Kind: axiom. Category: allocator invariant.
+src/vspec/meta.rs:48. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Assumption: the page size, the region's bounds and the identities of the ghost records (live objects, unclaimed reserved bytes) never change after `Meta::owning` sets them.
+> Assumption: what every value the metadata lock holds keeps from the one `Meta::owning` created it with is exactly the page size, the region's bounds and the identities of the ghost records (live objects, unclaimed reserved bytes).
 
 ```rust
 pub(crate) broadcast axiom fn axiom_meta_lock_frame(a: crate::meta::Inner, b: crate::meta::Inner)
     ensures
-        #[trigger] lock_frame(a, b) ==> a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
-            && a.spec_page() == b.spec_page() && a.spec_base() == b.spec_base() && a.spec_len() == b.spec_len(),
+        #[trigger] lock_frame(a, b) == (a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
+            && a.spec_page() == b.spec_page() && a.spec_base() == b.spec_base() && a.spec_len() == b.spec_len()),
 ;
 ```
