@@ -83,9 +83,9 @@ use paths::invalid_free;
 #[cfg(test)]
 use shared::ncpus;
 use shared::{now_ns, tid};
-use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
+use vstd::prelude::{Tracked, verus};
 
 verus! {
 
@@ -865,7 +865,7 @@ impl Heap {
             return false;
         }
         // The flush released every cached slot: test `p`'s bit again.
-        match shared.classify_free(p) {
+        match shared.classify_free(p, Tracked::assume_new()) {
             Ok((c, a)) => debug_assert!(c == class && a == to),
             Err(_) => invalid_free(p as usize),
         }
@@ -939,7 +939,7 @@ impl Heap {
             let c = self.cache_ptr(class);
             // SAFETY: `cache_ptr` is this heap's home header for `class`.
             if unsafe { self.hdr_ref(c) }.cap != 0 {
-                let refilled = a.class(class).refilled() as u32;
+                let refilled = a.0.class(class).refilled() as u32;
                 // SAFETY: as above.
                 let h = unsafe { self.hdr_mut(c) };
                 h.rekey(to, refilled);

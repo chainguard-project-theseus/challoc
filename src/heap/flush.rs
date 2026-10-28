@@ -4,6 +4,7 @@
 //! aborts on a double free that straddles the split.
 
 use core::ptr;
+use vstd::prelude::Tracked;
 
 use crate::arena::Arena;
 use crate::layout::CLASSES;
@@ -261,7 +262,13 @@ impl Heap {
             } else {
                 arena
             };
-            shared.release_routed(owner, class, high);
+            shared.release_routed(
+                owner,
+                class,
+                high,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             let h = self.hdr_mut(cache);
             h.len = rest_len as u32;
             h.moved = h.moved.wrapping_sub(n as u64);

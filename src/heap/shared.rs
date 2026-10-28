@@ -15,11 +15,11 @@ use crate::arena::{
 };
 use crate::class::SlabTable;
 use crate::config::Config;
-use crate::huge::{Huge, RunState};
+use crate::huge::{Huge, RunState, RunToken};
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
-use crate::lock::Lock;
+use crate::lock::{Lock, LockOrder};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{axiom_entry, rank_meta, rank_stats, rank_table};
 use crate::meta::Meta;
@@ -27,7 +27,7 @@ use crate::policy::Policy;
 use crate::stats::Snapshot;
 #[cfg(verus_keep_ghost)]
 use crate::stats::axiom_snapshot_lock_inv;
-use crate::sys::cgroup::{Cgroup, Deferred};
+use crate::sys::cgroup::{CellSeen, Cgroup, Deferred};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::atom::usize_id;
 use crate::vspec::atom::{UsizePerm, usize_ptr};
@@ -37,11 +37,14 @@ use crate::vspec::once::{Once, Step};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
 use crate::vspec::unbacked::Unbacked;
-use vstd::prelude::Ghost;
+use vstd::prelude::{Ghost, int};
 
 use super::heap_destructor;
+use super::live::Live;
 use super::tcaches::Tcaches;
 use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use crate::arena::Published;
+use crate::vspec::zero::Zeroed;
 #[cfg(verus_keep_ghost)]
 use vstd::layout::size_of;
 use vstd::map::Map;
@@ -49,6 +52,7 @@ use vstd::map::Map;
 use vstd::prelude::*;
 use vstd::prelude::{Tracked, verus};
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
+use vstd::resource::set::{GhostSingleton, GhostSubset};
 
 verus! {
 
@@ -1871,8 +1875,8 @@ impl Shared {
     /// The memory cgroup record, discovering it first if that has not
     /// happened: what a reader of the figures (`stats.cgroup.*`, the
     /// report) uses.
-    pub fn cgroup_now(&self) -> &crate::sys::cgroup::Cgroup {
-        self.discover_cgroup(true);
+    pub fn cgroup_now(&self, _ord: Tracked<&mut LockOrder>) -> &crate::sys::cgroup::Cgroup {
+        self.discover_cgroup(true, Tracked::assume_new(), Tracked::assume_new());
         self.cgroup
             .get()
             .unwrap_or_else(|| crate::sys::abort("cgroup: discovery did not publish"))
@@ -1881,16 +1885,17 @@ impl Shared {
     /// Discover the cgroup if the deferral has run out at `now` (the
     /// periodic tick, the background thread): `true` when this call did,
     /// and the policy has been evaluated on the first figures.
-    pub fn discover_cgroup_if_due(&self, now: u64) -> bool {
-        self.cgroup.due(now) && self.discover_cgroup(false)
+    pub fn discover_cgroup_if_due(&self, now: u64, _ord: Tracked<&mut LockOrder>) -> bool {
+        self.cgroup.due(now)
+            && self.discover_cgroup(false, Tracked::assume_new(), Tracked::assume_new())
     }
 
     /// Discover the cgroup in `fork`'s prepare handler, so the child
     /// inherits the record; without waiting for a discovery another
     /// thread (or this one, under a signal handler) has under way, which
     /// the child then starts over (`Deferred::fork_child`).
-    pub fn discover_cgroup_for_fork(&self) {
-        self.discover_cgroup(false);
+    pub fn discover_cgroup_for_fork(&self, _ord: Tracked<&mut LockOrder>) {
+        self.discover_cgroup(false, Tracked::assume_new(), Tracked::assume_new());
     }
 
     /// Run the deferred discovery (`Deferred::discover`): `true` when this
@@ -1899,7 +1904,12 @@ impl Shared {
     /// container that already had `high` events does not start with a
     /// full purge, whichever thread samples first); then the band from
     /// the first sample.
-    fn discover_cgroup(&self, wait: bool) -> bool {
+    fn discover_cgroup(
+        &self,
+        wait: bool,
+        _ord: Tracked<&mut LockOrder>,
+        _seen: Tracked<&mut CellSeen>,
+    ) -> bool {
         let ran = self.cgroup.discover(wait, |cg| {
             self.policy.rebase_high_rises(cg.rises().0);
         });
@@ -1932,14 +1942,20 @@ impl Shared {
     /// Arena `index` if it exists (automatic arenas are built on first
     /// touch; see `Arenas::get`).
     #[inline]
-    pub fn arena(&self, index: u16) -> Option<&Arena> {
+    pub fn arena(
+        &self,
+        index: u16,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Option<(&Arena, Tracked<&'static Published>)> {
         if index == 0 {
-            return Some(&self.arena0);
+            return Some((&self.arena0, self.arena0_published()));
         }
-        match self.arenas.get(self, index, Tracked::assume_new()) {
-            Some((a, _)) => Some(a),
-            None => None,
-        }
+        self.arenas.get(self, index, Tracked::assume_new())
+    }
+
+    /// The registry's record of arena 0 (ghost).
+    pub(crate) fn arena0_published(&self) -> Tracked<&'static Published> {
+        Tracked::assume_new()
     }
 
     /// Arena `index`, which must exist: the index came from a slab or run
@@ -1949,12 +1965,12 @@ impl Shared {
     /// instead of quietly materialising an automatic arena to release the
     /// slot through.
     #[inline]
-    pub(super) fn owner(&self, index: u16) -> &Arena {
+    pub(super) fn owner(&self, index: u16) -> (&Arena, Tracked<&'static Published>) {
         if index == 0 {
-            return &self.arena0;
+            return (&self.arena0, self.arena0_published());
         }
         match self.arenas.get_existing(index) {
-            Some(a) => a,
+            Some(a) => (a, Tracked::assume_new()),
             None => no_such_arena(index),
         }
     }
@@ -2062,25 +2078,42 @@ impl Shared {
     /// Claim one slot of `class` in `arena` straight from the slab bitmaps,
     /// bypassing every cache. Null when the region is exhausted. The flag
     /// says the memory is known zero.
-    pub fn alloc_direct(&self, arena: &Arena, class: usize) -> (*mut u8, bool) {
+    pub fn alloc_direct(
+        &self,
+        arena: &Arena,
+        pubw: Tracked<&'static Published>,
+        class: usize,
+        _blk: Tracked<&mut Live>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> (*mut u8, bool, Tracked<Zeroed>) {
         let mut out = [ptr::null_mut()];
-        let c = arena.class(class).claim(&self.meta, &mut out);
+        let (c, _z) = arena.class(class).claim_tokens(
+            &self.meta,
+            &mut out,
+            Tracked::assume_new(),
+            pubw,
+            Tracked::assume_new(),
+        );
         if c.n == 0 {
-            (ptr::null_mut(), false)
+            (ptr::null_mut(), false, Tracked::assume_new())
         } else {
-            (out[0], c.zeroed)
+            (out[0], c.zeroed, Tracked::assume_new())
         }
     }
 
     /// Release one slot straight to its slab bitmap through its owning
     /// arena. Aborts unless `p` is an allocated slot of `class` in `arena`.
-    pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8) {
-        self.owner(arena).class(class).release_with(
-            &[p],
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        );
+    pub fn free_direct(
+        &self,
+        arena: u16,
+        class: usize,
+        p: *mut u8,
+        _tok: Tracked<GhostSingleton<int>>,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
+        let (oa, ow) = self.owner(arena);
+        oa.class(class)
+            .release_with(&[p], Tracked::assume_new(), ow, Tracked::assume_new());
     }
 
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab
@@ -2088,7 +2121,7 @@ impl Shared {
     /// pointer into the huge region (the huge allocator checks it). Aborts
     /// on anything else.
     #[inline(always)]
-    pub fn classify_free(&self, p: *mut u8) -> Result<(usize, u16), usize> {
+    pub fn classify_free(&self, p: *mut u8, _blk: Tracked<&Live>) -> Result<(usize, u16), usize> {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
@@ -2153,7 +2186,13 @@ impl Shared {
     /// allocations pass here and are judged by the exact free that follows.
     #[cold]
     #[inline(never)]
-    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>) {
+    pub fn check_size_hint(
+        &self,
+        p: *mut u8,
+        size: usize,
+        hint: Option<usize>,
+        _blk: Tracked<&Live>,
+    ) {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, .. } => {
                 if hint != Some(class as usize) {
@@ -2195,14 +2234,22 @@ impl Shared {
     /// switch, a word `release_owned` reads anyway).
     ///
     /// [`release_owned`]: crate::class::ClassState::release_owned
-    pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8]) {
+    pub fn release_routed(
+        &self,
+        arena: u16,
+        class: usize,
+        ptrs: &[*mut u8],
+        _bag: Tracked<&mut GhostSubset<int>>,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
         let mut done = 0;
         let mut a = arena;
         loop {
-            done += self.owner(a).class(class).release_owned(
+            let (oa, ow) = self.owner(a);
+            done += oa.class(class).release_owned(
                 &ptrs[done..],
                 Tracked::assume_new(),
-                Tracked::assume_new(),
+                ow,
                 Tracked::assume_new(),
             );
             if done == ptrs.len() {
@@ -2212,7 +2259,9 @@ impl Shared {
             if next == a {
                 // `release_owned` stopped at a slab it says is not ours while
                 // the descriptor says it is: the descriptor changed under us.
-                panic!("heap: slab of class {class} changed arena {a} during a flush");
+                crate::sys::abort_fmt(format_args!(
+                    "heap: slab of class {class} changed arena {a} during a flush"
+                ));
             }
             a = next;
         }
@@ -2320,27 +2369,31 @@ impl Shared {
     /// an automatic arena not built yet (a thread whose first allocation
     /// is huge) is built here, an index that does not exist aborts. Null
     /// on exhaustion; the flag says the memory is known zero.
-    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
-        let Some(a) = self.arena(arena) else {
+    pub fn alloc_huge(
+        &self,
+        size: usize,
+        align: usize,
+        arena: u16,
+        _blk: Tracked<&mut Live>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> (*mut u8, bool, Tracked<Zeroed>) {
+        let Some((a, _)) = self.arena(arena, Tracked::assume_new()) else {
             no_such_arena(arena)
         };
-        let r = self
-            .huge
-            .alloc_run(
-                &self.meta,
-                size,
-                align,
-                arena,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            )
-            .0;
+        let (r, z) = self.huge.alloc_run(
+            &self.meta,
+            size,
+            align,
+            arena,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         if !r.ptr.is_null() {
             // The pages the run's descriptor records, which is what
             // `free_huge` will subtract.
             a.note_huge_alloc(r.pages);
         }
-        (r.ptr, r.zeroed)
+        (r.ptr, r.zeroed, z)
     }
 
     /// `zero_on_free` for a huge run: clear the usable bytes of the live
@@ -2349,23 +2402,29 @@ impl Shared {
     /// the whole run.
     #[cold]
     #[inline(never)]
-    pub fn zero_huge(&self, page: usize) {
+    pub fn zero_huge(&self, page: usize, _blk: Tracked<&mut Live>) -> Tracked<Zeroed> {
         let n = self.huge.usable_size(page, Tracked::assume_new());
         // SAFETY: a live run's usable bytes are committed, writable memory
         // this allocator handed out and the caller is freeing.
         unsafe { ptr::write_bytes(self.regions.huge_addr(page) as *mut u8, 0, n) };
+        Tracked::assume_new()
     }
 
     /// Free the huge run starting at `page`. Aborts unless it is a live
     /// run start. Returns the usable bytes released.
-    pub fn free_huge(&self, page: usize) -> usize {
+    pub fn free_huge(
+        &self,
+        page: usize,
+        _tok: Tracked<RunToken>,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> usize {
         let run = self.huge.free_run(
             &self.meta,
             page,
             Tracked::assume_new(),
             Tracked::assume_new(),
         );
-        self.owner(run.arena).note_huge_free(run.pages);
+        self.owner(run.arena).0.note_huge_free(run.pages);
         run.usable
     }
 }
