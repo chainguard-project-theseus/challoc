@@ -69,6 +69,7 @@
 use crate::arena::Published;
 #[cfg(verus_keep_ghost)]
 use crate::arena::process_pub_loc;
+use crate::bitmap::FullSeen;
 #[cfg(verus_keep_ghost)]
 use crate::bitmap::{
     Slots, addrs, has_bit, lemma_addrs_union, lemma_subset_bits, mask_bits, subset,
@@ -1818,6 +1819,29 @@ impl Inner {
         proof {
             assert forall|s: nat| old(self).slab_ok(s) implies #[trigger] self.slab_ok(s) by {}
         }
+    }
+
+    /// [`clear_partial`](Inner::clear_partial) of a slab whose bits a read
+    /// found all set: `seen` is that read's record
+    /// (`AtomicBitmap::is_full_seen`) for the slab's view of the class
+    /// bitmap, so a partial bit leaves this way only for a slab the caller
+    /// saw full.
+    #[inline(always)]
+    fn clear_partial_full(&mut self, slab: usize, Tracked(seen): Tracked<Option<FullSeen>>)
+        requires
+            old(self).base(),
+            slab < old(self).nbits(),
+            seen matches Some(w) && w.first() == slab * old(self).table@.spec_slots().sb
+                && w.slots() == old(self).table@.spec_slots(),
+        ensures
+            final(self).base(),
+            final(self).same_rest(old(self)),
+            final(self).partial.map@ == old(self).partial.map@.remove(slab as nat),
+            final(self).empty == old(self).empty,
+            final(self).purged == old(self).purged,
+            old(self).inv() ==> final(self).inv(),
+    {
+        self.clear_partial(slab)
     }
 
     /// `slab` into the empty set (it went `Empty`). The caller closes the
@@ -3633,8 +3657,11 @@ impl ClassState {
                 proof {
                     seen = seen.insert(s as nat, live);
                 }
-                if desc.state() == State::Active && self.table().bits(s).is_full() {
-                    g.clear_partial(s);
+                if desc.state() == State::Active {
+                    let (full, seen_full) = self.table().bits(s).is_full_seen();
+                    if full {
+                        g.clear_partial_full(s, seen_full);
+                    }
                 }
                 proof {
                     assert(g@.partial.map@.subset_of(g0.partial.map@));
@@ -3783,6 +3810,9 @@ impl ClassState {
             slab_marked(self.spec_table(), final(picks)[*old(np) as int].slab as int, final(pm)[*old(np) as int]@),
             !self.spec_table().spec_is_guard(final(picks)[*old(np) as int].slab as usize),
             slab_owner(self.spec_class() as int, final(picks)[*old(np) as int].slab as int) == self.arena,
+            // A slab this hold did not fill stays where a refill finds it.
+            final(picks)[*old(np) as int].n < class_table()[self.spec_class() as int].nslots
+                ==> final(g).partial.map@.contains(slab as nat),
     {
         proof {
             use_type_invariant(self);
