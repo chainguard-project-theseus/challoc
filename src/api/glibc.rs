@@ -32,6 +32,7 @@ use core::ffi::c_int;
 
 use crate::layout::NCLASSES;
 use crate::stats::{self, fig_add, fig_mul};
+use vstd::prelude::{Ghost, Seq, Tracked, int, verus};
 
 /// glibc's `struct mallinfo` (ten `int`s).
 #[repr(C)]
@@ -70,8 +71,16 @@ pub fn mallopt(_param: c_int, _value: c_int) -> c_int {
     1
 }
 
-/// `mallinfo2()`.
-pub fn mallinfo2() -> MallInfo2 {
+verus! {
+
+/// What [`mallinfo2`] read: [`stats::collect_all`]'s per-arena reads, their
+/// huge pages, and their sum.
+pub type Reads = Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)>;
+
+} // verus!
+
+/// `mallinfo2()`. `rd` gets what [`stats::collect_all`] read and summed.
+pub fn mallinfo2(_rd: Tracked<&mut Reads>) -> MallInfo2 {
     let shared = super::shared();
     let all = stats::collect_all(
         shared,
@@ -108,7 +117,7 @@ pub fn mallinfo2() -> MallInfo2 {
 
 /// `mallinfo()`: [`mallinfo2`] saturated into `int`s.
 pub fn mallinfo() -> MallInfo {
-    let m = mallinfo2();
+    let m = mallinfo2(Tracked::assume_new());
     let clamp = |v: usize| v.min(c_int::MAX as usize) as c_int;
     MallInfo {
         arena: clamp(m.arena),
@@ -144,7 +153,7 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn mallinfo2() -> super::MallInfo2 {
-        super::mallinfo2()
+        super::mallinfo2(vstd::prelude::Tracked::assume_new())
     }
 }
 
@@ -177,7 +186,7 @@ mod tests {
         // give bounds; the identities must hold for any single collection.
         let small: Vec<*mut u8> = (0..200).map(|_| malloc(900)).collect();
         let huge: Vec<*mut u8> = (0..3).map(|_| malloc(MEDIUM_MAX + 1)).collect();
-        let m = mallinfo2();
+        let m = mallinfo2(Tracked::assume_new());
         let size = crate::layout::class_size_of(900).unwrap();
         assert!(m.uordblks >= 200 * size, "{m:?}");
         assert!(m.hblks >= 3, "{m:?}");
