@@ -9,10 +9,13 @@ file.
 |---|---|---|---|---|
 | `axiom_c...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_class_lock` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_f...s_zero` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_d...s_zero` | axiom | allocator invariant | none (assumption) | trusted |
+| `ClassState::take_checks` | external_body | panic/abort | Verus | trusted |
 
 ## `axiom_class_lock_inv`
 
-src/class/mod.rs:1386. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1441. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -26,7 +29,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ## `axiom_class_lock`
 
-src/class/mod.rs:1397. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:1452. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with, and the value's arena, table and owned-slab record's location are the ones `new` set.
@@ -37,4 +40,76 @@ broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
         #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
             && v.oauth@.id() == init.oauth@.id()),
 ;
+```
+
+## `axiom_fresh_slots_zero`
+
+src/class/mod.rs:2187. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The kernel fact of `mmap(2)` (a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
+
+```rust
+axiom fn axiom_fresh_slots_zero(
+    tracked ticket: StateTicket,
+    t: SlabTable,
+    slab: int,
+    n: int,
+    tracked held: &GhostSubset<int>,
+) -> (tracked z: Zeroed)
+    requires
+        ticket.id() == desc_id(&desc_at(t, slab as usize)),
+        ticket.state() == state_byte(State::Fresh),
+        0 <= slab < t.spec_nslabs(),
+        !t.spec_is_guard(slab as usize),
+        0 <= n <= t.spec_slots().nslots,
+        held.id() == t.spec_slots().loc,
+        prefix_addrs(t, slab, n).subset_of(held@),
+    ensures
+        z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
+        z.len() == n * t.spec_slots().size,
+;
+```
+
+## `axiom_discarded_slots_zero`
+
+src/class/mod.rs:2226. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
+
+```rust
+axiom fn axiom_discarded_slots_zero(
+    tracked ticket: StateTicket,
+    tracked witness: PurgedZero,
+    t: SlabTable,
+    slab: int,
+    n: int,
+    tracked held: &GhostSubset<int>,
+) -> (tracked z: Zeroed)
+    requires
+        ticket.id() == desc_id(&desc_at(t, slab as usize)),
+        ticket.state() == state_byte(State::Purged),
+        0 <= slab < t.spec_nslabs(),
+        !t.spec_is_guard(slab as usize),
+        0 <= n <= t.spec_slots().nslots,
+        held.id() == t.spec_slots().loc,
+        prefix_addrs(t, slab, n).subset_of(held@),
+    ensures
+        z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
+        z.len() == n * t.spec_slots().size,
+;
+```
+
+## `ClassState::take_checks`
+
+src/class/mod.rs:2789. Kind: external_body. Category: panic/abort.
+Tool: Verus. Status: trusted.
+
+> `take`'s debug checks: the slab's owner word and its descriptor's arena name this arena.
+
+```rust
+fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize)
+    requires
+        crate::sys::may_abort(),
 ```

@@ -11,12 +11,12 @@ file.
 
 ## `purged_zero`
 
-src/purge.rs:246. Kind: external_body. Category: atomics primitive.
+src/purge.rs:247. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > [`purged_is_zero`], with the witness of a true read (`Some` exactly when it returns true).
 
-Body mints Tracked at line 250.
+Body mints Tracked at line 251.
 
 ```rust
 pub fn purged_zero() -> (r: (bool, Tracked<Option<PurgedZero>>))

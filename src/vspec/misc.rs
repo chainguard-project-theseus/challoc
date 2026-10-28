@@ -1,6 +1,7 @@
-//! Specifications of the derived `PartialEq` of three enums verified code
-//! compares: `config::Thp` and `sys::thp_host::ThpSetting` (`thp.rs`), and
-//! `huge::RunState`; and of `fence` and `AtomicU32::as_ptr`.
+//! Specifications of the derived `PartialEq` of four enums verified code
+//! compares: `config::Thp` and `sys::thp_host::ThpSetting` (`thp.rs`),
+//! `huge::RunState`, and `slab::State` (`class::ClassState::take`); and of
+//! `fence` and `AtomicU32::as_ptr`.
 
 use vstd::prelude::*;
 
@@ -29,6 +30,16 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::thp_host::ThpSettin
 }
 
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
+    open spec fn obeys_eq_spec() -> bool {
+        true
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        *self == *other
+    }
+}
+
+impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::slab::State {
     open spec fn obeys_eq_spec() -> bool {
         true
     }
