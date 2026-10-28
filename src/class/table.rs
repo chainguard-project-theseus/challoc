@@ -54,7 +54,7 @@ use vstd::raw_ptr::{PointsTo, ptr_ref};
 use vstd::raw_ptr::{PtrData, ptr_mut_from_data};
 use vstd::resource::Loc;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
-use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSubset};
+use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSingleton, GhostSubset};
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::bits::u64_trailing_zeros;
 
@@ -837,14 +837,22 @@ fn guard(addr: usize, len: usize) -> Result<(), Errno>
 
 } // verus!
 
-/// `(*w).load(Relaxed)` of the owner word of a handed-out group: the
-/// arena that owns the group's slabs.
+/// `(*w).load(Relaxed)` of the owner word of handed-out slab `slab`'s
+/// group in `t`: the arena that owns the group's slabs. `seen` is the
+/// caller's witness that the group was handed out, if it has one.
 ///
 /// # Safety
-/// `w` is the owner word of a group below the watermark: committed and
-/// written before the watermark moved.
+/// `w` is the owner word of `slab`'s group in `t`, committed and
+/// written before the watermark moved past the group.
+// `t`, `slab` and `seen` are read only by the proof (ghost).
+#[allow(unused_variables)]
 #[inline(always)]
-unsafe fn load_owner(w: *const AtomicU16) -> u16 {
+unsafe fn load_owner(
+    t: &SlabTable,
+    w: *const AtomicU16,
+    slab: Ghost<usize>,
+    seen: Tracked<Option<&'static GhostPersistentSubset<int>>>,
+) -> u16 {
     // SAFETY: guaranteed by the caller.
     unsafe { (*w).load(Ordering::Relaxed) }
 }
@@ -2762,12 +2770,26 @@ impl SlabTable {
     ///
     /// [`is_handed_out`]: SlabTable::is_handed_out
     #[inline(always)]
-    pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize) -> bool {
+    pub unsafe fn is_set_unchecked(
+        &self,
+        slab: usize,
+        slot: usize,
+        _held: Tracked<&Option<GhostSingleton<int>>>,
+    ) -> bool {
         let bit = slab * self.slab_bits as usize + slot;
         let index = word_index(bit / 64);
         // SAFETY: the caller guarantees the word is inside the handed-out
         // part of the bitmap.
-        let x = unsafe { self.bit_word_held(self.bits_base, index) };
+        let x = unsafe {
+            self.bit_word_held(
+                self.bits_base,
+                index,
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Tracked::assume_new(),
+            )
+        };
         (x >> (bit % 64)) & 1 == 1
     }
 
@@ -2779,7 +2801,17 @@ impl SlabTable {
     ///
     /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
     #[inline(always)]
-    unsafe fn bit_word_held(&self, bits_base: usize, index: usize) -> u64 {
+    // `slab`, `slot`, `bit` and `held` are read only by the proof (ghost).
+    #[allow(unused_variables)]
+    unsafe fn bit_word_held(
+        &self,
+        bits_base: usize,
+        index: usize,
+        slab: Ghost<usize>,
+        slot: Ghost<usize>,
+        bit: Ghost<usize>,
+        held: Tracked<&Option<GhostSingleton<int>>>,
+    ) -> u64 {
         let word = (bits_base + index * 8) as *const AtomicU64;
         // SAFETY: guaranteed by the caller.
         unsafe { (*word).load(Ordering::Relaxed) }
@@ -2791,7 +2823,8 @@ impl SlabTable {
     pub fn is_allocated(&self, slab: usize, slot: usize) -> bool {
         debug_assert!(slot < self.class().nslots());
         // SAFETY: the watermark check, then a slot below `nslots`.
-        self.is_handed_out(slab) && unsafe { self.is_set_unchecked(slab, slot) }
+        self.is_handed_out(slab)
+            && unsafe { self.is_set_unchecked(slab, slot, Tracked::assume_new()) }
     }
 
     /// The arena that owns `slab`'s group, without a watermark check:
@@ -2802,24 +2835,32 @@ impl SlabTable {
     ///
     /// [`is_handed_out`]: SlabTable::is_handed_out
     #[inline(always)]
-    unsafe fn owner_at(&self, slab: usize) -> u16 {
+    unsafe fn owner_at(
+        &self,
+        slab: usize,
+        seen: Tracked<Option<&'static GhostPersistentSubset<int>>>,
+    ) -> u16 {
         // `owners_base` before the shift: in this order the `free` fast
         // path's owner test schedules its loads as the plain code does.
         let word = (self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
         // SAFETY: the owner word of a handed-out group was committed and
         // written before the watermark moved.
-        unsafe { load_owner(word) }
+        unsafe { load_owner(self, word, Ghost::assume_new(), seen) }
     }
 
-    /// The arena that owns `slab`. Aborts for a slab that was never handed
-    /// out.
+    /// The arena that owns `slab`, with the witness that the group was
+    /// handed out that the watermark's load returned. Aborts for a slab
+    /// that was never handed out.
     #[inline]
-    pub fn owner(&self, slab: usize) -> u16 {
+    pub fn owner(&self, slab: usize) -> (u16, Tracked<&'static GhostPersistentSubset<int>>) {
         if slab >= self.committed_slabs() {
             never_committed(self.class as usize, slab);
         }
         // SAFETY: `slab` is below the acquire-loaded watermark.
-        unsafe { self.owner_at(slab) }
+        (
+            unsafe { self.owner_at(slab, Tracked::assume_new()) },
+            Tracked::assume_new(),
+        )
     }
 }
 
@@ -2902,10 +2943,16 @@ impl SlabTable {
     /// aborts unless `slab` has been handed out and `slot`'s bit is set,
     /// with the pointer and its location; returns the owning arena.
     #[inline]
-    pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> u16 {
-        self.check_live(slab, slot, p);
+    pub fn check_located(
+        &self,
+        slab: usize,
+        slot: usize,
+        p: usize,
+        held: Tracked<&Option<GhostSingleton<int>>>,
+    ) -> u16 {
+        self.check_live(slab, slot, p, held);
         // SAFETY: `check_live` returned, so `slab` is below the watermark.
-        unsafe { self.owner_at(slab) }
+        unsafe { self.owner_at(slab, Tracked::assume_new()) }
     }
 
     /// The bit test of [`check_located`], without the owner: the exact
@@ -2930,13 +2977,19 @@ impl SlabTable {
     /// [`check_located`]: SlabTable::check_located
     /// [`desc_if_committed`]: SlabTable::desc_if_committed
     #[inline(always)]
-    pub fn check_live(&self, slab: usize, slot: usize, p: usize) {
+    pub fn check_live(
+        &self,
+        slab: usize,
+        slot: usize,
+        p: usize,
+        held: Tracked<&Option<GhostSingleton<int>>>,
+    ) {
         if !self.is_handed_out(slab) {
             never_committed(self.class as usize, slab);
         }
         debug_assert!(slot < self.class().nslots());
         // SAFETY: below a value the watermark held, slot below `nslots`.
-        if !unsafe { self.is_set_unchecked(slab, slot) } {
+        if !unsafe { self.is_set_unchecked(slab, slot, held) } {
             self.not_live(slab, slot, p);
         }
     }

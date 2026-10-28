@@ -19,7 +19,7 @@ impl SlabTable {
     #[cfg(test)]
     pub fn check(&self, p: *mut u8) -> u16 {
         let (slab, slot) = self.locate(p);
-        self.check_located(slab, slot, p as usize)
+        self.check_located(slab, slot, p as usize, Tracked::assume_new())
     }
 }
 
@@ -27,9 +27,9 @@ impl ClassState {
     /// Tests: `SlabTable::check` plus the owner test (`p` must be a slot
     /// start whose bit is set, in a slab of this arena). The release path
     /// runs `check_located`/`check_live` on the located slot and its own
-    /// owner test (`wrong_arena` in [`release`]).
+    /// owner test (`wrong_arena` in [`release_with`]).
     ///
-    /// [`release`]: ClassState::release
+    /// [`release_with`]: ClassState::release_with
     #[cfg(test)]
     pub fn check(&self, p: *mut u8) {
         let arena = self.table().check(p);

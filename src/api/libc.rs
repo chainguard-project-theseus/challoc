@@ -340,9 +340,12 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared
-                .table(class)
-                .check_live(slab as usize, slot as usize, p as usize);
+            shared.table(class).check_live(
+                slab as usize,
+                slot as usize,
+                p as usize,
+                vstd::prelude::Tracked::assume_new(),
+            );
             CLASSES[class].size()
         }
         Kind::Huge { page } => shared
@@ -393,9 +396,12 @@ pub(super) fn old_size_or_keep(
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared
-                .table(class)
-                .check_live(slab as usize, slot as usize, p as usize);
+            shared.table(class).check_live(
+                slab as usize,
+                slot as usize,
+                p as usize,
+                vstd::prelude::Tracked::assume_new(),
+            );
             if class_for(size, align) == Some(class) {
                 return None;
             }
@@ -632,9 +638,12 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared
-                .table(class)
-                .check_live(slab as usize, slot as usize, p as usize);
+            shared.table(class).check_live(
+                slab as usize,
+                slot as usize,
+                p as usize,
+                vstd::prelude::Tracked::assume_new(),
+            );
             (class_of(size) == Some(class), CLASSES[class].size())
         }
         Kind::Huge { page } => {

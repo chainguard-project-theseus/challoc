@@ -314,8 +314,8 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(cs.table().group(), 128);
     assert!(cs.is_guard_slab(124) && !cs.is_guard_slab(128));
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 128));
-    assert_eq!(cs.table().owner(128), 1);
-    assert_eq!(cs.table().owner(5), 0);
+    assert_eq!(cs.table().owner(128).0, 1);
+    assert_eq!(cs.table().owner(5).0, 0);
     assert_eq!(cs.table().committed_slabs(), 256);
     assert_eq!(cs.table().guards(Tracked::assume_new()), 0);
     let (r, _) = env.claim(cs, 3 * n);
@@ -468,7 +468,7 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     assert_eq!(cs.stats().committed, 1);
     assert!(t.bits(0).is_full());
     for s in 1..128 {
-        assert_eq!(t.owner(s), 0, "slab {s}");
+        assert_eq!(t.owner(s).0, 0, "slab {s}");
         assert_eq!(t.desc(s).state(), State::Fresh, "slab {s}");
         assert_eq!(t.desc(s).arena(), 0, "slab {s}");
         assert_eq!(t.desc(s).live(), 0, "slab {s}");
@@ -484,9 +484,9 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     assert_eq!(claim, Claim { n: 1, zeroed: true });
     assert_eq!(q[0] as usize, env.regions.slab_addr(c, 128));
     assert_eq!(t.committed_slabs(), 256);
-    assert_eq!(t.owner(128), 1);
-    assert_eq!(t.owner(255), 1);
-    assert_eq!(t.owner(127), 0);
+    assert_eq!(t.owner(128).0, 1);
+    assert_eq!(t.owner(255).0, 1);
+    assert_eq!(t.owner(127).0, 0);
     assert_eq!(t.check(q[0]), 1);
     assert_eq!(t.check(p[0]), 0);
     // Arena 0 keeps filling its own group: slab 1 next, in the same
@@ -1455,7 +1455,7 @@ fn a_disagreeing_descriptor_arena_aborts_the_release() {
     let cs = env.class(small_class(), 0);
     let (p, _) = env.claim(cs, 1);
     let (slab, _) = cs.locate(p[0]);
-    assert_eq!(cs.table().owner(slab), 0);
+    assert_eq!(cs.table().owner(slab).0, 0);
     cs.desc(slab).set_arena(1);
     cs.release(&p);
 }
