@@ -1163,6 +1163,41 @@ impl SlabTable {
         self.mark_auth.borrow().empty().persist()
     }
 
+    /// An empty token of the class bitmap's authority: where a claim's
+    /// tokens start.
+    pub proof fn empty_tokens(tracked &self) -> (tracked r: GhostSubset<int>)
+        ensures
+            r.id() == self.spec_slots().loc,
+            r@ == Set::<int>::empty(),
+    {
+        self.slot_auth.borrow().empty()
+    }
+
+    /// The slot tokens' geometry is the class's (`Class::wf`), and slot
+    /// `slot` of `slab` is bit `slab * slab_bits + slot`, at the slot's
+    /// address in the process's regions, and a slot exactly when `slot <
+    /// nslots`.
+    pub(super) proof fn lemma_slot_bit(&self, slab: int, slot: int)
+        requires
+            self.inv(),
+            0 <= slab < self.spec_nslabs(),
+            0 <= slot < class_table()[self.spec_class() as int].slab_bits,
+        ensures
+            self.spec_slots().wf(),
+            self.spec_slots().addr(slab * self.spec_slots().sb + slot)
+                == process_regions().slot_at(self.spec_class() as int, slab, slot),
+            self.spec_slots().real(slab * self.spec_slots().sb + slot)
+                == (slot < class_table()[self.spec_class() as int].nslots),
+            0 <= slab * self.spec_slots().sb + slot < self.spec_slots().nbits,
+    {
+        let s = self.spec_slots();
+        let (n, sbi) = (self.nslabs as int, self.slab_bits as int);
+        assert(s.nbits == n * sbi);
+        assert(0 <= slab * sbi && slab * sbi + sbi <= n * sbi) by (nonlinear_arith)
+            requires slab < n, 0 <= slab, sbi >= 0;
+        crate::bitmap::lemma_slab_bit(s, slab, slot);
+    }
+
     /// Page groups are `1 << lg_slabs_per_page` slabs and tile the
     /// region. Opaque, so its bit operations stay out of proofs that do
     /// not need them; revealed by `new`.

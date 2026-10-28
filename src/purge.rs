@@ -229,9 +229,10 @@ pub fn purged_is_zero() -> bool {
 }
 
 /// Ghost: the record of one read of [`purged_is_zero`] that returned
-/// true, for the claim that hands out a `Purged` slab's slots as zero.
-/// Not `Copy`, and its field is private to this module: verified code
-/// gets one only from [`purged_zero`].
+/// true, which the claim that hands out a `Purged` slab's slots as zero
+/// uses up (`class::axiom_discarded_slots_zero`). Not `Copy`, and its
+/// field is private to this module: verified code gets one only from
+/// [`purged_zero`].
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub tracked struct PurgedZero {

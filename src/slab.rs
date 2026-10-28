@@ -162,6 +162,39 @@ impl DescPerm {
     pub closed spec fn arena(&self) -> u16 {
         self.arena
     }
+
+    /// A ticket of the state this permission records now, for a claim
+    /// that changes the state before it can use the fact (the zero-slot
+    /// axioms of `class::ClassState::take`).
+    pub proof fn ticket(tracked &self) -> (tracked r: StateTicket)
+        ensures
+            r.id() == self.id(),
+            r.state() == self.state(),
+    {
+        StateTicket { id: self.id, state: self.state }
+    }
+}
+
+/// Ghost: the state byte a descriptor's permission ([`DescPerm`]) recorded
+/// when [`DescPerm::ticket`] made this, the one way to get one (its fields
+/// are private to this module). Not `Copy`.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct StateTicket {
+    ghost id: usize,
+    ghost state: u8,
+}
+
+impl StateTicket {
+    /// The descriptor the permission was for ([`desc_id`]).
+    pub closed spec fn id(&self) -> usize {
+        self.id
+    }
+
+    /// The state byte the permission recorded.
+    pub closed spec fn state(&self) -> u8 {
+        self.state
+    }
 }
 
 /// The address of a descriptor: the identity a [`DescPerm`] is for (as

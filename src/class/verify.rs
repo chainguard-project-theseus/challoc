@@ -69,35 +69,6 @@ impl ClassState {
         }
     }
 
-    /// `check_zero`: the first word of every slot of a `Fresh` slab must
-    /// read zero before its first claim; a dirty one means the memory was
-    /// written before this table ever handed the slab out.
-    #[cold]
-    #[inline(never)]
-    pub(super) fn check_fresh_slab_is_zero(&self, slab: usize) {
-        let cls = self.class();
-        let bm = self.table().bits(slab);
-        for slot in 0..cls.nslots() {
-            let p = self.slot_ptr(slab, slot);
-            // SAFETY: a slot of a committed slab; the class lock is held.
-            let word = unsafe { read_word(p, 0) };
-            if word != 0 {
-                self.fresh_slab_dirty(slab, slot, p, word, &bm);
-            }
-        }
-    }
-
-    /// `check_zero`: abort when `slab`'s state byte disagrees with its
-    /// shadow, i.e. something outside `SlabDesc` wrote the descriptor.
-    #[cold]
-    #[inline(never)]
-    pub(super) fn check_shadow(&self, slab: usize, at: &str) {
-        let d = self.desc(slab);
-        let (state, shadow) = d.state_bytes();
-        if shadow != state.wrapping_add(1) {
-            self.shadow_written(slab, at, d, state, shadow)
-        }
-    }
     /// [`check_zero`](ClassState::check_zero)'s abort, inlined into it:
     /// gathers the slab's state for [`dirty_zero_slot`].
     #[inline(always)]
@@ -202,16 +173,23 @@ unsafe fn read_word(p: *mut u8, off: usize) -> u64 {
     unsafe { core::ptr::read_volatile(p.add(off) as *const u64) }
 }
 
+verus! {
+
 /// `check_zero` invariant: a slab with live slots was `Fresh` at selection.
+/// Trusted (`external_body`): Verus does not model the formatted message.
 #[cold]
 #[inline(never)]
+#[verifier::external_body]
 pub(super) fn fresh_with_live(
     class: usize,
     slab: usize,
     arena: u16,
     desc: &SlabDesc,
     set: usize,
-) -> ! {
+) -> !
+    requires
+        crate::sys::may_abort(),
+{
     sys::abort_fmt(format_args!(
         "check_zero: class {class} slab {slab} (arena {arena}) is Fresh with live {} ({set} bits set, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
@@ -220,6 +198,8 @@ pub(super) fn fresh_with_live(
         desc_ptr_addr(desc)
     ))
 }
+
+} // verus!
 
 /// `check_zero` invariant: a release reached a slab that reads `Fresh`.
 #[cold]
@@ -261,3 +241,52 @@ fn dirty_zero_slot(
         pick.slab, pick.state, now.5, pick.n
     ))
 }
+
+verus! {
+
+impl ClassState {
+    /// `check_zero`: the first word of every slot of a `Fresh` slab must
+    /// read zero before its first claim; a dirty one means the memory was
+    /// written before this table ever handed the slab out. A temporary
+    /// seam (`external_body`, body unchanged): its reads of the slots need
+    /// permissions to the slots' memory, which the claim does not hand out
+    /// yet.
+    #[cold]
+    #[inline(never)]
+    #[verifier::external_body]
+    pub(super) fn check_fresh_slab_is_zero(&self, slab: usize)
+        requires
+            crate::sys::may_abort(),
+    {
+        let cls = self.class();
+        let bm = self.table().bits(slab);
+        for slot in 0..cls.nslots() {
+            let p = self.slot_ptr(slab, slot);
+            // SAFETY: a slot of a committed slab; the class lock is held.
+            let word = unsafe { read_word(p, 0) };
+            if word != 0 {
+                self.fresh_slab_dirty(slab, slot, p, word, &bm);
+            }
+        }
+    }
+
+    /// `check_zero`: abort when `slab`'s state byte disagrees with its
+    /// shadow, i.e. something outside `SlabDesc` wrote the descriptor. A
+    /// temporary seam (`external_body`, body unchanged): its abort
+    /// (`shadow_written`) is not specified yet.
+    #[cold]
+    #[inline(never)]
+    #[verifier::external_body]
+    pub(super) fn check_shadow(&self, slab: usize, at: &str)
+        requires
+            crate::sys::may_abort(),
+    {
+        let d = self.desc(slab);
+        let (state, shadow) = d.state_bytes();
+        if shadow != state.wrapping_add(1) {
+            self.shadow_written(slab, at, d, state, shadow)
+        }
+    }
+}
+
+} // verus!
