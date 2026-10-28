@@ -1,9 +1,8 @@
-# Temporary seams, provable in Verus once the claim hands out permissions
-# to the slots' memory and the aborts are specified.
+# Temporary seams: check_fresh_slab_is_zero reads unclaimed slots (it needs
+# a permission to a Fresh slab's slots), and check_shadow's abort is not
+# specified yet.
 ClassState::check_fresh_slab_is_zero	panic/abort	Verus
 ClassState::check_shadow	panic/abort	Verus
-# Trusted abort: Verus does not model the formatted message.
+# Trusted aborts: they call code outside verus! (formatted messages).
+ClassState::dirty_word	panic/abort	Verus
 fresh_with_live	panic/abort	Verus
-# Temporary seam, provable in Verus once the claim hands out permissions
-# to the slots' memory: its raw reads of the slots are trusted.
-ClassState::check_zero	raw pointer (internal)	Verus
