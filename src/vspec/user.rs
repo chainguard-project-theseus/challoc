@@ -1,7 +1,7 @@
 //! The permission model for user memory: a [`UserMem`] is the permission
-//! to a huge run's usable bytes, which a
-//! [`Live`](crate::heap::live::Live) token holds while `Huge::check_zero`
-//! reads the run.
+//! to a block's usable bytes (a slab slot or a huge run), which a
+//! [`Live`](crate::heap::live::Live) token holds while
+//! `ClassState::check_zero` or `Huge::check_zero` reads the block.
 //!
 //! Reading a user block's bytes takes a capability too,
 //! [`may_read_user`], which `purge::check_zero` grants to the opt-in debug
@@ -16,11 +16,12 @@ verus! {
 
 /// The caller may read the bytes of a user block. The read primitive
 /// over a [`UserMem`] ([`UserMem::lemma_valid_reads`], and through it
-/// `Huge::read_run_word`) requires it, and a `UserMem` is the only
-/// permission verified code can hold to a block's bytes. So a verified
-/// function can read a user block only if its own `requires` (or its
-/// loop's invariant) carries the fact, or it calls [`grant_user_reads`],
-/// directly or through a `true` from `purge::check_zero()`.
+/// the class `read_word` and `Huge::read_run_word`) requires it, and a
+/// `UserMem` is the only permission verified code can hold to a block's
+/// bytes. So a verified function can read a user block only if its own
+/// `requires` (or its loop's invariant) carries the fact, or it calls
+/// [`grant_user_reads`], directly or through a `true` from
+/// `purge::check_zero()`.
 ///
 /// Opaque, with no meaning: a capability, not a claim about the world. It
 /// marks the reads for audit; Verus does not restrict who calls
