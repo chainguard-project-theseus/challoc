@@ -11,6 +11,9 @@ file.
 | `slice_from_perms` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `<[T]>::swap` | assume_spec | core library | Kani | trusted |
 | `slice::from_ref` | assume_spec | core library | Kani | trusted |
+| `array::IntoIter<T, N>` | ext_type_spec | core library | Kani | trusted |
+| `<[T; N] as c...>::into_iter` | assume_spec | core library | Kani | trusted |
+| `<core::array...rator>::next` | assume_spec | core library | Kani | trusted |
 
 ## `array_get_unchecked`
 
@@ -90,5 +93,51 @@ Tool: Kani. Status: trusted.
 pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
     ensures
         r@ == seq![*s],
+;
+```
+
+## `core::array::IntoIter<T, N>`
+
+src/vspec/slice.rs:99. Kind: ext_type_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `core::array::IntoIter`, the iterator `for x in [a, b]` walks.
+
+```rust
+pub struct ExArrayIntoIter<T, const N: usize>(core::array::IntoIter<T, N>);
+```
+
+## `<[T; N] as core::iter::IntoIterator>::into_iter`
+
+src/vspec/slice.rs:105. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> The iterator starts with every element of the array, in order.
+
+```rust
+pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator>::into_iter ](a: [T; N]) -> (r: <[
+    T;
+    N
+] as core::iter::IntoIterator>::IntoIter)
+    ensures
+        array_iter_rest(r) == a@,
+;
+```
+
+## `<core::array::IntoIter<T, N> as core::iter::Iterator>::next`
+
+src/vspec/slice.rs:115. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `next` hands out the front element, or `None` once every element has been handed out.
+
+```rust
+pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as core::iter::Iterator>::next ](i: &mut core::array::IntoIter<T, N>) -> (r: Option<
+    <core::array::IntoIter<T, N> as core::iter::Iterator>::Item,
+>)
+    ensures
+        array_iter_rest(*old(i)).len() > 0 ==> r == Some(array_iter_rest(*old(i))[0]) && array_iter_rest(*final(i))
+            == array_iter_rest(*old(i)).drop_first(),
+        array_iter_rest(*old(i)).len() == 0 ==> r is None && array_iter_rest(*final(i)) == array_iter_rest(*old(i)),
 ;
 ```

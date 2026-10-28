@@ -825,7 +825,7 @@ impl Set {
             // requires), the permission's.
             broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
             let len = 8 * ((nslabs + 63) / 64 + ((nslabs + 63) / 64 + 63) / 64);
-            assert((len + 7) / 8 * 8 == len);
+            assert((len + 7) / 8 * 8 == len) by { vstd::arithmetic::div_mod::lemma_hoist_over_denominator(7, len / 8, 8); }
             lemma_table_alloc(&words, b as int, len);
         }
         // Level 1 is small and touched by every operation: commit it now.

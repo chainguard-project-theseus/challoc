@@ -87,4 +87,38 @@ pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
         r@ == seq![*s],
 ;
 
+/// `core::array::IntoIter`, the iterator `for x in [a, b]` walks. A loop
+/// with a `continue`, which Verus rejects in a `for`, is spelled out as the
+/// `for` desugaring (`into_iter`, then `next` until `None`) so that the
+/// machine code stays that of the `for`; these specifications make that
+/// form verifiable.
+#[cfg(verus_keep_ghost)]
+#[verifier::external_type_specification]
+#[verifier::external_body]
+#[verifier::accept_recursive_types(T)]
+pub struct ExArrayIntoIter<T, const N: usize>(core::array::IntoIter<T, N>);
+
+/// The elements an array iterator has yet to hand out, front first.
+pub uninterp spec fn array_iter_rest<T, const N: usize>(i: core::array::IntoIter<T, N>) -> Seq<T>;
+
+/// The iterator starts with every element of the array, in order.
+pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator>::into_iter ](a: [T; N]) -> (r: <[
+    T;
+    N
+] as core::iter::IntoIterator>::IntoIter)
+    ensures
+        array_iter_rest(r) == a@,
+;
+
+/// `next` hands out the front element, or `None` once every element has
+/// been handed out.
+pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as core::iter::Iterator>::next ](i: &mut core::array::IntoIter<T, N>) -> (r: Option<
+    <core::array::IntoIter<T, N> as core::iter::Iterator>::Item,
+>)
+    ensures
+        array_iter_rest(*old(i)).len() > 0 ==> r == Some(array_iter_rest(*old(i))[0]) && array_iter_rest(*final(i))
+            == array_iter_rest(*old(i)).drop_first(),
+        array_iter_rest(*old(i)).len() == 0 ==> r is None && array_iter_rest(*final(i)) == array_iter_rest(*old(i)),
+;
+
 } // verus!

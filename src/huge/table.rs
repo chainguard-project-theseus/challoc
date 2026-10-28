@@ -705,12 +705,13 @@ impl Table {
     /// the last slot: a probe for an absent key ends at an empty slot, so
     /// a full table would spin in `find`. `ensure` keeps production load
     /// at or below one half; only a free after a failed growth (its
-    /// `ensure` is best effort) can get here. The proof asks the caller
-    /// for the room, so a caller verified against it never aborts here.
+    /// `ensure` is best effort) can get here. A caller that shows the room
+    /// never aborts here; one that cannot (a free after a failed growth)
+    /// needs the kernel-class capability (`sys::may_abort_kernel`).
     pub(super) fn insert(&mut self, key: usize, desc: *mut HugeDesc)
         requires
             old(self).wf(),
-            old(self).spec_count() + 1 < old(self).spec_cap(),
+            old(self).spec_count() + 1 < old(self).spec_cap() || crate::sys::may_abort_kernel(),
             old(self).lookup(key) is None,
             desc@.addr != 0,
         ensures
@@ -726,9 +727,6 @@ impl Table {
                 },
     {
         if !(self.count + 1 < self.cap()) {
-            proof {
-                assert(false);
-            }
             crate::sys::abort_kernel(format_args!("huge: descriptor table full"));
         }
         let ghost cap = self.spec_cap();
