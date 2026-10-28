@@ -63,6 +63,9 @@ use crate::lock::LockOrder;
 use crate::purge::NEVER;
 use crate::stats::fig_add64;
 use crate::sys::cgroup::{Cgroup, LEVELS, UNLIMITED};
+use crate::vspec::count::CountPerm;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::count::count_id;
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::{
     lemma_div_is_ordered, lemma_fundamental_div_mod, lemma_fundamental_div_mod_converse_div,
@@ -70,6 +73,7 @@ use vstd::arithmetic::div_mod::{
 };
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::mul::lemma_mul_inequality;
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 
 verus! {
@@ -496,8 +500,6 @@ pub fn band(limit: u64, current: u64) -> (b: Band)
     }
 }
 
-} // verus!
-
 /// The most severe row over the hierarchy (design 11): the effective
 /// limit against the leaf's usage, which also stands in for any limited
 /// level beyond `sys::cgroup::LEVELS`; and each ancestor with a limit of
@@ -505,10 +507,18 @@ pub fn band(limit: u64, current: u64) -> (b: Band)
 /// its limit by the usage of all its children. (`cg.ancestors().fold(..,
 /// |b, (l, c)| b.max(band(l, c)))`, spelled out: one ancestor at a time,
 /// `max` through [`most_severe`].)
-pub fn cgroup_band(cg: &Cgroup) -> Band {
+pub fn cgroup_band(cg: &Cgroup) -> (r: Band)
+    ensures
+        r.wf(),
+{
     let mut b = band(cg.limit().min(cg.high()), cg.current());
     let mut level = 1;
-    while level < LEVELS {
+    while level < LEVELS
+        invariant
+            1 <= level <= LEVELS,
+            b.wf(),
+        decreases LEVELS - level,
+    {
         let (l, c) = cg.ancestor(level);
         b = most_severe(b, band(l, c));
         level += 1;
@@ -516,23 +526,40 @@ pub fn cgroup_band(cg: &Cgroup) -> Band {
     b
 }
 
+/// Where `b` sits in `Band`'s order (the derived `Ord`: the variants in
+/// declaration order, `Scaled` by its position), as a number.
+pub open spec fn severity(b: Band) -> int {
+    match b {
+        Band::Unlimited => 0,
+        Band::Low => 1,
+        Band::Scaled(f) => 2 + f,
+        Band::Immediate => 3 + u32::MAX,
+    }
+}
+
 /// `a.max(b)` in `Band`'s order (the derived `Ord`: the variants in
 /// declaration order, `Scaled` by its position): `b` unless `a` is more
 /// severe (`max` returns its second argument on a tie). Spelled out:
 /// Verus does not specify derived orders.
-fn most_severe(a: Band, b: Band) -> Band {
-    let key = |x: Band| -> u64 {
-        match x {
-            Band::Unlimited => 0,
-            Band::Low => 1,
-            Band::Scaled(f) => 2 + f as u64,
-            Band::Immediate => 3 + u32::MAX as u64,
-        }
-    };
+fn most_severe(a: Band, b: Band) -> (r: Band)
+    ensures
+        r == a || r == b,
+        severity(r) >= severity(a),
+        severity(r) >= severity(b),
+{
+    let key = |x: Band| -> (k: u64)
+        ensures
+            k == severity(x),
+        {
+            match x {
+                Band::Unlimited => 0,
+                Band::Low => 1,
+                Band::Scaled(f) => 2 + f as u64,
+                Band::Immediate => 3 + u32::MAX as u64,
+            }
+        };
     if key(b) >= key(a) { b } else { a }
 }
-
-verus! {
 
 /// The advice a purge batch is issued with (design 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -674,14 +701,14 @@ pub fn keep_ratio(cap: u64, retention: u64) -> (keep: u32)
     }
 }
 
-} // verus!
-
 /// The policy's outcome as last evaluated, read by the decay driver and
 /// the periodic tick. All atomics: written by whichever thread took the
 /// sample, read by every slow path that runs periodic work.
 pub struct Policy {
     /// One more than the position in the scaled band ([`FRAC_ONE`] units),
     /// so `Scaled(0)` at the 70% edge is told from `Low`; 0 outside it.
+    /// Read and written only through the `vspec::count` wrappers, inside
+    /// [`FracPred`]'s invariant: a direct access would bypass its bound.
     scaled16: AtomicU32,
     /// In the immediate band.
     immediate: AtomicBool,
@@ -710,14 +737,42 @@ pub struct Policy {
     /// [`THP_MIN_LIMIT`] (`thp::forced_by_limit`, decided by
     /// `Shared::init`).
     thp_forced: bool,
+    /// Ghost (no bytes): the position's invariant ([`FracPred`]), which
+    /// holds its permission: it is at most [`FRAC_ONE`] + 1.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    frac_inv: Tracked<FracInv>,
 }
+
+/// Namespace of the position's invariant ([`FracPred`]).
+pub open spec fn frac_ns() -> int {
+    0x6672_6163
+}
+
+/// The position's invariant, keyed by the atomic's identity
+/// (`vspec::count::count_id`): it is at most [`FRAC_ONE`] + 1. `new` makes
+/// it with the atomic (value 0), and `apply`, its one writer, swaps in
+/// one more than the position of a scaled band (clamped to [`FRAC_ONE`])
+/// or 0, inside it.
+pub struct FracPred;
+
+impl InvariantPredicate<int, CountPerm> for FracPred {
+    open spec fn inv(k: int, perm: CountPerm) -> bool {
+        &&& perm.id() == k
+        &&& perm.value() <= 0x1_0001
+    }
+}
+
+/// The invariant of the position.
+pub type FracInv = AtomicInvariant<int, CountPerm, FracPred>;
 
 impl Policy {
     /// Defaults; `high_rises` is the cgroup record's count at init, so a
     /// container whose `memory.events` already showed `high` events does
     /// not start with a full purge.
     pub const fn new(high_rises: u64, thp_forced: bool) -> Policy {
-        let (scaled16, _) = crate::vspec::count::new(0);
+        // The position, with its invariant (0, at most `FRAC_ONE` + 1).
+        let (scaled16, Tracked(fperm)) = crate::vspec::count::new(0);
+        let tracked frac_inv = FracInv::new(count_id(&scaled16), fperm, frac_ns());
         Policy {
             scaled16,
             immediate: AtomicBool::new(false),
@@ -730,7 +785,16 @@ impl Policy {
             limited: AtomicBool::new(false),
             eager_excess: AtomicBool::new(false),
             thp_forced,
+            frac_inv: Tracked(frac_inv),
         }
+    }
+
+    /// The position's invariant is the one over this atomic, in
+    /// [`frac_ns`].
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        &&& self.frac_inv@.constant() == count_id(&self.scaled16)
+        &&& self.frac_inv@.namespace() == frac_ns()
     }
 
     /// A cgroup discovered after init: `high_rises` (its count at
@@ -740,14 +804,28 @@ impl Policy {
     }
 
     /// The stored position in the scaled band, one more than the position
-    /// (0 outside the band).
+    /// (0 outside the band), read inside its invariant ([`FracPred`]): at
+    /// most [`FRAC_ONE`] + 1.
     #[inline(always)]
-    fn position(&self) -> u32 {
-        crate::vspec::count::load(&self.scaled16, Ordering::Relaxed, Tracked::assume_new())
+    fn position(&self) -> (f: u32)
+        ensures
+            f <= 0x1_0001,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let f;
+        vstd::open_atomic_invariant!(self.frac_inv.borrow() => perm => {
+            f = crate::vspec::count::load(&self.scaled16, Ordering::Relaxed, Tracked(&perm));
+        });
+        f
     }
 
     /// The band as last evaluated (`Unlimited` when no limit was seen).
-    pub fn band(&self) -> Band {
+    pub fn band(&self) -> (b: Band)
+        ensures
+            b.wf(),
+    {
         if self.immediate.load(Ordering::Relaxed) {
             Band::Immediate
         } else if !self.limited.load(Ordering::Relaxed) {
@@ -781,7 +859,10 @@ impl Policy {
 
     /// The period the walks use for an arena configured with `base`.
     #[inline]
-    pub fn effective_decay_ns(&self, base: u64) -> u64 {
+    pub fn effective_decay_ns(&self, base: u64) -> (ns: u64)
+        ensures
+            ns <= base,
+    {
         if !self.limited.load(Ordering::Relaxed) {
             return base;
         }
@@ -829,6 +910,9 @@ impl Policy {
     /// Returns `true` when the decay driver should look again now (the
     /// band changed or a full purge is owed).
     pub fn apply(&self, band: Band, limit: u64, retention: u64, high_rises: u64) -> bool {
+        proof {
+            frac_one_value();
+        }
         let (scaled, immediate) = match band {
             Band::Unlimited | Band::Low => (0, false),
             Band::Scaled(f) => (f.min(FRAC_ONE) + 1, false),
@@ -841,12 +925,13 @@ impl Policy {
             UNLIMITED
         };
         let mut changed = self.limited.swap(limited, Ordering::Relaxed) != limited;
-        let prev_frac = crate::vspec::count::swap(
-            &self.scaled16,
-            scaled,
-            Ordering::Relaxed,
-            Tracked::assume_new(),
-        );
+        proof {
+            use_type_invariant(self);
+        }
+        let prev_frac;
+        vstd::open_atomic_invariant!(self.frac_inv.borrow() => perm => {
+            prev_frac = crate::vspec::count::swap(&self.scaled16, scaled, Ordering::Relaxed, Tracked(&mut perm));
+        });
         changed = (prev_frac != scaled) || changed;
         changed = (self.immediate.swap(immediate, Ordering::Relaxed) != immediate) || changed;
         self.cap.store(cap, Ordering::Relaxed);
@@ -877,6 +962,8 @@ impl Policy {
         changed
     }
 }
+
+} // verus!
 
 /// `Empty` bytes held by every class of every arena and by the huge
 /// allocator: one lock hold per class that has an `Empty` slab (the

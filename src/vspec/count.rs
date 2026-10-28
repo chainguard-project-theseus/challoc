@@ -35,12 +35,9 @@
 //!   inside the counter's invariant once the registry is built
 //!   (`arena::BoundPred`, `arena::NarenasPred`), and `Arenas::init` writes
 //!   each counter before the registry is published.
-//!
-//! Not yet for the policy's position: until its proof lands, `Policy::new`
-//! drops the permission [`new`] returns, and `Policy::position` and
-//! `Policy::apply`, outside `verus!`, hand [`load`] and [`swap`]
-//! `Tracked::assume_new()` placeholders. For the position, the last two
-//! premises are unchecked at this point.
+//!   The policy's position goes through [`load`] and [`swap`] only, inside
+//!   its invariant (`policy::FracPred`), which `Policy::new` builds with
+//!   the permission [`new`] returns.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use vstd::prelude::*;
