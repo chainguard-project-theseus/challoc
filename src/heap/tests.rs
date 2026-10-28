@@ -287,11 +287,11 @@ impl TestHeap {
     }
 
     fn gc(&self) {
-        self.heap().gc(self.s)
+        self.heap().gc(self.s, Tracked::assume_new())
     }
 
     pub(crate) fn flush_all(&self) {
-        self.heap().flush_all(self.s)
+        self.heap().flush_all(self.s, Tracked::assume_new())
     }
 
     fn ticks(&self) -> u32 {
@@ -323,7 +323,7 @@ impl TestHeap {
     }
 
     pub(crate) fn destroy(self) {
-        unsafe { Heap::destroy(self.h, self.s) }
+        unsafe { Heap::destroy(self.h, self.s, Tracked::assume_new()) }
     }
 }
 
@@ -1392,7 +1392,7 @@ fn zeroed_prefix_stays_below_low_water() {
 /// caller frees). The schedule of the next pop is not set.
 fn compacting_cache_with_run(t: &TestHeap, c: usize, seed: u64) -> Vec<*mut u8> {
     let mut live_ps = residue(t, c, 30, 560, seed);
-    assert!(Heap::fragmented(t.s, 0, c));
+    assert!(Heap::fragmented(t.s, 0, c, Tracked::assume_new()));
     live_ps.push(t.alloc(c));
     // Scheduled pops until the cache is compacting and a rebuild has
     // given it a run (the first probe only records the refill count).
@@ -1821,7 +1821,7 @@ fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
     let t = TestHeap::new(s);
     let c = class_with(224);
     let mut live_ps = residue(&t, c, 30, 560, 0x0c0f_fee5);
-    assert!(Heap::fragmented(s, 0, c));
+    assert!(Heap::fragmented(s, 0, c, Tracked::assume_new()));
     // Refill once, then probe until the cache switches to compacting
     // (the first probe only records the class's refill count).
     live_ps.push(t.alloc(c));
@@ -1851,7 +1851,7 @@ fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
         b.free(p);
     }
     b.destroy();
-    assert!(!Heap::fragmented(s, 0, c));
+    assert!(!Heap::fragmented(s, 0, c, Tracked::assume_new()));
     assert_eq!(live(s, c), 1);
     // The next pop is scheduled, its tick is the periodic one and the
     // GC interval has elapsed (the interval is subtracted from the
@@ -1904,7 +1904,7 @@ fn a_dense_class_is_probed_but_never_compacted() {
         t.ticks() as u64,
         ticks as u64 + pops / (PROBE_MASK as u64 + 1) - 2000 / (PROBE_MASK as u64 + 1)
     );
-    assert!(!Heap::fragmented(s, 0, c));
+    assert!(!Heap::fragmented(s, 0, c, Tracked::assume_new()));
     for p in ps {
         t.free(p);
     }
@@ -1919,7 +1919,7 @@ fn scheduled_pops_take_the_run_minimum_and_rebuild_from_the_lowest_slab() {
     let c = class_with(224);
     let cs = &s.arena0.classes[c];
     let mut live_ps = residue(&t, c, 30, 560, 0x5eed_1234);
-    assert!(Heap::fragmented(s, 0, c));
+    assert!(Heap::fragmented(s, 0, c, Tracked::assume_new()));
     assert_eq!(t.len(c), 0);
     // The first probe switches the cache to compacting; from then on
     // every eighth pop is served from the run.
@@ -1991,7 +1991,7 @@ fn churn_model_empties_the_high_slabs_and_then_stops_compacting() {
         before * 20 >= 17 * (MODEL_SLOTS / nslots),
         "{before} occupied slabs after the delete"
     );
-    assert!(Heap::fragmented(s, 0, c));
+    assert!(Heap::fragmented(s, 0, c, Tracked::assume_new()));
     let ideal = keep.len().div_ceil(nslots);
     let mut st = 0x2468_ace0u64;
     let mut was_compacting = false;
@@ -2016,7 +2016,7 @@ fn churn_model_empties_the_high_slabs_and_then_stops_compacting() {
         after <= bound,
         "{after} occupied slabs after the churn, ideal {ideal}, bound {bound}, before {before}"
     );
-    assert!(!Heap::fragmented(s, 0, c));
+    assert!(!Heap::fragmented(s, 0, c, Tracked::assume_new()));
     assert!(!t.cache(c).compacting(), "still compacting a dense class");
     assert_eq!(live(s, c), keep.len() + t.len(c));
     for p in keep {
@@ -2034,7 +2034,7 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
     let cs = &s.arena0.classes[c];
     let nslots = CLASSES[c].nslots();
     let mut keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x0bad_cafe);
-    assert!(Heap::fragmented(s, 0, c));
+    assert!(Heap::fragmented(s, 0, c, Tracked::assume_new()));
     // A balanced churn with a defragmenter-like stream of direct
     // (MALLOCX_TCACHE_NONE) claims at 3 slabs' worth per probe window
     // (over the gate, were it counting `claimed`; light enough not to
@@ -2097,7 +2097,7 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
     let cs = &s.arena0.classes[c];
     let t = TestHeap::new(s);
     let mut keep = residue(&t, c, 30, 560, 0x3333_4444);
-    assert!(Heap::fragmented(s, 0, c));
+    assert!(Heap::fragmented(s, 0, c, Tracked::assume_new()));
     let before_refilled = cs.refilled();
     for _ in 0..2 * (PROBE_MASK as usize + 1) + 64 {
         keep.push(t.alloc(c));
@@ -2621,9 +2621,9 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
     );
     assert_eq!(s.arenas.bound(3), 0);
     let before = s.arenas.bound(0);
-    let tc = s.tcaches.create(s, 0).unwrap();
+    let tc = s.tcaches.create(s, 0, Tracked::assume_new()).unwrap();
     assert_eq!(s.arenas.bound(0), before);
-    assert!(s.tcaches.destroy(s, tc));
+    assert!(s.tcaches.destroy(s, tc, Tracked::assume_new()));
     assert_eq!(s.arenas.bound(0), before);
     // First touch builds arena 1.
     let c = class_with(64);
@@ -2635,7 +2635,7 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
     t.heap().free(s, p);
     assert_eq!(t.heap().cache(c).unwrap().len(), HALF);
     // `thread.arena` moves the binding with the heap.
-    t.heap().set_arena(s, 3);
+    t.heap().set_arena(s, 3, Tracked::assume_new());
     assert_eq!((s.arenas.bound(1), s.arenas.bound(3)), (1, 1));
     t.destroy();
     assert_eq!((s.arenas.bound(1), s.arenas.bound(3)), (1, 0));
@@ -2810,7 +2810,7 @@ fn rehoming_only_takes_an_idle_automatic_arena() {
     assert_eq!(s.arenas.bound(1), 1);
     assert!(w3.heap().rehome);
     // `thread.arena` pins the home.
-    w3.heap().set_arena(s, 0);
+    w3.heap().set_arena(s, 0, Tracked::assume_new());
     assert!(!w3.heap().rehome);
     let r = w2.alloc(c);
     w2.destroy();
@@ -3092,7 +3092,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     h.free(s, p0);
     h.free(s, p3);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 3);
-    h.flush_all(s);
+    h.flush_all(s, Tracked::assume_new());
     assert_eq!(h.cache(c).unwrap().len(), 0);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 0);
     assert_eq!(h.cache_in(a1, c).unwrap().len(), 0);
@@ -3126,7 +3126,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert_eq!(a.classes[c].stats().empty, per_refill);
     // Destroying the heap frees the nodes too.
     let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
-    unsafe { Heap::destroy(t.h, s) };
+    unsafe { Heap::destroy(t.h, s, Tracked::assume_new()) };
     assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < before);
     core::mem::forget(t);
 }
@@ -3205,7 +3205,7 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     assert!(s.config.shared_class(c));
     assert_eq!(s.config.cap_for(0, 0, c), 0);
     assert_eq!(s.config.cap_for(0, a1, c), 0);
-    h.set_arena(s, a1);
+    h.set_arena(s, a1, Tracked::assume_new());
     // Default path: arena 0.
     let (d, _) = h.alloc_zeroed(s, c);
     assert_eq!(s.classify_free(d, Tracked::assume_new()), Ok((c, 0)));
@@ -3265,7 +3265,7 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
     let before = h.stats();
     assert_eq!((before.allocated, before.deallocated), (128, 64));
     let meta_before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
-    h.drop_home_caches(s);
+    h.drop_home_caches(s, Tracked::assume_new());
     assert!(h.cache(c).is_none());
     assert!(
         s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < meta_before,
@@ -3296,7 +3296,7 @@ fn set_arena_swaps_cache_arrays() {
     let c = class_with(64);
     let p0 = t.alloc(c);
     let (p1, _) = h.alloc_in(s, a1, c);
-    h.set_arena(s, a1);
+    h.set_arena(s, a1, Tracked::assume_new());
     assert_eq!(h.arena(), a1);
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(0, c).unwrap().len(), HALF - 1);
@@ -3312,10 +3312,10 @@ fn set_arena_swaps_cache_arrays() {
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert_eq!(h.cache_in(0, c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 1);
-    h.set_arena(s, 0);
+    h.set_arena(s, 0, Tracked::assume_new());
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF);
-    h.flush_all(s);
+    h.flush_all(s, Tracked::assume_new());
     let per_refill = HALF.div_ceil(CLASSES[c].nslots());
     assert_eq!(s.arena0.classes[c].stats().empty, per_refill);
     assert_eq!(
@@ -3331,8 +3331,8 @@ fn set_arena_swaps_cache_arrays() {
 fn explicit_caches_create_flush_destroy() {
     let s = shared();
     assert!(s.tcaches.is_empty());
-    let t0 = s.tcaches.create(s, 0).unwrap();
-    let t1 = s.tcaches.create(s, 0).unwrap();
+    let t0 = s.tcaches.create(s, 0, Tracked::assume_new()).unwrap();
+    let t1 = s.tcaches.create(s, 0, Tracked::assume_new()).unwrap();
     assert_eq!((t0, t1), (0, 1));
     assert_eq!(s.tcaches.len(), 2);
     assert!(s.tcaches.get(2).is_none());
@@ -3344,15 +3344,15 @@ fn explicit_caches_create_flush_destroy() {
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     h.free(s, p);
     assert_eq!(h.cache(c).unwrap().len(), HALF);
-    assert!(s.tcaches.flush(s, t0));
+    assert!(s.tcaches.flush(s, t0, Tracked::assume_new()));
     assert_eq!(s.tcaches.get(t0).unwrap().cache(c).unwrap().len(), 0);
-    assert!(!s.tcaches.flush(s, 9));
-    assert!(s.tcaches.destroy(s, t0));
-    assert!(!s.tcaches.destroy(s, t0));
+    assert!(!s.tcaches.flush(s, 9, Tracked::assume_new()));
+    assert!(s.tcaches.destroy(s, t0, Tracked::assume_new()));
+    assert!(!s.tcaches.destroy(s, t0, Tracked::assume_new()));
     assert!(s.tcaches.get(t0).is_none());
     assert_eq!(s.tcaches.len(), 1);
     // The slot is reused.
-    assert_eq!(s.tcaches.create(s, 0), Some(t0));
+    assert_eq!(s.tcaches.create(s, 0, Tracked::assume_new()), Some(t0));
 }
 
 // The opt-in `zero_on_free` and `slot_randomize` keys.
@@ -3657,7 +3657,7 @@ fn slot_randomize_keeps_the_compacting_run_valid() {
     let cs = &s.arena0.classes[c];
     let nslots = CLASSES[c].nslots();
     let mut keep = residue(&t, c, MODEL_SLOTS / nslots, 560, 0x9e37_79b9_7f4a_7c15);
-    assert!(Heap::fragmented(s, 0, c));
+    assert!(Heap::fragmented(s, 0, c, Tracked::assume_new()));
     let mut held: HashSet<usize> = keep.iter().map(|&p| p as usize).collect();
     let mut st = 0x2468_ace0u64;
     let mut was_compacting = false;
@@ -3722,7 +3722,7 @@ fn a_refill_of_a_cache_that_is_not_empty_aborts() {
     assert!(h.cache(c).unwrap().len() > 0);
     let a = s.arena(0, Tracked::assume_new()).unwrap().0;
     let k = h.cache_ptr(c);
-    unsafe { h.refill(s, a, k, c) };
+    unsafe { h.refill(s, a, Tracked::assume_new(), k, c, Tracked::assume_new()) };
 }
 
 #[test]
@@ -3734,7 +3734,7 @@ fn freeing_caches_that_were_not_flushed_aborts() {
     let _p = t.alloc(c);
     let h = t.heap();
     assert!(h.cache(c).unwrap().len() > 0);
-    Heap::free_caches(s, &mut h.caches);
+    Heap::free_caches(s, &mut h.caches, Tracked::assume_new());
 }
 
 #[test]
@@ -3797,7 +3797,7 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
     // Turning the caches off walks the list, flushes and frees every
     // node's caches (the nodes stay) and folds their counters.
-    h.set_tcache_enabled(s, false);
+    h.set_tcache_enabled(s, false, Tracked::assume_new());
     assert_eq!(Heap::nodes(h.others).count(), 3);
     assert!(
         h.cache_in(a1, c).is_none()
@@ -3813,7 +3813,7 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     );
     // `destroy` frees each node as the walk hands it over.
     let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
-    unsafe { Heap::destroy(t.h, s) };
+    unsafe { Heap::destroy(t.h, s, Tracked::assume_new()) };
     assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < before);
     core::mem::forget(t);
 }
@@ -3830,14 +3830,14 @@ fn probe_verdict_applies_the_gate_and_records_it() {
     let c = class_with(1024);
     let cs = &s.arena0.classes[c];
     let ps: Vec<*mut u8> = (0..4).map(|_| t.alloc(c)).collect();
-    assert!(!Heap::fragmented(s, 0, c));
+    assert!(!Heap::fragmented(s, 0, c, Tracked::assume_new()));
     let now = cs.refilled() as u32;
     assert_eq!(Heap::probe_verdict(s, 0, c, now), (now, Verdict::Dense));
     for p in &ps {
         t.free(*p);
     }
     let keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x0bad_cafe);
-    assert!(Heap::fragmented(s, 0, c));
+    assert!(Heap::fragmented(s, 0, c, Tracked::assume_new()));
     let now = cs.refilled() as u32;
     let before = cs.compaction_stats();
     assert_eq!(
@@ -4000,7 +4000,7 @@ fn a_free_routed_to_an_unbuilt_arena_aborts() {
     table.corrupt_owner_word(&s.meta, slab as usize / table.group(), 5);
     assert_eq!(s.classify_free(p, Tracked::assume_new()), Ok((c, 5)));
     h.free(s, p);
-    h.flush_all(s);
+    h.flush_all(s, Tracked::assume_new());
 }
 
 /// A heap homed on an automatic arena nothing has built yet
@@ -4015,7 +4015,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
         ..Config::DEFAULT
     })
     .build();
-    let hp = Heap::create_detached(s, 2);
+    let (hp, _, _) = Heap::create_detached(s, 2, Tracked::assume_new());
     assert!(!hp.is_null());
     let h = unsafe { &mut *hp };
     assert!(s.arenas.get_existing(2).is_none());
@@ -4035,7 +4035,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     );
     h.free(s, p);
     assert_eq!(a2.large(), (0, 0));
-    unsafe { Heap::destroy(hp, s) };
+    unsafe { Heap::destroy(hp, s, Tracked::assume_new()) };
 }
 
 #[test]
@@ -4128,7 +4128,7 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     h.free(s, p0);
     h.free(s, p1);
     assert_eq!(s.checked_slot_any(p0), Some(c));
-    h.flush_all(s);
+    h.flush_all(s, Tracked::assume_new());
     assert_eq!(
         (
             s.checked_slot(p0, h),

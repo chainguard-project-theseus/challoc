@@ -606,14 +606,20 @@ mod tests {
         dallocx(d, flags);
         assert_eq!(desc.live(), live - 1);
         // Explicit cache.
-        let t = s.tcaches.create(s, 0).expect("tcache.create");
+        let t = s
+            .tcaches
+            .create(s, 0, vstd::prelude::Tracked::assume_new())
+            .expect("tcache.create");
         let flags = mallocx_tcache(t) as c_int;
         let e = mallocx(300, flags);
         let th = s.tcaches.get(t).unwrap();
         let before = th.cache_in(0, c).map_or(0, |cc| cc.len());
         dallocx(e, flags);
         assert_eq!(th.cache_in(0, c).unwrap().len(), before + 1);
-        assert!(s.tcaches.destroy(s, t));
+        assert!(
+            s.tcaches
+                .destroy(s, t, vstd::prelude::Tracked::assume_new())
+        );
         // Huge runs record the arena.
         let h = mallocx(2 << 20, mallocx_arena(lua) as c_int);
         let Err(page) = s.classify_free(h, vstd::prelude::Tracked::assume_new()) else {
@@ -746,7 +752,10 @@ mod tests {
         api_libc::free(hp);
 
         // Explicit cache.
-        let t = s.tcaches.create(s, 0).expect("tcache.create");
+        let t = s
+            .tcaches
+            .create(s, 0, vstd::prelude::Tracked::assume_new())
+            .expect("tcache.create");
         let f = Flags::decode(mallocx_tcache(t) | mallocx_arena(lua));
         assert_eq!(f.tcache, Tcache::Explicit(t));
         let (e, _) = mallocx::alloc(s, c, f.arena, f.tcache);
@@ -765,10 +774,13 @@ mod tests {
             th.cache_in(heap::FOREIGN, c).unwrap().len(),
             before_foreign + 1
         );
-        assert!(s.tcaches.flush(s, t));
+        assert!(s.tcaches.flush(s, t, vstd::prelude::Tracked::assume_new()));
         assert_eq!(th.cache_in(lua, c).unwrap().len(), 0);
         assert_eq!(th.cache_in(heap::FOREIGN, c).unwrap().len(), 0);
-        assert!(s.tcaches.destroy(s, t));
+        assert!(
+            s.tcaches
+                .destroy(s, t, vstd::prelude::Tracked::assume_new())
+        );
 
         // Cross-thread: another thread allocates from the Lua arena and its
         // own home arena; this thread frees both with plain `free`, both
@@ -796,8 +808,8 @@ mod tests {
         // young and the other thread's arena is idle now, so its first
         // free of a slot there would otherwise move it onto that arena
         // (`Heap::try_rehome`, covered in heap/tests.rs).
-        h.set_arena(s, home);
-        h.flush_all(s);
+        h.set_arena(s, home, vstd::prelude::Tracked::assume_new());
+        h.flush_all(s, vstd::prelude::Tracked::assume_new());
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;
             assert_eq!(unsafe { *p }, i as u8);
@@ -830,7 +842,7 @@ mod tests {
             64,
             "both arenas' slots on the one FOREIGN cache"
         );
-        h.flush_all(s);
+        h.flush_all(s, vstd::prelude::Tracked::assume_new());
         // Per-arena purge covers the Lua arena's slabs only.
         let lua_arena = s.arena(lua, vstd::prelude::Tracked::assume_new()).unwrap();
         let empty_before = lua_arena.0.classes[c].stats().empty;

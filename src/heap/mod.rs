@@ -37,6 +37,7 @@
 mod cache;
 mod compact;
 mod flush;
+mod fresh;
 pub(crate) mod live;
 pub mod mallocx;
 mod others;
@@ -44,6 +45,7 @@ mod paths;
 mod shared;
 mod tcaches;
 mod thread;
+mod zero;
 
 #[cfg(test)]
 mod linux_tests;
@@ -78,14 +80,21 @@ use crate::layout::{CLASSES, NCLASSES};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
 
+use crate::arena::Homed;
+use crate::lock::LockOrder;
+use crate::vspec::zero::Zeroed;
+use fresh::FreshHeap;
 use others::{node_block_layout, node_caches_detached, node_set_arena};
 use paths::invalid_free;
 #[cfg(test)]
 use shared::ncpus;
 use shared::{now_ns, tid};
+use vstd::map::Map;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
-use vstd::prelude::{Tracked, verus};
+use vstd::prelude::{Ghost, Tracked, verus};
+use vstd::raw_ptr::PointsTo;
+use vstd::resource::set::GhostSingleton;
 
 verus! {
 
@@ -415,8 +424,6 @@ pub proof fn lemma_huge_fits(p: *mut u8, size: usize, a1: usize, a2: usize)
     }
 }
 
-} // verus!
-
 /// Per-thread byte counters (`thread.allocated`, `thread.deallocated`).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ThreadStats {
@@ -431,6 +438,29 @@ impl ThreadStats {
         self.allocated = self.allocated.wrapping_add(size.wrapping_mul(allocs));
         self.deallocated = self.deallocated.wrapping_add(size.wrapping_mul(frees));
     }
+}
+
+/// Ghost: the permissions for the cache memory of one heap (its home
+/// headers, the headers of its `others` nodes and their stacks), keyed by
+/// address. `cls` and `owner` are ghost bookkeeping for what the caches
+/// hold: the class each header caches, and for each stack entry the
+/// header and index it is. `toks` holds the slot tokens of the cached
+/// slots, by stack entry; `zero` the zero tokens of the headers' zero
+/// prefixes; `handed` the token of the slot the last pop from inside a
+/// zero prefix handed out; `released` the `(class, address)` pairs this
+/// heap's flushes handed back; `blocks` the metadata claim of each stack,
+/// by its base.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct CachePerms {
+    pub tracked hdrs: Map<*mut CacheHeader, PointsTo<CacheHeader>>,
+    pub tracked slots: Map<*mut *mut u8, PointsTo<*mut u8>>,
+    pub ghost cls: Map<*mut CacheHeader, vstd::prelude::int>,
+    pub ghost owner: Map<*mut *mut u8, (*mut CacheHeader, vstd::prelude::int)>,
+    pub tracked toks: Map<*mut *mut u8, GhostSingleton<vstd::prelude::int>>,
+    pub tracked zero: Map<*mut *mut u8, Zeroed>,
+    pub tracked handed: Option<Zeroed>,
+    pub ghost released: vstd::seq::Seq<(vstd::prelude::int, vstd::prelude::int)>,
+    pub tracked blocks: Map<*mut *mut u8, crate::meta::MetaClaim>,
 }
 
 /// One thread's allocator state (design 6.2). Lives in the metadata region;
@@ -480,7 +510,35 @@ pub struct Heap {
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
     caches: [CacheHeader; NCLASSES],
+    /// Ghost ([`CachePerms`], no bytes): the permissions for `caches`, the
+    /// `others` nodes' headers and their stacks.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    perms: Tracked<CachePerms>,
+    /// Ghost (no bytes): the `others` list, head first, as the nodes'
+    /// `next` fields chain it.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    list: Ghost<vstd::seq::Seq<*mut ArenaCaches>>,
+    /// Ghost (no bytes): the `others` nodes' keys, `keys[i]` the `arena`
+    /// field of `list[i]`.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    keys: Ghost<vstd::seq::Seq<u16>>,
+    /// Ghost (no bytes): the home headers, one per class, where creation
+    /// wrote them.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    home_hdrs: Ghost<vstd::seq::Seq<*mut CacheHeader>>,
+    /// Ghost (no bytes): the heap's ticket for its home arena while it is
+    /// counted there.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    homed: Tracked<Option<Homed>>,
+    /// Ghost (no bytes): what the heap keeps of each `others` node's block
+    /// ([`others::NodeHead`]): the permissions to the `arena`, `pad` and
+    /// `next` fields `other_caches` writes when it links the node in, the
+    /// rest of the block, and its claim.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    heads: Tracked<Map<*mut ArenaCaches, others::NodeHead>>,
 }
+
+} // verus!
 
 const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
 
@@ -492,7 +550,16 @@ const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
 /// The entries are this heap's stack storage and nothing else reads or
 /// writes them while the slice lives.
 #[inline(always)]
-unsafe fn stack_mut<'a>(slots: *mut *mut u8, start: usize, len: usize) -> &'a mut [*mut u8] {
+#[allow(
+    clippy::needless_lifetimes,
+    reason = "the permission and the slice share the lifetime in the Verus signature"
+)]
+unsafe fn stack_mut<'a>(
+    slots: *mut *mut u8,
+    start: usize,
+    len: usize,
+    _perms: Tracked<&'a mut Map<*mut *mut u8, PointsTo<*mut u8>>>,
+) -> &'a mut [*mut u8] {
     // SAFETY: guaranteed by the caller.
     unsafe { core::slice::from_raw_parts_mut(slots.add(start), len) }
 }
@@ -514,13 +581,21 @@ fn assert_refill_empty(len: &u32) {
     assert_eq!(*len, 0, "heap: refill of a cache that is not empty");
 }
 
+/// `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache
+/// that still holds slots: `*len == 0` after it returns.
+#[inline(always)]
+#[track_caller]
+fn assert_rekey_flushed(len: &u32) {
+    assert_eq!(*len, 0, "heap: re-keying a cache that was not flushed");
+}
+
 /// `(*h).bound = true` for a heap [`Heap::create`] has just made: a field
 /// store through the raw heap pointer.
 ///
 /// # Safety
 /// `h` is a fresh heap, exclusively owned.
 #[inline(always)]
-unsafe fn mark_bound(h: *mut Heap) {
+unsafe fn mark_bound(h: *mut Heap, _s: Tracked<&mut FreshHeap>) {
     // SAFETY: guaranteed by the caller.
     unsafe { (*h).bound = true };
 }
@@ -532,9 +607,17 @@ unsafe fn mark_bound(h: *mut Heap) {
 /// # Safety
 /// `h` is a fresh heap, exclusively owned.
 #[inline(always)]
-unsafe fn mark_rehome(h: *mut Heap) {
+unsafe fn mark_rehome(h: *mut Heap, _s: Tracked<&mut FreshHeap>) {
     // SAFETY: guaranteed by the caller.
     unsafe { (*h).rehome = true };
+}
+
+/// [`Arenas::assign`](crate::arena::Arenas::assign) on the process's
+/// arenas, with the new heap's ticket for the arena it picked.
+#[inline(always)]
+fn assign_home(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> (u16, Tracked<Homed>) {
+    let (arena, t, _) = shared.arenas.assign(Tracked::assume_new());
+    (arena, t)
 }
 
 impl Heap {
@@ -543,26 +626,32 @@ impl Heap {
     /// (`Arenas::assign`; `destroy` releases the binding). Null if the
     /// region is exhausted. Does not touch TLS or the thread key.
     pub fn create(shared: &Shared) -> *mut Heap {
-        let (arena, ticket, _) = shared.arenas.assign(vstd::prelude::Tracked::assume_new());
-        let h = Self::create_detached(shared, arena);
+        let (arena, ticket) = assign_home(shared, Tracked::assume_new());
+        let (h, _, _) = Self::create_detached(shared, arena, Tracked::assume_new());
         if h.is_null() {
             shared.arenas.unbind(arena, ticket);
         } else {
             // SAFETY: fresh, exclusively owned.
-            unsafe { mark_bound(h) };
+            unsafe { mark_bound(h, Tracked::assume_new()) };
             // SAFETY: as above.
-            unsafe { mark_rehome(h) };
+            unsafe { mark_rehome(h, Tracked::assume_new()) };
         }
         h
     }
 
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
-    /// before it is registered). Null if the region is exhausted.
-    pub fn create_detached(shared: &Shared, arena: u16) -> *mut Heap {
+    /// before it is registered). Null if the region is exhausted. With
+    /// the heap, the permissions to its caches and the token for its plain
+    /// fields (ghost).
+    fn create_detached(
+        shared: &Shared,
+        arena: u16,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> (*mut Heap, Tracked<CachePerms>, Tracked<Option<FreshHeap>>) {
         let block = shared.meta.alloc(Layout::new::<Heap>());
         let h = block as *mut Heap;
         if h.is_null() {
-            return h;
+            return (h, Tracked::assume_new(), Tracked::assume_new());
         }
         // SAFETY: `h` is a fresh, exclusively owned metadata block of the
         // right size and alignment. Field by field: a whole `Heap`
@@ -594,7 +683,7 @@ impl Heap {
             // SAFETY: as above.
             unsafe { ptr::write(cache, CacheHeader::EMPTY) };
         }
-        h
+        (h, Tracked::assume_new(), Tracked::assume_new())
     }
 
     /// Flush every cache, free them and the heap itself back to the
@@ -603,7 +692,7 @@ impl Heap {
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
     /// use by any thread.
-    pub unsafe fn destroy(h: *mut Heap, shared: &Shared) {
+    pub unsafe fn destroy(h: *mut Heap, shared: &Shared, _ord: Tracked<&mut LockOrder>) {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { tcaches::heap_at(h) };
         // Unbound before the flush: the arena is idle from here on, so a
@@ -621,9 +710,9 @@ impl Heap {
             heap.bound = false;
             heap.rehome = false;
         }
-        heap.flush_all(shared);
+        heap.flush_all(shared, Tracked::assume_new());
         // SAFETY: the home array (null).
-        unsafe { heap.free_caches_in(shared, ptr::null_mut()) };
+        unsafe { heap.free_caches_in(shared, ptr::null_mut(), Tracked::assume_new()) };
         // `for o in Self::nodes(heap.others)`, spelled out over
         // `node_next`: as the iterator does, the node's `next` is read
         // before the node is freed. Each node leaves the list as it goes
@@ -632,11 +721,11 @@ impl Heap {
         while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap; the node is freed below, after its `next`.
-            let next = unsafe { heap.node_next(o) };
+            let next = unsafe { heap.node_next(o, Ghost::assume_new()) };
             // SAFETY: `o` is a live node of this heap's `others` list.
-            unsafe { heap.free_caches_in(shared, o) };
+            unsafe { heap.free_caches_in(shared, o, Tracked::assume_new()) };
             // SAFETY: as above.
-            let pad = unsafe { heap.node_pad(o) };
+            let pad = unsafe { heap.node_pad(o, Ghost::assume_new()) };
             // SAFETY: the node lies `pad` lines into its block.
             let block = unsafe { (o as *mut u8).sub(64 * pad as usize) };
             shared.meta.free(
@@ -685,7 +774,13 @@ impl Heap {
     /// tests' teardown of a bare cache array). The heap's own arrays go
     /// through [`Heap::free_caches_in`].
     #[cfg(test)]
-    fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES]) {
+    fn free_caches(
+        shared: &Shared,
+        caches: &mut [CacheHeader; NCLASSES],
+        _stacks: Tracked<
+            Map<vstd::prelude::int, (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>,
+        >,
+    ) {
         for cache in caches.iter_mut() {
             if cache.cap != 0 {
                 assert_flushed(&cache.len);
@@ -708,7 +803,12 @@ impl Heap {
     ///
     /// # Safety
     /// `node` is null or a live node owned by this heap.
-    unsafe fn free_caches_in(&mut self, shared: &Shared, node: *mut ArenaCaches) {
+    unsafe fn free_caches_in(
+        &mut self,
+        shared: &Shared,
+        node: *mut ArenaCaches,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
         for class in 0..NCLASSES {
             // SAFETY: `node` is null or a live node owned by this heap.
             let cache = unsafe { self.header_in(node, class) };
@@ -791,7 +891,7 @@ impl Heap {
     /// Change the home arena (`thread.arena`). The caches of the old home
     /// move to the `others` list and the new home's, if any, take their
     /// place, so nothing is flushed. `arena` must exist.
-    pub fn set_arena(&mut self, shared: &Shared, arena: u16) {
+    pub fn set_arena(&mut self, shared: &Shared, arena: u16, _ord: Tracked<&mut LockOrder>) {
         // An explicit home is kept, even one equal to the current home:
         // no late move away from it ([`Heap::try_rehome`]).
         self.rehome = false;
@@ -803,7 +903,7 @@ impl Heap {
         if node.is_null() {
             // No metadata for a new node: the caches of the new home start
             // empty and the old home's must go back first.
-            self.drop_home_caches(shared);
+            self.drop_home_caches(shared, Tracked::assume_new());
         } else {
             // The node's headers and the home headers trade places, and
             // the node becomes the cache of `old`, the home arena being
@@ -817,7 +917,7 @@ impl Heap {
                 unsafe { self.swap_hdrs(a, b) };
             }
             // SAFETY: as above.
-            unsafe { node_set_arena(node, old) };
+            unsafe { node_set_arena(node, old, Tracked::assume_new()) };
         }
         self.arena = arena;
         if self.bound {
@@ -929,10 +1029,10 @@ impl Heap {
             return false;
         }
         let old = self.arena;
-        self.flush_arena(shared, old, ptr::null_mut());
+        self.flush_arena(shared, old, ptr::null_mut(), Tracked::assume_new());
         let foreign = self.other_caches(shared, FOREIGN, false);
         if !foreign.is_null() {
-            self.flush_arena(shared, FOREIGN, foreign);
+            self.flush_arena(shared, FOREIGN, foreign, Tracked::assume_new());
         }
         let a = shared.owner(to);
         for class in 0..NCLASSES {
@@ -957,12 +1057,12 @@ impl Heap {
     /// free them: the home array is `EMPTY` afterwards and `stats()` is
     /// unchanged. For a `thread.arena` change that could get no `others`
     /// node for the old home.
-    fn drop_home_caches(&mut self, shared: &Shared) {
+    fn drop_home_caches(&mut self, shared: &Shared, _ord: Tracked<&mut LockOrder>) {
         let home = self.arena;
-        self.flush_arena(shared, home, ptr::null_mut());
+        self.flush_arena(shared, home, ptr::null_mut(), Tracked::assume_new());
         Self::fold_counters(&mut self.uncached, &self.caches);
         // SAFETY: the home array (null).
-        unsafe { self.free_caches_in(shared, ptr::null_mut()) };
+        unsafe { self.free_caches_in(shared, ptr::null_mut(), Tracked::assume_new()) };
     }
 
     /// Add the byte counters a cache array stands for (`allocs` pops and
@@ -1006,9 +1106,9 @@ impl Heap {
         while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            let next = unsafe { self.node_next(o) };
+            let next = unsafe { self.node_next(o, Ghost::assume_new()) };
             // SAFETY: as above.
-            unsafe { Self::fold_counters(&mut s, self.node_caches(o)) };
+            unsafe { Self::fold_counters(&mut s, self.node_caches(o, Ghost::assume_new())) };
             o = next;
         }
         s
@@ -1035,26 +1135,36 @@ impl Heap {
     /// flushes and frees every cache of every arena, and makes
     /// `ensure_cache` refuse to create new ones; turning them on lets the
     /// next slow path create caches again.
-    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool) {
+    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool, _ord: Tracked<&mut LockOrder>) {
         self.tcache_enabled = on;
         if on {
             return;
         }
-        self.flush_all(shared);
+        self.flush_all(shared, Tracked::assume_new());
         Self::fold_counters(&mut self.uncached, &self.caches);
         // SAFETY: the home array (null).
-        unsafe { self.free_caches_in(shared, ptr::null_mut()) };
+        unsafe { self.free_caches_in(shared, ptr::null_mut(), Tracked::assume_new()) };
         // The walk of `flush_all`. Folding and freeing a node's headers
         // leaves the list as it is.
         let mut o = self.others;
         while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            let next = unsafe { self.node_next(o) };
+            let next = unsafe { self.node_next(o, Ghost::assume_new()) };
             // SAFETY: as above; the fold only reads the headers.
-            unsafe { Self::fold_counters(&mut self.uncached, node_caches_detached(o)) };
+            unsafe {
+                Self::fold_counters(
+                    &mut self.uncached,
+                    node_caches_detached(
+                        o,
+                        Tracked::assume_new(),
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                    ),
+                )
+            };
             // SAFETY: `o` is a live node of this heap's `others` list.
-            unsafe { self.free_caches_in(shared, o) };
+            unsafe { self.free_caches_in(shared, o, Tracked::assume_new()) };
             o = next;
         }
     }
@@ -1090,7 +1200,13 @@ impl Heap {
 
     /// Flush every cache of one array (the home array when `node` is null,
     /// else the node's, whose arena is `arena`) completely.
-    fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches) {
+    fn flush_arena(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        node: *mut ArenaCaches,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
         for class in 0..NCLASSES {
             // SAFETY: `node` is null or a live node owned by this heap; an
             // unused header has `len == 0` and is skipped.
@@ -1098,7 +1214,7 @@ impl Heap {
                 let cache = self.header_in(node, class);
                 let len = self.hdr_ref(cache).len as usize;
                 if len != 0 {
-                    self.flush(shared, arena, cache, class, len);
+                    self.flush(shared, arena, cache, class, len, Tracked::assume_new());
                 }
             }
         }
@@ -1106,9 +1222,9 @@ impl Heap {
 
     /// Return every cached slot of this heap to its slab. Caches stay
     /// allocated.
-    pub fn flush_all(&mut self, shared: &Shared) {
+    pub fn flush_all(&mut self, shared: &Shared, _ord: Tracked<&mut LockOrder>) {
         let home = self.arena;
-        self.flush_arena(shared, home, ptr::null_mut());
+        self.flush_arena(shared, home, ptr::null_mut(), Tracked::assume_new());
         // `for o in Self::nodes(self.others)`, spelled out: Verus has no
         // `from_fn`. As the iterator does, the node's `next` is read before
         // its turn.
@@ -1116,10 +1232,10 @@ impl Heap {
         while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            let next = unsafe { self.node_next(o) };
+            let next = unsafe { self.node_next(o, Ghost::assume_new()) };
             // SAFETY: as above.
-            let arena = unsafe { self.node_arena(o) };
-            self.flush_arena(shared, arena, o);
+            let arena = unsafe { self.node_arena(o, Ghost::assume_new()) };
+            self.flush_arena(shared, arena, o, Tracked::assume_new());
             o = next;
         }
     }
@@ -1127,17 +1243,17 @@ impl Heap {
     /// Cache GC (design 6.4): for every cache, release three quarters of
     /// the entries that went unused since the last GC, then restart the
     /// low-water tracking from the current length.
-    pub fn gc(&mut self, shared: &Shared) {
+    pub fn gc(&mut self, shared: &Shared, _ord: Tracked<&mut LockOrder>) {
         let home = self.arena;
-        self.gc_arena(shared, home, ptr::null_mut());
+        self.gc_arena(shared, home, ptr::null_mut(), Tracked::assume_new());
         // The walk of `flush_all`.
         let mut o = self.others;
         while !o.is_null() {
             // SAFETY: as in `flush_all`.
-            let next = unsafe { self.node_next(o) };
+            let next = unsafe { self.node_next(o, Ghost::assume_new()) };
             // SAFETY: as above.
-            let arena = unsafe { self.node_arena(o) };
-            self.gc_arena(shared, arena, o);
+            let arena = unsafe { self.node_arena(o, Ghost::assume_new()) };
+            self.gc_arena(shared, arena, o, Tracked::assume_new());
             o = next;
         }
     }
@@ -1148,7 +1264,13 @@ impl Heap {
         clippy::while_let_loop,
         reason = "the desugared `for`, which Verus needs for `continue`"
     )]
-    fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches) {
+    fn gc_arena(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        node: *mut ArenaCaches,
+        _ord: Tracked<&mut LockOrder>,
+    ) {
         // `for class in 0..NCLASSES`, spelled out: Verus rejects `continue`
         // in a `for` loop.
         let mut iter = 0..NCLASSES;
@@ -1169,10 +1291,17 @@ impl Heap {
                     // Never popped: everything it holds went unused.
                     let len = self.hdr_ref(cache).len as usize;
                     if len > 0 {
-                        self.flush(shared, arena, cache, class, len);
+                        self.flush(shared, arena, cache, class, len, Tracked::assume_new());
                     }
                 } else if lw > 0 {
-                    self.flush(shared, arena, cache, class, lw - lw / 4);
+                    self.flush(
+                        shared,
+                        arena,
+                        cache,
+                        class,
+                        lw - lw / 4,
+                        Tracked::assume_new(),
+                    );
                 }
                 let h = self.hdr_mut(cache);
                 h.low_water = h.len;
@@ -1197,7 +1326,7 @@ impl Heap {
             let now = now_ns();
             if now.wrapping_sub(self.last_gc) >= shared.gc_interval() {
                 self.last_gc = now;
-                self.gc(shared);
+                self.gc(shared, Tracked::assume_new());
             }
             crate::purge::on_tick(shared, now, ALLOC, vstd::prelude::Tracked::assume_new());
         }

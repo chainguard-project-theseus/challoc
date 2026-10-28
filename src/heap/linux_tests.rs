@@ -346,7 +346,7 @@ fn heap_off_pac_executes_no_pac_instruction() {
                 free(s, q);
             }
             let h = existing_heap(s).expect("a heap") as *mut Heap;
-            unsafe { (*h).flush_arena(s, 0, ptr::null_mut()) };
+            unsafe { (*h).flush_arena(s, 0, ptr::null_mut(), Tracked::assume_new()) };
             let ops = pac::test_ops() - before;
             let expect_some = !forced_off && pac::available();
             if (ops == 0) != !expect_some {
