@@ -1364,6 +1364,44 @@ impl<'a> AtomicBitmap<'a> {
             .iter()
             .all(|w| w.load(Ordering::Relaxed) & self.mask == self.mask)
     }
+
+    /// [`is_full`](AtomicBitmap::is_full), with the record of a true read
+    /// ([`FullSeen`], `Some` exactly when it returns true) for the slab
+    /// this view is of: what clearing a slab's partial bit as full takes
+    /// (`class::Inner::clear_partial_full`).
+    #[inline(always)]
+    pub fn is_full_seen(&self) -> (r: (bool, Tracked<Option<FullSeen>>))
+        ensures
+            r.0 == (r.1@ is Some),
+            r.1@ matches Some(w) ==> w.first() == self.spec_first() && w.slots() == self.spec_slots(),
+    {
+        let full = self.is_full();
+        let tracked w = if full { Some(FullSeen { first: self.first@, slots: self.slots@ }) } else { None };
+        (full, Tracked(w))
+    }
+}
+
+/// Ghost: the record of a read of [`AtomicBitmap::is_full`] that returned
+/// true on the view of the bits from `first` on, of the class bitmap
+/// `slots`. Not `Copy`, and only [`AtomicBitmap::is_full_seen`] makes one
+/// (its fields are private to this module).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct FullSeen {
+    ghost first: int,
+    ghost slots: Slots,
+}
+
+impl FullSeen {
+    /// The view's first bit.
+    pub closed spec fn first(&self) -> int {
+        self.first
+    }
+
+    /// The class bitmap the view is of.
+    pub closed spec fn slots(&self) -> Slots {
+        self.slots
+    }
 }
 
 /// Row of level-1 word `j` in a chunked view.
