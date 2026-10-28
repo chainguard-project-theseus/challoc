@@ -72,6 +72,7 @@ use crate::sys::Errno;
 use crate::sys::bytes_is;
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::cbuf::CCall;
+use crate::vspec::ptr::ref_ptr;
 use Op::*;
 use Reading::*;
 use vstd::prelude::*;
@@ -1616,7 +1617,7 @@ unsafe fn old_len(oldlenp: *mut usize, _oldp: Ghost<*mut u8>, _call: Tracked<&CC
 /// `oldp` holds at least `n` writable bytes, and `n <= size_of::<T>()`.
 #[inline(always)]
 unsafe fn copy_prefix<T: Copy>(v: &T, oldp: *mut c_void, n: usize, _oldlen: Ghost<usize>) {
-    let src = v as *const T as *const u8;
+    let src = ref_ptr(v) as *const u8;
     let (s, d) = (src as usize, oldp as usize);
     if s + n <= d || d + n <= s {
         // SAFETY: `n` bytes of `v`, readable, into the writable bytes at
