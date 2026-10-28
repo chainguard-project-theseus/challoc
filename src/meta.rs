@@ -46,7 +46,7 @@ use core::ptr;
 
 use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{axiom_meta_order, lock_init, rank_meta};
+use crate::lock::{axiom_meta_order, lock_frame, lock_init, rank_meta};
 use crate::sys::Errno;
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
@@ -758,8 +758,10 @@ impl Meta {
         let tracked (obj, mc) = split_block(raw, claim, p, layout, bin, self.live_id());
         let tracked z = zero_prefix(z, layout_size(layout) as int);
         proof {
-            // The guard drops with the lock's invariant restored.
+            // The guard drops with the lock's invariant restored, and its
+            // frame.
             assert(g@.wf());
+            assert(lock_frame(lock_init(self.inner), g@));
         }
         (p, Tracked((obj, mc)), Tracked(z))
     }
@@ -928,16 +930,18 @@ impl Meta {
                 }
                 proof {
                     assert(g@.wf());
+                    assert(lock_frame(lock_init(self.inner), g@));
                 }
                 return (Some(p), Tracked(z));
             }
         }
         let ghost g2 = g@;
         let tracked mut given = Unbacked::empty(0);
-        (
-            g.reserve(len, align, Tracked(&mut *claim), Tracked(&mut given)),
-            Tracked(reserved_table(given, claim@, len, g2.page, g2.top, false)),
-        )
+        let r = g.reserve(len, align, Tracked(&mut *claim), Tracked(&mut given));
+        proof {
+            assert(lock_frame(lock_init(self.inner), g@));
+        }
+        (r, Tracked(reserved_table(given, claim@, len, g2.page, g2.top, false)))
     }
 
     /// Make `[addr, addr + len)`, page aligned and inside a reservation or
@@ -2482,9 +2486,12 @@ impl Inner {
         requires
             crate::sys::may_syscall(),
         ensures
+            lock_frame(*old(self), *final(self)),
             r ==> len <= EAGER_MAX,
             *final(self) == (Inner { eager: final(self).eager, ..*old(self) }),
     {
+        broadcast use axiom_meta_lock_frame;
+
         if len > EAGER_MAX {
             return false;
         }
@@ -2520,6 +2527,7 @@ impl Inner {
             len <= EAGER_MAX,
             is_pow2(align),
         ensures
+            lock_frame(*old(self), *final(self)),
             final(self).wf(),
             final(self).live_id() == old(self).live_id(),
             final(self).pages_id() == old(self).pages_id(),
@@ -2559,6 +2567,8 @@ impl Inner {
                 })
             },
     {
+        broadcast use axiom_meta_lock_frame;
+
         let ghost align0 = align;
         let ghost (b0, lo0) = (self.bump as int, self.fresh_end() as int);
         proof {
@@ -2647,6 +2657,7 @@ impl Inner {
             old(self).wf(),
             bin < NBINS,
         ensures
+            lock_frame(*old(self), *final(self)),
             final(self).wf(),
             final(self).live_id() == old(self).live_id(),
             final(self).base == old(self).base,
@@ -2668,6 +2679,8 @@ impl Inner {
                     && res.1@.2.len() == bin_size(bin as int)
             } }),
     {
+        broadcast use axiom_meta_lock_frame;
+
         proof {
             lemma_bin(bin as int);
             lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
@@ -2808,9 +2821,12 @@ impl Inner {
             claim.key() == p as *mut FreeNode,
             claim.value() == bin as nat,
         ensures
+            lock_frame(*old(self), *final(self)),
             final(self).wf(),
             final(self).live_id() == old(self).live_id(),
     {
+        broadcast use axiom_meta_lock_frame;
+
         let addr = p as usize;
         let node = p as *mut FreeNode;
         let ghost m0 = self.live@@;
@@ -2908,6 +2924,7 @@ impl Inner {
             old(self).wf(),
             is_pow2(align),
         ensures
+            lock_frame(*old(self), *final(self)),
             final(self).wf(),
             final(self).live_id() == old(self).live_id(),
             final(self).pages_id() == old(self).pages_id(),
@@ -2933,6 +2950,8 @@ impl Inner {
                 })
             },
     {
+        broadcast use axiom_meta_lock_frame;
+
         let ghost align0 = align;
         proof {
             lemma_pow2_bits(align);
@@ -3007,6 +3026,7 @@ impl Inner {
             set_int_range(addr as int, addr + len) <= old(claim)@.dom(),
             forall|a: int| #[trigger] old(claim)@.dom().contains(a) ==> old(claim)@[a] == top_side,
         ensures
+            lock_frame(*old(self), *final(self)),
             final(self).wf(),
             final(self).live_id() == old(self).live_id(),
             final(self).pages_id() == old(self).pages_id(),
@@ -3019,6 +3039,8 @@ impl Inner {
             r is Ok && old(self).top <= addr ==> final(self).top_committed == old(self).top_committed + len,
             r is Ok ==> committed_range(addr as int, len as int),
     {
+        broadcast use axiom_meta_lock_frame;
+
         let ghost m = self.pages@@;
         let ghost range = set_int_range(addr as int, addr + len);
         // The range's part of the claim, which a success takes.
@@ -3093,6 +3115,7 @@ impl Inner {
             old(self).wf(),
             is_pow2(align),
         ensures
+            lock_frame(*old(self), *final(self)),
             final(self).wf(),
             final(self).live_id() == old(self).live_id(),
             final(self).pages_id() == old(self).pages_id(),
@@ -3104,6 +3127,8 @@ impl Inner {
             r.0 matches Some(s) ==> committed_range(s as int, words_up(len as int)),
             r.1@.provenance() == cast_provenance(),
     {
+        broadcast use axiom_meta_lock_frame;
+
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         if self.eager_ok(len) {
             let (bump, frontier, stats) = (self.bump, self.frontier, self.stats);
