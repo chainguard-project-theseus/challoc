@@ -1225,7 +1225,9 @@ impl SlabTable {
     {
     }
 
-    /// The table's guard slabs are its slot tokens' ([`Slots::guard`]).
+    /// The table's guard slabs are the process's guard slabs of its class
+    /// ([`guard_slab`](crate::layout::guard_slab), which
+    /// `Regions::is_slot` excludes) and its slot tokens' ([`Slots::guard`]).
     pub(super) proof fn lemma_guard_slab(&self, slab: int)
         requires
             self.inv(),
@@ -1981,6 +1983,13 @@ pub(super) broadcast proof fn lemma_spec_class(t: SlabTable)
 {
 }
 
+/// `spec_slabs_per_page` is the field, for the rest of `class/`.
+pub(super) broadcast proof fn lemma_spec_slabs_per_page(t: SlabTable)
+    ensures
+        #[trigger] t.spec_slabs_per_page() == t.slabs_per_page as usize,
+{
+}
+
 } // verus!
 
 verus! {
@@ -2623,6 +2632,34 @@ impl SlabTable {
 
 } // verus!
 
+verus! {
+
+impl SlabTable {
+    /// Slabs per page group; 1 unless the page is larger than the slab. A
+    /// power of two that divides the slab count, so page groups tile the
+    /// region.
+    #[inline]
+    pub fn slabs_per_page(&self) -> (r: usize)
+        ensures
+            r >= 1,
+            r == self.spec_slabs_per_page(),
+            r & sub(r, 1) == 0,
+            self.spec_nslabs() & sub(r, 1) == 0,
+            r == 1usize << crate::layout::guard_geom(self.spec_class() as int).0,
+            crate::layout::guard_geom(self.spec_class() as int).0 <= 26,
+    {
+        proof {
+            use_type_invariant(self);
+            reveal(SlabTable::page_groups_ok);
+            let (p, l) = (self.slabs_per_page as usize, self.lg_slabs_per_page);
+            assert(p == 1usize << l && l < 64 ==> p & sub(p, 1) == 0) by (bit_vector);
+        }
+        self.slabs_per_page as usize
+    }
+}
+
+} // verus!
+
 impl SlabTable {
     /// Start of the class bitmap (for `heap::ClassLine`).
     #[inline]
@@ -2640,12 +2677,6 @@ impl SlabTable {
     #[inline]
     pub fn lg_group(&self) -> u8 {
         self.lg_group
-    }
-
-    /// Slabs per page group; 1 unless the page is larger than the slab.
-    #[inline]
-    pub fn slabs_per_page(&self) -> usize {
-        self.slabs_per_page as usize
     }
 
     /// Tests: slabs handed to an arena at a time (see the field).

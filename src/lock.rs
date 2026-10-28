@@ -352,6 +352,17 @@ pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 ;
 
 /// Premise: the calling thread holds only allocator locks ranked below
+/// the class locks. Stands in for a token a closure cannot carry: its use
+/// is `ClassState::decay_with`'s walk, which `Decayer::decay` calls with
+/// no lock taken since `decay_with` was called with a token that allows
+/// the class locks.
+pub(crate) axiom fn axiom_below_class<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.allows(rank_class(0, 0)),
+        !o.root(),
+;
+
+/// Premise: the calling thread holds only allocator locks ranked below
 /// the huge lock. Stands in for a token a closure cannot carry: its use
 /// is `Huge::decay_with`'s walk, which `Decayer::decay` calls with no
 /// lock taken since `decay_with` was called with a token that allows
