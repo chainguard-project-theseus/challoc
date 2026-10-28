@@ -18,6 +18,7 @@ Each script also runs by hand on a Linux host with Docker.
 | `shellcheck.sh` | shellcheck (the pinned upstream release, SHA-256 checked) over `ci/*.sh` and `verus/*.sh` |
 | `extended.sh [TASK]` | one task of the on-request extended checks |
 | `floor.sh CELLS` | `cb launch exp-floor` on GCE cells with the check's `challoc-gce` identity |
+| `codegen.sh` | `scripts/codegen-diff.sh` from the change's merge base (`CHAINGUARD_BASE_REVISION`) to this tree, both quantum builds; exits 2 when a function changed |
 
 `expected-skips/<cell>.txt` holds the skip keys (the first word after
 `SKIP`) a cell is known to print. Regenerate one with
@@ -36,6 +37,8 @@ require); each file is a workflow:
 - `floor.yaml`: `floor` (AlmaLinux 9's 5.14, both arches, default and
   privileged containers) and the advisory `tripwire` (Debian 11's 5.10),
   on GCE VMs through `cb launch`; member pull requests and main only.
+- `verus.yaml`: `verus` and `verus-arm64`, the seam ledger, the proofs at quantum 16 and 8, and the coverage floor; `verus-main` the same on main.
+- `codegen.yaml`: the advisory `codegen` and `codegen-arm64`, the machine-code diff from the merge base (`ci/codegen.sh`).
 
 On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
 --check <check>` for any pushed commit), until Checks has a schedule:
