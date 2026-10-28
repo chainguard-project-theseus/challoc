@@ -19,10 +19,10 @@ verus! {
 /// The writers of the locked value: `Huge::new` builds it (verified:
 /// `Lock::new` requires `wf`); `lookup`, `usable_size`, `empty_bytes` and
 /// `stats` are verified and only read. `alloc_run` (through
-/// `alloc_aligned`), `purge_empty` and the decay walk (`purge_curve`) are
-/// verified and write it, though nothing checks that they restore `wf` at
-/// the guard's drop; `free_run`, which writes it, is not verified; the
-/// test-only `oldest_dirty_at` and `audit` only read. The fork handlers take
+/// `alloc_aligned`), `free_run`, `purge_empty` and the decay walk
+/// (`purge_curve`) are verified and write it, though nothing checks that
+/// they restore `wf` at the guard's drop; the test-only `oldest_dirty_at`
+/// and `audit` only read. The fork handlers take
 /// and release the raw lock without touching the value, and nothing calls
 /// `get_unlocked` on it. What is left is the claim that the lock protects
 /// `wf`.
@@ -36,8 +36,7 @@ pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
 /// shift and `Meta` identity. They are ghost fields set only in
 /// `Huge::new`. The verified writers assert it of the value they leave
 /// (`alloc_aligned` on its paths after the first write, `purge_empty`,
-/// `purge_curve`); `free_run`, not verified yet, is trusted to keep it:
-/// it assigns none of them (only `Huge::new` does).
+/// `purge_curve`, `free_run`).
 pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: crate::huge::Inner)
     ensures
         #[trigger] lock_frame(a, b) == (a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg() && a.spec_mid() == b.spec_mid()),
