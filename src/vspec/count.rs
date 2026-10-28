@@ -1,6 +1,7 @@
 //! `u32` counters as atomics with a ghost permission, for the arena
 //! registry's bound counts (`arena.rs`, `Arenas::bound`) and its arena
-//! count (`Arenas::count`).
+//! count (`Arenas::count`), and for the cgroup policy's position in the
+//! scaled band (`policy.rs`, `Policy::position`).
 //!
 //! The same pattern as `word.rs` for the class bitmap words: a
 //! [`CountPerm`] names the counter's identity and value, each operation is
@@ -11,15 +12,16 @@
 //!
 //! Trusted, all of it:
 //! - each wrapped `core` operation is one atomic operation on the counter
-//!   (a load, a store, a strong compare-and-swap or a wrapping
-//!   read-modify-write), as `core` documents;
+//!   (a load, a store, a swap, a strong compare-and-swap or a
+//!   wrapping read-modify-write), as `core` documents;
 //! - the proof model is sequentially consistent: the specifications ignore
 //!   `ordering`, so nothing here proves that `Relaxed` is strong enough;
 //! - [`count_id`] is the counter's identity, and a permission is for the
 //!   counter with its [`CountPerm::id`]. The identity is a ghost one, as
 //!   vstd's `PAtomicU32::id`: a function of the atomic's value, so fixed
 //!   when `AtomicU32::new` makes the atomic and kept when the atomic is
-//!   moved into place (`Arenas::init`'s writes), not its address;
+//!   moved into place (`Arenas::init`'s writes, `Policy::new`'s struct
+//!   literal), not its address;
 //! - atomics made by different calls have different identities: assumed,
 //!   as no code makes two atomics Verus can prove equal (it knows nothing
 //!   of `AtomicU32::new`'s result); a `const` item holding [`new`]'s result
@@ -33,6 +35,12 @@
 //!   inside the counter's invariant once the registry is built
 //!   (`arena::BoundPred`, `arena::NarenasPred`), and `Arenas::init` writes
 //!   each counter before the registry is published.
+//!
+//! Not yet for the policy's position: until its proof lands, `Policy::new`
+//! drops the permission [`new`] returns, and `Policy::position` and
+//! `Policy::apply`, outside `verus!`, hand [`load`] and [`swap`]
+//! `Tracked::assume_new()` placeholders. For the position, the last two
+//! premises are unchecked at this point.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use vstd::prelude::*;
@@ -138,6 +146,23 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
     no_unwind
 {
     c.load(ordering)
+}
+
+/// `c.swap(v, ordering)`: the previous value.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
+    requires
+        old(perm).id() == count_id(c),
+    ensures
+        final(perm).id() == old(perm).id(),
+        prev == old(perm).value(),
+        final(perm).value() == v,
+    opens_invariants none
+    no_unwind
+{
+    c.swap(v, ordering)
 }
 
 /// `AtomicU32::new(v)`, with the one permission to it: the only place a
