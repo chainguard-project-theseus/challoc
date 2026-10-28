@@ -70,8 +70,19 @@ Tool: Verus. Status: trusted.
 
 > The `check_zero` debug mode: the first and last word of every usable page of a run reported zero must read zero.
 
+Body mints Tracked at line 4386.
+
 ```rust
-fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16)
+fn check_zero(
+    &self,
+    s: usize,
+    usable_pages: usize,
+    prior: &'static str,
+    arena: u16,
+    Tracked(_tok): Tracked<&mut Map<int, RunToken>>,
+)
     requires
         crate::sys::may_abort(),
+    ensures
+        *final(_tok) == *old(_tok),
 ```

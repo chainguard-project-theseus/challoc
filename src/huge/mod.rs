@@ -4306,7 +4306,7 @@ impl Huge {
         let pages = g.desc(run).pages();
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
-            self.check_zero(s, usable_pages, prior, arena);
+            self.check_zero(s, usable_pages, prior, arena, Tracked(tok));
         }
         proof {
             // The lock's frame: the ghost page count, shift and `Meta`
@@ -4363,9 +4363,18 @@ impl Huge {
     #[cold]
     #[inline(never)]
     #[verifier::external_body]
-    fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16)
+    fn check_zero(
+        &self,
+        s: usize,
+        usable_pages: usize,
+        prior: &'static str,
+        arena: u16,
+        Tracked(_tok): Tracked<&mut Map<int, RunToken>>,
+    )
         requires
             crate::sys::may_abort(),
+        ensures
+            *final(_tok) == *old(_tok),
     {
         let page = self.page_size();
         let base = self.addr(s);
@@ -4374,7 +4383,7 @@ impl Huge {
                 let a = base + i * page + off;
                 // SAFETY: a usable page of the run this call just took;
                 // `prepare` committed it.
-                let word = unsafe { self.read_run_word(a) };
+                let word = unsafe { self.read_run_word(a, Tracked::assume_new()) };
                 if word != 0 {
                     dirty_zero_run(base, usable_pages, s, prior, arena, a, word);
                 }
@@ -4392,7 +4401,7 @@ impl Huge {
     /// # Safety
     /// `a` is an aligned word of a committed usable page of a run.
     #[inline(always)]
-    unsafe fn read_run_word(&self, a: usize) -> u64 {
+    unsafe fn read_run_word(&self, a: usize, _m: Tracked<&crate::vspec::user::UserMem>) -> u64 {
         let q = crate::vspec::addr::addr_to_ptr(a);
         // SAFETY: the caller's.
         unsafe { ptr::read_volatile(q as *const u64) }

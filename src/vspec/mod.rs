@@ -44,6 +44,7 @@ pub(crate) mod once;
 pub(crate) mod print;
 pub(crate) mod slice;
 pub(crate) mod unbacked;
+pub(crate) mod user;
 pub(crate) mod word;
 pub(crate) mod zero;
 
