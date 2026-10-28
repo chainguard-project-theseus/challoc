@@ -11,11 +11,12 @@ file.
 | `fetch_sub` | external_body | atomics primitive | loom/GenMC | trusted |
 | `store` | external_body | atomics primitive | loom/GenMC | trusted |
 | `load` | external_body | atomics primitive | loom/GenMC | trusted |
+| `swap` | external_body | atomics primitive | loom/GenMC | trusted |
 | `compare_exchange` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `fetch_add`
 
-src/vspec/count.rs:76. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:84. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.fetch_add(v, ordering)`, wrapping.
@@ -34,7 +35,7 @@ pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 
 ## `fetch_sub`
 
-src/vspec/count.rs:93. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:101. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.fetch_sub(v, ordering)`, wrapping.
@@ -53,7 +54,7 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 
 ## `store`
 
-src/vspec/count.rs:111. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:119. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
@@ -73,7 +74,7 @@ pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&
 
 ## `load`
 
-src/vspec/count.rs:130. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:138. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
@@ -90,9 +91,28 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
     no_unwind
 ```
 
+## `swap`
+
+src/vspec/count.rs:155. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> `c.swap(v, ordering)`: the previous value.
+
+```rust
+pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
+    requires
+        old(perm).id() == count_id(c),
+    ensures
+        final(perm).id() == old(perm).id(),
+        prev == old(perm).value(),
+        final(perm).value() == v,
+    opens_invariants none
+    no_unwind
+```
+
 ## `compare_exchange`
 
-src/vspec/count.rs:166. Kind: external_body. Category: atomics primitive.
+src/vspec/count.rs:191. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `c.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the counter held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).

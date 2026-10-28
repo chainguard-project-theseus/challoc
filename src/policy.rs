@@ -503,16 +503,33 @@ pub fn band(limit: u64, current: u64) -> (b: Band)
 /// level beyond `sys::cgroup::LEVELS`; and each ancestor with a limit of
 /// its own against its own usage, since the kernel holds an ancestor to
 /// its limit by the usage of all its children. (`cg.ancestors().fold(..,
-/// |b, (l, c)| b.max(band(l, c)))`, spelled out: one ancestor at a time.)
+/// |b, (l, c)| b.max(band(l, c)))`, spelled out: one ancestor at a time,
+/// `max` through [`most_severe`].)
 pub fn cgroup_band(cg: &Cgroup) -> Band {
     let mut b = band(cg.limit().min(cg.high()), cg.current());
     let mut level = 1;
     while level < LEVELS {
         let (l, c) = cg.ancestor(level);
-        b = b.max(band(l, c));
+        b = most_severe(b, band(l, c));
         level += 1;
     }
     b
+}
+
+/// `a.max(b)` in `Band`'s order (the derived `Ord`: the variants in
+/// declaration order, `Scaled` by its position): `b` unless `a` is more
+/// severe (`max` returns its second argument on a tie). Spelled out:
+/// Verus does not specify derived orders.
+fn most_severe(a: Band, b: Band) -> Band {
+    let key = |x: Band| -> u64 {
+        match x {
+            Band::Unlimited => 0,
+            Band::Low => 1,
+            Band::Scaled(f) => 2 + f as u64,
+            Band::Immediate => 3 + u32::MAX as u64,
+        }
+    };
+    if key(b) >= key(a) { b } else { a }
 }
 
 verus! {
@@ -700,8 +717,9 @@ impl Policy {
     /// container whose `memory.events` already showed `high` events does
     /// not start with a full purge.
     pub const fn new(high_rises: u64, thp_forced: bool) -> Policy {
+        let (scaled16, _) = crate::vspec::count::new(0);
         Policy {
-            scaled16: AtomicU32::new(0),
+            scaled16,
             immediate: AtomicBool::new(false),
             keep16: AtomicU32::new(KEEP_ALL),
             cap: AtomicU64::new(UNLIMITED),
@@ -725,7 +743,7 @@ impl Policy {
     /// (0 outside the band).
     #[inline(always)]
     fn position(&self) -> u32 {
-        self.scaled16.load(Ordering::Relaxed)
+        crate::vspec::count::load(&self.scaled16, Ordering::Relaxed, Tracked::assume_new())
     }
 
     /// The band as last evaluated (`Unlimited` when no limit was seen).
@@ -823,7 +841,12 @@ impl Policy {
             UNLIMITED
         };
         let mut changed = self.limited.swap(limited, Ordering::Relaxed) != limited;
-        let prev_frac = self.scaled16.swap(scaled, Ordering::Relaxed);
+        let prev_frac = crate::vspec::count::swap(
+            &self.scaled16,
+            scaled,
+            Ordering::Relaxed,
+            Tracked::assume_new(),
+        );
         changed = (prev_frac != scaled) || changed;
         changed = (self.immediate.swap(immediate, Ordering::Relaxed) != immediate) || changed;
         self.cap.store(cap, Ordering::Relaxed);
@@ -913,6 +936,28 @@ mod tests {
     /// 500 MiB: divisible by 10 and 20, so the band edges are exact.
     const L: u64 = 500 << 20;
     const BASE: u64 = 10_000 * MS;
+
+    /// `cgroup_band`'s `most_severe` is `Band`'s derived `max` on every
+    /// ordered pair, equal positions and the extreme ones included.
+    #[test]
+    fn most_severe_is_the_derived_max() {
+        let bands = [
+            Band::Unlimited,
+            Band::Low,
+            Band::Scaled(0),
+            Band::Scaled(1),
+            Band::Scaled(FRAC_ONE / 2),
+            Band::Scaled(FRAC_ONE),
+            Band::Scaled(u32::MAX - 1),
+            Band::Scaled(u32::MAX),
+            Band::Immediate,
+        ];
+        for a in bands {
+            for b in bands {
+                assert_eq!(most_severe(a, b), a.max(b), "{a:?} {b:?}");
+            }
+        }
+    }
 
     #[test]
     fn frac16_and_mul16_agree_with_the_arithmetic() {
