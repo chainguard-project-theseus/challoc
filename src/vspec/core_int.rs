@@ -20,6 +20,14 @@ pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
     ensures r as nat == popcount(x),
 ;
 
+/// `get_unchecked` is `index` without the bounds check: its safety contract
+/// is that the index is in bounds, so it has `index`'s precondition.
+pub assume_specification<T, I>[ <[T]>::get_unchecked::<I> ](slice: &[T], i: I) -> (b: &<I as core::slice::SliceIndex<[T]>>::Output)
+    where I: core::slice::SliceIndex<[T]>
+    requires call_requires(<I as core::slice::SliceIndex<[T]>>::index, (i, slice)),
+    ensures call_ensures(<I as core::slice::SliceIndex<[T]>>::index, (i, slice), b),
+;
+
 /// `usize::div_ceil`: the quotient rounded up; panics when `d == 0`
 /// (core docs), and cannot overflow otherwise.
 pub assume_specification[ usize::div_ceil ](x: usize, d: usize) -> (r: usize)

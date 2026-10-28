@@ -1341,20 +1341,30 @@ impl Arena {
         }
         &self.classes[class]
     }
+
+    /// Class state for `class`, without the bounds check the fast paths do
+    /// not need (`class` comes from `class_of`).
+    #[inline(always)]
+    pub fn class(&self, class: usize) -> (r: &ClassState)
+        requires
+            class < NCLASSES,
+        ensures
+            r.spec_class() == class,
+            *r == self.spec_class_state(class as int),
+            r.spec_arena() == self.spec_index(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        debug_assert!(class < NCLASSES);
+        // SAFETY: `class_of` only yields indices below `NCLASSES`.
+        unsafe { self.classes.get_unchecked(class) }
+    }
 }
 
 } // verus!
 
 impl Arena {
-    /// Class state for `class`, without the bounds check the fast paths do
-    /// not need (`class` comes from `class_of`).
-    #[inline(always)]
-    pub fn class(&self, class: usize) -> &ClassState {
-        debug_assert!(class < NCLASSES);
-        // SAFETY: `class_of` only yields indices below `NCLASSES`.
-        unsafe { self.classes.get_unchecked(class) }
-    }
-
     /// Change the decay period; `-1` turns purging off. Takes effect at the
     /// next periodic tick, or at once for a background thread, which is
     /// woken to recompute its deadline.
