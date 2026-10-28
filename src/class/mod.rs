@@ -3455,6 +3455,59 @@ axiom fn axiom_discarded_slots_zero(
         z.len() == n * t.spec_slots().size,
 ;
 
+/// The permission to the bytes of slots `0..nslots` of slab `slab` of
+/// table `g.table`, lent for as long as `held`, the slab's descriptor
+/// permission in the class lock value `g` (`Inner::dperms`), is borrowed:
+/// what `ClassState::check_fresh_slab_is_zero` reads the slab's slots
+/// through (the `check_zero` debug mode), before the slab's first claim.
+/// The bytes' values are unknown; the permission is valid through the
+/// casts `slot_ptr` makes. Borrowed, it makes them valid for reads only
+/// (`UserMem::lemma_valid_reads`).
+///
+/// Required, so proved at the call site: `held` is the descriptor
+/// permission of slab `slab` of a well-formed table, which records
+/// `Fresh` (`DescPerm`: one per descriptor, minted by
+/// `table::axiom_zero_desc`; while it is borrowed, nothing can write the
+/// descriptor's state), and is `g`'s for the slab; the slab is
+/// not a guard slab, and is owned by `g`'s arena, `Fresh` and committed
+/// in `g`'s ghost state.
+///
+/// Premise, the caller's and trusted: `g` is the value of the class lock
+/// the caller holds and `g.table` that class's table (which the
+/// descriptor permission alone does not say: the table's commit lock
+/// holds a slab's before the slab is handed out, and `inv` does not tie a
+/// table value to its class's one table), so the bytes are committed, and
+/// no other permission to them is held while `held` is borrowed. A slab
+/// is committed (`next_fresh_slab`) before the lock value's ghost
+/// records it so, and
+/// no decommit path takes a non-guard `Fresh` slab (a purge may discard,
+/// not unmap, a page group holding one); none of a `Fresh` slab's slots
+/// is allocated, cached or in a claim: the claims (`claim_prefix`,
+/// `finish`'s bit loop) take slots only of a slab `take` has made
+/// `Active`, and a slab leaves `Fresh` only through
+/// `ClassState::set_state_locked`, which never sets it, so
+/// `heap::live`'s `axiom_hand_out` mints no permission to these bytes
+/// meanwhile. Call site: `ClassState::take`.
+axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)
+    requires
+        g.table@.inv(),
+        0 <= slab < g.table@.spec_nslabs(),
+        !g.table@.spec_is_guard(slab as usize),
+        held.id() == desc_id(&desc_at(g.table@, slab as usize)),
+        held.state() == state_byte(State::Fresh),
+        g.dperms@.contains_key(slab as nat),
+        g.dperms@[slab as nat] == *held,
+        g.owns(slab as nat),
+        g.st(slab as nat) == State::Fresh,
+        g.committed@.contains(slab as nat),
+    ensures
+        m.covers(
+            process_regions().slot_at(g.table@.spec_class() as int, slab, 0),
+            class_table()[g.table@.spec_class() as int].nslots * class_table()[g.table@.spec_class() as int].size,
+        ),
+        m.provenance() == crate::vspec::addr::cast_provenance(),
+;
+
 /// The tokens a pick holds: the prefix a zero pick claimed under the lock.
 spec fn pick_addrs(t: SlabTable, p: Pick) -> VSet<int> {
     if p.zero { prefix_addrs(t, p.slab as int, p.n as int) } else { VSet::<int>::empty() }
@@ -3903,7 +3956,15 @@ impl ClassState {
                 if live != 0 {
                     fresh_with_live(self.class as usize, slab, self.arena, desc, self.table().bits(slab).allocated(self.class().nslots()));
                 }
-                self.check_fresh_slab_is_zero(slab);
+                proof {
+                    assert(g.st(slab as nat) == State::Fresh);
+                    g.lemma_desc(slab as nat);
+                    use_type_invariant(self);
+                }
+                // The slab's slots, read through the permission lent while
+                // the lock value's descriptor permission of the slab is
+                // borrowed.
+                self.check_fresh_slab_is_zero(slab, Tracked(axiom_fresh_slab_mem(*g, slab as int, g.dperms.borrow().tracked_borrow(slab as nat))));
             }
         }
         // The state byte the slab's descriptor permission records while it

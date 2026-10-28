@@ -1,7 +1,9 @@
 //! The permission model for user memory: a [`UserMem`] is the permission
 //! to a block's usable bytes (a slab slot or a huge run), which a
 //! [`Live`](crate::heap::live::Live) token holds while
-//! `ClassState::check_zero` or `Huge::check_zero` reads the block.
+//! `ClassState::check_zero` or `Huge::check_zero` reads the block, or to
+//! a `Fresh` slab's slots, lent under the class lock for
+//! `ClassState::check_fresh_slab_is_zero` (`class::axiom_fresh_slab_mem`).
 //!
 //! Reading a user block's bytes takes a capability too,
 //! [`may_read_user`], which `purge::check_zero` grants to the opt-in debug
