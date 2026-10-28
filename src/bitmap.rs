@@ -3460,6 +3460,19 @@ impl InvariantPredicate<WordKey, (WordPerm, GhostSubset<int>, GhostSubset<int>, 
     }
 }
 
+/// A guard slab's bit is clear in every value its word's invariant
+/// admits ([`guards_ok`], [`marks_ok`]).
+pub proof fn lemma_guard_clear(k: WordKey, v: WordVal, b: int)
+    requires
+        WordPred::inv(k, v),
+        64 * k.j <= b < 64 * k.j + 64,
+        k.slots.guard(b / k.slots.sb),
+    ensures
+        !has_bit(v.0.value(), (b - 64 * k.j) as u64),
+{
+    assert(v.2@.contains(fresh_mark(b)));
+}
+
 /// What a bitmap word's invariant holds.
 pub type WordVal = (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>);
 

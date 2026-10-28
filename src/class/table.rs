@@ -32,7 +32,8 @@ use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::addr::cast_provenance;
 use crate::vspec::atom::{
-    SeenVal, UsizePerm, load_u16_at, load_usize_seen, new_usize, store_usize, store_usize_at,
+    SeenVal, UsizePerm, load_u16_at, load_usize, load_usize_seen, new_usize, store_usize,
+    store_usize_at,
 };
 #[cfg(verus_keep_ghost)]
 use crate::vspec::atom::{u16_value, usize_id, usize_id_at};
@@ -602,6 +603,13 @@ pub type OwnerInv = AtomicInvariant<OwnerKey, OwnerVal, OwnerPred>;
 /// an owner word, are outside it).
 pub uninterp spec fn slab_owner(c: int, slab: int) -> u16;
 
+/// The arena that owns the slab of class `c`'s region holding address
+/// `p` ([`slab_owner`] of `Regions::slab_index`): for a slot, the arena
+/// it was claimed from and the only one it is released into.
+pub open spec fn slot_owner(c: int, p: usize) -> u16 {
+    slab_owner(c, process_regions().slab_index(c, p))
+}
+
 /// The authority of class `c`'s markers: the one its table made
 /// ([`axiom_slot_loc`]). Every slab's owner-store marker is minted once,
 /// by that table's `new`, so a store that uses it up can run at most once
@@ -611,6 +619,14 @@ pub uninterp spec fn mark_loc(c: int) -> Loc;
 /// The authority of class `c`'s slot tokens (`bitmap.rs`, "Slot tokens"):
 /// the one its table made ([`axiom_slot_loc`]).
 pub uninterp spec fn slot_loc(c: int) -> Loc;
+
+/// `held` is the token of slot `slot` of slab `slab` of class `c`, as a
+/// live slot's token holds it.
+pub open spec fn holds_slot(held: Option<GhostSingleton<int>>, c: int, slab: int, slot: int) -> bool {
+    &&& held matches Some(t)
+    &&& t.id() == slot_loc(c)
+    &&& t@ == process_regions().slot_at(c, slab, slot)
+}
 
 /// `p` is an initialised permission to the `T` at `addr`, through a
 /// pointer of the provenance an address cast picks up
@@ -835,11 +851,25 @@ fn guard(addr: usize, len: usize) -> Result<(), Errno>
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
 
-} // verus!
+/// `seen` is a witness that slab `slab` of `t` was handed out: its
+/// persistent witness marker ([`owner_mark`]), which a load of the
+/// watermark past `slab` returns ([`SlabTable::committed_seen`]: the
+/// watermark's invariant holds the markers of every slab below it,
+/// [`WatermarkPred`]).
+pub open spec fn seen_owner(t: SlabTable, slab: usize, seen: Option<&'static GhostPersistentSubset<int>>) -> bool {
+    &&& seen matches Some(w)
+    &&& w.id() == t.spec_sloc()
+    &&& w@.contains(owner_mark(slab as int))
+}
 
 /// `(*w).load(Relaxed)` of the owner word of handed-out slab `slab`'s
-/// group in `t`: the arena that owns the group's slabs. `seen` is the
-/// caller's witness that the group was handed out, if it has one.
+/// group in `t`: the arena that owns the slab, when the caller has a
+/// witness that the group was handed out (`seen`, [`seen_owner`]). The
+/// load is through the word's permission, inside its invariant
+/// ([`OwnerPred`]), which the witness shows to be past the store
+/// ([`store_owner`]): there the word holds the group's owner. Without one
+/// the value is any the word held. Sequential consistency, as for every
+/// atomic here (`vspec::atom`).
 ///
 /// # Safety
 /// `w` is the owner word of `slab`'s group in `t`, committed and
@@ -847,17 +877,48 @@ fn guard(addr: usize, len: usize) -> Result<(), Errno>
 // `t`, `slab` and `seen` are read only by the proof (ghost).
 #[allow(unused_variables)]
 #[inline(always)]
-unsafe fn load_owner(
-    t: &SlabTable,
-    w: *const AtomicU16,
-    slab: Ghost<usize>,
-    seen: Tracked<Option<&'static GhostPersistentSubset<int>>>,
-) -> u16 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { (*w).load(Ordering::Relaxed) }
+unsafe fn load_owner(t: &SlabTable, w: *const AtomicU16, Ghost(slab): Ghost<usize>, seen: Tracked<Option<&'static GhostPersistentSubset<int>>>) -> (r: u16)
+    requires
+        slab < t.spec_nslabs(),
+        w == owner_ptr_at(t.owner_addr((slab >> t.lg_group) as int)),
+    ensures
+        seen_owner(*t, slab, seen@) ==> r == slab_owner(t.spec_class() as int, slab as int),
+    opens_invariants [owner_ns()]
+{
+    proof {
+        use_type_invariant(t);
+        t.lemma_group_in_range(slab);
+        t.lemma_slab_in_group(slab);
+    }
+    let ghost g = (slab >> t.lg_group) as int;
+    let ghost (lo, hi) = (t.spec_group_range(g as usize).0 as int, t.spec_group_range(g as usize).1 as int);
+    proof {
+        assert(t.owner_invs@.contains_key(g));
+        broadcast use vstd::set_lib::range_set_properties;
+        assert(owner_marks(lo, hi).contains(owner_mark(slab as int)));
+    }
+    let r;
+    vstd::open_atomic_invariant!(t.owner_invs.borrow().tracked_borrow(g) => v => {
+        // SAFETY: the invariant's permission is to the word at `w`.
+        r = unsafe { load_u16_at(w, Ordering::Relaxed, Tracked(&v.0)) };
+        proof {
+            let k = t.owner_invs@[g].constant();
+            assert(k.lo == lo && k.hi == hi && k.class == t.spec_class() as int);
+            if seen_owner(*t, slab, seen@) {
+                // Not the unstored case: its markers are disjoint from the
+                // persistent `seen`, which has slab `slab`'s.
+                let tracked sw = seen.get().tracked_unwrap();
+                if owner_marks(lo, hi).subset_of(v.1@) {
+                    v.1.disjoint_persistent(sw);
+                    assert(v.1@.contains(owner_mark(slab as int)));
+                }
+                assert(owner_stored(k, r, v.2@, v.3));
+                assert(slab_owner(k.class, slab as int) == r);
+            }
+        }
+    });
+    r
 }
-
-verus! {
 
 /// `(*w).store(arena, Relaxed)` of the owner word of hand-out group
 /// `group` of `t`, through its permission `perm`: the permission holds
@@ -916,8 +977,6 @@ unsafe fn store_owner(
     unsafe { (*w).store(arena, Ordering::Relaxed) }
 }
 
-} // verus!
-
 /// `index` itself, for [`SlabTable::is_set_unchecked`]'s word index. On
 /// aarch64 it goes through an empty `asm!` (the next item): left alone,
 /// LLVM rewrites `(bit >> 6) << 3` as `(bit >> 3) & !7`, a shift and a
@@ -926,14 +985,26 @@ unsafe fn store_owner(
 /// in the load, and this is the identity.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-fn word_index(index: usize) -> usize {
+fn word_index(index: usize) -> (r: usize)
+    ensures
+        r == index,
+    opens_invariants none
+{
     index
 }
 
 /// [`word_index`] on aarch64: `index` through the empty `asm!`.
+///
+/// Trusted: the empty template leaves the register `index` is in, for
+/// input and output, unchanged.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-fn word_index(index: usize) -> usize {
+#[verifier::external_body]
+fn word_index(index: usize) -> (r: usize)
+    ensures
+        r == index,
+    opens_invariants none
+{
     let mut index = index;
     // SAFETY: an empty template; `index` comes out unchanged.
     unsafe {
@@ -941,8 +1012,6 @@ fn word_index(index: usize) -> usize {
     }
     index
 }
-
-verus! {
 
 /// [`SlabTable::take_group`]'s check that the watermark is a group
 /// boundary, which the precondition (proved from [`TableInner::inv`])
@@ -2624,17 +2693,31 @@ impl SlabTable {
 
     /// `committed_slabs.load(order)`: the hand-out watermark, as the
     /// queries and the `free` fast path load it (`Relaxed`; see
-    /// [`desc_if_committed`]).
+    /// [`desc_if_committed`]), through its permission, inside its
+    /// invariant ([`WatermarkPred`]): at most the slab count. It takes only
+    /// the value, not the invariant's set of witness markers, which only an
+    /// `Acquire` load may hand out ([`committed_seen`]).
     ///
+    /// [`committed_seen`]: SlabTable::committed_seen
     /// [`desc_if_committed`]: SlabTable::desc_if_committed
     #[inline(always)]
-    fn watermark(&self, order: Ordering) -> usize
+    fn watermark(&self, order: Ordering) -> (r: usize)
         requires
             // `core`'s load panics for these two.
             !(order is Release),
             !(order is AcqRel),
+        ensures
+            r <= self.spec_nslabs(),
+        opens_invariants [committed_ns()]
     {
-        self.committed_slabs.load(order)
+        proof {
+            use_type_invariant(self);
+        }
+        let r;
+        vstd::open_atomic_invariant!(self.committed_inv.borrow() => v => {
+            r = load_usize(&self.committed_slabs, order, Tracked(&v.0));
+        });
+        r
     }
 
     /// Guard slabs committed so far. `ord` is the caller's lock-order
@@ -2682,16 +2765,6 @@ impl SlabTable {
         }
         // SAFETY: `slab` is below a value the watermark actually held.
         Some(unsafe { self.desc_unchecked(slab) })
-    }
-
-    /// Whether `slab` has been handed out, by a relaxed load of the
-    /// watermark (see [`desc_if_committed`] for why that is enough on the
-    /// `free` fast path).
-    ///
-    /// [`desc_if_committed`]: SlabTable::desc_if_committed
-    #[inline(always)]
-    pub fn is_handed_out(&self, slab: usize) -> bool {
-        slab < self.watermark(Ordering::Relaxed)
     }
 }
 
@@ -2757,114 +2830,306 @@ impl SlabTable {
     }
 }
 
-} // verus!
-
 impl SlabTable {
+    /// Whether `slab` has been handed out, by a relaxed load of the
+    /// watermark (see [`desc_if_committed`] for why that is enough on the
+    /// `free` fast path). A handed-out slab is one of the region's: the
+    /// watermark is at most the slab count (its invariant,
+    /// [`WatermarkPred`]).
+    ///
+    /// [`desc_if_committed`]: SlabTable::desc_if_committed
+    #[inline(always)]
+    pub fn is_handed_out(&self, slab: usize) -> (r: bool)
+        ensures
+            r ==> slab < self.spec_nslabs(),
+        opens_invariants [committed_ns()]
+    {
+        slab < self.watermark(Ordering::Relaxed)
+    }
+
     /// The `free` check's bit (design section 4): whether `slot` of `slab`
     /// is marked allocated (or cached). One relaxed load of the bitmap
-    /// word, no bounds checks.
+    /// word, through its permission, no bounds checks. A set bit is not a
+    /// guard slab's, and with the slot's token (`held`, [`holds_slot`]: a
+    /// live slot's) the bit is set.
     ///
     /// # Safety
-    /// `slab` must have been handed out ([`is_handed_out`]) and `slot` must
-    /// be below the class's `nslots`.
+    /// `slab` must have been handed out ([`is_handed_out`]): its bitmap
+    /// word is committed. The precondition states only the bounds (`slab`
+    /// below the slab count, `slot` below the class's `nslots`).
     ///
     /// [`is_handed_out`]: SlabTable::is_handed_out
     #[inline(always)]
-    pub unsafe fn is_set_unchecked(
-        &self,
-        slab: usize,
-        slot: usize,
-        _held: Tracked<&Option<GhostSingleton<int>>>,
-    ) -> bool {
+    pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>) -> (r: bool)
+        requires
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            r ==> !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+            holds_slot(*held, self.spec_class() as int, slab as int, slot as int) ==> r,
+        opens_invariants [crate::bitmap::word_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_bits_fit(slab);
+            self.lemma_slots_wf();
+        }
         let bit = slab * self.slab_bits as usize + slot;
         let index = word_index(bit / 64);
         // SAFETY: the caller guarantees the word is inside the handed-out
         // part of the bitmap.
-        let x = unsafe {
-            self.bit_word_held(
-                self.bits_base,
-                index,
-                Ghost::assume_new(),
-                Ghost::assume_new(),
-                Ghost::assume_new(),
-                Tracked::assume_new(),
-            )
-        };
+        let x = unsafe { self.bit_word_held(self.bits_base, index, Ghost(slab), Ghost(slot), Ghost(bit), Tracked(held)) };
+        proof {
+            let k = (bit % 64) as u64;
+            assert((x >> k) & 1u64 != 0u64 ==> (x >> k) & 1u64 == 1u64) by (bit_vector);
+        }
         (x >> (bit % 64)) & 1 == 1
     }
 
     /// A relaxed load of word `index` of the class bitmap that starts at
-    /// `bits_base` (this table's): the word [`is_set_unchecked`] tests.
+    /// `bits_base` (this table's), through its permission, inside its
+    /// invariant: the word [`is_set_unchecked`] tests, which holds bit
+    /// `bit`, slot `slot` of `slab`. A guard slab's bit is clear in every
+    /// value the invariant admits (`bitmap::guards_ok`), and with the
+    /// slot's token (`held`, [`holds_slot`]) the bit is set: the word's
+    /// invariant holds the tokens of exactly its clear bits
+    /// (`bitmap::WordPred`), and tokens are unique.
     ///
     /// # Safety
-    /// The word is inside the handed-out part of the bitmap.
+    /// The word is inside the handed-out part of the bitmap (committed).
     ///
     /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
-    #[inline(always)]
     // `slab`, `slot`, `bit` and `held` are read only by the proof (ghost).
     #[allow(unused_variables)]
-    unsafe fn bit_word_held(
-        &self,
-        bits_base: usize,
-        index: usize,
-        slab: Ghost<usize>,
-        slot: Ghost<usize>,
-        bit: Ghost<usize>,
-        held: Tracked<&Option<GhostSingleton<int>>>,
-    ) -> u64 {
-        let word = (bits_base + index * 8) as *const AtomicU64;
-        // SAFETY: guaranteed by the caller.
-        unsafe { (*word).load(Ordering::Relaxed) }
+    #[inline(always)]
+    unsafe fn bit_word_held(&self, bits_base: usize, index: usize, Ghost(slab): Ghost<usize>, Ghost(slot): Ghost<usize>, Ghost(bit): Ghost<usize>, Tracked(held): Tracked<&Option<GhostSingleton<int>>>) -> (x: u64)
+        requires
+            bits_base == self.bits_base,
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].nslots,
+            bit == slab * class_table()[self.spec_class() as int].slab_bits + slot,
+            index == bit / 64,
+        ensures
+            (x >> (bit % 64)) & 1 != 0 ==> !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+            holds_slot(*held, self.spec_class() as int, slab as int, slot as int) ==> (x >> (bit % 64)) & 1 != 0,
+        opens_invariants [crate::bitmap::word_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_bits_fit(slab);
+            self.lemma_slots_wf();
+            reveal(words_perms_ok);
+        }
+        let ghost j = bit as int / 64;
+        proof {
+            assert(0 <= bit < self.nslabs * (self.slab_bits as int));
+            assert(j < self.spec_nwords());
+            assert(self.word_perms@.contains_key(j));
+            assert(self.word_invs@.contains_key(j));
+        }
+        let word = addr_to_ptr(bits_base + index * 8) as *const AtomicU64;
+        let w = ptr_ref(word, Tracked((*self.word_perms.borrow()).tracked_borrow(j)));
+        let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
+        let x;
+        vstd::open_atomic_invariant!(inv => pair => {
+            let tracked (perm, mut g, u, d) = pair;
+            x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));
+            proof {
+                self.lemma_guard_slab(slab as int);
+                let s = self.spec_slots();
+                let (v, k) = (x, (bit - 64 * j) as u64);
+                assert((bit - 64 * j) as u64 == (bit % 64) as u64);
+                assert((v >> k) & 1u64 != 1u64 ==> (v >> k) & 1u64 == 0u64) by (bit_vector);
+                if crate::layout::guard_slab(self.spec_class() as int, slab as int) {
+                    crate::bitmap::lemma_slab_bit(s, slab as int, slot as int);
+                    crate::bitmap::lemma_guard_clear(inv.constant(), (perm, g, u, d), bit as int);
+                }
+                if holds_slot(*held, self.spec_class() as int, slab as int, slot as int) {
+                    // The slot's token is not in the word, which holds the
+                    // tokens of its clear bits: the bit is set.
+                    let tracked t = held.tracked_borrow();
+                    g.disjoint_singleton(t);
+                    self.lemma_slot_bit(slab as int, slot as int);
+                    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+                    if !crate::bitmap::has_bit(v, k) {
+                        assert(crate::bitmap::free_bits(s, j, v).contains(bit as int));
+                        assert(g@.contains(s.addr(bit as int)));
+                    }
+                }
+                pair = (perm, g, u, d);
+            }
+        });
+        x
+    }
+
+    /// The arena that owns `slab`'s group, without a watermark check:
+    /// one relaxed load of its owner word, through its permission, inside
+    /// its invariant ([`load_owner`]). With `seen`, the witness that the
+    /// group was handed out (slab `slab`'s persistent witness marker,
+    /// which a load of the watermark past `slab` returns:
+    /// [`committed_seen`]), it is the slab's owner ([`slab_owner`]).
+    ///
+    /// # Safety
+    /// `slab` must have been handed out ([`is_handed_out`]): the owner
+    /// word of a handed-out group was committed and written before the
+    /// watermark moved (the premise of `Unbacked::into_lazy`).
+    ///
+    /// [`is_handed_out`]: SlabTable::is_handed_out
+    /// [`committed_seen`]: SlabTable::committed_seen
+    #[inline(always)]
+    unsafe fn owner_at(&self, slab: usize, seen: Tracked<Option<&'static GhostPersistentSubset<int>>>) -> (r: u16)
+        requires
+            slab < self.spec_nslabs(),
+        ensures
+            seen_owner(*self, slab, seen@) ==> r == slab_owner(self.spec_class() as int, slab as int),
+        opens_invariants [owner_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_group_in_range(slab);
+        }
+        // `owners_base` before the shift: in this order the `free` fast
+        // path's owner test schedules its loads as the plain code does.
+        let word = addr_to_ptr(self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
+        // SAFETY: the owner word of a handed-out group was committed and
+        // written before the watermark moved.
+        unsafe { load_owner(self, word, Ghost(slab), seen) }
+    }
+
+    /// The watermark, an `Acquire` load, as [`committed_slabs`] loads it,
+    /// with the witness the watermark's invariant holds with it: the
+    /// persistent witness markers of every slab below it, whose owner
+    /// words are stored ([`WatermarkPred`], [`load_owner`]).
+    ///
+    /// [`committed_slabs`]: SlabTable::committed_slabs
+    #[inline(always)]
+    fn committed_seen(&self) -> (r: (usize, Tracked<&'static GhostPersistentSubset<int>>))
+        ensures
+            r.0 <= self.spec_nslabs(),
+            r.1@.id() == self.spec_sloc(),
+            owner_marks(0, r.0 as int).subset_of(r.1@@),
+        opens_invariants [committed_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        load_usize_seen(&self.committed_slabs, Ordering::Acquire, &self.committed_inv)
+    }
+
+    /// The arena that owns `slab` ([`slab_owner`]), with the witness that
+    /// the group was handed out that the watermark's load returned, for
+    /// [`SlabTable::owned_by`]. Aborts for a slab that was never handed
+    /// out.
+    #[inline]
+    pub fn owner(&self, slab: usize) -> (r: (u16, Tracked<&'static GhostPersistentSubset<int>>))
+        requires
+            crate::sys::may_abort_pending(),
+        ensures
+            slab < self.spec_nslabs(),
+            r.0 == slab_owner(self.spec_class() as int, slab as int),
+            r.1@.id() == self.spec_sloc(),
+            r.1@@.contains(owner_mark(slab as int)),
+    {
+        let (committed, seen) = self.committed_seen();
+        if slab >= committed {
+            never_committed(self.class as usize, slab);
+        }
+        proof {
+            broadcast use vstd::set_lib::range_set_properties;
+            assert(owner_marks(0, committed as int).contains(owner_mark(slab as int)));
+        }
+        let tracked w = Some(seen.get());
+        // SAFETY: `slab` is below the acquire-loaded watermark.
+        (unsafe { self.owner_at(slab, Tracked(w)) }, seen)
+    }
+
+    /// What the owner word of handed-out slab `slab`'s group records of
+    /// its taker ([`OwnerPred`]), for a reader holding the registry's
+    /// record `pubw` of an arena: if the slab's owner is that arena, the
+    /// taker was that arena's class state (the two records of one index
+    /// agree, `GhostPersistentPointsTo::intersection_agrees`), so `g`, a
+    /// class lock value whose owned-slab record is that state's, has the
+    /// slab in it. `seen` is the witness that the group was handed out
+    /// ([`SlabTable::owner`] returns it). No code: the invariant is opened
+    /// for the proof alone.
+    // `g`, `seen` and `pubw` are read only by the proof (ghost).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    pub(super) fn owned_by(&self, slab: usize, seen: Tracked<&GhostPersistentSubset<int>>, g: &Inner, pubw: Tracked<&'static Published>)
+        requires
+            slab < self.spec_nslabs(),
+            seen@.id() == self.spec_sloc(),
+            seen@@.contains(owner_mark(slab as int)),
+            pubw@.id() == process_pub_loc(),
+            g.oauth@.id() == pubw@.value()[self.spec_class() as int],
+        ensures
+            slab_owner(self.spec_class() as int, slab as int) as int == pubw@.key() ==> g.oauth@@.contains(slab as int),
+        opens_invariants [owner_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_group_in_range(slab);
+            self.lemma_slab_in_group(slab);
+        }
+        let ghost gr = (slab >> self.lg_group) as int;
+        let ghost (lo, hi) = (self.spec_group_range(gr as usize).0 as int, self.spec_group_range(gr as usize).1 as int);
+        proof {
+            assert(self.owner_invs@.contains_key(gr));
+            broadcast use vstd::set_lib::range_set_properties;
+            assert(owner_marks(lo, hi).contains(owner_mark(slab as int)));
+        }
+        vstd::open_atomic_invariant!(self.owner_invs.borrow().tracked_borrow(gr) => v => {
+            proof {
+                let k = self.owner_invs@[gr].constant();
+                assert(k.lo == lo && k.hi == hi && k.class == self.spec_class() as int);
+                // Stored, as in `load_owner`.
+                if owner_marks(lo, hi).subset_of(v.1@) {
+                    v.1.disjoint_persistent(seen.get());
+                    assert(v.1@.contains(owner_mark(slab as int)));
+                }
+                let value = u16_value(v.0.value());
+                assert(owner_stored(k, value, v.2@, v.3));
+                assert(slab_owner(k.class, slab as int) == value);
+                let tracked t = v.3.tracked_borrow();
+                assert(taken_by(k, value, *t));
+                if value as int == pubw@.key() {
+                    let tracked mut w = t.0.duplicate();
+                    w.intersection_agrees(pubw.get());
+                    t.1.agree(g.oauth.borrow());
+                    assert(t.1@.contains(slab as int));
+                }
+            }
+        });
+    }
+
+    /// Slab `slab` is one of its hand-out group's, `slab >> lg_group`
+    /// ([`spec_group_range`](SlabTable::spec_group_range)).
+    proof fn lemma_slab_in_group(&self, slab: usize)
+        requires
+            self.inv(),
+            slab < self.nslabs,
+        ensures
+            self.spec_group_range(slab >> self.lg_group).0 <= slab < self.spec_group_range(slab >> self.lg_group).1,
+    {
+        let (lg, gr, n) = (self.lg_group, self.group as usize, self.nslabs);
+        let g = slab >> lg;
+        assert((g << lg) <= slab && slab < (g << lg) + gr) by (bit_vector)
+            requires lg < 64, gr == 1usize << lg, g == slab >> lg, slab < 0x400_0000;
     }
 
     /// Whether `slot` of `slab` is marked allocated (or cached); `false`
     /// for a slab that was never handed out. Never aborts.
     #[inline]
-    pub fn is_allocated(&self, slab: usize, slot: usize) -> bool {
+    pub fn is_allocated(&self, slab: usize, slot: usize) -> bool
+        requires
+            slot < class_table()[self.spec_class() as int].nslots,
+    {
         debug_assert!(slot < self.class().nslots());
+        let tracked none = None;
         // SAFETY: the watermark check, then a slot below `nslots`.
-        self.is_handed_out(slab)
-            && unsafe { self.is_set_unchecked(slab, slot, Tracked::assume_new()) }
-    }
-
-    /// The arena that owns `slab`'s group, without a watermark check:
-    /// one relaxed load of its owner word ([`load_owner`]).
-    ///
-    /// # Safety
-    /// `slab` must have been handed out ([`is_handed_out`]).
-    ///
-    /// [`is_handed_out`]: SlabTable::is_handed_out
-    #[inline(always)]
-    unsafe fn owner_at(
-        &self,
-        slab: usize,
-        seen: Tracked<Option<&'static GhostPersistentSubset<int>>>,
-    ) -> u16 {
-        // `owners_base` before the shift: in this order the `free` fast
-        // path's owner test schedules its loads as the plain code does.
-        let word = (self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
-        // SAFETY: the owner word of a handed-out group was committed and
-        // written before the watermark moved.
-        unsafe { load_owner(self, word, Ghost::assume_new(), seen) }
-    }
-
-    /// The arena that owns `slab`, with the witness that the group was
-    /// handed out that the watermark's load returned. Aborts for a slab
-    /// that was never handed out.
-    #[inline]
-    pub fn owner(&self, slab: usize) -> (u16, Tracked<&'static GhostPersistentSubset<int>>) {
-        if slab >= self.committed_slabs() {
-            never_committed(self.class as usize, slab);
-        }
-        // SAFETY: `slab` is below the acquire-loaded watermark.
-        (
-            unsafe { self.owner_at(slab, Tracked::assume_new()) },
-            Tracked::assume_new(),
-        )
+        self.is_handed_out(slab) && unsafe { self.is_set_unchecked(slab, slot, Tracked(&none)) }
     }
 }
-
-verus! {
 
 impl SlabTable {
     #[inline]
@@ -2920,39 +3185,112 @@ impl SlabTable {
     }
 }
 
-} // verus!
-
 impl SlabTable {
     /// Slab and slot of a pointer that must be a slot start in this class's
-    /// region. Aborts otherwise.
+    /// region. Aborts otherwise: never for a slot start (a guard slab's
+    /// too).
     #[inline]
-    pub fn locate(&self, p: *mut u8) -> (usize, usize) {
+    pub fn locate(&self, p: *mut u8) -> (r: (usize, usize))
+        requires
+            crate::sys::may_abort() || (crate::heap::regions_ok() && process_regions().is_slot_addr(self.spec_class() as int, p@.addr)),
+        ensures
+            r.0 < self.spec_nslabs(),
+            r.1 < class_table()[self.spec_class() as int].nslots,
+            process_regions().slot_at(self.spec_class() as int, r.0 as int, r.1 as int) == p@.addr,
+    {
+        proof {
+            use_type_invariant(self);
+        }
         let cls = self.class();
         let rel = (p as usize).wrapping_sub(self.base);
+        proof {
+            if crate::heap::regions_ok() && process_regions().is_slot_addr(self.spec_class() as int, p@.addr) {
+                // A slot start passes both checks below
+                // (`Regions::lemma_slot_addr_found`): its offset is inside
+                // the region, `nslabs` slabs, and a whole number of slots
+                // into its slab.
+                let c = self.spec_class() as int;
+                process_regions().lemma_slot_addr_found(c, p as usize);
+                let lg = cls.lg_slab;
+                let lr = process_regions().lg_region;
+                let (n, rl) = (self.nslabs, 1usize << lr);
+                assert(rel < rl);
+                assert(22 <= lr < 64);
+                assert(n == rl >> lg);
+                assert(n << lg == rl) by (bit_vector)
+                    requires
+                        n == rl >> lg,
+                        rl == 1usize << lr,
+                        lg <= 22,
+                        22 <= lr < 64,
+                ;
+            }
+        }
         if rel >= self.nslabs << cls.lg_slab {
             invalid_pointer(p as usize, self.class as usize, "outside the class region");
+        }
+        proof {
+            let lg = cls.lg_slab;
+            let n = self.nslabs;
+            let m = (usize::MAX - self.base) as usize;
+            assert(rel < n << lg && n <= m >> lg && lg <= 22 ==> rel >> lg < n) by (bit_vector);
+            assert(rel & sub(1usize << lg, 1) < 0x40_0000) by (bit_vector)
+                requires lg <= 22;
+            assert(crate::layout::MAX_SLAB == 0x40_0000) by (bit_vector);
+            let mk = cls.slab_mask as usize;
+            assert(mk == ((1usize << lg) - 1) as usize);
+            assert((rel & mk) < (1usize << lg)) by (bit_vector)
+                requires lg <= 22, mk == ((1usize << lg) - 1) as usize;
         }
         let (slot, valid) = cls.slot_of_offset(rel & cls.slab_mask());
         if !valid {
             invalid_pointer(p as usize, self.class as usize, "not a slot start");
+        }
+        proof {
+            // `p` is the slot's start: the offset splits into the slab's
+            // start and a whole number of slots.
+            let lg = cls.lg_slab;
+            let lgu = lg as usize;
+            let slab = rel >> lg;
+            let mask = sub(1usize << lg, 1);
+            let (n, b, a) = (self.nslabs, self.base, p as usize);
+            let m = (usize::MAX - b) as usize;
+            assert(rel == ((rel >> lg) << lg) + (rel & mask) && slab <= usize::MAX >> lgu) by (bit_vector)
+                requires lg <= 22, lgu == lg as usize, slab == rel >> lg, mask == sub(1usize << lg, 1);
+            assert(rel < n << lg && n <= m >> lg && lg <= 22 ==> rel <= m) by (bit_vector);
+            vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+            vstd::bits::lemma_usize_shl_is_mul(1, lgu);
+            vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(slab, lgu, usize::MAX);
+            vstd::bits::lemma_usize_shl_is_mul(slab, lgu);
+            assert((slab << lg) == (slab << lgu) && (1usize << lg) == (1usize << lgu)) by (bit_vector)
+                requires lgu == lg as usize;
+            assert(a as int == b + rel);
         }
         (rel >> cls.lg_slab, slot)
     }
 
     /// The `free` check of a pointer already located (`Regions::classify`):
     /// aborts unless `slab` has been handed out and `slot`'s bit is set,
-    /// with the pointer and its location; returns the owning arena.
+    /// with the pointer and its location; returns the owning arena. `held`
+    /// is the caller's slot token, if any: with the slot's (a live slot's,
+    /// [`holds_slot`]) the bit test cannot fail. The owner word is read without a witness that the
+    /// group was handed out (the watermark load is `Relaxed`, and only an
+    /// `Acquire` load hands one out, `vspec::atom::load_usize_seen`), so
+    /// the value returned is not specified: the release it routes to reads
+    /// the owner again, with the witness ([`owner`](SlabTable::owner)).
     #[inline]
-    pub fn check_located(
-        &self,
-        slab: usize,
-        slot: usize,
-        p: usize,
-        held: Tracked<&Option<GhostSingleton<int>>>,
-    ) -> u16 {
+    pub fn check_located(&self, slab: usize, slot: usize, p: usize, held: Tracked<&Option<GhostSingleton<int>>>) -> (r: u16)
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_slot(*held@, self.spec_class() as int, slab as int, slot as int)),
+            slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            slab < self.spec_nslabs(),
+            !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+    {
         self.check_live(slab, slot, p, held);
+        let tracked none = None;
         // SAFETY: `check_live` returned, so `slab` is below the watermark.
-        unsafe { self.owner_at(slab, Tracked::assume_new()) }
+        unsafe { self.owner_at(slab, Tracked(none)) }
     }
 
     /// The bit test of [`check_located`], without the owner: the exact
@@ -2972,24 +3310,33 @@ impl SlabTable {
     /// mask) runs only once the bit
     /// is clear, which it always is in a guard slab (`take_group` never
     /// sets one), so the messages are unchanged and the hot path is the
-    /// watermark compare and the bit test.
+    /// watermark compare and the bit test. With the slot's token
+    /// (`held`) the bit is set, so neither of the last two can fire; the
+    /// watermark compare is a pending check then (not proved unreachable
+    /// yet).
     ///
     /// [`check_located`]: SlabTable::check_located
     /// [`desc_if_committed`]: SlabTable::desc_if_committed
     #[inline(always)]
-    pub fn check_live(
-        &self,
-        slab: usize,
-        slot: usize,
-        p: usize,
-        held: Tracked<&Option<GhostSingleton<int>>>,
-    ) {
+    pub fn check_live(&self, slab: usize, slot: usize, p: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>)
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_slot(*held, self.spec_class() as int, slab as int, slot as int)),
+            slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            slab < self.spec_nslabs(),
+            // A guard slab's bits are clear: it aborts by name.
+            !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+    {
         if !self.is_handed_out(slab) {
             never_committed(self.class as usize, slab);
         }
         debug_assert!(slot < self.class().nslots());
         // SAFETY: below a value the watermark held, slot below `nslots`.
-        if !unsafe { self.is_set_unchecked(slab, slot, held) } {
+        if !unsafe { self.is_set_unchecked(slab, slot, Tracked(held)) } {
+            proof {
+                // A live slot's bit is set: the caller holds no token of it.
+                assert(!holds_slot(*held, self.spec_class() as int, slab as int, slot as int));
+            }
             self.not_live(slab, slot, p);
         }
     }
@@ -3000,15 +3347,16 @@ impl SlabTable {
     /// [`check_live`]: SlabTable::check_live
     #[cold]
     #[inline(never)]
-    fn not_live(&self, slab: usize, slot: usize, p: usize) -> ! {
+    fn not_live(&self, slab: usize, slot: usize, p: usize) -> !
+        requires
+            crate::sys::may_abort(),
+    {
         if self.is_guard_slab(slab) {
             guard_free(p, self.class as usize, slab);
         }
         invalid_free(p, self.class as usize, slab, slot)
     }
 }
-
-verus! {
 
 impl SlabTable {
     /// Hand the next group of slabs to `arena` (design section 4):

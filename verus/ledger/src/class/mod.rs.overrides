@@ -5,5 +5,3 @@ axiom_class_lock	allocator invariant	none (assumption)
 # a Purged one's while every discard was MADV_DONTNEED (madvise).
 axiom_fresh_slots_zero	allocator invariant	none (assumption)
 axiom_discarded_slots_zero	allocator invariant	none (assumption)
-# Temporary seam, provable in Verus: the owner word's read is not verified yet.
-ClassState::take_checks	panic/abort	Verus
