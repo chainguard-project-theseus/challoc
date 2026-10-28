@@ -222,6 +222,13 @@ pub closed spec fn lock_rs_only() -> bool {
     true
 }
 
+/// The explicit-cache table lock (`heap::Tcaches`), the outermost:
+/// `tcache.create` and `tcache.destroy` hold it across the arena creation,
+/// class and metadata locks.
+pub open spec fn rank_tcaches() -> int {
+    0x100_0000
+}
+
 /// The arena creation lock (`arena::Arenas`'s), below the class locks:
 /// a build takes the class, slab-set and metadata locks under it.
 pub open spec fn rank_arenas() -> int {

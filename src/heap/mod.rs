@@ -128,6 +128,8 @@ pub const fn default_cap(class: usize) -> u32 {
 /// arena index (`arena::MAX_ARENAS` is 4096).
 pub const FOREIGN: u16 = u16::MAX;
 
+verus! {
+
 /// `Shared::push_flags` bit: `double_free_scan` (compare the pushed slot
 /// against the top four cache entries).
 pub const PUSH_SCAN: u8 = 1;
@@ -142,7 +144,6 @@ pub const PUSH_ZERO: u8 = 2;
 /// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
 /// `false`; never set on x86_64.
 pub const PUSH_PAC: u8 = 4;
-verus! {
 
 /// `Shared::free_flags` bit, never in `push_flags`: more than one arena
 /// exists, so plain `free` compares the slot's owner word with the heap's

@@ -1092,16 +1092,22 @@ impl Meta {
 }
 
 /// The identity of the unclaimed-byte map of the process's `Meta`, the
-/// one in the `Shared` `api::init` builds: the claims to its reserved
-/// pages that the lazily committed tables carry (`class::sets::Lazy`)
-/// have it. Uninterpreted, as
-/// [`process_regions`](crate::layout::process_regions): the tables state
-/// their claims against it, and [`Meta::is_process`] says a `Meta` has it.
-/// Premise, not checked: the callers of the verified table constructors
-/// (`SlabTable::new`, `SetTable::new`, `Set::new`), all unverified, pass
-/// the process's one `Meta` and its page. The unit tests that build their
-/// own `Meta` are outside it, as they are outside `process_regions`.
-pub uninterp spec fn process_pages_id() -> Loc;
+/// one in the `Shared` `api::init` builds in its storage
+/// ([`Shared::built`](crate::heap::Shared::built) says the built
+/// `Shared`'s `meta` has it; [`lemma_process_pages_id`] unfolds it): the
+/// claims to its reserved pages that the lazily committed tables carry
+/// (`class::sets::Lazy`) have it, and [`Meta::is_process`] says a `Meta`
+/// has it.
+pub closed spec fn process_pages_id() -> Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.pages_id()
+}
+
+/// [`process_pages_id`] unfolded.
+pub(crate) proof fn lemma_process_pages_id()
+    ensures
+        process_pages_id() == crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.pages_id(),
+{
+}
 
 /// The process's page, `2^lg_page` of its regions: the page of its `Meta`
 /// ([`Meta::is_process`]), in which the lazily committed tables commit
