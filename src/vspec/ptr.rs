@@ -41,6 +41,61 @@ pub open spec fn valid_writes<T>(p: *mut T, len: int) -> bool {
     0 <= len <= rw_len(p@.provenance, p@.addr)
 }
 
+/// `p` is valid for reads of `len` bytes: inside the read-write bound.
+/// Closed, so that read validity (from [`lemma_writes_read`]) does not
+/// unfold into write validity outside this module.
+pub closed spec fn valid_reads<T>(p: *const T, len: int) -> bool {
+    0 <= len <= rw_len(p@.provenance, p@.addr)
+}
+
+/// Bytes valid for writes are valid for reads.
+pub proof fn lemma_writes_read(p: *mut u8, len: int)
+    requires
+        valid_writes(p, len),
+    ensures
+        valid_reads(p as *const u8, len),
+{
+}
+
+/// Read validity is of the address and provenance, so it carries over a
+/// cast to a pointer to `T`.
+pub proof fn lemma_reads_cast<T>(p: *mut u8, len: int)
+    requires
+        valid_reads(p as *const u8, len),
+    ensures
+        valid_reads(p as *const T, len),
+{
+}
+
+/// Every initialised value of `T`'s size is a `T` with no ghost content:
+/// a volatile read of a `T` makes a valid value out of any initialised
+/// bytes.
+/// Uninterpreted; [`axiom_plain_u64`] states it for `u64`, the only type
+/// verified code reads that way.
+pub uninterp spec fn plain<T>() -> bool;
+
+/// [`plain`] for `u64`: every initialised eight bytes are a `u64`, which
+/// holds no ghost state. Trusted: the `core` documentation of the integer
+/// types (no invalid bit patterns).
+pub axiom fn axiom_plain_u64()
+    ensures
+        plain::<u64>(),
+;
+
+/// `core::ptr::read_volatile`, with the safety contract of the `core`
+/// documentation: `src` is valid for reads of `size_of::<T>()` bytes and
+/// aligned for `T`, and the bytes are a valid `T`, which [`plain`] asserts
+/// for `T` (only `u64`). The bytes are initialised: the one caller reads a
+/// huge run, anonymous memory the kernel fills (zero, or what the program
+/// wrote). The value read is not stated.
+pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
+    requires
+        plain::<T>(),
+        valid_reads(src, vstd::layout::size_of::<T>() as int),
+        src@.addr as int % vstd::layout::align_of::<T>() as int == 0,
+    opens_invariants none
+;
+
 /// `core::ptr::write_bytes` filled the `len` bytes at `p` with zero. Only
 /// `write_bytes`' specification states it; `vspec::zero::axiom_wrote_zero`
 /// turns it into the token that the bytes read as zero.
@@ -67,6 +122,8 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 /// (`vspec::unbacked::Unbacked::commit`) or as a lazily committed table
 /// (`Unbacked::into_lazy`) and are split and joined from there, all inside
 /// one mapping (the metadata region, the only `Unbacked` token's source),
+/// or as a huge run's usable bytes (`heap::live`'s `axiom_hand_out`,
+/// pages `Huge::prepare` committed, inside the one huge-region mapping),
 /// so one permission's range never spans two allocations. A table's bytes
 /// are writable only once its owner has committed their page, the premise
 /// of `into_lazy`, which a caller of this axiom keeps too.

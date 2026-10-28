@@ -1,9 +1,6 @@
 # One huge allocator per process: the run authorities `Huge::new` makes
 # are the process's, as class::table's axiom_slot_loc for the slot ones.
 axiom_run_locs	allocator invariant	none (assumption)
-# Temporary seam: check_zero reads the run through the permission to
-# its bytes, which the live-block model mints (a later PR).
-Huge::check_zero	allocator invariant	Verus
 # The zero tokens of a run `take` hands out (zero_run, their one caller,
 # pinned by huge::tests::zero_axioms_called_from_zero_run_only): kernel
 # zero-fill facts under the allocator's rules. zero_run's requires tie the

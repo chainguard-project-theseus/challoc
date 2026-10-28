@@ -37,6 +37,7 @@
 mod cache;
 mod compact;
 mod flush;
+pub(crate) mod live;
 pub mod mallocx;
 mod others;
 mod paths;

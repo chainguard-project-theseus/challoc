@@ -10,11 +10,10 @@ file.
 | `axiom_run_locs` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_f...n_zero` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_d...d_zero` | axiom | allocator invariant | none (assumption) | trusted |
-| `Huge::check_zero` | external_body | allocator invariant | Verus | trusted |
 
 ## `axiom_run_locs`
 
-src/huge/mod.rs:997. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:1008. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: outside tests, [`Huge::new`] runs once per process, for the process's `Shared` (`Shared::init`), so the run authorities it makes are the process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc` for the slot authorities.
@@ -31,7 +30,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:1826. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:1837. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -48,7 +47,7 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:1850. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:1861. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
@@ -61,28 +60,4 @@ axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)
         z.addr() == addr,
         z.len() == len,
 ;
-```
-
-## `Huge::check_zero`
-
-src/huge/mod.rs:4366. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> The `check_zero` debug mode: the first and last word of every usable page of a run reported zero must read zero.
-
-Body mints Tracked at line 4386.
-
-```rust
-fn check_zero(
-    &self,
-    s: usize,
-    usable_pages: usize,
-    prior: &'static str,
-    arena: u16,
-    Tracked(_tok): Tracked<&mut Map<int, RunToken>>,
-)
-    requires
-        crate::sys::may_abort(),
-    ensures
-        *final(_tok) == *old(_tok),
 ```
