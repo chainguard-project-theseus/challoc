@@ -179,11 +179,12 @@ pub open spec fn may_abort_kernel() -> bool {
 }
 
 /// The capability of the free paths' checks not yet proved unreachable
-/// for a live block (the watermark, the live count, the slab state, the
-/// owner word): checks that fire on an invalid free, and on a valid one
-/// only if allocator state no verified invariant constrains is corrupt.
-/// Apart from [`integrity_aborts`], so a function that holds only that
-/// reaches none of them. Uninterpreted, as [`integrity_aborts`] is.
+/// for a live block (the watermark, the live count, the slab state and
+/// its shadow byte, the owner word): checks that fire on an invalid free,
+/// and on a valid one only if allocator state no verified invariant
+/// constrains is corrupt. Apart from [`integrity_aborts`], so a function
+/// that holds only that reaches none of them. Uninterpreted, as
+/// [`integrity_aborts`] is.
 pub uninterp spec fn pending_aborts() -> bool;
 
 /// The caller may abort at one of the pending checks

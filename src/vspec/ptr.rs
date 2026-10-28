@@ -125,7 +125,8 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 /// or as a slot's or a huge run's usable bytes (`heap::live`'s
 /// `axiom_hand_out`: a slot of a committed slab, inside the one class
 /// superblock mapping, or pages `Huge::prepare` committed, inside the one
-/// huge-region mapping),
+/// huge-region mapping), or as a committed `Fresh` slab's slots
+/// (`class::axiom_fresh_slab_mem`, inside the class superblock mapping),
 /// so one permission's range never spans two allocations. A table's bytes
 /// are writable only once its owner has committed their page, the premise
 /// of `into_lazy`, which a caller of this axiom keeps too.
