@@ -2656,11 +2656,7 @@ impl SlabTable {
         }
         self.slabs_per_page as usize
     }
-}
 
-} // verus!
-
-impl SlabTable {
     /// Start of the class bitmap (for `heap::ClassLine`).
     #[inline]
     pub fn bits_base(&self) -> usize {
@@ -2678,7 +2674,11 @@ impl SlabTable {
     pub fn lg_group(&self) -> u8 {
         self.lg_group
     }
+}
 
+} // verus!
+
+impl SlabTable {
     /// Tests: slabs handed to an arena at a time (see the field).
     #[cfg(test)]
     pub fn group(&self) -> usize {

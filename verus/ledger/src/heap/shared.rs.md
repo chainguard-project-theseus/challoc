@@ -7,68 +7,317 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Shared::lemma_wf` | external_body proof | allocator invariant | Verus | trusted |
-| `Shared:..._ranks` | external_body proof | allocator invariant | Verus | trusted |
-| `ClassLine` | ext_type_spec | allocator invariant | Verus | trusted |
-| `ThreadKey` | ext_type_spec | allocator invariant | Verus | trusted |
-| `Tcaches` | ext_type_spec | allocator invariant | Verus | trusted |
+| `axiom_p...shared` | axiom | allocator invariant | none (assumption) | trusted |
+| `ThreadK...create` | external_body | function pointer | none (assumption) | trusted |
+| `S_LINES` | external_body const | core library | Kani | trusted |
+| `S_FREE_FLAGS` | external_body const | core library | Kani | trusted |
+| `S_PUSH_FLAGS` | external_body const | core library | Kani | trusted |
+| `S_REGION_HI` | external_body const | core library | Kani | trusted |
+| `S_REGIONS` | external_body const | core library | Kani | trusted |
+| `S_TABLES` | external_body const | core library | Kani | trusted |
+| `S_ARENA0` | external_body const | core library | Kani | trusted |
+| `S_META` | external_body const | core library | Kani | trusted |
+| `S_HUGE` | external_body const | core library | Kani | trusted |
+| `S_GC_INTERVAL_NS` | external_body const | core library | Kani | trusted |
+| `S_POLICY` | external_body const | core library | Kani | trusted |
+| `S_CONFIG` | external_body const | core library | Kani | trusted |
+| `S_KEY` | external_body const | core library | Kani | trusted |
+| `S_ARENAS` | external_body const | core library | Kani | trusted |
+| `S_TCACHES` | external_body const | core library | Kani | trusted |
+| `S_STATS` | external_body const | core library | Kani | trusted |
+| `S_CGROUP` | external_body const | core library | Kani | trusted |
+| `axiom_shared_layout` | axiom | core library | Kani | trusted |
+| `axiom_s...egions` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `axiom_s...d_meta` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `axiom_s..._stats` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `Shared::begin` | external_body | raw pointer from C caller | none (assumption) | trusted |
 
-## `Shared::lemma_wf`
+## `axiom_process_shared`
 
-src/heap/shared.rs:166. Kind: external_body proof. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/heap/shared.rs:170. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
-> [`Shared::wf`] unfolded, for the rest of the crate: the process's well-formed, separated regions and its metadata allocator.
+> Assumption: one `Shared` per process.
 
 ```rust
-pub(crate) proof fn lemma_wf(&self)
-    requires
-        self.wf(),
+axiom fn axiom_process_shared()
     ensures
-        self.regions.wf(),
-        self.regions == crate::layout::process_regions(),
-        self.regions.separated(),
-        self.meta.is_process(),
+        crate::layout::process_regions() == shared_at(shared_storage()).regions,
+;
 ```
 
-## `Shared::lemma_ranks`
+## `ThreadKey::create`
 
-src/heap/shared.rs:182. Kind: external_body proof. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/heap/shared.rs:571. Kind: external_body. Category: function pointer.
+Tool: none (assumption). Status: trusted.
 
-> The process statistics lock's rank in the lock order (`lock.rs`).
+> A new key whose destructor is `heap_destructor`; `valid` says whether `pthread_key_create` gave one.
 
 ```rust
-pub(crate) proof fn lemma_ranks(&self)
+pub fn create() -> ThreadKey
     requires
-        self.wf(),
+        crate::sys::may_syscall(),
+```
+
+## `S_LINES`
+
+src/heap/shared.rs:792. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_LINES: usize = core::mem::offset_of!(Shared, lines);
+```
+
+## `S_FREE_FLAGS`
+
+src/heap/shared.rs:794. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
+```
+
+## `S_PUSH_FLAGS`
+
+src/heap/shared.rs:796. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
+```
+
+## `S_REGION_HI`
+
+src/heap/shared.rs:798. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
+```
+
+## `S_REGIONS`
+
+src/heap/shared.rs:800. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
+```
+
+## `S_TABLES`
+
+src/heap/shared.rs:802. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
+```
+
+## `S_ARENA0`
+
+src/heap/shared.rs:804. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
+```
+
+## `S_META`
+
+src/heap/shared.rs:806. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_META: usize = core::mem::offset_of!(Shared, meta);
+```
+
+## `S_HUGE`
+
+src/heap/shared.rs:808. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
+```
+
+## `S_GC_INTERVAL_NS`
+
+src/heap/shared.rs:810. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
+```
+
+## `S_POLICY`
+
+src/heap/shared.rs:812. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
+```
+
+## `S_CONFIG`
+
+src/heap/shared.rs:814. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
+```
+
+## `S_KEY`
+
+src/heap/shared.rs:816. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_KEY: usize = core::mem::offset_of!(Shared, key);
+```
+
+## `S_ARENAS`
+
+src/heap/shared.rs:818. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
+```
+
+## `S_TCACHES`
+
+src/heap/shared.rs:820. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
+```
+
+## `S_STATS`
+
+src/heap/shared.rs:822. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_STATS: usize = core::mem::offset_of!(Shared, stats);
+```
+
+## `S_CGROUP`
+
+src/heap/shared.rs:824. Kind: external_body const. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
+```
+
+## `axiom_shared_layout`
+
+src/heap/shared.rs:830. Kind: axiom. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Shared`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size.
+
+```rust
+axiom fn axiom_shared_layout()
     ensures
-        self.stats.rank() == crate::lock::rank_stats(),
+        field_fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS as int),
+        field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
+        field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI as int),
+        field_fits::<Shared, usize>(S_REGION_HI, S_REGIONS as int),
+        field_fits::<Shared, Regions>(S_REGIONS, S_TABLES as int),
+        field_fits::<Shared, [SlabTable; NCLASSES]>(S_TABLES, S_ARENA0 as int),
+        NCLASSES * size_of::<ClassLine>() <= isize::MAX,
+        NCLASSES * size_of::<SlabTable>() <= isize::MAX,
+        0 < size_of::<ClassLine>(),
+        0 < size_of::<SlabTable>(),
+        field_fits::<Shared, Arena>(S_ARENA0, S_META as int),
+        field_fits::<Shared, Meta>(S_META, S_HUGE as int),
+        field_fits::<Shared, Huge>(S_HUGE, S_GC_INTERVAL_NS as int),
+        field_fits::<Shared, u64>(S_GC_INTERVAL_NS, S_POLICY as int),
+        field_fits::<Shared, Policy>(S_POLICY, S_CONFIG as int),
+        field_fits::<Shared, Config>(S_CONFIG, S_KEY as int),
+        field_fits::<Shared, ThreadKey>(S_KEY, S_ARENAS as int),
+        field_fits::<Shared, Arenas>(S_ARENAS, S_TCACHES as int),
+        field_fits::<Shared, Tcaches>(S_TCACHES, S_STATS as int),
+        // Over several lines, as in `arena::axiom_arena_layout`.
+        field_fits::<
+            Shared,
+            Lock<Snapshot>,
+        >(S_STATS, S_CGROUP as int),
+        field_fits::<Shared, Deferred>(S_CGROUP, size_of::<Shared>() as int),
+        size_of::<Shared>() <= isize::MAX,
+;
 ```
 
-## `ClassLine`
+## `axiom_shared_regions`
 
-src/heap/shared.rs:207. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/heap/shared.rs:981. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The regions of the `Shared` at `p` are what the permission to its `regions` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`] writes the field): no verified code can write the field again, so the value is the built one.
 
 ```rust
-pub struct ExClassLine(ClassLine);
+axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Shared)
+    requires
+        pr.ptr() == field_ptr::<Shared, Regions>(p, S_REGIONS),
+        pr.is_init(),
+    ensures
+        shared_at(p).regions == pr.value(),
+;
 ```
 
-## `ThreadKey`
+## `axiom_shared_meta`
 
-src/heap/shared.rs:213. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/heap/shared.rs:999. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The metadata allocator of the `Shared` at `p` is what the permission to its `meta` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, in [`Shared::put_head`], right after it writes the field), as [`axiom_shared_regions`] states of the regions: no verified code can write the field again, so the value is the built one.
 
 ```rust
-pub struct ExThreadKey(ThreadKey);
+axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
+    requires
+        pm.ptr() == field_ptr::<Shared, Meta>(p, S_META),
+        pm.is_init(),
+    ensures
+        shared_at(p).meta == pm.value(),
+;
 ```
 
-## `Tcaches`
+## `axiom_shared_stats`
 
-src/heap/shared.rs:219. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/heap/shared.rs:1014. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The statistics lock of the `Shared` at `p` is what the permission to its `stats` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, in `init`, after [`Shared::put_tail`] writes the field), as [`axiom_shared_regions`] states of the regions: no verified code can write the field again (the snapshot changes behind the lock), so the value is the built one.
 
 ```rust
-pub struct ExTcaches(Tcaches);
+axiom fn axiom_shared_stats(tracked ps: &'static PointsTo<StatsLock>, p: *mut Shared)
+    requires
+        ps.ptr() == field_ptr::<Shared, Lock<Snapshot>>(p, S_STATS),
+        ps.is_init(),
+    ensures
+        shared_at(p).stats == ps.value(),
+;
+```
+
+## `Shared::begin`
+
+src/heap/shared.rs:1040. Kind: external_body. Category: raw pointer from C caller.
+Tool: none (assumption). Status: trusted.
+
+> The permission to `init`'s storage, uninitialised, for `once`, the process's token of this step.
+
+Body mints Tracked at line 1049.
+
+```rust
+fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsTo<Shared>>)
+    requires
+        this == shared_storage(),
+        once.step() == Step::Shared,
+    ensures
+        r@.ptr() == this,
+        r@.is_uninit(),
+        this@.addr + size_of::<Shared>() <= usize::MAX,
 ```

@@ -10,10 +10,16 @@ use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::lock::Lock;
-use vstd::prelude::{Ghost, Tracked};
+#[cfg(verus_keep_ghost)]
+use crate::lock::rank_tcaches;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked, verus};
 use vstd::raw_ptr::{PointsTo, ptr_mut_write};
 
 use super::{Heap, Shared};
+
+verus! {
 
 /// Explicit caches; ids are the 12-bit `MALLOCX_TCACHE` field minus 2.
 pub const MAX_TCACHES: usize = 1024;
@@ -29,13 +35,53 @@ pub struct Tcaches {
     table: [AtomicPtr<u8>; MAX_TCACHES],
 }
 
-/// The empty table [`Tcaches::init`] writes, every entry null.
-#[allow(
-    clippy::declare_interior_mutable_const,
-    reason = "only moved into a new value, never shared"
-)]
-const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] =
-    [const { AtomicPtr::new(ptr::null_mut()) }; MAX_TCACHES];
+/// Assumption (`lock.rs`): the explicit-cache table lock guards no value
+/// (`()`), so its invariant is trivially true. Nothing writes the value.
+pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
+    ensures
+        #[trigger] crate::lock::lock_inv(v),
+;
+
+/// The empty table [`Tcaches::init`] writes, every entry null. Trusted
+/// only as a value of its type: Verus has no array fill of a type that is
+/// not `Copy`, and nothing is claimed about the entries.
+#[verifier::external_body]
+#[allow(clippy::declare_interior_mutable_const, reason = "only moved into a new value, never shared")]
+const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] = [const { AtomicPtr::new(ptr::null_mut()) }; MAX_TCACHES];
+
+impl Tcaches {
+    /// Initialise `this` in place, empty, through the permission `perm` to
+    /// its storage, handed back initialised: one write of the whole value,
+    /// whose lock is created with rank `rank_tcaches()` and whose table
+    /// entries are null.
+    ///
+    /// # Safety
+    /// `this` must point to writable storage that nothing else reads until
+    /// this returns.
+    pub unsafe fn init(this: *mut Tcaches, Tracked(perm): Tracked<&mut PointsTo<Tcaches>>)
+        requires
+            old(perm).ptr() == this,
+            old(perm).is_uninit(),
+        ensures
+            final(perm).ptr() == this,
+            final(perm).is_init(),
+    {
+        broadcast use axiom_tcaches_lock_inv;
+
+        // Through the permission to the storage, which the caller makes
+        // writable and unaliased.
+        ptr_mut_write(
+            this,
+            Tracked(perm),
+            Tcaches {
+                lock: Lock::new((), Ghost(rank_tcaches())),
+                table: EMPTY_TABLE,
+            },
+        );
+    }
+}
+
+} // verus!
 
 /// A heap [`Heap::create`] or [`Heap::create_detached`] returned and
 /// nothing has destroyed, as a reference: an explicit cache's non-null
@@ -51,25 +97,6 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> &'a mut Heap {
 }
 
 impl Tcaches {
-    /// Initialise `this` in place, empty: one write of the whole value,
-    /// whose table entries are null.
-    ///
-    /// # Safety
-    /// `this` must point to writable storage that nothing else reads until
-    /// this returns.
-    pub unsafe fn init(this: *mut Tcaches, perm: Tracked<&mut PointsTo<Tcaches>>) {
-        // Through the permission to the storage, which the caller makes
-        // writable and unaliased.
-        ptr_mut_write(
-            this,
-            perm,
-            Tcaches {
-                lock: Lock::new((), Ghost::assume_new()),
-                table: EMPTY_TABLE,
-            },
-        );
-    }
-
     /// The table lock, for the fork handlers. It is the outermost
     /// allocator lock: `create` and `destroy` hold it across
     /// `Heap::create_detached` / `Heap::destroy`, which take the arena

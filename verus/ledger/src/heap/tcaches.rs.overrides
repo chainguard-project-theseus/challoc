@@ -1,0 +1,4 @@
+# The table lock guards `()`: its invariant is `true`.
+axiom_tcaches_lock_inv	allocator invariant	none (assumption)
+# An array fill Verus cannot state; nothing is claimed of its entries.
+EMPTY_TABLE	core library	Kani
