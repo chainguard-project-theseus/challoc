@@ -60,6 +60,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
 use crate::lock::LockOrder;
+#[cfg(verus_keep_ghost)]
+use crate::lock::rank_class;
 use crate::purge::NEVER;
 use crate::stats::fig_add64;
 use crate::sys::cgroup::{Cgroup, LEVELS, UNLIMITED};
@@ -967,37 +969,48 @@ impl Policy {
     }
 }
 
-} // verus!
-
 /// `Empty` bytes held by every class of every arena and by the huge
 /// allocator: one lock hold per class that has an `Empty` slab (the
 /// lock-free `oldest_empty` says which), one for the huge allocator.
-/// The sums are [`fig_add64`], which wraps as `+` does in the shipped
-/// build (overflow checks are off in release).
-pub fn empty_bytes(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> u64 {
+///
+/// The arenas are those [`Arenas::get_existing`](crate::arena::Arenas::get_existing)
+/// finds below `arenas.count()`. The sums are [`fig_add64`], which wraps
+/// as `+` does in the shipped build (overflow checks are off in release);
+/// callers rely on nothing but the type. The locks may wait in the
+/// kernel. Lock order: it takes class locks, then the huge lock, one at a
+/// time.
+pub fn empty_bytes(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     let mut total = 0u64;
     // `shared.arenas.iter()`, spelled out with an index: Verus does not
     // specify the iterator.
     let n = shared.arenas.count() as usize;
-    for i in 0..n {
+    for i in 0..n
+        invariant
+            crate::sys::may_syscall(),
+            ord.allows(rank_class(0, 0)),
+            *ord == *old(ord),
+    {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
-            total = fig_add64(total, arena.empty_bytes(Tracked::assume_new()) as u64);
+            total = fig_add64(total, arena.empty_bytes(Tracked(ord)) as u64);
         }
     }
-    fig_add64(total, shared.huge.empty_bytes(Tracked::assume_new()) as u64)
+    fig_add64(total, shared.huge.empty_bytes(Tracked(ord)) as u64)
 }
-
-verus! {
 
 /// Evaluate the table against the cgroup record after a sample. Without a
 /// limit this is a few loads; with one it sums the `Empty` bytes and
 /// publishes the outcome on `shared.policy`, waking a background thread
 /// when the band changed or a full purge is owed.
-#[verifier::external_body]
 pub fn evaluate(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
-        old(ord).allows(crate::lock::rank_class(0, 0)),
+        old(ord).allows(rank_class(0, 0)),
     ensures
         *final(ord) == *old(ord),
 {
@@ -1016,7 +1029,7 @@ pub fn evaluate(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         }
         return;
     }
-    let retention = empty_bytes(shared, Tracked::assume_new());
+    let retention = empty_bytes(shared, Tracked(ord));
     let changed = p.apply(b, limit, retention, cg.rises().0);
     // The purge side's mirror of "under 70% of a known limit", read at
     // each batch flush for the advice (the module doc): the band as just
