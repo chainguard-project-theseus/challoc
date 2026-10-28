@@ -12,6 +12,7 @@ file.
 | `ClassStat...laim_with` | no_decreases | termination | loom/GenMC | trusted |
 | `axiom_f...s_zero` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_d...s_zero` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_f...ab_mem` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_class_lock_inv`
 
@@ -126,5 +127,34 @@ axiom fn axiom_discarded_slots_zero(
     ensures
         z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
         z.len() == n * t.spec_slots().size,
+;
+```
+
+## `axiom_fresh_slab_mem`
+
+src/class/mod.rs:3491. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
+
+```rust
+axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)
+    requires
+        g.table@.inv(),
+        0 <= slab < g.table@.spec_nslabs(),
+        !g.table@.spec_is_guard(slab as usize),
+        held.id() == desc_id(&desc_at(g.table@, slab as usize)),
+        held.state() == state_byte(State::Fresh),
+        g.dperms@.contains_key(slab as nat),
+        g.dperms@[slab as nat] == *held,
+        g.owns(slab as nat),
+        g.st(slab as nat) == State::Fresh,
+        g.committed@.contains(slab as nat),
+    ensures
+        m.covers(
+            process_regions().slot_at(g.table@.spec_class() as int, slab, 0),
+            class_table()[g.table@.spec_class() as int].nslots * class_table()[g.table@.spec_class() as int].size,
+        ),
+        m.provenance() == crate::vspec::addr::cast_provenance(),
 ;
 ```

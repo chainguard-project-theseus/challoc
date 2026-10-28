@@ -5,3 +5,6 @@ axiom_class_lock	allocator invariant	none (assumption)
 # a Purged one's while every discard was MADV_DONTNEED (madvise).
 axiom_fresh_slots_zero	allocator invariant	none (assumption)
 axiom_discarded_slots_zero	allocator invariant	none (assumption)
+# The check_zero debug mode's read of a Fresh slab's slots: a permission to
+# them, lent while its descriptor permission is borrowed under the lock.
+axiom_fresh_slab_mem	allocator invariant	none (assumption)

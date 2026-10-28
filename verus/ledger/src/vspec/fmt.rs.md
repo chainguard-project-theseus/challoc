@@ -11,6 +11,7 @@ file.
 | `fmt::Formatt...>::write_str` | assume_spec | core library | Kani | trusted |
 | `fmt::Formatt...>::write_fmt` | assume_spec | core library | Kani | trusted |
 | `DisplaySpecIm...or sys::Errno` | spec_impl | core library | Kani | trusted |
+| `DebugSpecImpl for slab::State` | spec_impl | core library | Kani | trusted |
 
 ## `ExWrite`
 
@@ -59,6 +60,19 @@ Tool: Kani. Status: trusted.
 ```rust
 impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::Errno {
     closed spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+```
+
+## `DebugSpecImpl for slab::State`
+
+src/vspec/fmt.rs:56. Kind: spec_impl. Category: core library.
+Tool: Kani. Status: trusted.
+
+```rust
+impl vstd::std_specs::fmt::DebugSpecImpl for crate::slab::State {
+    open spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
         true
     }
 }

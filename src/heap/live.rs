@@ -239,8 +239,10 @@ impl Live {
 /// token still in the class bitmap's word invariants (a free slot, maybe
 /// of a slab above the commit watermark) would get a permission to
 /// uncommitted bytes; no caller makes one from such a token (no `PointsToRaw` is
-/// made for the class or huge regions but here; the metadata region's
-/// permissions lie apart from them).
+/// made for the class or huge regions but here and in
+/// `class::axiom_fresh_slab_mem`, the `check_zero` read of a `Fresh` slab,
+/// none of whose slots has a token outside the bitmap; the metadata
+/// region's permissions lie apart from them).
 ///
 /// At most one permission per block at a time, by the discipline of this
 /// module's API, which Verus checks at every caller: the axiom is private,
@@ -251,7 +253,10 @@ impl Live {
 /// through [`Live::take_slot`] and [`Live::into_run`], which drop the
 /// permission. There is one token per block (the class bitmap's and the
 /// huge allocator's authorities), so no second permission can be minted
-/// for bytes whose first is still held.
+/// for bytes whose first is still held. The one permission made elsewhere,
+/// `class::axiom_fresh_slab_mem`'s, covers a `Fresh` slab's slots, which no
+/// claim has taken (their tokens are in the bitmap), so this axiom mints
+/// none for them while it is lent.
 axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
     requires
         crate::heap::regions_ok(),

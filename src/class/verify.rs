@@ -5,12 +5,16 @@
 use super::abort::wrong_arena;
 #[cfg(verus_keep_ghost)]
 use super::slot_loc;
+#[cfg(verus_keep_ghost)]
+use super::table::bits_shape;
 use super::{ClassState, Pick, SlabTable};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
 use crate::purge;
 use crate::slab::{SlabDesc, State};
 use crate::sys;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::addr::cast_provenance;
 use crate::vspec::user::UserMem;
 use vstd::prelude::*;
 
@@ -42,18 +46,24 @@ impl ClassState {
             wrong_arena(p as usize, self.class as usize, arena, self.arena);
         }
     }
+}
 
+verus! {
+
+impl ClassState {
     /// [`check_fresh_slab_is_zero`](ClassState::check_fresh_slab_is_zero)'s
     /// abort, inlined into it.
     #[inline(always)]
-    fn fresh_slab_dirty(
-        &self,
-        slab: usize,
-        slot: usize,
-        p: *mut u8,
-        word: u64,
-        bm: &crate::bitmap::AtomicBitmap<'_>,
-    ) -> ! {
+    fn fresh_slab_dirty(&self, slab: usize, slot: usize, p: *mut u8, word: u64, bm: &crate::bitmap::AtomicBitmap<'_>) -> !
+        requires
+            crate::sys::may_abort(),
+            bits_shape(*bm, class_table()[self.spec_class() as int].slab_bits as usize),
+    {
+        proof {
+            use_type_invariant(self);
+            broadcast use crate::vspec::class::axiom_class_table_wf;
+            assert(class_table()[self.spec_class() as int].wf());
+        }
         let cls = self.class();
         sys::abort_fmt(format_args!(
             "check_zero: class {} slab {slab} (arena {}) is Fresh before its first claim but slot {slot} at {:#x} reads {word:#x} ({} of {} bits set, watermark {}, descriptor at {:#x})",
@@ -64,12 +74,15 @@ impl ClassState {
             cls.nslots(),
             self.table().committed_slabs(),
             desc_ptr_addr(self.desc(slab))
-        ))
+        ));
     }
 
     /// [`check_shadow`](ClassState::check_shadow)'s abort, inlined into it.
     #[inline(always)]
-    fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> ! {
+    fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> !
+        requires
+            crate::sys::may_abort_pending(),
+    {
         sys::abort_pending(format_args!(
             "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
             self.class,
@@ -88,6 +101,19 @@ impl ClassState {
 /// and has nothing for `Option`).
 struct Says(Option<State>);
 
+// `Says`'s `Debug` (below) writes under any formatter
+// (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DebugSpecImpl for Says {
+    open spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
+// The derived `Debug` of `Option<State>` under `{:?}`, the only way
+// challoc formats `Says`, as a `match`: Verus has no specification of
+// `Option`'s `Debug`. Under `{:#?}` the derived one would split the
+// `Some` over lines; nothing formats `Says` that way.
 impl core::fmt::Debug for Says {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.0 {
@@ -96,12 +122,10 @@ impl core::fmt::Debug for Says {
                 f.write_str("Some(")?;
                 core::fmt::Debug::fmt(&s, f)?;
                 f.write_str(")")
-            }
+            },
         }
     }
 }
-
-verus! {
 
 /// The address of `d`, for an abort message; nothing is claimed about it.
 #[inline(always)]
@@ -186,10 +210,8 @@ proof fn lemma_slot_size(c: int)
 verus! {
 
 /// `check_zero` invariant: a slab with live slots was `Fresh` at selection.
-/// Trusted (`external_body`): Verus does not model the formatted message.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 pub(super) fn fresh_with_live(
     class: usize,
     slab: usize,
@@ -231,8 +253,6 @@ pub(super) fn release_into_fresh(
     ))
 }
 
-} // verus!
-
 /// The `check_zero` abort: a slot handed out as zero has a dirty word.
 #[cold]
 #[inline(never)]
@@ -246,7 +266,10 @@ fn dirty_zero_slot(
     off: usize,
     word: u64,
     now: (State, usize, u16, usize, usize, usize),
-) -> ! {
+) -> !
+    requires
+        crate::sys::may_abort(),
+{
     let advice = purge::advice_name();
     let (state, live, owner, set, nslots, _) = now;
     sys::abort_fmt(format_args!(
@@ -254,8 +277,6 @@ fn dirty_zero_slot(
         pick.slab, pick.state, now.5, pick.n
     ))
 }
-
-verus! {
 
 impl ClassState {
     /// The `check_zero` debug mode: the first and
@@ -368,12 +389,8 @@ impl ClassState {
     }
 
     /// [`check_zero`](ClassState::check_zero)'s abort, inlined into it:
-    /// gathers the slab's state for [`dirty_zero_slot`]. Trusted
-    /// (`external_body`): it calls code outside `verus!` (the formatted
-    /// abort `dirty_zero_slot`, and the descriptor and bitmap reads for its
-    /// message).
+    /// gathers the slab's state for [`dirty_zero_slot`].
     #[inline(always)]
-    #[verifier::external_body]
     fn dirty_word(&self, pick: &Pick, size: usize, p: *mut u8, off: usize, word: u64) -> !
         requires
             crate::sys::may_abort(),
@@ -402,23 +419,66 @@ impl ClassState {
 
     /// `check_zero`: the first word of every slot of a `Fresh` slab must
     /// read zero before its first claim; a dirty one means the memory was
-    /// written before this table ever handed the slab out. A temporary
-    /// seam (`external_body`, body unchanged): it reads slots no claim has
-    /// taken, whose tokens are in the class bitmap's word invariants, so it
-    /// needs a permission to the slab's slots lent under the class lock.
+    /// written before this table ever handed the slab out. The reads go
+    /// through `m`, the permission to the slab's slots that `take` lends
+    /// under the class lock (`axiom_fresh_slab_mem`).
     #[cold]
     #[inline(never)]
-    #[verifier::external_body]
-    pub(super) fn check_fresh_slab_is_zero(&self, slab: usize)
+    pub(super) fn check_fresh_slab_is_zero(&self, slab: usize, Tracked(m): Tracked<&UserMem>)
         requires
             crate::sys::may_abort(),
+            crate::vspec::user::may_read_user(),
+            slab < self.spec_nslabs(),
+            !self.spec_table().spec_is_guard(slab),
+            m.covers(
+                process_regions().slot_at(self.spec_class() as int, slab as int, 0),
+                class_table()[self.spec_class() as int].nslots * class_table()[self.spec_class() as int].size,
+            ),
+            m.provenance() == cast_provenance(),
     {
+        proof {
+            use_type_invariant(self);
+            self.spec_table().lemma_region();
+            self.spec_table().lemma_regions_ok();
+            self.spec_table().lemma_guard_slab(slab as int);
+            lemma_slot_size(self.spec_class() as int);
+        }
         let cls = self.class();
         let bm = self.table().bits(slab);
-        for slot in 0..cls.nslots() {
+        for slot in 0..cls.nslots()
+            invariant
+                crate::sys::may_abort(),
+                crate::vspec::user::may_read_user(),
+                crate::heap::regions_ok(),
+                slab < self.spec_nslabs(),
+                *cls == class_table()[self.spec_class() as int],
+                cls.wf(),
+                bits_shape(bm, class_table()[self.spec_class() as int].slab_bits as usize),
+                self.spec_class() < NCLASSES,
+                !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+                crate::layout::base_aligned(process_regions().class_base[self.spec_class() as int] as int, self.spec_class() as int, process_regions().lg_page),
+                self.spec_nslabs() as int == process_regions().spec_nslabs(self.spec_class() as int),
+                class_table()[self.spec_class() as int].size >= 8,
+                m.covers(
+                    process_regions().slot_at(self.spec_class() as int, slab as int, 0),
+                    class_table()[self.spec_class() as int].nslots * class_table()[self.spec_class() as int].size,
+                ),
+                m.provenance() == cast_provenance(),
+        {
             let p = self.slot_ptr(slab, slot);
-            // SAFETY: a slot of a committed slab; the class lock is held.
-            let word = unsafe { read_word(p, 0, Ghost::assume_new(), Tracked::assume_new()) };
+            proof {
+                let c = self.spec_class() as int;
+                process_regions().lemma_is_slot(c, slab as int, slot as int, p@.addr);
+                lemma_slot_word(c, p);
+                // The slot's first word is inside the slab's slots.
+                let (b, sz, n, s) = (process_regions().slot_at(c, slab as int, 0), cls.size as int, cls.nslots as int, slot as int);
+                assert(p@.addr as int == b + s * sz);
+                assert(s * sz + 8 <= n * sz) by (nonlinear_arith)
+                    requires s < n, sz >= 8;
+            }
+            // SAFETY: a slot of a committed slab; the class lock is held,
+            // and `m` covers the slab's slots.
+            let word = unsafe { read_word(p, 0, Ghost(self.spec_class() as int), Tracked(m)) };
             if word != 0 {
                 self.fresh_slab_dirty(slab, slot, p, word, &bm);
             }
@@ -426,12 +486,9 @@ impl ClassState {
     }
 
     /// `check_zero`: abort when `slab`'s state byte disagrees with its
-    /// shadow, i.e. something outside `SlabDesc` wrote the descriptor. A
-    /// temporary seam (`external_body`, body unchanged): its abort
-    /// (`shadow_written`) is not specified yet.
+    /// shadow, i.e. something outside `SlabDesc` wrote the descriptor.
     #[cold]
     #[inline(never)]
-    #[verifier::external_body]
     pub(super) fn check_shadow(&self, slab: usize, at: &str)
         requires
             crate::sys::may_abort_pending(),

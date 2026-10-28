@@ -1,8 +1,0 @@
-# Temporary seams: check_fresh_slab_is_zero reads unclaimed slots (it needs
-# a permission to a Fresh slab's slots), and check_shadow's abort is not
-# specified yet.
-ClassState::check_fresh_slab_is_zero	panic/abort	Verus
-ClassState::check_shadow	panic/abort	Verus
-# Trusted aborts: they call code outside verus! (formatted messages).
-ClassState::dirty_word	panic/abort	Verus
-fresh_with_live	panic/abort	Verus

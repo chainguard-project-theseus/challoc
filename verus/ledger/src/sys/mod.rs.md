@@ -19,7 +19,7 @@ file.
 
 ## `axiom_getrandom_count`
 
-src/sys/mod.rs:766. Kind: axiom. Category: platform/kernel fact.
+src/sys/mod.rs:767. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`getrandom(2)`, Linux's `drivers/char/random.c`): a `getrandom` that does not fail returns the number of bytes it stored, at most `buflen`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
@@ -35,7 +35,7 @@ pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: u
 
 ## `getrandom_exact`
 
-src/sys/mod.rs:804. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:805. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Fill `buf` completely from `getrandom`, retrying short reads and `EINTR`.
@@ -48,7 +48,7 @@ pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
 
 ## `axiom_read_count`
 
-src/sys/mod.rs:974. Kind: axiom. Category: platform/kernel fact.
+src/sys/mod.rs:975. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`read(2)`, Linux's `fs/read_write.c`): a `read` that does not fail returns the number of bytes it stored, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result or a driver returns more than it was asked for (the VFS does not clamp it), all assumed absent.
@@ -64,7 +64,7 @@ pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: 
 
 ## `read_full`
 
-src/sys/mod.rs:1009. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:1010. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Read as much of `buf` as the file yields, retrying `EINTR`.
@@ -80,7 +80,7 @@ pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
 
 ## `axiom_write_count`
 
-src/sys/mod.rs:1057. Kind: axiom. Category: platform/kernel fact.
+src/sys/mod.rs:1058. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`write(2)`, Linux's `fs/read_write.c`): a `write` that does not fail returns the number of bytes it took, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
@@ -96,7 +96,7 @@ pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r:
 
 ## `write_all`
 
-src/sys/mod.rs:1092. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:1093. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Write all of `buf`, retrying short writes and `EINTR`.
@@ -109,7 +109,7 @@ pub fn write_all(fd: i32, buf: &[u8])
 
 ## `sigprocmask_block`
 
-src/sys/mod.rs:1382. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1383. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the syscall's word.
@@ -130,7 +130,7 @@ unsafe fn sigprocmask_block(
 
 ## `sigprocmask_setmask`
 
-src/sys/mod.rs:1415. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1416. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the syscall's word.
@@ -145,7 +145,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 
 ## `trap`
 
-src/sys/mod.rs:1463. Kind: external_body. Category: inline asm.
+src/sys/mod.rs:1464. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
