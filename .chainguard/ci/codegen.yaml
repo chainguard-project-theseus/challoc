@@ -1,0 +1,41 @@
+# The codegen checks: scripts/codegen-diff.sh between the pull request's
+# base and its head (ci/codegen.sh), on x86_64 and aarch64, both quantum
+# builds. A proof-only change shows `changed 0`; an exec change lists the
+# functions whose machine code changed, which the review reads against the
+# hot set. Advisory: exec changes are expected to change some functions.
+version: 1
+
+environment:
+  packages:
+    # Keep in step with lint.yaml (Dockerfile.dev's stream).
+    - rust-1.98
+    - build-base       # cc and g++ for build.rs
+    - binutils         # objdump, objcopy, readelf
+    - python-3.13      # scripts/codegen-fncmp.py
+    - git
+    - busybox
+
+checks:
+  codegen:
+    advisory: true
+    description: >-
+      scripts/codegen-diff.sh from the pull request's base to its head on
+      x86_64: .text hash and exact, reloc-only and changed functions for
+      the quantum-16 and quantum-8 builds.
+    trigger: [presubmit]
+    resources: medium-amd64
+    timeout: 30m
+    network: &crates
+      egress: [index.crates.io, static.crates.io]
+    cmd: [sh, ci/codegen.sh]
+
+  codegen-arm64:
+    advisory: true
+    description: >-
+      scripts/codegen-diff.sh from the pull request's base to its head on
+      aarch64, natively, for both quantum builds.
+    trigger: [presubmit]
+    resources: medium-arm64
+    timeout: 30m
+    network: *crates
+    cmd: [sh, ci/codegen.sh]

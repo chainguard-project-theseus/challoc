@@ -24,7 +24,8 @@ checks:
     description: >-
       make verus: the seam ledger check (verus/ledger/), cargo verus
       verify over challoc, then verus/count's tests and its coverage floor
-      (verus/FLOOR, against the pull request's base).
+      (verus/FLOOR, against the pull request's base); then cargo verus
+      verify of the quantum-8 build.
     trigger: [presubmit]
     resources: large-amd64
     timeout: 45m
@@ -43,12 +44,18 @@ checks:
           # (CHAINGUARD_BASE_REVISION, a reserved variable); a run without
           # one fails rather than skip the comparison.
           - make verus VERUS_BASE="${CHAINGUARD_BASE_REVISION:?no base revision to compare verus/FLOOR with}"
+      - &verus-q8
+        name: proofs at quantum 8
+        # The quantum-8 build (`--features quantum8`) has its own class
+        # table, so its proofs are checked too.
+        cmd: [cargo, verus, verify, --locked, --no-default-features, --features, quantum8]
 
   # The same on aarch64: the package's arm64 build, run natively.
   verus-arm64:
     description: >-
       make verus on aarch64, natively: the seam ledger check, cargo verus
-      verify over the aarch64 build of challoc, and the coverage floor.
+      verify over the aarch64 build of challoc, and the coverage floor;
+      then the quantum-8 build.
     trigger: [presubmit]
     resources: large-arm64
     timeout: 45m
@@ -56,13 +63,16 @@ checks:
     steps:
       - *counter-tests
       - *verus-step
+      - *verus-q8
 
   # On main, squash-merged, the commit before the one under test is the
   # base; verus/count fails when it does not resolve.
   verus-main:
     description: >-
       make verus on main: the seam ledger check, the proofs and the coverage
-      floor, against the commit before this one.
+      floor, against the commit before this one; then the quantum-8
+      build, so two pull requests that each pass alone cannot break the
+      quantum-8 proofs on main unseen.
     trigger: [postsubmit]
     resources: large-amd64
     timeout: 45m
@@ -71,3 +81,4 @@ checks:
       - *counter-tests
       - name: seam ledger, proofs and coverage floor
         cmd: [make, verus, VERUS_BASE=HEAD^]
+      - *verus-q8
