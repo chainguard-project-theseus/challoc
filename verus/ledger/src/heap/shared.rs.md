@@ -12,7 +12,6 @@ file.
 | `ClassLine` | ext_type_spec | allocator invariant | Verus | trusted |
 | `ThreadKey` | ext_type_spec | allocator invariant | Verus | trusted |
 | `Tcaches` | ext_type_spec | allocator invariant | Verus | trusted |
-| `policy::Policy` | ext_type_spec | allocator invariant | Verus | trusted |
 
 ## `Shared::lemma_wf`
 
@@ -72,13 +71,4 @@ Tool: Verus. Status: trusted.
 
 ```rust
 pub struct ExTcaches(Tcaches);
-```
-
-## `crate::policy::Policy`
-
-src/heap/shared.rs:225. Kind: ext_type_spec. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-pub struct ExPolicy(crate::policy::Policy);
 ```
