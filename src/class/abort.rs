@@ -1,5 +1,6 @@
 //! The heap-inconsistency aborts of the class protocol: `#[cold]`,
-//! never inlined, so the fast paths keep only a call.
+//! never inlined, so the fast paths keep only a call (but for
+//! `live_above_slots`, inlined into the refill path).
 
 use super::MAX_EMPTY_PASSES;
 use crate::slab::State;
@@ -142,6 +143,17 @@ pub(super) fn slab_count_underflow(which: &str) -> !
         crate::sys::may_abort(),
 {
     sys::abort_fmt(format_args!("class: {which} slab count underflow"))
+}
+
+/// `take`: a slab's `live` count is above its slot count, which would
+/// reserve a wrapped count. Unlike the others inlined, so `take` keeps
+/// the shape of an in-place check.
+#[inline(always)]
+pub(super) fn live_above_slots() -> !
+    requires
+        crate::sys::may_abort(),
+{
+    sys::abort_fmt(format_args!("class: slab live count above its slot count"))
 }
 
 } // verus!

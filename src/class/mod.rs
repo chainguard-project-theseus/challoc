@@ -66,8 +66,9 @@
 //! lock), so a concurrent release either is visible to that check or sets
 //! the bit afterwards.
 
+use crate::arena::Published;
 #[cfg(verus_keep_ghost)]
-use crate::arena::{Published, process_pub_loc};
+use crate::arena::process_pub_loc;
 use crate::layout::{CLASSES, Class, MAX_SLAB_WORDS, Regions};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
@@ -81,7 +82,7 @@ use crate::slab::{DescPerm, SlabDesc, State};
 use crate::slab::{desc_id, state_byte};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::addr::cast_provenance;
-use crate::vspec::zero::ZeroRaw;
+use crate::vspec::zero::{ZeroRaw, Zeroed};
 use core::sync::atomic::{AtomicU64, Ordering};
 // The whole prelude only under Verus, which builds no tests: in a test
 // build it would reach `tests.rs` through `use super::*`.
@@ -89,9 +90,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Map, Tracked, int, nat, verus};
 use vstd::raw_ptr::PointsTo;
-#[cfg(verus_keep_ghost)]
 use vstd::resource::Loc;
-use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth};
+use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSingleton, GhostSubset};
 
 mod abort;
 mod decay;
@@ -103,8 +103,8 @@ mod tests;
 mod verify;
 
 use abort::{
-    double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet,
-    wrong_arena, zero_slab_had_bits_set,
+    double_free, guard_free, live_above_slots, owner_mismatch, release_into_fresh_slab,
+    reservation_unmet, wrong_arena, zero_slab_had_bits_set,
 };
 #[cfg(test)]
 pub use sets::SET_GROUPS;
@@ -164,8 +164,35 @@ pub(crate) fn xorshift(state: &mut u64) -> u64 {
     x
 }
 
-/// Fisher-Yates shuffle of `out` with [`xorshift`].
+/// Fisher-Yates shuffle of `out` with [`xorshift`] ([`shuffle_zero`] with
+/// no tokens to carry).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64) {
+    shuffle_zero(
+        out,
+        rng,
+        Ghost::assume_new(),
+        Ghost::assume_new(),
+        Tracked::assume_new(),
+        Ghost::assume_new(),
+        Tracked::assume_new(),
+    );
+}
+
+/// Fisher-Yates shuffle of `out` with [`xorshift`], carrying with each
+/// slot its zero token (`z`, when `zeroed`, each `size` bytes) and its
+/// slot token (`t`, keyed by index, at location `loc`).
+// The extra arguments are ghost and tracked state.
+#[allow(unused_variables)]
+pub(crate) fn shuffle_zero(
+    out: &mut [*mut u8],
+    rng: &mut u64,
+    zeroed: Ghost<bool>,
+    size: Ghost<int>,
+    z: Tracked<&mut Map<int, Zeroed>>,
+    loc: Ghost<Option<Loc>>,
+    t: Tracked<&mut Map<int, GhostSingleton<int>>>,
+) {
     for i in (1..out.len()).rev() {
         let j = (xorshift(rng) % (i as u64 + 1)) as usize;
         out.swap(i, j);
@@ -184,6 +211,20 @@ pub struct Claim {
     /// its memory reads as zero.
     pub zeroed: bool,
 }
+
+verus! {
+
+/// Ghost: the slot tokens of a batch of claimed slot pointers, by key
+/// (the pointer's index, from a base): the class bitmap bit behind each
+/// pointer (`bits`), and each pointer's token (`toks`, one address each).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct SlotToks {
+    pub ghost bits: Map<int, int>,
+    pub tracked toks: Map<int, GhostSingleton<int>>,
+}
+
+} // verus!
 
 verus! {
 
@@ -1791,7 +1832,33 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
-        self.claim_with(meta, out, None)
+        self.claim_tokens(
+            meta,
+            out,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .0
+    }
+
+    /// [`claim`], with the claimed slots' tokens (`toks`, keyed by index
+    /// into `out`) and the zero tokens of the slots it wrote. `pubw` is the
+    /// registry's record of this state's arena and `ord` the caller's
+    /// lock-order token.
+    ///
+    /// [`claim`]: ClassState::claim
+    // `toks`, `pubw` and `ord` are ghost and tracked state.
+    #[allow(unused_variables)]
+    pub fn claim_tokens(
+        &self,
+        meta: &Meta,
+        out: &mut [*mut u8],
+        toks: Tracked<&mut SlotToks>,
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> (Claim, Tracked<Map<int, Zeroed>>) {
+        self.claim_with(meta, out, None, toks, Tracked::assume_new(), pubw, ord)
     }
 
     /// [`claim`] for `slot_randomize` (design section 4): the same slabs
@@ -1807,12 +1874,66 @@ impl ClassState {
     ///
     /// [`claim`]: ClassState::claim
     pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> Claim {
-        let c = self.claim_with(meta, out, Some(rng));
-        shuffle(&mut out[..c.n], rng);
-        c
+        self.claim_random_zero(
+            meta,
+            out,
+            rng,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .0
     }
 
-    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>) -> Claim {
+    /// [`claim_random`] with the zero tokens of the slots it wrote and
+    /// their slot tokens, as for [`claim_tokens`], both shuffled along with
+    /// the slots.
+    ///
+    /// [`claim_random`]: ClassState::claim_random
+    /// [`claim_tokens`]: ClassState::claim_tokens
+    // `toks`, `pubw` and `ord` are ghost and tracked state.
+    #[allow(unused_variables)]
+    pub fn claim_random_zero(
+        &self,
+        meta: &Meta,
+        out: &mut [*mut u8],
+        rng: &mut u64,
+        toks: Tracked<&mut SlotToks>,
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> (Claim, Tracked<Map<int, Zeroed>>) {
+        let (c, z) = self.claim_with(meta, out, Some(rng), toks, Tracked::assume_new(), pubw, ord);
+        shuffle_zero(
+            &mut out[..c.n],
+            rng,
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+        );
+        (c, z)
+    }
+
+    /// The loop of [`claim`] and [`claim_random`], with the claimed slots'
+    /// tokens (`toks`) and, for an empty claim, the lock value of the hold
+    /// that ran dry (`ex`); it returns the zero tokens of the slots it
+    /// wrote with the claim.
+    ///
+    /// [`claim`]: ClassState::claim
+    /// [`claim_random`]: ClassState::claim_random
+    // `toks`, `ex`, `pubw` and `ord` are ghost and tracked state.
+    #[allow(clippy::too_many_arguments, unused_variables)]
+    fn claim_with(
+        &self,
+        meta: &Meta,
+        out: &mut [*mut u8],
+        mut rng: Option<&mut u64>,
+        toks: Tracked<&mut SlotToks>,
+        ex: Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> (Claim, Tracked<Map<int, Zeroed>>) {
         let mut got = 0;
         let mut zeroed = true;
         let mut picks = [Pick {
@@ -1822,7 +1943,17 @@ impl ClassState {
             state: State::Active,
         }; MAX_PICKS];
         while got < out.len() {
-            let np = self.plan(meta, out.len() - got, &mut picks);
+            let np = self.plan(
+                meta,
+                out.len() - got,
+                &mut picks,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             if np == 0 {
                 break;
             }
@@ -1831,12 +1962,21 @@ impl ClassState {
                 &mut out[got..],
                 &mut zeroed,
                 rng.as_deref_mut(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Ghost::assume_new(),
             );
         }
-        Claim {
-            n: got,
-            zeroed: got > 0 && zeroed,
-        }
+        (
+            Claim {
+                n: got,
+                zeroed: got > 0 && zeroed,
+            },
+            Tracked::assume_new(),
+        )
     }
 
     /// The unlocked half of a refill: write the slots of `picks` (one
@@ -1855,16 +1995,28 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     /// [`take`]: ClassState::take
-    // The loop is the spelled-out `for` (see the comment in the body).
-    #[allow(clippy::while_let_loop)]
+    // The loop is the spelled-out `for` (see the comment in the body);
+    // the extra arguments are ghost and tracked state: each pick's slot
+    // tokens (`ptoks`), zero token (`pz`) and markers (`pm`), and the
+    // claimed slots' tokens (`otoks`) and zero tokens (`zt`), keyed from
+    // `base`.
+    #[allow(clippy::while_let_loop, clippy::too_many_arguments, unused_variables)]
     fn finish(
         &self,
         picks: &[Pick],
         out: &mut [*mut u8],
         zeroed: &mut bool,
         mut rng: Option<&mut u64>,
+        ptoks: Tracked<Map<int, GhostSubset<int>>>,
+        pz: Tracked<Map<int, Zeroed>>,
+        pm: Tracked<Map<int, GhostPersistentSubset<int>>>,
+        otoks: Tracked<&mut SlotToks>,
+        zt: Tracked<&mut Map<int, Zeroed>>,
+        base: Ghost<int>,
     ) -> usize {
         let cls = self.class();
+        // The table, named for the proof's facts about it.
+        let _t0 = self.table();
         let check_zero = purge::check_zero();
         let mut got = 0;
         // `for pick in picks`, spelled out: Verus rejects `continue` in a
@@ -1884,7 +2036,12 @@ impl ClassState {
                     out[got + k] = self.slot_ptr(slab, k);
                 }
                 if check_zero {
-                    self.check_zero(&out[got..got + want], pick);
+                    self.check_zero(
+                        &out[got..got + want],
+                        pick,
+                        Tracked::assume_new(),
+                        Ghost::assume_new(),
+                    );
                 }
                 got += want;
                 continue;
@@ -1952,7 +2109,26 @@ impl ClassState {
     /// every slot is reserved here leaves the partial set at once: nothing
     /// in it can be released before this claim hands slots out, so no
     /// release can race the clear.
-    fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
+    ///
+    /// `ptoks`, `pz` and `pm` get each pick's slot tokens, zero token and
+    /// markers under the pick's index; no picks for a non-zero `want`
+    /// leaves in `ex` the lock value of the hold and the `live` loads of
+    /// its partial slabs. `pubw` is the registry's record of this state's
+    /// arena and `ord` the caller's lock-order token.
+    // The last six arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments, unused_variables)]
+    fn plan(
+        &self,
+        meta: &Meta,
+        want: usize,
+        picks: &mut [Pick; MAX_PICKS],
+        ptoks: Tracked<&mut Map<int, GhostSubset<int>>>,
+        pz: Tracked<&mut Map<int, Zeroed>>,
+        pm: Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
+        ex: Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> usize {
         let cls = self.class();
         let mut g = self
             .inner
@@ -1970,7 +2146,16 @@ impl ClassState {
                     g.clear_partial(s);
                 }
             } else {
-                self.take(&mut g, s, &mut remaining, picks, &mut np);
+                self.take(
+                    &mut g,
+                    s,
+                    &mut remaining,
+                    picks,
+                    &mut np,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
             }
             next = g.partial.map.lowest_set_from(s + 1);
         }
@@ -1980,7 +2165,16 @@ impl ClassState {
                 Some(s) => s,
                 None => break,
             };
-            self.take(&mut g, s, &mut remaining, picks, &mut np);
+            self.take(
+                &mut g,
+                s,
+                &mut remaining,
+                picks,
+                &mut np,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         np
     }
@@ -1989,6 +2183,12 @@ impl ClassState {
     /// lock, fix up its state and partial bit, and record the pick.
     /// Modelled at `model::Model::take`, inside the locked step
     /// `protocol::Refill::PlanLocked` of `model::Model::step_refill`.
+    ///
+    /// The pick's slot tokens, zero token and markers go into `ptoks`, `pz`
+    /// and `pm` under the pick's index.
+    // The negated test is the form the proof states; the last three
+    // arguments are ghost and tracked state.
+    #[allow(clippy::nonminimal_bool, clippy::too_many_arguments, unused_variables)]
     fn take(
         &self,
         g: &mut Inner,
@@ -1996,16 +2196,18 @@ impl ClassState {
         remaining: &mut usize,
         picks: &mut [Pick; MAX_PICKS],
         np: &mut usize,
+        ptoks: Tracked<&mut Map<int, GhostSubset<int>>>,
+        pz: Tracked<&mut Map<int, Zeroed>>,
+        pm: Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
     ) {
         let desc = self.desc(slab);
         let live = desc.live();
         self.take_checks(g, desc, slab, live);
         // `live > nslots` would reserve a wrapped count (the release
         // profile does not check overflow; the dev profile does).
-        assert!(
-            live <= self.class().nslots(),
-            "class: slab live count above its slot count"
-        );
+        if !(live <= self.class().nslots()) {
+            live_above_slots();
+        }
         let avail = self.class().nslots() - live;
         let n = avail.min(*remaining);
         let state = self.state_locked(g, desc, slab);
@@ -2040,10 +2242,25 @@ impl ClassState {
             g.set_partial(slab);
         }
         // `Purged` memory is zero only while every discard so far was
-        // `MADV_DONTNEED` (`purge::purged_is_zero`).
-        let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());
+        // `MADV_DONTNEED` (`purge::purged_is_zero`); the read comes with its
+        // witness, which the zero claim of a `Purged` slab uses up.
+        let (purged_zero, _purged_witness) = if state == State::Purged {
+            purge::purged_zero()
+        } else {
+            (true, Tracked::assume_new())
+        };
+        let zero = state.is_zero() && purged_zero;
+        // The table, named for the proof's facts about it.
+        let _t = self.table();
         if zero {
-            self.claim_prefix(slab, n, state, live);
+            self.claim_prefix(
+                slab,
+                n,
+                state,
+                live,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         picks[*np] = Pick {
             slab: slab as u32,
@@ -2090,7 +2307,18 @@ impl ClassState {
     /// bits `0..n` means `live` no longer bounds the set bits: abort.
     ///
     /// [`finish`]: ClassState::finish
-    fn claim_prefix(&self, slab: usize, n: usize, state: State, live: usize) {
+    // `toks` gets the claimed slots' tokens; `inited` is the slab's
+    // markers (ghost and tracked state).
+    #[allow(unused_variables)]
+    fn claim_prefix(
+        &self,
+        slab: usize,
+        n: usize,
+        state: State,
+        live: usize,
+        toks: Tracked<&mut GhostSubset<int>>,
+        inited: Tracked<&GhostPersistentSubset<int>>,
+    ) {
         let bm = self.table().bits(slab);
         let mut k = 0;
         let mut w = 0;
