@@ -7,12 +7,26 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `lend` | external_body | C-program contract | none (assumption) | trusted |
 | `set_errno` | external_body | FFI/syscall | none (assumption) | trusted |
 | `get_errno` | external_body | FFI/syscall | none (assumption) | trusted |
 
+## `lend`
+
+src/vspec/errno.rs:41. Kind: external_body. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: lends the calling thread's `errno` to one call into challoc, with its value unknown.
+
+Body mints Tracked at line 42.
+
+```rust
+pub fn lend() -> (e: Tracked<ThreadErrno>)
+```
+
 ## `set_errno`
 
-src/vspec/errno.rs:36. Kind: external_body. Category: FFI/syscall.
+src/vspec/errno.rs:49. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: writes `e` to the calling thread's `errno` through libc's pointer.
@@ -25,7 +39,7 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
 
 ## `get_errno`
 
-src/vspec/errno.rs:50. Kind: external_body. Category: FFI/syscall.
+src/vspec/errno.rs:63. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: reads the calling thread's `errno` through libc's pointer.

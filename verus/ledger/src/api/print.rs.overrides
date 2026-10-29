@@ -1,0 +1,12 @@
+# The report's permit: its C caller holds no allocator lock, and `shared`
+# releases every lock it takes before it returns.
+Unlocked	C-program contract	none (assumption)
+axiom_unlocked	C-program contract	none (assumption)
+# `CStr::to_str` on the static ASCII names of `config`.
+word	core library	Kani
+# The C caller passed `opts` under the entry point's contract.
+axiom_c_call	C-program contract	none (assumption)
+# Opaque wrapper of the caller's callback, a function pointer.
+WriteCallback	function pointer	Kani
+# `{:?}` of an array, core formatting.
+hist_line	core library	Kani

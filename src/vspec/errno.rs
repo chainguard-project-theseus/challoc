@@ -29,6 +29,19 @@ impl ThreadErrno {
     }
 }
 
+/// Trusted: lends the calling thread's `errno` to one call into challoc,
+/// with its value unknown. Called only by the export wrappers, once each,
+/// before the call that may write it. A nested call (an allocation from
+/// libc during the outer one) gets its own token from its own wrapper;
+/// an outer claim is about challoc's last write at the outer return. No
+/// code: the token is ghost.
+#[verifier::external_body]
+#[inline(always)]
+#[cfg_attr(test, allow(dead_code))]
+pub fn lend() -> (e: Tracked<ThreadErrno>) {
+    Tracked::assume_new()
+}
+
 /// Trusted: writes `e` to the calling thread's `errno` through libc's
 /// pointer.
 #[verifier::external_body]

@@ -106,15 +106,18 @@ pub enum PercpuArena {
     Phycpu,
 }
 
-} // verus!
-
-/// The names [`Thp::name`] gives, in variant order: one constant the
-/// verifier can take on trust (it takes no `CStr` literal).
-const THP_NAMES: [&CStr; 3] = [c"never", c"auto", c"always"];
+/// The names [`Thp::name`] gives, in variant order. Outside the
+/// verifier's view (Verus takes no `CStr` literal); nothing is claimed
+/// about them.
+#[allow(clippy::redundant_static_lifetimes)]
+#[verifier::external_body]
+const THP_NAMES: [&'static CStr; 3] = [c"never", c"auto", c"always"];
 
 /// The names [`PercpuArena::name`] gives, in variant order, as
 /// [`THP_NAMES`].
-const PERCPU_ARENA_NAMES: [&CStr; 3] = [c"disabled", c"percpu", c"phycpu"];
+#[allow(clippy::redundant_static_lifetimes)]
+#[verifier::external_body]
+const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu"];
 
 impl Thp {
     pub const fn name(self) -> &'static CStr {
@@ -135,8 +138,6 @@ impl PercpuArena {
         }
     }
 }
-
-verus! {
 
 /// Every tunable of design section 12; [`Config::DEFAULT`] holds the
 /// compiled defaults. `docs/tuning.md` section 2 documents each key: its
@@ -407,9 +408,9 @@ impl Config {
 
     /// The value of a key by name, for `mallctl("opt.<key>")`: the
     /// [`TABLE`] entry's reader. `None` for keys that are only accepted
-    /// and ignored, for inert keys and for unknown keys. Outside the
-    /// verifier's view: the table holds function pointers.
-    #[verifier::external]
+    /// and ignored, for inert keys and for unknown keys. Trusted: the
+    /// table holds function pointers; nothing is claimed about the value.
+    #[verifier::external_body]
     pub fn get(&self, key: &[u8]) -> Option<Value> {
         Key::find(key).map(|k| (k.read.0)(self))
     }
@@ -857,12 +858,18 @@ const fn names() -> [&'static str; TABLE.len()] {
 
 const NAMES: [&str; TABLE.len()] = names();
 
+verus! {
+
 /// Every key readable through [`Config::get`], in table order, for the
 /// `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at
 /// compile time, by position) and the tests: the names of [`TABLE`].
-pub const KEYS: &[&str] = &NAMES;
-
-verus! {
+/// Trusted only as a value of its type: `NAMES` is built from `TABLE`,
+/// which holds function pointers; nothing is claimed about the names.
+// The lifetimes are spelled out: `verus!` builds an `exec const` as a
+// function in the verifier's view, where `&[&str]` would have none.
+#[allow(clippy::redundant_static_lifetimes)]
+#[verifier::external_body]
+pub exec const KEYS: &'static [&'static str] = &NAMES;
 
 /// jemalloc keys that are accepted and ignored.
 #[allow(clippy::redundant_static_lifetimes)]
@@ -947,8 +954,6 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> (r: u32)
     if cap < MIN_CAP { MIN_CAP } else { cap }
 }
 
-} // verus!
-
 /// A readable configuration value (`mallctl` `opt.*`, the report's
 /// `opt.` lines). The variant is the key's C type in `mallctl`,
 /// jemalloc's for the keys jemalloc has: `Int` is `ssize_t` (the decay
@@ -964,8 +969,6 @@ pub enum Value {
     Size(usize),
     Str(&'static CStr),
 }
-
-verus! {
 
 /// One problem found while parsing; the offending bytes borrow the input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

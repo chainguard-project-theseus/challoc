@@ -1,3 +1,6 @@
 # The address of a static whose initialiser lies outside verus!; it
 # claims only that every call returns the same nodes.
 root	allocator invariant	Verus
+# `VERSION_STR`, whose definition lies outside verus!; it claims only that
+# the value is a `&'static str`.
+VERSION	core library	none (assumption)

@@ -7,10 +7,14 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `THP_NAMES` | external_body const | core library | none (assumption) | trusted |
+| `PERCPU_..._NAMES` | external_body const | core library | none (assumption) | trusted |
 | `Config::set_listed` | external_body | function pointer | Kani | trusted |
+| `Config::get` | external_body | function pointer | Kani | trusted |
 | `Parse` | ext_type_spec | function pointer | Kani | trusted |
 | `Read` | ext_type_spec | function pointer | Kani | trusted |
 | `TABLE` | external_body const | function pointer | Kani | trusted |
+| `KEYS` | external_body const | function pointer | Kani | trusted |
 | `parse_from` | external_body | function pointer | Kani | trusted |
 | `read_slot` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
@@ -19,9 +23,31 @@ file.
 | `bytes_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `env_var` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 
+## `THP_NAMES`
+
+src/config.rs:114. Kind: external_body const. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> The names [`Thp::name`] gives, in variant order.
+
+```rust
+const THP_NAMES: [&'static CStr; 3] = [c"never", c"auto", c"always"];
+```
+
+## `PERCPU_ARENA_NAMES`
+
+src/config.rs:120. Kind: external_body const. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> The names [`PercpuArena::name`] gives, in variant order, as [`THP_NAMES`].
+
+```rust
+const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu"];
+```
+
 ## `Config::set_listed`
 
-src/config.rs:399. Kind: external_body. Category: function pointer.
+src/config.rs:400. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > The [`TABLE`] entry's parser for `key`, `None` when no entry is named `key`.
@@ -34,9 +60,20 @@ fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Resul
         final(self).wf(),
 ```
 
+## `Config::get`
+
+src/config.rs:414. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: trusted.
+
+> The value of a key by name, for `mallctl("opt.<key>")`: the [`TABLE`] entry's reader.
+
+```rust
+pub fn get(&self, key: &[u8]) -> Option<Value>
+```
+
 ## `Parse`
 
-src/config.rs:544. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:545. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -45,7 +82,7 @@ struct ExParse(Parse);
 
 ## `Read`
 
-src/config.rs:550. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:551. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -54,7 +91,7 @@ struct ExRead(Read);
 
 ## `TABLE`
 
-src/config.rs:836. Kind: external_body const. Category: function pointer.
+src/config.rs:837. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > [`ENTRIES`], the tunables.
@@ -63,9 +100,20 @@ Tool: Kani. Status: trusted.
 pub exec const TABLE: &'static [Key] = ENTRIES;
 ```
 
+## `KEYS`
+
+src/config.rs:872. Kind: external_body const. Category: function pointer.
+Tool: Kani. Status: trusted.
+
+> Every key readable through [`Config::get`], in table order, for the `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at compile time, by position) and the tests: the names of [`TABLE`].
+
+```rust
+pub exec const KEYS: &'static [&'static str] = &NAMES;
+```
+
 ## `parse_from`
 
-src/config.rs:1554. Kind: external_body. Category: function pointer.
+src/config.rs:1557. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > [`Config::parse_source`] of `text` from `source`, cut or not, printing each problem as `challoc: <source>: <issue>` to `out`.
@@ -89,7 +137,7 @@ fn parse_from(
 
 ## `read_slot`
 
-src/config.rs:1663. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1666. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `const char *` the symbol at `slot` holds.
@@ -100,7 +148,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ## `malloc_conf_addr`
 
-src/config.rs:1676. Kind: external_body. Category: inline asm.
+src/config.rs:1679. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -111,7 +159,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ## `je_malloc_conf_addr`
 
-src/config.rs:1701. Kind: external_body. Category: inline asm.
+src/config.rs:1704. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -122,7 +170,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ## `byte_at`
 
-src/config.rs:1762. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1765. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The byte at `p + n`.
@@ -133,7 +181,7 @@ unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ## `bytes_at`
 
-src/config.rs:1774. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1777. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -146,7 +194,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ## `env_var`
 
-src/config.rs:1792. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1795. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.

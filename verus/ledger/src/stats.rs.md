@@ -14,7 +14,7 @@ file.
 
 ## `fig_add`
 
-src/stats.rs:481. Kind: external_body. Category: core library.
+src/stats.rs:483. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
@@ -27,7 +27,7 @@ pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
 
 ## `fig_mul`
 
-src/stats.rs:492. Kind: external_body. Category: core library.
+src/stats.rs:494. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a * b` for a statistics figure; see [`fig_add`].
@@ -40,7 +40,7 @@ pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
 
 ## `fig_add64`
 
-src/stats.rs:503. Kind: external_body. Category: core library.
+src/stats.rs:505. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `a + b` for a statistics counter; see [`fig_add`].
@@ -53,7 +53,7 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 
 ## `axiom_snapshot_lock_inv`
 
-src/stats.rs:602. Kind: axiom. Category: allocator invariant.
+src/stats.rs:604. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The snapshot an `epoch` stores satisfies [`Snapshot::inv`].

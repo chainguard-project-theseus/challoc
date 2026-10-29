@@ -5,3 +5,8 @@ read_slot	raw pointer from C caller	Miri (evidence only)
 byte_at	raw pointer from C caller	Miri (evidence only)
 bytes_at	raw pointer from C caller	Miri (evidence only)
 env_var	raw pointer from C caller	Miri (evidence only)
+# `CStr` literals, which Verus does not take; nothing is claimed about them.
+THP_NAMES	core library	none (assumption)
+PERCPU_ARENA_NAMES	core library	none (assumption)
+# Built from `TABLE`, which holds function pointers; claimed only as a value of its type.
+KEYS	function pointer	Kani

@@ -28,7 +28,7 @@ file.
 
 ## `axiom_ready`
 
-src/api/mod.rs:188. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:219. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: a thread that holds the frozen permissions ([`Published`], which `init` builds when it freezes them and `STATE`'s invariant holds from `READY` on, [`load_state`]) may state [`ready`].
@@ -44,7 +44,7 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 
 ## `axiom_published`
 
-src/api/mod.rs:210. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:241. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the frozen permissions, for a thread that knows the allocator is published ([`ready`]): a `&'static` reference to the `Published` `init` froze, the only one there is.
@@ -60,7 +60,7 @@ pub axiom fn axiom_published() -> (tracked r: &'static Published)
 
 ## `LinePerm`
 
-src/api/mod.rs:235. Kind: external_body type. Category: atomics primitive.
+src/api/mod.rs:266. Kind: external_body type. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `LINE_STATE`: its current [`value`](LinePerm::value).
@@ -71,7 +71,7 @@ pub tracked struct LinePerm
 
 ## `StatePerm`
 
-src/api/mod.rs:324. Kind: external_body type. Category: atomics primitive.
+src/api/mod.rs:355. Kind: external_body type. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `STATE`: its current [`value`](StatePerm::value).
@@ -82,7 +82,7 @@ pub tracked struct StatePerm
 
 ## `axiom_state`
 
-src/api/mod.rs:379. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:410. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `STATE`'s invariant.
@@ -96,7 +96,7 @@ axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, Sta
 
 ## `state_load`
 
-src/api/mod.rs:451. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:482. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE.load(Acquire)`: the permission's value.
@@ -111,7 +111,7 @@ fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
 
 ## `state_claim`
 
-src/api/mod.rs:467. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:498. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)` when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value it has otherwise, left unchanged.
@@ -127,7 +127,7 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
 
 ## `state_publish`
 
-src/api/mod.rs:482. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:513. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE`'s `READY` store, `Release`.
@@ -142,7 +142,7 @@ fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
 
 ## `line_load`
 
-src/api/mod.rs:517. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:548. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `LINE_STATE.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
@@ -160,7 +160,7 @@ fn line_load(ordering: Ordering, Tracked(perm): Tracked<&LinePerm>) -> (r: u8)
 
 ## `line_compare_exchange`
 
-src/api/mod.rs:538. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:569. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `LINE_STATE.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when it held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
@@ -185,7 +185,7 @@ fn line_compare_exchange(
 
 ## `line_store`
 
-src/api/mod.rs:563. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:594. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `LINE_STATE.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
@@ -203,7 +203,7 @@ fn line_store(v: u8, ordering: Ordering, Tracked(perm): Tracked<&mut LinePerm>)
 
 ## `line_ready`
 
-src/api/mod.rs:822. Kind: no_decreases. Category: termination.
+src/api/mod.rs:853. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > [`feature_line_ready`] after its `shared()`, whose published permissions (`published`) have the line's invariant: build the line, or wait for the thread building it (termination is not claimed: the wait ends when the other thread's build does).
@@ -219,7 +219,7 @@ fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'
 
 ## `init_slow`
 
-src/api/mod.rs:939. Kind: no_decreases. Category: termination.
+src/api/mod.rs:970. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
@@ -235,7 +235,7 @@ fn init_slow() -> (r: &'static Shared)
 
 ## `shared_storage_ptr`
 
-src/api/mod.rs:989. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1020. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -249,7 +249,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ## `features_ptr`
 
-src/api/mod.rs:1005. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1036. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The storage of [`FEATURES`].
@@ -263,7 +263,7 @@ fn features_ptr() -> (p: *mut Features)
 
 ## `line_ptr`
 
-src/api/mod.rs:1017. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1048. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The storage of [`FEATURE_LINE`].
@@ -277,7 +277,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 
 ## `axiom_statics`
 
-src/api/mod.rs:1055. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:1086. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, the class table ([`layout::CLASSES`]), initialised, whose entries are well formed and sized ([`layout::table_ok`]: its initial value is [`layout::BASE_CLASSES`], `ClassTable::new`), and `LINE_STATE`'s permission, at `LINE_UNBUILT`.
@@ -305,7 +305,7 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
 
 ## `atfork_handlers`
 
-src/api/mod.rs:1096. Kind: external_body. Category: function pointer.
+src/api/mod.rs:1127. Kind: external_body. Category: function pointer.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_atfork` with the three fork handlers: 0, or the error number.

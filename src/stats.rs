@@ -333,6 +333,8 @@ impl ArenaStats {
     }
 
     /// `allocated` for this arena: small plus large.
+    // Only the tests call it: the report sums the fields with `fig_add`.
+    #[allow(dead_code)]
     #[inline]
     pub fn allocated(&self) -> (r: usize)
         requires
