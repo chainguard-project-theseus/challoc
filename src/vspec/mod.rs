@@ -37,12 +37,11 @@ mod misc;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod panic;
 #[cfg(verus_keep_ghost)]
-pub(crate) mod ptr;
-#[cfg(verus_keep_ghost)]
 pub(crate) mod sys;
 
 pub(crate) mod once;
 pub(crate) mod print;
+pub(crate) mod ptr;
 pub(crate) mod slice;
 pub(crate) mod unbacked;
 pub(crate) mod user;

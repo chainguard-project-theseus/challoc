@@ -11,7 +11,7 @@ file.
 
 ## `root`
 
-src/api/mallctl.rs:936. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:937. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > [`ROOT`].
