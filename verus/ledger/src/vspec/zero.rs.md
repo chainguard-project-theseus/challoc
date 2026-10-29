@@ -68,12 +68,12 @@ pub proof fn axiom_wrote_zero(tracked raw: &PointsToRaw, p: *mut u8, n: usize) -
 
 ## `write_zero`
 
-src/vspec/zero.rs:260. Kind: external_body. Category: raw pointer (internal).
+src/vspec/zero.rs:334. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > `write_bytes(p, 0, n)`, returning the token for what it wrote.
 
-Body mints Tracked at line 270.
+Body mints Tracked at line 344.
 
 ```rust
 pub unsafe fn write_zero(p: *mut u8, n: usize) -> (z: Tracked<Zeroed>)

@@ -82,6 +82,15 @@ verus! {
 /// takes groups holds (`SlabTable::take_group`'s `pubw`).
 pub type Published = GhostPersistentPointsTo<int, Seq<Loc>>;
 
+/// `w` names `a` as the arena the process registry published at `a`'s
+/// index: two class states of one class and arena index that both have
+/// such a record are the same ([`process_pub_loc`]).
+pub open spec fn published(w: Published, a: Arena) -> bool {
+    &&& w.id() == process_pub_loc()
+    &&& w.key() == a.spec_index() as int
+    &&& w.value() == a.spec_olocs()
+}
+
 /// The location of the process registry's record of published arenas
 /// (`Shared::built_at(Shared::storage())`'s, [`Arenas::spec_pub_loc`]),
 /// which a [`Published`] of the process is a point of.
@@ -1362,22 +1371,19 @@ impl Arena {
     }
 }
 
-} // verus!
-
 impl Arena {
     /// Change the decay period; `-1` turns purging off. Takes effect at the
     /// next periodic tick, or at once for a background thread, which is
     /// woken to recompute its deadline.
-    pub fn set_decay_ms(&self, ms: i64) {
+    pub fn set_decay_ms(&self, ms: i64)
+        requires
+            crate::sys::may_syscall(),
+    {
         self.decay_ns
             .store(crate::purge::decay_ns_from_ms(ms), Ordering::Relaxed);
         crate::purge::note_decay_changed();
     }
-}
 
-verus! {
-
-impl Arena {
     /// Decay step over every class (see `ClassState::decay_with`) with
     /// the period the cgroup policy gives this arena and its keep ratio
     /// for the retention cap (design 11): the earliest next deadline,

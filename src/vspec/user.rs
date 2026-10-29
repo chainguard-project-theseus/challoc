@@ -1,10 +1,12 @@
 //! The permission model for user memory: a [`UserMem`] is the permission
 //! to a block's usable bytes (a slab slot or a huge run), with the bytes'
 //! contents as verified code knows them, which a
-//! [`Live`](crate::heap::live::Live) token holds while
-//! `ClassState::check_zero` or `Huge::check_zero` reads the block, or to
-//! a `Fresh` slab's slots, lent under the class lock for
-//! `ClassState::check_fresh_slab_is_zero` (`class::axiom_fresh_slab_mem`).
+//! [`Live`](crate::heap::live::Live) token holds: from `Shared::alloc_direct`
+//! or `Shared::alloc_huge`, which hand the block out, lent to
+//! `Shared::zero_huge`'s clear, and while `ClassState::check_zero` or
+//! `Huge::check_zero` reads the block. Or to a `Fresh` slab's slots, lent
+//! under the class lock for `ClassState::check_fresh_slab_is_zero`
+//! (`class::axiom_fresh_slab_mem`).
 //!
 //! Reading a user block's bytes takes a capability too,
 //! [`may_read_user`], which `purge::check_zero` grants to the opt-in debug
@@ -164,6 +166,31 @@ proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
     ensures
         final(m).frame(*old(m), z.addr(), z.len()),
         final(m).reads_zero(z.addr(), z.len()),
+{
+}
+
+/// The permission to bytes of challoc's memory, of any provenance, as the
+/// permission to them through an integer-to-pointer cast
+/// ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr), of
+/// [`cast_provenance`](crate::vspec::addr::cast_provenance)), the bytes
+/// and their values unchanged. Trusted: challoc's memory is mapped with
+/// `mmap`, whose addresses come back from the kernel as integers, so every
+/// pointer into it is derived from a cast and its provenance is exposed;
+/// a cast of an address in it picks up that provenance (Rust's exposed
+/// provenance), so the cast pointer is valid wherever the first one was.
+/// The permission is changed in place, so the bytes keep one. Its premise
+/// is that the bytes are challoc's: every `UserMem` is (its sources are
+/// `heap::live`'s hand-out, for blocks of the class and huge regions, and
+/// `class::axiom_fresh_slab_mem`'s loan of a fresh slab's bytes). Caller:
+/// `Shared::zero_huge`, which clears a run through the cast of its page's
+/// address.
+#[verifier::external_body]
+pub proof fn axiom_cast(tracked m: &mut UserMem)
+    ensures
+        final(m).dom() == old(m).dom(),
+        final(m).wf() == old(m).wf(),
+        final(m).bytes() == old(m).bytes(),
+        final(m).provenance() == crate::vspec::addr::cast_provenance(),
 {
 }
 
