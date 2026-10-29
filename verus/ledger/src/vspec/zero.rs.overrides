@@ -3,7 +3,5 @@ axiom_zero_word	raw pointer (internal)	none (assumption)
 # A `Zeroed` token is not tied to the writes to its bytes; the one caller
 # pairs a permission with the token made with it under one lock hold.
 ZeroRaw::axiom_new	allocator invariant	none (assumption)
-# vstd states no effect of write_bytes; the spec records the call.
-axiom_wrote_zero	raw pointer (internal)	none (assumption)
 # vstd states no effect of write_bytes: the bytes read as zero after.
-write_zero	raw pointer (internal)	none (assumption)
+zero_raw	raw pointer (internal)	none (assumption)

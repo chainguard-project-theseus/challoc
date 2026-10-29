@@ -100,29 +100,24 @@ impl UserMem {
         &&& forall|i: int| !(a <= i < a + n) ==> #[trigger] self.bytes()[i] == old.bytes()[i]
     }
 
-    /// The permission makes the `len` bytes from `p` (of its provenance)
-    /// valid for reads and writes (`vspec::ptr::axiom_raw_valid`). Writes
-    /// take the permission itself: a borrowed one only reads
-    /// ([`UserMem::lemma_valid_reads`]). Unchanged. Private: a write bound
-    /// is a read bound too (`valid_writes` implies `valid_reads`), so its
-    /// caller is this module's [`zero_user`], which only writes.
-    proof fn lemma_valid(tracked &mut self, p: *mut u8, len: int)
+    /// The `len` bytes from `p` (of its provenance) are in the raw
+    /// permission, what [`zero_raw`](crate::vspec::zero::zero_raw) takes
+    /// `&mut` to fill them. Private: its caller is this module's
+    /// [`zero_user`].
+    proof fn lemma_raw_range(tracked &self, p: *mut u8, len: int)
         requires
             0 <= len,
-            old(self).provenance() == p@.provenance,
-            forall|i: int| p@.addr <= i < p@.addr + len ==> #[trigger] old(self).dom().contains(i),
+            self.provenance() == p@.provenance,
+            forall|i: int| p@.addr <= i < p@.addr + len ==> #[trigger] self.dom().contains(i),
         ensures
-            *final(self) == *old(self),
-            crate::vspec::ptr::valid_writes(p, len),
-            crate::vspec::ptr::valid_reads(p as *const u8, len),
+            self.raw.contains_range(p@.addr as int, len),
+            self.raw.provenance() == p@.provenance,
     {
         assert(self.raw.contains_range(p@.addr as int, len)) by {
             assert forall|i: int| #[trigger] Set::range(p@.addr as int, p@.addr + len).contains(i) implies self.dom().contains(i) by {
                 broadcast use vstd::set_lib::range_set_properties;
             }
         }
-        crate::vspec::ptr::axiom_raw_valid(&self.raw, p, len);
-        crate::vspec::ptr::lemma_writes_read(p, len);
     }
 
     /// The permission makes the `len` bytes from `p` (of its provenance)
@@ -195,7 +190,8 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
 }
 
 /// Clear the `n` bytes at `p` with the permission `m` to them
-/// (`write_bytes(p, 0, n)` through `vspec::zero::write_zero`), returning
+/// (`write_bytes(p, 0, n)` through `vspec::zero::zero_raw`, with the
+/// permission's raw bytes taken `&mut`), returning
 /// the token for what it wrote; `m`'s byte state reads them as zero after.
 /// `p` is non-null, as `write_bytes` requires even of an empty fill.
 #[inline(always)]
@@ -211,11 +207,10 @@ pub unsafe fn zero_user(p: *mut u8, n: usize, Tracked(m): Tracked<&mut UserMem>)
         final(m).reads_zero(p@.addr as int, n as int),
 {
     proof {
-        broadcast use vstd::layout::align_of_u8;
-        m.lemma_valid(p, n as int);
+        m.lemma_raw_range(p, n as int);
     }
     // SAFETY: the permission makes the `n` bytes at `p` writable.
-    let z = unsafe { crate::vspec::zero::write_zero(p, n) };
+    let z = unsafe { crate::vspec::zero::zero_raw(p, n, Tracked(&mut m.raw)) };
     proof {
         axiom_zeroed_bytes(z.borrow(), m);
     }

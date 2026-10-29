@@ -9,8 +9,7 @@ file.
 |---|---|---|---|---|
 | `ZeroRaw...om_new` | external_body proof | allocator invariant | none (assumption) | trusted |
 | `axiom_zero_word` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
-| `axiom_wrote_zero` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
-| `write_zero` | external_body | raw pointer (internal) | none (assumption) | trusted |
+| `zero_raw` | external_body | raw pointer (internal) | none (assumption) | trusted |
 
 ## `ZeroRaw::axiom_new`
 
@@ -48,39 +47,23 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
         w.value() == 0,
 ```
 
-## `axiom_wrote_zero`
+## `zero_raw`
 
-src/vspec/zero.rs:217. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/zero.rs:315. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
-> The token for what `write_bytes(p, 0, n)` just wrote: the `n` bytes at `p` read as zero.
+> `write_bytes(p, 0, n)` through `raw`, the permission to the `n` bytes at `p`, taken `&mut` so that no other view of them (a `PointsTo` held from the same bytes, a [`ZeroRaw`] or a `UserMem` lending them) is held across the fill; the token for what it wrote.
+
+Body mints Tracked at line 327.
 
 ```rust
-pub proof fn axiom_wrote_zero(tracked raw: &PointsToRaw, p: *mut u8, n: usize) -> (tracked z: Zeroed)
-    requires
-        crate::vspec::ptr::wrote_zero(p, n as int),
-        raw.contains_range(p@.addr as int, n as int),
-        raw.provenance() == p@.provenance,
-    ensures
-        z.addr() == p@.addr,
-        z.len() == n,
-```
-
-## `write_zero`
-
-src/vspec/zero.rs:334. Kind: external_body. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
-
-> `write_bytes(p, 0, n)`, returning the token for what it wrote.
-
-Body mints Tracked at line 344.
-
-```rust
-pub unsafe fn write_zero(p: *mut u8, n: usize) -> (z: Tracked<Zeroed>)
+pub unsafe fn zero_raw(p: *mut u8, n: usize, Tracked(raw): Tracked<&mut PointsToRaw>) -> (z: Tracked<Zeroed>)
     requires
         p@.addr != 0,
-        n == 0 || crate::vspec::ptr::valid_writes(p, n as int),
+        old(raw).contains_range(p@.addr as int, n as int),
+        old(raw).provenance() == p@.provenance,
     ensures
+        *final(raw) == *old(raw),
         z@.addr() == p@.addr,
         z@.len() == n,
 ```

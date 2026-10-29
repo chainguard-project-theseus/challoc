@@ -58,9 +58,7 @@ use crate::vspec::meta::{axiom_meta_lock_frame, axiom_meta_lock_inv};
 use crate::vspec::unbacked::Unbacked;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::unbacked::committed_range;
-#[cfg(verus_keep_ghost)]
-use crate::vspec::zero::axiom_wrote_zero;
-use crate::vspec::zero::{ZeroRaw, Zeroed};
+use crate::vspec::zero::{ZeroRaw, Zeroed, zero_raw};
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::{lemma_add_mod_noop, lemma_sub_mod_noop};
 #[cfg(verus_keep_ghost)]
@@ -690,7 +688,7 @@ impl Meta {
     /// the permission to the object's `layout.size()` bytes and its
     /// [`MetaClaim`], which [`free`](Meta::free) takes back, and the token
     /// that they read as zero: a reused object is cleared here
-    /// ([`axiom_wrote_zero`]), and a fresh one lies above the old bump pointer,
+    /// ([`zero_raw`]), and a fresh one lies above the old bump pointer,
     /// whose bytes carry the token `Unbacked::commit` returned when they
     /// were committed (`Inner::alloc` hands it back with the object).
     // The tracked results are part of the signature.
@@ -729,21 +727,19 @@ impl Meta {
             .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
         let before = g.bump;
         let (p, Tracked(blk)) = g.alloc(bin);
-        let tracked (raw, mc, fz) = blk;
+        let tracked (mut raw, mc, fz) = blk;
         let tracked MetaClaim { claim, .. } = mc;
         let tracked mut z = Zeroed::empty(0);
         if !p.is_null() && (p as usize) < before {
             // Reused: below the old bump pointer. Fresh memory is above it
             // and has never been written.
             proof {
-                broadcast use vstd::layout::align_of_u8;
                 lemma_bin(bin as int);
-                crate::vspec::ptr::axiom_raw_valid(&raw, p, bin_size(bin as int));
             }
             // SAFETY: `p` is a live block of `BINS[bin]` bytes we just took.
-            unsafe { ptr::write_bytes(p, 0, BINS[bin] as usize) };
+            let Tracked(zw) = unsafe { zero_raw(p, BINS[bin] as usize, Tracked(&mut raw)) };
             proof {
-                z = axiom_wrote_zero(&raw, p, bin_size(bin as int) as usize);
+                z = zw;
             }
         }
         proof {

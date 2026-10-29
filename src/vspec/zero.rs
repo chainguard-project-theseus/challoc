@@ -4,7 +4,7 @@
 //! `bitmap::TwoLevelBitmap::from_raw` and `from_raw_chunked` build their
 //! views' word permissions from one. A [`Zeroed`] token says a range of
 //! bytes reads as zero: `meta::Meta::alloc_zeroed` returns one for the
-//! object it hands out, from [`axiom_wrote_zero`] for a reused one.
+//! object it hands out, from [`zero_raw`] for a reused one.
 
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsToRaw;
@@ -202,30 +202,6 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
     unimplemented!()
 }
 
-/// The token for what `write_bytes(p, 0, n)` just wrote: the `n` bytes at
-/// `p` read as zero. Trusted for the effect of `write_bytes`, which nothing
-/// in vstd states. Its specification (`vspec::ptr`) records the call as
-/// [`wrote_zero`], which ties the token to a call made with the same `p`
-/// and `n`; the caller also shows a raw permission to the bytes, so they
-/// are not held typed (written through a `PointsTo`). The fact has no time
-/// in it, so a caller must take the token right after the call, before
-/// anything else writes the bytes: the one caller is
-/// `meta::Meta::alloc_zeroed`, on the line after its `write_bytes`.
-///
-/// [`wrote_zero`]: crate::vspec::ptr::wrote_zero
-#[verifier::external_body]
-pub proof fn axiom_wrote_zero(tracked raw: &PointsToRaw, p: *mut u8, n: usize) -> (tracked z: Zeroed)
-    requires
-        crate::vspec::ptr::wrote_zero(p, n as int),
-        raw.contains_range(p@.addr as int, n as int),
-        raw.provenance() == p@.provenance,
-    ensures
-        z.addr() == p@.addr,
-        z.len() == n,
-{
-    unimplemented!()
-}
-
 /// Page `q` of a region of `pg`-byte pages at `base` starts at a multiple
 /// of `align` (every page does when `align` is at most a page).
 pub open spec fn page_aligned(base: int, pg: int, q: int, align: int) -> bool {
@@ -324,22 +300,29 @@ pub proof fn lemma_slot_not_huge(c: int, p: usize)
     ;
 }
 
-/// `write_bytes(p, 0, n)`, returning the token for what it wrote. Its
-/// `requires` is `write_bytes`' contract for `u8` (`vspec::ptr`): `p` is
-/// non-null and, unless `n` is 0, valid for writes of `n` bytes (a `u8`
-/// pointer is always aligned). Trusted for the one fact that contract
-/// does not state: the `n` bytes at `p` read as zero afterwards.
+/// `write_bytes(p, 0, n)` through `raw`, the permission to the `n` bytes
+/// at `p`, taken `&mut` so that no other view of them (a `PointsTo` held
+/// from the same bytes, a [`ZeroRaw`] or a `UserMem` lending them) is
+/// held across the fill; the token for what it wrote. Trusted: the
+/// `core` contract of `write_bytes` for `u8` (`p` non-null; the bytes
+/// valid for writes, which the permission stands for, as for
+/// `vspec::ptr::axiom_raw_valid`, whose premise a caller keeps too: a
+/// lazily committed table's bytes only once their page is committed)
+/// and its effect, which nothing in vstd states: the `n` bytes read as
+/// zero afterwards. The permission names no contents, so it is unchanged.
 #[verifier::external_body]
 #[inline(always)]
-pub unsafe fn write_zero(p: *mut u8, n: usize) -> (z: Tracked<Zeroed>)
+pub unsafe fn zero_raw(p: *mut u8, n: usize, Tracked(raw): Tracked<&mut PointsToRaw>) -> (z: Tracked<Zeroed>)
     requires
         p@.addr != 0,
-        n == 0 || crate::vspec::ptr::valid_writes(p, n as int),
+        old(raw).contains_range(p@.addr as int, n as int),
+        old(raw).provenance() == p@.provenance,
     ensures
+        *final(raw) == *old(raw),
         z@.addr() == p@.addr,
         z@.len() == n,
 {
-    // SAFETY: the caller's, as for `write_bytes`.
+    // SAFETY: the permission makes the `n` bytes at `p` writable.
     unsafe { core::ptr::write_bytes(p, 0, n) };
     Tracked::assume_new()
 }
