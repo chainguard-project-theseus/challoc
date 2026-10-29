@@ -2791,8 +2791,6 @@ impl SlabTable {
     }
 }
 
-} // verus!
-
 impl SlabTable {
     /// Descriptor of `slab` if it has been handed out, `None` otherwise:
     /// no abort, for queries.
@@ -2822,8 +2820,6 @@ impl SlabTable {
         Some(unsafe { self.desc_unchecked(slab) })
     }
 }
-
-verus! {
 
 impl SlabTable {
     /// Descriptor of a handed-out slab. Aborts for a slab that was never
