@@ -1,4 +1,4 @@
-# codeowners-gate sidecar for chainguard-dev/challoc: the source of truth for
+# codeowners-gate sidecar for wolfi-dev/challoc: the source of truth for
 # .github/CODEOWNERS, which renders it without the bot: owners. Change both
 # with a change request and mono's hack/codeowners-gate/run.sh apply (mono's
 # codeowners skill), run from the root of this repository. GitHub reads the
