@@ -315,6 +315,8 @@ pub open spec fn hint_ok(p: *mut u8, hint: Option<usize>) -> bool {
 /// the run's `nallocx` for a size no class serves. Also the small size of
 /// a run an alignment made huge, and any size `realloc` kept the run for.
 /// `Shared::check_size_hint` aborts on a size that fails it.
+/// With it, a live run's [`Live::lemma_block_usable`] gives
+/// `block_usable(p, size) == blk.len()`, as a slot's holds for any size.
 ///
 /// [`huge_usable`]: crate::vspec::zero::huge_usable
 pub open spec fn huge_hint_ok(blk: Live, p: *mut u8, size: usize) -> bool {

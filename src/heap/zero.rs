@@ -10,13 +10,20 @@
 //! claim's tokens, `CachePerms::handed_ok` states what
 //! `CachePerms::handed` holds for a slot popped from inside the prefix,
 //! and the other lemmas here carry the invariant across header writes.
+//!
+//! Also the zero-on-free theorems ([`theorem_zero_on_free`],
+//! [`theorem_zero_on_free_huge`]): a slot or a huge run released with a
+//! token that its bytes read as zero is zero over its usable bytes, which
+//! is what the free paths under `zero_on_free` need once they are verified.
 
 use super::CachePerms;
 #[cfg(verus_keep_ghost)]
-use super::{CacheHeader, plain};
+use super::{CacheHeader, Live, plain};
 #[cfg(verus_keep_ghost)]
-use crate::layout::class_table;
+use crate::layout::{class_table, process_regions};
 use crate::vspec::zero::Zeroed;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::zero::block_usable;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int, verus};
@@ -433,6 +440,48 @@ pub(super) proof fn lemma_rebuild_entries(
         assert(crate::layout::process_regions().is_slot(c, claimed[n - 1 - i]@.addr));
         super::lemma_plain_stored(outf[i], claimed[n - 1 - i], c, base);
     }
+}
+
+/// Zero-on-free, for slots: a token `z` that the class-size bytes of
+/// slot `p` of class `c` read as zero covers the slot's whole usable size
+/// ([`block_usable`]: one class per slot address, so its size is `c`'s).
+/// A free path that releases the slot under `Shared::zero_on_free` holds
+/// such a token once it has cleared the slot. The callers
+/// (`Heap::free_slow_in` and `heap::free_direct`, after `zero_slot`) are
+/// unverified exec code on main and do not call it yet: `zero_slot`
+/// returns no token there.
+pub proof fn theorem_zero_on_free(tracked z: &Zeroed, p: *mut u8, c: int)
+    requires
+        super::regions_ok(),
+        process_regions().is_slot(c, p@.addr),
+        z.covers(p, class_table()[c].size as int),
+    ensures
+        block_usable(p@.addr, 0) == class_table()[c].size,
+        forall|a: int| p@.addr <= a < p@.addr + block_usable(p@.addr, 0) ==> #[trigger] z.has(a),
+{
+    let c2 = choose|c2: int| #[trigger] process_regions().is_slot(c2, p@.addr);
+    crate::vspec::zero::lemma_slot_unique(c, c2, p@.addr);
+}
+
+/// Zero-on-free for huge runs: `z`, the token `Shared::zero_huge` returns
+/// for the live run `blk` at `page`, starts at the run's address and has
+/// the run's usable length (`Live::len`, the run token's pages before the
+/// guard), so it covers the run's whole usable size, a block of the huge
+/// region. The second `ensures` restates the `requires` through
+/// [`Zeroed::has`], for callers. Its callers are the two callers of
+/// `Shared::free_huge` on the free paths, `Heap::free_huge` and
+/// `heap::free_direct`, which are unverified on main and drop
+/// `zero_huge`'s token there.
+pub(crate) proof fn theorem_zero_on_free_huge(tracked z: &Zeroed, blk: Live, page: int)
+    requires
+        blk.run_block(page),
+        z.addr() == blk.addr() as int,
+        z.len() == blk.len(),
+    ensures
+        process_regions().is_huge_block(blk.addr(), blk.len()),
+        forall|a: int| blk.addr() <= a < blk.addr() + blk.len() ==> #[trigger] z.has(a),
+{
+    blk.lemma_huge_block();
 }
 
 } // verus!

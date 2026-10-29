@@ -2595,6 +2595,8 @@ impl Shared {
         ensures
             self.huge_run_zero(z@, page),
             final(blk).run_block(page as int),
+            z@.addr() == final(blk).addr() as int,
+            z@.len() == final(blk).len(),
     {
         proof {
             self.lemma_wf_slow();
