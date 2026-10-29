@@ -102,7 +102,7 @@ pipeline:
   - uses: git-checkout
     if: ${{options.local-challoc.enabled}} == 'false'
     with:
-      repository: https://github.com/chainguard-dev/challoc
+      repository: https://github.com/wolfi-dev/challoc
       tag: v${{vars.challoc-version}}
       # No release tag yet (2026-09-20): the main commit this definition
       # was written against. The Wolfi PR sets the tag and its commit.
