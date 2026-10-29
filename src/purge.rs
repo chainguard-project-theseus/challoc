@@ -49,6 +49,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use crate::arena::Arena;
 use crate::heap::Shared;
 use crate::lock::LockOrder;
+#[cfg(verus_keep_ghost)]
+use crate::lock::rank_class;
 pub use crate::policy::Advice;
 use crate::sys;
 use vstd::prelude::*;
@@ -171,8 +173,6 @@ pub fn failed_discards() -> (u64, u64) {
     )
 }
 
-} // verus!
-
 /// An explicit purge in progress: every flush until the guard drops is
 /// eager (the caller asked for RSS to drop), whatever the band.
 struct Explicit;
@@ -184,11 +184,19 @@ impl Explicit {
     }
 }
 
+// Trusted: Verus wants a destructor that opens no invariant and cannot
+// unwind; the body is one atomic subtract.
 impl Drop for Explicit {
-    fn drop(&mut self) {
+    #[verifier::external_body]
+    fn drop(&mut self)
+        opens_invariants none
+        no_unwind
+    {
         EXPLICIT.fetch_sub(1, Ordering::Relaxed);
     }
 }
+
+} // verus!
 
 verus! {
 
@@ -2078,6 +2086,8 @@ impl Left {
 
 } // verus!
 
+verus! {
+
 /// Run every decay walk that is due at `now` (coarse monotonic
 /// nanoseconds) and return the earliest future deadline, `None` when
 /// nothing is `Empty` or decay is off. Lock-free for a class with nothing
@@ -2086,25 +2096,39 @@ impl Left {
 /// Never inlined, so `Heap::tick` (through `on_tick`) and
 /// `background::main` keep a call here rather than a copy of the loop.
 #[inline(never)]
-pub fn decay(shared: &Shared, now: u64, _ord: Tracked<&mut LockOrder>) -> Option<u64> {
+pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     // Design 11: a `memory.events` `high` rise owes one full purge, run
     // before the walks so they see the survivors (none, normally).
     let policy = &shared.policy;
     if policy.take_full_purge() {
-        purge_all(shared, Tracked::assume_new(), Tracked::assume_new());
+        let tracked mut left = Ghost(Left::none());
+        purge_all(shared, Tracked(&mut left), Tracked(ord));
     }
     let keep16 = policy.keep16();
     let mut next: Option<u64> = None;
     let count = arena_count(shared);
-    for i in 0..count {
+    for i in 0..count
+        invariant
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            ord.allows(rank_class(0, 0)),
+            *ord == *old(ord),
+            count <= crate::arena::MAX_ARENAS,
+    {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
-            next = earliest(
-                next,
-                decay_one(shared, arena, now, keep16, Tracked::assume_new()),
-            );
+            next = earliest(next, decay_one(shared, arena, now, keep16, Tracked(ord)));
         }
     }
-    next = earliest(next, decay_huge(shared, now, keep16, Tracked::assume_new()));
+    next = earliest(next, decay_huge(shared, now, keep16, Tracked(ord)));
     next
 }
 
@@ -2112,56 +2136,62 @@ pub fn decay(shared: &Shared, now: u64, _ord: Tracked<&mut LockOrder>) -> Option
 /// the huge extents, which belong to no single arena's sets) that are due
 /// at `now`, on the periods and keep ratio [`decay`] gives them. `None`
 /// if the arena does not exist.
-pub fn decay_arena(
-    shared: &Shared,
-    index: u16,
-    now: u64,
-    _ord: Tracked<&mut LockOrder>,
-) -> Option<()> {
+pub fn decay_arena(shared: &Shared, index: u16, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<()>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     let arena = shared.arenas.get_existing(index)?;
     let keep16 = shared.policy.keep16();
-    decay_one(shared, arena, now, keep16, Tracked::assume_new());
+    decay_one(shared, arena, now, keep16, Tracked(ord));
     if index == 0 {
-        decay_huge(shared, now, keep16, Tracked::assume_new());
+        decay_huge(shared, now, keep16, Tracked(ord));
     }
     Some(())
 }
 
 /// One arena's walks on its own period, scaled by the policy's band.
-fn decay_one(
-    shared: &Shared,
-    arena: &Arena,
-    now: u64,
-    keep16: u32,
-    _ord: Tracked<&mut LockOrder>,
-) -> Option<u64> {
+fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     arena.decay_with(
         now,
         shared.policy.effective_decay_ns(arena.decay_ns()),
         keep16,
-        Tracked::assume_new(),
+        Tracked(ord),
     )
 }
 
 /// The huge allocator's walk. It is shared by every arena: its own period
 /// when `huge_dirty_decay_ms` is set, else arena 0's (design 7), scaled by
 /// the policy's band.
-fn decay_huge(
-    shared: &Shared,
-    now: u64,
-    keep16: u32,
-    _ord: Tracked<&mut LockOrder>,
-) -> Option<u64> {
+fn decay_huge(shared: &Shared, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     let decay_ns = shared.policy.effective_decay_ns(shared.huge_decay_ns());
     if decay_ns == NEVER {
         return None;
     }
-    shared
-        .huge
-        .decay_with(now, decay_ns, keep16, Tracked::assume_new())
+    proof {
+        shared.lemma_huge_process();
+    }
+    shared.huge.decay_with(now, decay_ns, keep16, Tracked(ord))
 }
-
-verus! {
 
 /// The earlier of two optional deadlines; either one when the other is
 /// `None`.
@@ -2182,61 +2212,146 @@ fn earliest(next: Option<u64>, d: Option<u64>) -> (r: Option<u64>)
         None => next,
     }
 }
-
-} // verus!
-
 /// Arena indices to visit: [`crate::arena::Arenas::count`], which never
-/// exceeds the table (`create` stops at [`MAX_ARENAS`]; the clamp is
-/// redundant and keeps the bound visible to the verifier).
+/// exceeds the table (`create` stops at [`MAX_ARENAS`]; `count` is
+/// verified to ensure it, so the clamp is redundant and stays only to
+/// keep the machine code).
 ///
 /// [`MAX_ARENAS`]: crate::arena::MAX_ARENAS
 #[inline]
-fn arena_count(shared: &Shared) -> usize {
+fn arena_count(shared: &Shared) -> (n: usize)
+    ensures
+        n <= crate::arena::MAX_ARENAS,
+{
     (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS)
 }
 
 /// Purge every `Empty` slab of every arena and every huge extent
 /// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
 /// purge: the memory is wanted back now). Returns how many were purged.
-/// `left` is ghost: what the purge left ([`Left`]).
-pub fn purge_all(
-    shared: &Shared,
-    _left: Tracked<&mut Ghost<Left>>,
-    _ord: Tracked<&mut LockOrder>,
-) -> usize {
+///
+/// `left` gets what was purged: the bytes discarded, nonzero iff anything
+/// was purged, the arenas visited, every class of each, and the huge
+/// allocator, with no slab or extent `Empty` in the lock value each purge
+/// released, except in a class with several slabs per page or in a range
+/// `madvise` refused ([`Left::clean`]).
+pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+        (r > 0) == (final(left)@.bytes > 0),
+        forall|i: int| #[trigger] final(left)@.arenas.contains(i) ==> 0 <= i < crate::arena::MAX_ARENAS,
+        final(left)@.covers(),
+        final(left)@.huge,
+        final(left)@.clean(),
+{
     let _explicit = Explicit::enter();
+    proof {
+        *left = Ghost(Left::none());
+        Left::lemma_none();
+    }
     let mut n: usize = 0;
     let count = arena_count(shared);
-    for i in 0..count {
+    for i in 0..count
+        invariant
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            ord.allows(rank_class(0, 0)),
+            *ord == *old(ord),
+            count <= crate::arena::MAX_ARENAS,
+            n <= i * 0x8_0000_0000_0000,
+            (n > 0) == (left@.bytes > 0),
+            forall|a: int| #[trigger] left@.arenas.contains(a) ==> 0 <= a < i,
+            left@.covers(),
+            !left@.huge,
+            left@.clean(),
+    {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
-            n += arena.purge_all(Tracked::assume_new(), Tracked::assume_new());
+            let tracked mut la = Ghost(Left::none());
+            // At most `NCLASSES * 2^45` slabs an arena.
+            n += arena.purge_all(Tracked(&mut la), Tracked(ord));
+            proof {
+                let l0 = left@;
+                Left::lemma_join(l0, la@);
+                *left = Ghost(l0.join(la@));
+                assert forall|a: int| #[trigger] left@.arenas.contains(a) implies 0 <= a < i + 1 by {
+                    if !l0.arenas.contains(a) {
+                        assert(la@.arenas.contains(a));
+                    }
+                }
+            }
         }
     }
-    n + shared
-        .huge
-        .purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new())
+    let tracked mut lh = Ghost(Left::none());
+    proof {
+        shared.lemma_huge_process();
+    }
+    let h = shared.huge.purge_empty(u64::MAX, Tracked(&mut lh), Tracked(ord));
+    proof {
+        let l0 = left@;
+        Left::lemma_join(l0, lh@);
+        *left = Ghost(l0.join(lh@));
+        assert(left@.arenas =~= l0.arenas);
+        assert(left@.classes =~= l0.classes);
+    }
+    n + h
 }
 
 /// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
 /// age (plus, for arena 0, the huge extents, which belong to no single
-/// arena's sets), eagerly. `None` if the arena does not exist. `left` is
-/// ghost: what the purge left ([`Left`]).
+/// arena's sets), eagerly. `None` if the arena does not exist.
+///
+/// `left` gets what [`purge_all`] says of its purges: here every class of
+/// arena `index` and, for arena 0, the huge allocator.
 pub fn purge_arena(
     shared: &Shared,
     index: u16,
-    _left: Tracked<&mut Ghost<Left>>,
-    _ord: Tracked<&mut LockOrder>,
-) -> Option<usize> {
+    Tracked(left): Tracked<&mut Ghost<Left>>,
+    Tracked(ord): Tracked<&mut LockOrder>,
+) -> (r: Option<usize>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+        r is None ==> final(left)@ == Left::none(),
+        r matches Some(n) ==> (n > 0) == (final(left)@.bytes > 0),
+        r is Some ==> final(left)@.arenas == set![index as int],
+        final(left)@.huge == (r is Some && index == 0),
+        final(left)@.covers(),
+        final(left)@.clean(),
+{
     let _explicit = Explicit::enter();
+    proof {
+        *left = Ghost(Left::none());
+        Left::lemma_none();
+    }
     let arena = shared.arenas.get_existing(index)?;
-    let mut n = arena.purge_all(Tracked::assume_new(), Tracked::assume_new());
+    let mut n = arena.purge_all(Tracked(&mut *left), Tracked(ord));
     if index == 0 {
-        n += shared
-            .huge
-            .purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
+        let tracked mut lh = Ghost(Left::none());
+        proof {
+            shared.lemma_huge_process();
+        }
+        n += shared.huge.purge_empty(u64::MAX, Tracked(&mut lh), Tracked(ord));
+        proof {
+            let l0 = left@;
+            Left::lemma_join(l0, lh@);
+            *left = Ghost(l0.join(lh@));
+            assert(left@.arenas =~= l0.arenas);
+        }
     }
     Some(n)
 }
+
+} // verus!
 
 /// Periodic-work hook (design 6.4): start the background thread if one was
 /// requested and does not exist, otherwise run decay here unless the
@@ -2263,12 +2378,20 @@ pub fn on_tick(shared: &Shared, now: u64, alloc: bool, _ord: Tracked<&mut LockOr
     }
 }
 
+verus! {
+
 /// Design 11: `memory.current` and `memory.events`, at most once per 10 ms
 /// of the coarse clock, and the policy evaluated on the sample that was
 /// taken; nothing at all when the cgroup is untracked or the window has
 /// not passed. Slow paths only (the periodic tick, the background thread).
-fn sample(shared: &Shared, now: u64, _ord: Tracked<&mut LockOrder>) {
-    if shared.discover_cgroup_if_due(now, Tracked::assume_new()) {
+fn sample(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>)
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
+    if shared.discover_cgroup_if_due(now, Tracked(ord)) {
         return;
     }
     // `shared.cgroup().is_some_and(|cg| cg.sample(now))`, spelled out:
@@ -2278,11 +2401,9 @@ fn sample(shared: &Shared, now: u64, _ord: Tracked<&mut LockOrder>) {
         None => false,
     };
     if sampled {
-        crate::policy::evaluate(shared, Tracked::assume_new());
+        crate::policy::evaluate(shared, Tracked(ord));
     }
 }
-
-verus! {
 
 /// A class or the huge allocator went from no `Empty` slab to one: wake a
 /// background thread that may be sleeping without a deadline.

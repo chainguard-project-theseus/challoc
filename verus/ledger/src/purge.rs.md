@@ -7,16 +7,28 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `Explicit::drop` | external_body | atomics primitive | Kani | trusted |
 | `purged_zero` | external_body | atomics primitive | loom/GenMC | trusted |
+
+## `Explicit::drop`
+
+src/purge.rs:191. Kind: external_body. Category: atomics primitive.
+Tool: Kani. Status: trusted.
+
+```rust
+fn drop(&mut self)
+    opens_invariants none
+    no_unwind
+```
 
 ## `purged_zero`
 
-src/purge.rs:257. Kind: external_body. Category: atomics primitive.
+src/purge.rs:265. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > [`purged_is_zero`], with the witness of a true read (`Some` exactly when it returns true).
 
-Body mints Tracked at line 261.
+Body mints Tracked at line 269.
 
 ```rust
 pub fn purged_zero() -> (r: (bool, Tracked<Option<PurgedZero>>))
