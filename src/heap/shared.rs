@@ -186,13 +186,15 @@ pub uninterp spec fn shared_at(p: *mut Shared) -> Shared;
 /// Assumption: one `Shared` per process. The process's regions
 /// ([`process_regions`](crate::layout::process_regions)) are those of
 /// the `Shared` in its storage, which `api::init` builds once, before it
-/// publishes `READY`. `process_regions` is uninterpreted and no other
-/// axiom relates it to a value, so this defines it. The unit tests build
+/// publishes `READY`, and [`pac_mode`](super::pac_mode) is whether that
+/// `Shared`'s `push_flags` has [`PUSH_PAC`] set. Both are uninterpreted
+/// and no other axiom relates them to a value, so this defines them. The unit tests build
 /// further `Shared`s elsewhere; the assumption is about the shipped
 /// library.
 axiom fn axiom_process_shared()
     ensures
         crate::layout::process_regions() == shared_at(shared_storage()).regions,
+        super::pac_mode() == (shared_at(shared_storage()).push_flags & PUSH_PAC != 0),
 ;
 
 impl Shared {
@@ -207,8 +209,8 @@ impl Shared {
     }
 
     /// What `Shared::init` establishes of the value it builds, and nothing
-    /// changes afterwards (`regions`, `meta` and `stats` are written
-    /// once, before the `Shared` is published): the address-space layout is well formed and
+    /// changes afterwards (the fields it names are written once, before the
+    /// `Shared` is published): the address-space layout is well formed and
     /// separated and is the process's ([`crate::layout::process_regions`]),
     /// and `meta` allocates from the metadata region and is the process's
     /// (its claims to reserved pages are
@@ -216,19 +218,37 @@ impl Shared {
     /// regions' page), and the statistics lock is at its rank
     /// ([`rank_stats`](crate::lock::rank_stats)); `region_hi` is the offset
     /// bits past a class region, each table is its class's, and each class
-    /// line is well formed over its table ([`ClassLine::wf`]).
+    /// line is well formed over its table ([`ClassLine::wf`]); the huge
+    /// allocator covers the huge region on the regions' page, with its
+    /// records from `meta`; [`PUSH_PAC`] is [`pac_mode`](super::pac_mode),
+    /// set only where pointer authentication is available; the
+    /// configuration is well formed; `meta`'s live-object records are the
+    /// process's ([`process_live_id`](crate::meta::process_live_id)); and
+    /// arena 0 has index 0 and is the process's arena registry's.
     pub closed spec fn built(&self) -> bool {
         &&& self.regions.wf()
         &&& self.regions == crate::layout::process_regions()
         &&& self.regions.separated()
         &&& self.region_hi == !(((1usize << self.regions.lg_region) - 1) as usize)
+        &&& self.huge.spec_base() == self.regions.huge_base
+        &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
+        &&& (self.push_flags & PUSH_PAC != 0) == super::pac_mode()
+        &&& super::pac_mode() ==> crate::sys::pac::pac_available()
+        &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.lines[c].wf(self.tables[c], self.regions, c)
+        &&& self.huge.spec_npages() == self.huge_pages()
         &&& self.meta.spec_base() == self.regions.meta_base
         &&& self.meta.spec_len() == self.regions.meta_len
+        &&& self.meta.live_id() == crate::meta::process_live_id()
         &&& self.meta.pages_id() == crate::meta::process_pages_id()
         &&& self.meta.page() == (1usize << self.regions.lg_page)
+        &&& self.huge.spec_mid() == self.meta.live_id()
+        &&& self.arena0.spec_index() == 0
         &&& self.stats.rank() == crate::lock::rank_stats()
+        &&& self.arenas.wf()
+        &&& self.arenas.is_process()
+        &&& self.arenas.spec_arena0() == self.arena0
     }
 
     /// The value is as `Shared::init` built it ([`Shared::built`]), and the
@@ -1337,8 +1357,9 @@ spec fn tables_at(m: Map<int, PointsTo<SlabTable>>, p: *mut Shared) -> bool {
 /// class lines, every one initialised, and the tables), joined into the
 /// permission to the whole value, the value [`shared_at`] names, frozen
 /// (`&'static`): readers share it, and nothing can write through it. Its
-/// statistics lock, `region_hi`, tables and class lines are the ones
-/// their permissions hold. Trusted, as
+/// push flags, `region_hi`, huge allocator, configuration, arena 0, arena
+/// registry, statistics lock, tables and class lines are the ones their
+/// permissions hold. Trusted, as
 /// `arena::axiom_arena_assemble` is: vstd has no way to join typed
 /// permissions, and the permissions cover every field at its offset. The
 /// permissions are used up, so nothing verified writes the fields
@@ -1374,7 +1395,12 @@ axiom fn axiom_shared_built(
         arena0.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0),
         arena0.is_init(),
     ensures
+        shared_at(p).push_flags == parts.push_flags.value(),
         shared_at(p).region_hi == parts.region_hi.value(),
+        shared_at(p).huge == parts.huge.value(),
+        shared_at(p).config == parts.config.value(),
+        shared_at(p).arena0 == arena0.value(),
+        parts.arenas.perm matches Some(a) ==> shared_at(p).arenas == a.value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).tables[c] == tables[c].value(),
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] shared_at(p).lines[c] == lines[c].value(),
         shared_at(p).stats == parts.stats.value(),
@@ -1907,7 +1933,9 @@ impl Shared {
     /// number in use); `guard_install` says whether the kernel
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
-    /// VMA per guard, see `class/`).
+    /// VMA per guard, see `class/`); `pac` says whether the probe found
+    /// pointer authentication (`sys::pac::available`), so it is never set
+    /// where pointer authentication is missing.
     // The last two arguments are ghost.
     #[allow(clippy::too_many_arguments)]
     #[verifier::loop_isolation(false)]
@@ -1932,6 +1960,7 @@ impl Shared {
             space@.len() == regions.meta_len,
             config.wf(),
             once::shared_steps(steps),
+            pac ==> crate::sys::pac::pac_available(),
         ensures
             r ==> shared_at(this).built(),
             r ==> final(built).at(this),
@@ -1962,6 +1991,7 @@ impl Shared {
         proof {
             assert(crate::config::MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
             axiom_process_shared();
+            crate::meta::lemma_process_live_id();
             crate::meta::lemma_process_pages_id();
             let lg = regions.lg_page;
             assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector)
@@ -2008,6 +2038,20 @@ impl Shared {
                 Tracked(&mut parts.free_flags),
                 Tracked(regions_perm),
             );
+            proof {
+                // The `PUSH_PAC` bit is set only from `pac` (the probe).
+                let f = parts.push_flags.value();
+                let x: u8 = if config.double_free_scan { PUSH_SCAN } else { 0 };
+                let y: u8 = if config.zero_on_free { PUSH_ZERO } else { 0 };
+                let z: u8 = if pac && config.pac_pointers { PUSH_PAC } else { 0 };
+                assert(f == x | y | z);
+                assert((x | y | z) & 4u8 != 0 ==> z == 4u8) by (bit_vector)
+                    requires
+                        x == 0 || x == 1,
+                        y == 0 || y == 2,
+                        z == 0 || z == 4,
+                ;
+            }
             proof {
                 // Every step but `Shared`'s and `Statics`' still has its
                 // token.
@@ -2216,6 +2260,9 @@ impl Shared {
                     assert(table_perms.contains_key(d));
                     assert(line_perms.contains_key(d));
                 }
+                axiom_process_shared();
+                let s = shared_at(this);
+                s.arenas.lemma_is_process();
             }
         }
         true
@@ -2403,9 +2450,9 @@ impl Shared {
 
     /// [`Shared::wf`] unfolded, the facts the slow paths use
     /// beyond [`Shared::lemma_wf`]'s: the huge allocator over the huge
-    /// region, the class tables' classes, the configuration, and the arena
-    /// registry with arena 0. `region_hi` and the tables' classes come from
-    /// [`Shared::built`]; the rest from [`Shared::axiom_wf_slow`].
+    /// region, the class tables' classes, the configuration, the arena
+    /// registry with arena 0, and the metadata allocator's live-object
+    /// records, the process's.
     pub(crate) proof fn lemma_wf_slow(&self)
         requires
             self.wf(),
@@ -2420,28 +2467,9 @@ impl Shared {
             self.arena0.spec_index() == 0,
             self.arenas.wf(),
             self.arenas.is_process(),
-            self.arenas.spec_arena0() == self.arena0,
-    {
-        self.axiom_wf_slow();
-    }
-
-    /// The facts of [`Shared::wf`] the slow paths use that `built` does not yet
-    /// carry: the huge allocator over the huge region, the configuration,
-    /// and the arena registry with arena 0. Trusted until `built` carries
-    /// them and `Shared::init` proves them.
-    #[verifier::external_body]
-    proof fn axiom_wf_slow(&self)
-        requires
-            self.wf(),
-        ensures
-            self.huge.spec_base() == self.regions.huge_base,
-            self.huge.spec_page() == (1usize << self.regions.lg_page) as int,
-            self.huge.spec_npages() == self.huge_pages(),
-            self.config.wf(),
-            self.huge.spec_mid() == self.meta.live_id(),
-            self.arena0.spec_index() == 0,
-            self.arenas.wf(),
-            self.arenas.is_process(),
+            self.meta.live_id() == crate::meta::process_live_id(),
+            (self.push_flags & PUSH_PAC != 0) == super::pac_mode(),
+            super::pac_mode() ==> crate::sys::pac::pac_available(),
             self.arenas.spec_arena0() == self.arena0,
     {
     }
@@ -3608,20 +3636,20 @@ impl Shared {
 verus! {
 
 impl Shared {
-    /// Whether cache and heap pointers are signed ([`PUSH_PAC`]).
-    ///
-    /// Temporary seam: `Shared::init` sets [`PUSH_PAC`] exactly when the
-    /// process signs its pointers ([`pac_mode`](super::pac_mode)), only
-    /// once `sys::pac::available` said yes, and nothing changes the flags
-    /// afterwards; [`Shared::built`] does not state the flags yet, so the
-    /// two ensures are trusted until it does.
-    #[verifier::external_body]
+    /// Whether cache and heap pointers are signed ([`PUSH_PAC`]): in a
+    /// well-formed `Shared`, [`pac_mode`](super::pac_mode), which is on only
+    /// where pointer authentication is available ([`Shared::built`]).
     #[inline(always)]
     pub fn pac(&self) -> (r: bool)
         ensures
             self.wf() ==> r == super::pac_mode(),
             self.wf() && r ==> crate::sys::pac::pac_available(),
     {
+        proof {
+            if self.wf() {
+                self.lemma_wf_slow();
+            }
+        }
         self.push_flags & PUSH_PAC != 0
     }
 }

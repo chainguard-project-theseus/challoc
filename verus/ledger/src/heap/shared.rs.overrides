@@ -28,10 +28,3 @@ axiom_shared_meta	raw pointer (internal)	none (assumption)
 axiom_shared_built	raw pointer (internal)	none (assumption)
 # The caller's storage (`init`'s safety contract), once per process.
 Shared::begin	raw pointer from C caller	none (assumption)
-# Temporary seam, discharged by 37b (planned, tracked in #138), which
-# strengthens `built` and proves it in `Shared::init` after #261: the
-# facts of `wf` the slow paths use that `built` does not carry yet.
-Shared::axiom_wf_slow	allocator invariant	Verus
-# Temporary seam: `Shared::built` does not state the push flags yet;
-# discharged when it does (with `Shared::init`'s flags).
-Shared::pac	allocator invariant	Verus

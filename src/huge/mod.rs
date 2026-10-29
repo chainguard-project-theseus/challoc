@@ -3558,7 +3558,9 @@ impl Huge {
             once.step() == Step::Huge,
         ensures
             r matches Some(h) ==> h.spec_npages() == (regions.huge_len >> regions.lg_page) as int
-                && h.spec_page() == (1usize << regions.lg_page) as int,
+                && h.spec_page() == (1usize << regions.lg_page) as int
+                && h.spec_base() == regions.huge_base,
+            r matches Some(h) ==> h.spec_mid() == meta.live_id(),
             *final(ord) == *old(ord),
     {
         broadcast use axiom_huge_lock_inv;
