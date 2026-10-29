@@ -147,4 +147,43 @@ pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as cor
         array_iter_rest(*old(i)).len() == 0 ==> r is None && array_iter_rest(*final(i)) == array_iter_rest(*old(i)),
 ;
 
+/// `s.sort_unstable()` on a slice of raw pointers: permutes `s`. Trusted:
+/// `core` documents panics for an `Ord` that is not a total order or
+/// that panics itself, and a thin pointer's `Ord` compares addresses,
+/// a total order that does not panic, so the call returns with `s` a
+/// permutation of what it held. A wrapper for `*mut u8` alone, where an
+/// `assume_specification` of `<[T]>::sort_unstable` would cover every
+/// `T: Ord`. `#[inline(always)]` leaves the machine code of the bare call.
+#[inline(always)]
+#[verifier::external_body]
+pub fn sort_ptrs(s: &mut [*mut u8])
+    ensures
+        final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+{
+    s.sort_unstable()
+}
+
+} // verus!
+
+verus! {
+
+/// `for e in s` over a mutable slice: `s.iter_mut()`, whose `vstd`
+/// specification this repeats (the loop hands out each element once, and
+/// each one's final value flows back into `s`).
+pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into_iter ](s: &'a mut [T]) -> (iter: core::slice::IterMut<'a, T>)
+    ensures
+        vstd::std_specs::iter::IteratorSpec::remaining(&iter).len() == old(s)@.len() == final(s)@.len(),
+        forall|i: int| #![trigger vstd::std_specs::iter::IteratorSpec::remaining(&iter)[i]]
+            0 <= i < old(s)@.len() ==> *(vstd::std_specs::iter::IteratorSpec::remaining(&iter)[i]) == old(s)@[i],
+        forall|i: int|
+            #![trigger vstd::std_specs::iter::IteratorSpec::remaining(&iter)[i]]
+            #![trigger final(s)@[i]]
+            0 <= i < old(s)@.len() ==> *final(vstd::std_specs::iter::IteratorSpec::remaining(&iter)[i]) == final(s)@[i],
+        vstd::std_specs::iter::IteratorSpec::obeys_prophetic_iter_laws(&iter),
+        vstd::std_specs::iter::IteratorSpec::will_return_none(&iter),
+        vstd::std_specs::iter::IteratorSpec::decrease(&iter) is Some,
+;
+
 } // verus!

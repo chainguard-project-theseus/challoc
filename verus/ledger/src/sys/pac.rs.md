@@ -9,6 +9,8 @@ file.
 |---|---|---|---|---|
 | `axiom_u..._limit` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_auth_sign` | axiom | platform/kernel fact | none (assumption) | trusted |
+| `sign` | external_body | inline asm | Islaris/Isla | trusted |
+| `auth` | external_body | inline asm | Islaris/Isla | trusted |
 
 ## `axiom_user_va_limit`
 
@@ -38,4 +40,37 @@ pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
     ensures
         #[trigger] spec_auth(spec_sign(p, modifier), modifier) == p,
 ;
+```
+
+## `sign`
+
+src/sys/pac.rs:193. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
+
+> Sign `p` with data key A and `modifier` (`pacda`).
+
+```rust
+pub fn sign(p: usize, modifier: usize) -> (r: usize)
+    requires
+        pac_available(),
+    ensures
+        r == spec_sign(p, modifier),
+    opens_invariants none
+```
+
+## `auth`
+
+src/sys/pac.rs:234. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
+
+> Authenticate `p`, signed by [`sign`] with the same `modifier` (`autda`): the plain pointer, or, when the two disagree, a fault or a non-canonical pointer (module doc).
+
+```rust
+pub fn auth(p: usize, modifier: usize) -> (r: usize)
+    requires
+        pac_available(),
+        super::may_abort_corrupt(),
+    ensures
+        r == spec_auth(p, modifier),
+    opens_invariants none
 ```

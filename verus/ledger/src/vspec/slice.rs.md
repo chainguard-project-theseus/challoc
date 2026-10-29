@@ -15,6 +15,8 @@ file.
 | `array::IntoIter<T, N>` | ext_type_spec | core library | Kani | trusted |
 | `<[T; N] as c...>::into_iter` | assume_spec | core library | Kani | trusted |
 | `<core::array...rator>::next` | assume_spec | core library | Kani | trusted |
+| `sort_ptrs` | external_body | core library | Kani | trusted |
+| `<&'a mut [T]...>::into_iter` | assume_spec | core library | Kani | trusted |
 
 ## `core::slice::from_raw_parts::<'a, T>`
 
@@ -159,5 +161,43 @@ pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as cor
         array_iter_rest(*old(i)).len() > 0 ==> r == Some(array_iter_rest(*old(i))[0]) && array_iter_rest(*final(i))
             == array_iter_rest(*old(i)).drop_first(),
         array_iter_rest(*old(i)).len() == 0 ==> r is None && array_iter_rest(*final(i)) == array_iter_rest(*old(i)),
+;
+```
+
+## `sort_ptrs`
+
+src/vspec/slice.rs:159. Kind: external_body. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `s.sort_unstable()` on a slice of raw pointers: permutes `s`.
+
+```rust
+pub fn sort_ptrs(s: &mut [*mut u8])
+    ensures
+        final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+```
+
+## `<&'a mut [T] as core::iter::IntoIterator>::into_iter`
+
+src/vspec/slice.rs:175. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `for e in s` over a mutable slice: `s.iter_mut()`, whose `vstd` specification this repeats (the loop hands out each element once, and each one's final value flows back into `s`).
+
+```rust
+pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into_iter ](s: &'a mut [T]) -> (iter: core::slice::IterMut<'a, T>)
+    ensures
+        vstd::std_specs::iter::IteratorSpec::remaining(&iter).len() == old(s)@.len() == final(s)@.len(),
+        forall|i: int| #![trigger vstd::std_specs::iter::IteratorSpec::remaining(&iter)[i]]
+            0 <= i < old(s)@.len() ==> *(vstd::std_specs::iter::IteratorSpec::remaining(&iter)[i]) == old(s)@[i],
+        forall|i: int|
+            #![trigger vstd::std_specs::iter::IteratorSpec::remaining(&iter)[i]]
+            #![trigger final(s)@[i]]
+            0 <= i < old(s)@.len() ==> *final(vstd::std_specs::iter::IteratorSpec::remaining(&iter)[i]) == final(s)@[i],
+        vstd::std_specs::iter::IteratorSpec::obeys_prophetic_iter_laws(&iter),
+        vstd::std_specs::iter::IteratorSpec::will_return_none(&iter),
+        vstd::std_specs::iter::IteratorSpec::decrease(&iter) is Some,
 ;
 ```

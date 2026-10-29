@@ -182,11 +182,21 @@ pub fn fpac() -> bool {
     }
 }
 
+verus! {
+
 /// Sign `p` with data key A and `modifier` (`pacda`). Only when
-/// [`available`] is true; `p` must be a plain (unsigned) pointer, since
+/// [`pac_available`]; `p` must be a plain (unsigned) pointer, since
 /// signing a signed pointer corrupts its PAC.
+/// Inline assembly on aarch64, outside what Verus checks.
+#[verifier::external_body]
 #[inline(always)]
-pub fn sign(p: usize, modifier: usize) -> usize {
+pub fn sign(p: usize, modifier: usize) -> (r: usize)
+    requires
+        pac_available(),
+    ensures
+        r == spec_sign(p, modifier),
+    opens_invariants none
+{
     #[cfg(target_arch = "aarch64")]
     {
         #[cfg(test)]
@@ -213,10 +223,22 @@ pub fn sign(p: usize, modifier: usize) -> usize {
 }
 
 /// Authenticate `p`, signed by [`sign`] with the same `modifier`
-/// (`autda`): the plain pointer, or a fault / a non-canonical pointer
-/// (module doc) when the two disagree.
+/// (`autda`): the plain pointer, or, when the two disagree, a fault or a
+/// non-canonical pointer (module doc). The fault (FEAT_FPAC's `SIGILL`)
+/// kills the process and, with the keys fixed as `spec_sign` assumes,
+/// fires only on a corrupt entry: an integrity abort, so the caller holds
+/// `sys::may_abort_corrupt`.
+/// Inline assembly on aarch64, outside what Verus checks.
+#[verifier::external_body]
 #[inline(always)]
-pub fn auth(p: usize, modifier: usize) -> usize {
+pub fn auth(p: usize, modifier: usize) -> (r: usize)
+    requires
+        pac_available(),
+        super::may_abort_corrupt(),
+    ensures
+        r == spec_auth(p, modifier),
+    opens_invariants none
+{
     #[cfg(target_arch = "aarch64")]
     {
         #[cfg(test)]
@@ -241,6 +263,8 @@ pub fn auth(p: usize, modifier: usize) -> usize {
         p
     }
 }
+
+} // verus!
 
 /// Strip the PAC from `p` without authenticating it (`xpacd`): the address
 /// a signed or corrupted entry names, for abort messages and tests. Only
