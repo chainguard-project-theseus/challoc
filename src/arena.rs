@@ -3368,6 +3368,15 @@ impl Arenas {
         &&& self.spec_pub_loc() == Shared::built_at(Shared::storage()).arenas.spec_pub_loc()
     }
 
+    /// The process registry is [`Arenas::is_process`].
+    pub(crate) proof fn lemma_is_process(&self)
+        requires
+            *self == Shared::built_at(Shared::storage()).arenas,
+        ensures
+            self.is_process(),
+    {
+    }
+
     /// Arena `index` if it exists, with its persistent record
     /// ([`Published`]). An automatic index whose arena has not been built
     /// yet is built here (cold); an explicit index that `create` has not

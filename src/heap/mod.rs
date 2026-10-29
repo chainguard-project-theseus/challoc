@@ -468,13 +468,11 @@ pub proof fn lemma_huge_fits(p: *mut u8, size: usize, a1: usize, a2: usize)
 }
 
 /// Whether cache entries are stored signed: the process's `Shared` has
-/// [`PUSH_PAC`] set. Uninterpreted; [`Shared::pac`]'s trusted ensures is
-/// the seam that ties it to what a well-formed `Shared`'s `pac` returns
-/// (`push_flags & PUSH_PAC`, in a trusted body). One
-/// value, since a process publishes one `Shared` and `push_flags` is
-/// written once, before the `Shared` is published. The unit tests build
-/// several with different flags, which that tie would contradict, so the
-/// spec stands for the shipped library only.
+/// [`PUSH_PAC`] set. Uninterpreted; `heap::shared::axiom_process_shared`
+/// ties it to the `push_flags` of the `Shared` in its storage. One value, since a process publishes one `Shared` and
+/// `push_flags` is written once, before the `Shared` is published. The
+/// unit tests build several with different flags, so the spec stands for
+/// the shipped library only.
 pub uninterp spec fn pac_mode() -> bool;
 
 /// A slot start of class `c` has no other class, so the hint `Some(c)`

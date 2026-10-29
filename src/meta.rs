@@ -3518,6 +3518,13 @@ pub closed spec fn process_live_id() -> Loc {
     crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.live_id()
 }
 
+/// [`process_live_id`] unfolded.
+pub(crate) proof fn lemma_process_live_id()
+    ensures
+        process_live_id() == crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.live_id(),
+{
+}
+
 } // verus!
 
 verus! {
