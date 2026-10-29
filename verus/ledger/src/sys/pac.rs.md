@@ -8,10 +8,11 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_u..._limit` | axiom | platform/kernel fact | none (assumption) | trusted |
+| `axiom_auth_sign` | axiom | platform/kernel fact | none (assumption) | trusted |
 
 ## `axiom_user_va_limit`
 
-src/sys/pac.rs:47. Kind: axiom. Category: platform/kernel fact.
+src/sys/pac.rs:61. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (Linux's default map window): the limit is at most `2^48`.
@@ -20,5 +21,21 @@ Tool: none (assumption). Status: trusted.
 pub axiom fn axiom_user_va_limit()
     ensures
         user_va_limit() <= 0x1_0000_0000_0000,
+;
+```
+
+## `axiom_auth_sign`
+
+src/sys/pac.rs:71. Kind: axiom. Category: platform/kernel fact.
+Tool: none (assumption). Status: trusted.
+
+> Trusted (Armv8.3 PAuth, and the identity on x86_64): authenticating what signing a plain user address returned, with the same modifier, gives the address back.
+
+```rust
+pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
+    requires
+        p < user_va_limit(),
+    ensures
+        #[trigger] spec_auth(spec_sign(p, modifier), modifier) == p,
 ;
 ```

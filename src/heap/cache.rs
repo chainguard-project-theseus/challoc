@@ -11,6 +11,8 @@ use crate::sys::pac;
 use super::{FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE, assert_rekey_flushed};
 use vstd::prelude::verus;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
 
 verus! {
 
@@ -497,3 +499,36 @@ impl Heap {
         cache
     }
 }
+
+verus! {
+
+// Verus checks the size and alignment this layout states.
+global layout CacheHeader is size == 64, align == 64;
+
+/// The size and alignment `global layout` gives [`CacheHeader`], for
+/// modules that do not see the declaration.
+pub(super) proof fn lemma_header_layout()
+    ensures
+        vstd::layout::size_of::<CacheHeader>() == 64,
+        vstd::layout::align_of::<CacheHeader>() == 64,
+{
+}
+
+impl CacheHeader {
+    /// The header invariant: the run lies inside the entries not popped
+    /// since the last GC, which lie inside the stack, which lies inside
+    /// its capacity (`run_end <= low_water <= len <= cap`), a capacity of at
+    /// most [`MAX_NSLOTS`](crate::config::MAX_NSLOTS) (`Heap::ensure_cache`
+    /// sizes it from the ladder, which `tcache_nslots_small_max` bounds; the
+    /// flush's [`flag_sort`](super::flush::flag_sort) assumes that bound,
+    /// in its debug assertion and its `u32` cursors), and the zero prefix
+    /// lies inside the entries not popped since the last GC
+    /// (`zeroed <= low_water`, see [`CacheHeader::zeroed`]).
+    pub(super) open spec fn inv(&self) -> bool {
+        &&& self.run_end <= self.low_water <= self.len <= self.cap
+        &&& self.cap <= crate::config::MAX_NSLOTS
+        &&& self.zeroed <= self.low_water
+    }
+}
+
+} // verus!

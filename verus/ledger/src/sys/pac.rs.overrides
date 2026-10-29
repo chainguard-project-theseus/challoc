@@ -1,1 +1,4 @@
 axiom_user_va_limit	platform/kernel fact	none (assumption)
+# Armv8.3 PAuth (the identity on x86_64): authenticating a signed plain
+# user address with the same modifier gives it back.
+axiom_auth_sign	platform/kernel fact	none (assumption)
