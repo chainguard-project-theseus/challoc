@@ -592,6 +592,14 @@ ctests! {
         negative!("dallocx_none_twice", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
             stdout_lacks: &["returned"]),
     ];
+    /// `dallocx(p, MALLOCX_TCACHE(4000))`, an explicit cache id past the
+    /// table (`heap::tcaches::MAX_TCACHES`), so one `tcache.create` never
+    /// returned: the routing finds no such cache and aborts at the call
+    /// with the id in the message.
+    c_negative_dallocx_bad_tcache => [
+        negative!("dallocx_bad_tcache", SIGABRT, &["MALLOCX_TCACHE(4000): no such explicit cache"],
+            stdout_lacks: &["returned"]),
+    ];
     /// Item 43: `free_sized` with a huge size hint on a slab pointer. The hint
     /// names no class, so the sized fast path declines and the slow path's
     /// hint check aborts at the call.

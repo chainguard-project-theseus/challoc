@@ -90,7 +90,7 @@ impl Flags {
 #[cold]
 #[inline(never)]
 fn invalid_tcache(id: u16) -> ! {
-    panic!("MALLOCX_TCACHE({id}): no such explicit cache")
+    crate::sys::abort_fmt(format_args!("MALLOCX_TCACHE({id}): no such explicit cache"))
 }
 
 /// Routing of a `MALLOCX` allocation of a non-huge class on the calling
