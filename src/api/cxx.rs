@@ -42,6 +42,10 @@ use core::ffi::c_void;
 use core::ptr;
 
 use super::libc;
+use crate::heap::Live;
+use crate::vspec::cbuf::CCall;
+use crate::vspec::errno::ThreadErrno;
+use vstd::prelude::Tracked;
 
 /// `std::new_handler`: `void (*)()`, null when none is installed.
 type NewHandler = Option<unsafe extern "C" fn()>;
@@ -136,7 +140,13 @@ fn throw_bad_alloc() -> ! {
 /// the handler throws). `align` is 0 for the unaligned operators.
 #[cold]
 #[inline(never)]
-fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
+fn oom(
+    size: usize,
+    align: usize,
+    nothrow: bool,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
     loop {
         let Some(handler) = new_handler() else {
             if nothrow {
@@ -156,9 +166,9 @@ fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
             unsafe { handler() };
         }
         let p = if align == 0 {
-            libc::malloc(size)
+            libc::malloc(size, vstd::prelude::Tracked::assume_new())
         } else {
-            libc::aligned_alloc(align, size)
+            libc::aligned_alloc(align, size, vstd::prelude::Tracked::assume_new())
         };
         if !p.is_null() {
             return p;
@@ -169,10 +179,21 @@ fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
 /// `malloc`'s slow path with the `new` failure protocol on top.
 #[cold]
 #[inline(never)]
-fn new_slow(size: usize, nothrow: bool) -> *mut u8 {
-    let p = libc::malloc_slow(size);
+fn new_slow(
+    size: usize,
+    nothrow: bool,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    let p = libc::malloc_slow(size, Tracked::assume_new(), Tracked::assume_new());
     if p.is_null() {
-        oom(size, 0, nothrow)
+        oom(
+            size,
+            0,
+            nothrow,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     } else {
         p
     }
@@ -181,34 +202,71 @@ fn new_slow(size: usize, nothrow: bool) -> *mut u8 {
 /// `operator new(size)` and `operator new[](size)`: `malloc`'s fast path
 /// inline, everything else one tail call away.
 #[inline(always)]
-pub fn new(size: usize) -> *mut u8 {
-    match libc::malloc_fast(size) {
-        Some(p) => p,
-        None => new_slow(size, false),
-    }
+pub fn new(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    new_block(size, false, Tracked::assume_new(), Tracked::assume_new())
 }
 
 /// The `nothrow_t` forms: null on failure after the handler loop.
 #[inline(always)]
-pub fn new_nothrow(size: usize) -> *mut u8 {
-    match libc::malloc_fast(size) {
+pub fn new_nothrow(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    new_block(size, true, Tracked::assume_new(), Tracked::assume_new())
+}
+
+/// [`new`] (`nothrow` false) and [`new_nothrow`] with the block's token,
+/// as `libc::malloc_block`.
+#[inline(always)]
+pub fn new_block(
+    size: usize,
+    nothrow: bool,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    match libc::malloc_fast(size, Tracked::assume_new()) {
         Some(p) => p,
-        None => new_slow(size, true),
+        None => new_slow(size, nothrow, Tracked::assume_new(), Tracked::assume_new()),
     }
 }
 
 /// The `align_val_t` forms. A non-power-of-two `align` fails here and
 /// skips the handler loop: no amount of freed memory makes it valid.
-pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> *mut u8 {
+pub fn new_aligned(
+    size: usize,
+    align: usize,
+    nothrow: bool,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    new_aligned_block(
+        size,
+        align,
+        nothrow,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
+}
+
+/// [`new_aligned`] with the block's token, as `libc::malloc_block`.
+pub fn new_aligned_block(
+    size: usize,
+    align: usize,
+    nothrow: bool,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
     if !align.is_power_of_two() {
         if nothrow {
             return ptr::null_mut();
         }
         throw_bad_alloc()
     }
-    let p = libc::aligned_alloc(align, size);
+    let p = libc::aligned_alloc_block(align, size, Tracked::assume_new(), Tracked::assume_new());
     if p.is_null() {
-        oom(size, align, nothrow)
+        oom(
+            size,
+            align,
+            nothrow,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     } else {
         p
     }
@@ -216,24 +274,24 @@ pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> *mut u8 {
 
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
 #[inline(always)]
-pub fn delete(p: *mut u8) {
-    libc::free(p)
+pub fn delete(p: *mut u8, _c: Tracked<CCall>) {
+    libc::free(p, Tracked::assume_new())
 }
 
 /// `operator delete(void*, size_t)` and its array form: `free_sized`. The
 /// size is the one the matching `operator new(size)` was called with, so
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
-pub fn delete_sized(p: *mut u8, size: usize) {
-    libc::free_sized(p, size)
+pub fn delete_sized(p: *mut u8, size: usize, _c: Tracked<CCall>) {
+    libc::free_sized(p, size, Tracked::assume_new())
 }
 
 /// `operator delete(void*, size_t, std::align_val_t)` and its array form:
 /// `free_aligned_sized` with the arguments the matching aligned `new`
 /// passed to `aligned_alloc`.
 #[inline(always)]
-pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize) {
-    libc::free_aligned_sized(p, align, size)
+pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, _c: Tracked<CCall>) {
+    libc::free_aligned_sized(p, align, size, Tracked::assume_new())
 }
 
 // ---------------------------------------------------------------------------
@@ -248,37 +306,37 @@ mod exports {
     /// `operator new(size_t)`
     #[unsafe(export_name = "_Znwm")]
     pub extern "C" fn new(size: usize) -> *mut c_void {
-        super::new(size) as *mut c_void
+        super::new(size, vstd::prelude::Tracked::assume_new()) as *mut c_void
     }
 
     /// `operator new[](size_t)`
     #[unsafe(export_name = "_Znam")]
     pub extern "C" fn new_array(size: usize) -> *mut c_void {
-        super::new(size) as *mut c_void
+        super::new(size, vstd::prelude::Tracked::assume_new()) as *mut c_void
     }
 
     /// `operator new(size_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnwmRKSt9nothrow_t")]
     pub extern "C" fn new_nothrow(size: usize, _tag: *const c_void) -> *mut c_void {
-        super::new_nothrow(size) as *mut c_void
+        super::new_nothrow(size, vstd::prelude::Tracked::assume_new()) as *mut c_void
     }
 
     /// `operator new[](size_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnamRKSt9nothrow_t")]
     pub extern "C" fn new_array_nothrow(size: usize, _tag: *const c_void) -> *mut c_void {
-        super::new_nothrow(size) as *mut c_void
+        super::new_nothrow(size, vstd::prelude::Tracked::assume_new()) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZnwmSt11align_val_t")]
     pub extern "C" fn new_aligned(size: usize, align: usize) -> *mut c_void {
-        super::new_aligned(size, align, false) as *mut c_void
+        super::new_aligned(size, align, false, vstd::prelude::Tracked::assume_new()) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZnamSt11align_val_t")]
     pub extern "C" fn new_array_aligned(size: usize, align: usize) -> *mut c_void {
-        super::new_aligned(size, align, false) as *mut c_void
+        super::new_aligned(size, align, false, vstd::prelude::Tracked::assume_new()) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t, const std::nothrow_t&)`
@@ -288,7 +346,7 @@ mod exports {
         align: usize,
         _tag: *const c_void,
     ) -> *mut c_void {
-        super::new_aligned(size, align, true) as *mut c_void
+        super::new_aligned(size, align, true, vstd::prelude::Tracked::assume_new()) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t, const std::nothrow_t&)`
@@ -298,61 +356,61 @@ mod exports {
         align: usize,
         _tag: *const c_void,
     ) -> *mut c_void {
-        super::new_aligned(size, align, true) as *mut c_void
+        super::new_aligned(size, align, true, vstd::prelude::Tracked::assume_new()) as *mut c_void
     }
 
     /// `operator delete(void*)`
     #[unsafe(export_name = "_ZdlPv")]
     pub extern "C" fn delete(p: *mut c_void) {
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete[](void*)`
     #[unsafe(export_name = "_ZdaPv")]
     pub extern "C" fn delete_array(p: *mut c_void) {
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete(void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvRKSt9nothrow_t")]
     pub extern "C" fn delete_nothrow(p: *mut c_void, _tag: *const c_void) {
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete[](void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdaPvRKSt9nothrow_t")]
     pub extern "C" fn delete_array_nothrow(p: *mut c_void, _tag: *const c_void) {
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete(void*, size_t)`
     #[unsafe(export_name = "_ZdlPvm")]
     pub extern "C" fn delete_sized(p: *mut c_void, size: usize) {
-        super::delete_sized(p as *mut u8, size)
+        super::delete_sized(p as *mut u8, size, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete[](void*, size_t)`
     #[unsafe(export_name = "_ZdaPvm")]
     pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize) {
-        super::delete_sized(p as *mut u8, size)
+        super::delete_sized(p as *mut u8, size, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete(void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_t")]
     pub extern "C" fn delete_aligned(p: *mut c_void, _align: usize) {
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete[](void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvSt11align_val_t")]
     pub extern "C" fn delete_array_aligned(p: *mut c_void, _align: usize) {
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete(void*, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_tRKSt9nothrow_t")]
     pub extern "C" fn delete_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *const c_void) {
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete[](void*, std::align_val_t, const std::nothrow_t&)`
@@ -362,19 +420,29 @@ mod exports {
         _align: usize,
         _tag: *const c_void,
     ) {
-        super::delete(p as *mut u8)
+        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
     }
 
     /// `operator delete(void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvmSt11align_val_t")]
     pub extern "C" fn delete_sized_aligned(p: *mut c_void, size: usize, align: usize) {
-        super::delete_sized_aligned(p as *mut u8, size, align)
+        super::delete_sized_aligned(
+            p as *mut u8,
+            size,
+            align,
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete[](void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvmSt11align_val_t")]
     pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, size: usize, align: usize) {
-        super::delete_sized_aligned(p as *mut u8, size, align)
+        super::delete_sized_aligned(
+            p as *mut u8,
+            size,
+            align,
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 }
 

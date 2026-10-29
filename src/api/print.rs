@@ -1570,7 +1570,9 @@ mod tests {
 
     #[test]
     fn text_report_has_every_section_and_live_figures() {
-        let live: Vec<*mut u8> = (0..100).map(|_| malloc(700)).collect();
+        let live: Vec<*mut u8> = (0..100)
+            .map(|_| malloc(700, vstd::prelude::Tracked::assume_new()))
+            .collect();
         let text = report("");
         assert!(
             text.starts_with("___ Begin jemalloc statistics ___\n"),
@@ -1645,7 +1647,7 @@ mod tests {
             .unwrap();
         assert!(allocated >= 100 * size);
         for p in live {
-            free(p);
+            free(p, vstd::prelude::Tracked::assume_new());
         }
         // Option letters.
         let g = report("g");
@@ -1941,7 +1943,10 @@ mod tests {
         let s = crate::api::shared();
         // Make sure this thread has a heap (the counters live in it), then
         // read them through the same materialisation `mallctl` uses.
-        free(malloc(64));
+        free(
+            malloc(64, vstd::prelude::Tracked::assume_new()),
+            vstd::prelude::Tracked::assume_new(),
+        );
         let counters = || {
             let st = crate::heap::heap_for_thread(s).unwrap().materialise_stats();
             (st.allocated, st.deallocated)
@@ -1994,8 +1999,10 @@ mod tests {
 
     #[test]
     fn malloc_info_writes_glibc_xml_to_the_stream() {
-        let live: Vec<*mut u8> = (0..50).map(|_| malloc(3000)).collect();
-        let big = malloc(1 << 20);
+        let live: Vec<*mut u8> = (0..50)
+            .map(|_| malloc(3000, vstd::prelude::Tracked::assume_new()))
+            .collect();
+        let big = malloc(1 << 20, vstd::prelude::Tracked::assume_new());
         let f = unsafe { libc::tmpfile() };
         assert!(!f.is_null());
         assert_eq!(malloc_info(0, f, Tracked::assume_new()), 0);
@@ -2025,9 +2032,9 @@ mod tests {
             malloc_info(0, core::ptr::null_mut(), Tracked::assume_new()),
             -1
         );
-        free(big);
+        free(big, vstd::prelude::Tracked::assume_new());
         for p in live {
-            free(p);
+            free(p, vstd::prelude::Tracked::assume_new());
         }
         // glibc's malloc_stats just has to run and stay on stderr.
         malloc_stats();

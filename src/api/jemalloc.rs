@@ -51,9 +51,12 @@ use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
 use super::libc::{class_for, old_size_or_keep, usable_size};
-use crate::heap::Shared;
 use crate::heap::mallocx::{self, Flags, Tcache};
+use crate::heap::{Live, Shared};
 use crate::layout::{CLASSES, Kind};
+use crate::vspec::cbuf::CCall;
+use crate::vspec::zero::Zeroed;
+use vstd::prelude::{Ghost, Tracked, int};
 
 /// `void (*malloc_message)(void *cbopaque, const char *s)`; null when the
 /// program has not installed one.
@@ -142,43 +145,57 @@ fn usable_for(shared: &Shared, size: usize, f: &Flags) -> Option<usize> {
 /// usable size when `MALLOCX_ZERO` is set and the memory is not already
 /// known to be zero. Null on exhaustion or for an arena or explicit cache
 /// that does not exist (`errno` untouched).
-fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> *mut u8 {
+fn alloc_with(
+    shared: &Shared,
+    size: usize,
+    f: &Flags,
+    _blk: Tracked<&mut Live>,
+) -> (*mut u8, Tracked<Zeroed>) {
     let align = f.align();
-    let (p, usable, zeroed) = match class_for(size, align) {
+    let (p, usable, zeroed, z) = match class_for(size, align) {
         Some(c) => {
-            let (p, z, _) = mallocx::alloc(
-                shared,
-                c,
-                f.arena,
-                f.tcache,
-                vstd::prelude::Tracked::assume_new(),
-            );
-            (p, CLASSES.table()[c].size(), z)
+            let (p, zero, z) = mallocx::alloc(shared, c, f.arena, f.tcache, Tracked::assume_new());
+            (p, CLASSES.table()[c].size(), zero, z)
         }
         None => {
-            let (p, z, _) = mallocx::alloc_huge(
+            let (p, zero, z) = mallocx::alloc_huge(
                 shared,
                 size,
                 align,
                 f.arena,
                 f.tcache,
-                vstd::prelude::Tracked::assume_new(),
+                Tracked::assume_new(),
             );
-            (p, shared.huge.usable_for(size).unwrap_or(0), z)
+            let u = shared.huge.usable_for(size);
+            (p, u.unwrap_or(0), zero, z)
         }
     };
     if !p.is_null() && f.zero && !zeroed {
-        // SAFETY: `p` is a fresh allocation of `usable` bytes.
+        // SAFETY: a fresh block with `usable` usable bytes.
         unsafe { ptr::write_bytes(p, 0, usable) };
+        return (p, Tracked::assume_new());
     }
-    p
+    (p, z)
 }
 
 /// `mallocx(size, flags)`. `size == 0` gets the smallest class, as
 /// `malloc(0)` does.
 pub fn mallocx(size: usize, flags: c_int) -> *mut u8 {
+    mallocx_zeroed(size, flags, Tracked::assume_new()).0
+}
+
+/// [`mallocx`] with the token that `MALLOCX_ZERO` memory reads as zero:
+/// with the flag, a non-null result comes with a [`Zeroed`] token for its
+/// whole usable size (the class's size for a slot, `size` rounded up to
+/// whole pages for a huge run), which is at least `size`; and `blk` gets
+/// the block's token.
+pub fn mallocx_zeroed(
+    size: usize,
+    flags: c_int,
+    _blk: Tracked<&mut Live>,
+) -> (*mut u8, Tracked<Zeroed>) {
     let f = Flags::decode(flags as u32);
-    alloc_with(super::shared(), size, &f)
+    alloc_with(super::shared(), size, &f, Tracked::assume_new())
 }
 
 /// `rallocx(p, size, flags)`: in place when the new size maps to the same
@@ -188,28 +205,58 @@ pub fn mallocx(size: usize, flags: c_int) -> *mut u8 {
 /// `min(old usable, size)`, free `p` through the flags' cache.
 /// `MALLOCX_ZERO` zeroes the bytes beyond the copied prefix of a moved
 /// block. On failure `p` is intact and null comes back.
-pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> *mut u8 {
+pub fn rallocx(p: *mut u8, size: usize, flags: c_int, _c: Tracked<CCall>) -> *mut u8 {
+    rallocx_zeroed(p, size, flags, Tracked::assume_new(), Tracked::assume_new()).0
+}
+
+/// [`rallocx`] with the token that `MALLOCX_ZERO` memory past the copy
+/// reads as zero: with the flag, a new block (null `p`, or a moved block)
+/// comes with a [`Zeroed`] token for its bytes from `k` to the end of its
+/// usable size, where `k`, the ghost second result, is the number of bytes
+/// copied from `p`: `min(old usable, size)`, and 0 for a null `p`. `blk`
+/// is the caller's token for `p`, and `out` gets the result's: a new
+/// block's, or `blk` itself when `p` is kept or the move fails (`p` is
+/// then still the caller's).
+pub fn rallocx_zeroed(
+    p: *mut u8,
+    size: usize,
+    flags: c_int,
+    _blk: Tracked<Live>,
+    _out: Tracked<&mut Live>,
+) -> (*mut u8, Ghost<int>, Tracked<Zeroed>) {
     let f = Flags::decode(flags as u32);
     if p.is_null() {
-        return alloc_with(super::shared(), size, &f);
+        let (q, z) = alloc_with(super::shared(), size, &f, Tracked::assume_new());
+        return (q, Ghost::assume_new(), z);
     }
     let Some(shared) = super::shared_if_ready() else {
         not_an_allocation("rallocx", p)
     };
-    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, f.align()) else {
-        return p;
+    let align = f.align();
+    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, align, Tracked::assume_new())
+    else {
+        return (p, Ghost::assume_new(), Tracked::assume_new());
     };
-    let q = alloc_with(shared, size, &f);
+    let (q, _) = alloc_with(shared, size, &f, Tracked::assume_new());
     if q.is_null() {
-        return q;
+        return (q, Ghost::assume_new(), Tracked::assume_new());
     }
-    // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
-    // ones, and they are distinct allocations. `alloc_with` already zeroed
-    // `q` when `MALLOCX_ZERO` asked for it, so the tail past the copy is
-    // zero.
-    unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
-    mallocx::free(shared, p, f.tcache, vstd::prelude::Tracked::assume_new());
-    q
+    // SAFETY: `old_size_or_keep` classified `p` as a live block with `old`
+    // usable bytes, and `q` is a fresh allocation of at least `size` bytes,
+    // distinct from `p`. `alloc_with`
+    // already zeroed `q` when `MALLOCX_ZERO` asked for it, so the tail
+    // past the copy is zero.
+    unsafe {
+        super::libc::copy_moved(
+            p,
+            q,
+            old.min(size),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+    };
+    mallocx::free(shared, p, f.tcache, Tracked::assume_new());
+    (q, Ghost::assume_new(), Tracked::assume_new())
 }
 
 /// `xallocx(p, size, extra, flags)`: resize in place only. challoc never
@@ -227,12 +274,18 @@ pub fn sallocx(p: *mut u8, _flags: c_int) -> usize {
     let Some(shared) = super::shared_if_ready() else {
         not_an_allocation("sallocx", p)
     };
-    usable_size(shared, p)
+    usable_size(shared, p, Tracked::assume_new())
 }
 
 /// `dallocx(p, flags)`: free through the flags' cache (`MALLOCX_TCACHE_NONE`
 /// releases the slot straight to its slab bitmap). Null is a no-op.
-pub fn dallocx(p: *mut u8, flags: c_int) {
+pub fn dallocx(p: *mut u8, flags: c_int, _c: Tracked<CCall>) {
+    dallocx_block(p, flags, Tracked::assume_new())
+}
+
+/// [`dallocx`] with the caller's token for `p`, which
+/// the free takes back: the token of the live block `p`.
+pub fn dallocx_block(p: *mut u8, flags: c_int, _blk: Tracked<Live>) {
     if p.is_null() {
         return;
     }
@@ -240,7 +293,7 @@ pub fn dallocx(p: *mut u8, flags: c_int) {
     let Some(shared) = super::shared_if_ready() else {
         not_an_allocation("dallocx", p)
     };
-    mallocx::free(shared, p, f.tcache, vstd::prelude::Tracked::assume_new());
+    mallocx::free(shared, p, f.tcache, Tracked::assume_new());
 }
 
 /// `sdallocx(p, size, flags)`: `size` must satisfy `nallocx(size, flags)
@@ -256,25 +309,37 @@ pub fn dallocx(p: *mut u8, flags: c_int) {
 /// [`sdallocx_flags`], a call, so that the compiler cannot merge the two
 /// sized fast paths behind a test of the hint.
 #[inline(always)]
-pub fn sdallocx(p: *mut u8, size: usize, flags: c_int) {
+pub fn sdallocx(p: *mut u8, size: usize, flags: c_int, _c: Tracked<CCall>) {
+    sdallocx_block(p, size, flags, Tracked::assume_new())
+}
+
+/// [`sdallocx`] with the caller's token for `p`, which
+/// the free takes back: the token of the live block `p`.
+#[inline(always)]
+pub fn sdallocx_block(p: *mut u8, size: usize, flags: c_int, _blk: Tracked<Live>) {
     if flags == 0 {
-        return super::libc::free_sized(p, size);
+        return super::libc::free_sized_with(p, size, Tracked::assume_new());
     }
-    sdallocx_flags(p, size, flags)
+    sdallocx_flags(p, size, flags, Tracked::assume_new())
 }
 
 /// `sdallocx` with non-zero flags: the decoded alignment's class as the
 /// hint through the default cache, or an explicit cache or none.
 #[inline(never)]
-fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int) {
+fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int, _blk: Tracked<Live>) {
     let f = Flags::decode(flags as u32);
     match f.tcache {
-        Tcache::Default => super::libc::free_sized_hint(p, size, class_for(size, f.align())),
+        Tcache::Default => super::libc::free_sized_block(
+            p,
+            size,
+            class_for(size, f.align()),
+            Tracked::assume_new(),
+        ),
         // The raw flags, not `f`: a `Flags` argument goes by pointer to a
         // stack copy, and that copy is a frame every default `sdallocx`
         // sets up and tears down (the sized path's instruction budget,
         // design 6.3).
-        _ => sdallocx_routed(p, size, flags),
+        _ => sdallocx_routed(p, size, flags, Tracked::assume_new()),
     }
 }
 
@@ -283,7 +348,7 @@ fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int) {
 #[inline(never)]
 // sdallocx's path: left as written so its codegen does not move.
 #[allow(clippy::collapsible_if)]
-fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
+fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, _blk: Tracked<Live>) {
     if p.is_null() {
         return;
     }
@@ -300,14 +365,14 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
                 p,
                 hint,
                 shared.push_flags(),
-                vstd::prelude::Tracked::assume_new(),
+                Tracked::assume_new(),
             ) {
                 return;
             }
         }
     }
-    shared.check_size_hint(p, size, hint, vstd::prelude::Tracked::assume_new());
-    mallocx::free(shared, p, f.tcache, vstd::prelude::Tracked::assume_new());
+    shared.check_size_hint(p, size, hint, Tracked::assume_new());
+    mallocx::free(shared, p, f.tcache, Tracked::assume_new());
 }
 
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when
@@ -393,7 +458,7 @@ mod exports {
             super::mallocx(size, flags) as *mut c_void
         }
         fn rallocx / je_rallocx(p: *mut c_void, size: usize, flags: c_int) -> *mut c_void {
-            super::rallocx(p as *mut u8, size, flags) as *mut c_void
+            super::rallocx(p as *mut u8, size, flags, vstd::prelude::Tracked::assume_new()) as *mut c_void
         }
         fn xallocx / je_xallocx(p: *mut c_void, size: usize, extra: usize, flags: c_int) -> usize {
             super::xallocx(p as *mut u8, size, extra, flags)
@@ -402,10 +467,10 @@ mod exports {
             super::sallocx(p as *mut u8, flags)
         }
         fn dallocx / je_dallocx(p: *mut c_void, flags: c_int) {
-            super::dallocx(p as *mut u8, flags)
+            super::dallocx(p as *mut u8, flags, vstd::prelude::Tracked::assume_new())
         }
         fn sdallocx / je_sdallocx(p: *mut c_void, size: usize, flags: c_int) {
-            super::sdallocx(p as *mut u8, size, flags)
+            super::sdallocx(p as *mut u8, size, flags, vstd::prelude::Tracked::assume_new())
         }
         fn nallocx / je_nallocx(size: usize, flags: c_int) -> usize {
             super::nallocx(size, flags)
@@ -475,7 +540,7 @@ mod tests {
                 }
                 // Dirty it, free it, and take the same shape zeroed.
                 unsafe { ptr::write_bytes(p, 0xAB, usable) };
-                dallocx(p, flags);
+                dallocx(p, flags, vstd::prelude::Tracked::assume_new());
                 let z = mallocx(size, flags | MALLOCX_ZERO as c_int);
                 assert!(!z.is_null());
                 let n = sallocx(z, 0);
@@ -486,7 +551,7 @@ mod tests {
                         "mallocx ZERO size {size} lg_align {la} byte {i}"
                     );
                 }
-                sdallocx(z, size, flags);
+                sdallocx(z, size, flags, vstd::prelude::Tracked::assume_new());
             }
         }
         // Alignment above the medium tier is a huge run even for one byte.
@@ -497,7 +562,7 @@ mod tests {
             Kind::Huge { .. }
         ));
         assert_eq!(p as usize % (1 << 19), 0);
-        dallocx(p, 0);
+        dallocx(p, 0, vstd::prelude::Tracked::assume_new());
         assert_eq!(nallocx(usize::MAX, 0), 0);
         assert_eq!(nallocx(0, 0), class_size_of(0).unwrap());
         assert!(mallocx(usize::MAX / 2, 0).is_null());
@@ -527,19 +592,24 @@ mod tests {
         let p = mallocx(1 << 20, flags);
         assert!(!p.is_null());
         assert_eq!(p as usize % (1 << 24), 0);
-        dallocx(p, flags);
+        dallocx(p, flags, vstd::prelude::Tracked::assume_new());
     }
 
     #[test]
     fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         // Same class keeps the pointer; a class change moves and copies.
-        let p = rallocx(ptr::null_mut(), 10, 0);
+        let p = rallocx(ptr::null_mut(), 10, 0, vstd::prelude::Tracked::assume_new());
         assert!(!p.is_null());
         for i in 0..10 {
             unsafe { *p.add(i) = i as u8 };
         }
-        assert_eq!(rallocx(p, 16, 0), p);
-        let q = rallocx(p, 100, MALLOCX_ZERO as c_int);
+        assert_eq!(rallocx(p, 16, 0, vstd::prelude::Tracked::assume_new()), p);
+        let q = rallocx(
+            p,
+            100,
+            MALLOCX_ZERO as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_ne!(q, p);
         let n = sallocx(q, 0);
         for i in 0..n {
@@ -547,11 +617,16 @@ mod tests {
             assert_eq!(unsafe { *q.add(i) }, want, "byte {i} after rallocx ZERO");
         }
         // Alignment forces a move even within the same size.
-        let r = rallocx(q, 100, mallocx_lg_align(12) as c_int);
+        let r = rallocx(
+            q,
+            100,
+            mallocx_lg_align(12) as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(r as usize % 4096, 0);
         assert_eq!(unsafe { *r.add(9) }, 9);
         // Into and out of the huge tier.
-        let h = rallocx(r, MEDIUM_MAX + 1, 0);
+        let h = rallocx(r, MEDIUM_MAX + 1, 0, vstd::prelude::Tracked::assume_new());
         assert!(matches!(
             shared().regions.classify(h as usize),
             Kind::Huge { .. }
@@ -559,18 +634,28 @@ mod tests {
         assert_eq!(unsafe { *h.add(9) }, 9);
         let page = shared().regions.page_size();
         assert_eq!(
-            rallocx(h, MEDIUM_MAX + page, 0),
+            rallocx(
+                h,
+                MEDIUM_MAX + page,
+                0,
+                vstd::prelude::Tracked::assume_new()
+            ),
             h,
             "same page count keeps the run"
         );
-        let h2 = rallocx(h, MEDIUM_MAX + page + 1, MALLOCX_ZERO as c_int);
+        let h2 = rallocx(
+            h,
+            MEDIUM_MAX + page + 1,
+            MALLOCX_ZERO as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_ne!(h2, h);
         assert_eq!(unsafe { *h2.add(9) }, 9);
         let n = sallocx(h2, 0);
         for i in (MEDIUM_MAX + page)..n {
             assert_eq!(unsafe { *h2.add(i) }, 0, "huge rallocx ZERO tail byte {i}");
         }
-        let s = rallocx(h2, 24, 0);
+        let s = rallocx(h2, 24, 0, vstd::prelude::Tracked::assume_new());
         assert_eq!(sallocx(s, 0), class_size_of(24).unwrap());
         assert_eq!(unsafe { *s.add(9) }, 9);
         // xallocx never moves and reports the current usable size, with
@@ -586,10 +671,10 @@ mod tests {
         );
         assert_eq!(unsafe { *s.add(9) }, 9, "xallocx touched nothing");
         // A failed rallocx leaves the block intact.
-        assert!(rallocx(s, usize::MAX / 2, 0).is_null());
+        assert!(rallocx(s, usize::MAX / 2, 0, vstd::prelude::Tracked::assume_new()).is_null());
         assert_eq!(unsafe { *s.add(9) }, 9);
-        dallocx(s, 0);
-        dallocx(ptr::null_mut(), 0);
+        dallocx(s, 0, vstd::prelude::Tracked::assume_new());
+        dallocx(ptr::null_mut(), 0, vstd::prelude::Tracked::assume_new());
     }
 
     #[test]
@@ -608,14 +693,31 @@ mod tests {
         );
         // rallocx within the class keeps it in the Lua arena; across
         // classes with the arena flag lands there too.
-        assert_eq!(rallocx(p, 320, mallocx_arena(lua) as c_int), p);
-        let q = rallocx(p, 3000, mallocx_arena(lua) as c_int);
+        assert_eq!(
+            rallocx(
+                p,
+                320,
+                mallocx_arena(lua) as c_int,
+                vstd::prelude::Tracked::assume_new()
+            ),
+            p
+        );
+        let q = rallocx(
+            p,
+            3000,
+            mallocx_arena(lua) as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(
             s.classify_free(q, vstd::prelude::Tracked::assume_new())
                 .map(|x| x.1),
             Ok(lua)
         );
-        dallocx(q, mallocx_arena(lua) as c_int);
+        dallocx(
+            q,
+            mallocx_arena(lua) as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         // No cache: the live count moves at once.
         let flags = (mallocx_arena(lua) | MALLOCX_TCACHE_NONE) as c_int;
         let d = mallocx(300, flags);
@@ -623,7 +725,7 @@ mod tests {
         let desc = s.table(c).desc(slab);
         assert_eq!(desc.arena(), lua);
         let live = desc.live();
-        dallocx(d, flags);
+        dallocx(d, flags, vstd::prelude::Tracked::assume_new());
         assert_eq!(desc.live(), live - 1);
         // Explicit cache.
         let t = s
@@ -634,7 +736,7 @@ mod tests {
         let e = mallocx(300, flags);
         let th = s.tcaches.get(t).unwrap();
         let before = th.cache_in(0, c).map_or(0, |cc| cc.len());
-        dallocx(e, flags);
+        dallocx(e, flags, vstd::prelude::Tracked::assume_new());
         assert_eq!(th.cache_in(0, c).unwrap().len(), before + 1);
         assert!(
             s.tcaches
@@ -656,7 +758,7 @@ mod tests {
                 .arena,
             lua
         );
-        dallocx(h, 0);
+        dallocx(h, 0, vstd::prelude::Tracked::assume_new());
         // Nonexistent arena or explicit cache: null, not an abort.
         assert!(mallocx(300, mallocx_arena(4000) as c_int).is_null());
         assert!(mallocx(2 << 20, mallocx_arena(4000) as c_int).is_null());
@@ -713,7 +815,7 @@ mod tests {
         let cached_foreign = |h: &heap::Heap| h.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
         let before = cached_in(h);
         let before_foreign = cached_foreign(h);
-        api_libc::free(p);
+        api_libc::free(p, vstd::prelude::Tracked::assume_new());
         assert_eq!(cached_in(h), before);
         assert_eq!(cached_foreign(h), before_foreign + 1);
         // realloc within the class keeps the pointer and the arena.
@@ -727,8 +829,21 @@ mod tests {
         // (Written again: this is a fresh slot of the Lua arena's cache,
         // the one freed above went to the FOREIGN cache.)
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
-        assert_eq!(api_libc::realloc(p, size), p);
-        let q = api_libc::realloc(p, size * 4);
+        assert_eq!(
+            api_libc::realloc(
+                p,
+                size,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
+            p
+        );
+        let q = api_libc::realloc(
+            p,
+            size * 4,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_ne!(q, p);
         assert_eq!(unsafe { *q }, 0xa5);
         // Across classes, plain realloc lands in the caller's home arena.
@@ -737,7 +852,7 @@ mod tests {
                 .map(|x| x.1),
             Ok(home)
         );
-        api_libc::free(q);
+        api_libc::free(q, vstd::prelude::Tracked::assume_new());
 
         // Direct path: live count moves at once, no cache involved.
         let f = Flags::decode(mallocx_arena(lua) | MALLOCX_TCACHE_NONE);
@@ -817,7 +932,7 @@ mod tests {
                 .arena,
             lua
         );
-        api_libc::free(hp);
+        api_libc::free(hp, vstd::prelude::Tracked::assume_new());
 
         // Explicit cache.
         let t = s
@@ -907,7 +1022,7 @@ mod tests {
             } else {
                 assert_eq!(arena, other);
             }
-            api_libc::free(p);
+            api_libc::free(p, vstd::prelude::Tracked::assume_new());
         }
         assert_eq!(
             cached_in(h),
@@ -997,7 +1112,7 @@ mod tests {
         // Every other slot of the first half goes back: those slabs are
         // half full, the second half's stay full.
         for p in ptrs[..n / 2].iter().step_by(2) {
-            dallocx(*p, flags);
+            dallocx(*p, flags, vstd::prelude::Tracked::assume_new());
         }
         let live: Vec<*mut u8> = ptrs
             .iter()
@@ -1061,7 +1176,7 @@ mod tests {
             0,
             "stack"
         );
-        dallocx(h, flags);
+        dallocx(h, flags, vstd::prelude::Tracked::assume_new());
         // A class above BIN_MAX answers like a bin (the utilization queries
         // report it as one region; the hint has no geometry contract): two
         // full slabs of 16 KiB slots plus one slab holding a single slot,
@@ -1102,10 +1217,10 @@ mod tests {
             );
         }
         for p in big {
-            dallocx(p, flags);
+            dallocx(p, flags, vstd::prelude::Tracked::assume_new());
         }
         for p in live {
-            dallocx(p, flags);
+            dallocx(p, flags, vstd::prelude::Tracked::assume_new());
         }
     }
 
@@ -1120,21 +1235,26 @@ mod tests {
             let p = mallocx(size, 0);
             assert!(!p.is_null());
             assert_eq!(nallocx(hint, 0), usable);
-            sdallocx(p, hint, 0);
+            sdallocx(p, hint, 0, vstd::prelude::Tracked::assume_new());
         }
         // A run an alignment made huge takes the small size it was asked
         // for, with or without the alignment flag.
         let flags = mallocx_lg_align(20) as c_int;
         let p = mallocx(64, flags);
         assert!(!p.is_null());
-        sdallocx(p, 64, flags);
-        let p = crate::api::libc::aligned_alloc(1 << 20, 64);
+        sdallocx(p, 64, flags, vstd::prelude::Tracked::assume_new());
+        let p = crate::api::libc::aligned_alloc(1 << 20, 64, vstd::prelude::Tracked::assume_new());
         assert!(!p.is_null());
-        crate::api::libc::free_aligned_sized(p, 1 << 20, 64);
+        crate::api::libc::free_aligned_sized(p, 1 << 20, 64, vstd::prelude::Tracked::assume_new());
         // A run `realloc` kept takes the size the caller last asked for.
         let p = mallocx(1 << 20, 0);
-        let q = crate::api::libc::realloc(p, (1 << 20) - 100);
+        let q = crate::api::libc::realloc(
+            p,
+            (1 << 20) - 100,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(q, p);
-        crate::api::libc::free_sized(q, (1 << 20) - 100);
+        crate::api::libc::free_sized(q, (1 << 20) - 100, vstd::prelude::Tracked::assume_new());
     }
 }
