@@ -115,6 +115,51 @@ impl Live {
     {
     }
 
+    /// A live run's usable bytes are a block of the huge region.
+    pub proof fn lemma_huge_block(&self)
+        requires
+            self.wf(),
+            self.run_opt() is Some,
+        ensures
+            process_regions().is_huge_block(self.addr(), self.len()),
+    {
+    }
+
+    /// The usable bytes [`block_usable`] names for a live block are its
+    /// [`Live::len`]: the class's size for a slot (one class per slot),
+    /// and for a run, whenever `size` rounds up to the run's usable size
+    /// ([`huge_usable`]`(size) == len`, what `heap::huge_hint_ok` states of
+    /// a sized free).
+    ///
+    /// [`block_usable`]: crate::vspec::zero::block_usable
+    /// [`huge_usable`]: crate::vspec::zero::huge_usable
+    pub proof fn lemma_block_usable(&self, size: int)
+        requires
+            self.wf(),
+            process_regions().wf(),
+            process_regions().separated(),
+            self.run_of() ==> crate::vspec::zero::huge_usable(size) == self.len(),
+        ensures
+            crate::vspec::zero::block_usable(self.addr(), size) == self.len(),
+    {
+        let r = process_regions();
+        let p = self.addr;
+        if self.run is None {
+            // A slot of `class`, and of no other class.
+            assert(r.is_slot(self.class, p));
+            let c = choose|c: int| #[trigger] r.is_slot(c, p);
+            crate::vspec::zero::lemma_slot_unique(self.class, c, p);
+        } else {
+            // A page start of the huge region, which no slot is.
+            assert(r.is_huge_block(p, self.len()));
+            assert forall|c: int| !#[trigger] r.is_slot(c, p) by {
+                if r.is_slot(c, p) {
+                    crate::vspec::zero::lemma_slot_not_huge(c, p);
+                }
+            }
+        }
+    }
+
     /// Borrow the permission, for a read of the block's bytes.
     pub proof fn mem_ref(tracked &self) -> (tracked r: &UserMem)
         requires
