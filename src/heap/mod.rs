@@ -2853,7 +2853,13 @@ impl Heap {
                 self.last_gc = now;
                 self.gc(shared, Tracked::assume_new());
             }
-            crate::purge::on_tick(shared, now, ALLOC, vstd::prelude::Tracked::assume_new());
+            crate::purge::on_tick(
+                shared,
+                now,
+                ALLOC,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
     }
 }

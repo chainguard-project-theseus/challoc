@@ -8,11 +8,16 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_s...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
+| `pthread_join` | external_body | FFI/syscall | none (assumption) | trusted |
+| `create` | external_body | allocator invariant | Verus | trusted |
+| `spawn` | external_body | FFI/syscall | none (assumption) | trusted |
+| `shared_arg` | external_body | raw pointer from C caller | none (assumption) | trusted |
+| `main` | no_decreases | termination | none (assumption) | trusted |
 | `axiom_state_lock` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_state_lock_inv`
 
-src/purge/background.rs:62. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:60. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: every holder of the state lock leaves the stack's end in range and no thread published that has exited, so the lock's invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first start; after it, a reservation of `STACK_SIZE` bytes, which `Meta::reserve` places below `va_limit`) and `exited ==> !present` (a thread that found the request withdrawn and exited before its `start` published it stays unpublished).
@@ -24,9 +29,90 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 ;
 ```
 
+## `pthread_join`
+
+src/purge/background.rs:451. Kind: external_body. Category: FFI/syscall.
+Tool: none (assumption). Status: trusted.
+
+> `pthread_join(t, NULL)`: 0 or an error number.
+
+```rust
+unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `create`
+
+src/purge/background.rs:468. Kind: external_body. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+> Create the thread on `stack` (reserving the stack first if there is none yet), after joining `previous`.
+
+Body mints Tracked at line 520; mints Ghost at line 527; mints Tracked at line 528.
+
+```rust
+fn create(
+    shared: &Shared,
+    stack: usize,
+    previous: Option<::libc::pthread_t>,
+    Tracked(ord): Tracked<&mut LockOrder>,
+) -> (r: (usize, Option<::libc::pthread_t>))
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        stack + STACK_SIZE <= usize::MAX,
+        old(ord).allows(rank_meta()),
+    ensures
+        r.0 + STACK_SIZE <= usize::MAX,
+        *final(ord) == *old(ord),
+```
+
+## `spawn`
+
+src/purge/background.rs:559. Kind: external_body. Category: FFI/syscall.
+Tool: none (assumption). Status: trusted.
+
+> `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
+
+Body mints Tracked at line 576; mints Tracked at line 584.
+
+```rust
+fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+```
+
+## `shared_arg`
+
+src/purge/background.rs:646. Kind: external_body. Category: raw pointer from C caller.
+Tool: none (assumption). Status: trusted.
+
+> The `Shared` that [`spawn`] passes as the thread's argument.
+
+```rust
+fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
+    ensures
+        r.wf(),
+```
+
+## `main`
+
+src/purge/background.rs:662. Kind: no_decreases. Category: termination.
+Tool: none (assumption). Status: trusted.
+
+> The thread's body: decay and sample until the request is withdrawn.
+
+```rust
+extern "C" fn main(arg: *mut c_void) -> *mut c_void
+```
+
 ## `axiom_state_lock`
 
-src/purge/background.rs:675. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:762. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_lock`] is the raw lock of [`STATE`].
