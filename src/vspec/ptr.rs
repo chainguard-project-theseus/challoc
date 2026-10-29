@@ -90,9 +90,9 @@ pub proof fn lemma_reads_cast<T>(p: *mut u8, len: int)
 /// Every initialised value of `T`'s size is a `T` with no ghost content:
 /// a volatile read of a `T` makes a valid value out of any initialised
 /// bytes.
-/// Uninterpreted; [`axiom_plain_u64`], [`axiom_plain_u8`] and
-/// [`axiom_plain_usize`] state it for the types verified code reads that
-/// way (volatile and unaligned reads).
+/// Uninterpreted; [`axiom_plain_u64`], [`axiom_plain_u8`],
+/// [`axiom_plain_usize`] and [`axiom_plain_ptr`] state it for the types
+/// verified code reads that way (volatile and unaligned reads).
 pub uninterp spec fn plain<T>() -> bool;
 
 /// [`plain`] for `u64`: every initialised eight bytes are a `u64`, which
@@ -116,6 +116,16 @@ pub axiom fn axiom_plain_u8()
 pub axiom fn axiom_plain_usize()
     ensures
         plain::<usize>(),
+;
+
+/// [`plain`] for `*const T` (sized `T`): every initialised pointer-sized
+/// bytes are a `*const T`. Trusted: the `core` documentation of raw
+/// pointers (any address is a valid raw pointer value). The value carries
+/// no provenance the reader may use: a pointer read from C bytes is good
+/// for comparing addresses, not for access.
+pub axiom fn axiom_plain_ptr<T>()
+    ensures
+        plain::<*const T>(),
 ;
 
 /// `core::ptr::read_volatile`, with the safety contract of the `core`

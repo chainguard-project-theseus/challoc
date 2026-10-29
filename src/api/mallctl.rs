@@ -64,7 +64,11 @@ use crate::arena::{ARENAS_ALL, MAX_ARENAS};
 use crate::config::{KEYS, Value};
 use crate::heap::{self, Heap, Shared};
 use crate::huge::RunState;
+#[cfg(verus_keep_ghost)]
+use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NBINS, NCLASSES};
+#[cfg(verus_keep_ghost)]
+use crate::lock::axiom_entry;
 use crate::purge;
 use crate::stats::{self, ArenaStats, BinStats};
 use crate::sys;
@@ -109,9 +113,17 @@ pub(crate) const VERSION: &'static str = VERSION_STR;
 /// so parsers that split on `-` and `.` (tikv-jemalloc-ctl, Redis's
 /// `mem_allocator` line) work; the "gid" says who this really is.
 pub const VERSION_STR: &str = "5.3.0-0-gchalloc";
-const VERSION_CSTR: &[u8] = b"5.3.0-0-gchalloc\0";
+
+verus! {
+
+#[allow(clippy::redundant_static_lifetimes)]
+exec const VERSION_CSTR: &'static [u8] = b"5.3.0-0-gchalloc\0";
+#[allow(clippy::redundant_static_lifetimes)]
+exec const EMPTY_CSTR: &'static [u8] = b"\0";
+
+} // verus!
+
 const _: () = assert!(VERSION_CSTR.len() == VERSION_STR.len() + 1);
-const EMPTY_CSTR: &[u8] = b"\0";
 
 verus! {
 
@@ -143,14 +155,15 @@ enum Op {
     UtilBatchQuery,
 }
 
-} // verus!
-
 /// `MALLCTL_ARENAS_DESTROYED` (4097 in both shipped headers): jemalloc's
 /// merged statistics of the arenas destroyed so far. challoc never
 /// destroys an arena (`arena.<i>.destroy` purges it and keeps it
 /// registered, design 13.4), so `stats.arenas.4097.*` answers zeros and
 /// `arena.4097.*` is `ENOENT` like every index at or above `MAX_ARENAS`.
 const ARENAS_DESTROYED: usize = 4097;
+
+} // verus!
+
 const _: () = assert!(ARENAS_DESTROYED >= MAX_ARENAS && ARENAS_DESTROYED != ARENAS_ALL as usize);
 
 verus! {
@@ -247,11 +260,14 @@ enum Reader {
     OptValue,
 }
 
-} // verus!
 
 /// `read(mib)`: the reader's function, called directly.
 #[inline(always)]
-fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int> {
+fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     match read {
         Reader::BinSize => bin_size(mib),
         Reader::BinNregs => bin_nregs(mib),
@@ -310,11 +326,16 @@ fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int> {
 
 /// The allocator state, initialised (the readers run inside `mallctl`,
 /// after its own [`super::shared`]).
-fn shared() -> &'static Shared {
+fn shared() -> (r: &'static Shared)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        r.wf(),
+{
     super::shared()
 }
 
-verus! {
 
 /// One node of the name tree. A node named [`NUMERIC`] is the only child
 /// of its parent and matches any decimal component, which becomes the MIB
@@ -398,103 +419,195 @@ const fn opt_nodes(read: Reader) -> [Node; KEYS.len()] {
 
 static OPT: [Node; KEYS.len()] = opt_nodes(Reader::OptValue);
 
-// The readers of the read-only keys, one named function each, in the
-// order of the `Reader` variants: `arenas.*` and `stats.*`, then
-// `thread.*` (which may create the thread's heap), `config.*` and
-// `version`. `opt.*` reads through `opt_value`.
+verus! {
 
-fn bin_size(m: &[usize]) -> Result<Reading, c_int> {
+// The readers of `arenas.*` and `stats.*`, named so that Verus checks
+// them. Those that read the allocator state require `may_abort`: they get
+// it through [`shared`], whose `api::shared` may run init. `opt.*` reads
+// through `opt_value`. The `thread.*` readers, `config.*` and `version`
+// follow; `thread.*` also may create the thread's heap.
+
+fn bin_size(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(bin_class(m)?.size()))
 }
 
-fn bin_nregs(m: &[usize]) -> Result<Reading, c_int> {
+fn bin_nregs(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(U32(bin_class(m)?.nslots() as u32))
 }
 
-fn bin_slab_size(m: &[usize]) -> Result<Reading, c_int> {
+fn bin_slab_size(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(bin_class(m)?.slab_size()))
 }
 
-fn arenas_narenas(_m: &[usize]) -> Result<Reading, c_int> {
+fn arenas_narenas(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Unsigned(shared().arenas.count() as c_uint))
 }
 
-fn arenas_nbins(_m: &[usize]) -> Result<Reading, c_int> {
+fn arenas_nbins(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Unsigned(NBINS as c_uint))
 }
 
-fn arenas_nlextents(_m: &[usize]) -> Result<Reading, c_int> {
+fn arenas_nlextents(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Unsigned(0))
 }
 
-fn arenas_page(_m: &[usize]) -> Result<Reading, c_int> {
+fn arenas_page(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let s = shared();
+    proof {
+        s.lemma_wf();
+    }
     Ok(Size(s.regions.page_size()))
 }
 
-fn arenas_quantum(_m: &[usize]) -> Result<Reading, c_int> {
+fn arenas_quantum(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(QUANTUM))
 }
 
-fn bin_curregs(m: &[usize]) -> Result<Reading, c_int> {
+fn bin_curregs(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(bin_stats(m)?.curregs))
 }
 
-fn bin_curslabs(m: &[usize]) -> Result<Reading, c_int> {
+fn bin_curslabs(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(bin_stats(m)?.curslabs))
 }
 
-fn bin_nonfull_slabs(m: &[usize]) -> Result<Reading, c_int> {
+fn bin_nonfull_slabs(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(bin_stats(m)?.nonfull_slabs))
 }
 
-fn small_allocated(m: &[usize]) -> Result<Reading, c_int> {
+fn small_allocated(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))
 }
 
-fn small_resident(m: &[usize]) -> Result<Reading, c_int> {
+fn small_resident(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let a = arena_stats(shared(), at(m, 2))?;
     // `+` as the build computes it ([`stats::fig_add`]).
     Ok(Size(stats::fig_add(a.small_active, a.small_dirty)))
 }
 
-fn large_allocated(m: &[usize]) -> Result<Reading, c_int> {
+fn large_allocated(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated))
 }
 
-fn arena_pactive(m: &[usize]) -> Result<Reading, c_int> {
+fn arena_pactive(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))
 }
 
-fn arena_pdirty(m: &[usize]) -> Result<Reading, c_int> {
+fn arena_pdirty(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))
 }
 
-fn arena_pmuzzy(m: &[usize]) -> Result<Reading, c_int> {
+fn arena_pmuzzy(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))
 }
 
-fn arena_resident(m: &[usize]) -> Result<Reading, c_int> {
+fn arena_resident(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(arena_stats(shared(), at(m, 2))?.resident))
 }
 
-fn arena_mapped(m: &[usize]) -> Result<Reading, c_int> {
+fn arena_mapped(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))
 }
 
-fn arena_retained(m: &[usize]) -> Result<Reading, c_int> {
+fn arena_retained(m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(arena_stats(shared(), at(m, 2))?.retained))
 }
 
-fn cgroup_limit(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_limit(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(tracked()?.limit() as usize))
 }
 
-fn cgroup_high(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_high(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(Size(tracked()?.high() as usize))
 }
 
-fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     // Rate limited to once per 10 ms, so a polling reader costs at
     // most that many file reads.
     let cg = tracked()?;
@@ -502,7 +615,11 @@ fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int> {
     Ok(Size(cg.current() as usize))
 }
 
-fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     tracked()?;
     Ok(Size(
         match shared().policy.effective_decay_ns(shared().decay_ns()) {
@@ -512,129 +629,192 @@ fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int> {
     ))
 }
 
-fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     tracked()?;
     Ok(Size(shared().policy.cap() as usize))
 }
 
-fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     tracked()?;
-    Ok(Size(
-        crate::policy::empty_bytes(shared(), vstd::prelude::Tracked::assume_new()) as usize,
-    ))
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(crate::policy::empty_bytes(shared(), Tracked(&mut axiom_entry())) as usize))
 }
 
-fn cgroup_full_purges(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_full_purges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     tracked()?;
     Ok(Size(shared().policy.full_purges() as usize))
 }
 
-fn cgroup_purge_advice(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_purge_advice(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size((purge::advice() == purge::Advice::Lazy) as usize))
 }
 
-fn cgroup_lazy_purges(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_lazy_purges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(purge::batches().0 as usize))
 }
 
-fn cgroup_eager_purges(_m: &[usize]) -> Result<Reading, c_int> {
+fn cgroup_eager_purges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(purge::batches().1 as usize))
 }
 
-fn thp_mode(_m: &[usize]) -> Result<Reading, c_int> {
+fn thp_mode(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(crate::thp::decision().mode as usize))
 }
 
-fn thp_class_ranges(_m: &[usize]) -> Result<Reading, c_int> {
+fn thp_class_ranges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(crate::thp::stats().class_ranges as usize))
 }
 
-fn thp_class_bytes(_m: &[usize]) -> Result<Reading, c_int> {
+fn thp_class_bytes(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(crate::thp::stats().class_bytes as usize))
 }
 
-fn thp_huge_ranges(_m: &[usize]) -> Result<Reading, c_int> {
+fn thp_huge_ranges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(crate::thp::stats().huge_ranges as usize))
 }
 
-fn thp_meta_ranges(_m: &[usize]) -> Result<Reading, c_int> {
+fn thp_meta_ranges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(crate::thp::stats().meta_ranges as usize))
 }
 
-fn thp_failures(_m: &[usize]) -> Result<Reading, c_int> {
+fn thp_failures(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(crate::thp::stats().failures as usize))
 }
 
-fn thp_nohuge_ranges(_m: &[usize]) -> Result<Reading, c_int> {
+fn thp_nohuge_ranges(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_syscall(),
+{
     Ok(Size(crate::thp::stats().nohuge_ranges as usize))
 }
 
-fn stats_allocated(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(
-        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
-            .totals
-            .allocated,
-    ))
+fn stats_allocated(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.allocated))
 }
 
-fn stats_active(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(
-        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
-            .totals
-            .active,
-    ))
+fn stats_active(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.active))
 }
 
-fn stats_metadata(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(
-        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
-            .totals
-            .metadata,
-    ))
+fn stats_metadata(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.metadata))
 }
 
-fn stats_resident(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(
-        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
-            .totals
-            .resident,
-    ))
+fn stats_resident(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.resident))
 }
 
-fn stats_mapped(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(
-        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
-            .totals
-            .mapped,
-    ))
+fn stats_mapped(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.mapped))
 }
 
-fn stats_retained(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(Size(
-        stats::snapshot(shared(), vstd::prelude::Tracked::assume_new())
-            .totals
-            .retained,
-    ))
+fn stats_retained(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.retained))
 }
 
-fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int> {
+#[verifier::external_body]
+fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(U64(thread_heap(shared())?.materialise_stats().allocated))
 }
 
-fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(U64Ptr(ptr::from_ref(
-        &thread_heap(shared())?.materialise_stats().allocated,
-    )))
+#[verifier::external_body]
+fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    Ok(U64Ptr(ptr::from_ref(&thread_heap(shared())?.materialise_stats().allocated)))
 }
 
-fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int> {
+#[verifier::external_body]
+fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     Ok(U64(thread_heap(shared())?.materialise_stats().deallocated))
 }
 
-fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int> {
-    Ok(U64Ptr(ptr::from_ref(
-        &thread_heap(shared())?.materialise_stats().deallocated,
-    )))
+#[verifier::external_body]
+fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    Ok(U64Ptr(ptr::from_ref(&thread_heap(shared())?.materialise_stats().deallocated)))
 }
 
 fn config_malloc_conf(_m: &[usize]) -> Result<Reading, c_int> {
@@ -652,6 +832,8 @@ fn config_stats(_m: &[usize]) -> Result<Reading, c_int> {
 fn version(_m: &[usize]) -> Result<Reading, c_int> {
     Ok(Str(VERSION_CSTR.as_ptr() as *const c_char))
 }
+
+} // verus!
 
 static BIN_GEOMETRY: [Node; 3] = [
     stat("size", Reader::BinSize),
@@ -1874,8 +2056,6 @@ impl Io {
     }
 }
 
-} // verus!
-
 // ---------------------------------------------------------------------------
 // The keys.
 // ---------------------------------------------------------------------------
@@ -1894,39 +2074,214 @@ pub struct Utilization {
 }
 
 impl Utilization {
-    const ZERO: Utilization = Utilization {
-        slabcur_addr: ptr::null_mut(),
-        nfree: 0,
-        nregs: 0,
-        size: 0,
-        bin_nfree: 0,
-        bin_nregs: 0,
-    };
+    exec const ZERO: Utilization
+        ensures
+            triple_is(Self::ZERO, 0, 0, 0),
+            no_bin(Self::ZERO),
+    {
+        Utilization {
+            slabcur_addr: ptr::null_mut(),
+            nfree: 0,
+            nregs: 0,
+            size: 0,
+            bin_nfree: 0,
+            bin_nregs: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The utilization and defrag hint as a function of what the query read.
+// The figures are atomic loads Verus does not constrain, so the statement
+// is over the values the call read: each output is the stated function of
+// `p`'s classification and of a record of those reads. The record's
+// `allocated`, `committed`, `live`, `found` and `run` are not tied to the
+// loads (`desc_if_committed` and the bitmap read have no postcondition),
+// so the statement fixes the outputs only once those are given.
+// ---------------------------------------------------------------------------
+
+/// `rg.classify(p) == k` as far as [`Regions::classify`]'s postcondition
+/// fixes it: a slot start of a class region (which, with separated
+/// regions, is `Slab` of its class, slab and slot), a page start of the
+/// huge region with its page index, and `Invalid` for anything that is
+/// neither.
+///
+/// [`Regions::classify`]: crate::layout::Regions::classify
+pub open spec fn classified(rg: crate::layout::Regions, p: usize, k: Kind) -> bool {
+    &&& k matches Kind::Slab { class, slab, slot } ==> class < NCLASSES && slot < class_table()[class as int].nslots
+        && rg.is_slot_addr(class as int, p) && p as int == rg.slot_at(class as int, slab as int, slot as int)
+        && (slab as int) < rg.spec_nslabs(class as int)
+    &&& k matches Kind::Huge { page } ==> rg.is_huge_block(p, 1) && page == ((p - rg.huge_base) as usize) >> rg.lg_page
+    &&& rg.separated() ==> forall|c: int| #[trigger] rg.is_slot_addr(c, p) ==> (k matches Kind::Slab { class, .. } && class as int == c)
+}
+
+/// What a utilization query read (ghost): `p`'s classification, and the
+/// value each load returned. `allocated` is the slot's bitmap bit
+/// (`desc_if_committed`), `live` the slab's live count as `nfree` used
+/// it (`nslots - nfree`: the load, clamped at `nslots`), `found` that the
+/// arena the descriptor names is built, `st` and `curregs` that arena's
+/// class counters from one lock hold (`bin_stats`), `lowest` its lowest
+/// partial slab, and `run` the huge descriptor at `p`'s page
+/// (`Huge::lookup`, under the huge lock).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct UtilRead {
+    pub kind: Kind,
+    pub allocated: bool,
+    pub committed: bool,
+    pub live: int,
+    pub found: bool,
+    pub st: crate::class::ClassStats,
+    pub curregs: int,
+    pub lowest: Option<usize>,
+    pub run: Option<crate::huge::RunInfo>,
+}
+
+/// `a - b`, or 0 below zero (`saturating_sub`).
+pub open spec fn sat_sub(a: int, b: int) -> int {
+    if a >= b { a - b } else { 0 }
+}
+
+/// `u`'s `(nfree, nregs, size)` triple, the one `batch_query` stores.
+pub open spec fn triple_is(u: Utilization, nfree: int, nregs: int, size: int) -> bool {
+    u.nfree == nfree && u.nregs == nregs && u.size == size
+}
+
+/// No bin-wide figures and no current slab (the non-verbose query, and
+/// everything that is not a live slot of a bin class).
+pub open spec fn no_bin(u: Utilization) -> bool {
+    u.bin_nfree == 0 && u.bin_nregs == 0 && u.slabcur_addr@.addr == 0
+}
+
+/// The figures a query of `p` reports from the reads `rd`: for a live
+/// slot of a bin class (bit set, slab committed), `(nslots - live,
+/// nslots, nslots * size)`, plus, verbose and with the owning arena
+/// built, `curslabs * nslots` regions of which `curregs` are out and the
+/// lowest partial slab's address (null when there is none); `(0, 1,
+/// size)` for a live slot of a class above `BIN_MAX` (the classes from
+/// `NBINS` on); `(0, 1, usable)` for the start of an active huge run;
+/// zeros for everything else.
+#[verifier::opaque]
+pub open spec fn util_from(rg: crate::layout::Regions, p: usize, verbose: bool, rd: UtilRead, u: Utilization) -> bool {
+    match rd.kind {
+        Kind::Slab { class, .. } => {
+            let c = class_table()[class as int];
+            if !rd.allocated || !rd.committed {
+                triple_is(u, 0, 0, 0) && no_bin(u)
+            } else if c.size > crate::layout::BIN_MAX {
+                triple_is(u, 0, 1, c.size as int) && no_bin(u)
+            } else {
+                let curslabs = rd.st.committed - rd.st.empty - rd.st.purged;
+                &&& triple_is(u, sat_sub(c.nslots as int, rd.live), c.nslots as int, c.nslots * c.size)
+                &&& if verbose && rd.found {
+                    &&& u.bin_nregs == curslabs * c.nslots
+                    &&& u.bin_nfree == u.bin_nregs - rd.curregs
+                    &&& u.slabcur_addr@.addr == match rd.lowest {
+                        Some(s) => rg.class_base[class as int] + (s << c.lg_slab),
+                        None => 0,
+                    }
+                } else {
+                    no_bin(u)
+                }
+            }
+        },
+        Kind::Huge { page } => match rd.run {
+            Some(r) if r.start == page && r.state == RunState::Active => triple_is(u, 0, 1, r.usable as int) && no_bin(u),
+            _ => triple_is(u, 0, 0, 0) && no_bin(u),
+        },
+        Kind::Invalid => triple_is(u, 0, 0, 0) && no_bin(u),
+    }
+}
+
+/// `rd` is a possible read of a query of `p` that reported `u`: `rd.kind`
+/// is `p`'s classification, the counters are within what `bin_stats`
+/// returns (no more slots out than the live-capable slabs hold), the
+/// lowest partial slab is a slab of the class, and `u` is
+/// [`util_from`]`(rd)`.
+pub open spec fn util_read(rg: crate::layout::Regions, p: usize, verbose: bool, rd: UtilRead, u: Utilization) -> bool {
+    &&& classified(rg, p, rd.kind)
+    &&& rd.st.empty + rd.st.purged <= rd.st.committed
+    &&& 0 <= rd.curregs <= (rd.st.committed - rd.st.empty - rd.st.purged) * (match rd.kind {
+        Kind::Slab { class, .. } => class_table()[class as int].nslots as int,
+        _ => 0,
+    })
+    &&& (rd.lowest matches Some(s) ==> rd.kind matches Kind::Slab { class, .. } && (s as int) < rg.spec_nslabs(class as int))
+    &&& util_from(rg, p, verbose, rd, u)
 }
 
 /// The utilisation figures of `p` (see the module docs). `verbose` adds
 /// the bin-wide figures and `slabcur_addr`, which cost one class lock.
-pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilization {
+pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Utilization)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+    ensures
+        // The outputs as a function of a record of the call's reads
+        // ([`util_from`]).
+        exists|rd: UtilRead| #[trigger] util_read(crate::layout::process_regions(), p as usize, verbose, rd, u),
+{
+    proof {
+        shared.lemma_wf();
+        shared.lemma_wf_ready();
+        reveal(util_from);
+    }
+    // Premise (lock order): called from the `mallctl` entry points, which
+    // hold no lock.
+    let tracked mut ord = axiom_entry();
     let mut u = Utilization::ZERO;
+    let ghost mut rd = UtilRead {
+        kind: Kind::Invalid,
+        allocated: false,
+        committed: false,
+        live: 0,
+        found: false,
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0 },
+        curregs: 0,
+        lowest: None,
+        run: None,
+    };
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
+            proof {
+                rd.kind = Kind::Slab { class, slab, slot };
+                crate::vspec::class::axiom_class_table_wf(class as int);
+            }
             let class = class as usize;
             let t = shared.table(class);
             let cls = t.class();
             if !t.is_allocated(slab as usize, slot as usize) {
+                proof {
+                    assert(util_read(crate::layout::process_regions(), p as usize, verbose, rd, u));
+                }
                 return u;
             }
+            proof {
+                rd.allocated = true;
+            }
             let Some(d) = t.desc_if_committed(slab as usize) else {
+                proof {
+                    assert(util_read(crate::layout::process_regions(), p as usize, verbose, rd, u));
+                }
                 return u;
             };
+            proof {
+                rd.committed = true;
+            }
             if class >= NBINS {
                 // Reported like a large extent (`layout::BIN_MAX`): one
                 // region of its own size, no bin figures.
                 u.nregs = 1;
                 u.size = cls.size();
+                proof {
+                    assert(util_read(crate::layout::process_regions(), p as usize, verbose, rd, u));
+                }
                 return u;
             }
             u.nfree = d.nfree(cls);
+            proof {
+                // `nfree` is `nslots` less the live count it loaded.
+                rd.live = cls.nslots - u.nfree;
+            }
             u.nregs = cls.nslots();
             // The region bytes of the slab, not its power-of-two size: the
             // tail past the last slot belongs to no region, and Valkey's
@@ -1939,42 +2294,74 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             if verbose {
                 if let Some(a) = shared.arenas.get_existing(d.arena()) {
                     let cs = a.class(class);
-                    let (st, curregs) = cs.bin_stats(vstd::prelude::Tracked::assume_new());
+                    let (st, curregs) = cs.bin_stats(Tracked(&mut ord));
+                    proof {
+                        let (c, k, n) = ((st.committed - st.empty - st.purged) as int, st.committed as int, cls.nslots as int);
+                        assert(c * n <= k * n) by (nonlinear_arith)
+                            requires
+                                c <= k,
+                                n >= 0,
+                        ;
+                        rd.found = true;
+                        rd.st = st;
+                        rd.curregs = curregs as int;
+                    }
                     u.bin_nregs = st.curslabs() * cls.nslots();
                     u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
-                    if let Some(s) = cs.lowest_partial(vstd::prelude::Tracked::assume_new()) {
+                    if let Some(s) = cs.lowest_partial(Tracked(&mut ord)) {
                         // No code (the body is empty): a step for the
                         // verifier, that the slab is one of the class
                         // region's.
                         cs.nslabs_are_the_region_s();
-                        u.slabcur_addr =
-                            addr_to_ptr(shared.regions.slab_addr(class, s)) as *mut c_void;
+                        u.slabcur_addr = addr_to_ptr(shared.regions.slab_addr(class, s)) as *mut c_void;
+                        proof {
+                            rd.lowest = Some(s);
+                        }
                     }
                 }
             }
-        }
+        },
         Kind::Huge { page } => {
+            proof {
+                rd.kind = Kind::Huge { page };
+            }
             // As above, two `if`s.
             #[allow(clippy::collapsible_if)]
-            if let Some(r) = shared.huge.lookup(
-                page,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
-            ) {
+            if let Some(r) = shared.huge.lookup(page, Tracked(&None), Tracked(&mut ord)) {
+                proof {
+                    rd.run = Some(r);
+                }
                 if r.start == page && r.state == RunState::Active {
                     u.nregs = 1;
                     u.size = r.usable;
                 }
             }
-        }
-        Kind::Invalid => {}
+        },
+        Kind::Invalid => {},
+    }
+    proof {
+        assert(util_read(crate::layout::process_regions(), p as usize, verbose, rd, u));
     }
     u
 }
 
-/// The arena that owns the live allocation `p` (`arenas.lookup`), without
-/// aborting on anything else.
-pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
+/// The arena that owns the live allocation `p` (`arenas.lookup`), or
+/// `None` for anything else. Its one abort is `class::SlabTable::owner`'s,
+/// for a slab that was never handed out, a pending check, so it needs
+/// only `may_abort_pending`.
+pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16>
+    requires
+        crate::sys::may_abort_pending(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+        shared.lemma_wf_ready();
+    }
+    // Premise (lock order): called from the `mallctl` entry points, which
+    // hold no lock.
+    let tracked mut ord = axiom_entry();
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let t = shared.table(class as usize);
@@ -1983,38 +2370,60 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
             } else {
                 None
             }
-        }
+        },
         Kind::Huge { page } => {
-            let r = shared.huge.lookup(
-                page,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
-            )?;
+            let r = shared.huge.lookup(page, Tracked(&None), Tracked(&mut ord))?;
             if r.start == page && r.state == RunState::Active {
                 Some(r.arena)
             } else {
                 None
             }
-        }
+        },
         Kind::Invalid => None,
     }
 }
 
-/// Pointer `i` of the caller's `newp` array: an unaligned read at `ptrs + i`.
+/// `(nfree, nregs, size)` is the triple a non-verbose utilization query of
+/// `p` reports for some possible read ([`util_read`]).
+pub open spec fn util_triple(rg: crate::layout::Regions, p: usize, nfree: int, nregs: int, size: int) -> bool {
+    exists|rd: UtilRead, u: Utilization| #[trigger] util_read(rg, p, false, rd, u) && triple_is(u, nfree, nregs, size)
+}
+
+/// Pointer `i` of the caller's `newp` array, whose byte length the caller
+/// gave as `newlen`: an unaligned read of the 8 bytes at `ptrs + 8 * i`,
+/// which the precondition puts inside those `newlen` bytes ([`c_readable`]).
 ///
 /// # Safety
-/// `ptrs` holds at least `i + 1` readable pointers.
+/// `ptrs` holds `newlen` readable bytes.
 #[inline(always)]
-unsafe fn query_ptr(ptrs: *const *const c_void, i: usize, _newlen: Ghost<usize>) -> *const c_void {
+unsafe fn query_ptr(ptrs: *const *const c_void, i: usize, Ghost(newlen): Ghost<usize>) -> *const c_void
+    requires
+        (i + 1) * 8 <= newlen,
+        c_readable(ptrs as *mut u8, newlen as int),
+{
+    proof {
+        broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+        broadcast use vstd::layout::layout_of_references_and_pointers, vstd::layout::layout_of_references_and_pointers_for_sized_types;
+        let base = ptrs as *mut *const c_void;
+        lemma_c_readable_at(ptrs as *mut u8, newlen as int, base, 0);
+        assert(vstd::layout::size_of::<*const c_void>() == 8);
+        assert(i * vstd::layout::size_of::<*const c_void>() <= newlen);
+        assert(crate::vspec::ptr::in_alloc(base, newlen as int));
+        crate::vspec::ptr::axiom_ptr_add_addr(base, i);
+        lemma_c_readable_at(ptrs as *mut u8, newlen as int, crate::vspec::ptr::ptr_add(base, i), 8 * i);
+        crate::vspec::ptr::axiom_plain_ptr::<c_void>();
+    }
     // SAFETY: guaranteed by the caller.
     unsafe { ptrs.add(i).read_unaligned() }
 }
 
 /// Store triple `i`, `(nfree, nregs, size)`, into the caller's `oldp`
-/// array: unaligned writes of words `3 * i .. 3 * i + 3`.
+/// array, whose byte length the caller gave as `*oldlenp == oldlen`:
+/// unaligned writes of words `3 * i .. 3 * i + 3`, which the precondition
+/// puts inside those `oldlen` bytes ([`c_buffer`]).
 ///
 /// # Safety
-/// `out` holds at least `3 * i + 3` writable words.
+/// `out` holds `oldlen` writable bytes.
 #[inline(always)]
 unsafe fn store_triple(
     out: *mut usize,
@@ -2022,9 +2431,28 @@ unsafe fn store_triple(
     nfree: usize,
     nregs: usize,
     size: usize,
-    _oldlen: Ghost<usize>,
-    _q: Ghost<*const c_void>,
-) {
+    Ghost(oldlen): Ghost<usize>,
+    Ghost(q): Ghost<*const c_void>,
+)
+    requires
+        (3 * i + 3) * 8 <= oldlen,
+        // What is stored is the non-verbose query of `q`, the pointer
+        // `query_ptr` read for index `i`.
+        util_triple(crate::layout::process_regions(), q as usize, nfree as int, nregs as int, size as int),
+        c_buffer(out as *mut u8, oldlen as int),
+        c_writes(out@.provenance),
+{
+    proof {
+        broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+        lemma_c_buffer_at(out as *mut u8, oldlen as int, out, 0);
+        let (k0, k1, k2) = ((3 * i) as usize, (3 * i + 1) as usize, (3 * i + 2) as usize);
+        crate::vspec::ptr::axiom_ptr_add_addr(out, k0);
+        lemma_c_buffer_at(out as *mut u8, oldlen as int, crate::vspec::ptr::ptr_add(out, k0), 8 * k0);
+        crate::vspec::ptr::axiom_ptr_add_addr(out, k1);
+        lemma_c_buffer_at(out as *mut u8, oldlen as int, crate::vspec::ptr::ptr_add(out, k1), 8 * k1);
+        crate::vspec::ptr::axiom_ptr_add_addr(out, k2);
+        lemma_c_buffer_at(out as *mut u8, oldlen as int, crate::vspec::ptr::ptr_add(out, k2), 8 * k2);
+    }
     // SAFETY: guaranteed by the caller.
     unsafe {
         out.add(3 * i).write_unaligned(nfree);
@@ -2035,17 +2463,28 @@ unsafe fn store_triple(
 
 /// `experimental.utilization.batch_query`: `newp` is an array of pointers,
 /// `oldp` an array of `(nfree, nregs, size)` triples of the same count.
-/// Only an exact fit is accepted: `newlen` is `n` pointers and `*oldlenp` is
-/// `n` triples of words for some `n > 0`, so every read and write of the loop stays
-/// inside the caller's buffers. `_call` is the call's token.
-fn batch_query(shared: &Shared, io: &Io, _call: Tracked<&mut CCall>) -> Result<(), c_int> {
+/// Only an exact fit is accepted: `newlen` is `8 * n` and `*oldlenp` is
+/// `24 * n` for some `n > 0`, so every read and write of the loop stays
+/// inside the caller's buffers. `call` is the call's token, before any
+/// write through its buffers.
+fn batch_query(shared: &Shared, io: &Io, Tracked(call): Tracked<&mut CCall>) -> Result<(), c_int>
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+        io.handed(*old(call)),
+        !old(call).written(),
+{
     if io.oldp.is_null() || io.oldlenp.is_null() || io.newp.is_null() {
         return Err(EINVAL);
     }
     let psz = size_of::<*const c_void>();
     let tsz = 3 * size_of::<usize>();
     // SAFETY: `oldlenp` is the caller's length pointer.
-    let oldlen = unsafe { old_len(io.oldlenp, Ghost::assume_new(), Tracked::assume_new()) };
+    let ghost oldp = io.oldp as *mut u8;
+    let oldlen = unsafe { old_len(io.oldlenp, Ghost(oldp), Tracked(&*call)) };
+    proof {
+        call.open_writes(CArg::Sized(oldp, io.oldlenp as *const usize));
+    }
     let n = io.newlen / psz;
     // `checked_mul`: a count whose triples overflow must not wrap onto
     // the caller's `oldlen` and send the loop past both arrays.
@@ -2054,27 +2493,47 @@ fn batch_query(shared: &Shared, io: &Io, _call: Tracked<&mut CCall>) -> Result<(
     }
     let ptrs = io.newp as *const *const c_void;
     let out = io.oldp as *mut usize;
-    for i in 0..n {
+    proof {
+        broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+        assert(c_readable(ptrs as *mut u8, io.newlen as int));
+        assert(c_buffer(out as *mut u8, oldlen as int));
+    }
+    for i in 0..n
+        invariant
+            crate::sys::may_syscall(),
+            shared.wf(),
+            n * 8 <= io.newlen,
+            n * 24 == oldlen,
+            c_buffer(out as *mut u8, oldlen as int),
+            c_writes(out@.provenance),
+            c_readable(ptrs as *mut u8, io.newlen as int),
+    {
+        proof {
+            assert((i + 1) * 8 <= n * 8) by (nonlinear_arith)
+                requires
+                    i < n,
+            ;
+            assert((3 * i + 3) * 8 <= n * 24) by (nonlinear_arith)
+                requires
+                    i < n,
+            ;
+        }
         // SAFETY: `n` pointers are readable at `newp` and `3 * n` words
         // writable at `oldp`, both checked against the caller's lengths.
         unsafe {
-            let q = query_ptr(ptrs, i, Ghost::assume_new());
+            let q = query_ptr(ptrs, i, Ghost(io.newlen));
             let u = utilization(shared, q, false);
-            store_triple(
-                out,
-                i,
-                u.nfree,
-                u.nregs,
-                u.size,
-                Ghost::assume_new(),
-                Ghost::assume_new(),
-            );
+            store_triple(out, i, u.nfree, u.nregs, u.size, Ghost(oldlen), Ghost(q));
         }
     }
     Ok(())
 }
 
-fn arena_index(i: usize) -> Result<u16, c_int> {
+fn arena_index(i: usize) -> (r: Result<u16, c_int>)
+    ensures
+        r matches Ok(a) ==> a == i && i < MAX_ARENAS,
+        r matches Err(e) ==> e == ENOENT && i >= MAX_ARENAS,
+{
     if i < MAX_ARENAS {
         Ok(i as u16)
     } else {
@@ -2083,13 +2542,20 @@ fn arena_index(i: usize) -> Result<u16, c_int> {
 }
 
 /// `mib[i]`, or an index that matches nothing when the MIB is shorter.
-fn at(mib: &[usize], i: usize) -> usize {
+fn at(mib: &[usize], i: usize) -> (r: usize)
+    ensures
+        r == if i < mib@.len() { mib@[i as int] } else { usize::MAX },
+{
     mib.get(i).copied().unwrap_or(usize::MAX)
 }
 
 /// `opt.<key>`: the key's value with its jemalloc type, the
 /// `config::Value` variant's.
-fn opt_value(mib: &[usize]) -> Result<Reading, c_int> {
+fn opt_value(mib: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let key = KEYS.get(at(mib, 1)).ok_or(ENOENT)?;
     Ok(match shared().config.get(key.as_bytes()).ok_or(ENOENT)? {
         Value::Bool(b) => Bool(b),
@@ -2101,11 +2567,16 @@ fn opt_value(mib: &[usize]) -> Result<Reading, c_int> {
 }
 
 /// `arenas.bin.<j>.*`: the bin's class; `ENOENT` past `arenas.nbins`.
-// `CLASSES[..NBINS].get(j)`, spelled with `CLASSES.table()` and an index
-// check. `j < NCLASSES` is redundant for the compiler (`NBINS <=
-// NCLASSES`), which folds it.
+// `CLASSES[..NBINS].get(j)`, spelled with `CLASSES.table()`, the verified
+// view of the table.
+// `j < NCLASSES` is redundant for the compiler, not for the verifier, which
+// cannot see `NBINS`'s value.
 #[allow(clippy::redundant_comparisons)]
-fn bin_class(mib: &[usize]) -> Result<crate::layout::Class, c_int> {
+fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
+    ensures
+        r matches Err(e) ==> e == ENOENT,
+        r matches Ok(c) ==> c.wf(),
+{
     let j = at(mib, 2);
     if j < NBINS && j < NCLASSES {
         Ok(CLASSES.table()[j])
@@ -2117,7 +2588,11 @@ fn bin_class(mib: &[usize]) -> Result<crate::layout::Class, c_int> {
 /// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures. (`bins[..NBINS]
 /// .get(j)`, spelled out as in `bin_class`.)
 #[allow(clippy::redundant_comparisons)]
-fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
+fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let a = arena_stats(shared(), at(mib, 2))?;
     let j = at(mib, 4);
     if j < NBINS && j < NCLASSES {
@@ -2129,9 +2604,16 @@ fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
 
 /// The tracked cgroup, or `ENOENT`: like jemalloc's keys behind a disabled
 /// build option, the name resolves and the read says the facility is off.
-fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
+fn tracked() -> (r: Result<&'static crate::sys::cgroup::Cgroup, c_int>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        r matches Err(e) ==> e == ENOENT,
+{
     let s = shared();
-    let cg = s.cgroup_now(vstd::prelude::Tracked::assume_new());
+    // Premise (lock order): called from `mallctl`, which holds no lock.
+    let cg = s.cgroup_now(Tracked(&mut axiom_entry()));
     if cg.tracked() { Ok(cg) } else { Err(ENOENT) }
 }
 
@@ -2139,12 +2621,18 @@ fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
 /// `MALLCTL_ARENAS_ALL` or, jemalloc's pre-5.0 convention that it still
 /// honours, `arenas.narenas`. Redis and Valkey (`jemalloc_purge`, behind
 /// `MEMORY PURGE` and `FLUSHALL`) use the latter.
-fn all_arenas(shared: &Shared, i: usize) -> bool {
+fn all_arenas(shared: &Shared, i: usize) -> (r: bool)
+    ensures
+        i == ARENAS_ALL ==> r,
+{
     i == ARENAS_ALL as usize || i == shared.arenas.count() as usize
 }
 
 /// `arena.<i>.dirty_decay_ms` value of a period in nanoseconds.
-fn ms_of(ns: u64) -> isize {
+fn ms_of(ns: u64) -> (r: isize)
+    ensures
+        r == if ns == purge::NEVER { -1 } else { (ns / 1_000_000) as int },
+{
     if ns == purge::NEVER {
         -1
     } else {
@@ -2155,23 +2643,23 @@ fn ms_of(ns: u64) -> isize {
 /// The stored statistics of arena `i`, the `MALLCTL_ARENAS_ALL` merge, or
 /// the zeros of `MALLCTL_ARENAS_DESTROYED` (both recognised before the
 /// range check, which they fail).
-fn arena_stats(shared: &Shared, i: usize) -> Result<ArenaStats, c_int> {
+fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+    ensures
+        r matches Err(e) ==> e == ENOENT,
+{
     if i == ARENAS_ALL as usize {
-        return Ok(stats::arena_stats_all(
-            shared,
-            vstd::prelude::Tracked::assume_new(),
-        ));
+        return Ok(stats::arena_stats_all(shared, Tracked(&mut axiom_entry())));
     }
     if i == ARENAS_DESTROYED {
         return Ok(ArenaStats::empty(ARENAS_DESTROYED as u16));
     }
-    stats::arena_stats(
-        shared,
-        arena_index(i)?,
-        vstd::prelude::Tracked::assume_new(),
-    )
-    .ok_or(ENOENT)
+    stats::arena_stats(shared, arena_index(i)?, Tracked(&mut axiom_entry())).ok_or(ENOENT)
 }
+
+} // verus!
 
 /// Return the calling thread's cached slots before a purge so the purge
 /// can reach the slabs they pin (`malloc_trim` does the same).
