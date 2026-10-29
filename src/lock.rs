@@ -810,6 +810,35 @@ impl<T> Drop for LockGuard<'_, T> {
 
 } // verus!
 
+impl<T> Lock<T> {
+    /// [`RawLock::lock_held`] for a holder that also keeps the value:
+    /// acquire, and return the hold's token with the permission of the
+    /// cell, which the holder keeps until the release (the fork handlers,
+    /// for the arena creation lock).
+    #[inline(always)]
+    pub(crate) fn lock_held_perm(
+        &self,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> Tracked<(LockHeld, PointsTo<T>)> {
+        self.raw.lock();
+        Tracked::assume_new()
+    }
+
+    /// The value, read through the permission `perm` of the cell, which a
+    /// holder keeps ([`Lock::lock_held_perm`]).
+    #[inline(always)]
+    pub(crate) fn value_held<'a>(&'a self, _perm: Tracked<&'a PointsTo<T>>) -> &'a T {
+        self.value.borrow(Tracked::assume_new())
+    }
+
+    /// [`RawLock::unlock_held`] for a [`Lock::lock_held_perm`] holder:
+    /// release, handing back the token and the permission of the cell.
+    #[inline(always)]
+    pub(crate) fn unlock_held_perm(&self, _t: Tracked<LockHeld>, _perm: Tracked<PointsTo<T>>) {
+        self.raw.release();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
