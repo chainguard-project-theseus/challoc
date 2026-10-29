@@ -1,3 +1,6 @@
 # The flag's one load, with the witness of a true read that the Purged zero
 # claim uses up.
 purged_zero	atomics primitive	loom/GenMC
+# The explicit purge's guard: Verus wants a destructor that opens no
+# invariant and cannot unwind; the body is one atomic subtract.
+Explicit::drop	atomics primitive	Kani

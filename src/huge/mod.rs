@@ -592,6 +592,24 @@ impl Tally {
         }
     }
 
+    /// Once nothing is pending and nothing is left to visit, every
+    /// `Empty` extent of a full walk was refused.
+    proof fn lemma_walked_all(&self, h: &Huge, g: Inner, x: *mut HugeDesc)
+        requires
+            self.inv(h, g, purge::none()),
+            self.full@,
+            self.rest@.len() == 0,
+            g.descs@.contains_key(x),
+            g.descs@[x].value().state == RunState::Empty as u8,
+        ensures
+            self.refused@.contains(x),
+    {
+        assert(g.elist@.contains(x));
+        let i = g.elist@.index_of(x);
+        assert(0 <= i < g.elist@.len() - self.rest@.len());
+        assert(!(purge::none())(piece_of(h, g.descs@[g.elist@[i]].value())));
+    }
+
     /// The count purged is at most `u32::MAX`.
     proof fn lemma_counts(&self, h: &Huge, g: Inner)
         requires
@@ -6990,7 +7008,7 @@ impl Huge {
     pub fn purge_empty(
         &self,
         cutoff: u64,
-        Tracked(_left): Tracked<&mut Ghost<purge::Left>>,
+        Tracked(left): Tracked<&mut Ghost<purge::Left>>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: usize)
         requires
@@ -7001,6 +7019,13 @@ impl Huge {
         ensures
             *final(ord) == *old(ord),
             r <= u32::MAX,
+            final(left)@.bytes >= 0,
+            (r > 0) == (final(left)@.bytes > 0),
+            final(left)@.arenas == vstd::set::Set::<int>::empty(),
+            final(left)@.classes == vstd::set::Set::<(int, int)>::empty(),
+            final(left)@.slabs == ISet::<(int, int, int)>::empty(),
+            final(left)@.huge,
+            cutoff == u64::MAX ==> final(left)@.clean(),
     {
         broadcast use axiom_huge_lock_inv, axiom_huge_lock_frame;
 
@@ -7065,7 +7090,39 @@ impl Huge {
         batch.flush(&mut t, self, &mut g);
         self.sync_oldest(&g);
         proof {
-            t.lemma_counts(self, g@);
+            let lv = g@;
+            let ext = ISet::new(
+                |a: int|
+                    exists|x: *mut HugeDesc| #[trigger]
+                        lv.descs@.contains_key(x) && x@.addr == a && lv.descs@[x].value().state == RunState::Empty as u8,
+            );
+            let refused = ISet::new(
+                |a: int| exists|x: *mut HugeDesc| #[trigger] t.refused@.contains(x) && x@.addr == a,
+            );
+            *left = Ghost(
+                purge::Left {
+                    bytes: batch.sent(),
+                    arenas: vstd::set::Set::empty(),
+                    classes: vstd::set::Set::empty(),
+                    slabs: ISet::empty(),
+                    huge: true,
+                    extents: ext,
+                    refused: ISet::empty(),
+                    refused_extents: refused,
+                },
+            );
+            t.lemma_counts(self, lv);
+            if cutoff == u64::MAX {
+                // Every `Empty` extent is on the list, every member of
+                // which the walk visited; none is pending once the batch
+                // is flushed, so each was refused.
+                assert forall|a: int| #[trigger] ext.contains(a) implies refused.contains(a) by {
+                    let x = choose|x: *mut HugeDesc| #[trigger]
+                        lv.descs@.contains_key(x) && x@.addr == a && lv.descs@[x].value().state == RunState::Empty as u8;
+                    t.lemma_walked_all(self, lv, x);
+                    assert(t.refused@.contains(x));
+                }
+            }
         }
         proof {
             // The lock's frame: the ghost page count, shift and `Meta`
