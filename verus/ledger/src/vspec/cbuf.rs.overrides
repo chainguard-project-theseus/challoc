@@ -2,3 +2,9 @@
 # token until a write or a call back into C.
 CCall::str_byte	C-program contract	none (assumption)
 CCall::str_c_byte	C-program contract	none (assumption)
+# The C contract of a sized buffer or a counted array: its length word
+# readable through the token, and the buffer that many bytes.
+CCall::sized	C-program contract	none (assumption)
+CCall::counted	C-program contract	none (assumption)
+# What open_writes stands for, taken only there with the token &mut.
+axiom_c_writes	C-program contract	none (assumption)
