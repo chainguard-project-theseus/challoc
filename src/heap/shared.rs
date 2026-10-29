@@ -2524,34 +2524,32 @@ impl Shared {
 #[cold]
 #[inline(never)]
 fn no_such_arena(index: u16) -> ! {
-    panic!("arena {index} does not exist")
+    crate::sys::abort_pending(format_args!("arena {index} does not exist"))
 }
 
 /// [`Shared::check_size_hint`]'s abort on a slab slot whose class is not
 /// the hint's.
 #[cold]
 #[inline(never)]
-#[track_caller]
 fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> ! {
-    panic!(
+    crate::sys::abort_fmt(format_args!(
         "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
         p as usize,
         size,
         class,
         CLASSES.table()[class as usize].size()
-    )
+    ))
 }
 
 /// [`Shared::check_size_hint`]'s abort on a huge run whose usable size is
 /// not the hint's.
 #[cold]
 #[inline(never)]
-#[track_caller]
 fn huge_hint_mismatch(p: *mut u8, size: usize, usable: usize) -> ! {
-    panic!(
+    crate::sys::abort_fmt(format_args!(
         "sized free of {:#x}: size hint {} does not match the allocation (huge run, {} bytes)",
         p as usize, size, usable
-    )
+    ))
 }
 
 verus! {
