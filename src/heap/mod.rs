@@ -59,9 +59,11 @@ use compact::{
     PROBE_MASK,
 };
 pub use compact::{MODE_OFF, MODE_PROBE};
+pub use live::Live;
 pub use others::ArenaCaches;
 #[cfg(test)]
 pub use paths::free_fast;
+pub(crate) use paths::shared_ptr;
 pub use paths::{
     alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast_slot, free_sized_fast,
 };
@@ -72,7 +74,7 @@ pub use shared::Shared;
 pub use shared::shared_storage;
 #[cfg(test)]
 use shared::{FAIL_SETSPECIFIC, guard_interval_for};
-pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
+pub use thread::{HeapPerm, TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 
 use core::alloc::Layout;
@@ -94,8 +96,6 @@ use crate::arena::homed_on;
 use crate::lock::LockOrder;
 use crate::vspec::zero::Zeroed;
 use fresh::FreshHeap;
-#[cfg(verus_keep_ghost)]
-pub(crate) use live::Live;
 use others::{node_block_layout, node_caches_detached, node_set_arena};
 use paths::invalid_free;
 #[cfg(test)]
@@ -4342,7 +4342,7 @@ impl Heap {
                 unsafe {
                     let cache = Self::node_cache_ptr(foreign, class);
                     if self.hdr_ref(cache).cap != 0 {
-                        Self::scan_or_abort(shared, cache, p);
+                        self.scan_or_abort(shared, cache, p);
                     }
                 }
             }
@@ -4355,7 +4355,7 @@ impl Heap {
             Ok((c, a)) => debug_assert!(c == class && a == to),
             Err(_) => invalid_free(p as usize),
         }
-        self.push(shared, class, p);
+        self.push(shared, class, p, Tracked::assume_new());
         true
     }
 

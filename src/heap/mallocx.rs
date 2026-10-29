@@ -6,9 +6,10 @@
 //! ([`Tcache::None`], straight against the slab bitmaps).
 
 use core::ptr;
-use vstd::prelude::Tracked;
+use vstd::prelude::{Ghost, Tracked};
 
 use super::Shared;
+use crate::vspec::zero::Zeroed;
 
 /// `MALLOCX_ZERO`.
 pub const MALLOCX_ZERO: u32 = 0x40;
@@ -96,14 +97,38 @@ fn invalid_tcache(id: u16) -> ! {
 /// Routing of a `MALLOCX` allocation of a non-huge class on the calling
 /// thread. `None` from the arena lookup (an index `arenas.create` never
 /// handed out) gives null. The flag says the memory is known zero.
-pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) -> (*mut u8, bool) {
+// The nested `if` stands for a let chain, which Verus does not support.
+#[allow(clippy::collapsible_if)]
+pub fn alloc(
+    shared: &Shared,
+    class: usize,
+    arena: Option<u16>,
+    tcache: Tcache,
+    _blk: Tracked<&mut super::Live>,
+) -> (*mut u8, bool, Tracked<Zeroed>) {
     match tcache {
         Tcache::Default => match crate::heap::heap_for_thread(shared) {
             Some(h) => match arena {
-                Some(a) => h.alloc_in(shared, a, class),
-                None => h.alloc_zeroed(shared, class),
+                Some(a) => {
+                    let (p, zero) = h.alloc_in(shared, a, class, Tracked::assume_new());
+                    let z = h.take_handed(
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                    );
+                    (p, zero, z)
+                }
+                None => {
+                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked::assume_new());
+                    let z = h.take_handed(
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                    );
+                    (p, zero, z)
+                }
             },
-            None => alloc_direct(shared, class, arena.unwrap_or(0)),
+            None => alloc_direct(shared, class, arena.unwrap_or(0), Tracked::assume_new()),
         },
         Tcache::Explicit(t) => {
             let Some(h) = shared.tcaches.get(t) else {
@@ -112,34 +137,55 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
             // As for the default cache: only an explicit arena pins a
             // shared class to it (`Heap::alloc_in`).
             match arena {
-                Some(a) => h.alloc_in(shared, a, class),
-                None => h.alloc_zeroed(shared, class),
+                Some(a) => {
+                    let (p, zero) = h.alloc_in(shared, a, class, Tracked::assume_new());
+                    let z = h.take_handed(
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                    );
+                    (p, zero, z)
+                }
+                None => {
+                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked::assume_new());
+                    let z = h.take_handed(
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                        Ghost::assume_new(),
+                    );
+                    (p, zero, z)
+                }
             }
         }
         Tcache::None => {
             let a = arena
-                .or_else(|| crate::heap::existing_heap(shared).map(|h| h.arena()))
+                .or_else(|| {
+                    crate::heap::existing_heap(crate::heap::shared_ptr(shared)).map(|h| h.arena())
+                })
                 .unwrap_or(0);
-            let (p, zero) = alloc_direct(shared, class, a);
-            if !p.is_null()
-                && let Some(h) = crate::heap::existing_heap(shared)
-            {
-                h.count_direct_alloc(class);
+            let (p, zero, z) = alloc_direct(shared, class, a, Tracked::assume_new());
+            if !p.is_null() {
+                if let Some(h) = crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {
+                    h.count_direct_alloc(class);
+                }
             }
-            (p, zero)
+            (p, zero, z)
         }
     }
 }
 
 /// One slot of `class` straight from `arena`'s slab bitmaps.
-fn alloc_direct(shared: &Shared, class: usize, arena: u16) -> (*mut u8, bool) {
+fn alloc_direct(
+    shared: &Shared,
+    class: usize,
+    arena: u16,
+    _blk: Tracked<&mut super::Live>,
+) -> (*mut u8, bool, Tracked<Zeroed>) {
     match shared.arena(arena, Tracked::assume_new()) {
         Some((a, w)) => {
-            let (p, zero, _) =
-                shared.alloc_direct(a, w, class, Tracked::assume_new(), Tracked::assume_new());
-            (p, zero)
+            shared.alloc_direct(a, w, class, Tracked::assume_new(), Tracked::assume_new())
         }
-        None => (ptr::null_mut(), false),
+        None => (ptr::null_mut(), false, Tracked::assume_new()),
     }
 }
 
@@ -151,38 +197,37 @@ pub fn alloc_huge(
     align: usize,
     arena: Option<u16>,
     tcache: Tcache,
-) -> (*mut u8, bool) {
+    _blk: Tracked<&mut super::Live>,
+) -> (*mut u8, bool, Tracked<Zeroed>) {
     let a = match (arena, tcache) {
         (Some(a), _) => a,
         (None, Tcache::Explicit(t)) => match shared.tcaches.get(t) {
             Some(h) => h.arena(),
             None => invalid_tcache(t),
         },
-        (None, _) => crate::heap::existing_heap(shared).map_or(0, |h| h.arena()),
+        (None, _) => {
+            crate::heap::existing_heap(crate::heap::shared_ptr(shared)).map_or(0, |h| h.arena())
+        }
     };
     if shared.arena(a, Tracked::assume_new()).is_none() {
-        return (ptr::null_mut(), false);
+        return (ptr::null_mut(), false, Tracked::assume_new());
     }
     match crate::heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge_in(shared, size, align, a),
-        None => {
-            let (p, zero, _) =
-                shared.alloc_huge(size, align, a, Tracked::assume_new(), Tracked::assume_new());
-            (p, zero)
-        }
+        Some(h) => h.alloc_huge_in(shared, size, align, a, Tracked::assume_new()),
+        None => shared.alloc_huge(size, align, a, Tracked::assume_new(), Tracked::assume_new()),
     }
 }
 
 /// Routing of a `MALLOCX` free (`dallocx`, `sdallocx`) on the calling
 /// thread. Aborts unless `p` is a live allocation.
-pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache) {
+pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, _blk: Tracked<super::Live>) {
     match tcache {
-        Tcache::Default => crate::heap::free(shared, p),
+        Tcache::Default => crate::heap::free(shared, p, Tracked::assume_new()),
         Tcache::Explicit(t) => match shared.tcaches.get(t) {
-            Some(h) => h.free(shared, p),
+            Some(h) => h.free(shared, p, Tracked::assume_new()),
             None => invalid_tcache(t),
         },
-        Tcache::None => crate::heap::free_direct(shared, p),
+        Tcache::None => crate::heap::free_direct(shared, p, Tracked::assume_new()),
     }
 }
 
