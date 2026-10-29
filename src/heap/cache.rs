@@ -7,6 +7,7 @@ use core::ptr;
 
 use crate::layout::NCLASSES;
 use crate::sys::pac;
+use crate::vspec::addr::addr_to_ptr;
 
 use super::{FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE, assert_rekey_flushed};
@@ -170,7 +171,7 @@ impl CacheHeader {
     pub(super) fn sign_all(slots: *mut *mut u8, entries: &mut [*mut u8]) {
         let m = slots as usize;
         for e in entries {
-            *e = pac::sign(*e as usize, m) as *mut u8;
+            *e = addr_to_ptr(pac::sign(*e as usize, m));
         }
     }
 
@@ -179,7 +180,7 @@ impl CacheHeader {
     pub(super) fn auth_all(slots: *mut *mut u8, entries: &mut [*mut u8]) {
         let m = slots as usize;
         for e in entries {
-            *e = pac::auth(*e as usize, m) as *mut u8;
+            *e = addr_to_ptr(pac::auth(*e as usize, m));
         }
     }
 
