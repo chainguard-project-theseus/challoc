@@ -243,13 +243,31 @@ pub proof fn lemma_effective_idempotent(m: u64)
     assert((0xFFFF_FFFE_7FFF_FFFFu64 & !0x4_0100u64) & !0xFFFF_FFFE_7FFF_FFFFu64 == 0) by (bit_vector);
 }
 
+/// Premise (the calling thread's mask): the token stands for the signal
+/// mask of the thread that calls this. It names no value, but states
+/// [`SigMask::wf`] of it: the mask is one the kernel holds (`SIGKILL` and
+/// `SIGSTOP` cannot be blocked) and has glibc's `SIGCANCEL` and `SIGSETXID`
+/// unblocked, which holds because glibc's `sigprocmask` and
+/// `pthread_sigmask` strip those two, and nothing in the process blocks
+/// signals through a raw `rt_sigprocmask` (challoc's own calls,
+/// [`block_all_signals`] and [`set_signal_mask`], keep them unblocked).
+/// Called once at a handler's entry (`api::fork_prepare`; the test
+/// `api::tests::fork_hold_is_resumed_once` counts the calls); nothing on
+/// the thread changes the mask while the token is held except through it,
+/// and the C caller's code does not run until the handler returns. A
+/// second call would hand out a second token for the same mask; no lemma
+/// relates two tokens.
+pub(crate) axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
+    ensures
+        sig.wf(),
+;
+
 } // verus!
 
 /// The calling thread's signal-mask token, in a module of its own: its
-/// field is private here, so no code in `sys` (or anywhere) builds one.
-/// Nothing mints one yet: the unverified callers pass placeholders
-/// (`Tracked::assume_new()`, in the ledger) until a trusted axiom for the
-/// calling thread's mask lands with the first verified caller.
+/// field is private here, so no code in `sys` (or anywhere) builds one;
+/// [`axiom_thread_mask`] hands them out, and the unverified callers pass
+/// placeholders (`Tracked::assume_new()`).
 mod sigmask {
     #[cfg(verus_keep_ghost)]
     use super::{BLOCKABLE_SIGNALS, effective};

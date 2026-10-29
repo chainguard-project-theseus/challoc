@@ -9,6 +9,7 @@ file.
 |---|---|---|---|---|
 | `RawLock::lock_slow` | no_decreases | termination | loom/GenMC | trusted |
 | `axiom_entry` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_fork_entry` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_b..._class` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_below_huge` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_meta_order` | axiom | allocator invariant | Verus | trusted |
@@ -35,7 +36,7 @@ fn lock_slow(&self)
 
 ## `axiom_entry`
 
-src/lock.rs:383. Kind: axiom. Category: allocator invariant.
+src/lock.rs:389. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (an entry point): the calling thread holds no allocator lock.
@@ -48,9 +49,24 @@ pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 ;
 ```
 
+## `axiom_fork_entry`
+
+src/lock.rs:408. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Premise (the fork prepare handler's entry): the calling thread holds no allocator lock, as for [`axiom_entry`], and keeps this token for the whole handler, which takes every lock with [`RawLock::lock_held`] and releases none of them before it returns: a root.
+
+```rust
+pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.top() == 0,
+        o.root(),
+;
+```
+
 ## `axiom_below_class`
 
-src/lock.rs:394. Kind: axiom. Category: allocator invariant.
+src/lock.rs:419. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise: the calling thread holds only allocator locks ranked below the class locks.
@@ -65,7 +81,7 @@ pub(crate) axiom fn axiom_below_class<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `axiom_below_huge`
 
-src/lock.rs:405. Kind: axiom. Category: allocator invariant.
+src/lock.rs:430. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise: the calling thread holds only allocator locks ranked below the huge lock.
@@ -80,7 +96,7 @@ pub(crate) axiom fn axiom_below_huge<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `axiom_meta_order`
 
-src/lock.rs:416. Kind: axiom. Category: allocator invariant.
+src/lock.rs:441. Kind: axiom. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Premise: the calling thread holds only allocator locks ranked below the metadata lock ([`rank_meta`]).
@@ -95,7 +111,7 @@ pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `wait`
 
-src/lock.rs:427. Kind: external_body. Category: FFI/syscall.
+src/lock.rs:452. Kind: external_body. Category: FFI/syscall.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -106,7 +122,7 @@ fn wait(state: &AtomicU32, val: u32)
 
 ## `wake`
 
-src/lock.rs:438. Kind: external_body. Category: FFI/syscall.
+src/lock.rs:463. Kind: external_body. Category: FFI/syscall.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -117,7 +133,7 @@ fn wake(state: &AtomicU32)
 
 ## `axiom_acquired`
 
-src/lock.rs:509. Kind: axiom. Category: allocator invariant.
+src/lock.rs:536. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`axiom_held`], for a holder of the raw lock): a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -133,7 +149,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ## `axiom_held`
 
-src/lock.rs:524. Kind: axiom. Category: allocator invariant.
+src/lock.rs:551. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a holder of the raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token lends the permission of `l`'s cell for as long as the token stays borrowed, and the value satisfies [`lock_inv`] and keeps [`lock_frame`], as at [`axiom_acquired`].
@@ -152,12 +168,12 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ## `cell_ref`
 
-src/lock.rs:774. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:868. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 782.
+Body mints Tracked at line 876.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -171,12 +187,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:789. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:883. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 799.
+Body mints Tracked at line 893.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -192,7 +208,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:809. Kind: external_body. Category: atomics primitive.
+src/lock.rs:903. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 ```rust

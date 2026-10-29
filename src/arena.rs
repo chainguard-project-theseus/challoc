@@ -1770,6 +1770,11 @@ impl Created {
         &&& self.half@@.0 == self.n
         &&& forall|i: int| #[trigger] self.half@@.1.contains_key(i) ==> 0 <= i < self.n
     }
+
+    /// The holder's half's snapshot.
+    pub closed spec fn snap(self) -> Snap {
+        self.half@@
+    }
 }
 
 /// The permission of the creation lock's cell, as the fork handlers keep
@@ -2905,6 +2910,149 @@ impl Arenas {
         Tracked(pw.tracked_unwrap())
     }
 
+    /// [`Arenas::get_existing`] for a holder of the creation lock that
+    /// keeps the permission of its cell, `cp` (the fork handlers,
+    /// [`Arenas::lock_held`]): the arena at `index` in the lock value's
+    /// half of the snapshot ([`Created`]), which nothing can change while
+    /// the holder keeps `cp`. The same code as `get_existing`; the lock
+    /// value is read only for its ghost half.
+    ///
+    /// The `&Created` it forms into the lock's cell (`Lock::value_held`)
+    /// is sound because of its requirement: `cp` is the cell's
+    /// permission, which [`Arenas::lock_held`] hands out with the creation
+    /// lock held and [`Arenas::unlock_held`] takes back as it releases
+    /// the lock. While the caller keeps `cp` the lock stays held, so no
+    /// lock guard, and no `&mut` into the cell (`Arenas::create`,
+    /// `Arenas::materialise`), exists. The proof does not check two parts
+    /// of that: that the holder takes no guard of the creation lock and
+    /// releases it no other way (`Arenas::raw_lock` is test-only), and
+    /// that unverified code makes no `cp` with `Tracked::assume_new`. So
+    /// this stays crate-private.
+    #[inline(always)]
+    pub(crate) fn get_frozen<'a>(&'a self, index: u16, cp: Tracked<&CreatedPerm>) -> (r: Option<&'a Arena>)
+        requires
+            self.frozen(*cp@),
+        ensures
+            r is Some <==> cp@.value().snap().1.contains_key(index as int),
+            r matches Some(a) ==> *a == cp@.value().snap().1[index as int],
+            r matches Some(a) ==> a.spec_index() == index,
+    {
+        let i = index as usize;
+        if i >= MAX_ARENAS {
+            return None;
+        }
+        proof {
+            use_type_invariant(self);
+        }
+        // Read only by the proof (its ghost half).
+        #[allow(unused_variables)]
+        let c = self.lock.value_held(cp);
+        let p;
+        let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, i as int));
+                v.auth.agree(c.half.borrow());
+            }
+            p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));
+            proof {
+                if p@.addr != 0 {
+                    perm = Some(*v.arenas.tracked_borrow(i as int));
+                }
+            }
+        });
+        // SAFETY: a non-null entry of the table.
+        if p.is_null() { None } else { Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }) }
+    }
+
+    /// [`Arenas::count`] for a holder of the creation lock that keeps the
+    /// permission of its cell, `cp`, as in [`Arenas::get_frozen`]: the
+    /// count in the lock value's half of the snapshot. It forms the same
+    /// `&Created`, sound for the same reasons.
+    #[inline(always)]
+    pub(crate) fn count_frozen(&self, cp: Tracked<&CreatedPerm>) -> (r: u32)
+        requires
+            self.frozen(*cp@),
+        ensures
+            r == cp@.value().snap().0,
+            r as usize <= MAX_ARENAS,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        // Read only by the proof (its ghost half).
+        #[allow(unused_variables)]
+        let c = self.lock.value_held(cp);
+        let r;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                v.auth.agree(c.half.borrow());
+            }
+            r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));
+        });
+        r
+    }
+
+    /// The creation lock, taken for the fork handlers: `RawLock::lock_held`
+    /// with the permission of the lock's cell, which they keep until the
+    /// release (`Lock::lock_held_perm`), so that nothing changes the count
+    /// or the table meanwhile ([`Arenas::frozen`]).
+    #[inline(always)]
+    pub(crate) fn lock_held(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Tracked<(LockHeld, CreatedPerm)>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).root(),
+            old(ord).allows(rank_arenas()),
+        ensures
+            r@.0.held() == self.spec_raw_lock(),
+            self.frozen(r@.1),
+            final(ord).root(),
+            final(ord).top() == rank_arenas(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let r = self.lock.lock_held_perm(Tracked(ord));
+        proof {
+            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
+
+        }
+        r
+    }
+
+    /// Release the creation lock [`Arenas::lock_held`] took, handing back
+    /// its token and the permission of its cell (`Lock::unlock_held_perm`).
+    #[inline(always)]
+    pub(crate) fn unlock_held(&self, Tracked(t): Tracked<LockHeld>, Tracked(cp): Tracked<CreatedPerm>)
+        requires
+            crate::sys::may_syscall(),
+            t.held() == self.spec_raw_lock(),
+            self.frozen(cp),
+    {
+        self.lock.unlock_held_perm(Tracked(t), Tracked(cp));
+    }
+
+    /// `cp` is the permission of the creation lock's cell, whose value
+    /// keeps the lock's invariant and has the snapshot's half
+    /// ([`Created`]) of this registry: what [`Arenas::lock_held`] hands
+    /// the fork handlers.
+    pub closed spec fn frozen(&self, cp: CreatedPerm) -> bool {
+        &&& self.lock.has_perm(cp)
+        &&& cp.value().ok()
+        &&& cp.value().half@.id() == self.count_inv@.constant().snap
+    }
+
+    /// The snapshot of an [`Arenas::frozen`] permission: a count of at most
+    /// [`MAX_ARENAS`], and arenas only below it.
+    pub proof fn lemma_frozen(&self, cp: CreatedPerm)
+        requires
+            self.frozen(cp),
+        ensures
+            cp.value().snap().0 <= MAX_ARENAS,
+            forall|i: int| #[trigger] cp.value().snap().1.contains_key(i) ==> 0 <= i < cp.value().snap().0,
+    {
+    }
+
     /// Automatic arenas, as `init` clamped them.
     pub closed spec fn spec_auto(&self) -> int {
         self.auto as int
@@ -3597,72 +3745,5 @@ impl Arenas {
                 Some(unsafe { &*p })
             }
         })
-    }
-}
-
-impl Arenas {
-    /// [`Arenas::get_existing`] for a holder of the creation lock that
-    /// keeps the permission of its cell, `cp` (the fork handlers,
-    /// [`Arenas::lock_held`]). The same code as `get_existing`; the lock
-    /// value is read only for its ghost half.
-    ///
-    /// It forms a `&Created` into the lock's cell (`Lock::value_held`).
-    /// That is sound only while the caller holds the creation lock, taken
-    /// by [`Arenas::lock_held`], and `cp` is the cell's permission that
-    /// call returned: then no lock guard exists, so no `&mut` into the
-    /// cell (`Arenas::create`, `Arenas::materialise`). A `cp` from
-    /// anywhere else (unverified code can make one with
-    /// `Tracked::assume_new`) carries no such guarantee, so this stays
-    /// crate-private.
-    #[inline(always)]
-    pub(crate) fn get_frozen<'a>(
-        &'a self,
-        index: u16,
-        cp: Tracked<&CreatedPerm>,
-    ) -> Option<&'a Arena> {
-        let i = index as usize;
-        if i >= MAX_ARENAS {
-            return None;
-        }
-        // Read only by the proof (its ghost half).
-        #[allow(unused_variables)]
-        let c = self.lock.value_held(cp);
-        let p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked::assume_new());
-        // SAFETY: a non-null entry of the table.
-        if p.is_null() {
-            None
-        } else {
-            Some(unsafe { arena_ref(p, Tracked::assume_new(), Ghost::assume_new()) })
-        }
-    }
-
-    /// [`Arenas::count`] for a holder of the creation lock that keeps the
-    /// permission of its cell, `cp`, as in [`Arenas::get_frozen`]. It forms
-    /// the same `&Created`, sound under the same requirement on the caller
-    /// and `cp`.
-    #[inline(always)]
-    pub(crate) fn count_frozen(&self, cp: Tracked<&CreatedPerm>) -> u32 {
-        // Read only by the proof (its ghost half).
-        #[allow(unused_variables)]
-        let c = self.lock.value_held(cp);
-        crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked::assume_new())
-    }
-
-    /// The creation lock, taken for the fork handlers: `RawLock::lock_held`
-    /// with the permission of the lock's cell, which they keep until the
-    /// release (`Lock::lock_held_perm`).
-    #[inline(always)]
-    pub(crate) fn lock_held(
-        &self,
-        ord: Tracked<&mut LockOrder>,
-    ) -> Tracked<(LockHeld, CreatedPerm)> {
-        self.lock.lock_held_perm(ord)
-    }
-
-    /// Release the creation lock [`Arenas::lock_held`] took, handing back
-    /// its token and the permission of its cell (`Lock::unlock_held_perm`).
-    #[inline(always)]
-    pub(crate) fn unlock_held(&self, t: Tracked<LockHeld>, cp: Tracked<CreatedPerm>) {
-        self.lock.unlock_held_perm(t, cp)
     }
 }

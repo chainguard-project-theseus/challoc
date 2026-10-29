@@ -120,11 +120,17 @@ use crate::config;
 use crate::heap::Shared;
 use crate::layout::{self, NCLASSES, Regions};
 use crate::lock::LockHeld;
+#[cfg(verus_keep_ghost)]
+use crate::lock::{RawLock, axiom_entry, rank_arena_stats, rank_class, rank_sets, rank_table};
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
+#[cfg(verus_keep_ghost)]
+use crate::sys::{SigMask, all_blocked, effective};
 use crate::vspec::once;
 use crate::vspec::word::WordPerm;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::word::word_addr;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
@@ -321,7 +327,8 @@ pub tracked struct LineVal {
 /// ([`LineCell::built`]). `init` makes it at `LINE_UNBUILT`, with the
 /// features published. The exchange from `LINE_UNBUILT` to
 /// `LINE_BUILDING` ([`claim_line`]) hands the permissions to its winner,
-/// the only writer of the two statics; the `LINE_READY` store
+/// the only writer of the two statics, and the invariant holds none
+/// while the line is `LINE_BUILDING`; the `LINE_READY` store
 /// ([`publish_line`]) puts them back frozen, after the build, for every
 /// reader ([`load_line`]).
 // Ghost: named only by proof code.
@@ -332,6 +339,7 @@ impl InvariantPredicate<(), LineVal> for LinePred {
     open spec fn inv(k: (), v: LineVal) -> bool {
         &&& v.perm.value() == LINE_UNBUILT || v.perm.value() == LINE_BUILDING || v.perm.value() == LINE_READY
         &&& v.perm.value() == LINE_UNBUILT ==> (v.cell matches Some(c) && c.unbuilt())
+        &&& v.perm.value() == LINE_BUILDING ==> v.cell is None
         &&& v.perm.value() == LINE_READY ==> (v.frozen matches Some(c) && c.built())
     }
 }
@@ -458,6 +466,8 @@ pub const LINE_READY: u8 = 2;
 
 } // verus!
 
+verus! {
+
 /// Signal mask of the forking thread, saved by `fork_prepare` and restored by
 /// `fork_release`. One slot suffices because it is only written and read
 /// while the writer holds every allocator lock: a second thread in
@@ -465,15 +475,27 @@ pub const LINE_READY: u8 = 2;
 /// the unit tests call them directly) waits on the first class lock before
 /// it can store, and the releaser reads before its first unlock. A handler
 /// cannot nest a fork inside the window because signals are blocked for its
-/// duration. An atomic whose accesses are relaxed (a plain load and
-/// store), ordered by the locks.
-static FORK_SIGMASK: AtomicU64 = AtomicU64::new(0);
+/// duration. An atomic so that verified code can read and write it: the
+/// accesses are relaxed (a plain load and store), ordered by the locks.
+/// The release reads it through the permission its hold carries
+/// ([`ForkHeld::has_slot`]), so the value read is the mask the hold
+/// records. Its identity is carried by the holds rather than stated of
+/// the static (Verus cannot name a static in a specification): the
+/// prepare's hold records the word it stored to
+/// ([`ForkHeld::slot_addr`], bookkeeping: nothing reads that hold
+/// after the store), and the release's hold is handed over for the word
+/// [`fork_slot`] returns to the release ([`resume::resumed`]); that the
+/// two are one word is the handoff's premise.
+exec static FORK_SIGMASK: AtomicU64 = AtomicU64::new(0);
 
-/// [`FORK_SIGMASK`], the slot the fork handlers save the mask in.
+/// [`FORK_SIGMASK`] as a reference. Nothing is claimed of it: the holds
+/// carry its identity (see [`FORK_SIGMASK`]).
 #[inline(always)]
 fn fork_slot() -> &'static AtomicU64 {
     &FORK_SIGMASK
 }
+
+} // verus!
 
 verus! {
 
@@ -1073,11 +1095,9 @@ fn line_ptr() -> (p: *mut FeatureLine)
 /// `LINE_STATE`'s initial value (the static's initialiser) and that
 /// every write of it is [`line_compare_exchange`]'s or [`line_store`]'s,
 /// inside the line's invariant, which `init` makes with this
-/// permission ([`LinePred`]), but one: the fork child's reset from
-/// `LINE_BUILDING` to `LINE_UNBUILT` (`feature_line_fork_child`), which
-/// is unverified and runs outside the invariant, so it puts no
-/// permissions back (an open seam of the fork handlers, whose proof
-/// hands the child the orphaned permissions); and that verified code
+/// permission ([`LinePred`]; the fork child's reset from `LINE_BUILDING`
+/// to `LINE_UNBUILT`, [`feature_line_fork_child`], puts back the
+/// permissions [`axiom_line_orphaned`] hands it); and that verified code
 /// learns its value only from them and [`line_load`]; nothing writes it
 /// before `init` makes that invariant (the line's requests first return
 /// from `shared`, and the fork handlers are registered at `init`'s end).
@@ -1262,8 +1282,14 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
 
 verus! {
 
-/// A lock the fork handlers take, named by its place in the allocator
-/// (design section 9).
+/// A lock the fork handlers take, named by its place in the allocator:
+/// the list in [`fork_prepare`]'s body (design section 9). The test
+/// `fork_lock_list_matches_the_source_tree` checks the test list
+/// `FORK_LOCKS` against every `Lock` in the source tree; that
+/// `FORK_LOCKS` and this enum name the same locks is by inspection.
+/// Arena locks carry the arena's index (as `Arenas::get_existing` takes
+/// it), class and table locks the class. The background thread's state
+/// lock is separate, in its own token (see [`fork_holds`]).
 // Ghost: named only by proof code.
 #[allow(dead_code)]
 pub ghost enum ForkLock {
@@ -1287,10 +1313,84 @@ pub ghost enum ForkLock {
     ArenaStats(int),
 }
 
-/// The hold of the fork lock list: the arenas `fork_prepare` found, one
-/// [`LockHeld`] per listed lock, the content of [`FORK_SIGMASK`] and the
-/// word it is in, the permission to that word in the release's hold, and
-/// the permission of the creation lock's cell.
+/// An arena lock (class or slab set) of an arena in `a`.
+pub open spec fn arena_part(k: ForkLock, a: Set<int>) -> bool {
+    match k {
+        ForkLock::Class(i, c) => a.contains(i) && 0 <= c < NCLASSES,
+        ForkLock::Sets(i) => a.contains(i),
+        _ => false,
+    }
+}
+
+/// A class lock of an arena in `a`.
+pub open spec fn class_part(k: ForkLock, a: Set<int>) -> bool {
+    match k {
+        ForkLock::Class(i, c) => a.contains(i) && 0 <= c < NCLASSES,
+        _ => false,
+    }
+}
+
+/// A slab table lock.
+pub open spec fn table_part(k: ForkLock) -> bool {
+    match k {
+        ForkLock::Table(c) => 0 <= c < NCLASSES,
+        _ => false,
+    }
+}
+
+/// An arena statistics lock of an arena in `a`.
+pub open spec fn stats_part(k: ForkLock, a: Set<int>) -> bool {
+    match k {
+        ForkLock::ArenaStats(i) => a.contains(i),
+        _ => false,
+    }
+}
+
+/// The fork lock list for the arenas in `a` (the arenas `fork_prepare`
+/// found), the state lock aside: the explicit-cache table and arena
+/// creation locks, every class and slab-set lock of every arena, every
+/// slab table lock, the huge, metadata and process statistics locks, and
+/// every arena's statistics lock.
+pub open spec fn listed(k: ForkLock, a: Set<int>) -> bool {
+    ||| k == ForkLock::Tcaches
+    ||| k == ForkLock::Arenas
+    ||| arena_part(k, a)
+    ||| table_part(k)
+    ||| k == ForkLock::Huge
+    ||| k == ForkLock::Meta
+    ||| k == ForkLock::Stats
+    ||| stats_part(k, a)
+}
+
+/// The lock `k` names in `s`, with arena `i` the value `arenas[i]`: the
+/// value of the lock the accessor path through `s` reaches.
+pub open spec fn lock_at(s: Shared, arenas: Map<int, Arena>, k: ForkLock) -> RawLock {
+    match k {
+        ForkLock::Tcaches => s.spec_fork_locks().0,
+        ForkLock::Arenas => s.spec_fork_locks().1,
+        ForkLock::Class(i, c) => arenas[i].spec_class_state(c).spec_raw_lock(),
+        ForkLock::Sets(i) => arenas[i].spec_sets().spec_raw_lock(),
+        ForkLock::Table(c) => s.spec_tables()[c].spec_raw_lock(),
+        ForkLock::Huge => s.spec_fork_locks().2,
+        ForkLock::Meta => s.spec_fork_locks().3,
+        ForkLock::Stats => s.spec_fork_locks().4,
+        ForkLock::ArenaStats(i) => arenas[i].spec_stats_lock(),
+    }
+}
+
+/// The hold of the fork lock list:
+/// the arenas `fork_prepare` found, `n` the arena count it read, and one
+/// [`LockHeld`] per listed lock, each the hold of the lock its key names,
+/// the mask its holder records as stored in [`FORK_SIGMASK`] (`saved`)
+/// and the address of that word (`slot_addr`), with, in the
+/// release's hold, the permission to that word (`slot`).
+/// It also keeps the permission of the creation lock's cell (`created`,
+/// from `Arenas::lock_held`), whose value's half of the registry's
+/// snapshot is `n` and `arenas` ([`ForkHeld::wf`]), so the count and the
+/// table cannot change while it is kept ([`arena_held`], [`count_held`]).
+/// Built, by convention, only by `fork_prepare` as it takes the locks
+/// and by [`resume::axiom_fork_resumed`] for the release: the fields are
+/// private to `api` (its submodules can see them too).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct ForkHeld {
@@ -1303,21 +1403,235 @@ pub tracked struct ForkHeld {
     tracked created: crate::arena::CreatedPerm,
 }
 
-} // verus!
+impl ForkHeld {
+    /// The permission of the creation lock's cell the hold keeps.
+    pub closed spec fn created(self) -> crate::arena::CreatedPerm {
+        self.created
+    }
+
+    /// The arena count `fork_prepare` read.
+    pub closed spec fn n(self) -> int {
+        self.n
+    }
+
+    /// The arenas `fork_prepare` found, by index.
+    pub closed spec fn arenas(self) -> Map<int, Arena> {
+        self.arenas
+    }
+
+    /// The keys held.
+    pub closed spec fn keys(self) -> Set<ForkLock> {
+        self.toks.dom()
+    }
+
+    /// The lock held under key `k`.
+    pub closed spec fn lock(self, k: ForkLock) -> RawLock {
+        self.toks[k].held()
+    }
+
+    /// The content of [`FORK_SIGMASK`] as this hold's holder records it
+    /// ([`save_sigmask`] records its argument), `None` before. Part of the
+    /// hold because the slot is written and read only under every lock.
+    pub closed spec fn saved(self) -> Option<u64> {
+        self.saved
+    }
+
+    /// The address of the word this hold's holder records as storing its
+    /// [`saved`](ForkHeld::saved) content ([`save_sigmask`]: the word
+    /// of [`FORK_SIGMASK`]); meaningful once that is `Some`.
+    pub closed spec fn slot_addr(self) -> usize {
+        self.slot_addr
+    }
+
+    /// The hold has the permission to the word it records
+    /// ([`slot_addr`](ForkHeld::slot_addr)), and its value is the content
+    /// the hold records: the release's hold, as [`resume::axiom_fork_resumed`]
+    /// hands it over (`fork_prepare` stores without one, under every
+    /// lock).
+    pub closed spec fn has_slot(self) -> bool {
+        self.slot matches Some(p) && p.addr() == self.slot_addr && self.saved == Some(p.value())
+    }
+
+    /// The hold has no permission to [`FORK_SIGMASK`]: the prepare's hold,
+    /// the only one [`save_sigmask`] writes under, so the slot is never
+    /// written while its permission exists.
+    pub closed spec fn no_slot(self) -> bool {
+        self.slot is None
+    }
+
+    /// This hold after [`save_sigmask`] stored `m` in the word at `a`.
+    pub closed spec fn with_saved(self, m: u64, a: usize) -> ForkHeld {
+        ForkHeld { saved: Some(m), slot_addr: a, ..self }
+    }
+
+    /// Storing in the slot changes neither the locks held nor the arenas.
+    proof fn lemma_with_saved(self, s: Shared, m: u64, a: usize)
+        ensures
+            self.wf(s) ==> self.with_saved(m, a).wf(s),
+            self.all() ==> self.with_saved(m, a).all(),
+            self.with_saved(m, a).saved() == Some(m),
+    {
+        let t = self.with_saved(m, a);
+        assert(t.keys() == self.keys());
+        assert(t.arenas() == self.arenas());
+        assert(t.n() == self.n());
+        assert(t.created() == self.created());
+        assert forall|k: ForkLock| #[trigger] t.lock(k) == self.lock(k) by {}
+    }
+
+    /// Add the hold `t` under key `k`.
+    proof fn put(tracked &mut self, k: ForkLock, tracked t: LockHeld)
+        ensures
+            final(self).keys() == old(self).keys().insert(k),
+            final(self).lock(k) == t.held(),
+            forall|j: ForkLock| j != k ==> #[trigger] final(self).lock(j) == old(self).lock(j),
+            final(self).n() == old(self).n(),
+            final(self).arenas() == old(self).arenas(),
+            final(self).saved() == old(self).saved(),
+            final(self).no_slot() == old(self).no_slot(),
+            final(self).created() == old(self).created(),
+    {
+        self.toks.tracked_insert(k, t);
+    }
+
+    /// Take the hold under key `k` out, to release it.
+    proof fn take(tracked &mut self, k: ForkLock) -> (tracked t: LockHeld)
+        requires
+            old(self).keys().contains(k),
+        ensures
+            t.held() == old(self).lock(k),
+            final(self).keys() == old(self).keys().remove(k),
+            forall|j: ForkLock| j != k ==> #[trigger] final(self).lock(j) == old(self).lock(j),
+            final(self).n() == old(self).n(),
+            final(self).arenas() == old(self).arenas(),
+            final(self).saved() == old(self).saved(),
+            final(self).no_slot() == old(self).no_slot(),
+            final(self).created() == old(self).created(),
+    {
+        self.toks.tracked_remove(k)
+    }
+
+    /// `n` is a count `fork_prepare` read (a `u32`), each token is the hold
+    /// of the lock its key names in `s`, and the arenas are indices below
+    /// `n`; the creation lock's cell permission is `s`'s registry's, and
+    /// its value's half of the snapshot is `n` and the arenas
+    /// (`Arenas::frozen`).
+    pub(crate) open spec fn wf(self, s: Shared) -> bool {
+        &&& 0 <= self.n() <= u32::MAX
+        &&& forall|i: int| #[trigger] self.arenas().contains_key(i) ==> 0 <= i < self.n()
+        &&& s.arenas.frozen(self.created())
+        &&& self.created().value().snap().0 as int == self.n()
+        &&& self.created().value().snap().1 == self.arenas()
+        &&& forall|k: ForkLock|
+            #![trigger self.keys().contains(k)]
+            #![trigger self.lock(k)]
+            self.keys().contains(k) ==> self.lock(k) == lock_at(s, self.arenas(), k)
+    }
+
+    /// The keys held are exactly the fork lock list for the arenas found.
+    pub open spec fn all(self) -> bool {
+        forall|k: ForkLock| #[trigger] self.keys().contains(k) <==> listed(k, self.arenas().dom())
+    }
+}
+
+/// Fork safety's hold: `held` holds every lock of the fork lock list of
+/// `s` ([`listed`], for the arenas it found) and nothing else, and
+/// `state` the background thread's state lock. `fork_prepare` ends with
+/// it, and the release starts from it.
+pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -> bool {
+    &&& held.wf(s)
+    &&& held.all()
+    &&& state.held() == purge::background::state_lock()
+}
+
+/// Premise (the fork handler handoff): the parent and child handlers
+/// run on the thread whose prepare handler returned holding
+/// [`fork_holds`] (glibc runs them on the forking thread, after
+/// `_Fork`; in the child that thread is the copy of the forking one),
+/// and nothing released a lock in between: signals are blocked from the
+/// prepare handler's first step, and the atfork handlers registered
+/// before ours (whose prepare runs after ours and whose parent and
+/// child handlers run before ours) do not take an allocator lock. Ghost
+/// state does not cross the C calls, so the hold is handed over here:
+/// the state lock's token, then [`resume::axiom_fork_resumed`] for the rest, at
+/// the `&Shared` the release reads (the same object: `shared` returns
+/// the one static). Each handler calls them once, which nothing
+/// enforces: a second call would hand out a second token for a held
+/// lock, so no lemma may claim that two tokens of one lock are apart,
+/// and two tokens would also let `Lock::get_unlocked` hand out two
+/// `&mut` to one value, which Verus would take as independent.
+axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
+    ensures
+        state.held() == purge::background::state_lock(),
+;
+
+/// The signal half of the fork hold: `sig` (the calling thread's mask)
+/// has every blockable signal blocked, and the hold records `orig` as
+/// saved (`held.saved()`), a mask the kernel can hold. `fork_prepare` ends with
+/// it, `orig` being the mask in force at its entry, and the release
+/// starts from it.
+pub(crate) open spec fn fork_sig_holds(sig: SigMask, held: ForkHeld, orig: u64) -> bool {
+    &&& sig.wf()
+    &&& sig.mask() == all_blocked()
+    &&& held.saved() == Some(orig)
+    &&& effective(orig) == orig
+    &&& orig & !crate::sys::BLOCKABLE_SIGNALS == 0
+}
+
+/// Premise (the fork handler handoff, its signal half; see
+/// [`axiom_fork_resumed_state`]): the parent and child handlers run on
+/// the thread whose prepare handler returned holding [`fork_sig_holds`]
+/// (in the child, its copy, which inherits the mask), whose mask has
+/// stayed as that handler left it, every blockable signal blocked:
+/// glibc's `_Fork` restores the mask it found, and the atfork handlers
+/// registered before ours (whose prepare runs after ours and whose parent
+/// and child handlers run before ours) leave the mask as they found it.
+/// The slot's content is [`resume::axiom_fork_resumed`]'s. Each handler calls
+/// this once, which nothing enforces.
+axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
+    ensures
+        sig.mask() == all_blocked(),
+;
 
 /// `s.arenas.get_existing(i as u16)` while `held` holds the creation
-/// lock: the arena `fork_prepare` found at `i`, through the permission of
-/// the creation lock's cell the hold keeps (`Arenas::get_frozen`).
+/// lock: the arena `fork_prepare` found at `i`. `held` keeps the
+/// permission of the creation lock's cell, whose value's half of the
+/// registry's snapshot is the count and the arenas `fork_prepare` read
+/// ([`ForkHeld::wf`]); `Arenas::create` and `Arenas::build` change the
+/// count and the table only with that half, so a read now returns what
+/// that read did (`Arenas::get_frozen`). The hold must also have the
+/// creation lock's token (required), so a scan runs only while the lock
+/// is held, before the release hands the token and the cell permission
+/// back together (`Arenas::unlock_held`).
 #[inline(always)]
-fn arena_held<'a>(s: &'a Shared, i: usize, _held: Tracked<&ForkHeld>) -> Option<&'a Arena> {
-    s.arenas.get_frozen(i as u16, Tracked::assume_new())
+fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) -> (r: Option<&'a Arena>)
+    requires
+        held.wf(*s),
+        held.keys().contains(ForkLock::Arenas),
+        held.lock(ForkLock::Arenas) == s.spec_fork_locks().1,
+        i < held.n(),
+    ensures
+        r is Some <==> held.arenas().contains_key(i as int),
+        r matches Some(a) ==> *a == held.arenas()[i as int],
+{
+    proof {
+        s.arenas.lemma_frozen(held.created);
+    }
+    s.arenas.get_frozen(i as u16, Tracked(&held.created))
 }
 
 /// `s.arenas.count()` while `held` holds the creation lock: the count
-/// `fork_prepare` read (`Arenas::count_frozen`).
+/// `fork_prepare` read, as [`arena_held`] (`Arenas::count_frozen`).
 #[inline(always)]
-fn count_held(s: &Shared, _held: Tracked<&ForkHeld>) -> u32 {
-    s.arenas.count_frozen(Tracked::assume_new())
+fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
+    requires
+        held.wf(*s),
+        held.keys().contains(ForkLock::Arenas),
+        held.lock(ForkLock::Arenas) == s.spec_fork_locks().1,
+    ensures
+        r as int == held.n(),
+{
+    s.arenas.count_frozen(Tracked(&held.created))
 }
 
 /// Block signals, then take every allocator lock so the child inherits a
@@ -1332,10 +1646,33 @@ fn count_held(s: &Shared, _held: Tracked<&ForkHeld>) -> u32 {
 /// (`stats.rs`); `take_group` holds a class lock and its slab table lock
 /// while it takes the arena's slab-set lock, so every slab table lock
 /// comes before every slab-set lock; the per-arena statistics locks are
-/// leaves and the background thread's state lock comes last. The test
-/// `fork_handlers_take_and_release_every_lock` derives the list of locks
-/// from the source tree, so a new `Lock` fails it until it is added here.
+/// leaves and the background thread's state lock comes last. The tests
+/// `fork_lock_list_matches_the_source_tree` (the list of locks, from the
+/// source tree) and `fork_handlers_take_and_release_every_lock` (that the
+/// handlers take each one) fail until a new `Lock` is added here.
+///
+/// Fork safety, first half: it returns holding [`fork_holds`], one token
+/// per lock of the fork lock list (asserted at the end). It also ends
+/// with [`fork_sig_holds`]: every blockable signal blocked since before
+/// its first acquisition (each loop's invariant), and the mask in force
+/// at its entry recorded in the hold as saved (`held.saved()`). That the
+/// slot holds that mask rests on the code, not the proof: the store in
+/// [`save_sigmask`] is unchecked, and the release's link back to it is
+/// the premise of [`resume::axiom_fork_resumed`].
+///
+/// Lock order: every acquisition ranks above every lock taken before it
+/// ([`crate::lock::LockOrder`]).
 extern "C" fn fork_prepare() {
+    proof {
+        crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
+    }
+    // Premise (lock order): the thread that calls `fork` holds no
+    // allocator lock (no allocator code forks; a `fork` from a signal
+    // handler that interrupted allocator code holding a lock is outside
+    // the C contract; and the prepare handlers that run before ours have
+    // returned).
+    let tracked mut ord = crate::lock::axiom_fork_entry();
     // A deferred cgroup discovery (design 11) runs now, before the locks:
     // a process that forks (a PostgreSQL postmaster, a server's workers)
     // reads the files once and its children inherit the record, where
@@ -1344,197 +1681,630 @@ extern "C" fn fork_prepare() {
     // for one this thread's own interrupted code is running, when `fork`
     // is called from a signal handler): the child then starts that one
     // over (`fork_child`), and the parent's finishes as usual.
-    shared().discover_cgroup_for_fork(Tracked::assume_new());
-    let mask = sys::block_all_signals(Tracked::assume_new());
+    shared().discover_cgroup_for_fork(Tracked(&mut ord));
+    // Premise: `sig` is this thread's mask (`sys::axiom_thread_mask`).
+    let tracked mut sig = sys::axiom_thread_mask();
+    let ghost orig = sig.mask();
+    let mask = sys::block_all_signals(Tracked(&mut sig));
     let s = shared();
-    let _ = s.tcaches_lock().lock_held(Tracked::assume_new());
+    let Tracked(t) = s.tcaches_lock().lock_held(Tracked(&mut ord));
+    let tracked mut toks: Map<ForkLock, LockHeld> = Map::tracked_empty();
+    proof {
+        toks.tracked_insert(ForkLock::Tcaches, t);
+    }
     // With the permission of the creation lock's cell, which the hold
     // keeps: the count and the table stay as read below until the release.
-    let _ = s.arenas.lock_held(Tracked::assume_new());
-    let _ = s.stats_lock().lock_held(Tracked::assume_new());
+    let Tracked(tcp) = s.arenas.lock_held(Tracked(&mut ord));
+    let tracked (t, cp) = tcp;
+    proof {
+        s.lemma_arenas_lock();
+        toks.tracked_insert(ForkLock::Arenas, t);
+        s.arenas.lemma_frozen(cp);
+    }
+    let Tracked(t) = s.stats_lock().lock_held(Tracked(&mut ord));
+    proof {
+        toks.tracked_insert(ForkLock::Stats, t);
+    }
+    let ghost mut arenas: Map<int, Arena> = Map::empty();
     // Each `for a in s.arenas.iter()` is spelled as the scan `Arenas::iter`
     // makes, through `Arenas::get_frozen` (`get_existing` with the
-    // creation lock's half), and `a.classes[c]` as `Arena::class`, as in
-    // `fork_release`.
-    let n = s.arenas.count_frozen(Tracked::assume_new()) as usize;
-    for i in 0..n {
-        if let Some(a) = s.arenas.get_frozen(i as u16, Tracked::assume_new()) {
-            for c in 0..NCLASSES {
-                let _ = a.class(c).raw_lock().lock_held(Tracked::assume_new());
+    // creation lock's half; Verus does not specify the iterator), and
+    // `a.classes[c]` as `Arena::class`, as in `fork_release`.
+    let n = s.arenas.count_frozen(Tracked(&cp)) as usize;
+    for i in 0..n
+        invariant
+            crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
+            n <= crate::arena::MAX_ARENAS,
+            s.arenas.frozen(cp),
+            n == cp.value().snap().0,
+            forall|j: int| #[trigger] arenas.contains_key(j) ==> arenas[j] == cp.value().snap().1[j],
+            forall|j: int| #[trigger] arenas.contains_key(j) ==> cp.value().snap().1.contains_key(j),
+            forall|j: int| 0 <= j < i && #[trigger] cp.value().snap().1.contains_key(j) ==> arenas.contains_key(j),
+            forall|j: int| #[trigger] arenas.contains_key(j) ==> 0 <= j < i,
+            forall|j: int| #[trigger] arenas.contains_key(j) ==> arenas[j].spec_index() as int == j,
+            forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k == ForkLock::Tcaches || k
+                == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, arenas.dom())),
+            forall|k: ForkLock| #[trigger]
+                toks.contains_key(k) ==> toks[k].held() == lock_at(*s, arenas, k),
+            ord.root(),
+            ord.top() < rank_class(i as int, 0),
+    {
+        if let Some(a) = s.arenas.get_frozen(i as u16, Tracked(&cp)) {
+            let ghost before = arenas;
+            proof {
+                arenas = arenas.insert(i as int, *a);
+            }
+            for c in 0..NCLASSES
+                invariant
+                    crate::sys::may_syscall(),
+                    sig.wf(),
+                    sig.mask() == all_blocked(),
+                    arenas == before.insert(i as int, *a),
+                    a.spec_index() as int == i,
+                    i < crate::arena::MAX_ARENAS,
+                    s.arenas.frozen(cp),
+                    n == cp.value().snap().0,
+                    cp.value().snap().1.contains_key(i as int),
+                    *a == cp.value().snap().1[i as int],
+                    forall|j: int| #[trigger] before.contains_key(j) ==> before[j] == cp.value().snap().1[j],
+                    forall|j: int| #[trigger] before.contains_key(j) ==> cp.value().snap().1.contains_key(j),
+                    forall|j: int| 0 <= j < i && #[trigger] cp.value().snap().1.contains_key(j) ==> before.contains_key(j),
+                    forall|j: int| #[trigger] before.contains_key(j) ==> 0 <= j < i,
+                    forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k == ForkLock::Tcaches
+                        || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, before.dom()) || (
+                    k matches ForkLock::Class(j, d) && j == i && 0 <= d < c)),
+                    forall|k: ForkLock| #[trigger]
+                        toks.contains_key(k) ==> toks[k].held() == lock_at(*s, arenas, k),
+                    ord.root(),
+                    ord.top() < rank_class(i as int, c as int),
+            {
+                let Tracked(t) = a.class(c).raw_lock().lock_held(Tracked(&mut ord));
+                proof {
+                    toks.tracked_insert(ForkLock::Class(i as int, c as int), t);
+                }
+            }
+            proof {
+                assert forall|k: ForkLock| #[trigger] toks.contains_key(k) <==> (k
+                    == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats
+                    || class_part(k, arenas.dom())) by {
+                    if let ForkLock::Class(j, d) = k {
+                        if j == i as int {
+                            assert(class_part(k, arenas.dom()) <==> 0 <= d < NCLASSES);
+                        }
+                    }
+                }
             }
         }
     }
-    for c in 0..NCLASSES {
-        let _ = s.tables()[c].raw_lock().lock_held(Tracked::assume_new());
+    proof {
+        s.arenas.lemma_frozen(cp);
+        assert(arenas =~= cp.value().snap().1);
+    }
+    let tracked mut held = ForkHeld { n: n as int, arenas, toks, saved: None, slot_addr: 0, slot: None, created: cp };
+    for c in 0..NCLASSES
+        invariant
+            crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
+            held.wf(*s),
+            held.no_slot(),
+            n == held.n(),
+            held.n() <= crate::arena::MAX_ARENAS,
+            forall|j: int| #[trigger] held.arenas().contains_key(j) ==> held.arenas()[j].spec_index() as int == j,
+            forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
+                    k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, held.arenas().dom())
+                        || (k matches ForkLock::Table(d) && 0 <= d < c)
+            ),
+            ord.root(),
+            ord.top() < rank_table(c as int),
+            s.wf(),
+    {
+        let Tracked(t) = s.tables()[c].raw_lock().lock_held(Tracked(&mut ord));
+        proof {
+            held.put(ForkLock::Table(c as int), t);
+        }
     }
     // `take_group` takes an arena's slab-set lock under a class lock and
     // that class's slab table lock, so the slab-set locks come after
     // every slab table lock.
-    for i in 0..n {
-        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
-            let _ = a.sets().raw_lock().lock_held(Tracked::assume_new());
-        }
-    }
-    let _ = s.huge_lock().lock_held(Tracked::assume_new());
-    let _ = s.meta_lock().lock_held(Tracked::assume_new());
-    for i in 0..n {
-        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
-            let _ = a.stats_raw_lock().lock_held(Tracked::assume_new());
-        }
-    }
-    let _ = purge::background::fork_lock(Tracked::assume_new());
-    // Every allocator lock is held, so no other forking thread can touch
-    // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
-    save_sigmask(
-        mask,
-        Ghost::assume_new(),
-        Tracked::assume_new(),
-        Tracked::assume_new(),
-    );
-}
-
-/// Save the signal mask for `fork_release`, recorded in the hold, under
-/// every allocator lock (ghost: `held` and `state`).
-#[inline(always)]
-fn save_sigmask(
-    mask: u64,
-    _s: Ghost<Shared>,
-    _held: Tracked<&mut ForkHeld>,
-    _state: Tracked<&LockHeld>,
-) {
-    let slot = fork_slot();
-    slot.store(mask, Ordering::Relaxed);
-}
-
-/// The signal mask `fork_prepare` saved: read from `w` ([`FORK_SIGMASK`])
-/// through the hold's permission to it.
-#[inline(always)]
-fn saved_sigmask(
-    w: &AtomicU64,
-    _s: Ghost<Shared>,
-    _held: Tracked<&ForkHeld>,
-    _state: Tracked<&LockHeld>,
-) -> u64 {
-    crate::vspec::word::load(w, Ordering::Relaxed, Tracked::assume_new())
-}
-
-/// Release the locks taken by `fork_prepare`, in reverse order, then let
-/// signals through again. `state` is the background thread's state
-/// lock's token.
-fn fork_release(state: Tracked<LockHeld>) {
-    let s = shared();
-    let (slot, _held) = resume::resumed(s, Tracked::assume_new());
-    // Written by the `fork_prepare` that paired with this release, and
-    // still ours because every lock is held until the unlocks below.
-    let mask = saved_sigmask(
-        slot,
-        Ghost::assume_new(),
-        Tracked::assume_new(),
-        Tracked::assume_new(),
-    );
-    purge::background::fork_unlock(state);
-    // Arenas cannot appear while the creation lock is held, so this is the
-    // same set `fork_prepare` locked, in reverse. Each `for i in
-    // (0..n).rev()` is spelled as a countdown, and `a.classes[c]` as
-    // `Arena::class`.
-    let n = count_held(s, Tracked::assume_new()) as usize;
-    let mut i = n;
-    while i > 0 {
-        i -= 1;
-        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
-            a.stats_raw_lock().unlock_held(Tracked::assume_new());
-        }
-    }
-    s.meta_lock().unlock_held(Tracked::assume_new());
-    s.huge_lock().unlock_held(Tracked::assume_new());
-    let mut i = n;
-    while i > 0 {
-        i -= 1;
-        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
-            a.sets().raw_lock().unlock_held(Tracked::assume_new());
-        }
-    }
-    let mut c = NCLASSES;
-    while c > 0 {
-        c -= 1;
-        s.tables()[c].raw_lock().unlock_held(Tracked::assume_new());
-    }
-    let mut i = n;
-    while i > 0 {
-        i -= 1;
-        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
-            let mut c = NCLASSES;
-            while c > 0 {
-                c -= 1;
-                a.class(c).raw_lock().unlock_held(Tracked::assume_new());
+    for i in 0..n
+        invariant
+            crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
+            n == held.n(),
+            held.wf(*s),
+            held.no_slot(),
+            n <= crate::arena::MAX_ARENAS,
+            forall|j: int| #[trigger] held.arenas().contains_key(j) ==> held.arenas()[j].spec_index() as int == j,
+            forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
+                    k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, held.arenas().dom())
+                        || table_part(k) || (k matches ForkLock::Sets(j) && j < i
+                        && held.arenas().contains_key(j))
+            ),
+            ord.root(),
+            ord.top() < rank_sets(i as int),
+            s.wf(),
+    {
+        if let Some(a) = arena_held(s, i, Tracked(&held)) {
+            let Tracked(t) = a.sets().raw_lock().lock_held(Tracked(&mut ord));
+            proof {
+                held.put(ForkLock::Sets(i as int), t);
             }
         }
     }
-    s.stats_lock().unlock_held(Tracked::assume_new());
-    s.arenas
-        .unlock_held(Tracked::assume_new(), Tracked::assume_new());
-    s.tcaches_lock().unlock_held(Tracked::assume_new());
-    sys::set_signal_mask(mask, Tracked::assume_new());
+    let Tracked(t) = s.huge_lock().lock_held(Tracked(&mut ord));
+    proof {
+        held.put(ForkLock::Huge, t);
+    }
+    let Tracked(t) = s.meta_lock().lock_held(Tracked(&mut ord));
+    proof {
+        held.put(ForkLock::Meta, t);
+    }
+    for i in 0..n
+        invariant
+            crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
+            n == held.n(),
+            held.wf(*s),
+            held.no_slot(),
+            n <= crate::arena::MAX_ARENAS,
+            forall|j: int| #[trigger] held.arenas().contains_key(j) ==> held.arenas()[j].spec_index() as int == j,
+            forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
+                    k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || arena_part(k, held.arenas().dom())
+                        || table_part(k) || k == ForkLock::Huge || k == ForkLock::Meta || (k matches ForkLock::ArenaStats(j) && j < i
+                        && held.arenas().contains_key(j))
+            ),
+            ord.root(),
+            ord.top() < rank_arena_stats(i as int),
+    {
+        if let Some(a) = arena_held(s, i, Tracked(&held)) {
+            let Tracked(t) = a.stats_raw_lock().lock_held(Tracked(&mut ord));
+            proof {
+                held.put(ForkLock::ArenaStats(i as int), t);
+            }
+        }
+    }
+    let Tracked(state) = purge::background::fork_lock(Tracked(&mut ord));
+    // Every allocator lock is held, so no other forking thread can touch
+    // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
+    let ghost before = held;
+    save_sigmask(mask, Ghost(*s), Tracked(&mut held), Tracked(&state));
+    proof {
+        before.lemma_with_saved(*s, mask, held.slot_addr());
+        assert(fork_holds(*s, held, state));
+        assert(fork_sig_holds(sig, held, orig));
+    }
 }
 
+/// Save the signal mask for `fork_release`, recorded in the hold
+/// (`held.saved()`). Its requirement is the [`FORK_SIGMASK`] protocol:
+/// the caller holds every allocator lock (ghost), so the hold that
+/// records the content is the one exclusive hold of the slot; and the
+/// hold has no permission to the slot ([`ForkHeld::no_slot`]), so no
+/// permission goes stale. The store is unchecked: it goes through no
+/// permission, and `saved` records the argument `mask`, not the word
+/// written, so nothing the proof checks ties the two (a store of any
+/// other value would verify).
+#[inline(always)]
+fn save_sigmask(
+    mask: u64,
+    Ghost(s): Ghost<Shared>,
+    Tracked(held): Tracked<&mut ForkHeld>,
+    Tracked(state): Tracked<&LockHeld>,
+)
+    requires
+        fork_holds(s, *old(held), *state),
+        old(held).no_slot(),
+    ensures
+        *final(held) == old(held).with_saved(mask, final(held).slot_addr()),
+{
+    let slot = fork_slot();
+    slot.store(mask, Ordering::Relaxed);
+    proof {
+        held.saved = Some(mask);
+        held.slot_addr = word_addr(slot);
+    }
+}
+
+/// The signal mask `fork_prepare` saved, the content the hold records:
+/// read from `w` ([`FORK_SIGMASK`], the word the hold records) through
+/// the hold's permission to it
+/// ([`ForkHeld::has_slot`]), which only a holder of every allocator lock
+/// has (required, ghost). The value is still the one this thread's
+/// prepare handler saved: [`save_sigmask`] requires that hold too, so a
+/// second thread's `fork_prepare` (glibc serialises the handlers, the
+/// unit tests do not) stores only after it has taken every lock, so
+/// after this release's unlocks.
+#[inline(always)]
+fn saved_sigmask(
+    w: &AtomicU64,
+    Ghost(s): Ghost<Shared>,
+    Tracked(held): Tracked<&ForkHeld>,
+    Tracked(state): Tracked<&LockHeld>,
+) -> (r: u64)
+    requires
+        fork_holds(s, *held, *state),
+        held.has_slot(),
+        held.slot_addr() == word_addr(w),
+    ensures
+        held.saved() == Some(r),
+{
+    let tracked slot = held.slot.tracked_borrow();
+    crate::vspec::word::load(w, Ordering::Relaxed, Tracked(slot))
+}
+
+/// Release the locks taken by `fork_prepare`, in reverse order, then let
+/// signals through again.
+///
+/// Fork safety, second half: it starts from the hold `fork_prepare`
+/// ended with ([`fork_holds`]; `state` is the state lock's token) and
+/// releases each listed lock once, by handing its token back to
+/// `RawLock::unlock_held`; it ends holding none (asserted at the end).
+///
+/// The signal mask: it
+/// starts from [`fork_sig_holds`], reads the slot under every lock, keeps
+/// every blockable signal blocked through its last unlock, and ends with
+/// the thread's mask the slot's content (asserted at the end).
+fn fork_release(Tracked(state): Tracked<LockHeld>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        state.held() == purge::background::state_lock(),
+{
+    let s = shared();
+    let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));
+    let tracked mut sig = axiom_fork_resumed_sig();
+    let ghost saved = held.saved()->Some_0;
+    proof {
+        crate::sys::lemma_effective_idempotent(crate::sys::BLOCKABLE_SIGNALS);
+        assert(fork_sig_holds(sig, held, saved));
+    }
+    // Written by the `fork_prepare` that paired with this release, and
+    // still ours because every lock is held until the unlocks below.
+    let mask = saved_sigmask(slot, Ghost(*s), Tracked(&held), Tracked(&state));
+    purge::background::fork_unlock(Tracked(state));
+    // Arenas cannot appear while the creation lock is held, so this is the
+    // same set `fork_prepare` locked (what `arena_held` and `count_held`
+    // prove from the hold's cell permission), in reverse. Each `for i in
+    // (0..n).rev()` is spelled as a countdown: Verus does not specify
+    // `Rev`.
+    // The class states are read through `Arena::class`, the verified
+    // accessor of `a.classes[c]`.
+    let n = count_held(s, Tracked(&held)) as usize;
+    let mut i = n;
+    while i > 0
+        invariant
+            crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
+            i <= n == held.n(),
+            held.wf(*s),
+            forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
+                    k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || arena_part(k, held.arenas().dom())
+                        || table_part(k) || k == ForkLock::Huge || k == ForkLock::Meta || (k matches ForkLock::ArenaStats(j) && j < i
+                        && held.arenas().contains_key(j))
+            ),
+        decreases i,
+    {
+        i -= 1;
+        if let Some(a) = arena_held(s, i, Tracked(&held)) {
+            let tracked t = held.take(ForkLock::ArenaStats(i as int));
+            a.stats_raw_lock().unlock_held(Tracked(t));
+        }
+    }
+    let tracked t = held.take(ForkLock::Meta);
+    s.meta_lock().unlock_held(Tracked(t));
+    let tracked t = held.take(ForkLock::Huge);
+    s.huge_lock().unlock_held(Tracked(t));
+    let mut i = n;
+    while i > 0
+        invariant
+            crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
+            i <= n == held.n(),
+            held.wf(*s),
+            forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
+                    k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, held.arenas().dom())
+                        || table_part(k) || (k matches ForkLock::Sets(j) && j < i
+                        && held.arenas().contains_key(j))
+            ),
+        decreases i,
+    {
+        i -= 1;
+        if let Some(a) = arena_held(s, i, Tracked(&held)) {
+            let tracked t = held.take(ForkLock::Sets(i as int));
+            a.sets().raw_lock().unlock_held(Tracked(t));
+        }
+    }
+    let mut c = NCLASSES;
+    while c > 0
+        invariant
+            crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
+            c <= NCLASSES,
+            n == held.n(),
+            held.wf(*s),
+            forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
+                    k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, held.arenas().dom())
+                        || (k matches ForkLock::Table(d) && 0 <= d < c)
+            ),
+        decreases c,
+    {
+        c -= 1;
+        let tracked t = held.take(ForkLock::Table(c as int));
+        s.tables()[c].raw_lock().unlock_held(Tracked(t));
+    }
+    let mut i = n;
+    while i > 0
+        invariant
+            crate::sys::may_syscall(),
+            sig.wf(),
+            sig.mask() == all_blocked(),
+            i <= n == held.n(),
+            held.wf(*s),
+            forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
+                    k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(
+                        k,
+                        held.arenas().dom().filter(|j: int| j < i),
+                    )
+            ),
+        decreases i,
+    {
+        i -= 1;
+        if let Some(a) = arena_held(s, i, Tracked(&held)) {
+            let mut c = NCLASSES;
+            while c > 0
+                invariant
+                    crate::sys::may_syscall(),
+                    sig.wf(),
+                    sig.mask() == all_blocked(),
+                    c <= NCLASSES,
+                    i < n == held.n(),
+                    held.arenas().contains_key(i as int),
+                    *a == held.arenas()[i as int],
+                    held.wf(*s),
+                    forall|k: ForkLock| #[trigger] held.keys().contains(k) <==> (
+                            k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(
+                                k,
+                                held.arenas().dom().filter(|j: int| j < i),
+                            ) || (k matches ForkLock::Class(j, d) && j == i && 0 <= d < c)
+                    ),
+                decreases c,
+            {
+                c -= 1;
+                let tracked t = held.take(ForkLock::Class(i as int, c as int));
+                a.class(c).raw_lock().unlock_held(Tracked(t));
+            }
+        }
+    }
+    let tracked t = held.take(ForkLock::Stats);
+    s.stats_lock().unlock_held(Tracked(t));
+    let tracked t = held.take(ForkLock::Arenas);
+    let tracked tt = held.take(ForkLock::Tcaches);
+    proof {
+        assert(held.keys() =~= Set::empty());
+        s.lemma_arenas_lock();
+    }
+    // The creation lock's cell permission goes back with its token: the
+    // hold has no lock left.
+    let tracked cp = held.created;
+    s.arenas.unlock_held(Tracked(t), Tracked(cp));
+    s.tcaches_lock().unlock_held(Tracked(tt));
+    sys::set_signal_mask(mask, Tracked(&mut sig));
+    proof {
+        assert(sig.mask() == saved);
+    }
+}
+
+/// The parent keeps its threads; the forking thread releases what its
+/// prepare handler took.
 extern "C" fn fork_parent() {
-    fork_release(Tracked::assume_new());
+    proof {
+        crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
+    }
+    let tracked state = axiom_fork_resumed_state();
+    fork_release(Tracked(state));
 }
 
 /// The child has one thread; the locks were held by the forking thread, so
 /// releasing them is exactly right. Before that, with everything still
 /// locked, the background thread is marked absent (design 8.1).
 extern "C" fn fork_child() {
-    purge::background::fork_child(Tracked::assume_new());
+    proof {
+        crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
+    }
+    let tracked mut state = axiom_fork_resumed_state();
+    purge::background::fork_child(Tracked(&mut state));
     let s = shared();
+    proof {
+        // The child's fork handler is where `in_fork_child` holds: only the
+        // forking thread runs in the child.
+        reveal(crate::sys::cgroup::in_fork_child);
+    }
     s.cgroup_fork_child();
-    feature_line_fork_child(Tracked::assume_new());
-    fork_release(Tracked::assume_new());
+    let tracked published;
+    proof {
+        s.lemma_wf_ready();
+        published = axiom_published();
+    }
+    feature_line_fork_child(Tracked(published));
+    fork_release(Tracked(state));
     // The dirty bytes this child inherited, the lazy start's baseline: read
     // after the release (the sum takes the class and huge locks), while
     // the child is still single-threaded, so nothing has moved them. Only
     // under the lazy start: nothing else reads it.
     if purge::background::auto() {
-        purge::background::set_fork_base(crate::policy::empty_bytes(
-            shared(),
-            Tracked::assume_new(),
-        ));
+        // Premise (lock order): the release above handed back every lock
+        // this thread held.
+        let tracked mut ord = axiom_entry();
+        purge::background::set_fork_base(crate::policy::empty_bytes(shared(), Tracked(&mut ord)));
     }
 }
 
 /// The child of a `fork` has only the forking thread: a feature line
 /// another thread was building is not coming, so the child's first
-/// request builds it again rather than waiting forever, through the line's
-/// invariant in `published`. (If the forking thread itself was building
+/// request builds it again rather than waiting forever. The reset puts
+/// back the permissions to the two statics, which that thread held
+/// ([`axiom_line_orphaned`]). (If the forking thread itself was building
 /// it, from a signal handler that forked, it finishes when the handler
-/// returns; a second build in between writes the same bytes.)
-fn feature_line_fork_child(_published: Tracked<&'static Published>) {
-    let _ = line_compare_exchange(
-        LINE_BUILDING,
-        LINE_UNBUILT,
-        Ordering::Relaxed,
-        Ordering::Relaxed,
-        Tracked::assume_new(),
-    );
+/// returns; a second build in between writes the same bytes when the
+/// THP files read the same both times, and can race with it if the child
+/// has started another thread: the residue that axiom states.)
+fn feature_line_fork_child(Tracked(published): Tracked<&'static Published>)
+    requires
+        published.ok(),
+        crate::sys::cgroup::in_fork_child(),
+{
+    let tracked inv = published.line;
+    vstd::open_atomic_invariant!(inv => v => {
+        let ghost before = v.perm;
+        let _reset = line_compare_exchange(LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.perm));
+        proof {
+            if _reset is Ok {
+                v.cell = Some(axiom_line_orphaned(before, &v.perm, &v.cell));
+            }
+        }
+    });
 }
 
-/// The release's handoff of the fork hold, in a module of its own.
+/// Premise (the fork child's orphaned line): in the child of a `fork`,
+/// a line whose state the child's reset found `LINE_BUILDING` (`before`,
+/// `LINE_STATE`'s permission just before the reset, and `perm`, just
+/// after it, at `LINE_UNBUILT`) was being built by a thread of the
+/// parent, which holds the permissions to [`FEATURES`] and
+/// [`FEATURE_LINE`] between its winning exchange and its `LINE_READY`
+/// store ([`claim_line`], [`publish_line`]), and they satisfy
+/// [`LineCell::unbuilt`] throughout (the build writes the features
+/// through `ptr_mut_ref`, which keeps them initialised). The child has
+/// only the forking thread, so when the builder was another thread, no
+/// thread of the child holds those permissions, and the reset takes
+/// them. Called only by [`feature_line_fork_child`], right after its
+/// successful reset, which only the child's fork handler runs
+/// ([`fork_child`]; the test `fork_child_resets_are_child_only` checks
+/// the call sites).
+///
+/// The residue this does not cover: when the builder was the forking
+/// thread itself (a signal handler that forked while its thread was
+/// building the line, api/mod.rs's `line_ready`), the permissions exist
+/// twice in the child, the reset's and the interrupted build's. The
+/// child's own request may then build the line and publish
+/// `LINE_READY`, and the interrupted build, resumed when the handler
+/// returns, completes the features' THP table and writes the line a
+/// second time and stores `LINE_READY` again: a line a reader of the
+/// first `LINE_READY` may hold a reference into is overwritten, with the
+/// same bytes when the THP files read the same both times. The two
+/// builds run one after the other when both are the forking thread's;
+/// if the child has started another thread by then (the handler
+/// allocates and starts the lazy background thread, say) and that thread
+/// requests the line, they can run concurrently, a data race on the two
+/// statics. And the child's copy of `FEATURES` may hold a half-done
+/// update of the THP table (`thp` written, `thp_sizes` not, or the
+/// reverse: plain stores the compiler may reorder), so the child's build
+/// may skip the probe and print a mixed table.
+///
+/// The requirements pin the call to the state right after that reset: the
+/// caller is the child's fork handler (`sys::cgroup::in_fork_child`), and
+/// the invariant's slot for the permissions is empty (`cell`, which
+/// [`LinePred`] keeps empty at `LINE_BUILDING`), so the permissions it
+/// hands out are the only ones the invariant can hold.
+axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm, tracked cell: &Option<LineCell>) -> (tracked c: LineCell)
+    requires
+        crate::sys::cgroup::in_fork_child(),
+        cell is None,
+        before.value() == LINE_BUILDING,
+        perm.value() == LINE_UNBUILT,
+    ensures
+        c.unbuilt(),
+;
+
+} // verus!
+
+/// The release's handoff of the fork hold, in a module of its own: its
+/// axiom is private here, so the only code that can mint the permission
+/// to the signal-mask slot is [`resumed`](resume::resumed), which mints
+/// it for [`fork_slot`]'s word and no other.
 mod resume {
+    #[cfg(verus_keep_ghost)]
+    use super::fork_holds;
     use super::{ForkHeld, fork_slot};
     use crate::heap::Shared;
     use crate::lock::LockHeld;
+    #[cfg(verus_keep_ghost)]
+    use crate::{purge, sys::effective, vspec::word::word_addr};
     use core::sync::atomic::AtomicU64;
-    use vstd::prelude::Tracked;
+    #[cfg(verus_keep_ghost)]
+    use vstd::prelude::*;
+    use vstd::prelude::{Tracked, verus};
+
+    verus! {
+
+    /// Premise (see `api::axiom_fork_resumed_state`): the rest of the
+    /// hold, with the permission to `slot`, which must be the word the
+    /// prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s
+    /// `&FORK_SIGMASK`, as the prepare's store did, and a static has one
+    /// address (the same premise as for `s`, the `Shared` the release
+    /// reads); passed any other word, it would mint a second permission
+    /// to it, which is why it is private to this module. The hold has the
+    /// arena count and the arenas `fork_prepare` read and the mask it
+    /// saved in `FORK_SIGMASK` (`n`, `arenas` and `saved` are those reads
+    /// and that store, which the ensures does not name: the premise is
+    /// that they are; the slot's content is a mask the kernel held, and
+    /// only a holder of every lock writes it, see `save_sigmask`), and the
+    /// permission to the slot whose value is that content
+    /// ([`ForkHeld::has_slot`]): the one trusted link between the slot and
+    /// the hold, through which `saved_sigmask` reads (no other permission
+    /// to the slot exists). `save_sigmask`'s store is unchecked, so that
+    /// the word holds the `saved` the prepare's hold recorded is part of
+    /// this premise too. `state` must be the state lock's token: a fact
+    /// about a token the caller already has is a requirement, never a
+    /// conclusion (ensured, a token of any other lock would prove
+    /// `false`). The hold also has the permission of the creation lock's
+    /// cell that `fork_prepare` took (`Arenas::lock_held`, through
+    /// [`ForkHeld::wf`]): restated, as the tokens are, and still the only
+    /// one, since the prepare's hold kept it and no one wrote the value.
+    /// That permission is exclusive (vstd's `PointsTo::is_exclusive`), so a
+    /// second call would prove `false`, not just restate a token: the one
+    /// caller is [`resumed`], called once per handler (the test
+    /// `fork_hold_is_resumed_once` checks there is one call site).
+    axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &LockHeld) -> (tracked held: ForkHeld)
+        requires
+            state.held() == purge::background::state_lock(),
+        ensures
+            fork_holds(*s, held, *state),
+            held.has_slot(),
+            held.slot_addr() == word_addr(slot),
+            held.saved() matches Some(m) && effective(m) == m && m & !crate::sys::BLOCKABLE_SIGNALS == 0,
+    ;
 
     /// The slot, [`fork_slot`], and the release's hold of every lock, with
-    /// the permission to that slot.
+    /// the permission to that slot: [`axiom_fork_resumed`] for the word
+    /// [`fork_slot`] returns. Each handler calls it once, which nothing
+    /// enforces (see `api::axiom_fork_resumed_state`).
+    // `s` is only named by the specification and the ghost call.
+    #[allow(unused_variables)]
     #[inline(always)]
-    pub(super) fn resumed(
-        _s: &Shared,
-        _state: Tracked<&LockHeld>,
-    ) -> (&'static AtomicU64, Tracked<ForkHeld>) {
-        (fork_slot(), Tracked::assume_new())
+    pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&LockHeld>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>))
+        requires
+            state.held() == purge::background::state_lock(),
+        ensures
+            fork_holds(*s, r.1@, *state),
+            r.1@.has_slot(),
+            r.1@.slot_addr() == word_addr(r.0),
+            r.1@.saved() matches Some(m) && effective(m) == m && m & !crate::sys::BLOCKABLE_SIGNALS == 0,
+    {
+        let slot = fork_slot();
+        (slot, Tracked(axiom_fork_resumed(s, slot, state)))
     }
+
+    } // verus!
 }
 
 #[cfg(test)]
@@ -1867,6 +2637,142 @@ mod tests {
                 other => panic!("no fork-handler assertion for lock {other}"),
             }
         }
+    }
+
+    /// `resume::axiom_fork_resumed` restates the fork hold, whose creation
+    /// lock cell permission is exclusive: a second call would prove
+    /// `false`. Its one call is in `resume::resumed`, and `resumed`'s one
+    /// call is in `fork_release`, which each handler calls once.
+    #[test]
+    fn fork_hold_is_resumed_once() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let src = include_str!("mod.rs");
+        let calls = |name: &str| {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| l.contains(name) && !l.contains("fn "))
+                .count()
+        };
+        let axiom = std::format!("{}{}(", "axiom_fork_", "resumed");
+        let resumed = std::format!("{}{}(", "resume::", "resumed");
+        let release = std::format!("{}{}(", "fork_", "release");
+        assert_eq!(calls(&axiom), 1, "calls of the resume axiom");
+        assert_eq!(calls(&resumed), 1, "calls of resume::resumed");
+        assert_eq!(calls(&release), 2, "calls of fork_release");
+        // The other once-per-handler premises: the state lock's token, in
+        // the parent and the child handler, and the mask's, in the release;
+        // the prepare's lock-order root and the thread's mask, in the
+        // prepare.
+        let state = std::format!("{}{}(", "axiom_fork_resumed_", "state");
+        let sig = std::format!("{}{}(", "axiom_fork_resumed_", "sig");
+        let entry = std::format!("{}{}(", "axiom_fork_", "entry");
+        let mask = std::format!("{}{}(", "axiom_thread_", "mask");
+        assert_eq!(calls(&state), 2, "calls of the state token's premise");
+        assert_eq!(calls(&sig), 1, "calls of the mask token's premise");
+        let lock = include_str!("../lock.rs");
+        let sys = include_str!("../sys/mod.rs");
+        let calls_in = |text: &str, name: &str| {
+            text.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| l.contains(name) && !l.contains("fn "))
+                .count()
+        };
+        assert_eq!(
+            calls(&entry) + calls_in(lock, &entry),
+            1,
+            "calls of the prepare's lock-order premise"
+        );
+        assert_eq!(
+            calls(&mask) + calls_in(sys, &mask),
+            1,
+            "calls of the thread mask premise"
+        );
+    }
+
+    /// The once-cells' fork-child resets, which take the permissions a
+    /// thread of the parent held (`axiom_line_orphaned`,
+    /// `sys::cgroup::axiom_cell_orphaned`), run only in the child's fork
+    /// handler: across every non-test source file, each axiom has one
+    /// call, in its reset, each reset one caller, `fork_child` (through
+    /// `Shared::cgroup_fork_child` for the cgroup record), and
+    /// `fork_child` is named only where `pthread_atfork` registers it.
+    #[test]
+    fn fork_child_resets_are_child_only() {
+        use std::string::ToString;
+        /// Every `.rs` file under `dir` but the loom and Kani trees, as
+        /// (path, text before its first `#[cfg(test)]` test module).
+        fn sources(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                let name = path.to_str().unwrap().to_string();
+                if path.is_dir() {
+                    if !name.ends_with("loom_tests") && !name.ends_with("kani") {
+                        sources(&path, out);
+                    }
+                } else if name.ends_with(".rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let cut = ["tests", "linux_tests", "pure_tests"]
+                        .iter()
+                        .filter_map(|m| text.find(&std::format!("\n#[cfg(test)]\nmod {m} {{")))
+                        .min()
+                        .unwrap_or(text.len());
+                    out.push((name, text[..cut].to_string()));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        sources(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &mut files,
+        );
+        // Calls: lines naming `name` that are neither comments nor the
+        // item's own declaration.
+        let calls = |name: &str| -> Vec<String> {
+            files
+                .iter()
+                .flat_map(|(f, src)| {
+                    src.lines()
+                        .filter(|l| !l.trim_start().starts_with("//"))
+                        .filter(|l| l.contains(name) && !l.contains("fn "))
+                        .map(move |l| std::format!("{f}: {}", l.trim()))
+                })
+                .collect()
+        };
+        let api = include_str!("mod.rs");
+        let child = api
+            .split("extern \"C\" fn fork_child() {")
+            .nth(1)
+            .and_then(|s| s.split("\n}\n").next())
+            .unwrap_or("");
+        let one = |name: &str, file: &str| {
+            let found = calls(name);
+            assert_eq!(found.len(), 1, "calls of {name}: {found:?}");
+            assert!(
+                found[0].contains(file),
+                "{name} called outside {file}: {found:?}"
+            );
+        };
+        one("axiom_line_orphaned(", "src/api/mod.rs");
+        one("axiom_cell_orphaned(", "src/sys/cgroup.rs");
+        one("feature_line_fork_child(", "src/api/mod.rs");
+        one("cgroup_fork_child(", "src/api/mod.rs");
+        one(".fork_child()", "src/heap/shared.rs");
+        assert!(
+            child.contains("feature_line_fork_child(")
+                && child.contains("cgroup_fork_child(")
+                && child.contains("reveal(crate::sys::cgroup::in_fork_child)"),
+            "the resets and the fork-child capability are fork_child's"
+        );
+        let handler = calls("(fork_child)");
+        assert!(
+            handler.len() == 1 && handler[0].contains("pthread_atfork"),
+            "fork_child is named outside its registration: {handler:?}"
+        );
+        assert!(files.len() > 50, "the source tree was not found");
     }
 
     /// The set of locks the handlers cover is exactly the set of locks in
