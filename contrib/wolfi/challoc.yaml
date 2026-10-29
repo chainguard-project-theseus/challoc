@@ -78,7 +78,7 @@ pipeline:
   - uses: git-checkout
     if: ${{options.local-source.enabled}} == 'false'
     with:
-      repository: https://github.com/chainguard-dev/challoc
+      repository: https://github.com/wolfi-dev/challoc
       tag: v${{package.version}}
       # The repository has no release tag yet (2026-09-20): this is the
       # main commit the definition was written against. The Wolfi PR that
@@ -123,7 +123,7 @@ pipeline:
 
       Name: challoc
       Description: A memory-safe, jemalloc-compatible malloc replacement
-      URL: https://github.com/chainguard-dev/challoc
+      URL: https://github.com/wolfi-dev/challoc
       Version: ${{package.version}}
       Cflags: -I\${includedir}
       Libs: -L\${libdir} -Wl,--push-state,--no-as-needed -lchalloc -Wl,--pop-state
