@@ -2351,8 +2351,6 @@ pub fn purge_arena(
     Some(n)
 }
 
-} // verus!
-
 /// Periodic-work hook (design 6.4): start the background thread if one was
 /// requested and does not exist, otherwise run decay here unless the
 /// thread is doing it, and let the lazy start look at what decay left.
@@ -2361,24 +2359,27 @@ pub fn purge_arena(
 /// lock held (`pthread_join`'s TLS teardown, the stack cache trim) and
 /// `pthread_create` takes that lock again. Such a tick purges in the
 /// foreground and leaves the start to the next allocation's tick.
-pub fn on_tick(shared: &Shared, now: u64, alloc: bool, _ord: Tracked<&mut LockOrder>) {
-    sample(shared, now, Tracked::assume_new());
+pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
+    sample(shared, now, Tracked(ord));
     if background::present() {
         return;
     }
-    if alloc
-        && background::requested()
-        && background::start_requested(shared, Tracked::assume_new())
-    {
+    if alloc && background::requested() && background::start_requested(shared, Tracked(ord), Tracked(&mut *errno)) {
         return;
     }
-    if decay(shared, now, Tracked::assume_new()).is_some() {
+    if decay(shared, now, Tracked(ord)).is_some() {
         // Dirty memory is still waiting: the lazy start's look.
-        background::auto_tick(shared, now, alloc, Tracked::assume_new());
+        background::auto_tick(shared, now, alloc, Tracked(ord), Tracked(&mut *errno));
     }
 }
-
-verus! {
 
 /// Design 11: `memory.current` and `memory.events`, at most once per 10 ms
 /// of the coarse clock, and the policy evaluated on the sample that was

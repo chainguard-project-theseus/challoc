@@ -2,3 +2,13 @@
 # about the unverified holders and the one static.
 axiom_state_lock_inv	allocator invariant	none (assumption)
 axiom_state_lock	allocator invariant	none (assumption)
+# libc's thread calls and the argument C passes the thread.
+pthread_join	FFI/syscall	none (assumption)
+spawn	FFI/syscall	none (assumption)
+shared_arg	raw pointer from C caller	none (assumption)
+# Temporary seam, discharged by the TLS-slot PR (the `TlsSlot` and
+# `HeapPerm` ghost model): `create` parks the TLS slot around the pthread
+# calls, which needs the slot's permission and the heap's.
+create	allocator invariant	Verus
+# The thread's loop ends only when another thread withdraws the request.
+main	termination	none (assumption)

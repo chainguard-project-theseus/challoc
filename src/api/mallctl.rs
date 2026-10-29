@@ -2265,7 +2265,11 @@ fn ctl(
                 purge::background::request(on, vstd::prelude::Tracked::assume_new());
                 if on
                     && !purge::background::present()
-                    && !purge::background::start(shared, vstd::prelude::Tracked::assume_new())
+                    && !purge::background::start(
+                        shared,
+                        vstd::prelude::Tracked::assume_new(),
+                        vstd::prelude::Tracked::assume_new(),
+                    )
                 {
                     return Err(EAGAIN);
                 }

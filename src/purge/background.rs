@@ -9,9 +9,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::{Lock, LockHeld, LockOrder, Padded};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{RawLock, lock_inv, rank_state};
+use crate::lock::{RawLock, axiom_entry, lock_inv, rank_class, rank_meta, rank_state};
 use crate::sys::{self, Timespec};
-use crate::vspec::errno::{get_errno, set_errno};
+use crate::vspec::errno::{ThreadErrno, get_errno, set_errno};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
@@ -47,18 +47,16 @@ struct State {
 /// start; after it, a reservation of `STACK_SIZE` bytes, which
 /// `Meta::reserve` places below `va_limit`) and `exited ==> !present`
 /// (a thread that found the request withdrawn and exited before its
-/// `start` published it stays unpublished). The verified holder that
-/// writes the value, `fork_child` (the fork child's writer through
-/// `Lock::get_unlocked`), asserts it after clearing `present` and
-/// `exited`; `request` writes nothing under it. The unverified holders
-/// are trusted to keep it: `start` writes `stack` and sets `present` only
-/// to `thread.is_some() && !exited` (it clears `exited` only while
-/// nothing is present), the thread's exit in `main` sets `present` false
-/// and `exited` true, and `start_requested` and `auto_tick` write nothing
-/// under it. Verus checks nothing when a guard is released, so this is
-/// the claim. The test-only readers (`join_exited`, `stack`, `thread`)
-/// never write `stack`, `present` or `exited`, and no other code touches
-/// the value.
+/// `start` published it stays unpublished). The verified holders keep
+/// it: `start` asserts it after writing `stack` and `present` (which it
+/// sets only to `thread.is_some() && !exited`, and clears `exited` only
+/// while nothing is present), `main` asserts it after its exit's writes
+/// (`present` false, `exited` true), and `fork_child` (the fork child's
+/// writer through `Lock::get_unlocked`) after clearing both; `request`,
+/// `start_requested` and `auto_tick` write nothing under it. Verus
+/// checks nothing when a guard is released, so this is the claim. The
+/// test-only readers (`join_exited`, `stack`, `thread`) never write
+/// `stack`, `present` or `exited`, and no other code touches the value.
 broadcast axiom fn axiom_state_lock_inv(v: State)
     ensures
         #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
@@ -227,18 +225,27 @@ fn kick()
     let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };
 }
 
-} // verus!
-
 /// Create the thread if it does not exist. `true` if one exists on
 /// return; `false` if creation failed or is in progress on another
 /// thread (the caller then purges in the foreground for this tick).
 ///
-/// `errno` is preserved: this runs from `free`'s slow path (design
+/// `errno` (the calling thread's, through its [`ThreadErrno`] token) is
+/// preserved: this runs from `free`'s slow path (design
 /// section 1 promises `free` leaves `errno` alone) and glibc's
 /// `pthread_create` / `pthread_join` may set it on their way.
-pub fn start(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
+pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>) -> bool
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_meta()),
+    ensures
+        *final(ord) == *old(ord),
+{
+    broadcast use axiom_state_lock_inv;
+
     let (stack, previous) = {
-        let mut g = state().lock(Tracked::assume_new(), Tracked::assume_new());
+        let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         if g.present {
             return true;
         }
@@ -247,11 +254,12 @@ pub fn start(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
         }
         g.creating = true;
         g.exited = false;
+        assert(lock_inv(g@));
         (g.stack, g.thread.take())
     };
-    let saved_errno = get_errno(Tracked::assume_new());
-    let (stack, thread) = create(shared, stack, previous, Tracked::assume_new());
-    set_errno(saved_errno, Tracked::assume_new());
+    let saved_errno = get_errno(Tracked(&*errno));
+    let (stack, thread) = create(shared, stack, previous, Tracked(ord));
+    set_errno(saved_errno, Tracked(&mut *errno));
     #[cfg(test)]
     if thread.is_some() {
         let hook = BEFORE_PUBLISH.lock().unwrap().take();
@@ -260,12 +268,13 @@ pub fn start(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
         }
     }
     let present = {
-        let mut g = state().lock(Tracked::assume_new(), Tracked::assume_new());
+        let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         g.creating = false;
         g.stack = stack;
         g.thread = thread;
         g.present = thread.is_some() && !g.exited;
         PRESENT.store(g.present, Ordering::Relaxed);
+        assert(lock_inv(g@));
         g.present
     };
     // A class's first `Empty` slab may have arrived after the thread's
@@ -290,11 +299,19 @@ pub fn start(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
 /// than [`AUTO_RETRY_NS`] later, up to [`AUTO_TRIES`] failures in all,
 /// after which it is off for good. An explicit request stays, and the
 /// next tick tries again.
-pub fn start_requested(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
-    if start(shared, Tracked::assume_new()) {
+pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>) -> bool
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_meta()),
+    ensures
+        *final(ord) == *old(ord),
+{
+    if start(shared, Tracked(ord), Tracked(&mut *errno)) {
         return true;
     }
-    let g = state().lock(Tracked::assume_new(), Tracked::assume_new());
+    let g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
     if !g.creating && !g.present && AUTO.load(Ordering::Relaxed) {
         REQUESTED.store(false, Ordering::Relaxed);
         // `+ 1` as the release build computes it (overflow checks are off
@@ -324,7 +341,15 @@ pub fn start_requested(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> bool {
 /// rare next to it.
 #[cold]
 #[inline(never)]
-pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, _ord: Tracked<&mut LockOrder>) {
+pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && !alloc),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     if !auto() {
         return;
     }
@@ -345,7 +370,7 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, _ord: Tracked<&mut Lock
     {
         return;
     }
-    let dirty = crate::policy::empty_bytes(shared, Tracked::assume_new());
+    let dirty = crate::policy::empty_bytes(shared, Tracked(ord));
     let base = AUTO_BASE.load(Ordering::Relaxed).min(dirty);
     AUTO_BASE.store(base, Ordering::Relaxed);
     if !auto_due(dirty - base, now, &AUTO_SINCE) {
@@ -353,18 +378,16 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, _ord: Tracked<&mut Lock
     }
     {
         // Under the state lock: an explicit `request` in between wins.
-        let _g = state().lock(Tracked::assume_new(), Tracked::assume_new());
+        let _g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         if !AUTO.load(Ordering::Relaxed) {
             return;
         }
         REQUESTED.store(true, Ordering::Relaxed);
     }
     if alloc {
-        start_requested(shared, Tracked::assume_new());
+        start_requested(shared, Tracked(ord), Tracked(&mut *errno));
     }
 }
-
-verus! {
 
 /// Whether `own` dirty bytes at `now` start the thread: at once from
 /// [`AUTO_BURST`]; from [`AUTO_FLOOR`] once every look for
@@ -416,12 +439,19 @@ pub fn set_auto(shared: Option<&Shared>) {
     AUTO_FAILS.store(0, Ordering::Relaxed);
 }
 
-/// `pthread_join(t, NULL)`: 0 or an error number.
+verus! {
+
+/// `pthread_join(t, NULL)`: 0 or an error number. Trusted: a raw libc
+/// call; nothing is claimed about the result.
 ///
 /// # Safety
 /// `t` is a joinable thread this module created and never joined.
+#[verifier::external_body]
 #[inline(always)]
-unsafe fn pthread_join(t: ::libc::pthread_t) -> i32 {
+unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: guaranteed by the caller.
     unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) }
 }
@@ -429,14 +459,28 @@ unsafe fn pthread_join(t: ::libc::pthread_t) -> i32 {
 /// Create the thread on `stack` (reserving the stack first if there is
 /// none yet), after joining `previous`. Returns the stack (kept even
 /// when creation fails, for the next attempt) and the new thread.
-// A `match`, not `Option::filter`: vstd does not specify it.
+/// Trusted: the body parks the TLS slot through `sys::tls::get` and
+/// `set`, which take no slot or heap permission here, and passes
+/// placeholder tokens for `Meta::reserve`'s claim and `Meta::commit`.
+// The `match` stands for `Option::filter`, which vstd does not specify.
+#[verifier::external_body]
 #[allow(clippy::manual_filter)]
 fn create(
     shared: &Shared,
     stack: usize,
     previous: Option<::libc::pthread_t>,
-    _ord: Tracked<&mut LockOrder>,
-) -> (usize, Option<::libc::pthread_t>) {
+    Tracked(ord): Tracked<&mut LockOrder>,
+) -> (r: (usize, Option<::libc::pthread_t>))
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        stack + STACK_SIZE <= usize::MAX,
+        old(ord).allows(rank_meta()),
+    ensures
+        r.0 + STACK_SIZE <= usize::MAX,
+        *final(ord) == *old(ord),
+{
     let page = shared.regions.page_size();
     // The TLS slot is parked on `TLS_CREATING` for the pthread calls:
     // `pthread_create` allocates the new thread's DTV with `calloc`
@@ -507,7 +551,17 @@ fn create(
 /// a restart can wait for its exit. Signals are blocked
 /// ([`sys::block_all_signals`]) so the new thread inherits them blocked
 /// and never runs an application handler.
-fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> {
+///
+/// Trusted: raw pthread calls, and the thread's entry is a function
+/// pointer. `shared` is well formed: the thread's [`shared_arg`] ensures
+/// it of the pointer passed here.
+#[verifier::external_body]
+fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
     // SAFETY: plain pthread attribute calls on a local; the stack is
     // ours and committed.
     unsafe {
@@ -536,6 +590,8 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> 
         thread
     }
 }
+
+} // verus!
 
 /// Join the recorded thread if it has exited (`request(false)` and
 /// its wake-up have happened) and forget it, so the stack is known to
@@ -574,41 +630,74 @@ pub fn thread() -> Option<::libc::pthread_t> {
     STATE.lock_t().thread
 }
 
-/// The `Shared` that [`spawn`] passes as the thread's argument.
+verus! {
+
+/// The `Shared` that [`spawn`] passes as the thread's argument. Trusted:
+/// a raw-pointer dereference; the pointer is the `Shared` `start` was
+/// given, which its contract requires to be well formed. `Shared::wf`
+/// includes `api::ready()`, so this also asserts that the allocator is
+/// published, for the new thread: `start`'s caller had it, and
+/// `pthread_create` orders the thread after it. The deref itself would
+/// verify through `api::axiom_published`; what is trusted is that `arg`
+/// is that `Shared`, at its storage, which no contract can say of the
+/// argument the C library passes.
+#[verifier::external_body]
 #[inline(always)]
-fn shared_arg(arg: *mut c_void) -> &'static Shared {
+fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
+    ensures
+        r.wf(),
+{
     // SAFETY: `start` passed a `Shared` that lives for the rest of the
     // process (the process-wide one, or a leaked test fixture).
     unsafe { &*(arg as *const Shared) }
 }
 
 /// The thread's name for `PR_SET_NAME`, NUL-terminated.
-const THREAD_NAME: [u8; 11] = [
-    b'c', b'h', b'a', b'l', b'l', b'o', b'c', b'-', b'b', b'g', 0,
-];
+const THREAD_NAME: [u8; 11] = [b'c', b'h', b'a', b'l', b'l', b'o', b'c', b'-', b'b', b'g', 0];
 
 /// The thread's body: decay and sample until the request is withdrawn.
+/// Termination is not claimed: the loop ends when another thread calls
+/// `request(false)`.
+#[verifier::exec_allows_no_decreases_clause]
 extern "C" fn main(arg: *mut c_void) -> *mut c_void {
+    proof {
+        crate::sys::grant_syscalls();
+        crate::sys::grant_aborts();
+    }
     let shared = shared_arg(arg);
+    // Premise (lock order): a new thread holds no allocator lock.
+    let tracked mut ord = axiom_entry();
     // SAFETY: the name is NUL-terminated.
     let _ = unsafe { sys::prctl(PR_SET_NAME, THREAD_NAME.as_ptr() as usize, 0, 0, 0) };
     detach_from_starter();
-    loop {
+    loop
+        invariant
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            ord.top() == 0,
+    {
         // Read the sequence before scanning, so a bump that lands
         // between the scan and the wait makes the wait return at once.
         let seq = SEQ.load(Ordering::SeqCst);
         if !requested() {
-            let mut g = state().lock(Tracked::assume_new(), Tracked::assume_new());
+            let mut g = state().lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+            let ghost before = g@;
             g.present = false;
             g.exited = true;
+            proof {
+                axiom_state_lock_inv(before);
+                axiom_state_lock_inv(g@);
+            }
+            assert(lock_inv(g@));
             PRESENT.store(false, Ordering::Relaxed);
             #[cfg(test)]
             EXITS.fetch_add(1, Ordering::SeqCst);
             return core::ptr::null_mut();
         }
         let now = sys::now_coarse_ns();
-        super::sample(shared, now, Tracked::assume_new());
-        let deadline = super::decay(shared, now, Tracked::assume_new());
+        super::sample(shared, now, Tracked(&mut ord));
+        let deadline = super::decay(shared, now, Tracked(&mut ord));
         // `deadline.map(|deadline| ..)`, spelled as a `match`.
         let timeout = match deadline {
             Some(deadline) => {
@@ -630,8 +719,6 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };
     }
 }
-
-verus! {
 
 /// The thread inherits the scheduling of whichever thread created it, and
 /// under the lazy start that is any allocating thread: a worker pinned to
