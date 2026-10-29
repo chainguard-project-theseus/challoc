@@ -13,7 +13,7 @@ file.
 
 ## `ZeroRaw::axiom_new`
 
-src/vspec/zero.rs:138. Kind: external_body proof. Category: allocator invariant.
+src/vspec/zero.rs:143. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The bytes of `raw`, which `z` reads as zero.
@@ -21,7 +21,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
     requires
-        forall|a: int| #[trigger] raw.dom().contains(a) ==> z.addr() <= a < z.addr() + z.len(),
+        forall|a: int| #[trigger] raw.dom().contains(a) ==> z.has(a),
     ensures
         r.dom() == raw.dom(),
         r.provenance() == raw.provenance(),
@@ -29,7 +29,7 @@ pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked 
 
 ## `axiom_zero_word`
 
-src/vspec/zero.rs:191. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/zero.rs:196. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The eight bytes of `z`, which read as zero, as the `u64` at `p` holding 0: `PointsToRaw::into_typed`, initialised with the value the bytes hold.
@@ -49,12 +49,12 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
 
 ## `zero_raw`
 
-src/vspec/zero.rs:315. Kind: external_body. Category: raw pointer (internal).
+src/vspec/zero.rs:333. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > `write_bytes(p, 0, n)` through `raw`, the permission to the `n` bytes at `p`, taken `&mut` so that no other view of them (a `PointsTo` held from the same bytes, a [`ZeroRaw`] or a `UserMem` lending them) is held across the fill; the token for what it wrote.
 
-Body mints Tracked at line 327.
+Body mints Tracked at line 345.
 
 ```rust
 pub unsafe fn zero_raw(p: *mut u8, n: usize, Tracked(raw): Tracked<&mut PointsToRaw>) -> (z: Tracked<Zeroed>)

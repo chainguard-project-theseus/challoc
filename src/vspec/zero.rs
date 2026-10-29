@@ -35,6 +35,11 @@ impl Zeroed {
         self.len
     }
 
+    /// Byte `a` is one of the token's: it reads as zero.
+    pub open spec fn has(&self, a: int) -> bool {
+        self.addr() <= a < self.addr() + self.len()
+    }
+
     /// The token covers at least `n` bytes from `p`.
     pub open spec fn covers(&self, p: *mut u8, n: int) -> bool {
         &&& self.addr() == p@.addr
@@ -137,7 +142,7 @@ impl ZeroRaw {
     #[verifier::external_body]
     pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
         requires
-            forall|a: int| #[trigger] raw.dom().contains(a) ==> z.addr() <= a < z.addr() + z.len(),
+            forall|a: int| #[trigger] raw.dom().contains(a) ==> z.has(a),
         ensures
             r.dom() == raw.dom(),
             r.provenance() == raw.provenance(),
@@ -234,6 +239,19 @@ pub open spec fn huge_usable(size: int) -> int {
     let pg = (1usize << crate::layout::process_regions().lg_page) as int;
     let n = (size + pg - 1) / pg;
     (if n == 0 { 1 } else { n }) * pg
+}
+
+/// The usable bytes of a block `p` an allocation of `size` bytes returned:
+/// the class's size for a slot of a class (one class per slot:
+/// [`lemma_slot_unique`]), [`huge_usable`]`(size)` otherwise. For a live
+/// block this is [`Live::len`](crate::heap::Live::len) when the size
+/// rounds to the run's usable size (`Live::lemma_block_usable`).
+pub open spec fn block_usable(p: usize, size: int) -> int {
+    if exists|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p) {
+        crate::layout::class_table()[choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p)].size as int
+    } else {
+        huge_usable(size)
+    }
 }
 
 /// [`run_placeable`] for the process's huge region (`Shared::wf`: the
