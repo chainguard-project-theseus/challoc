@@ -37,64 +37,81 @@ use core::ffi::c_int;
 use core::ptr;
 
 use crate::QUANTUM;
-use crate::heap::{self, Shared};
+use crate::heap::{self, Live, Shared};
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, SMALL_MAX, class_of, class_of_small};
 use crate::sys::Errno;
+use crate::vspec::cbuf::{CCall, COut};
+use crate::vspec::errno::{ThreadErrno, set_errno};
+use crate::vspec::usable::Stored;
+use crate::vspec::zero::Zeroed;
+use vstd::prelude::{Ghost, Tracked};
+use vstd::raw_ptr::ptr_mut_write;
 
 // The codes as `c_int`, for `errno` and `posix_memalign`'s return; the
 // numbers live in `sys::errno`.
 const ENOMEM: c_int = Errno::ENOMEM.0;
 const EINVAL: c_int = Errno::EINVAL.0;
 
-#[inline(always)]
-fn set_errno(e: c_int) {
-    // SAFETY: `__errno_location` returns the calling thread's `errno`.
-    unsafe { *::libc::__errno_location() = e };
-}
-
 /// Null with `errno = ENOMEM`.
 #[cold]
 #[inline(never)]
-fn enomem() -> *mut u8 {
-    set_errno(ENOMEM);
+fn enomem(_errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    set_errno(ENOMEM, Tracked::assume_new());
     ptr::null_mut()
 }
 
 /// Null with `errno = EINVAL`.
 #[cold]
 #[inline(never)]
-fn einval() -> *mut u8 {
-    set_errno(EINVAL);
+fn einval(_errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    set_errno(EINVAL, Tracked::assume_new());
     ptr::null_mut()
+}
+
+/// [`class_of`], the form the entry points call: the smallest class whose
+/// slot holds `n` bytes.
+#[inline(always)]
+pub(super) fn class_index(n: usize) -> Option<usize> {
+    class_of(n)
+}
+
+/// [`class_index`] of a request of at most [`SMALL_MAX`] bytes, from the
+/// small table alone ([`class_of_small`]): the same class.
+#[inline(always)]
+pub(super) fn class_index_small(n: usize) -> usize {
+    class_of_small(n)
 }
 
 /// Huge allocation on the calling thread, counted in its heap when it has
 /// one. `align` is a power of two; `1` means none.
 #[cold]
 #[inline(never)]
-fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
+fn alloc_huge(
+    shared: &Shared,
+    size: usize,
+    align: usize,
+    _blk: Tracked<&mut Live>,
+) -> (*mut u8, bool, Tracked<Zeroed>) {
     match heap::heap_for_thread(shared) {
-        Some(h) => {
-            let (p, zero, _) =
-                h.alloc_huge(shared, size, align, vstd::prelude::Tracked::assume_new());
-            (p, zero)
-        }
-        None => {
-            let (p, zero, _) = shared.alloc_huge(
-                size,
-                align,
-                0,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
-            );
-            (p, zero)
-        }
+        Some(h) => h.alloc_huge(shared, size, align, Tracked::assume_new()),
+        None => shared.alloc_huge(size, align, 0, Tracked::assume_new(), Tracked::assume_new()),
     }
 }
 
 /// `malloc`.
 #[inline(always)]
-pub fn malloc(size: usize) -> *mut u8 {
+pub fn malloc(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    malloc_block(size, Tracked::assume_new(), Tracked::assume_new())
+}
+
+/// [`malloc`] with the block's token: `blk` gets the token of the block
+/// returned, which has at least `size` usable bytes.
+#[inline(always)]
+pub fn malloc_block(
+    size: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
     // the exported `malloc` needs no stack frame. A size above the small
@@ -102,39 +119,53 @@ pub fn malloc(size: usize) -> *mut u8 {
     // only from the table here, its stride-scaled entry addresses the
     // cache header as it is (`class_of_small`).
     if size > SMALL_MAX {
-        return malloc_medium(size);
+        return malloc_medium(size, Tracked::assume_new(), Tracked::assume_new());
     }
-    malloc_class(size, class_of_small(size))
+    malloc_class(
+        size,
+        class_index_small(size),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
 }
 
 /// `malloc` of a size above the small table: the same pop, behind the
 /// computed class.
 #[inline(never)]
-fn malloc_medium(size: usize) -> *mut u8 {
-    let Some(c) = class_of(size) else {
-        return malloc_slow(size);
+fn malloc_medium(
+    size: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    let Some(c) = class_index(size) else {
+        return malloc_slow(size, Tracked::assume_new(), Tracked::assume_new());
     };
-    malloc_class(size, c)
+    malloc_class(size, c, Tracked::assume_new(), Tracked::assume_new())
 }
 
 /// `malloc`'s pop for a known class `c` of `size`.
 #[inline(always)]
-fn malloc_class(size: usize, c: usize) -> *mut u8 {
+fn malloc_class(
+    size: usize,
+    c: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else {
-        return malloc_slow(size);
+        return malloc_slow(size, Tracked::assume_new(), Tracked::assume_new());
     };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
-    match h.alloc_fast(c, flags, vstd::prelude::Tracked::assume_new()) {
+    match h.alloc_fast(c, flags, Tracked::assume_new()) {
         Some(p) => p,
         // The class, not the size: the declined pop (an empty cache or
         // the scheduled pop) goes straight to the slow path of its class,
         // `heap::alloc_declined`, not through a second classification and
         // a second fast pop.
-        None => malloc_slow_class(c),
+        None => malloc_slow_class(c, Tracked::assume_new(), Tracked::assume_new()),
     }
 }
 
@@ -143,68 +174,108 @@ fn malloc_class(size: usize, c: usize) -> *mut u8 {
 /// `heap::alloc_declined`, null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_slow_class(class: usize) -> *mut u8 {
-    let p = heap::alloc_declined(super::shared(), class, vstd::prelude::Tracked::assume_new());
-    if p.is_null() { enomem() } else { p }
+fn malloc_slow_class(
+    class: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    let p = heap::alloc_declined(super::shared(), class, Tracked::assume_new());
+    if p.is_null() {
+        enomem(Tracked::assume_new())
+    } else {
+        p
+    }
 }
 
 /// The cache pop alone: `None` whenever anything is off the fast path (no
 /// heap yet, empty cache, huge size). Shared with the C++ `operator new`
 /// family in `cxx.rs`, whose failure handling differs from `malloc`'s.
 #[inline(always)]
-pub(super) fn malloc_fast(size: usize) -> Option<*mut u8> {
-    let c = class_of(size)?;
+// The `let ... else`s stand for `?`, which the proofs spell out.
+#[allow(clippy::question_mark)]
+pub(super) fn malloc_fast(size: usize, _blk: Tracked<&mut Live>) -> Option<*mut u8> {
+    let Some(c) = class_index(size) else {
+        return None;
+    };
     let shared = super::shared_ptr();
-    let h = heap::existing_heap(shared)?;
+    let Some(h) = heap::existing_heap(shared) else {
+        return None;
+    };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
-    h.alloc_fast(c, flags, vstd::prelude::Tracked::assume_new())
+    h.alloc_fast(c, flags, Tracked::assume_new())
 }
 
 /// Everything `malloc` does off its fast path. Null with `errno = ENOMEM`
 /// on failure.
 #[cold]
 #[inline(never)]
-pub(super) fn malloc_slow(size: usize) -> *mut u8 {
+pub(super) fn malloc_slow(
+    size: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
     let shared = super::shared();
-    let p = match class_of(size) {
-        Some(c) => heap::alloc(shared, c, vstd::prelude::Tracked::assume_new()),
-        None => alloc_huge(shared, size, 1).0,
+    let p = match class_index(size) {
+        Some(c) => heap::alloc(shared, c, Tracked::assume_new()),
+        None => alloc_huge(shared, size, 1, Tracked::assume_new()).0,
     };
-    if p.is_null() { enomem() } else { p }
+    if p.is_null() {
+        enomem(Tracked::assume_new())
+    } else {
+        p
+    }
 }
 
 /// `calloc`. Skips the `memset` when the slot or run is known to read as
 /// zero (fresh or purged memory).
 #[inline(always)]
-pub fn calloc(n: usize, m: usize) -> *mut u8 {
+pub fn calloc(n: usize, m: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    calloc_zeroed(n, m, Tracked::assume_new(), Tracked::assume_new()).0
+}
+
+/// [`calloc`] with the token that its memory reads as zero: a non-null
+/// result comes with a [`Zeroed`] token for its `n * m` bytes, from the
+/// `memset` or from the allocator's report that the slot or run is known
+/// zero; and `blk` gets the block's token.
+#[inline(always)]
+pub fn calloc_zeroed(
+    n: usize,
+    m: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> (*mut u8, Tracked<Zeroed>) {
     let Some(size) = n.checked_mul(m) else {
-        return enomem();
+        return (enomem(Tracked::assume_new()), Tracked::assume_new());
     };
     let shared = super::shared();
-    let (p, zeroed) = match class_of(size) {
-        Some(c) => {
-            let (p, zeroed, _) =
-                heap::alloc_zeroed(shared, c, vstd::prelude::Tracked::assume_new());
-            (p, zeroed)
-        }
-        None => alloc_huge(shared, size, 1),
+    let (p, zeroed, z) = match class_index(size) {
+        Some(c) => heap::alloc_zeroed(shared, c, Tracked::assume_new()),
+        None => alloc_huge(shared, size, 1, Tracked::assume_new()),
     };
     if p.is_null() {
-        return enomem();
+        return (enomem(Tracked::assume_new()), Tracked::assume_new());
     }
     if !zeroed {
-        // SAFETY: `p` is a fresh allocation of at least `size` bytes.
+        // SAFETY: a fresh block with at least `size` usable bytes.
         unsafe { ptr::write_bytes(p, 0, size) };
+        return (p, Tracked::assume_new());
     }
-    p
+    (p, z)
 }
 
 /// `free`. Null is a no-op; anything that is not a live allocation aborts.
 #[inline(always)]
-pub fn free(p: *mut u8) {
+pub fn free(p: *mut u8, _c: Tracked<CCall>) {
+    free_block(p, Tracked::assume_new())
+}
+
+/// [`free`] with the caller's token for `p`, which the
+/// free takes back.
+#[inline(always)]
+pub fn free_block(p: *mut u8, _blk: Tracked<Live>) {
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
     // Null is one of those outcomes: it is in no class region (the
@@ -212,7 +283,7 @@ pub fn free(p: *mut u8) {
     // class index of null is out of range) and `free_slow` returns for it, so
     // the common case pays no test of its own (jemalloc's `free` fast
     // path leaves null to its slow path the same way).
-    if let Some((t, tp)) = heap::tls_heap_slot(vstd::prelude::Tracked::assume_new()) {
+    if let Some((t, tp)) = heap::tls_heap_slot(Tracked::assume_new()) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
         let shared = unsafe { &*super::shared_base() };
@@ -223,8 +294,8 @@ pub fn free(p: *mut u8) {
                 t,
                 tp,
                 p,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
             )
         }
         .is_some()
@@ -232,7 +303,7 @@ pub fn free(p: *mut u8) {
             return;
         }
     }
-    free_slow(p)
+    free_slow(p, Tracked::assume_new())
 }
 
 /// Sized free on the calling thread's heap: `hint` is the class the size
@@ -242,11 +313,18 @@ pub fn free(p: *mut u8) {
 /// invalid or double free through this path is caught when the cache
 /// flushes it, not at the call; a hint that does not match aborts.
 #[inline(always)]
-pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
+pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, _c: Tracked<CCall>) {
+    free_sized_block(p, size, hint, Tracked::assume_new())
+}
+
+/// [`free_sized_hint`] with the caller's token for `p`,
+/// which the free takes back: the token of the live block `p`.
+#[inline(always)]
+pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, _blk: Tracked<Live>) {
     // A huge size (no hint) has no fast path: straight to the slow one,
     // so the fast path carries a plain class and no test of the hint.
     let Some(c) = hint else {
-        return free_sized_unhinted(p, size);
+        return free_sized_unhinted(p, size, Tracked::assume_new());
     };
     // On x86_64 there is no null test here: null is below every class
     // region, so its offset from the hint's region base wraps to a value
@@ -267,21 +345,21 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
             p,
             Some(c),
             shared.push_flags(),
-            vstd::prelude::Tracked::assume_new(),
+            Tracked::assume_new(),
         ) {
             return;
         }
     }
-    free_sized_slow(p, size, hint)
+    free_sized_slow(p, size, hint, Tracked::assume_new())
 }
 
 /// The sized free of a size no class holds (a huge run, or nothing): the
 /// exact `free` behind the null test.
 #[cold]
 #[inline(never)]
-fn free_sized_unhinted(p: *mut u8, size: usize) {
+fn free_sized_unhinted(p: *mut u8, size: usize, _blk: Tracked<Live>) {
     if !p.is_null() {
-        free_sized_slow(p, size, None)
+        free_sized_slow(p, size, None, Tracked::assume_new())
     }
 }
 
@@ -292,15 +370,15 @@ fn free_sized_unhinted(p: *mut u8, size: usize) {
 /// message).
 #[cold]
 #[inline(never)]
-fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
+fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, _blk: Tracked<Live>) {
     #[cfg(target_arch = "x86_64")]
     if p.is_null() {
         return;
     }
     match super::shared_if_ready() {
         Some(shared) => {
-            shared.check_size_hint(p, size, hint, vstd::prelude::Tracked::assume_new());
-            heap::free(shared, p, vstd::prelude::Tracked::assume_new())
+            shared.check_size_hint(p, size, hint, Tracked::assume_new());
+            heap::free(shared, p, Tracked::assume_new())
         }
         None => free_before_init(p),
     }
@@ -310,34 +388,47 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
 /// `malloc`/`calloc`/`realloc` (or any size in the same class, or for a
 /// huge run any size whose page count is the run's).
 #[inline(always)]
-pub fn free_sized(p: *mut u8, size: usize) {
+pub fn free_sized(p: *mut u8, size: usize, _c: Tracked<CCall>) {
+    free_sized_with(p, size, Tracked::assume_new())
+}
+
+/// [`free_sized`] with the caller's token for `p`,
+/// which the free takes back (`free_sized_block`'s); also `sdallocx`'s
+/// with no flags.
+#[inline(always)]
+pub fn free_sized_with(p: *mut u8, size: usize, _blk: Tracked<Live>) {
     // As in `malloc`: a size above the small table is a tail call, so the
     // class comes only from the table here and the stride-scaled entry
     // addresses the class line and the cache header as it is. That keeps
     // the sized path within its registers, with no spill (on Genoa a
     // `push` and a `pop` here cost `valkey1` 8%, #46).
     if size > SMALL_MAX {
-        return free_sized_medium(p, size);
+        return free_sized_medium(p, size, Tracked::assume_new());
     }
-    free_sized_hint(p, size, Some(class_of_small(size)))
+    free_sized_block(
+        p,
+        size,
+        Some(class_index_small(size)),
+        Tracked::assume_new(),
+    )
 }
 
 /// `free_sized` of a size above the small table.
 #[inline(never)]
-fn free_sized_medium(p: *mut u8, size: usize) {
-    free_sized_hint(p, size, class_of(size))
+fn free_sized_medium(p: *mut u8, size: usize, _blk: Tracked<Live>) {
+    free_sized_block(p, size, class_index(size), Tracked::assume_new())
 }
 
 /// C23 `free_aligned_sized(p, align, size)`: the arguments given to
 /// `aligned_alloc`. An alignment that is not a power of two matches no
 /// class and aborts on a slab pointer.
-pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize) {
+pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, _c: Tracked<CCall>) {
     let hint = if align.is_power_of_two() {
         class_for(size, align)
     } else {
         None
     };
-    free_sized_hint(p, size, hint)
+    free_sized_hint(p, size, hint, Tracked::assume_new())
 }
 
 /// Everything `free` does off its fast path: heap creation, a full cache,
@@ -346,12 +437,12 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize) {
 /// same message it always did).
 #[cold]
 #[inline(never)]
-fn free_slow(p: *mut u8) {
+fn free_slow(p: *mut u8, _blk: Tracked<Live>) {
     if p.is_null() {
         return;
     }
     match super::shared_if_ready() {
-        Some(shared) => heap::free(shared, p, vstd::prelude::Tracked::assume_new()),
+        Some(shared) => heap::free(shared, p, Tracked::assume_new()),
         None => free_before_init(p),
     }
 }
@@ -371,7 +462,7 @@ fn free_before_init(p: *mut u8) -> ! {
 /// slot from the dense arrays, `check_live` tests the bit, and the size is
 /// the class's.
 #[inline(always)]
-pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
+pub fn usable_size(shared: &Shared, p: *mut u8, _blk: Tracked<&Live>) -> usize {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
@@ -379,13 +470,11 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
                 slab as usize,
                 slot as usize,
                 p as usize,
-                vstd::prelude::Tracked::assume_new(),
+                Tracked::assume_new(),
             );
-            CLASSES[class].size()
+            class_size(class)
         }
-        Kind::Huge { page } => shared
-            .huge
-            .usable_size(page, vstd::prelude::Tracked::assume_new()),
+        Kind::Huge { page } => shared.huge.usable_size(page, Tracked::assume_new()),
         Kind::Invalid => not_an_allocation(p),
     }
 }
@@ -405,7 +494,7 @@ pub fn malloc_usable_size(p: *mut u8) -> usize {
         return 0;
     }
     match super::shared_if_ready() {
-        Some(shared) => usable_size(shared, p),
+        Some(shared) => usable_size(shared, p, Tracked::assume_new()),
         None => free_before_init(p),
     }
 }
@@ -427,6 +516,7 @@ pub(super) fn old_size_or_keep(
     p: *mut u8,
     size: usize,
     align: usize,
+    _blk: Tracked<&Live>,
 ) -> Option<usize> {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
@@ -435,17 +525,15 @@ pub(super) fn old_size_or_keep(
                 slab as usize,
                 slot as usize,
                 p as usize,
-                vstd::prelude::Tracked::assume_new(),
+                Tracked::assume_new(),
             );
             if class_for(size, align) == Some(class) {
                 return None;
             }
-            Some(CLASSES[class].size())
+            Some(class_size(class))
         }
         Kind::Huge { page } => {
-            let old = shared
-                .huge
-                .usable_size(page, vstd::prelude::Tracked::assume_new());
+            let old = shared.huge.usable_size(page, Tracked::assume_new());
             if class_for(size, align).is_none()
                 && shared.huge.usable_for(size) == Some(old)
                 && (p as usize) % align == 0
@@ -465,36 +553,98 @@ pub(super) fn old_size_or_keep(
 /// same class or the same number of huge pages (`old_size_or_keep`);
 /// otherwise allocate, copy `min(old usable, new size)`, free. On failure
 /// the old block is intact.
-pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
+pub fn realloc(
+    p: *mut u8,
+    size: usize,
+    _errno: Tracked<&mut ThreadErrno>,
+    _c: Tracked<CCall>,
+) -> *mut u8 {
+    realloc_block(
+        p,
+        size,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
+}
+
+/// `realloc`'s copy: the first `n` bytes of the live block `p` into the
+/// new live block `q`, with both blocks' tokens (`blk`'s to read,
+/// `out`'s to write).
+///
+/// # Safety
+/// `p` and `q` are live blocks of at least `n` usable bytes each, which
+/// do not overlap.
+#[inline(always)]
+pub(super) unsafe fn copy_moved(
+    p: *mut u8,
+    q: *mut u8,
+    n: usize,
+    _blk: Tracked<&mut Live>,
+    _out: Tracked<&mut Live>,
+) {
+    // SAFETY: the caller's contract: `p` has `n` readable bytes, `q` at
+    // least `n` writable ones, and they are distinct allocations. The
+    // tokens are not yet the ones that show it (the callers pass
+    // `Tracked::assume_new()` until the proofs).
+    unsafe { ptr::copy_nonoverlapping(p, q, n) };
+}
+
+/// [`realloc`] with the tokens: `blk` is the caller's for `p`, and `out`
+/// gets the result's: a new block's, or `blk` itself when `p` is kept or
+/// the move fails (`p` is then still the caller's).
+#[inline(always)]
+pub fn realloc_block(
+    p: *mut u8,
+    size: usize,
+    _blk: Tracked<Live>,
+    _out: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
     if p.is_null() {
-        return malloc(size);
+        return malloc_block(size, Tracked::assume_new(), Tracked::assume_new());
     }
     if size == 0 {
-        free(p);
+        free_block(p, Tracked::assume_new());
         return ptr::null_mut();
     }
     let Some(shared) = super::shared_if_ready() else {
         free_before_init(p)
     };
-    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1) else {
+    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1, Tracked::assume_new()) else {
         return p;
     };
-    let q = malloc(size);
+    let q = malloc_block(size, Tracked::assume_new(), Tracked::assume_new());
     if q.is_null() {
         return q;
     }
-    // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
-    // ones, and they are distinct allocations.
-    unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
-    heap::free(shared, p, vstd::prelude::Tracked::assume_new());
+    // SAFETY: `old_size_or_keep` classified `p` as a live block with `old`
+    // usable bytes, and `q` is a fresh allocation of at least `size` bytes,
+    // distinct from `p`.
+    unsafe {
+        copy_moved(
+            p,
+            q,
+            old.min(size),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+    };
+    heap::free(shared, p, Tracked::assume_new());
     q
 }
 
 /// `reallocarray`: `realloc(p, n * m)` with overflow reported as `ENOMEM`.
-pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
+pub fn reallocarray(
+    p: *mut u8,
+    n: usize,
+    m: usize,
+    _errno: Tracked<&mut ThreadErrno>,
+    _c: Tracked<CCall>,
+) -> *mut u8 {
     match n.checked_mul(m) {
-        Some(size) => realloc(p, size),
-        None => enomem(),
+        Some(size) => realloc(p, size, Tracked::assume_new(), Tracked::assume_new()),
+        None => enomem(Tracked::assume_new()),
     }
 }
 
@@ -516,11 +666,14 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
 /// the three allocating entry points; a null makes them plain
 /// `malloc`/`calloc`/`realloc`).
 #[inline(always)]
-fn store_usable(usable: *mut usize, n: usize) {
+fn store_usable(usable: *mut usize, n: usize, _uout: Tracked<&mut COut<usize>>) -> Tracked<Stored> {
     if !usable.is_null() {
-        // SAFETY: the caller passed a writable `size_t` or null.
-        unsafe { *usable = n };
+        // The caller passed a writable `size_t` or null (`usable` is not
+        // null here). The permission is assumed (`Tracked::assume_new()`)
+        // until the proofs supply `uout`'s.
+        ptr_mut_write(usable, Tracked::assume_new(), n);
     }
+    Tracked::assume_new()
 }
 
 /// `CLASSES[class].size()` for a class a fast path produced: below
@@ -530,7 +683,7 @@ fn store_usable(usable: *mut usize, n: usize) {
 fn class_size(class: usize) -> usize {
     debug_assert!(class < NCLASSES);
     // SAFETY: as above.
-    unsafe { CLASSES.get_unchecked(class) }.size()
+    unsafe { CLASSES.table().get_unchecked(class) }.size()
 }
 
 /// `challoc_malloc_usable(size, usable)`: `malloc(size)`, and the block's
@@ -539,22 +692,71 @@ fn class_size(class: usize) -> usize {
 /// The same pop as `malloc` with the class size added from the class the
 /// pop used; everything else is one tail call away, as in `malloc`.
 #[inline(always)]
-pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
-    let Some(c) = class_of(size) else {
-        return malloc_usable_huge(size, usable);
+pub fn malloc_usable(
+    size: usize,
+    usable: *mut usize,
+    _uout: Tracked<COut<usize>>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    malloc_usable_stored(
+        size,
+        usable,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
+    .0
+}
+
+/// [`malloc_usable`] with the token for what it stored through `usable`:
+/// the block's usable size (its class's size, or `size` rounded up to
+/// whole pages for a huge run), and 0 for a null result.
+/// `blk` gets the block's token, as in [`malloc_block`].
+#[inline(always)]
+pub fn malloc_usable_stored(
+    size: usize,
+    usable: *mut usize,
+    _uout: Tracked<&mut COut<usize>>,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> (*mut u8, Tracked<Stored>) {
+    let Some(c) = class_index(size) else {
+        return malloc_usable_huge(
+            size,
+            usable,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     };
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else {
-        return malloc_usable_class(c, usable);
+        let (p, s) = malloc_usable_class(
+            c,
+            usable,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        return (p, s);
     };
     // SAFETY: as in `malloc`.
     let flags = unsafe { heap::fast_flags(shared) };
-    match h.alloc_fast(c, flags, vstd::prelude::Tracked::assume_new()) {
+    match h.alloc_fast(c, flags, Tracked::assume_new()) {
         Some(p) => {
-            store_usable(usable, class_size(c));
-            p
+            let s = store_usable(usable, class_size(c), Tracked::assume_new());
+            (p, s)
         }
-        None => malloc_usable_class(c, usable),
+        None => {
+            let (p, s) = malloc_usable_class(
+                c,
+                usable,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
+            (p, s)
+        }
     }
 }
 
@@ -564,29 +766,46 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
 /// null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8 {
-    let p = heap::alloc_declined(super::shared(), class, vstd::prelude::Tracked::assume_new());
+fn malloc_usable_class(
+    class: usize,
+    usable: *mut usize,
+    _uout: Tracked<&mut COut<usize>>,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> (*mut u8, Tracked<Stored>) {
+    let shared = super::shared();
+    let p = heap::alloc_declined(shared, class, Tracked::assume_new());
     if p.is_null() {
-        store_usable(usable, 0);
-        return enomem();
+        let s = store_usable(usable, 0, Tracked::assume_new());
+        return (enomem(Tracked::assume_new()), s);
     }
-    store_usable(usable, class_size(class));
-    p
+    let s = store_usable(usable, class_size(class), Tracked::assume_new());
+    (p, s)
 }
 
 /// `malloc_usable` of a huge size: the run's usable bytes come from the
 /// huge table, the same read `malloc_usable_size` does.
 #[cold]
 #[inline(never)]
-fn malloc_usable_huge(size: usize, usable: *mut usize) -> *mut u8 {
+fn malloc_usable_huge(
+    size: usize,
+    usable: *mut usize,
+    _uout: Tracked<&mut COut<usize>>,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> (*mut u8, Tracked<Stored>) {
     let shared = super::shared();
-    let (p, _) = alloc_huge(shared, size, 1);
+    let (p, _, _) = alloc_huge(shared, size, 1, Tracked::assume_new());
     if p.is_null() {
-        store_usable(usable, 0);
-        return enomem();
+        let s = store_usable(usable, 0, Tracked::assume_new());
+        return (enomem(Tracked::assume_new()), s);
     }
-    store_usable(usable, usable_size(shared, p));
-    p
+    let s = store_usable(
+        usable,
+        usable_size(shared, p, Tracked::assume_new()),
+        Tracked::assume_new(),
+    );
+    (p, s)
 }
 
 /// `challoc_calloc_usable(n, m, usable)`: `calloc(n, m)` with the usable
@@ -594,41 +813,74 @@ fn malloc_usable_huge(size: usize, usable: *mut usize) -> *mut u8 {
 /// zero, not only the `n * m` bytes asked for: the caller is told it owns
 /// the usable bytes (Valkey's `zcalloc_usable` hands them on), and that is
 /// what jemalloc's `calloc` zeroes.
-pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
+pub fn calloc_usable(
+    n: usize,
+    m: usize,
+    usable: *mut usize,
+    _uout: Tracked<COut<usize>>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    calloc_usable_zeroed(
+        n,
+        m,
+        usable,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
+    .0
+}
+
+/// [`calloc_usable`] with the token that its memory reads as zero, and
+/// the token for what it stored through `usable`. A non-null result comes
+/// with a [`Zeroed`] token for its `n * m` bytes and for its whole usable
+/// size, and `usable` holds that size (the class's size, or `n * m` rounded up to whole pages); a null result
+/// stores 0. `blk` gets the block's token. For a huge request the `memset`
+/// length is the run's usable size read back from its descriptor
+/// ([`usable_size`]), which is the usable size of the block's token: the
+/// request rounded up to whole pages.
+#[inline(always)]
+pub fn calloc_usable_zeroed(
+    n: usize,
+    m: usize,
+    usable: *mut usize,
+    _uout: Tracked<&mut COut<usize>>,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> (*mut u8, Tracked<Zeroed>, Tracked<Stored>) {
     let Some(size) = n.checked_mul(m) else {
-        store_usable(usable, 0);
-        return enomem();
+        let s = store_usable(usable, 0, Tracked::assume_new());
+        return (enomem(Tracked::assume_new()), Tracked::assume_new(), s);
     };
     let shared = super::shared();
-    let (p, zeroed, u) = match class_of(size) {
+    let (p, zeroed, u, z) = match class_index(size) {
         Some(c) => {
-            let (p, zeroed, _) =
-                heap::alloc_zeroed(shared, c, vstd::prelude::Tracked::assume_new());
-            (p, zeroed, class_size(c))
+            let (p, zeroed, z) = heap::alloc_zeroed(shared, c, Tracked::assume_new());
+            (p, zeroed, class_size(c), z)
         }
         None => {
-            let (p, zeroed) = alloc_huge(shared, size, 1);
-            (
-                p,
-                zeroed,
-                if p.is_null() {
-                    0
-                } else {
-                    usable_size(shared, p)
-                },
-            )
+            let (p, zeroed, z) = alloc_huge(shared, size, 1, Tracked::assume_new());
+            let u = if p.is_null() {
+                0
+            } else {
+                usable_size(shared, p, Tracked::assume_new())
+            };
+            (p, zeroed, u, z)
         }
     };
     if p.is_null() {
-        store_usable(usable, 0);
-        return enomem();
+        let s = store_usable(usable, 0, Tracked::assume_new());
+        return (enomem(Tracked::assume_new()), Tracked::assume_new(), s);
     }
-    if !zeroed {
-        // SAFETY: `p` is a fresh allocation of `u` usable bytes.
+    let z = if !zeroed {
+        // SAFETY: a fresh block with `u` usable bytes.
         unsafe { ptr::write_bytes(p, 0, u) };
-    }
-    store_usable(usable, u);
-    p
+        Tracked::assume_new()
+    } else {
+        z
+    };
+    let s = store_usable(usable, u, Tracked::assume_new());
+    (p, z, s)
 }
 
 /// `challoc_realloc_usable(p, size, usable)`: `realloc(p, size)` with the
@@ -637,32 +889,86 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
 /// place reports its class size from the classification `realloc` does
 /// anyway; a moved block reports what the `malloc_usable` that made it
 /// reported.
-pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
+pub fn realloc_usable(
+    p: *mut u8,
+    size: usize,
+    usable: *mut usize,
+    _uout: Tracked<COut<usize>>,
+    _errno: Tracked<&mut ThreadErrno>,
+    _c: Tracked<CCall>,
+) -> *mut u8 {
+    realloc_usable_stored(
+        p,
+        size,
+        usable,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
+    .0
+}
+
+/// [`realloc_usable`] with the token for what it stored through `usable`:
+/// for a non-null result, its usable size for a request of `size` bytes
+/// whether the block was kept (the class's size, or a run's usable size
+/// equal to `size` rounded up to whole pages) or moved (what [`malloc_usable_stored`] stored). The block
+/// tokens are as in [`realloc_block`].
+pub fn realloc_usable_stored(
+    p: *mut u8,
+    size: usize,
+    usable: *mut usize,
+    _uout: Tracked<&mut COut<usize>>,
+    _blk: Tracked<Live>,
+    _out: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> (*mut u8, Tracked<Stored>) {
     if p.is_null() {
-        return malloc_usable(size, usable);
+        return malloc_usable_stored(
+            size,
+            usable,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     }
     if size == 0 {
-        free(p);
-        store_usable(usable, 0);
-        return ptr::null_mut();
+        free_block(p, Tracked::assume_new());
+        let s = store_usable(usable, 0, Tracked::assume_new());
+        return (ptr::null_mut(), s);
     }
     let Some(shared) = super::shared_if_ready() else {
         free_before_init(p)
     };
-    let (keep, old) = realloc_old(shared, p, size);
+    let (keep, old) = realloc_old(shared, p, size, Tracked::assume_new());
     if keep {
-        store_usable(usable, old);
-        return p;
+        let s = store_usable(usable, old, Tracked::assume_new());
+        return (p, s);
     }
-    let q = malloc_usable(size, usable);
+    let (q, s) = malloc_usable_stored(
+        size,
+        usable,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     if q.is_null() {
-        return q;
+        return (q, s);
     }
-    // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
-    // ones, and they are distinct allocations.
-    unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
-    heap::free(shared, p, vstd::prelude::Tracked::assume_new());
-    q
+    // SAFETY: `realloc_old` classified `p` as a live block with `old`
+    // usable bytes, and `q` is a fresh allocation of at least `size` bytes,
+    // distinct from `p`.
+    unsafe {
+        copy_moved(
+            p,
+            q,
+            old.min(size),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+    };
+    heap::free(shared, p, Tracked::assume_new());
+    (q, s)
 }
 
 /// [`old_size_or_keep`]'s decision for `realloc` (alignment 1) with the
@@ -670,7 +976,7 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
 /// when `size` maps to `p`'s class or to a huge run of the same page
 /// count. The same checks and aborts as `old_size_or_keep`, which stays as
 /// it is so `realloc` and `rallocx` are untouched.
-fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
+fn realloc_old(shared: &Shared, p: *mut u8, size: usize, _blk: Tracked<&Live>) -> (bool, usize) {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
@@ -678,14 +984,12 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
                 slab as usize,
                 slot as usize,
                 p as usize,
-                vstd::prelude::Tracked::assume_new(),
+                Tracked::assume_new(),
             );
-            (class_of(size) == Some(class), CLASSES[class].size())
+            (class_of(size) == Some(class), class_size(class))
         }
         Kind::Huge { page } => {
-            let old = shared
-                .huge
-                .usable_size(page, vstd::prelude::Tracked::assume_new());
+            let old = shared.huge.usable_size(page, Tracked::assume_new());
             (
                 class_of(size).is_none() && shared.huge.usable_for(size) == Some(old),
                 old,
@@ -706,11 +1010,19 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
 /// size from the same classification the exact `free` then repeats, so a
 /// bad pointer dies with `free`'s message.
 #[inline(always)]
-pub fn free_usable(p: *mut u8) -> usize {
+pub fn free_usable(p: *mut u8, _c: Tracked<CCall>) -> usize {
+    free_usable_block(p, Tracked::assume_new())
+}
+
+/// [`free_usable`] with the caller's token for `p`,
+/// which the free takes back: the token of the live block `p`, whose
+/// usable size is the result.
+#[inline(always)]
+pub fn free_usable_block(p: *mut u8, _blk: Tracked<Live>) -> usize {
     if p.is_null() {
         return 0;
     }
-    if let Some((t, tp)) = heap::tls_heap_slot(vstd::prelude::Tracked::assume_new()) {
+    if let Some((t, tp)) = heap::tls_heap_slot(Tracked::assume_new()) {
         // SAFETY: as in `free`.
         let shared = unsafe { &*super::shared_base() };
         // SAFETY: as in `free`.
@@ -720,14 +1032,14 @@ pub fn free_usable(p: *mut u8) -> usize {
                 t,
                 tp,
                 p,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
             )
         } {
             return class_size(class);
         }
     }
-    free_usable_slow(p)
+    free_usable_slow(p, Tracked::assume_new())
 }
 
 /// Everything `free_usable` does off its fast path: the size first, from
@@ -737,17 +1049,15 @@ pub fn free_usable(p: *mut u8) -> usize {
 /// release).
 #[cold]
 #[inline(never)]
-fn free_usable_slow(p: *mut u8) -> usize {
+fn free_usable_slow(p: *mut u8, _blk: Tracked<Live>) -> usize {
     let Some(shared) = super::shared_if_ready() else {
         free_before_init(p)
     };
-    let usable = match shared.classify_free(p, vstd::prelude::Tracked::assume_new()) {
-        Ok((class, _)) => CLASSES[class].size(),
-        Err(page) => shared
-            .huge
-            .usable_size(page, vstd::prelude::Tracked::assume_new()),
+    let usable = match shared.classify_free(p, Tracked::assume_new()) {
+        Ok((class, _)) => class_size(class),
+        Err(page) => shared.huge.usable_size(page, Tracked::assume_new()),
     };
-    heap::free(shared, p, vstd::prelude::Tracked::assume_new());
+    heap::free(shared, p, Tracked::assume_new());
     usable
 }
 
@@ -759,7 +1069,7 @@ fn free_usable_slow(p: *mut u8) -> usize {
 /// and `nallocx`.
 #[inline]
 pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
-    let c = class_of(size)?;
+    let c = class_index(size)?;
     if align <= QUANTUM {
         return Some(c);
     }
@@ -774,7 +1084,7 @@ pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
     // is a power of two so the divisibility test is a mask.
     let mut c = c;
     loop {
-        let cls = CLASSES.get(c)?;
+        let cls = CLASSES.table().get(c)?;
         if cls.size() & (align - 1) == 0 {
             return Some(c);
         }
@@ -784,75 +1094,161 @@ pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
 
 /// Allocate `size` bytes aligned to `align`, a power of two. Null with
 /// `errno = ENOMEM` on exhaustion.
-pub fn alloc_aligned(align: usize, size: usize) -> *mut u8 {
+pub fn alloc_aligned(
+    align: usize,
+    size: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
     debug_assert!(align.is_power_of_two());
     if align <= QUANTUM {
-        return malloc(size);
+        let p = malloc_block(size, Tracked::assume_new(), Tracked::assume_new());
+        return p;
     }
     let shared = super::shared();
     let p = match class_for(size, align) {
-        Some(c) => heap::alloc(shared, c, vstd::prelude::Tracked::assume_new()),
-        None => alloc_huge(shared, size, align).0,
+        Some(c) => heap::alloc(shared, c, Tracked::assume_new()),
+        None => alloc_huge(shared, size, align, Tracked::assume_new()).0,
     };
-    if p.is_null() { enomem() } else { p }
+    if p.is_null() {
+        enomem(Tracked::assume_new())
+    } else {
+        p
+    }
 }
 
 /// `aligned_alloc` and `memalign`: `EINVAL` unless `align` is a power of
 /// two. glibc does not require `size` to be a multiple of `align`.
-pub fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
+pub fn aligned_alloc(align: usize, size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    aligned_alloc_block(align, size, Tracked::assume_new(), Tracked::assume_new())
+}
+
+/// [`aligned_alloc`] with the block's token, as [`malloc_block`].
+pub fn aligned_alloc_block(
+    align: usize,
+    size: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
     if !align.is_power_of_two() {
-        return einval();
+        return einval(Tracked::assume_new());
     }
-    alloc_aligned(align, size)
+    alloc_aligned(align, size, Tracked::assume_new(), Tracked::assume_new())
+}
+
+/// Store the allocation through `posix_memalign`'s out-pointer, with
+/// `oout`, the permission `posix_memalign` was handed for it, which then
+/// holds `p`.
+#[inline(always)]
+fn store_out(out: *mut *mut u8, p: *mut u8, _oout: Tracked<&mut COut<*mut u8>>) {
+    // The caller passes a valid out-pointer (`posix_memalign`'s
+    // contract). The permission is assumed (`Tracked::assume_new()`)
+    // until the proofs supply `oout`'s.
+    ptr_mut_write(out, Tracked::assume_new(), p);
 }
 
 /// `posix_memalign`. Returns 0, `EINVAL` (alignment not a power of two or
 /// not a multiple of `sizeof(void *)`) or `ENOMEM`; never touches `errno`
 /// on the `EINVAL` path.
-pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> c_int {
-    if !align.is_power_of_two() || !align.is_multiple_of(core::mem::size_of::<*mut u8>()) {
+pub fn posix_memalign(
+    out: *mut *mut u8,
+    align: usize,
+    size: usize,
+    _oout: Tracked<COut<*mut u8>>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> c_int {
+    posix_memalign_block(
+        out,
+        align,
+        size,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
+}
+
+/// [`posix_memalign`] with the token of the block it stores: on a 0
+/// return, `out` holds a block of at least `size` bytes aligned to
+/// `align`, and `blk` gets its token.
+// `%`: Verus does not specify `usize::is_multiple_of`.
+#[allow(clippy::manual_is_multiple_of)]
+pub fn posix_memalign_block(
+    out: *mut *mut u8,
+    align: usize,
+    size: usize,
+    _oout: Tracked<&mut COut<*mut u8>>,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> c_int {
+    if !align.is_power_of_two() || align % core::mem::size_of::<*mut u8>() != 0 {
         return EINVAL;
     }
-    let p = alloc_aligned(align, size);
+    let p = alloc_aligned(align, size, Tracked::assume_new(), Tracked::assume_new());
     if p.is_null() {
         return ENOMEM;
     }
-    // SAFETY: the caller passes a valid out-pointer.
-    unsafe { *out = p };
+    store_out(out, p, Tracked::assume_new());
     0
 }
 
+/// `shared.regions.page_size()`, the process's page (`1 << lg_page` of
+/// its regions), a power of two: `Regions::wf` (part of `Shared::wf`)
+/// bounds `lg_page` below 64.
+#[inline(always)]
+fn page_size(shared: &Shared) -> usize {
+    shared.regions.page_size()
+}
+
 /// `valloc`: page-aligned.
-pub fn valloc(size: usize) -> *mut u8 {
-    let page = super::shared().regions.page_size();
-    alloc_aligned(page, size)
+pub fn valloc(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    valloc_block(size, Tracked::assume_new(), Tracked::assume_new())
+}
+
+/// [`valloc`] with the block's token, as [`malloc_block`].
+pub fn valloc_block(
+    size: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    let page = page_size(super::shared());
+    alloc_aligned(page, size, Tracked::assume_new(), Tracked::assume_new())
 }
 
 /// `pvalloc`: page-aligned, size rounded up to a whole page.
-pub fn pvalloc(size: usize) -> *mut u8 {
-    let page = super::shared().regions.page_size();
+pub fn pvalloc(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
+    pvalloc_block(size, Tracked::assume_new(), Tracked::assume_new())
+}
+
+/// [`pvalloc`] with the block's token, as [`malloc_block`].
+pub fn pvalloc_block(
+    size: usize,
+    _blk: Tracked<&mut Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) -> *mut u8 {
+    let page = page_size(super::shared());
     let Some(rounded) = size.checked_add(page - 1) else {
-        return enomem();
+        return enomem(Tracked::assume_new());
     };
-    alloc_aligned(page, rounded & !(page - 1))
+    alloc_aligned(
+        page,
+        rounded & !(page - 1),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
 }
 
 /// `malloc_trim`: return the calling thread's cached slots to their slabs,
 /// then purge every `Empty` slab and huge extent whatever its age (design
 /// section 8). Returns 1 if anything was purged, 0 otherwise or before
 /// init. `pad` is glibc's top-of-heap allowance and has no meaning here.
-pub fn malloc_trim(_pad: usize) -> c_int {
+pub fn malloc_trim(_pad: usize, _left: Tracked<&mut Ghost<crate::purge::Left>>) -> c_int {
     let Some(shared) = super::shared_if_ready() else {
         return 0;
     };
-    if let Some(h) = heap::existing_heap(shared) {
-        h.flush_all(shared, vstd::prelude::Tracked::assume_new());
+    if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
+        h.flush_all(shared, Tracked::assume_new());
     }
-    (crate::purge::purge_all(
-        shared,
-        vstd::prelude::Tracked::assume_new(),
-        vstd::prelude::Tracked::assume_new(),
-    ) > 0) as c_int
+    (crate::purge::purge_all(shared, Tracked::assume_new(), Tracked::assume_new()) > 0) as c_int
 }
 
 // ---------------------------------------------------------------------------
@@ -911,23 +1307,27 @@ mod exports {
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.malloc")]
     pub extern "C" fn malloc(size: usize) -> *mut c_void {
-        super::malloc(size) as *mut c_void
+        super::malloc(size, Tracked::assume_new()) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn je_malloc(size: usize) -> *mut c_void {
-        super::malloc(size) as *mut c_void
+        super::malloc(size, Tracked::assume_new()) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.free")]
     pub extern "C" fn free(p: *mut c_void) {
-        super::free(p as *mut u8)
+        super::free(p as *mut u8, Tracked::assume_new())
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn je_free(p: *mut c_void) {
-        super::free(p as *mut u8)
+        super::free(p as *mut u8, Tracked::assume_new())
+    }
+
+    fn memptr_out(_out: *mut *mut u8) -> Tracked<COut<*mut u8>> {
+        Tracked::assume_new()
     }
 
     // The alignment of the sections `malloc` and `free` are placed in: a
@@ -955,25 +1355,26 @@ mod exports {
 
     export_pair! {
         fn calloc / je_calloc(n: usize, m: usize) -> *mut c_void {
-            super::calloc(n, m) as *mut c_void
+            super::calloc(n, m, Tracked::assume_new()) as *mut c_void
         }
         fn realloc / je_realloc(p: *mut c_void, size: usize) -> *mut c_void {
-            super::realloc(p as *mut u8, size) as *mut c_void
+            super::realloc(p as *mut u8, size, Tracked::assume_new(), Tracked::assume_new()) as *mut c_void
         }
         fn aligned_alloc / je_aligned_alloc(align: usize, size: usize) -> *mut c_void {
-            super::aligned_alloc(align, size) as *mut c_void
+            super::aligned_alloc(align, size, Tracked::assume_new()) as *mut c_void
         }
         fn memalign / je_memalign(align: usize, size: usize) -> *mut c_void {
-            super::aligned_alloc(align, size) as *mut c_void
+            super::aligned_alloc(align, size, Tracked::assume_new()) as *mut c_void
         }
         fn posix_memalign / je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
-            super::posix_memalign(out as *mut *mut u8, align, size)
+            let oout = memptr_out(out as *mut *mut u8);
+            super::posix_memalign(out as *mut *mut u8, align, size, oout, Tracked::assume_new())
         }
         fn valloc / je_valloc(size: usize) -> *mut c_void {
-            super::valloc(size) as *mut c_void
+            super::valloc(size, Tracked::assume_new()) as *mut c_void
         }
         fn pvalloc / je_pvalloc(size: usize) -> *mut c_void {
-            super::pvalloc(size) as *mut c_void
+            super::pvalloc(size, Tracked::assume_new()) as *mut c_void
         }
         fn malloc_usable_size / je_malloc_usable_size(p: *mut c_void) -> usize {
             super::malloc_usable_size(p as *mut u8)
@@ -984,25 +1385,31 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn reallocarray(p: *mut c_void, n: usize, m: usize) -> *mut c_void {
-        super::reallocarray(p as *mut u8, n, m) as *mut c_void
+        super::reallocarray(
+            p as *mut u8,
+            n,
+            m,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        ) as *mut c_void
     }
 
     /// C23 `free_sized`: the size is checked against the class and stands
     /// in for the slot bit test (design 6.3).
     #[unsafe(no_mangle)]
     pub extern "C" fn free_sized(p: *mut c_void, size: usize) {
-        super::free_sized(p as *mut u8, size)
+        super::free_sized(p as *mut u8, size, Tracked::assume_new())
     }
 
     /// C23 `free_aligned_sized`: as `free_sized`, with the alignment.
     #[unsafe(no_mangle)]
     pub extern "C" fn free_aligned_sized(p: *mut c_void, align: usize, size: usize) {
-        super::free_aligned_sized(p as *mut u8, align, size)
+        super::free_aligned_sized(p as *mut u8, align, size, Tracked::assume_new())
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_trim(pad: usize) -> c_int {
-        super::malloc_trim(pad)
+        super::malloc_trim(pad, Tracked::assume_new())
     }
 
     // challoc's size-returning entry points (design 13.7): challoc's own
@@ -1010,12 +1417,14 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn challoc_malloc_usable(size: usize, usable: *mut usize) -> *mut c_void {
-        super::malloc_usable(size, usable) as *mut c_void
+        super::malloc_usable(size, usable, Tracked::assume_new(), Tracked::assume_new())
+            as *mut c_void
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn challoc_calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut c_void {
-        super::calloc_usable(n, m, usable) as *mut c_void
+        super::calloc_usable(n, m, usable, Tracked::assume_new(), Tracked::assume_new())
+            as *mut c_void
     }
 
     #[unsafe(no_mangle)]
@@ -1024,12 +1433,19 @@ mod exports {
         size: usize,
         usable: *mut usize,
     ) -> *mut c_void {
-        super::realloc_usable(p as *mut u8, size, usable) as *mut c_void
+        super::realloc_usable(
+            p as *mut u8,
+            size,
+            usable,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        ) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn challoc_free_usable(p: *mut c_void) -> usize {
-        super::free_usable(p as *mut u8)
+        super::free_usable(p as *mut u8, Tracked::assume_new())
     }
 }
 
@@ -1075,7 +1491,7 @@ mod tests {
             1 << 20,
             10 << 20,
         ] {
-            let p = malloc(n);
+            let p = malloc(n, vstd::prelude::Tracked::assume_new());
             assert!(!p.is_null(), "malloc({n})");
             assert_eq!(p as usize % QUANTUM, 0);
             let usable = malloc_usable_size(p);
@@ -1086,19 +1502,19 @@ mod tests {
             }
             fill(p, usable, 3);
             check(p, usable, 3);
-            free(p);
+            free(p, vstd::prelude::Tracked::assume_new());
         }
         assert_eq!(malloc_usable_size(ptr::null_mut()), 0);
-        free(ptr::null_mut());
+        free(ptr::null_mut(), vstd::prelude::Tracked::assume_new());
     }
 
     #[test]
     fn malloc_zero_returns_distinct_pointers() {
-        let a = malloc(0);
-        let b = malloc(0);
+        let a = malloc(0, vstd::prelude::Tracked::assume_new());
+        let b = malloc(0, vstd::prelude::Tracked::assume_new());
         assert!(!a.is_null() && !b.is_null() && a != b);
-        free(a);
-        free(b);
+        free(a, vstd::prelude::Tracked::assume_new());
+        free(b, vstd::prelude::Tracked::assume_new());
     }
 
     #[test]
@@ -1106,18 +1522,18 @@ mod tests {
         for &n in &[24usize, 1000, 5000, MEDIUM_MAX + 1, 3 << 20] {
             // Dirty a block, free it, then calloc the same size: the reused
             // memory must read as zero.
-            let p = malloc(n);
+            let p = malloc(n, vstd::prelude::Tracked::assume_new());
             fill(p, n, 0xAB);
-            free(p);
-            let q = calloc(1, n);
+            free(p, vstd::prelude::Tracked::assume_new());
+            let q = calloc(1, n, vstd::prelude::Tracked::assume_new());
             assert!(!q.is_null());
             for i in 0..n {
                 assert_eq!(unsafe { *q.add(i) }, 0, "calloc({n}) byte {i} not zero");
             }
-            free(q);
+            free(q, vstd::prelude::Tracked::assume_new());
         }
-        set_errno(0);
-        assert!(calloc(usize::MAX, 2).is_null());
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        assert!(calloc(usize::MAX, 2, vstd::prelude::Tracked::assume_new()).is_null());
         assert_eq!(errno(), ENOMEM);
     }
 
@@ -1136,39 +1552,93 @@ mod tests {
             1000,
             10,
         ];
-        let mut p = malloc(sizes[0]);
+        let mut p = malloc(sizes[0], vstd::prelude::Tracked::assume_new());
         fill(p, sizes[0], 1);
         let mut prev = sizes[0];
         for &n in &sizes[1..] {
-            p = realloc(p, n);
+            p = realloc(
+                p,
+                n,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert!(!p.is_null(), "realloc to {n}");
             check(p, prev.min(n), 1);
             fill(p, n, 1);
             prev = n;
         }
         // Same class: same pointer.
-        let q = realloc(p, prev);
+        let q = realloc(
+            p,
+            prev,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(q, p);
-        let q = realloc(p, prev + 1);
+        let q = realloc(
+            p,
+            prev + 1,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(q, p, "10 -> 11 stays in the 16-byte class");
         assert!(
-            realloc(p, 0).is_null(),
+            realloc(
+                p,
+                0,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null(),
             "realloc(p, 0) frees and returns null"
         );
 
         // Huge: same number of pages keeps the pointer.
         let page = super::super::shared().regions.page_size();
-        let h = realloc(ptr::null_mut(), MEDIUM_MAX + 1);
-        assert_eq!(realloc(h, MEDIUM_MAX + page), h);
-        let h2 = realloc(h, MEDIUM_MAX + page + 1);
+        let h = realloc(
+            ptr::null_mut(),
+            MEDIUM_MAX + 1,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
+        assert_eq!(
+            realloc(
+                h,
+                MEDIUM_MAX + page,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
+            h
+        );
+        let h2 = realloc(
+            h,
+            MEDIUM_MAX + page + 1,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_ne!(h2, h);
-        free(h2);
+        free(h2, vstd::prelude::Tracked::assume_new());
 
-        assert!(reallocarray(ptr::null_mut(), usize::MAX, 2).is_null());
+        assert!(
+            reallocarray(
+                ptr::null_mut(),
+                usize::MAX,
+                2,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null()
+        );
         assert_eq!(errno(), ENOMEM);
-        let r = reallocarray(ptr::null_mut(), 8, 8);
+        let r = reallocarray(
+            ptr::null_mut(),
+            8,
+            8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(malloc_usable_size(r) >= 64);
-        free(r);
+        free(r, vstd::prelude::Tracked::assume_new());
     }
 
     #[test]
@@ -1183,7 +1653,7 @@ mod tests {
                 3 * align,
                 MEDIUM_MAX + 1,
             ] {
-                let p = aligned_alloc(align, size);
+                let p = aligned_alloc(align, size, vstd::prelude::Tracked::assume_new());
                 assert!(!p.is_null(), "aligned_alloc({align}, {size})");
                 assert_eq!(
                     p as usize % align,
@@ -1193,12 +1663,21 @@ mod tests {
                 assert!(malloc_usable_size(p) >= size);
                 fill(p, size, 9);
                 check(p, size, 9);
-                free(p);
+                free(p, vstd::prelude::Tracked::assume_new());
 
                 let mut out = ptr::null_mut();
-                assert_eq!(posix_memalign(&mut out, align, size), 0);
+                assert_eq!(
+                    posix_memalign(
+                        &mut out,
+                        align,
+                        size,
+                        vstd::prelude::Tracked::assume_new(),
+                        vstd::prelude::Tracked::assume_new()
+                    ),
+                    0
+                );
                 assert_eq!(out as usize % align, 0);
-                free(out);
+                free(out, vstd::prelude::Tracked::assume_new());
             }
             align <<= 1;
         }
@@ -1208,67 +1687,99 @@ mod tests {
     fn aligned_allocation_picks_the_smallest_fitting_class() {
         // 48-byte request at 32-byte alignment: class 48 slots are only
         // 16-aligned, so class 64 is used.
-        let p = aligned_alloc(32, 48);
+        let p = aligned_alloc(32, 48, vstd::prelude::Tracked::assume_new());
         assert_eq!(malloc_usable_size(p), 64);
-        free(p);
+        free(p, vstd::prelude::Tracked::assume_new());
         // Alignment already implied by the quantum: plain class.
-        let p = aligned_alloc(QUANTUM, 48);
+        let p = aligned_alloc(QUANTUM, 48, vstd::prelude::Tracked::assume_new());
         assert_eq!(malloc_usable_size(p), class_size_of(48).unwrap());
-        free(p);
+        free(p, vstd::prelude::Tracked::assume_new());
         // 4 KiB alignment for 5 KiB: the 6 KiB class (5120 + 1024) is not a
         // multiple of 4 KiB; 8 KiB is.
-        let p = aligned_alloc(4096, 5 * 1024);
+        let p = aligned_alloc(4096, 5 * 1024, vstd::prelude::Tracked::assume_new());
         assert_eq!(malloc_usable_size(p), 8192);
-        free(p);
+        free(p, vstd::prelude::Tracked::assume_new());
     }
 
     #[test]
     fn bad_alignment_is_einval_and_exhaustion_is_enomem() {
-        set_errno(0);
-        assert!(aligned_alloc(0, 16).is_null());
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        assert!(aligned_alloc(0, 16, vstd::prelude::Tracked::assume_new()).is_null());
         assert_eq!(errno(), EINVAL);
-        set_errno(0);
-        assert!(aligned_alloc(24, 16).is_null());
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        assert!(aligned_alloc(24, 16, vstd::prelude::Tracked::assume_new()).is_null());
         assert_eq!(errno(), EINVAL);
 
         let mut out = ptr::null_mut::<u8>();
-        set_errno(0);
-        assert_eq!(posix_memalign(&mut out, 3, 16), EINVAL);
+        set_errno(0, vstd::prelude::Tracked::assume_new());
         assert_eq!(
-            posix_memalign(&mut out, 4, 16),
+            posix_memalign(
+                &mut out,
+                3,
+                16,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
+            EINVAL
+        );
+        assert_eq!(
+            posix_memalign(
+                &mut out,
+                4,
+                16,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
             EINVAL,
             "below sizeof(void *)"
         );
         assert_eq!(errno(), 0, "posix_memalign leaves errno alone");
         assert!(out.is_null());
 
-        set_errno(0);
-        assert!(malloc(usize::MAX / 2).is_null());
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        assert!(malloc(usize::MAX / 2, vstd::prelude::Tracked::assume_new()).is_null());
         assert_eq!(errno(), ENOMEM);
-        set_errno(0);
-        assert!(realloc(ptr::null_mut(), usize::MAX / 2).is_null());
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        assert!(
+            realloc(
+                ptr::null_mut(),
+                usize::MAX / 2,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null()
+        );
         assert_eq!(errno(), ENOMEM);
-        set_errno(0);
-        assert_eq!(posix_memalign(&mut out, 16, usize::MAX / 2), ENOMEM);
-        set_errno(0);
-        assert!(pvalloc(usize::MAX).is_null());
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        assert_eq!(
+            posix_memalign(
+                &mut out,
+                16,
+                usize::MAX / 2,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
+            ENOMEM
+        );
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        assert!(pvalloc(usize::MAX, vstd::prelude::Tracked::assume_new()).is_null());
         assert_eq!(errno(), ENOMEM);
     }
 
     #[test]
     fn valloc_and_pvalloc_are_page_aligned() {
         let page = super::super::shared().regions.page_size();
-        let p = valloc(10);
+        let p = valloc(10, vstd::prelude::Tracked::assume_new());
         assert_eq!(p as usize % page, 0);
         assert!(malloc_usable_size(p) >= 10);
-        free(p);
-        let p = pvalloc(page + 1);
+        free(p, vstd::prelude::Tracked::assume_new());
+        let p = pvalloc(page + 1, vstd::prelude::Tracked::assume_new());
         assert_eq!(p as usize % page, 0);
         assert!(malloc_usable_size(p) >= 2 * page);
-        free(p);
-        let p = pvalloc(0);
+        free(p, vstd::prelude::Tracked::assume_new());
+        let p = pvalloc(0, vstd::prelude::Tracked::assume_new());
         assert!(malloc_usable_size(p) >= page);
-        free(p);
+        free(p, vstd::prelude::Tracked::assume_new());
     }
 
     /// Design 13.7: the size-returning entry points answer exactly what
@@ -1292,7 +1803,12 @@ mod tests {
             10 << 20,
         ] {
             let mut u = usize::MAX;
-            let p = malloc_usable(n, &mut u);
+            let p = malloc_usable(
+                n,
+                &mut u,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert!(!p.is_null(), "malloc_usable({n})");
             assert_eq!(p as usize % QUANTUM, 0);
             assert_eq!(u, malloc_usable_size(p), "malloc_usable({n})");
@@ -1303,15 +1819,25 @@ mod tests {
             }
             fill(p, u, 3);
             check(p, u, 3);
-            assert_eq!(free_usable(p), u, "free_usable({n})");
+            assert_eq!(
+                free_usable(p, vstd::prelude::Tracked::assume_new()),
+                u,
+                "free_usable({n})"
+            );
 
             // calloc_usable: the whole usable size reads as zero, even on a
             // slot or run that was dirtied and freed a moment ago.
-            let d = malloc(n.max(1));
+            let d = malloc(n.max(1), vstd::prelude::Tracked::assume_new());
             fill(d, malloc_usable_size(d), 0xAB);
-            free(d);
+            free(d, vstd::prelude::Tracked::assume_new());
             let mut u = usize::MAX;
-            let q = calloc_usable(1, n, &mut u);
+            let q = calloc_usable(
+                1,
+                n,
+                &mut u,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert!(!q.is_null(), "calloc_usable({n})");
             assert_eq!(u, malloc_usable_size(q));
             for i in 0..u {
@@ -1327,7 +1853,14 @@ mod tests {
             // same size; `realloc_usable(q, 0)` would free, so 0 asks for
             // 1, still class 0), a move across tiers keeps the content.
             let mut u2 = usize::MAX;
-            let r = realloc_usable(q, n.max(1), &mut u2);
+            let r = realloc_usable(
+                q,
+                n.max(1),
+                &mut u2,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert_eq!(
                 r, q,
                 "realloc_usable({n}) to the same size keeps the pointer"
@@ -1335,12 +1868,19 @@ mod tests {
             assert_eq!(u2, u);
             let grown = 2 * n + 4097;
             let mut u3 = usize::MAX;
-            let g = realloc_usable(r, grown, &mut u3);
+            let g = realloc_usable(
+                r,
+                grown,
+                &mut u3,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert!(!g.is_null());
             assert_eq!(u3, malloc_usable_size(g));
             assert!(u3 >= grown);
             check(g, u.min(grown), 4);
-            assert_eq!(free_usable(g), u3);
+            assert_eq!(free_usable(g, vstd::prelude::Tracked::assume_new()), u3);
         }
     }
 
@@ -1352,60 +1892,136 @@ mod tests {
     /// block intact.
     #[test]
     fn usable_entry_points_null_and_failure_cases() {
-        assert_eq!(free_usable(ptr::null_mut()), 0);
-        let p = malloc_usable(100, ptr::null_mut());
+        assert_eq!(
+            free_usable(ptr::null_mut(), vstd::prelude::Tracked::assume_new()),
+            0
+        );
+        let p = malloc_usable(
+            100,
+            ptr::null_mut(),
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!p.is_null());
-        let q = calloc_usable(2, 50, ptr::null_mut());
+        let q = calloc_usable(
+            2,
+            50,
+            ptr::null_mut(),
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!q.is_null() && is_zero(q, 100));
-        let r = realloc_usable(q, 5000, ptr::null_mut());
+        let r = realloc_usable(
+            q,
+            5000,
+            ptr::null_mut(),
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!r.is_null());
-        free(p);
-        free(r);
+        free(p, vstd::prelude::Tracked::assume_new());
+        free(r, vstd::prelude::Tracked::assume_new());
 
         let mut u = usize::MAX;
-        let p = realloc_usable(ptr::null_mut(), 300, &mut u);
+        let p = realloc_usable(
+            ptr::null_mut(),
+            300,
+            &mut u,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         assert_eq!(u, malloc_usable_size(p));
         fill(p, 300, 8);
-        set_errno(0);
+        set_errno(0, vstd::prelude::Tracked::assume_new());
         let mut u2 = usize::MAX;
-        assert!(realloc_usable(p, usize::MAX / 2, &mut u2).is_null());
+        assert!(
+            realloc_usable(
+                p,
+                usize::MAX / 2,
+                &mut u2,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null()
+        );
         assert_eq!(errno(), ENOMEM);
         assert_eq!(u2, 0);
         check(p, 300, 8);
         let mut u3 = usize::MAX;
         assert!(
-            realloc_usable(p, 0, &mut u3).is_null(),
+            realloc_usable(
+                p,
+                0,
+                &mut u3,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null(),
             "realloc_usable(p, 0) frees and returns null"
         );
         assert_eq!(u3, 0);
 
-        set_errno(0);
-        let mut u = usize::MAX;
-        assert!(malloc_usable(usize::MAX / 2, &mut u).is_null());
-        assert_eq!((errno(), u), (ENOMEM, 0));
-        set_errno(0);
-        let mut u = usize::MAX;
-        assert!(calloc_usable(usize::MAX, 2, &mut u).is_null(), "overflow");
-        assert_eq!((errno(), u), (ENOMEM, 0));
-        set_errno(0);
+        set_errno(0, vstd::prelude::Tracked::assume_new());
         let mut u = usize::MAX;
         assert!(
-            calloc_usable(1, usize::MAX / 2, &mut u).is_null(),
+            malloc_usable(
+                usize::MAX / 2,
+                &mut u,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null()
+        );
+        assert_eq!((errno(), u), (ENOMEM, 0));
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        let mut u = usize::MAX;
+        assert!(
+            calloc_usable(
+                usize::MAX,
+                2,
+                &mut u,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null(),
+            "overflow"
+        );
+        assert_eq!((errno(), u), (ENOMEM, 0));
+        set_errno(0, vstd::prelude::Tracked::assume_new());
+        let mut u = usize::MAX;
+        assert!(
+            calloc_usable(
+                1,
+                usize::MAX / 2,
+                &mut u,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null(),
             "exhaustion"
         );
         assert_eq!((errno(), u), (ENOMEM, 0));
 
         // Aligned blocks report their class, not the request.
-        let a = aligned_alloc(4096, 5 * 1024);
-        assert_eq!(free_usable(a), 8192);
+        let a = aligned_alloc(4096, 5 * 1024, vstd::prelude::Tracked::assume_new());
+        assert_eq!(free_usable(a, vstd::prelude::Tracked::assume_new()), 8192);
         // Off the fast path: a full cache and a huge run.
-        let many: Vec<*mut u8> = (0..3000).map(|_| malloc(64)).collect();
+        let many: Vec<*mut u8> = (0..3000)
+            .map(|_| malloc(64, vstd::prelude::Tracked::assume_new()))
+            .collect();
         for p in many {
-            assert_eq!(free_usable(p), 64);
+            assert_eq!(free_usable(p, vstd::prelude::Tracked::assume_new()), 64);
         }
-        let h = malloc(3 << 20);
-        assert_eq!(free_usable(h), malloc_usable_size_of_huge(3 << 20));
+        let h = malloc(3 << 20, vstd::prelude::Tracked::assume_new());
+        assert_eq!(
+            free_usable(h, vstd::prelude::Tracked::assume_new()),
+            malloc_usable_size_of_huge(3 << 20)
+        );
     }
 
     fn malloc_usable_size_of_huge(n: usize) -> usize {
@@ -1418,16 +2034,18 @@ mod tests {
 
     #[test]
     fn free_preserves_errno() {
-        let p = malloc(100);
-        let h = malloc(1 << 20);
-        set_errno(1234);
-        free(p);
-        free(h);
+        let p = malloc(100, vstd::prelude::Tracked::assume_new());
+        let h = malloc(1 << 20, vstd::prelude::Tracked::assume_new());
+        set_errno(1234, vstd::prelude::Tracked::assume_new());
+        free(p, vstd::prelude::Tracked::assume_new());
+        free(h, vstd::prelude::Tracked::assume_new());
         // Overflow a cache so the flush path runs too.
-        let many: Vec<*mut u8> = (0..1000).map(|_| malloc(64)).collect();
-        set_errno(1234);
+        let many: Vec<*mut u8> = (0..1000)
+            .map(|_| malloc(64, vstd::prelude::Tracked::assume_new()))
+            .collect();
+        set_errno(1234, vstd::prelude::Tracked::assume_new());
         for p in many {
-            free(p);
+            free(p, vstd::prelude::Tracked::assume_new());
         }
         assert_eq!(errno(), 1234);
     }
@@ -1443,21 +2061,21 @@ mod tests {
         // A background thread at a 1 ms decay would purge the run first.
         let _serial = crate::testutil::global_state();
         let purged = (0..8).any(|_| {
-            let h = malloc(4 << 20);
+            let h = malloc(4 << 20, vstd::prelude::Tracked::assume_new());
             assert!(!h.is_null());
             unsafe { ptr::write_bytes(h, 1, 4 << 20) };
-            free(h);
-            malloc_trim(0) == 1
+            free(h, vstd::prelude::Tracked::assume_new());
+            malloc_trim(0, vstd::prelude::Tracked::assume_new()) == 1
         });
         assert!(purged, "malloc_trim never reported the freed run purged");
-        let quiet = (0..32).any(|_| malloc_trim(0) == 0);
+        let quiet = (0..32).any(|_| malloc_trim(0, vstd::prelude::Tracked::assume_new()) == 0);
         assert!(quiet, "malloc_trim never found nothing to purge");
     }
 
     #[test]
     fn cross_thread_free_and_thread_exit_with_full_cache() {
         let blocks: Vec<usize> = (0..4096)
-            .map(|i| malloc(32 + (i % 8) * 16) as usize)
+            .map(|i| malloc(32 + (i % 8) * 16, vstd::prelude::Tracked::assume_new()) as usize)
             .collect();
         let handles: Vec<_> = blocks
             .chunks(512)
@@ -1465,12 +2083,14 @@ mod tests {
                 let chunk: Vec<usize> = chunk.to_vec();
                 std::thread::spawn(move || {
                     for &p in &chunk {
-                        free(p as *mut u8);
+                        free(p as *mut u8, vstd::prelude::Tracked::assume_new());
                     }
                     // Leave with plenty in this thread's caches.
-                    let mine: Vec<*mut u8> = (0..300).map(|_| malloc(48)).collect();
+                    let mine: Vec<*mut u8> = (0..300)
+                        .map(|_| malloc(48, vstd::prelude::Tracked::assume_new()))
+                        .collect();
                     for p in mine {
-                        free(p);
+                        free(p, vstd::prelude::Tracked::assume_new());
                     }
                 })
             })
