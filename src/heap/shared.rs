@@ -6,7 +6,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(verus_keep_ghost)]
 use crate::arena::published;
@@ -50,6 +50,7 @@ use super::live::Live;
 use super::tcaches::Tcaches;
 use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 use crate::arena::Published;
+use crate::vspec::flags::RouteByte;
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_keep_ghost)]
 use vstd::layout::size_of;
@@ -102,7 +103,7 @@ pub struct Shared {
     /// (`superblock`, `lg_stride`): after `Regions` it would sit on its own
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
-    pub(crate) free_flags: AtomicU8,
+    pub(crate) free_flags: RouteByte,
     /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
     /// (`double_free_scan`, design 6.3 step 3: every push compares the
     /// slot against the top four cache entries and aborts on a match) and
@@ -279,7 +280,10 @@ impl Shared {
 
     /// A second arena is being built (`Arenas::build`).
     pub fn set_multi_arena(&self) {
-        self.free_flags.fetch_or(FREE_ROUTE, Ordering::Relaxed);
+        proof {
+            assert(8u8 & !8u8 == 0) by (bit_vector);
+        }
+        crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);
     }
 
     /// The decay period new arenas start with (`dirty_decay_ms`).
@@ -629,6 +633,8 @@ impl ClassLine {
     }
 }
 
+// The route bit `vspec::flags::fetch_or` may set is `FREE_ROUTE`.
+const _: () = assert!(crate::vspec::flags::ROUTE == FREE_ROUTE);
 const _: () = assert!(
     core::mem::offset_of!(Shared, free_flags) / 128
         == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock))
@@ -920,7 +926,7 @@ const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 axiom fn axiom_shared_layout()
     ensures
         field_fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS as int),
-        field_fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
+        field_fits::<Shared, RouteByte>(S_FREE_FLAGS, S_PUSH_FLAGS as int),
         field_fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI as int),
         field_fits::<Shared, usize>(S_REGION_HI, S_REGIONS as int),
         field_fits::<Shared, Regions>(S_REGIONS, S_TABLES as int),
@@ -952,7 +958,7 @@ axiom fn axiom_shared_layout()
 // `axiom_shared_layout`, checked.
 const _: () = assert!(
     fits::<Shared, [ClassLine; NCLASSES]>(S_LINES, S_FREE_FLAGS)
-        && fits::<Shared, AtomicU8>(S_FREE_FLAGS, S_PUSH_FLAGS)
+        && fits::<Shared, RouteByte>(S_FREE_FLAGS, S_PUSH_FLAGS)
         && fits::<Shared, u8>(S_PUSH_FLAGS, S_REGION_HI)
         && fits::<Shared, usize>(S_REGION_HI, S_REGIONS)
         && fits::<Shared, Regions>(S_REGIONS, S_TABLES)
@@ -1000,7 +1006,7 @@ type StatsLock = Lock<Snapshot>;
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 tracked struct SharedParts {
-    tracked free_flags: PointsTo<AtomicU8>,
+    tracked free_flags: PointsTo<RouteByte>,
     tracked push_flags: PointsTo<u8>,
     tracked region_hi: PointsTo<usize>,
     tracked arena0: Held<Arena>,
@@ -1032,7 +1038,7 @@ impl SharedParts {
     /// ([`shared_ok`]); `arena0` and `arenas` when they are held.
     spec fn at(&self, p: *mut Shared) -> bool {
         &&& shared_ok(p)
-        &&& self.free_flags.ptr() == field_ptr::<Shared, AtomicU8>(p, S_FREE_FLAGS)
+        &&& self.free_flags.ptr() == field_ptr::<Shared, RouteByte>(p, S_FREE_FLAGS)
         &&& self.push_flags.ptr() == field_ptr::<Shared, u8>(p, S_PUSH_FLAGS)
         &&& self.region_hi.ptr() == field_ptr::<Shared, usize>(p, S_REGION_HI)
         &&& (self.arena0.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0))
@@ -1232,7 +1238,7 @@ impl Shared {
         let tracked raw = perm.into_raw();
         axiom_raw_valid(&raw, p as *mut u8, size_of::<Shared>() as int);
         let tracked (lines, raw) = take_field::<Shared, [ClassLine; NCLASSES]>(raw, p, S_LINES, S_FREE_FLAGS as int);
-        let tracked (free_flags, raw) = take_field::<Shared, AtomicU8>(raw, p, S_FREE_FLAGS, S_PUSH_FLAGS as int);
+        let tracked (free_flags, raw) = take_field::<Shared, RouteByte>(raw, p, S_FREE_FLAGS, S_PUSH_FLAGS as int);
         let tracked (push_flags, raw) = take_field::<Shared, u8>(raw, p, S_PUSH_FLAGS, S_REGION_HI as int);
         let tracked (region_hi, raw) = take_field::<Shared, usize>(raw, p, S_REGION_HI, S_REGIONS as int);
         let tracked (regions, raw) = take_field::<Shared, Regions>(raw, p, S_REGIONS, S_TABLES as int);
@@ -1346,14 +1352,14 @@ impl Shared {
         region_hi: usize,
         Tracked(pf): Tracked<&mut PointsTo<u8>>,
         Tracked(ph): Tracked<&mut PointsTo<usize>>,
-        Tracked(pa): Tracked<&mut PointsTo<AtomicU8>>,
+        Tracked(pa): Tracked<&mut PointsTo<RouteByte>>,
         Tracked(pr): Tracked<&'a PointsTo<Regions>>,
     ) -> (r: &'a Regions)
         requires
             shared_ok(this),
             old(pf).ptr() == field_ptr::<Shared, u8>(this, S_PUSH_FLAGS),
             old(ph).ptr() == field_ptr::<Shared, usize>(this, S_REGION_HI),
-            old(pa).ptr() == field_ptr::<Shared, AtomicU8>(this, S_FREE_FLAGS),
+            old(pa).ptr() == field_ptr::<Shared, RouteByte>(this, S_FREE_FLAGS),
             pr.ptr() == field_ptr::<Shared, Regions>(this, S_REGIONS),
             pr.is_init(),
         ensures
@@ -1374,7 +1380,7 @@ impl Shared {
         unsafe {
             ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);
             ptr_mut_write(field_at(this, S_REGION_HI), Tracked(ph), region_hi);
-            ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), AtomicU8::new(flags));
+            ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));
             ptr_ref(field_at(this, S_REGIONS), Tracked(pr))
         }
     }
@@ -3004,7 +3010,7 @@ impl Shared {
     /// plus [`FREE_ROUTE`] once a second arena exists.
     #[inline(always)]
     pub fn free_flags(&self) -> u8 {
-        self.free_flags.load(Ordering::Relaxed)
+        crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)
     }
 
     /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
