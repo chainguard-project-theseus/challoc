@@ -66,6 +66,37 @@ macro_rules! export_pair {
     };
 }
 
+/// [`export_pair`] with the bodies inside `verus!`: Verus checks them,
+/// after granting each export the syscall and abort capabilities of a C
+/// entry point.
+#[cfg(not(test))]
+macro_rules! verified_export_pair {
+    ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? $body:block)*) => {
+        ::vstd::prelude::verus! {
+        $(
+            $(#[$m])*
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
+                proof {
+                    crate::sys::grant_syscalls();
+                    crate::sys::grant_aborts();
+                }
+                $body
+            }
+            $(#[$m])*
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $je($($arg: $ty),*) $(-> $ret)? {
+                proof {
+                    crate::sys::grant_syscalls();
+                    crate::sys::grant_aborts();
+                }
+                $body
+            }
+        )*
+        } // verus!
+    };
+}
+
 // The C++ and libc exports are compiled out of the test binary, which
 // leaves the helpers only they call unused there.
 #[cfg_attr(test, allow(dead_code))]

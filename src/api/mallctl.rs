@@ -95,6 +95,14 @@ const EAGAIN: c_int = Errno::EAGAIN.0;
 const EFAULT: c_int = Errno::EFAULT.0;
 const EINVAL: c_int = Errno::EINVAL.0;
 
+/// [`VERSION_STR`] for verified code, its value opaque to the verifier.
+/// `VERSION_STR` is outside `verus!`, in the form scripts/install.sh
+/// reads; `verus!` builds a `const` as a function in the verifier's view,
+/// so the lifetime is spelled out here.
+#[verifier::external_body]
+#[allow(clippy::redundant_static_lifetimes)]
+pub(crate) const VERSION: &'static str = VERSION_STR;
+
 } // verus!
 
 /// `version`: jemalloc's `<major>.<minor>.<bugfix>-<nrev>-g<gid>` shape,
@@ -342,7 +350,7 @@ impl Node {
     }
 }
 
-// The lifetime is spelled out, as for `VERSION_STR`.
+// The lifetime is spelled out, as for `VERSION`.
 #[allow(clippy::redundant_static_lifetimes)]
 const NUMERIC: &'static str = "*";
 
