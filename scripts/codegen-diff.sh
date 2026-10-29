@@ -76,7 +76,10 @@ case "$MODE" in
       echo "   sections new: $(sections "$so")"
       if [ "$oh" != "$nh" ]; then
         python3 "$FNCMP" "$DIR/disasm-$v.txt" "$DIR/disasm-$v-new.txt" > "$DIR/report-$v.txt" || true
-        sed 's/^/   /' "$DIR/report-$v.txt" | head -60
+        grep -E '^(functions|insns|### )' "$DIR/report-$v.txt" | sed 's/^/   /'
+        sed -n '/^baseline functions with no counterpart:/,$p' "$DIR/report-$v.txt" | sed 's/^/   /'
+        echo "   -- first 60 lines of the per-function diffs:"
+        grep -vE '^(functions|insns)' "$DIR/report-$v.txt" | sed 's/^/   /' | head -60
         grep -q 'changed 0$' "$DIR/report-$v.txt" || rc=2
       fi
     done
