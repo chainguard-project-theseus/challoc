@@ -32,7 +32,7 @@ addition when it is.
 ## Source
 
 The pipeline's first step is `git-checkout` of
-`https://github.com/chainguard-dev/challoc` at `v${{package.version}}`,
+`https://github.com/wolfi-dev/challoc` at `v${{package.version}}`,
 guarded by a build option: `--build-option local-source` skips it and
 builds the tree melange was given with `--source-dir` instead. The
 repository has no release tag and is not public (2026-09-20), so the
