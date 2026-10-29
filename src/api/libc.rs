@@ -74,7 +74,11 @@ fn einval() -> *mut u8 {
 #[inline(never)]
 fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
     match heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge(shared, size, align),
+        Some(h) => {
+            let (p, zero, _) =
+                h.alloc_huge(shared, size, align, vstd::prelude::Tracked::assume_new());
+            (p, zero)
+        }
         None => {
             let (p, zero, _) = shared.alloc_huge(
                 size,
@@ -124,7 +128,7 @@ fn malloc_class(size: usize, c: usize) -> *mut u8 {
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
-    match h.alloc_fast(c, flags) {
+    match h.alloc_fast(c, flags, vstd::prelude::Tracked::assume_new()) {
         Some(p) => p,
         // The class, not the size: the declined pop (an empty cache or
         // the scheduled pop) goes straight to the slow path of its class,
@@ -140,7 +144,7 @@ fn malloc_class(size: usize, c: usize) -> *mut u8 {
 #[cold]
 #[inline(never)]
 fn malloc_slow_class(class: usize) -> *mut u8 {
-    let p = heap::alloc_declined(super::shared(), class);
+    let p = heap::alloc_declined(super::shared(), class, vstd::prelude::Tracked::assume_new());
     if p.is_null() { enomem() } else { p }
 }
 
@@ -156,7 +160,7 @@ pub(super) fn malloc_fast(size: usize) -> Option<*mut u8> {
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
-    h.alloc_fast(c, flags)
+    h.alloc_fast(c, flags, vstd::prelude::Tracked::assume_new())
 }
 
 /// Everything `malloc` does off its fast path. Null with `errno = ENOMEM`
@@ -166,7 +170,7 @@ pub(super) fn malloc_fast(size: usize) -> Option<*mut u8> {
 pub(super) fn malloc_slow(size: usize) -> *mut u8 {
     let shared = super::shared();
     let p = match class_of(size) {
-        Some(c) => heap::alloc(shared, c),
+        Some(c) => heap::alloc(shared, c, vstd::prelude::Tracked::assume_new()),
         None => alloc_huge(shared, size, 1).0,
     };
     if p.is_null() { enomem() } else { p }
@@ -181,7 +185,11 @@ pub fn calloc(n: usize, m: usize) -> *mut u8 {
     };
     let shared = super::shared();
     let (p, zeroed) = match class_of(size) {
-        Some(c) => heap::alloc_zeroed(shared, c),
+        Some(c) => {
+            let (p, zeroed, _) =
+                heap::alloc_zeroed(shared, c, vstd::prelude::Tracked::assume_new());
+            (p, zeroed)
+        }
         None => alloc_huge(shared, size, 1),
     };
     if p.is_null() {
@@ -204,12 +212,23 @@ pub fn free(p: *mut u8) {
     // class index of null is out of range) and `free_slow` returns for it, so
     // the common case pays no test of its own (jemalloc's `free` fast
     // path leaves null to its slow path the same way).
-    if let Some((t, tp)) = heap::tls_heap_slot() {
+    if let Some((t, tp)) = heap::tls_heap_slot(vstd::prelude::Tracked::assume_new()) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
         let shared = unsafe { &*super::shared_base() };
         // SAFETY: the slot value of this thread.
-        if unsafe { heap::free_fast_slot(shared, t, tp, p) }.is_some() {
+        if unsafe {
+            heap::free_fast_slot(
+                shared,
+                t,
+                tp,
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        }
+        .is_some()
+        {
             return;
         }
     }
@@ -242,7 +261,14 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
     if let Some(h) = heap::existing_heap(sp) {
         // SAFETY: as in `free`.
         let shared = unsafe { &*sp };
-        if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags()) {
+        if heap::free_sized_fast(
+            shared,
+            h,
+            p,
+            Some(c),
+            shared.push_flags(),
+            vstd::prelude::Tracked::assume_new(),
+        ) {
             return;
         }
     }
@@ -274,7 +300,7 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint, vstd::prelude::Tracked::assume_new());
-            heap::free(shared, p)
+            heap::free(shared, p, vstd::prelude::Tracked::assume_new())
         }
         None => free_before_init(p),
     }
@@ -325,7 +351,7 @@ fn free_slow(p: *mut u8) {
         return;
     }
     match super::shared_if_ready() {
-        Some(shared) => heap::free(shared, p),
+        Some(shared) => heap::free(shared, p, vstd::prelude::Tracked::assume_new()),
         None => free_before_init(p),
     }
 }
@@ -460,7 +486,7 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations.
     unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
-    heap::free(shared, p);
+    heap::free(shared, p, vstd::prelude::Tracked::assume_new());
     q
 }
 
@@ -523,7 +549,7 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
     };
     // SAFETY: as in `malloc`.
     let flags = unsafe { heap::fast_flags(shared) };
-    match h.alloc_fast(c, flags) {
+    match h.alloc_fast(c, flags, vstd::prelude::Tracked::assume_new()) {
         Some(p) => {
             store_usable(usable, class_size(c));
             p
@@ -539,7 +565,7 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
 #[cold]
 #[inline(never)]
 fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8 {
-    let p = heap::alloc_declined(super::shared(), class);
+    let p = heap::alloc_declined(super::shared(), class, vstd::prelude::Tracked::assume_new());
     if p.is_null() {
         store_usable(usable, 0);
         return enomem();
@@ -576,7 +602,8 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
     let shared = super::shared();
     let (p, zeroed, u) = match class_of(size) {
         Some(c) => {
-            let (p, zeroed) = heap::alloc_zeroed(shared, c);
+            let (p, zeroed, _) =
+                heap::alloc_zeroed(shared, c, vstd::prelude::Tracked::assume_new());
             (p, zeroed, class_size(c))
         }
         None => {
@@ -634,7 +661,7 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
     // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
     // ones, and they are distinct allocations.
     unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
-    heap::free(shared, p);
+    heap::free(shared, p, vstd::prelude::Tracked::assume_new());
     q
 }
 
@@ -683,11 +710,20 @@ pub fn free_usable(p: *mut u8) -> usize {
     if p.is_null() {
         return 0;
     }
-    if let Some((t, tp)) = heap::tls_heap_slot() {
+    if let Some((t, tp)) = heap::tls_heap_slot(vstd::prelude::Tracked::assume_new()) {
         // SAFETY: as in `free`.
         let shared = unsafe { &*super::shared_base() };
         // SAFETY: as in `free`.
-        if let Some(class) = unsafe { heap::free_fast_slot(shared, t, tp, p) } {
+        if let Some(class) = unsafe {
+            heap::free_fast_slot(
+                shared,
+                t,
+                tp,
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        } {
             return class_size(class);
         }
     }
@@ -711,7 +747,7 @@ fn free_usable_slow(p: *mut u8) -> usize {
             .huge
             .usable_size(page, vstd::prelude::Tracked::assume_new()),
     };
-    heap::free(shared, p);
+    heap::free(shared, p, vstd::prelude::Tracked::assume_new());
     usable
 }
 
@@ -755,7 +791,7 @@ pub fn alloc_aligned(align: usize, size: usize) -> *mut u8 {
     }
     let shared = super::shared();
     let p = match class_for(size, align) {
-        Some(c) => heap::alloc(shared, c),
+        Some(c) => heap::alloc(shared, c, vstd::prelude::Tracked::assume_new()),
         None => alloc_huge(shared, size, align).0,
     };
     if p.is_null() { enomem() } else { p }

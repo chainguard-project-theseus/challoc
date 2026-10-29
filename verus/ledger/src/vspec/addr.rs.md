@@ -14,7 +14,7 @@ file.
 
 ## `addr_to_ptr`
 
-src/vspec/addr.rs:24. Kind: external_body. Category: raw pointer (internal).
+src/vspec/addr.rs:23. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `addr as *mut u8`: a pointer to `addr` (Verus supports only the other direction of the cast), [`addr_ptr`], with [`cast_provenance`].
@@ -30,7 +30,7 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
 
 ## `core::ptr::copy_nonoverlapping::<T>`
 
-src/vspec/addr.rs:44. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/addr.rs:43. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::copy_nonoverlapping`, with the safety contract of the `core` documentation: both pointers are properly aligned and, unless the copy is empty, `src` is valid for reads and `dst` for writes of `count * size_of::<T>()` bytes, and the two ranges do not overlap.
@@ -53,7 +53,7 @@ pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T
 
 ## `<*mut T>::is_null`
 
-src/vspec/addr.rs:59. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/addr.rs:58. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*mut T>::is_null`: the address is zero.
@@ -69,7 +69,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: 
 
 ## `<*const T>::is_null`
 
-src/vspec/addr.rs:67. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/addr.rs:66. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*const T>::is_null`: the address is zero.

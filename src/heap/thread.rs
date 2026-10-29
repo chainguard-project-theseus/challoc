@@ -4,9 +4,10 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use vstd::prelude::Tracked;
+use vstd::prelude::{Tracked, verus};
 
 use crate::sys::pac;
+use crate::sys::tls::TlsSlot;
 
 use super::PUSH_PAC;
 use super::{Heap, Shared};
@@ -31,12 +32,43 @@ pub const TLS_EXITED: usize = 2;
 /// `existing_heap` from handing it out).
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let h = p as *mut Heap;
-    crate::sys::tls::set(TLS_EXITED as *mut c_void);
+    crate::sys::tls::set(TLS_EXITED as *mut c_void, Tracked::assume_new());
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
         let shared = &*(*h).shared;
         Heap::destroy(h, shared, Tracked::assume_new());
     }
+}
+verus! {
+
+/// Ghost: the permission to a thread heap, linear: the thread's TLS slot
+/// token ([`TlsSlot`]) holds it while the slot holds the heap, and
+/// [`slot_heap_ref`] lends the heap out of the token, for as long as the
+/// token is lent. Abstract rather than a `vstd` `PointsTo<Heap>`: a
+/// heap's ghost fields own the permissions to its own home headers
+/// ([`super::CachePerms`]), so a `PointsTo` to the whole `Heap` would own
+/// those bytes a second time. Its specification comes with the proofs of
+/// the slot's users.
+#[verifier::external_body]
+pub tracked struct HeapPerm {
+    _no_copy: (),
+}
+
+} // verus!
+
+/// The heap `h` names, borrowed for as long as the slot token is: what
+/// [`heap_from_slot`] returns.
+///
+/// # Safety
+/// `h` is the calling thread's heap, which its slot holds.
+#[inline(always)]
+#[allow(clippy::needless_lifetimes)]
+pub(super) unsafe fn slot_heap_ref<'a>(
+    h: *mut Heap,
+    _tls: Tracked<&'a mut TlsSlot>,
+) -> &'a mut Heap {
+    // SAFETY: guaranteed by the caller.
+    unsafe { &mut *h }
 }
 
 /// The calling thread's heap, created on first use. `None` when the thread
@@ -56,7 +88,17 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 // The heap is per thread, reached through `Shared`; see the doc above.
 #[allow(clippy::mut_from_ref)]
 pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
-    let (t, tp) = crate::sys::tls::get_tp();
+    heap_for_thread_in(shared, Tracked::assume_new())
+}
+
+/// [`heap_for_thread`] with the caller's slot token, which the heap is
+/// borrowed from.
+#[inline(always)]
+pub fn heap_for_thread_in<'a>(
+    shared: &'a Shared,
+    _tls: Tracked<&'a mut TlsSlot>,
+) -> Option<&'a mut Heap> {
+    let (t, tp) = crate::sys::tls::get_tp(Tracked::assume_new());
     let t = t as usize;
     if t > TLS_EXITED {
         // Anything above the sentinels is this thread's heap pointer,
@@ -64,16 +106,16 @@ pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
         // sentinels are never signed, so the compare comes first; a signed
         // pointer keeps its low 48 bits and stays above them).
         // SAFETY: `t` is this thread's slot value above the sentinels.
-        return Some(unsafe { heap_from_slot(t, tp, shared.pac()) });
+        return Some(unsafe { heap_from_slot(t, tp, shared.pac(), Tracked::assume_new()) });
     }
-    create_heap_for_thread(shared, t)
+    create_heap_for_thread(shared, t, Tracked::assume_new())
 }
 
 /// The slot value for heap `h` on the calling thread: `h` signed with the
 /// thread pointer when `shared.pac()`, else `h` itself.
-fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
+fn tls_value_for(shared: &Shared, h: *mut Heap, _tls: Tracked<&TlsSlot>) -> *mut c_void {
     if shared.pac() {
-        let (_, tp) = crate::sys::tls::get_tp();
+        let (_, tp) = crate::sys::tls::get_tp(Tracked::assume_new());
         pac::sign(h as usize, tp) as *mut c_void
     } else {
         h as *mut c_void
@@ -82,9 +124,11 @@ fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
 
 #[cold]
 #[inline(never)]
-// As `heap_for_thread`.
-#[allow(clippy::mut_from_ref)]
-fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
+fn create_heap_for_thread<'a>(
+    shared: &'a Shared,
+    slot: usize,
+    _tls: Tracked<&'a mut TlsSlot>,
+) -> Option<&'a mut Heap> {
     if slot != 0 {
         return None;
     }
@@ -92,19 +136,22 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
     if h.is_null() {
         return None;
     }
-    crate::sys::tls::set(TLS_CREATING as *mut c_void);
+    crate::sys::tls::set(TLS_CREATING as *mut c_void, Tracked::assume_new());
     if !shared.key.set(h) {
         // Thread exit could not free the heap, so it goes now and this
         // call is served without one; the next call tries again, as
         // after a failed `Heap::create`.
         // SAFETY: created above and never published.
         unsafe { Heap::destroy(h, shared, Tracked::assume_new()) };
-        crate::sys::tls::set(ptr::null_mut());
+        crate::sys::tls::set(ptr::null_mut(), Tracked::assume_new());
         return None;
     }
-    crate::sys::tls::set(tls_value_for(shared, h));
+    crate::sys::tls::set(
+        tls_value_for(shared, h, Tracked::assume_new()),
+        Tracked::assume_new(),
+    );
     // SAFETY: freshly created and owned by this thread.
-    Some(unsafe { &mut *h })
+    Some(unsafe { slot_heap_ref(h, Tracked::assume_new()) })
 }
 
 /// The calling thread's heap if it already exists, with no attempt to
@@ -123,12 +170,23 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
 /// `shared()`, after init wrote that byte.
 #[inline(always)]
 pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
-    let (t, tp) = tls_heap_slot()?;
+    existing_heap_in(shared, Tracked::assume_new())
+}
+
+/// [`existing_heap`] with the caller's slot token, which the heap is
+/// borrowed from.
+#[inline(always)]
+#[allow(clippy::needless_lifetimes)]
+pub fn existing_heap_in<'a>(
+    shared: *const Shared,
+    _tls: Tracked<&'a mut TlsSlot>,
+) -> Option<&'a mut Heap> {
+    let (t, tp) = tls_heap_slot(Tracked::assume_new())?;
     // SAFETY: a real slot value proves this thread observed `READY`, so
     // `push_flags` was written before.
     let flags = unsafe { fast_flags(shared) };
     // SAFETY: `t` is this thread's slot value above the sentinels.
-    Some(unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0) })
+    Some(unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked::assume_new()) })
 }
 
 /// The calling thread's TLS slot value and thread pointer when the slot
@@ -138,8 +196,8 @@ pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
 /// frame it did not have, so the entry points take [`existing_heap`] and
 /// the `autda`s sit behind their own predicted `tbz`s.)
 #[inline(always)]
-pub fn tls_heap_slot() -> Option<(usize, usize)> {
-    let (t, tp) = crate::sys::tls::get_tp();
+pub fn tls_heap_slot(_tls: Tracked<&TlsSlot>) -> Option<(usize, usize)> {
+    let (t, tp) = crate::sys::tls::get_tp(Tracked::assume_new());
     let t = t as usize;
     if t > TLS_EXITED { Some((t, tp)) } else { None }
 }
@@ -163,13 +221,19 @@ pub unsafe fn fast_flags(shared: *const Shared) -> u8 {
 /// `(t, tp)` from [`tls_heap_slot`] on this thread, and `pac` is the
 /// process's `PUSH_PAC`.
 #[inline(always)]
-pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> &'static mut Heap {
+#[allow(clippy::needless_lifetimes)]
+pub unsafe fn heap_from_slot<'a>(
+    t: usize,
+    tp: usize,
+    pac: bool,
+    _tls: Tracked<&'a mut TlsSlot>,
+) -> &'a mut Heap {
     let h = if pac { pac::auth(t, tp) } else { t };
     // SAFETY: guaranteed by the caller; the hint spares the null test the
     // compiler would otherwise add for the `Option` niche, `t` being above
     // the sentinels and `autda` never producing zero from it.
     unsafe {
         core::hint::assert_unchecked(h != 0);
-        &mut *(h as *mut Heap)
+        slot_heap_ref(h as *mut Heap, Tracked::assume_new())
     }
 }

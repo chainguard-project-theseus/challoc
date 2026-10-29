@@ -49,7 +49,7 @@ Tool: Verus. Status: trusted.
 
 > Create the thread on `stack` (reserving the stack first if there is none yet), after joining `previous`.
 
-Body mints Tracked at line 520; mints Ghost at line 527; mints Tracked at line 528.
+Body mints Tracked at line 489; mints Tracked at line 492; mints Tracked at line 520; mints Ghost at line 527; mints Tracked at line 528; mints Tracked at line 545.
 
 ```rust
 fn create(

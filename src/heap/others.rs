@@ -588,10 +588,10 @@ impl Heap {
             let len = unsafe { self.hdr_ref(cache) }.len;
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
-                return unsafe { self.pop(cache, class, len, shared.pac()) };
+                return unsafe { self.pop(cache, class, len, shared.pac(), Tracked::assume_new()) };
             }
         }
-        self.alloc_slow_in(shared, arena, class)
+        self.alloc_slow_in(shared, arena, class, Tracked::assume_new())
     }
 
     /// Free of a slot whose slab belongs to another arena than the home
@@ -610,12 +610,18 @@ impl Heap {
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
             if unsafe {
-                Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags())
+                Self::push_cache_flags(
+                    Self::node_cache_ptr(node, class),
+                    p,
+                    shared.push_flags(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
             } {
                 return;
             }
         }
-        self.free_slow_in(shared, FOREIGN, class, p)
+        self.free_slow_in(shared, FOREIGN, class, p, Tracked::assume_new())
     }
 
     /// The `others` node for `arena`, created (if `create`) on first use.

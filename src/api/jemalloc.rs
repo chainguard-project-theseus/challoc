@@ -146,11 +146,24 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> *mut u8 {
     let align = f.align();
     let (p, usable, zeroed) = match class_for(size, align) {
         Some(c) => {
-            let (p, z) = mallocx::alloc(shared, c, f.arena, f.tcache);
+            let (p, z, _) = mallocx::alloc(
+                shared,
+                c,
+                f.arena,
+                f.tcache,
+                vstd::prelude::Tracked::assume_new(),
+            );
             (p, CLASSES.table()[c].size(), z)
         }
         None => {
-            let (p, z) = mallocx::alloc_huge(shared, size, align, f.arena, f.tcache);
+            let (p, z, _) = mallocx::alloc_huge(
+                shared,
+                size,
+                align,
+                f.arena,
+                f.tcache,
+                vstd::prelude::Tracked::assume_new(),
+            );
             (p, shared.huge.usable_for(size).unwrap_or(0), z)
         }
     };
@@ -195,7 +208,7 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> *mut u8 {
     // `q` when `MALLOCX_ZERO` asked for it, so the tail past the copy is
     // zero.
     unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
-    mallocx::free(shared, p, f.tcache);
+    mallocx::free(shared, p, f.tcache, vstd::prelude::Tracked::assume_new());
     q
 }
 
@@ -227,7 +240,7 @@ pub fn dallocx(p: *mut u8, flags: c_int) {
     let Some(shared) = super::shared_if_ready() else {
         not_an_allocation("dallocx", p)
     };
-    mallocx::free(shared, p, f.tcache);
+    mallocx::free(shared, p, f.tcache, vstd::prelude::Tracked::assume_new());
 }
 
 /// `sdallocx(p, size, flags)`: `size` must satisfy `nallocx(size, flags)
@@ -281,13 +294,20 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
     let hint = class_for(size, f.align());
     if let Tcache::Explicit(t) = f.tcache {
         if let Some(h) = shared.tcaches.get(t) {
-            if crate::heap::free_sized_fast(shared, h, p, hint, shared.push_flags()) {
+            if crate::heap::free_sized_fast(
+                shared,
+                h,
+                p,
+                hint,
+                shared.push_flags(),
+                vstd::prelude::Tracked::assume_new(),
+            ) {
                 return;
             }
         }
     }
     shared.check_size_hint(p, size, hint, vstd::prelude::Tracked::assume_new());
-    mallocx::free(shared, p, f.tcache);
+    mallocx::free(shared, p, f.tcache, vstd::prelude::Tracked::assume_new());
 }
 
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when
@@ -668,7 +688,13 @@ mod tests {
         assert_eq!((f.arena, f.tcache), (Some(lua), Tcache::Default));
 
         // Default cache, explicit arena: through this thread's heap.
-        let (p, _) = mallocx::alloc(s, c, f.arena, f.tcache);
+        let (p, _, _) = mallocx::alloc(
+            s,
+            c,
+            f.arena,
+            f.tcache,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
         assert_eq!(
@@ -691,7 +717,13 @@ mod tests {
         assert_eq!(cached_in(h), before);
         assert_eq!(cached_foreign(h), before_foreign + 1);
         // realloc within the class keeps the pointer and the arena.
-        let (p, _) = mallocx::alloc(s, c, Some(lua), Tcache::Default);
+        let (p, _, _) = mallocx::alloc(
+            s,
+            c,
+            Some(lua),
+            Tcache::Default,
+            vstd::prelude::Tracked::assume_new(),
+        );
         // (Written again: this is a fresh slot of the Lua arena's cache,
         // the one freed above went to the FOREIGN cache.)
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
@@ -710,30 +742,66 @@ mod tests {
         // Direct path: live count moves at once, no cache involved.
         let f = Flags::decode(mallocx_arena(lua) | MALLOCX_TCACHE_NONE);
         assert_eq!(f.tcache, Tcache::None);
-        let (d, _) = mallocx::alloc(s, c, f.arena, f.tcache);
+        let (d, _, _) = mallocx::alloc(
+            s,
+            c,
+            f.arena,
+            f.tcache,
+            vstd::prelude::Tracked::assume_new(),
+        );
         let (slab, _) = s.table(c).locate(d);
         let desc = s.table(c).desc(slab);
         assert_eq!(desc.arena(), lua);
         let live = desc.live();
         let cached = cached_in(h);
-        mallocx::free(s, d, Tcache::None);
+        mallocx::free(s, d, Tcache::None, vstd::prelude::Tracked::assume_new());
         assert_eq!(desc.live(), live - 1);
         assert_eq!(cached_in(h), cached);
         // A non-existent arena is null, not an abort.
         assert!(
-            mallocx::alloc(s, c, Some(4000), Tcache::Default)
-                .0
-                .is_null()
+            mallocx::alloc(
+                s,
+                c,
+                Some(4000),
+                Tcache::Default,
+                vstd::prelude::Tracked::assume_new()
+            )
+            .0
+            .is_null()
         );
-        assert!(mallocx::alloc(s, c, Some(4000), Tcache::None).0.is_null());
         assert!(
-            mallocx::alloc_huge(s, 1 << 20, 1, Some(4000), Tcache::Default)
-                .0
-                .is_null()
+            mallocx::alloc(
+                s,
+                c,
+                Some(4000),
+                Tcache::None,
+                vstd::prelude::Tracked::assume_new()
+            )
+            .0
+            .is_null()
+        );
+        assert!(
+            mallocx::alloc_huge(
+                s,
+                1 << 20,
+                1,
+                Some(4000),
+                Tcache::Default,
+                vstd::prelude::Tracked::assume_new()
+            )
+            .0
+            .is_null()
         );
 
         // Huge runs record the arena too.
-        let (hp, _) = mallocx::alloc_huge(s, 3 << 20, 1, Some(lua), Tcache::Default);
+        let (hp, _, _) = mallocx::alloc_huge(
+            s,
+            3 << 20,
+            1,
+            Some(lua),
+            Tcache::Default,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!hp.is_null());
         let Err(page) = s.classify_free(hp, vstd::prelude::Tracked::assume_new()) else {
             panic!("not huge")
@@ -758,7 +826,13 @@ mod tests {
             .expect("tcache.create");
         let f = Flags::decode(mallocx_tcache(t) | mallocx_arena(lua));
         assert_eq!(f.tcache, Tcache::Explicit(t));
-        let (e, _) = mallocx::alloc(s, c, f.arena, f.tcache);
+        let (e, _, _) = mallocx::alloc(
+            s,
+            c,
+            f.arena,
+            f.tcache,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(
             s.classify_free(e, vstd::prelude::Tracked::assume_new()),
             Ok((c, lua))
@@ -768,7 +842,12 @@ mod tests {
         let before_foreign = th.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
         // The free through the explicit cache (homed on arena 0) lands on
         // its FOREIGN cache, as any plain free of another arena's slot.
-        mallocx::free(s, e, Tcache::Explicit(t));
+        mallocx::free(
+            s,
+            e,
+            Tcache::Explicit(t),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(th.cache_in(lua, c).unwrap().len(), before);
         assert_eq!(
             th.cache_in(heap::FOREIGN, c).unwrap().len(),
@@ -791,7 +870,13 @@ mod tests {
             let mut v = Vec::new();
             for i in 0..64 {
                 let a = if i % 2 == 0 { Some(lua) } else { None };
-                let (p, _) = mallocx::alloc(s, c, a, Tcache::Default);
+                let (p, _, _) = mallocx::alloc(
+                    s,
+                    c,
+                    a,
+                    Tcache::Default,
+                    vstd::prelude::Tracked::assume_new(),
+                );
                 assert!(!p.is_null());
                 unsafe { *p = i as u8 };
                 v.push(p as usize);

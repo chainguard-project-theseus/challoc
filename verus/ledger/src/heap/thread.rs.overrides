@@ -1,0 +1,2 @@
+# An abstract linear token: no spec states anything of it yet.
+HeapPerm	allocator invariant	none (assumption)
