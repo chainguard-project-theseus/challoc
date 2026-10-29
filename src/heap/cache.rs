@@ -170,25 +170,6 @@ impl CacheHeader {
         self.slots
     }
 
-    /// Sign every entry of `entries` (plain pointers) in place with the
-    /// stack base `slots` as the modifier ([`PUSH_PAC`]).
-    #[inline]
-    pub(super) fn sign_all(slots: *mut *mut u8, entries: &mut [*mut u8]) {
-        let m = slots as usize;
-        for e in entries {
-            *e = addr_to_ptr(pac::sign(*e as usize, m));
-        }
-    }
-
-    /// Authenticate every entry of `entries` (signed) in place.
-    #[inline]
-    pub(super) fn auth_all(slots: *mut *mut u8, entries: &mut [*mut u8]) {
-        let m = slots as usize;
-        for e in entries {
-            *e = addr_to_ptr(pac::auth(*e as usize, m));
-        }
-    }
-
     /// The plain pointer a stored entry names: authenticated when `pac`
     /// (`Shared::pac()`), the entry itself otherwise. For tests reading
     /// [`CacheHeader::cached`] or [`CacheHeader::run`], which return the
@@ -216,6 +197,65 @@ impl CacheHeader {
         self.set_mode(MODE_PROBE);
     }
 }
+
+verus! {
+
+impl CacheHeader {
+    /// Sign every entry of `entries` (plain pointers) in place with the
+    /// stack base `slots` as the modifier ([`PUSH_PAC`]).
+    #[inline]
+    pub(super) fn sign_all(slots: *mut *mut u8, entries: &mut [*mut u8])
+        requires
+            pac::pac_available(),
+        ensures
+            final(entries)@.len() == old(entries)@.len(),
+            forall|i: int| 0 <= i < old(entries)@.len() ==>
+                (#[trigger] final(entries)@[i])@.addr == pac::spec_sign(old(entries)@[i]@.addr, slots@.addr),
+    {
+        let m = slots as usize;
+        let ghost e0 = entries@;
+        for e in it: entries
+            invariant
+                m == slots@.addr,
+                pac::pac_available(),
+                it.seq().len() == e0.len(),
+                forall|i: int| 0 <= i < it.seq().len() ==> *(#[trigger] it.seq()[i]) == e0[i],
+                forall|i: int| 0 <= i < it.index() ==> (*final(#[trigger] it.seq()[i]))@.addr == pac::spec_sign(e0[i]@.addr, m),
+        {
+            *e = addr_to_ptr(pac::sign(*e as usize, m));
+        }
+    }
+
+    /// Authenticate every entry of `entries` (signed) in place. A corrupt
+    /// entry kills the process (`pac::auth`), so the caller may abort at an
+    /// integrity check.
+    #[inline]
+    pub(super) fn auth_all(slots: *mut *mut u8, entries: &mut [*mut u8])
+        requires
+            pac::pac_available(),
+            crate::sys::may_abort_corrupt(),
+        ensures
+            final(entries)@.len() == old(entries)@.len(),
+            forall|i: int| 0 <= i < old(entries)@.len() ==>
+                (#[trigger] final(entries)@[i])@.addr == pac::spec_auth(old(entries)@[i]@.addr, slots@.addr),
+    {
+        let m = slots as usize;
+        let ghost e0 = entries@;
+        for e in it: entries
+            invariant
+                m == slots@.addr,
+                pac::pac_available(),
+                crate::sys::may_abort_corrupt(),
+                it.seq().len() == e0.len(),
+                forall|i: int| 0 <= i < it.seq().len() ==> *(#[trigger] it.seq()[i]) == e0[i],
+                forall|i: int| 0 <= i < it.index() ==> (*final(#[trigger] it.seq()[i]))@.addr == pac::spec_auth(e0[i]@.addr, m),
+        {
+            *e = addr_to_ptr(pac::auth(*e as usize, m));
+        }
+    }
+}
+
+} // verus!
 
 impl Heap {
     /// The home header for `class`: `heap + 128 + 64 * class`, no load.
