@@ -18,7 +18,7 @@ file.
 
 ## `axiom_table_lock_inv`
 
-src/class/table.rs:267. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:268. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit lock's value keeps [`TableInner::inv`] while the lock is free.
@@ -32,7 +32,7 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 
 ## `axiom_table_lock_frame`
 
-src/class/table.rs:279. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:280. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit lock's ghost geometry, marker authorities, descriptor array and the location of the watermark's ghost variable never change.
@@ -48,7 +48,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 
 ## `store_owner`
 
-src/class/table.rs:952. Kind: external_body. Category: atomics primitive.
+src/class/table.rs:976. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `(*w).store(arena, Relaxed)` of the owner word of hand-out group `group` of `t`, through its permission `perm`: the permission holds `arena` ([`u16_value`], as `vspec::atom::load_u16_at` reads it back), and from here on [`slab_owner`] of every slab of the group is `arena`.
@@ -81,7 +81,7 @@ unsafe fn store_owner(
 
 ## `word_index`
 
-src/class/table.rs:1004. Kind: external_body. Category: inline asm.
+src/class/table.rs:1028. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > [`word_index`] on aarch64: `index` through the empty `asm!`.
@@ -95,7 +95,7 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
 
 ## `axiom_zero_desc`
 
-src/class/table.rs:2234. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2273. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the 16 bytes at `addr`, which read as zero (`z`, a piece of the descriptor array `Meta::reserve_table` returned), are a `SlabDesc`, initialised: plain atomics, valid for every bit pattern (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw permissions do not track byte values).
@@ -117,7 +117,7 @@ axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int) -> (tracked r: (PointsTo
 
 ## `axiom_zero_owner`
 
-src/class/table.rs:2250. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:2289. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of the owner array `Meta::reserve_table` returned), are an `AtomicU16`, initialised (valid for every bit pattern), as [`axiom_zero_desc`].
@@ -137,7 +137,7 @@ axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo
 
 ## `axiom_slot_loc`
 
-src/class/table.rs:2274. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:2313. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: `SlabTable::new` runs once per class in a process, so the authority it makes is the class's ([`slot_loc`]), and so is its marker authority (`mloc`, [`mark_loc`]).
@@ -154,7 +154,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 
 ## `axiom_fresh_words`
 
-src/class/table.rs:2297. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:2336. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the permissions of the `n` words of the class bitmap at `base`, each holding zero: `z`, the bitmap's reservation from `Meta::reserve_table`, reads as zero over them.

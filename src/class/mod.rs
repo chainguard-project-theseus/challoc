@@ -122,7 +122,11 @@ use abort::{
 pub use sets::SET_GROUPS;
 pub(crate) use sets::Set;
 pub use sets::SetTable;
+pub use table::CommittedInv;
 pub use table::SlabTable;
+#[cfg(verus_keep_ghost)]
+pub(crate) use table::lemma_tz_shl;
+pub(crate) use table::load_mirror;
 pub(crate) use table::word_index;
 #[cfg(verus_keep_ghost)]
 use table::{
@@ -130,7 +134,7 @@ use table::{
     slab_owner, words_of,
 };
 #[cfg(verus_keep_ghost)]
-pub use table::{slot_loc, slot_owner};
+pub use table::{committed_ns, owner_ns, slot_loc, slot_owner};
 use verify::{fresh_with_live, release_into_fresh};
 #[cfg(verus_keep_ghost)]
 use vstd::set::Set as VSet;

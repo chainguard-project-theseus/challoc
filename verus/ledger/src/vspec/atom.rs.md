@@ -16,7 +16,7 @@ file.
 
 ## `store_usize`
 
-src/vspec/atom.rs:108. Kind: external_body. Category: atomics primitive.
+src/vspec/atom.rs:109. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
@@ -36,7 +36,7 @@ pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm):
 
 ## `load_usize`
 
-src/vspec/atom.rs:133. Kind: external_body. Category: atomics primitive.
+src/vspec/atom.rs:134. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
@@ -55,7 +55,7 @@ pub fn load_usize(a: &AtomicUsize, ordering: Ordering, Tracked(perm): Tracked<&U
 
 ## `usize_ptr`
 
-src/vspec/atom.rs:158. Kind: external_body. Category: raw pointer (internal).
+src/vspec/atom.rs:159. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > `a as *const AtomicUsize`: a pointer to the atomic, which names it ([`usize_id_at`]).
@@ -71,7 +71,7 @@ pub(crate) fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
 
 ## `store_usize_at`
 
-src/vspec/atom.rs:177. Kind: external_body. Category: atomics primitive.
+src/vspec/atom.rs:178. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `(*p).store(v, ordering)` through a pointer to an atomic, with the permission of the atomic it names (it panics for an `Acquire` or `AcqRel` ordering).
@@ -91,12 +91,12 @@ pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering
 
 ## `load_usize_seen`
 
-src/vspec/atom.rs:219. Kind: external_body. Category: atomics primitive.
+src/vspec/atom.rs:220. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `a.load(ordering)` inside `inv`, an invariant that holds `a`'s permission with a persistent set and a ghost variable's half ([`SeenVal`]): the permission's value, so a value the predicate admits, and a copy of the set the invariant held with it, frozen (the ghost variable stays in the invariant).
 
-Body mints Tracked at line 233.
+Body mints Tracked at line 234.
 
 ```rust
 pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(
@@ -116,7 +116,7 @@ pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(
 
 ## `load_u16_at`
 
-src/vspec/atom.rs:259. Kind: external_body. Category: atomics primitive.
+src/vspec/atom.rs:260. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `(*p).load(ordering)` through `perm`, the permission to the atomic at `p`: the value the permission holds ([`u16_value`]).
