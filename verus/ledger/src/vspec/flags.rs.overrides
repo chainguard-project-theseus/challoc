@@ -1,0 +1,6 @@
+# The free fast path's route byte: each wrapper is one core atomic
+# operation (or AtomicU8::new), and `fixed` is kept because fetch_or of
+# bits within ROUTE is the only write after `new`.
+new	atomics primitive	loom/GenMC
+load	atomics primitive	loom/GenMC
+fetch_or	atomics primitive	loom/GenMC
