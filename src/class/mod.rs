@@ -5240,6 +5240,104 @@ impl ClassState {
     }
 }
 
+
+/// `f` is injective over the entries of `y`. Opaque: a pairwise fact,
+/// quadratic in the `f(y[_])` terms it meets wherever it is known;
+/// [`lemma_perm_distinct`] states it, and each reader reveals it where it
+/// reads it.
+#[verifier::opaque]
+pub open spec fn injective_on(y: Seq<*mut u8>, f: spec_fn(*mut u8) -> int) -> bool {
+    forall|i: int, j: int| 0 <= i < j < y.len() ==> f(y[i]) != f(y[j])
+}
+
+/// `y`, a permutation of `x` (the same multiset), is injective under `f`
+/// where `x` was, and each of its entries is one of `x`'s.
+#[verifier::spinoff_prover]
+pub proof fn lemma_perm_distinct(x: Seq<*mut u8>, y: Seq<*mut u8>, f: spec_fn(*mut u8) -> int)
+    requires
+        x.to_multiset() == y.to_multiset(),
+        injective_on(x, f),
+    ensures
+        y.len() == x.len(),
+        injective_on(y, f),
+        forall|i: int| 0 <= i < y.len() ==> x.contains(#[trigger] y[i]),
+{
+    broadcast use {vstd::seq_lib::group_to_multiset_ensures, vstd::multiset::group_multiset_axioms};
+
+    reveal(injective_on);
+    assert(x.len() == x.to_multiset().len());
+    assert(y.len() == y.to_multiset().len());
+    assert forall|i: int| 0 <= i < y.len() implies x.contains(#[trigger] y[i]) by {
+        assert(y.contains(y[i]));
+        assert(y.to_multiset().count(y[i]) > 0);
+    }
+    assert forall|i: int, j: int| 0 <= i < j < y.len() implies f(y[i]) != f(y[j]) by {
+        if f(y[i]) == f(y[j]) {
+            assert(x.contains(y[i]));
+            assert(x.contains(y[j]));
+            let k = choose|k: int| 0 <= k < x.len() && x[k] == y[i];
+            if y[i] == y[j] {
+                let r = y.remove(i);
+                assert(r[j - 1] == y[j]);
+                assert(r.contains(y[j]));
+                assert(r.to_multiset().count(y[i]) > 0);
+                assert(r.to_multiset() == y.to_multiset().remove(y[i]));
+                let rx = x.remove(k);
+                assert(rx.to_multiset() == x.to_multiset().remove(x[k]));
+                assert(rx.to_multiset().count(y[i]) > 0);
+                assert(rx.contains(y[i]));
+                let l = choose|l: int| 0 <= l < rx.len() && rx[l] == y[i];
+                let l2 = if l < k { l } else { l + 1 };
+                assert(x[l2] == rx[l]);
+                if k < l2 {
+                    assert(f(x[k]) != f(x[l2]));
+                } else {
+                    assert(f(x[l2]) != f(x[k]));
+                }
+            } else {
+                let l = choose|l: int| 0 <= l < x.len() && x[l] == y[j];
+                if k < l {
+                    assert(f(x[k]) != f(x[l]));
+                } else {
+                    assert(f(x[l]) != f(x[k]));
+                }
+            }
+        }
+    }
+}
+
+/// [`lemma_perm_distinct`] for the addresses: `aset` of the addresses of
+/// `y` is that of `x`.
+#[verifier::spinoff_prover]
+pub proof fn lemma_perm_addrs(x: Seq<*mut u8>, y: Seq<*mut u8>)
+    requires
+        x.to_multiset() == y.to_multiset(),
+        distinct(ptr_addrs(x), 0, x.len() as int),
+    ensures
+        y.len() == x.len(),
+        distinct(ptr_addrs(y), 0, y.len() as int),
+        aset(ptr_addrs(y), 0, y.len() as int) <= aset(ptr_addrs(x), 0, x.len() as int),
+{
+    broadcast use lemma_aset;
+    let f = |p: *mut u8| p@.addr as int;
+    assert(injective_on(x, f)) by {
+        reveal(injective_on);
+        assert forall|i: int, j: int| 0 <= i < j < x.len() implies f(x[i]) != f(x[j]) by {
+            assert(ptr_addrs(x)[i] != ptr_addrs(x)[j]);
+        }
+    }
+    lemma_perm_distinct(x, y, f);
+    reveal(injective_on);
+    assert forall|i: int, j: int| 0 <= i < j < y.len() implies ptr_addrs(y)[i] != ptr_addrs(y)[j] by {
+        assert(f(y[i]) != f(y[j]));
+    }
+    assert forall|v: int| aset(ptr_addrs(y), 0, y.len() as int).contains(v) implies aset(ptr_addrs(x), 0, x.len() as int).contains(v) by {
+        let i = choose|i: int| 0 <= i < y.len() && ptr_addrs(y)[i] == v;
+        assert(x.contains(y[i]));
+        let k = choose|k: int| 0 <= k < x.len() && x[k] == y[i];
+        assert(ptr_addrs(x)[k] == v);
+    }
+}
 } // verus!
 
 impl ClassState {

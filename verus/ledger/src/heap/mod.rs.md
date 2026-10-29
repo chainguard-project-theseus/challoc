@@ -7,11 +7,27 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `assert_..._empty` | external_body | panic/abort | none (assumption) | trusted |
 | `Heap::a...latile` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
+
+## `assert_refill_empty`
+
+src/heap/mod.rs:4085. Kind: external_body. Category: panic/abort.
+Tool: none (assumption). Status: trusted.
+
+> `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns.
+
+```rust
+fn assert_refill_empty(len: &u32)
+    requires
+        crate::sys::may_abort() || *len == 0,
+    ensures
+        *len == 0,
+```
 
 ## `Heap::arena_volatile`
 
-src/heap/mod.rs:4827. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:4935. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.

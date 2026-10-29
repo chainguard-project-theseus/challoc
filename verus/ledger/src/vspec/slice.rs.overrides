@@ -1,2 +1,3 @@
 array_get_unchecked	core library	Kani
 sort_ptrs	core library	Kani
+sort_ptrs_by_key	core library	Kani
