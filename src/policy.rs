@@ -72,7 +72,7 @@ use vstd::arithmetic::div_mod::{
     lemma_multiply_divide_lt,
 };
 #[cfg(verus_keep_ghost)]
-use vstd::arithmetic::mul::lemma_mul_inequality;
+use vstd::arithmetic::mul::{lemma_mul_inequality, lemma_mul_is_commutative};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 
@@ -441,7 +441,11 @@ pub proof fn lemma_decay_monotone(base: u64, lo: Band, hi: Band)
             lemma_div_is_ordered(d * f, d * 0x1_0000, 0x1_0000);
             lemma_fundamental_div_mod_converse_div(d * 0x1_0000, 0x1_0000, d, 0);
             if let Band::Scaled(g) = hi {
-                lemma_mul_inequality(f as int, g as int, d);
+                assert(f <= g);
+                lemma_mul_inequality(f as int, g as int, d as int);
+                lemma_mul_is_commutative(f as int, d as int);
+                lemma_mul_is_commutative(g as int, d as int);
+                assert(d * f <= d * g);
                 lemma_div_is_ordered(d * f, d * g, 0x1_0000);
             }
         }
@@ -983,11 +987,20 @@ pub fn empty_bytes(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> u64 {
     fig_add64(total, shared.huge.empty_bytes(Tracked::assume_new()) as u64)
 }
 
+verus! {
+
 /// Evaluate the table against the cgroup record after a sample. Without a
 /// limit this is a few loads; with one it sums the `Empty` bytes and
 /// publishes the outcome on `shared.policy`, waking a background thread
 /// when the band changed or a full purge is owed.
-pub fn evaluate(shared: &Shared, _ord: Tracked<&mut LockOrder>) {
+#[verifier::external_body]
+pub fn evaluate(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(crate::lock::rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     let Some(cg) = shared.cgroup() else {
         return;
     };
@@ -1013,6 +1026,8 @@ pub fn evaluate(shared: &Shared, _ord: Tracked<&mut LockOrder>) {
         crate::purge::note_decay_changed();
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

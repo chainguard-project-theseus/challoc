@@ -3786,6 +3786,19 @@ impl Huge {
         &&& self.spec_base_aligned()
     }
 
+    /// [`Huge::is_process`] from its parts.
+    pub proof fn lemma_is_process(&self)
+        requires
+            crate::heap::regions_ok(),
+            self.spec_base() == crate::layout::process_regions().huge_base,
+            self.spec_page() == (1usize << crate::layout::process_regions().lg_page) as int,
+            self.spec_npages() == (crate::layout::process_regions().huge_len >> crate::layout::process_regions().lg_page) as int,
+            self.spec_base_aligned(),
+        ensures
+            self.is_process(),
+    {
+    }
+
     /// Pages `start..start + pages` of the process's huge allocator, at
     /// least one, make a range a purge may discard
     /// ([`well_formed`](crate::purge::well_formed), whole-allocator theorem

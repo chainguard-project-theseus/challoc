@@ -299,7 +299,9 @@ pub open spec fn rank_spare() -> int {
 /// root in place. Every function that may take a lock takes its caller's
 /// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
 /// (the exceptions are `meta::Meta`'s methods but `Meta::stats`,
-/// [`axiom_meta_order`], and `huge::Huge::usable_size`, [`axiom_entry`]). The fields are private to
+/// [`axiom_meta_order`], and `huge::Huge::usable_size`,
+/// `heap::shared::Shared::check_size_hint` and `heap::shared::Shared::init`,
+/// [`axiom_entry`]). The fields are private to
 /// this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
@@ -345,13 +347,22 @@ impl<'a> LockOrder<'a> {
 }
 
 /// Premise (an entry point): the calling thread holds no allocator lock.
-/// Stands in for the token an entry point would hold for its whole call;
-/// its use is `Huge::usable_size`, whose callers (`api::libc`'s
-/// `usable_size`, its realloc and `free_usable` paths, and
-/// `Shared::zero_huge`) hold no allocator lock. No allocator entry point is
-/// re-entered while a lock is held: allocator code calls nothing that may
-/// allocate with a lock held, and a signal handler that allocates is
-/// outside the C contract (the fork handlers block signals).
+/// Stands in for the token an entry point would hold for its whole call.
+/// Its uses:
+/// - `Huge::usable_size`, whose callers (`api::libc`'s `usable_size`, its
+///   realloc and `free_usable` paths, and `Shared::zero_huge`) hold no
+///   allocator lock;
+/// - `Shared::check_size_hint`'s `Huge::lookup` on the sized-free slow
+///   path, whose callers (`api::libc`'s `free_sized_slow` and
+///   `api::jemalloc`'s `sdallocx_routed`) are reached from the C entry
+///   points through code that takes no lock;
+/// - `Shared::init`, which runs before the `Shared` is published, so no
+///   allocator lock exists yet.
+///
+/// No allocator entry point is re-entered while a lock is held: allocator
+/// code calls nothing that may allocate with a lock held, and a signal
+/// handler that allocates is outside the C contract (the fork handlers
+/// block signals).
 pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.top() == 0,
