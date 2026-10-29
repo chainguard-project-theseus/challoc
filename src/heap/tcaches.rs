@@ -35,6 +35,15 @@ pub struct Tcaches {
     table: [AtomicPtr<u8>; MAX_TCACHES],
 }
 
+impl Tcaches {
+    /// The table lock is the explicit-cache table lock of the lock order
+    /// (`init` creates it so).
+    #[verifier::type_invariant]
+    spec fn rank_ok(self) -> bool {
+        self.lock.rank() == rank_tcaches()
+    }
+}
+
 /// Assumption (`lock.rs`): the explicit-cache table lock guards no value
 /// (`()`), so its invariant is trivially true. Nothing writes the value.
 pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
@@ -79,6 +88,26 @@ impl Tcaches {
             },
         );
     }
+
+    /// The table lock, for the fork handlers. It is the outermost
+    /// allocator lock: `create` and `destroy` hold it across
+    /// `Heap::create_detached` / `Heap::destroy`, which take the arena
+    /// creation, class and metadata locks.
+    pub fn raw_lock(&self) -> (r: &crate::lock::RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+            r.rank() == rank_tcaches(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        self.lock.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> crate::lock::RawLock {
+        self.lock.spec_raw()
+    }
 }
 
 } // verus!
@@ -97,14 +126,6 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> &'a mut Heap {
 }
 
 impl Tcaches {
-    /// The table lock, for the fork handlers. It is the outermost
-    /// allocator lock: `create` and `destroy` hold it across
-    /// `Heap::create_detached` / `Heap::destroy`, which take the arena
-    /// creation, class and metadata locks.
-    pub fn raw_lock(&self) -> &crate::lock::RawLock {
-        self.lock.raw()
-    }
-
     /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
     /// when the table or the metadata region is full.
     pub fn create(

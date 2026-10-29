@@ -1,6 +1,5 @@
 axiom_published	allocator invariant	none (assumption)
-# Ghost permissions to the two init-once atomics: every access outside the
-# tests is one of their wrappers (the fork child's LINE_STATE reset among them).
+# Ghost permissions to the two init-once atomics; their wrappers are the only accesses.
 LinePerm	atomics primitive	loom/GenMC
 StatePerm	atomics primitive	loom/GenMC
 # The init-once protocol: what STATE's and the statics' invariants hold.
@@ -9,3 +8,10 @@ axiom_state	allocator invariant	none (assumption)
 axiom_statics	allocator invariant	none (assumption)
 # Passes function pointers, which Verus does not support.
 atfork_handlers	function pointer	none (assumption)
+# The fork handler handoff: glibc runs the parent and child handlers on the
+# thread whose prepare handler returned holding the locks and the mask.
+axiom_fork_resumed_state	platform/kernel fact	none (assumption)
+axiom_fork_resumed_sig	platform/kernel fact	none (assumption)
+axiom_fork_resumed	platform/kernel fact	none (assumption)
+# The fork child's orphaned feature line: only the forking thread runs there.
+axiom_line_orphaned	allocator invariant	none (assumption)

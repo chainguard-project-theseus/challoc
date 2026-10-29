@@ -783,6 +783,11 @@ proof fn lemma_table_alloc(tracked raw: &ZeroRaw, base: int, len: int)
 impl Set {
     /// A set over `0..nslabs` on its own table, which holds its claim to
     /// its uncommitted pages ([`Lazy::claimed`]).
+    ///
+    /// The proof's solver cost moves with unrelated items elsewhere in the
+    /// crate; its own solver instance (`spinoff_prover`) keeps them out of
+    /// its context.
+    #[verifier::spinoff_prover]
     pub(crate) fn new(meta: &Meta, page: usize, nslabs: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Set>)
         requires
             crate::sys::may_syscall(),
@@ -1240,8 +1245,17 @@ impl SetTable {
 
     /// The commit lock, for fork handlers.
     #[inline]
-    pub fn raw_lock(&self) -> &RawLock {
+    pub fn raw_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+            r.rank() == self.rank(),
+    {
         self.tables.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> RawLock {
+        self.tables.spec_raw()
     }
 }
 

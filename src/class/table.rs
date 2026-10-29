@@ -2523,8 +2523,20 @@ impl SlabTable {
 
     /// The commit lock, for fork handlers.
     #[inline]
-    pub fn raw_lock(&self) -> &RawLock {
+    pub fn raw_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_raw_lock(),
+            r.rank() == rank_table(self.spec_class() as int),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         self.inner.raw()
+    }
+
+    /// The lock [`Self::raw_lock`] returns.
+    pub closed spec fn spec_raw_lock(&self) -> RawLock {
+        self.inner.0.spec_raw()
     }
 
     /// Whether `slab` is reserved as a guard slab. Guards are counted in

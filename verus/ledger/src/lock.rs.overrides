@@ -21,3 +21,5 @@ axiom_below_class	allocator invariant	none (assumption)
 # Lock-order premise inside `Huge::decay_with`'s walk closure, which
 # cannot carry the caller's token.
 axiom_below_huge	allocator invariant	none (assumption)
+# The fork prepare handler holds no lock at entry and keeps its token throughout.
+axiom_fork_entry	allocator invariant	none (assumption)

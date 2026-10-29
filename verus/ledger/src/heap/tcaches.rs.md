@@ -12,7 +12,7 @@ file.
 
 ## `axiom_tcaches_lock_inv`
 
-src/heap/tcaches.rs:40. Kind: axiom. Category: allocator invariant.
+src/heap/tcaches.rs:49. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the explicit-cache table lock guards no value (`()`), so its invariant is trivially true.
@@ -26,7 +26,7 @@ pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
 
 ## `EMPTY_TABLE`
 
-src/heap/tcaches.rs:50. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:59. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The empty table [`Tcaches::init`] writes, every entry null.
