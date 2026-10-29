@@ -4,7 +4,10 @@
 
 use core::ptr;
 use vstd::map::Map;
-use vstd::prelude::{Ghost, Tracked, int, verus};
+use vstd::prelude::verus;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked, int};
 use vstd::raw_ptr::ptr_mut_ref;
 use vstd::resource::set::GhostSingleton;
 
@@ -700,15 +703,24 @@ pub(super) fn cached_twice(p: *mut u8) -> ! {
     ))
 }
 
+verus! {
+
 /// `CLASSES[class].size()` without the bounds check: every `class` on the
 /// fast paths came from `class_of` or a slab descriptor, so it is below
 /// `NCLASSES`.
 #[inline(always)]
-pub(super) fn class_size(class: usize) -> usize {
+pub(super) fn class_size(class: usize) -> (r: usize)
+    requires
+        class < NCLASSES,
+    ensures
+        r == crate::layout::class_table()[class as int].size,
+{
     debug_assert!(class < NCLASSES);
-    // SAFETY: as above.
-    unsafe { CLASSES.get_unchecked(class) }.size()
+    // SAFETY: `class < NCLASSES`, the precondition.
+    unsafe { crate::vspec::slice::array_get_unchecked(CLASSES.table(), class) }.size()
 }
+
+} // verus!
 
 /// The scheduled pop's check, in debug builds: `allocs` is a multiple of
 /// the compaction period.
