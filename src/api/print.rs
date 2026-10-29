@@ -378,7 +378,8 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // 10 ms window allows), or why nothing is tracked.
     let cgroup = shared.cgroup_now(vstd::prelude::Tracked::assume_new());
     cgroup.sample(crate::sys::now_coarse_ns());
-    writeln!(out, "{}", cgroup)?;
+    // The `Cgroup` itself, not the reference to it.
+    writeln!(out, "{}", *cgroup)?;
     policy_line(out, shared)?;
     advice_line(out)?;
     thp_line(out)
