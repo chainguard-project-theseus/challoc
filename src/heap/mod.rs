@@ -105,7 +105,7 @@ use vstd::map::Map;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
-use vstd::raw_ptr::PointsTo;
+use vstd::raw_ptr::{PointsTo, ptr_mut_ref};
 use vstd::resource::set::GhostSingleton;
 
 verus! {
@@ -4222,8 +4222,12 @@ impl Heap {
     /// # Safety
     /// `a` and `b` are distinct headers this heap owns.
     unsafe fn swap_hdrs(&mut self, a: *mut CacheHeader, b: *mut CacheHeader) {
-        // SAFETY: guaranteed by the caller.
-        unsafe { ptr::swap(a, b) };
+        // The caller gives two distinct owned headers, so the two
+        // references do not alias.
+        core::mem::swap(
+            ptr_mut_ref(a, Tracked::assume_new()),
+            ptr_mut_ref(b, Tracked::assume_new()),
+        );
     }
 
     /// `&*cache` for an owned header (a `(*cache).field` load).
