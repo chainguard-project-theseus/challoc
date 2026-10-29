@@ -60,13 +60,15 @@ These hold on every supported host with the default configuration:
 
 - **Invalid free aborts.** A plain `free` of a pointer challoc didn't
   return aborts at the call.
-- **Stale double free aborts.** A second `free` of a slot that has
-  already left the thread cache aborts at the call.
+- **Stale double free aborts.** A second `free` of a slot whose slot
+  bit is clear (released to its slab and not handed out again) aborts
+  at the call.
 - **Mis-sized free aborts.** A sized free whose size names another
   class (for a huge run, another page count) aborts at the call.
 - **Foreign pointers abort** in `malloc_usable_size`, `realloc` and
   `sallocx`, where jemalloc's behaviour is undefined. So does a freed
-  pointer whose slot has already left the thread cache.
+  pointer whose slot bit is clear (released to its slab and not handed
+  out again).
 - **Abort, never continue.** On any inconsistency challoc writes a
   `challoc:` message to stderr and calls `abort()`. It never tries to
   repair the heap.
@@ -107,11 +109,12 @@ These hold on every supported host with the default configuration:
   `malloc` return a chosen address) are off by default. Each costs more
   than the budget for default-on hardening. `docs/tuning.md` lists the
   prices.
-- **Memory safety of challoc itself.** challoc is `no_std` Rust with
-  `unsafe` confined to the syscall layer, the thread-local accessor and
-  the slab pointer arithmetic. Part of it is formally verified with
-  Verus (`verus/README.md` has the current coverage). That is a
-  reduction in risk, not a proof of the whole allocator.
+- **Memory safety of challoc itself.** challoc is `no_std` Rust. Part
+  of it is formally verified with Verus: the `verus` check holds `main`
+  to the verified share of functions and lines in `verus/FLOOR`, and
+  `verus/ledger/` lists every item Verus takes on trust
+  (`verus/README.md` has the current coverage). That is a reduction in
+  risk, not a proof of the whole allocator.
 
 ## Out of scope
 
@@ -119,6 +122,12 @@ These hold on every supported host with the default configuration:
   challoc has no quarantine and no canaries. A stale pointer reads and
   writes whatever block now occupies the slot. Tagged pointers (MTE, or
   a software tag) are designed but not implemented (#50).
+- **A free of a live slot the caller doesn't own.** Once a freed slot
+  is released and handed out again, a stale `free` of the old pointer,
+  or a forged pointer to the start of another live slot, looks exactly
+  like a correct free: the slot bit is set, so it doesn't abort, and
+  the next owner's block is freed under it. Tagged pointers (#50) are
+  what would catch this.
 - **Overflows within a size class.** An overflow into the next block
   of the same class isn't detected until it hits a guard or an
   unmapped page.
