@@ -975,10 +975,16 @@ pub(super) fn now_ns() -> u64 {
     crate::sys::now_coarse_ns()
 }
 
+verus! {
+
 /// Eight random bytes from `getrandom(2)` for `slot_randomize`; on a
 /// kernel that refuses (not seen on any supported one) the clock, so
-/// the heap is still seeded with something that varies.
-pub(super) fn seed() -> u64 {
+/// the heap is still seeded with something that varies. Claims nothing
+/// about the value.
+pub(super) fn seed() -> u64
+    requires
+        crate::sys::may_syscall(),
+{
     let mut b = [0u8; 8];
     match crate::sys::getrandom_exact(&mut b) {
         // `u64::from_ne_bytes` on the little-endian targets (x86_64,
@@ -996,6 +1002,8 @@ pub(super) fn seed() -> u64 {
         Err(_) => crate::sys::now_coarse_ns(),
     }
 }
+
+} // verus!
 
 verus! {
 
@@ -3520,12 +3528,6 @@ impl Shared {
 } // verus!
 
 impl Shared {
-    /// Whether cache and heap pointers are signed ([`PUSH_PAC`]).
-    #[inline(always)]
-    pub fn pac(&self) -> bool {
-        self.push_flags & PUSH_PAC != 0
-    }
-
     /// Whether the thread-exit key exists (heaps of exiting threads are
     /// reclaimed). False only if `pthread_key_create` failed at init.
     #[cfg(test)]
@@ -3602,6 +3604,29 @@ impl Shared {
         self.set_slot(p).map(|(class, _)| class)
     }
 }
+
+verus! {
+
+impl Shared {
+    /// Whether cache and heap pointers are signed ([`PUSH_PAC`]).
+    ///
+    /// Temporary seam: `Shared::init` sets [`PUSH_PAC`] exactly when the
+    /// process signs its pointers ([`pac_mode`](super::pac_mode)), only
+    /// once `sys::pac::available` said yes, and nothing changes the flags
+    /// afterwards; [`Shared::built`] does not state the flags yet, so the
+    /// two ensures are trusted until it does.
+    #[verifier::external_body]
+    #[inline(always)]
+    pub fn pac(&self) -> (r: bool)
+        ensures
+            self.wf() ==> r == super::pac_mode(),
+            self.wf() && r ==> crate::sys::pac::pac_available(),
+    {
+        self.push_flags & PUSH_PAC != 0
+    }
+}
+
+} // verus!
 
 verus! {
 
