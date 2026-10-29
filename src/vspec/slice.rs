@@ -187,3 +187,128 @@ pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into
 ;
 
 } // verus!
+
+verus! {
+
+/// `q` is one of the `ptr_add` keys `start..start + n` from `base`.
+pub open spec fn elem_key<T>(base: *mut T, start: int, n: int, q: *mut T) -> bool {
+    exists|i: int| start <= i < start + n && q == #[trigger] crate::vspec::ptr::ptr_add(base, i as usize)
+}
+
+/// `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements
+/// `start..start + n` of the `T`s at `base`, whose permissions `elems`
+/// holds keyed by their pointers, element `i`'s at `base.add(i)`, and no
+/// other permission: the slice of those elements, for as long as `elems`
+/// stays borrowed. Each permission must be owned, not necessarily
+/// initialised; the slice starts out holding the initialised elements'
+/// values, and when the borrow ends `elems` holds each element's
+/// permission again, with its pointer, initialised to the slice's final
+/// value there. Trusted: such permissions give what `from_raw_parts_mut` asks
+/// for (the elements valid for reads and writes and aligned, and accessed
+/// through the slice alone while it lives, which the borrow of `elems`
+/// keeps), and a write through a slice leaves the element initialised.
+/// Premises, not in the `requires` (the keys are `ptr_add`s, which say
+/// nothing of addresses on their own): the elements are consecutive in
+/// one allocation of at most `isize::MAX` bytes, so `base.add(start)` is
+/// in bounds, and `T` is not zero-sized, so no two keys are one pointer;
+/// and every element's bytes are initialised, as `from_raw_parts_mut`
+/// asks and a permission that is not initialised does not show (a cache
+/// stack's entries hold the pointer last stored there, or zero from the
+/// metadata region's fresh pages). The one
+/// caller is `slice_mut_from_perms`, for `heap::stack_mut`, which passes
+/// a cache stack's `*mut u8` entries (in the stack's allocation,
+/// `heap::slot_in`); `stack_mut`'s callers read an entry only after a
+/// claim or a push wrote it.
+#[verifier::external_body]
+#[inline(always)]
+#[allow(clippy::needless_lifetimes, reason = "the permission and the slice share the lifetime in the Verus signature")]
+pub unsafe fn slice_mut_elems<'a, T>(
+    base: *mut T,
+    start: usize,
+    n: usize,
+    Tracked(elems): Tracked<&'a mut Map<*mut T, vstd::raw_ptr::PointsTo<T>>>,
+) -> (r: &'a mut [T])
+    requires
+        0 < n,
+        forall|q: *mut T| #[trigger] old(elems).contains_key(q) ==> elem_key(base, start as int, n as int, q),
+        forall|i: int| start <= i < start + n ==> {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            old(elems).contains_key(q) && old(elems)[q].ptr() == q
+        },
+    ensures
+        r@.len() == n,
+        final(r)@.len() == n,
+        forall|i: int| start <= i < start + n ==> {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            &&& final(elems).contains_key(q)
+            &&& final(elems)[q].ptr() == q
+            &&& final(elems)[q].opt_value() == vstd::raw_ptr::MemContents::Init(final(r)@[i - start])
+        },
+        forall|i: int|
+            start <= i < start + n && old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init()
+                ==> r@[i - start] == #[trigger] old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].value(),
+{
+    // SAFETY: the precondition and the premises above.
+    unsafe { core::slice::from_raw_parts_mut(base.add(start), n) }
+}
+
+/// `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements
+/// `start..start + n` of the `T`s at `base`, whose permissions `perms`
+/// holds keyed by their pointers, element `i`'s at `base.add(i)`:
+/// [`slice_mut_elems`] over those elements' permissions, the others kept
+/// apart (`Map::tracked_borrow_mut_split`). The slice borrows the
+/// permissions: each must be owned, not necessarily initialised; when the
+/// borrow ends every one it covered is initialised to the slice's final
+/// value there, every permission keeps its pointer and, if it was
+/// initialised, stays so, and no other permission changes. The slice
+/// starts out holding the initialised elements' values. The one caller is
+/// `heap::stack_mut` (a cache stack's entries).
+///
+/// # Safety
+/// The premises of [`slice_mut_elems`].
+#[inline(always)]
+#[allow(clippy::needless_lifetimes, reason = "the permission and the slice share the lifetime in the Verus signature")]
+pub unsafe fn slice_mut_from_perms<'a, T>(
+    base: *mut T,
+    start: usize,
+    n: usize,
+    Tracked(perms): Tracked<&'a mut Map<*mut T, vstd::raw_ptr::PointsTo<T>>>,
+) -> (r: &'a mut [T])
+    requires
+        0 < n,
+        forall|i: int| start <= i < start + n ==> {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            old(perms).contains_key(q) && old(perms)[q].ptr() == q
+        },
+    ensures
+        r@.len() == n,
+        final(r)@.len() == n,
+        forall|q: *mut T| #![trigger old(perms).contains_key(q)] #![trigger final(perms).contains_key(q)] #![trigger final(perms)[q]] old(perms).contains_key(q) ==> {
+            &&& final(perms).contains_key(q)
+            &&& final(perms)[q].ptr() == old(perms)[q].ptr()
+            &&& (old(perms)[q].is_init() ==> final(perms)[q].is_init())
+        },
+        forall|i: int| start <= i < start + n ==> #[trigger] final(perms)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init(),
+        forall|i: int|
+            start <= i < start + n && old(perms)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init()
+                ==> r@[i - start] == #[trigger] old(perms)[crate::vspec::ptr::ptr_add(base, i as usize)].value(),
+        forall|i: int| start <= i < start + n ==> #[trigger] final(perms)[crate::vspec::ptr::ptr_add(base, i as usize)].value() == final(r)@[i - start],
+        forall|q: *mut T|
+            old(perms).contains_key(q) && (forall|i: int| start <= i < start + n ==> q != #[trigger] crate::vspec::ptr::ptr_add(base, i as usize))
+                ==> #[trigger] final(perms)[q] == old(perms)[q],
+{
+    let ghost keys = perms.dom().filter(|q: *mut T| elem_key(base, start as int, n as int, q));
+    let tracked (elems, _rest) = perms.tracked_borrow_mut_split(keys);
+    proof {
+        assert forall|i: int| start <= i < start + n implies {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            elems[q] == old(perms)[q]
+        } by {
+            assert(keys.contains(crate::vspec::ptr::ptr_add(base, i as usize)));
+        }
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { slice_mut_elems(base, start, n, Tracked(elems)) }
+}
+
+} // verus!
