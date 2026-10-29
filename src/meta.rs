@@ -1180,7 +1180,7 @@ impl MetaClaim {
     }
 
     /// A claim that is no object's, for the paths that hand out none.
-    proof fn tracked_none() -> (tracked r: MetaClaim) {
+    pub proof fn tracked_none() -> (tracked r: MetaClaim) {
         MetaClaim { claim: None, slack: PointsToRaw::empty(cast_provenance()) }
     }
 
