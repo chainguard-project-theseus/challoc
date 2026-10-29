@@ -2612,6 +2612,7 @@ impl ClassState {
     /// plan ran out of picks before the request was met.
     ///
     /// [`plan`]: ClassState::plan
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
         self.claim_tokens(
             meta,
@@ -2635,6 +2636,7 @@ impl ClassState {
     /// always means: every slot came from a slab nothing else could touch.
     ///
     /// [`claim`]: ClassState::claim
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> Claim {
         self.claim_random_zero(
             meta,

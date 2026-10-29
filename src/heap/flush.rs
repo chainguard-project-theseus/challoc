@@ -9,6 +9,7 @@ use crate::vspec::zero::Zeroed;
 use core::ptr;
 use vstd::map::Map;
 use vstd::prelude::*;
+use vstd::raw_ptr::{ptr_mut_ref, ptr_ref};
 
 use crate::arena::Arena;
 use crate::layout::CLASSES;
@@ -32,18 +33,16 @@ impl Heap {
         shared: &Shared,
         cs: &crate::class::ClassState,
         out: &mut [*mut u8],
-        _toks: Tracked<&mut crate::class::SlotToks>,
-        _pubw: Tracked<&'static Published>,
-        _ord: Tracked<&mut LockOrder>,
+        toks: Tracked<&mut crate::class::SlotToks>,
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
     ) -> (crate::class::Claim, Tracked<Map<int, Zeroed>>) {
+        cs.slot_tokens_are_the_class_s();
         if slot_randomize(shared) {
             let rng = self.rng();
-            (
-                cs.claim_random(&shared.meta, out, rng),
-                Tracked::assume_new(),
-            )
+            cs.claim_random_zero(&shared.meta, out, rng, toks, pubw, ord)
         } else {
-            (cs.claim(&shared.meta, out), Tracked::assume_new())
+            cs.claim_tokens(&shared.meta, out, toks, pubw, ord)
         }
     }
 
@@ -84,31 +83,29 @@ impl Heap {
         &mut self,
         shared: &Shared,
         arena: &Arena,
-        _pubw: Tracked<&'static Published>,
+        pubw: Tracked<&'static Published>,
         cache: *mut CacheHeader,
         class: usize,
-        _ord: Tracked<&mut LockOrder>,
+        ord: Tracked<&mut LockOrder>,
     ) -> u32 {
-        // SAFETY: the cache is empty and has `cap` slots of storage.
+        // SAFETY: the cache is empty and has `cap` slots of storage, and
+        // `cache` is this heap's own header (the contract), which nothing
+        // else touches: the header reads and writes below (`hdr_ref`,
+        // `hdr_at`, `ptr_mut_ref`) are of an owned header. They go around
+        // `hdr_mut`, because the stack's permissions are held apart from the
+        // heap while the slice lives.
         unsafe {
             assert_refill_empty(&self.hdr_ref(cache).len);
             let want = (self.hdr_ref(cache).cap / 2).max(1) as usize;
-            let out = stack_mut(self.hdr_ref(cache).slots, 0, want, Tracked::assume_new());
+            let out = stack_mut(self.hdr_at(cache).slots, 0, want, Tracked::assume_new());
             let cs = arena.class(class);
-            let (claim, _) = self.claim(
-                shared,
-                cs,
-                out,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            );
+            let (claim, _) = self.claim(shared, cs, out, Tracked::assume_new(), pubw, ord);
             arena.class(class).note_refill(claim.n);
             out[..claim.n].reverse();
             if shared.pac() {
-                CacheHeader::sign_all(self.hdr_ref(cache).slots, &mut out[..claim.n]);
+                CacheHeader::sign_all(self.hdr_at(cache).slots, &mut out[..claim.n]);
             }
-            let h = self.hdr_mut(cache);
+            let h = ptr_mut_ref(cache, Tracked::assume_new());
             h.len = claim.n as u32;
             h.moved = h.moved.wrapping_add(claim.n as u64);
             h.low_water = claim.n as u32;
@@ -189,15 +186,20 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         n: usize,
-        _ord: Tracked<&mut LockOrder>,
+        ord: Tracked<&mut LockOrder>,
     ) {
         if n == 0 {
             return;
         }
-        // SAFETY: `n <= len <= cap` entries exist.
+        // SAFETY: `n <= len <= cap` entries exist, and `cache` is this
+        // heap's own header (the contract), which nothing else touches: the
+        // header reads and writes below (`ptr_ref`, `ptr_mut_ref`) are of an
+        // owned header. They go around `hdr_ref` and `hdr_mut`, because the
+        // stack's permissions are held apart from the heap while the slice
+        // lives.
         unsafe {
             let pac = shared.pac();
-            let slots = self.hdr_ref(cache).slots;
+            let slots = ptr_ref(cache, Tracked::assume_new()).slots;
             // With signed entries the selection, the sortedness test and
             // the kept sort order by the address bits alone (`!pac::mask()`
             // masks the PAC field, one `and` per compare); only the
@@ -219,7 +221,7 @@ impl Heap {
             let all = stack_mut(
                 slots,
                 0,
-                self.hdr_ref(cache).len as usize,
+                ptr_ref(cache, Tracked::assume_new()).len as usize,
                 Tracked::assume_new(),
             );
             let rest_len = all.len() - n;
@@ -239,7 +241,7 @@ impl Heap {
                 } else {
                     ptr::null_mut()
                 };
-                self.hdr_mut(cache).unsorted_flushes = 0;
+                ptr_mut_ref(cache, Tracked::assume_new()).unsorted_flushes = 0;
             } else {
                 kept_max = if rest_len > 0 {
                     // `all[..rest_len - 1] <= all[rest_len - 1] <= all[rest_len..]`.
@@ -252,7 +254,7 @@ impl Heap {
                 } else {
                     ptr::null_mut()
                 };
-                let h = self.hdr_mut(cache);
+                let h = ptr_mut_ref(cache, Tracked::assume_new());
                 let k = h.unsorted_flushes;
                 h.unsorted_flushes = k.wrapping_add(1);
                 if rest_len > 1 && (k < 2 || k % 32 == 0) {
@@ -289,14 +291,8 @@ impl Heap {
             } else {
                 arena
             };
-            shared.release_routed(
-                owner,
-                class,
-                high,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            );
-            let h = self.hdr_mut(cache);
+            shared.release_routed(owner, class, high, Tracked::assume_new(), ord);
+            let h = ptr_mut_ref(cache, Tracked::assume_new());
             h.len = rest_len as u32;
             h.moved = h.moved.wrapping_sub(n as u64);
             h.zeroed = 0;

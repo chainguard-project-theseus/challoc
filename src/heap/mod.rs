@@ -3946,10 +3946,10 @@ unsafe fn stack_mut<'a>(
     slots: *mut *mut u8,
     start: usize,
     len: usize,
-    _perms: Tracked<&'a mut Map<*mut *mut u8, PointsTo<*mut u8>>>,
+    perms: Tracked<&'a mut Map<*mut *mut u8, PointsTo<*mut u8>>>,
 ) -> &'a mut [*mut u8] {
     // SAFETY: guaranteed by the caller.
-    unsafe { core::slice::from_raw_parts_mut(slots.add(start), len) }
+    unsafe { crate::vspec::slice::slice_mut_from_perms(slots, start, len, perms) }
 }
 
 /// `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and
@@ -4212,6 +4212,22 @@ impl Heap {
             }
             *h = CacheHeader::EMPTY;
         }
+    }
+
+    /// `&*cache` for an owned header, for the refill and the flush, which
+    /// hold the stack permissions apart from the heap for a while, so
+    /// [`Heap::hdr_ref`]'s `Heap::wf` does not hold there. It reads through
+    /// `ptr_ref` with a permission it makes up (`Tracked::assume_new`),
+    /// not one it is given, so it is unsafe for its caller's precondition;
+    /// a later proof PR can make it safe once it takes the header's
+    /// permission.
+    ///
+    /// # Safety
+    /// `cache` is a header this heap owns (a home header or one of a live
+    /// `others` node's), and nothing writes it while the reference lives.
+    #[inline(always)]
+    unsafe fn hdr_at(&self, cache: *mut CacheHeader) -> &CacheHeader {
+        vstd::raw_ptr::ptr_ref(cache, Tracked::assume_new())
     }
 
     /// The `Shared` this heap was created on.
