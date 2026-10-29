@@ -2358,9 +2358,11 @@ proof fn lemma_took_tally(g0: Inner, g1: Inner, t: Take, k: int)
 /// The `Empty` list after a take: its length and pages are the counters,
 /// and it holds every `Empty` extent.
 ///
-/// The explicit rlimit: this proof is sensitive to crate-wide context and
-/// went past the default once unrelated ghost state was added elsewhere.
+/// The proof's solver cost moves with unrelated items elsewhere in the
+/// crate; its own solver instance (`spinoff_prover`) keeps them out of
+/// its context, and the rlimit leaves it headroom.
 #[verifier::rlimit(40)]
+#[verifier::spinoff_prover]
 proof fn lemma_took_elist(g0: Inner, g1: Inner, t: Take)
     requires
         g0.wf(),
