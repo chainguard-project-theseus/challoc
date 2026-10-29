@@ -11,9 +11,10 @@
 # preempting one thread for another) and larson runs 16 and 64 threads
 # on them. `--container default,cpus=4` gives the quota variant.
 #
-# Cells: every cell tagged `exp-slice` (the kernel 7.2 cell, which has the
+# Cells: every cell an internal overlay tags `exp-slice`; none in the
+# public tree. The experiment ran on a kernel 7.2 cell, which has the
 # extension, and a 6.18 cell, which does not: there auto and off must come
-# out `same`, the experiment's negative control). The features line in the
+# out `same`, the experiment's negative control. The features line in the
 # report says what the kernel granted (`slice_ext=on` vs `no-slice_ctrl`).
 #
 # Positive percentages mean `auto` did worse than `off`. `cb launch
