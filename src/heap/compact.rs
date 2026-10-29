@@ -172,7 +172,13 @@ impl Heap {
                     h.probe_refilled = refilled;
                     match verdict {
                         Verdict::Refilling | Verdict::Dense => {
-                            return Self::pop_top(cache, len, pac);
+                            return Self::pop_top(
+                                cache,
+                                len,
+                                pac,
+                                Tracked::assume_new(),
+                                Tracked::assume_new(),
+                            );
                         }
                         Verdict::Fragmented => {}
                     }
@@ -180,7 +186,15 @@ impl Heap {
                     h.set_mode(MODE_COMPACT);
                     return self.pop_compact_run(cache, class, len);
                 }
-                _ => return Self::pop_top(cache, len, pac),
+                _ => {
+                    return Self::pop_top(
+                        cache,
+                        len,
+                        pac,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
+                }
             }
             self.pop_compact_run(cache, class, len)
         }
@@ -202,7 +216,15 @@ impl Heap {
             let pac = (*self.shared).pac();
             match self.hdr_ref(cache).mode {
                 MODE_COMPACT => {}
-                _ => return Self::pop_top(cache, len, pac),
+                _ => {
+                    return Self::pop_top(
+                        cache,
+                        len,
+                        pac,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
+                }
             }
             let mut len = len;
             if self.hdr_ref(cache).run_end == 0 {
@@ -234,7 +256,13 @@ impl Heap {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    return Self::pop_top(cache, len, pac);
+                    return Self::pop_top(
+                        cache,
+                        len,
+                        pac,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
                 }
             }
             let h = self.hdr_mut(cache);

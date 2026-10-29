@@ -6,14 +6,19 @@ use core::alloc::Layout;
 use core::ptr;
 
 use crate::layout::NCLASSES;
+use crate::lock::LockOrder;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
-use super::{FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
+use super::{CachePerms, FOREIGN, Heap, Live, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE, assert_rekey_flushed};
+use vstd::map::Map;
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
+use vstd::prelude::{Tracked, int};
+use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_mut_write, ptr_ref};
+use vstd::resource::set::GhostSingleton;
 
 verus! {
 
@@ -216,6 +221,13 @@ impl Heap {
     /// The home header for `class`: `heap + 128 + 64 * class`, no load.
     #[inline(always)]
     pub(super) fn cache_ptr(&mut self, class: usize) -> *mut CacheHeader {
+        self.home_ptr_at(class)
+    }
+
+    /// The home header of `class`, by address: the `caches` array's
+    /// element.
+    #[inline(always)]
+    fn home_ptr_at(&mut self, class: usize) -> *mut CacheHeader {
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
         unsafe { (&raw mut self.caches).cast::<CacheHeader>().add(class) }
@@ -239,15 +251,24 @@ impl Heap {
         class: usize,
         len: u32,
         pac: bool,
+        _blk: Tracked<&mut Live>,
     ) -> (*mut u8, bool) {
+        let h = ptr_mut_ref(cache, Tracked::assume_new());
+        let allocs = h.allocs.wrapping_add(1);
+        h.allocs = allocs;
+        if ((allocs as u32) & h.compact_mask) == 0 {
+            // SAFETY: guaranteed by the caller.
+            return unsafe { self.pop_compact(cache, class, len) };
+        }
         // SAFETY: guaranteed by the caller.
         unsafe {
-            let allocs = (*cache).allocs.wrapping_add(1);
-            (*cache).allocs = allocs;
-            if ((allocs as u32) & (*cache).compact_mask) == 0 {
-                return self.pop_compact(cache, class, len);
-            }
-            Self::pop_top(cache, len, pac)
+            Self::pop_top(
+                cache,
+                len,
+                pac,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
         }
     }
 
@@ -262,26 +283,33 @@ impl Heap {
     /// # Safety
     /// As for [`Heap::pop`].
     #[inline(always)]
-    pub(super) unsafe fn pop_top(cache: *mut CacheHeader, len: u32, pac: bool) -> (*mut u8, bool) {
+    pub(super) unsafe fn pop_top(
+        cache: *mut CacheHeader,
+        len: u32,
+        pac: bool,
+        _perms: Tracked<&mut CachePerms>,
+        _out: Tracked<&mut Map<int, GhostSingleton<int>>>,
+    ) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
+            let h = ptr_mut_ref(cache, Tracked::assume_new());
             let len = len - 1;
-            (*cache).len = len;
+            h.len = len;
             let mut zero = false;
-            if len < (*cache).low_water {
-                (*cache).low_water = len;
-                if len < (*cache).run_end {
-                    (*cache).run_end = len;
+            if len < h.low_water {
+                h.low_water = len;
+                if len < h.run_end {
+                    h.run_end = len;
                 }
-                if len < (*cache).zeroed {
-                    (*cache).zeroed = len;
+                if len < h.zeroed {
+                    h.zeroed = len;
                     zero = true;
                 }
             }
-            let slots = (*cache).slots();
-            let p = *slots.add(len as usize);
+            let slots = h.slots();
+            let p = *ptr_ref(slots.add(len as usize), Tracked::assume_new());
             let p = if pac {
-                pac::auth(p as usize, slots as usize) as *mut u8
+                addr_to_ptr(pac::auth(p as usize, slots as usize))
             } else {
                 p
             };
@@ -291,9 +319,9 @@ impl Heap {
 
     /// Push a checked slot of `class` (home arena) onto its cache.
     #[inline(always)]
-    pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8) {
-        if !self.push_fast(class, p, shared.push_flags()) {
-            self.free_slow(shared, class, p);
+    pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8, _blk: Tracked<Live>) {
+        if !self.push_fast(class, p, shared.push_flags(), Tracked::assume_new()) {
+            self.free_slow(shared, class, p, Tracked::assume_new());
         }
     }
 
@@ -303,11 +331,25 @@ impl Heap {
     /// `zeroed` is never above the pushed position (see
     /// [`CacheHeader::zeroed`]). `flags` is `Shared::push_flags`.
     #[inline(always)]
-    pub fn push_fast(&mut self, class: usize, p: *mut u8, flags: u8) -> bool {
+    pub fn push_fast(
+        &mut self,
+        class: usize,
+        p: *mut u8,
+        flags: u8,
+        _tk: Tracked<&mut Map<int, GhostSingleton<int>>>,
+    ) -> bool {
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == cap == 0`, so
         // nothing is written) or with a stack of `cap` slots.
-        unsafe { Self::push_cache_flags(cache, p, flags) }
+        unsafe {
+            Self::push_cache_flags(
+                cache,
+                p,
+                flags,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+        }
     }
 
     /// [`Heap::push_cache`] behind the opt-in hardening: with `flags` zero
@@ -330,24 +372,57 @@ impl Heap {
     /// # Safety
     /// As for [`Heap::push_cache`].
     #[inline(always)]
-    pub(super) unsafe fn push_cache_flags(cache: *mut CacheHeader, p: *mut u8, flags: u8) -> bool {
+    pub(super) unsafe fn push_cache_flags(
+        cache: *mut CacheHeader,
+        p: *mut u8,
+        flags: u8,
+        _perms: Tracked<&mut CachePerms>,
+        _tk: Tracked<&mut Map<int, GhostSingleton<int>>>,
+    ) -> bool {
         // One byte compare each for the two common configurations: signed
         // pointers alone (opt-in `pac_pointers:true` on an arm64 host with
         // PAC; never set elsewhere, so the compare is compiled out) and no
         // hardening (the default on every host, PAC or not).
         if cfg!(target_arch = "aarch64") && flags == PUSH_PAC {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false, true) };
+            return unsafe {
+                Self::push_cache(
+                    cache,
+                    p,
+                    false,
+                    true,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+            };
         }
         if flags == 0 {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false, false) };
+            return unsafe {
+                Self::push_cache(
+                    cache,
+                    p,
+                    false,
+                    false,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+            };
         }
         if flags & PUSH_ZERO != 0 {
             return false;
         }
         // SAFETY: guaranteed by the caller.
-        unsafe { Self::push_cache(cache, p, flags & PUSH_SCAN != 0, flags & PUSH_PAC != 0) }
+        unsafe {
+            Self::push_cache(
+                cache,
+                p,
+                flags & PUSH_SCAN != 0,
+                flags & PUSH_PAC != 0,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+        }
     }
 
     /// `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the
@@ -359,7 +434,12 @@ impl Heap {
     /// # Safety
     /// `slots` has `len` entries.
     #[inline(always)]
-    pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8) -> bool {
+    pub(super) unsafe fn cached_recently(
+        slots: *mut *mut u8,
+        len: u32,
+        e: *mut u8,
+        _perms: Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>,
+    ) -> bool {
         if len == 0 {
             return false;
         }
@@ -400,24 +480,27 @@ impl Heap {
         p: *mut u8,
         scan: bool,
         pac: bool,
+        _perms: Tracked<&mut CachePerms>,
+        _tk: Tracked<&mut Map<int, GhostSingleton<int>>>,
     ) -> bool {
         // SAFETY: guaranteed by the caller.
         unsafe {
-            let len = (*cache).len;
-            if len == (*cache).cap {
+            let h = ptr_mut_ref(cache, Tracked::assume_new());
+            let len = h.len;
+            if len == h.cap {
                 return false;
             }
-            let slots = (*cache).slots();
+            let slots = h.slots();
             let e = if pac {
-                pac::sign(p as usize, slots as usize) as *mut u8
+                addr_to_ptr(pac::sign(p as usize, slots as usize))
             } else {
                 p
             };
-            if scan && Self::cached_recently(slots, len, e) {
+            if scan && Self::cached_recently(slots, len, e, Tracked::assume_new()) {
                 return false;
             }
-            *slots.add(len as usize) = e;
-            (*cache).len = len + 1;
+            ptr_mut_write(slots.add(len as usize), Tracked::assume_new(), e);
+            h.len = len + 1;
         }
         true
     }
@@ -430,6 +513,7 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
+        _ord: Tracked<&mut LockOrder>,
     ) -> *mut CacheHeader {
         // The capacity first: a class that is never cached for this arena
         // must not create an `others` node. This is the one place the
@@ -461,42 +545,43 @@ impl Heap {
             return ptr::null_mut();
         }
         // SAFETY: `cache` points into this heap's own header array.
-        if unsafe { (*cache).cap } != 0 {
+        if unsafe { self.hdr_ref(cache) }.cap != 0 {
             return cache;
         }
         let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
         if slots.is_null() {
             return ptr::null_mut();
         }
-        // SAFETY: `cache` is this heap's own header (still `EMPTY`) and
-        // `slots` has room for `cap` pointers, exclusively ours.
-        unsafe {
-            ptr::write(
-                cache,
-                CacheHeader {
-                    len: 0,
-                    cap,
-                    low_water: 0,
-                    zeroed: 0,
-                    slots: slots as *mut *mut u8,
-                    allocs: 0,
-                    compact_mask: u32::MAX,
-                    run_end: 0,
-                    moved: 0,
-                    probe_refilled: refilled,
-                    arena,
-                    mode: MODE_OFF,
-                    unsorted_flushes: 0,
-                },
-            );
-            // The `FOREIGN` cache is never popped, so it never probes.
-            let mode = if arena == FOREIGN {
-                MODE_OFF
-            } else {
-                MODE_PROBE
-            };
-            (*cache).set_mode(mode);
-        }
+        // `cache` is this heap's own header (still `EMPTY`) and `slots`
+        // has room for `cap` pointers, exclusively ours.
+        ptr_mut_write(
+            cache,
+            Tracked::assume_new(),
+            CacheHeader {
+                len: 0,
+                cap,
+                low_water: 0,
+                zeroed: 0,
+                slots: slots as *mut *mut u8,
+                allocs: 0,
+                compact_mask: u32::MAX,
+                run_end: 0,
+                moved: 0,
+                probe_refilled: refilled,
+                arena,
+                mode: MODE_OFF,
+                unsorted_flushes: 0,
+            },
+        );
+        // The `FOREIGN` cache is never popped, so it never probes.
+        let mode = if arena == FOREIGN {
+            MODE_OFF
+        } else {
+            MODE_PROBE
+        };
+        // SAFETY: as above.
+        let h = unsafe { self.hdr_mut(cache) };
+        h.set_mode(mode);
         cache
     }
 }
