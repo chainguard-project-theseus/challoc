@@ -38,6 +38,9 @@
  *   negative sallocx_stale        sallocx(p, 0) after free(p) and a flush
  *   negative dallocx_none_twice   dallocx(p, MALLOCX_TCACHE_NONE) twice: the
  *                                 uncached release checks the bit at once
+ *   negative dallocx_bad_tcache   dallocx(p, MALLOCX_TCACHE(4000)), an id
+ *                                 tcache.create never returned: aborts at
+ *                                 the call, naming the id
  *   negative free_sized_huge_hint free_sized(slab pointer, 1 MiB): a huge
  *                                 size hint on a slab pointer aborts at the
  *                                 call (the hint names no class)
@@ -298,6 +301,12 @@ int main(int argc, char **argv)
         dallocx(bad, MALLOCX_TCACHE_NONE); /* straight to the slab bitmap */
         dallocx(bad, MALLOCX_TCACHE_NONE); /* must abort: the bit is already clear */
         printf("second uncached dallocx of %p returned\n", bad);
+    } else if (strcmp(mode, "dallocx_bad_tcache") == 0) {
+        REQUIRE(dallocx != NULL, "dallocx not exported");
+        void *p = victim(64);
+        bad = p;
+        dallocx(bad, MALLOCX_TCACHE(4000)); /* must abort: no explicit cache 4000 */
+        printf("dallocx(%p, MALLOCX_TCACHE(4000)) returned\n", bad);
     } else if (strcmp(mode, "free_sized_huge_hint") == 0) {
         REQUIRE(free_sized != NULL, "free_sized not exported");
         void *p = victim(64);
