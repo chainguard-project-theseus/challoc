@@ -64,8 +64,9 @@ These hold on every supported host with the default configuration:
   already left the thread cache aborts at the call.
 - **Mis-sized free aborts.** A sized free whose size names another
   class (for a huge run, another page count) aborts at the call.
-- **Freed or foreign pointers abort** in `malloc_usable_size`,
-  `realloc` and `sallocx`, where jemalloc's behaviour is undefined.
+- **Foreign pointers abort** in `malloc_usable_size`, `realloc` and
+  `sallocx`, where jemalloc's behaviour is undefined. So does a freed
+  pointer whose slot has already left the thread cache.
 - **Abort, never continue.** On any inconsistency challoc writes a
   `challoc:` message to stderr and calls `abort()`. It never tries to
   repair the heap.
@@ -82,6 +83,10 @@ These hold on every supported host with the default configuration:
   takes one copy before that, the duplicate isn't detected and the slot
   is live twice. `double_free_scan:true` closes most of this window at
   the call, at a measured cost.
+- **Freed pointers still in the thread cache.** A slot keeps its live
+  bit until a flush releases it, so `malloc_usable_size`, `realloc` or
+  `sallocx` on a pointer freed into the cache (and not yet flushed) is
+  not detected: it reports the class's usable size, or reallocates.
 - **The sized path defers its slot check.** `sdallocx` and `free_sized`
   check the size at the call but leave the double-free check to the
   flush, which is jemalloc's behaviour for every free.
