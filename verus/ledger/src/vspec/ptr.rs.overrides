@@ -3,3 +3,6 @@ axiom_array_elem	core library	none (assumption)
 axiom_raw_valid	raw pointer (internal)	none (assumption)
 # A `u64` has no padding and every bit pattern is a value.
 axiom_plain_u64	core library	none (assumption)
+# Integers: no padding, and every bit pattern is a value.
+axiom_plain_u8	core library	none (assumption)
+axiom_plain_usize	core library	none (assumption)

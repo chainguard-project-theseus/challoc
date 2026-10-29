@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `addr_to_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `ptr::co...g::<T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `<*mut T...s_null` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `<*const...s_null` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 
@@ -27,9 +28,32 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
     opens_invariants none
 ```
 
+## `core::ptr::copy_nonoverlapping::<T>`
+
+src/vspec/addr.rs:44. Kind: assume_spec. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `core::ptr::copy_nonoverlapping`, with the safety contract of the `core` documentation: both pointers are properly aligned and, unless the copy is empty, `src` is valid for reads and `dst` for writes of `count * size_of::<T>()` bytes, and the two ranges do not overlap.
+
+```rust
+pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T, dst: *mut T, count: usize)
+    requires
+        src@.addr as int % vstd::layout::align_of::<T>() as int == 0,
+        dst@.addr as int % vstd::layout::align_of::<T>() as int == 0,
+        count as int * vstd::layout::size_of::<T>() == 0 || {
+            let len = count as int * vstd::layout::size_of::<T>();
+            &&& crate::vspec::ptr::valid_reads(src, len)
+            &&& crate::vspec::ptr::valid_writes(dst, len)
+            &&& crate::vspec::cbuf::c_apart(dst@.addr as int, len)
+            &&& crate::vspec::cbuf::c_writes(dst@.provenance)
+            &&& (src@.addr + len <= dst@.addr || dst@.addr + len <= src@.addr)
+        },
+;
+```
+
 ## `<*mut T>::is_null`
 
-src/vspec/addr.rs:35. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/addr.rs:59. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*mut T>::is_null`: the address is zero.
@@ -45,7 +69,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: 
 
 ## `<*const T>::is_null`
 
-src/vspec/addr.rs:43. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/addr.rs:67. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*const T>::is_null`: the address is zero.
