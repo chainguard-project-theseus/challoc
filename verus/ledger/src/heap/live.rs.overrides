@@ -1,3 +1,4 @@
-# The permission to a run's usable bytes: at most one per run token at a
-# time, for pages the huge allocator committed and no other permission covers.
+# The permission to a block's usable bytes (a slot or a run): at most one
+# per slot or run token at a time, for committed bytes no other permission
+# covers.
 axiom_hand_out	allocator invariant	none (assumption)

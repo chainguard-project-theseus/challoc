@@ -4510,6 +4510,7 @@ impl Huge {
                 end <= hi,
                 hi == self.spec_base() + self.spec_npages() * p,
                 hi <= crate::meta::va_limit(),
+                blk.mem_ok(),
                 blk.mem().covers(base as int, usable_pages * p),
                 blk.mem().provenance() == crate::vspec::addr::cast_provenance(),
                 blk.block(run_ptr),
@@ -4547,6 +4548,7 @@ impl Huge {
                     hi <= crate::meta::va_limit(),
                     base == self.spec_base() + s * p,
                     end == self.spec_base() + (s + usable_pages) * p,
+                    blk.mem_ok(),
                     blk.mem().covers(base as int, usable_pages * p),
                     blk.mem().provenance() == crate::vspec::addr::cast_provenance(),
                     end == base + usable_pages * p,
@@ -4573,7 +4575,7 @@ impl Huge {
         }
         proof {
             // The token back, the permission dropped with it.
-            let tracked t = blk.into_run();
+            let tracked t = blk.into_run(s as int);
             tok.tracked_insert(0, t);
             assert(*tok =~= *old(tok));
         }

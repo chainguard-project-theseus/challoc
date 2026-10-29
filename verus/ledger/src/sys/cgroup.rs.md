@@ -10,7 +10,6 @@ file.
 | `scan_lines` | no_decreases | termination | none (assumption) | trusted |
 | `axiom_c...phaned` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `Deferred::discover` | no_decreases | termination | loom/GenMC | trusted |
-| `Deferre...blished` | external_body | allocator invariant | Verus | trusted |
 
 ## `scan_lines`
 
@@ -66,17 +65,6 @@ pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F, Tracked(seen): 
     requires
         crate::sys::may_syscall(),
         forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
-```
-
-## `Deferred::published`
-
-src/sys/cgroup.rs:1609. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> The published record, read through the cell's frozen permission that `seen` holds ([`Deferred::seen_done`]); no load of the phase.
-
-```rust
-pub fn published(&self, Tracked(seen): Tracked<CellSeen>) -> &Cgroup
-    requires
-        self.seen_done(seen),
+    ensures
+        wait ==> self.seen_done(*final(seen)),
 ```

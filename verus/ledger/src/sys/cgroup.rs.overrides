@@ -4,7 +4,3 @@
 axiom_cell_orphaned	platform/kernel fact	none (assumption)
 # Runs until the reader reports the end or an error.
 scan_lines	termination	none (assumption)
-# Temporary seam, discharged by 41s (the Shared slow paths' proof), with
-# `discover`'s `wait ==> seen_done(seen)`, for which `publish` returns the
-# cell's frozen permission and `discover` puts it in `seen`.
-Deferred::published	allocator invariant	Verus
