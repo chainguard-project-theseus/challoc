@@ -1,3 +1,6 @@
 # The byte state a fresh `Zeroed` token sets: the token's meaning, with
 # the premise (made after the bytes' last write) Verus does not check.
 axiom_zeroed_bytes	allocator invariant	none (assumption)
+# Exposed provenance: challoc's memory comes from `mmap` as integers, so a
+# cast of an address in it is valid wherever the first pointer was.
+axiom_cast	platform/kernel fact	none (assumption)

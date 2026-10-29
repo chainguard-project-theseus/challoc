@@ -3,7 +3,7 @@
 //! and the crate-facing functions that find the calling thread's heap.
 
 use core::ptr;
-use vstd::prelude::Tracked;
+use vstd::prelude::{Tracked, verus};
 
 use crate::layout::{CLASSES, NCLASSES};
 use crate::sys::pac;
@@ -579,11 +579,18 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
     }
 }
 
+verus! {
+
 #[cold]
 #[inline(never)]
-pub(super) fn invalid_free(p: usize) -> ! {
+pub(super) fn invalid_free(p: usize) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("invalid free of {p:#x}: not an allocation"))
 }
+
+} // verus!
 
 /// `zero_on_free`: clear the class-size bytes of slot `p`. Called from the
 /// slow paths only (`Heap::free_slow_in`, `free_direct`), so the default

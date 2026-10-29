@@ -124,12 +124,12 @@ pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
 #[cfg(verus_keep_ghost)]
-pub use table::slot_loc;
-#[cfg(verus_keep_ghost)]
 use table::{
     bits_ghost, bits_shape, desc_at, guard_marked, lemma_bit_in_slab, slab_marked, slab_mask_of,
-    slab_owner, slot_owner, words_of,
+    slab_owner, words_of,
 };
+#[cfg(verus_keep_ghost)]
+pub use table::{slot_loc, slot_owner};
 use verify::{fresh_with_live, release_into_fresh};
 #[cfg(verus_keep_ghost)]
 use vstd::set::Set as VSet;
@@ -428,6 +428,15 @@ pub proof fn lemma_addrs_insert(s: Slots, a: VSet<int>, b: int)
 }
 
 impl SlotToks {
+    /// No slots.
+    pub proof fn empty() -> (tracked r: SlotToks)
+        ensures
+            r.bits == Map::<int, int>::empty(),
+            r.toks == Map::<int, GhostSingleton<int>>::empty(),
+    {
+        SlotToks { bits: Map::empty(), toks: Map::tracked_empty() }
+    }
+
     /// Entries `lo..hi` of `out` are claimed bits of table `t` (keys
     /// `base + i`), slots, each at its bit's address, with its token.
     pub open spec fn holds(self, t: SlabTable, out: Seq<*mut u8>, base: int, lo: int, hi: int) -> bool {
@@ -1966,6 +1975,20 @@ impl ClassState {
     /// Slabs of the class region.
     pub closed spec fn spec_nslabs(&self) -> usize {
         table_at(self.table).spec_nslabs()
+    }
+
+    /// The class table's slot tokens are of the class's authority
+    /// (`table::slot_loc`). No code: a proof step for callers that hold
+    /// the state by reference.
+    #[inline(always)]
+    pub fn slot_tokens_are_the_class_s(&self)
+        ensures
+            self.spec_table().spec_slots().loc == slot_loc(self.spec_class() as int),
+    {
+        proof {
+            use_type_invariant(self);
+            self.spec_table().lemma_slots_wf();
+        }
     }
 
     /// A class region has at most `2^45` slabs: it ends below `2^57` and
@@ -4403,6 +4426,107 @@ pub proof fn lemma_aset_step(a: Seq<int>, lo: int, i: int, hi: int)
         }
     }
     assert(aset(a, lo, i + 1) =~= aset(a, lo, i).insert(a[i]));
+}
+
+/// `aset(a, lo, hi)` is `a[lo]` and `aset(a, lo + 1, hi)`, for `lo < hi`.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_front(a: Seq<int>, lo: int, hi: int)
+    requires
+        lo < hi,
+    ensures
+        aset(a, lo, hi) == aset(a, lo + 1, hi).insert(a[lo]),
+        aset(a, lo, lo) == VSet::<int>::empty(),
+{
+    broadcast use lemma_aset;
+    assert forall|x: int| aset(a, lo, hi).contains(x) <==> aset(a, lo + 1, hi).insert(a[lo]).contains(x) by {
+        if aset(a, lo, hi).contains(x) {
+            let k = choose|k: int| lo <= k < hi && a[k] == x;
+            if k > lo {
+                assert(aset(a, lo + 1, hi).contains(x));
+            }
+        }
+        if aset(a, lo + 1, hi).contains(x) {
+            let k = choose|k: int| lo + 1 <= k < hi && a[k] == x;
+            assert(lo <= k < hi);
+        }
+        if x == a[lo] {
+            assert(aset(a, lo, hi).contains(x));
+        }
+    }
+    assert(aset(a, lo, hi) =~= aset(a, lo + 1, hi).insert(a[lo]));
+    assert(aset(a, lo, lo) =~= VSet::<int>::empty());
+}
+
+/// `b[lo..hi]` is `a[off + lo..off + hi]`: the same addresses, as
+/// distinct.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_shift(a: Seq<int>, b: Seq<int>, off: int, lo: int, hi: int)
+    requires
+        lo <= hi,
+        forall|i: int| lo <= i < hi ==> b[i] == a[off + i],
+    ensures
+        aset(b, lo, hi) == aset(a, off + lo, off + hi),
+        distinct(a, off + lo, off + hi) ==> distinct(b, lo, hi),
+{
+    broadcast use lemma_aset;
+    assert forall|x: int| aset(b, lo, hi).contains(x) <==> aset(a, off + lo, off + hi).contains(x) by {
+        if aset(b, lo, hi).contains(x) {
+            let i = choose|i: int| lo <= i < hi && b[i] == x;
+            assert(a[off + i] == x);
+        }
+        if aset(a, off + lo, off + hi).contains(x) {
+            let k = choose|k: int| off + lo <= k < off + hi && a[k] == x;
+            assert(b[k - off] == x);
+        }
+    }
+    assert(aset(b, lo, hi) =~= aset(a, off + lo, off + hi));
+    if distinct(a, off + lo, off + hi) {
+        assert forall|i: int, j: int| lo <= i < j < hi implies b[i] != b[j] by {
+            assert(a[off + i] != a[off + j]);
+        }
+    }
+}
+
+/// `aset(a, lo, hi)` is the union of its two halves at `mid`, disjoint
+/// when `a` is distinct there.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_split(a: Seq<int>, lo: int, mid: int, hi: int)
+    requires
+        lo <= mid <= hi,
+    ensures
+        aset(a, lo, hi) == aset(a, lo, mid).union(aset(a, mid, hi)),
+        distinct(a, lo, hi) ==> aset(a, lo, mid).disjoint(aset(a, mid, hi)),
+        distinct(a, lo, hi) ==> distinct(a, lo, mid) && distinct(a, mid, hi),
+{
+    broadcast use lemma_aset;
+    assert forall|x: int| aset(a, lo, hi).contains(x) <==> aset(a, lo, mid).union(aset(a, mid, hi)).contains(x) by {
+        if aset(a, lo, hi).contains(x) {
+            let k = choose|k: int| lo <= k < hi && a[k] == x;
+            if k < mid {
+                assert(aset(a, lo, mid).contains(x));
+            } else {
+                assert(aset(a, mid, hi).contains(x));
+            }
+        }
+        if aset(a, lo, mid).contains(x) {
+            let k = choose|k: int| lo <= k < mid && a[k] == x;
+            assert(aset(a, lo, hi).contains(x));
+        }
+        if aset(a, mid, hi).contains(x) {
+            let k = choose|k: int| mid <= k < hi && a[k] == x;
+            assert(aset(a, lo, hi).contains(x));
+        }
+    }
+    assert(aset(a, lo, hi) =~= aset(a, lo, mid).union(aset(a, mid, hi)));
+    if distinct(a, lo, hi) {
+        assert forall|x: int| !(aset(a, lo, mid).contains(x) && aset(a, mid, hi).contains(x)) by {
+            if aset(a, lo, mid).contains(x) && aset(a, mid, hi).contains(x) {
+                let k = choose|k: int| lo <= k < mid && a[k] == x;
+                let l = choose|l: int| mid <= l < hi && a[l] == x;
+                assert(a[k] != a[l]);
+            }
+        }
+    }
 }
 
 /// Slot `slot` of a slab of `slab_bits <= 64 * MAX_SLAB_WORDS` bits sits in

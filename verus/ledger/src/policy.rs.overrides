@@ -1,0 +1,3 @@
+# Temporary seam, discharged by 41g (#275, the background tick's purge glue): the policy's
+# evaluation after a cgroup sample.
+evaluate	allocator invariant	Verus

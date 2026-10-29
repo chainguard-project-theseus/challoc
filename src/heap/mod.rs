@@ -86,6 +86,8 @@ use crate::arena::Homed;
 use crate::lock::LockOrder;
 use crate::vspec::zero::Zeroed;
 use fresh::FreshHeap;
+#[cfg(verus_keep_ghost)]
+pub(crate) use live::Live;
 use others::{node_block_layout, node_caches_detached, node_set_arena};
 use paths::invalid_free;
 #[cfg(test)]
@@ -283,6 +285,35 @@ pub open spec fn slot_start(p: *mut u8) -> bool {
 pub open spec fn free_target(p: *mut u8) -> bool {
     ||| slot_start(p)
     ||| process_regions().is_huge_block(p@.addr, 1)
+}
+
+/// A sized free's size hint names `p`'s class: if `p` is a slot start of
+/// class `c`, `hint` is `Some(c)`.
+/// `hint` is the class the size (and alignment) the program passed name,
+/// `None` for a size no class holds or an alignment that is not a power
+/// of two, so a slot freed with the size of another class, or with a huge
+/// size, fails it. The sized frees test it of a slot before they push or
+/// release it (`Shared::sized_slot` on the fast path, else
+/// `Shared::check_size_hint`, which aborts); a pointer that is no slot
+/// start passes it, and the exact free behind it judges the pointer.
+pub open spec fn hint_ok(p: *mut u8, hint: Option<usize>) -> bool {
+    forall|c: int| #[trigger] process_regions().is_slot(c, p@.addr) ==> hint == Some(c as usize)
+}
+
+/// The huge half of a sized free's check ([`hint_ok`] is the slot half):
+/// for `p` a page start of the huge region and no slot start, with `blk`
+/// the caller's token for it (the run's, [`Live::claims`]), `size`
+/// rounded up to whole pages ([`huge_usable`]) is the run's usable size,
+/// the run's `nallocx` for a size no class serves. Also the small size of
+/// a run an alignment made huge, and any size `realloc` kept the run for.
+/// `Shared::check_size_hint` aborts on a size that fails it.
+///
+/// [`huge_usable`]: crate::vspec::zero::huge_usable
+pub open spec fn huge_hint_ok(blk: Live, p: *mut u8, size: usize) -> bool {
+    blk.claims(p) && !slot_start(p) && process_regions().is_huge_block(p@.addr, 1) ==> {
+        &&& size + live::page_size() - 1 <= usize::MAX
+        &&& crate::vspec::zero::huge_usable(size as int) == blk.len()
+    }
 }
 
 /// A misaligned pointer is no free target: every slot start and every

@@ -250,6 +250,80 @@ pub open spec fn run_placeable(base: int, pg: int, np: int, size: int, align: in
     &&& exists|q: int| 0 <= q && q + run_need(pg, size) <= np && #[trigger] page_aligned(base, pg, q, align)
 }
 
+/// The usable bytes of a huge run for a request of `size` bytes: `size`
+/// rounded up to whole pages of the process, at least one page
+/// (`Huge::spec_usable` of the process's huge allocator, whose page is the
+/// regions' page: `Shared::wf`).
+pub open spec fn huge_usable(size: int) -> int {
+    let pg = (1usize << crate::layout::process_regions().lg_page) as int;
+    let n = (size + pg - 1) / pg;
+    (if n == 0 { 1 } else { n }) * pg
+}
+
+/// [`run_placeable`] for the process's huge region (`Shared::wf`: the
+/// huge allocator's base, page and page count are the regions').
+pub open spec fn huge_placeable(size: usize, align: usize) -> bool {
+    let r = crate::layout::process_regions();
+    run_placeable(r.huge_base as int, (1usize << r.lg_page) as int, (r.huge_len >> r.lg_page) as int, size as int, align as int)
+}
+
+/// A slot address (a guard slab's too) belongs to one class: class `c`'s
+/// region lies inside stride `c` of the superblock (`Regions::separated`).
+pub proof fn lemma_slot_unique(c1: int, c2: int, p: usize)
+    requires
+        crate::layout::process_regions().wf(),
+        crate::layout::process_regions().separated(),
+        crate::layout::process_regions().is_slot_addr(c1, p),
+        crate::layout::process_regions().is_slot_addr(c2, p),
+    ensures
+        c1 == c2,
+{
+    let r = crate::layout::process_regions();
+    let stride = (1usize << r.lg_stride) as int;
+    r.lemma_slot_in_region(c1, p);
+    r.lemma_slot_in_region(c2, p);
+    crate::vspec::class::axiom_class_table_wf(c1);
+    crate::vspec::class::axiom_class_table_wf(c2);
+    assert(r.superblock + c1 * stride <= p < r.superblock + (c1 + 1) * stride);
+    assert(r.superblock + c2 * stride <= p < r.superblock + (c2 + 1) * stride);
+    if c1 < c2 {
+        assert((c1 + 1) * stride <= c2 * stride) by (nonlinear_arith)
+            requires
+                c1 + 1 <= c2,
+                stride >= 0,
+        ;
+    } else if c2 < c1 {
+        assert((c2 + 1) * stride <= c1 * stride) by (nonlinear_arith)
+            requires
+                c2 + 1 <= c1,
+                stride >= 0,
+        ;
+    }
+}
+
+/// A slot address (a guard slab's too) is no page start of the huge
+/// region: its class region lies in the superblock, which
+/// `Regions::separated` keeps apart from the huge region.
+pub proof fn lemma_slot_not_huge(c: int, p: usize)
+    requires
+        crate::layout::process_regions().wf(),
+        crate::layout::process_regions().separated(),
+        crate::layout::process_regions().is_slot_addr(c, p),
+    ensures
+        !crate::layout::process_regions().is_huge_block(p, 1),
+{
+    let r = crate::layout::process_regions();
+    let stride = (1usize << r.lg_stride) as int;
+    r.lemma_slot_in_region(c, p);
+    crate::vspec::class::axiom_class_table_wf(c);
+    assert(r.superblock + c * stride <= r.class_base[c]);
+    assert((c + 1) * stride <= crate::layout::NCLASSES * stride) by (nonlinear_arith)
+        requires
+            c < crate::layout::NCLASSES,
+            stride >= 0,
+    ;
+}
+
 /// `write_bytes(p, 0, n)`, returning the token for what it wrote. Its
 /// `requires` is `write_bytes`' contract for `u8` (`vspec::ptr`): `p` is
 /// non-null and, unless `n` is 0, valid for writes of `n` bytes (a `u8`
