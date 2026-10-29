@@ -148,20 +148,30 @@ pub struct Shared {
 /// Uninterpreted.
 pub uninterp spec fn shared_storage() -> *mut Shared;
 
-/// The permission to the whole `Shared` [`Shared::init`] built, frozen, once
-/// it has: what `init` hands back to its caller, which publishes it.
+/// The permission to the whole `Shared` [`Shared::init`] built, frozen
+/// ([`axiom_shared_built`]), once it has: what `init` hands back to its
+/// caller, which publishes it (`api::Published`).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Built {
     pub tracked perm: Option<&'static PointsTo<Shared>>,
 }
 
+impl Built {
+    /// The permission is to the `Shared` at `p`, initialised, and holds
+    /// the value built there ([`Shared::built_at`]).
+    pub open spec fn at(&self, p: *mut Shared) -> bool {
+        self.perm matches Some(r) && r.ptr() == p && r.is_init() && r.value() == shared_at(p)
+    }
+}
+
 /// The `Shared` built in place at `p`: [`Shared::init`] writes each field
 /// once, before anything reads it, and afterwards nothing writes a field
 /// but through its atomics, locks and cells, so the value is one value.
-/// Uninterpreted; [`axiom_shared_regions`], [`axiom_shared_meta`] and
-/// [`axiom_shared_stats`] fix the fields `built` names from the
-/// permissions `init` wrote them through.
+/// Uninterpreted; [`axiom_shared_regions`] and [`axiom_shared_meta`] fix
+/// the fields `built` names from the permissions `init` wrote them
+/// through before the build is done, and [`axiom_shared_built`] the whole
+/// value.
 pub uninterp spec fn shared_at(p: *mut Shared) -> Shared;
 
 /// Assumption: one `Shared` per process. The process's regions
@@ -226,6 +236,28 @@ impl Shared {
             self.regions == crate::layout::process_regions(),
             self.regions.separated(),
             self.meta.is_process(),
+    {
+    }
+
+    /// A built `Shared` ([`Shared::built`]) is well formed once the
+    /// allocator is published.
+    pub proof fn lemma_built_wf(&self)
+        requires
+            self.built(),
+            crate::api::ready(),
+        ensures
+            self.wf(),
+    {
+    }
+
+    /// A well-formed `Shared` was built ([`Shared::built`]) and the
+    /// allocator is published.
+    pub proof fn lemma_wf_ready(&self)
+        requires
+            self.wf(),
+        ensures
+            self.built(),
+            crate::api::ready(),
     {
     }
 
@@ -1010,6 +1042,23 @@ impl SharedParts {
         &&& self.cgroup.ptr() == field_ptr::<Shared, Deferred>(p, S_CGROUP)
     }
 
+    /// Every field is written (arena 0 and the metadata allocator too,
+    /// whose permissions `init` freezes, arena 0's for the arena registry
+    /// and the allocator's for [`axiom_shared_meta`], so not among these).
+    spec fn written(&self) -> bool {
+        &&& self.free_flags.is_init()
+        &&& self.push_flags.is_init()
+        &&& self.region_hi.is_init()
+        &&& self.huge.is_init()
+        &&& self.gc_interval_ns.is_init()
+        &&& self.policy.is_init()
+        &&& self.config.is_init()
+        &&& self.key.is_init()
+        &&& self.arenas.perm matches Some(a) && a.is_init()
+        &&& self.tcaches.is_init()
+        &&& self.stats.is_init()
+        &&& self.cgroup.is_init()
+    }
 }
 
 /// The class line permissions of the `Shared` at `p`, element by element.
@@ -1021,6 +1070,52 @@ spec fn lines_at(m: Map<int, PointsTo<ClassLine>>, p: *mut Shared) -> bool {
 spec fn tables_at(m: Map<int, PointsTo<SlabTable>>, p: *mut Shared) -> bool {
     elems_at(m, field_ptr::<Shared, SlabTable>(p, S_TABLES), 0, NCLASSES as int)
 }
+
+/// The written fields of the `Shared` at `p` (`Shared::split`'s parts and
+/// class lines, every one initialised, and the tables), joined into the
+/// permission to the whole value, the value [`shared_at`] names, frozen
+/// (`&'static`): readers share it, and nothing can write through it. Its
+/// statistics lock is the one the parts' permission holds. Trusted, as
+/// `arena::axiom_arena_assemble` is: vstd has no way to join typed
+/// permissions, and the permissions cover every field at its offset. The
+/// permissions are used up, so nothing verified writes the fields
+/// afterwards; that nothing unverified does is `shared_at`'s own
+/// assumption. The tables', the class lines' and arena 0's permissions
+/// are frozen already (`vstd::modes::tracked_static_ref`, once `init` has
+/// written them, as the regions' is; arena 0's for the arena registry's
+/// table, `Arenas::init`), so they are only read. So are the regions' and
+/// the metadata allocator's (`regions` and `meta`), frozen once written
+/// ([`Shared::put_head`]); [`axiom_shared_regions`] and
+/// [`axiom_shared_meta`] state those two fields.
+axiom fn axiom_shared_built(
+    tracked parts: SharedParts,
+    tracked regions: &'static PointsTo<Regions>,
+    tracked meta: &'static PointsTo<Meta>,
+    tracked lines: &'static Map<int, PointsTo<ClassLine>>,
+    tracked tables: &'static Map<int, PointsTo<SlabTable>>,
+    tracked arena0: &'static PointsTo<Arena>,
+    p: *mut Shared,
+) -> (tracked r: &'static PointsTo<Shared>)
+    requires
+        parts.at(p),
+        parts.written(),
+        parts.meta.perm is None,
+        regions.ptr() == field_ptr::<Shared, Regions>(p, S_REGIONS),
+        regions.is_init(),
+        meta.ptr() == field_ptr::<Shared, Meta>(p, S_META),
+        meta.is_init(),
+        lines_at(*lines, p),
+        elems_init(*lines, 0, NCLASSES as int),
+        tables_at(*tables, p),
+        elems_init(*tables, 0, NCLASSES as int),
+        arena0.ptr() == field_ptr::<Shared, Arena>(p, S_ARENA0),
+        arena0.is_init(),
+    ensures
+        shared_at(p).stats == parts.stats.value(),
+        r.ptr() == p,
+        r.is_init(),
+        r.value() == shared_at(p),
+;
 
 /// The regions of the `Shared` at `p` are what the permission to its
 /// `regions` field holds, once that permission is frozen
@@ -1054,21 +1149,6 @@ axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
         pm.is_init(),
     ensures
         shared_at(p).meta == pm.value(),
-;
-
-/// The statistics lock of the `Shared` at `p` is what the permission to
-/// its `stats` field holds, once that permission is frozen
-/// (`vstd::modes::tracked_static_ref`, in `init`, after
-/// [`Shared::put_tail`] writes the field), as [`axiom_shared_regions`]
-/// states of the regions: no verified code can write the field again (the
-/// snapshot changes behind the lock), so the value is the built one.
-/// Trusted, as [`axiom_shared_regions`] is.
-axiom fn axiom_shared_stats(tracked ps: &'static PointsTo<StatsLock>, p: *mut Shared)
-    requires
-        ps.ptr() == field_ptr::<Shared, Lock<Snapshot>>(p, S_STATS),
-        ps.is_init(),
-    ensures
-        shared_at(p).stats == ps.value(),
 ;
 
 impl Shared {
@@ -1206,8 +1286,8 @@ impl Shared {
 /// permission to the field it writes or reads (`SharedParts`), in
 /// `init`'s order; `this` is the storage `init` was handed.
 impl Shared {
-    /// `meta` and `regions`; the written metadata allocator, its field's
-    /// permission taken out of `pm` and frozen: nothing writes the field
+    /// `meta` and `regions`; the written metadata allocator and its field's
+    /// permission, taken out of `pm` and frozen: nothing writes the field
     /// again, and the `Shared` built at `this` holds `meta`
     /// ([`axiom_shared_meta`]).
     #[inline(always)]
@@ -1217,7 +1297,7 @@ impl Shared {
         regions: Regions,
         Tracked(pm): Tracked<&'a mut Held<Meta>>,
         Tracked(pr): Tracked<&mut PointsTo<Regions>>,
-    ) -> (r: &'a Meta)
+    ) -> (r: (&'a Meta, Tracked<&'static PointsTo<Meta>>))
         requires
             shared_ok(this),
             old(pm).perm matches Some(m) && m.ptr() == field_ptr::<Shared, Meta>(this, S_META),
@@ -1228,7 +1308,10 @@ impl Shared {
             final(pr).ptr() == old(pr).ptr(),
             final(pr).is_init(),
             final(pr).value() == regions,
-            *r == meta,
+            *r.0 == meta,
+            r.1@.ptr() == field_ptr::<Shared, Meta>(this, S_META),
+            r.1@.is_init(),
+            r.1@.value() == meta,
     {
         proof {
             axiom_shared_layout();
@@ -1244,7 +1327,7 @@ impl Shared {
             proof {
                 axiom_shared_meta(m, this);
             }
-            ptr_ref(meta_ptr, Tracked(m))
+            (ptr_ref(meta_ptr, Tracked(m)), Tracked(m))
         }
     }
 
@@ -1570,7 +1653,7 @@ impl Shared {
         guard_install: bool,
         pac: bool,
         Tracked(steps): Tracked<Map<Step, Once>>,
-        Tracked(_built): Tracked<&mut Built>,
+        Tracked(built): Tracked<&mut Built>,
     ) -> (r: bool)
         requires
             crate::sys::may_abort(),
@@ -1585,6 +1668,7 @@ impl Shared {
             once::shared_steps(steps),
         ensures
             r ==> shared_at(this).built(),
+            r ==> final(built).at(this),
     {
         // Premise (lock order): no allocator lock exists before this
         // `Shared` is built (`api::init` runs `init` once, before the
@@ -1623,7 +1707,7 @@ impl Shared {
         // SAFETY: the caller guarantees `this` is writable and unaliased;
         // every write goes through the permission to its field.
         unsafe {
-            let meta = Shared::put_head(
+            let (meta, Tracked(meta_perm)) = Shared::put_head(
                 this,
                 Meta::owning(regions.meta_base, regions.meta_len, regions.page_size(), space),
                 regions,
@@ -1659,8 +1743,9 @@ impl Shared {
                 Tracked(regions_perm),
             );
             proof {
-                // Every step but `Shared`'s still has its token.
-                assert forall|s: Step| s != Step::Shared implies #[trigger] once::holds(steps, s) by {
+                // Every step but `Shared`'s and `Statics`' still has its
+                // token.
+                assert forall|s: Step| s != Step::Shared && s != Step::Statics implies #[trigger] once::holds(steps, s) by {
                     assert(once::holds(steps0, s));
                 }
             }
@@ -1765,6 +1850,9 @@ impl Shared {
                 // `perm` is the copy's, moved into place with it.
                 table.mirror_watermark(usize_ptr(&line.committed), perm, Tracked(&mut ord));
             }
+            // Frozen: the lines' fields are written once, here, and what
+            // changes in one (the watermark copy) is an atomic.
+            let tracked line_perms = vstd::modes::tracked_static_ref(line_perms);
             let arena0 = Shared::arena0_ptr(this);
             proof {
                 axiom_shared_layout();
@@ -1774,7 +1862,7 @@ impl Shared {
                 return false;
             }
             // Arena 0's permission, frozen: the arena registry's table
-            // keeps it for entry 0.
+            // keeps it for entry 0, and `axiom_shared_built` takes it.
             let tracked a0 = vstd::modes::tracked_static_ref(parts.arena0.perm.tracked_take());
             let tracked huge_once = once::take(&mut steps, Step::Huge);
             match Huge::new(meta, regions, guard_install, Tracked(huge_once), Tracked(&mut ord)) {
@@ -1850,11 +1938,8 @@ impl Shared {
                 Tracked(&mut parts.key),
                 Tracked(&mut parts.stats),
             );
-            // Frozen: nothing writes the field again (the snapshot changes
-            // behind the lock).
-            let tracked stats_perm = vstd::modes::tracked_static_ref(parts.stats);
             proof {
-                axiom_shared_stats(stats_perm, this);
+                built.perm = Some(axiom_shared_built(parts, regions_perm, meta_perm, line_perms, table_perms, a0, this));
                 assert(shared_at(this).regions == regions0);
             }
         }

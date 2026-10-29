@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `ClassTable` | external_body type | UnsafeCell/volatile/transmute | none (assumption) | trusted |
+| `axiom_c..._table` | axiom | allocator invariant | none (assumption) | trusted |
 | `ClassTable::new` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 | `ClassTa...:table` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 | `classes_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
@@ -23,9 +24,26 @@ Tool: none (assumption). Status: trusted.
 pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 ```
 
+## `axiom_class_table`
+
+src/layout/mod.rs:1186. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: what [`class_table`] names, the contents of [`CLASSES`] after init, is what a frozen permission to its storage holds.
+
+```rust
+pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
+    requires
+        t.ptr() == classes_storage(),
+        t.is_init(),
+    ensures
+        class_table() == t.value(),
+;
+```
+
 ## `ClassTable::new`
 
-src/layout/mod.rs:1182. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1196. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -34,7 +52,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ## `ClassTable::table`
 
-src/layout/mod.rs:1197. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1211. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The table, for verified code.
@@ -49,7 +67,7 @@ pub fn table(&self) -> (r: &[Class; NCLASSES])
 
 ## `classes_ptr`
 
-src/layout/mod.rs:1248. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1262. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The storage of [`CLASSES`]' table, as a raw pointer.

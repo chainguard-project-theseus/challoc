@@ -8,22 +8,103 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `Reserved` | external_body type | platform/kernel fact | none (assumption) | trusted |
+| `Reserve...static` | external_body proof | platform/kernel fact | none (assumption) | trusted |
+| `Reserve...sjoint` | external_body proof | platform/kernel fact | none (assumption) | trusted |
+| `Reserve...backed` | external_body proof | platform/kernel fact | none (assumption) | trusted |
+| `try_reserve` | external_body | FFI/syscall | none (assumption) | trusted |
+| `word` | external_body | core library | Kani | trusted |
 | `entry_barrier` | external_body | inline asm | Islaris/Isla | trusted |
 
 ## `Reserved`
 
-src/layout/regions.rs:1914. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:1923. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
-> Ghost ownership of one live reservation that [`try_reserve`] obtained from the kernel.
+> Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
 
 ```rust
 pub tracked struct Reserved
 ```
 
+## `Reserved::is_apart_from_static`
+
+src/layout/regions.rs:1940. Kind: external_body proof. Category: platform/kernel fact.
+Tool: none (assumption). Status: trusted.
+
+> Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
+
+```rust
+pub proof fn is_apart_from_static(tracked &self)
+    requires
+        self.len() > 0,
+    ensures
+        disjoint(self.addr() as int, self.len() as int, shared_static_addr(), shared_static_len()),
+```
+
+## `Reserved::is_disjoint`
+
+src/layout/regions.rs:1957. Kind: external_body proof. Category: platform/kernel fact.
+Tool: none (assumption). Status: trusted.
+
+> Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
+
+```rust
+pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
+    requires
+        old(self).len() > 0,
+        other.len() > 0,
+    ensures
+        *final(self) == *old(self),
+        disjoint(old(self).addr() as int, old(self).len() as int, other.addr() as int, other.len() as int),
+```
+
+## `Reserved::into_unbacked`
+
+src/layout/regions.rs:1976. Kind: external_body proof. Category: platform/kernel fact.
+Tool: none (assumption). Status: trusted.
+
+> The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
+
+```rust
+pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
+    ensures
+        u.addr() == self.addr(),
+        u.len() == self.len(),
+```
+
+## `try_reserve`
+
+src/layout/regions.rs:1996. Kind: external_body. Category: FFI/syscall.
+Tool: none (assumption). Status: trusted.
+
+> Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
+
+Body mints Tracked at line 2013.
+
+```rust
+fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
+    requires
+        crate::sys::may_syscall(),
+    ensures
+        r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && 0 < a && a + len <= user_va_limit(),
+```
+
+## `word`
+
+src/layout/regions.rs:2207. Kind: external_body. Category: core library.
+Tool: Kani. Status: trusted.
+
+> Word `i` of the random bytes (`8 * i` on, the target's byte order).
+
+```rust
+fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
+    requires
+        i < NCLASSES + 3,
+```
+
 ## `entry_barrier`
 
-src/layout/regions.rs:2288. Kind: external_body. Category: inline asm.
+src/layout/regions.rs:2682. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
