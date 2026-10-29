@@ -348,7 +348,8 @@ impl<'a> LockOrder<'a> {
 
 /// Premise (an entry point): the calling thread holds no allocator lock.
 /// Stands in for the token an entry point would hold for its whole call.
-/// Its uses:
+/// Each use is reached from a C entry point (or a thread's start) through
+/// code that holds no allocator lock at that point. Its uses:
 /// - `Huge::usable_size`, whose callers (`api::libc`'s `usable_size`, its
 ///   realloc and `free_usable` paths, and `Shared::zero_huge`) hold no
 ///   allocator lock;
@@ -357,7 +358,17 @@ impl<'a> LockOrder<'a> {
 ///   `api::jemalloc`'s `sdallocx_routed`) are reached from the C entry
 ///   points through code that takes no lock;
 /// - `Shared::init`, which runs before the `Shared` is published, so no
-///   allocator lock exists yet.
+///   allocator lock exists yet;
+/// - the background thread's `main` (`purge::background`), since a new
+///   thread holds no allocator lock;
+/// - the report writers of `api::print` (under `malloc_stats_print`,
+///   `malloc_info` and `malloc_stats`), one token per call to
+///   `stats::collect`, `stats::collect_arena`, `stats::collect_all`,
+///   `Shared::cgroup_now`, `ClassState::is_partial` and
+///   `policy::empty_bytes`: the report's C caller holds no allocator lock,
+///   the report takes none itself, and each of those calls releases every
+///   lock it takes before it returns (none returns a guard), so none is
+///   held at the next call.
 ///
 /// No allocator entry point is re-entered while a lock is held: allocator
 /// code calls nothing that may allocate with a lock held, and a signal

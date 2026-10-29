@@ -1,5 +1,5 @@
-//! Specifications for `config.rs`: `c_void`, `<*const T>::cast` and
-//! `char::to_digit`.
+//! Specifications for `config.rs`: `c_void`, `CStr`, `<*const T>::cast`
+//! and `char::to_digit`.
 
 use vstd::prelude::*;
 
@@ -12,6 +12,12 @@ verus! {
 #[verifier::external_type_specification]
 #[verifier::external_body]
 pub struct ExCVoid(core::ffi::c_void);
+
+/// `core::ffi::CStr`, opaque: verified code only passes the static names
+/// of `config::Value::Str` on.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExCStr(core::ffi::CStr);
 
 /// `<*const T>::cast`: a pointer to `U`; nothing is claimed about it
 /// (`config::linux` only tests the result for null before a trusted read).

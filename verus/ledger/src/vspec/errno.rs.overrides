@@ -1,3 +1,5 @@
 # libc's errno pointer, which Verus does not model.
 set_errno	FFI/syscall	none (assumption)
 get_errno	FFI/syscall	none (assumption)
+# The export wrappers' token for the calling thread's errno, ghost only.
+lend	C-program contract	none (assumption)

@@ -7,11 +7,23 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `VERSION` | external_body const | core library | none (assumption) | trusted |
 | `root` | external_body | allocator invariant | Verus | trusted |
+
+## `VERSION`
+
+src/api/mallctl.rs:104. Kind: external_body const. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> [`VERSION_STR`] for verified code, its value opaque to the verifier.
+
+```rust
+pub(crate) const VERSION: &'static str = VERSION_STR;
+```
 
 ## `root`
 
-src/api/mallctl.rs:947. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:955. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > [`ROOT`].

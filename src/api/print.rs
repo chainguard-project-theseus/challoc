@@ -21,29 +21,46 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::fmt::{self, Write};
 
 use super::jemalloc::malloc_write;
-use super::mallctl::VERSION_STR;
 use crate::QUANTUM;
 use crate::arena::Arena;
 use crate::config::{INERT_KEYS, KEYS, PercpuArena, Value};
 use crate::heap::Shared;
+#[cfg(verus_keep_ghost)]
+use crate::layout::class_table;
 use crate::layout::{CLASSES, NBINS, NCLASSES};
+#[cfg(verus_keep_ghost)]
+use crate::lock::axiom_entry;
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
 use crate::vspec::cbuf;
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::print::base_slab_sizes;
+#[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
+use vstd::prelude::{Tracked, verus};
 use vstd::raw_ptr::ptr_ref;
+#[cfg(verus_keep_ghost)]
+use vstd::string::StringSliceAdditionalSpecFns;
 
 /// `void (*write_cb)(void *cbopaque, const char *s)`.
 pub type WriteCb = Option<unsafe extern "C" fn(*mut c_void, *const c_char)>;
 
-/// The caller's [`WriteCb`], wrapped so that [`Target`] holds no function
-/// pointer type of its own. Transparent, so it has `WriteCb`'s ABI and
-/// the C exports take it as their `write_cb`.
+/// The caller's [`WriteCb`], wrapped so that [`Target`] and
+/// [`malloc_stats_print`] can be inside `verus!` (Verus rejects function
+/// pointer types; it sees this type as opaque). Transparent, so it has
+/// `WriteCb`'s ABI and the C exports take it as their `write_cb`.
 #[repr(transparent)]
 pub struct WriteCallback(pub WriteCb);
+
+verus! {
+
+/// Opaque: `WriteCallback` holds a function pointer type, which Verus
+/// rejects.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+#[allow(dead_code)]
+pub struct ExWriteCallback(WriteCallback);
 
 /// Where a report goes.
 enum Target {
@@ -55,13 +72,49 @@ enum Target {
     Stderr,
 }
 
+/// Ghost permit: the calling thread held no allocator lock when the
+/// report began. The report's external calls ([`emit`]) require it, so
+/// only report code reaches them. Private and opaque (verified code
+/// cannot build one), and made only by [`axiom_unlocked`]; the report's
+/// [`Sink`] holds it from creation to drop, so only the report functions
+/// and the formatting code that writes to the sink can reach it. It does
+/// not track locks taken after it is made: that none is held when the
+/// sink flushes rests on the report taking no allocator lock itself and
+/// on every call it makes that takes one dropping its guard before it
+/// returns, which review checks and Verus does not.
+#[verifier::external_body]
+pub(super) tracked struct Unlocked {
+    _no_copy: (),
+}
+
+/// Trusted: the calling thread holds no allocator lock at this call.
+/// Called only by the report entry points ([`stats_print`],
+/// [`malloc_info`], [`malloc_stats`]), once each, after [`super::shared`]
+/// and right before the report's [`Sink`] is made: their C caller holds
+/// no allocator lock (a premise), and `shared` releases every lock it
+/// takes before it returns. The permit says nothing about locks taken
+/// after this call ([`Unlocked`]).
+axiom fn axiom_unlocked() -> (tracked u: Unlocked);
+
 /// Hand `buf[..len]` to `target`: the report's only calls out of the
-/// allocator. Calls the caller's callback (a function pointer), the
-/// `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
-/// stderr), `fwrite` or `write(2)`. `len < 1024`: the NUL goes at
-/// `buf[len]` and `len` bytes of `buf` are handed on.
+/// allocator. Trusted: calls the caller's callback (a function pointer),
+/// the `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
+/// stderr), `fwrite` or `write(2)`; claims nothing. The permit `u`
+/// limits the calls to report code; it does not show that no allocator
+/// lock is held here (see [`Unlocked`] and the `fwrite` arm for why none
+/// is). `len < 1024`: the body stores the NUL at `buf[len]` and hands on
+/// `len` bytes of `buf`. `no_unwind`, as
+/// `Sink::flush` needs for its `&mut` of the buffer: a C callee cannot
+/// unwind into Rust, and the `panic = "abort"` profiles abort on a panic
+/// (test builds unwind).
+#[verifier::external_body]
 #[inline(always)]
-fn emit(target: &Target, buf: &mut [u8; 1024], len: usize) {
+fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>)
+    requires
+        crate::sys::may_syscall(),
+        len < 1024,
+    no_unwind
+{
     match *target {
         Target::Callback(WriteCallback(Some(cb)), opaque) => {
             buf[len] = 0;
@@ -91,24 +144,50 @@ struct Sink {
     target: Target,
     buf: [u8; 1024],
     len: usize,
+    /// Ghost: the report's permit, for [`emit`] (read only in ghost code).
+    #[allow(dead_code)]
+    permit: Tracked<Unlocked>,
 }
 
 impl Sink {
-    fn new(target: Target) -> Sink {
+    /// Room for the NUL after the buffered bytes, and the sink was built
+    /// where a system call may be made (its flush is one), as
+    /// for `sys::abort::Stderr`.
+    #[verifier::type_invariant]
+    spec fn wf(&self) -> bool {
+        self.len < 1024 && crate::sys::may_syscall()
+    }
+
+    /// Requires the syscall capability: a write may flush to the kernel,
+    /// so a sink is built only where a system call may be made.
+    fn new(target: Target, permit: Tracked<Unlocked>) -> (r: Sink)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r.len == 0,
+    {
         Sink {
             target,
             buf: [0; 1024],
             len: 0,
+            permit,
         }
     }
 
-    /// Hand the buffered bytes to the target ([`emit`]) and empty the
-    /// buffer.
-    fn flush(&mut self) {
+    /// Hand the buffered bytes to the target ([`emit`], under the
+    /// report's permit) and empty the buffer. `emit`'s bound holds by the
+    /// type invariant (`len < 1024`).
+    fn flush(&mut self)
+        ensures
+            final(self).len == 0,
+    {
+        proof {
+            use_type_invariant(&*self);
+        }
         if self.len == 0 {
             return;
         }
-        emit(&self.target, &mut self.buf, self.len);
+        emit(&self.target, &mut self.buf, self.len, Tracked(self.permit.borrow()));
         self.len = 0;
     }
 }
@@ -118,21 +197,72 @@ impl Sink {
 /// `s`, 0 only when its first character does not fit: `room >= 4` always
 /// takes one.
 #[inline(always)]
-fn char_cut(s: &str, room: usize) -> usize {
+fn char_cut(s: &str, room: usize) -> (n: usize)
+    requires
+        // Every `str` fits in memory (at most `isize::MAX` bytes).
+        s.spec_bytes().len() <= usize::MAX,
+    ensures
+        n <= s.spec_bytes().len(),
+        n <= room,
+        vstd::utf8::is_char_boundary(s.spec_bytes(), n as int),
+        s@.len() > 0 && room >= 4 ==> n > 0,
+{
+    proof {
+        lemma_first_char_boundary(s);
+    }
+    let ghost first = vstd::utf8::length_of_first_scalar(s.spec_bytes());
     let mut n = s.len().min(room);
-    while !s.is_char_boundary(n) {
+    assert(n == s.spec_bytes().len() || n == room);
+    while !s.is_char_boundary(n)
+        invariant
+            n <= s.spec_bytes().len(),
+            n <= room,
+            vstd::utf8::is_char_boundary(s.spec_bytes(), 0),
+            s@.len() > 0 ==> 1 <= first <= 4 && first <= s.spec_bytes().len()
+                && vstd::utf8::is_char_boundary(s.spec_bytes(), first),
+            s@.len() > 0 && room >= 4 ==> first <= n,
+        decreases n,
+    {
         n -= 1;
     }
     n
 }
 
-// The cut on a character boundary is `char_cut`; the copy is a byte
-// loop rather than `copy_from_slice`, and the rest of `s` comes from
-// `split_at`.
+/// A non-empty `str` starts with a character of 1 to 4 bytes, which ends
+/// on a character boundary, as 0 is one.
+proof fn lemma_first_char_boundary(s: &str)
+    ensures
+        vstd::utf8::valid_utf8(s.spec_bytes()),
+        vstd::utf8::is_char_boundary(s.spec_bytes(), 0),
+        s@.len() > 0 ==> {
+            let first = vstd::utf8::length_of_first_scalar(s.spec_bytes());
+            &&& 1 <= first <= 4
+            &&& first <= s.spec_bytes().len()
+            &&& vstd::utf8::is_char_boundary(s.spec_bytes(), first)
+        },
+{
+    let b = s.spec_bytes();
+    vstd::utf8::encode_utf8_valid_utf8(s@);
+    vstd::utf8::encode_utf8_decode_utf8(s@);
+    if s@.len() > 0 {
+        assert(b.len() > 0);
+        assert(vstd::utf8::valid_utf8(vstd::utf8::pop_first_scalar(b)));
+        assert(vstd::utf8::is_char_boundary(vstd::utf8::pop_first_scalar(b), 0));
+    }
+}
+
+// The cut on a character boundary is [`char_cut`]; the copy is a byte
+// loop rather than `copy_from_slice`: Verus does not take a `&mut`
+// through a field of a type with an invariant in a call that may unwind.
 impl Write for Sink {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let mut s = s;
-        while !s.is_empty() {
+        while !s.is_empty()
+            decreases s.spec_bytes().len() * 2048 + self.len,
+        {
+            proof {
+                use_type_invariant(&*self);
+            }
             let room = self.buf.len() - 1 - self.len;
             if room == 0 {
                 self.flush();
@@ -141,25 +271,33 @@ impl Write for Sink {
             // Cut on a character boundary: slicing `s` inside a multi-byte
             // character would panic in the middle of a report.
             let b = s.as_bytes();
+            proof {
+                assert(b@.len() == b.len());
+            }
             let n = char_cut(s, room);
             if n == 0 {
                 self.flush();
                 continue;
             }
             let mut i = 0;
-            while i < n {
+            while i < n
+                invariant
+                    crate::sys::may_syscall(),
+                    self.len + n < 1024,
+                    n <= b@.len(),
+                    i <= n,
+                decreases n - i,
+            {
                 self.buf[self.len + i] = b[i];
                 i += 1;
             }
             self.len += n;
-            // `s = &s[n..]`.
+            // `s = &s[n..]`, as `split_at`, whose specification Verus has.
             s = s.split_at(n).1;
         }
         Ok(())
     }
 }
-
-verus! {
 
 /// Parsed `opts`.
 struct Opts {
@@ -176,7 +314,6 @@ struct Opts {
 /// # Safety
 /// `opts + i` is a readable byte of the caller's string.
 #[inline(always)]
-// `c_char` is `i8` on x86_64 and `u8` on aarch64: the cast is needed on one.
 #[allow(clippy::unnecessary_cast)]
 unsafe fn opt_byte(opts: *const c_char, i: usize, Tracked(cc): Tracked<&cbuf::CCall>) -> (r: u8)
     requires
@@ -240,14 +377,22 @@ impl Opts {
     }
 }
 
-} // verus!
-
 /// A configuration value's name (`config::Value::Str`, the `thp` key).
+/// Trusted: `CStr::to_str`, which vstd does not specify; nothing is
+/// claimed about the result.
+#[verifier::external_body]
 fn word(s: &CStr) -> &str {
     s.to_str().unwrap_or("?")
 }
 
-fn decay_ms(ns: u64) -> i64 {
+fn decay_ms(ns: u64) -> (r: i64)
+    ensures
+        r == if ns == purge::NEVER {
+            -1
+        } else {
+            (ns / 1_000_000) as int
+        },
+{
     if ns == purge::NEVER {
         -1
     } else {
@@ -259,29 +404,37 @@ fn decay_ms(ns: u64) -> i64 {
 // Text report.
 // ---------------------------------------------------------------------------
 
-// The indexed loops stand for `for key in KEYS`.
+// The indexed loops stand for `for key in KEYS`: Verus does not specify a
+// slice's `IntoIterator`.
 #[allow(clippy::needless_range_loop)]
-fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result {
+fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+    }
     // jemalloc's banner, not "challoc statistics": consumers key on it (Valkey's
     // `MEMORY MALLOC-STATS` coverage test asserts `*jemalloc*`), just as the
     // JSON form keeps its top-level "jemalloc" object. The `Version:` line
     // that follows says which library produced the report.
     writeln!(out, "___ Begin jemalloc statistics ___")?;
-    writeln!(out, "Version: \"{}\"", VERSION_STR)?;
+    writeln!(out, "Version: \"{}\"", super::mallctl::VERSION)?;
     writeln!(out, "Build-time option settings")?;
     writeln!(out, "  config.debug: false")?;
     writeln!(out, "  config.stats: true")?;
     writeln!(out, "  config.quantum: {QUANTUM}")?;
     writeln!(out, "Run-time option settings")?;
-    // `for key in KEYS`, with an index.
+    // `for key in KEYS`, with an index: Verus does not specify a slice's
+    // `IntoIterator`.
     let keys = KEYS;
     for k in 0..keys.len() {
         let key = &keys[k];
         let note = if bytes_is(key.as_bytes(), b"thp") && shared.policy.thp_forced() {
             " (accepted, no effect; forced to never by a cgroup limit under 1 GiB)"
-        } else if bytes_is(key.as_bytes(), b"percpu_arena")
-            && shared.config.percpu_arena != PercpuArena::Disabled
-        {
+        } else if bytes_is(key.as_bytes(), b"percpu_arena") && shared.config.percpu_arena != PercpuArena::Disabled {
             " (accepted, no effect; caches are per thread)"
         } else {
             ""
@@ -326,7 +479,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         "Arenas: {} ({} automatic), explicit caches: {}",
         snap.narenas,
         shared.arenas.auto(),
-        shared.tcaches.len()
+        crate::vspec::print::tcaches_len(shared)
     )?;
     writeln!(out, "Quantum size: {}", QUANTUM)?;
     writeln!(out, "Page size: {}", shared.regions.page_size())?;
@@ -376,7 +529,8 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     )?;
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.
-    let cgroup = shared.cgroup_now(vstd::prelude::Tracked::assume_new());
+    // Premise (lock order): the report takes no lock around this.
+    let cgroup = shared.cgroup_now(Tracked(&mut axiom_entry()));
     cgroup.sample(crate::sys::now_coarse_ns());
     // The `Cgroup` itself, not the reference to it.
     writeln!(out, "{}", *cgroup)?;
@@ -410,12 +564,8 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     }
     if d.mode != crate::thp::Mode::Off {
         // `1usize << lg`, as `wrapping_shl`: what `<<` compiles to in
-        // release, and the thresholds are atomics nothing bounds.
-        write!(
-            out,
-            " slab_min {}",
-            1usize.wrapping_shl(d.lg_slab_min as u32)
-        )?;
+        // release, and the thresholds are atomics no invariant bounds.
+        write!(out, " slab_min {}", 1usize.wrapping_shl(d.lg_slab_min as u32))?;
         write!(out, " pmd {}", 1usize.wrapping_shl(d.lg_pmd as u32))?;
         match d.lg_meta {
             crate::thp::NO_SIZE => write!(out, " meta off")?,
@@ -428,8 +578,9 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         " class_ranges {} ({} bytes, {} chunks) huge_ranges {} meta_ranges {} failures {}",
         s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
     )?;
-    // Design 17: the host's global mode. `map_or("none",
-    // ThpSetting::name)`, spelled as a `match`.
+    // Design 17: the host's global mode.
+    // `map_or("none", ThpSetting::name)`, spelled as a `match`: Verus does
+    // not take a function item as a closure.
     writeln!(
         out,
         "; host {}",
@@ -442,13 +593,18 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
 /// what it gives arena 0.
-fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
     use crate::policy::{Band, FRAC_ONE};
+    proof {
+        crate::policy::frac_one_value();
+    }
     let p = &shared.policy;
-    if !shared
-        .cgroup_now(vstd::prelude::Tracked::assume_new())
-        .tracked()
-    {
+    // Premise (lock order): the report takes no lock around this.
+    if !shared.cgroup_now(Tracked(&mut axiom_entry())).tracked() {
         return writeln!(out, "cgroup policy: off (not tracked)");
     }
     write!(out, "cgroup policy: ")?;
@@ -478,8 +634,10 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
         crate::sys::cgroup::UNLIMITED => write!(out, " retention_cap max")?,
         c => write!(out, " retention_cap {c}")?,
     }
-    // Out of the `writeln!`, read before the line is formatted.
-    let empty_bytes = crate::policy::empty_bytes(shared, vstd::prelude::Tracked::assume_new());
+    // Out of the `writeln!` so that its ghost argument is erased (the
+    // `verus!` expansion does not reach into a macro's arguments).
+    // Premise (lock order): the report takes no lock around this.
+    let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut axiom_entry()));
     writeln!(
         out,
         " keep {}% empty_bytes {} full_purges {}{} thp {}",
@@ -523,7 +681,11 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
     )
 }
 
-fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
+fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     writeln!(out, "arenas[{}]:", arena.index())?;
     writeln!(out, "  dirty_decay_ms: {}", decay_ms(arena.decay_ns()))?;
     writeln!(
@@ -540,6 +702,8 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         "  small:               {:>14} {:>12} {:>12} {:>12}",
         s.small_allocated, s.small_active, s.small_dirty, s.small_retained
     )?;
+    // `fig_add` is `+` as the build computes it (the figures have no
+    // proved bound).
     writeln!(
         out,
         "  large:               {:>14} {:>12} {:>12} {:>12}  ({} huge runs)",
@@ -570,7 +734,8 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
     )?;
     let mut large_header = false;
     // `for (j, b) in s.bins.iter().enumerate()` with its `continue`, as an
-    // indexed loop and an `if`.
+    // indexed loop and an `if`: Verus specifies neither `Enumerate` nor
+    // `continue` in a `for`.
     for j in 0..NCLASSES {
         let b = &s.bins[j];
         if fig_add(fig_add(b.curslabs, b.empty_slabs), b.purged_slabs) != 0 {
@@ -610,13 +775,23 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
 #[allow(clippy::while_let_loop)]
-fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result {
+fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let mut header = false;
     // `for (j, b) in s.bins.iter().enumerate()` and `for i in
-    // 0..cs.committed_slabs()`, with their `continue`s, spelled out as
-    // `loop`s over the ranges.
+    // 0..cs.committed_slabs()`, with their `continue`s, spelled out: Verus
+    // specifies neither `Enumerate` nor `continue` in a `for`.
     let mut classes = 0..NCLASSES;
-    loop {
+    loop
+        invariant
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            classes.start <= classes.end == NCLASSES,
+        decreases classes.end - classes.start,
+    {
         let j = match classes.next() {
             Some(j) => j,
             None => break,
@@ -631,7 +806,20 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
         let mut hist = [0usize; 9];
         let (mut mismatched, mut unlisted, mut slabs) = (0usize, 0usize, 0usize);
         let mut committed = 0..cs.committed_slabs();
-        loop {
+        loop
+            invariant
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                committed.start <= committed.end <= cs.spec_nslabs(),
+                slabs <= committed.start,
+                mismatched <= committed.start,
+                unlisted <= committed.start,
+                forall|k: int| 0 <= k < 9 ==> hist[k] <= committed.start,
+                *cls == class_table()[cs.spec_class() as int],
+                cls.wf(),
+                nslots == cls.nslots,
+            decreases committed.end - committed.start,
+        {
             let i = match committed.next() {
                 Some(i) => i,
                 None => break,
@@ -652,7 +840,8 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
             if cs.table().bits(i).allocated(nslots) != live {
                 mismatched += 1;
             }
-            if live < nslots && !cs.is_partial(i, vstd::prelude::Tracked::assume_new()) {
+            // Premise (lock order): the report takes no lock around this.
+            if live < nslots && !cs.is_partial(i, Tracked(&mut axiom_entry())) {
                 unlisted += 1;
             }
         }
@@ -668,7 +857,10 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
     Ok(())
 }
 
-/// One class's line of [`slab_histogram`].
+/// One class's line of [`slab_histogram`]. Trusted: `{:?}` of an array is
+/// outside what vstd's formatting specifies; a write has no other effect
+/// the proofs track.
+#[verifier::external_body]
 fn hist_line<W: Write>(
     out: &mut W,
     size: usize,
@@ -685,8 +877,13 @@ fn hist_line<W: Write>(
     )
 }
 
-fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result {
-    let snap = stats::collect(shared, vstd::prelude::Tracked::assume_new());
+fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    let snap = stats::collect(shared, Tracked(&mut axiom_entry()));
     if !o.no_general {
         text_general(out, shared, &snap)?;
     }
@@ -694,9 +891,15 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         // Every arena with its live figures: a scan of every index below
         // the count (`stats::arena_at`). An error returns at once.
         let n = shared.arenas.count() as usize;
-        for i in 0..n {
+        for i in 0..n
+            invariant
+                n <= crate::arena::MAX_ARENAS,
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                shared.wf(),
+        {
             if let Some(a) = stats::arena_at(shared, i) {
-                let s = stats::collect_arena(shared, a, vstd::prelude::Tracked::assume_new());
+                let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
                 text_arena(out, a, &s, !o.no_bins)?;
             }
         }
@@ -719,7 +922,14 @@ fn json_general<W: Write>(
     shared: &Shared,
     snap: &Snapshot,
     arenas_follow: bool,
-) -> fmt::Result {
+) -> fmt::Result
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+    }
     writeln!(
         out,
         "\t\t\"config\": {{\"debug\": false, \"stats\": true, \"quantum\": {QUANTUM}}},"
@@ -727,7 +937,7 @@ fn json_general<W: Write>(
     writeln!(out, "\t\t\"opt\": {{")?;
     let mut first = true;
     // `for key in KEYS` with its `let .. else { continue }`, with an index
-    // and an `if let`.
+    // and an `if let`: Verus does not specify a slice's `IntoIterator`.
     let keys = KEYS;
     for k in 0..keys.len() {
         let key = &keys[k];
@@ -778,10 +988,12 @@ fn json_general<W: Write>(
             None => "none",
         }
     )?;
-    let cg = shared.cgroup_now(vstd::prelude::Tracked::assume_new());
+    // Premise (lock order): the report takes no lock around this.
+    let cg = shared.cgroup_now(Tracked(&mut axiom_entry()));
     cg.sample(crate::sys::now_coarse_ns());
-    // Out of the `writeln!`, as in `policy_line`.
-    let empty_bytes = crate::policy::empty_bytes(shared, vstd::prelude::Tracked::assume_new());
+    // Out of the `writeln!`, as in `policy_line`. Premise (lock order):
+    // the report takes no lock around this.
+    let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut axiom_entry()));
     writeln!(
         out,
         "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}, \"failed_discards\": {}, \"failed_discard_bytes\": {}}},",
@@ -860,7 +1072,10 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         // `for (j, b) in s.bins[..NBINS].iter().enumerate()`, with an
         // index.
         let nbins = nbins();
-        for j in 0..nbins {
+        for j in 0..nbins
+            invariant
+                nbins <= NCLASSES,
+        {
             let b = &s.bins[j];
             writeln!(
                 out,
@@ -884,11 +1099,16 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// The JSON report (`J`): the `jemalloc` object with `version` and
 /// `implementation`, then [`json_general`] and the `stats.arenas` object of
 /// [`json_arena`]s, each under its option letter as in [`text_report`].
-fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result {
-    let snap = stats::collect(shared, vstd::prelude::Tracked::assume_new());
+fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    let snap = stats::collect(shared, Tracked(&mut axiom_entry()));
     writeln!(out, "{{")?;
     writeln!(out, "\t\"jemalloc\": {{")?;
-    writeln!(out, "\t\t\"version\": \"{VERSION_STR}\",")?;
+    writeln!(out, "\t\t\"version\": \"{}\",", super::mallctl::VERSION)?;
     writeln!(out, "\t\t\"implementation\": \"challoc\",")?;
     if !o.no_general {
         json_general(out, shared, &snap, !o.no_arenas)?;
@@ -898,9 +1118,15 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         // Every arena, as in `text_report`.
         let mut first = true;
         let n = shared.arenas.count() as usize;
-        for i in 0..n {
+        for i in 0..n
+            invariant
+                n <= crate::arena::MAX_ARENAS,
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                shared.wf(),
+        {
             if let Some(a) = stats::arena_at(shared, i) {
-                let s = stats::collect_arena(shared, a, vstd::prelude::Tracked::assume_new());
+                let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
                 if !first {
                     writeln!(out, ",")?;
                 }
@@ -916,19 +1142,37 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
 }
 
 /// [`NBINS`], which is at most `NCLASSES` (`layout.rs` asserts it at
-/// compile time), as a constant the compiler folds.
+/// compile time; the verifier cannot see the `exec const`'s value), as a
+/// constant the compiler folds.
 #[inline(always)]
-fn nbins() -> usize {
+fn nbins() -> (r: usize)
+    ensures
+        r <= NCLASSES,
+{
     let n = NBINS;
     if n < NCLASSES { n } else { NCLASSES }
 }
 
-/// [`malloc_stats_print`] into `target`.
+/// [`malloc_stats_print`] into `target`, `opts` read through the call's
+/// token `cc`, whose reads end before the first call back into C (the
+/// sink's `write_cb`, which may change the string).
 #[inline(always)]
-fn stats_print(target: Target, opts: *const c_char, _cc: Tracked<&mut cbuf::CCall>) {
+fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cbuf::CCall>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        // The C contract of `opts` (`malloc_stats_print`'s caller's).
+        opts@.addr != 0 ==> old(cc).reads_str(opts as *const u8),
+{
     let shared = super::shared();
-    let o = Opts::parse(opts, Tracked::assume_new());
-    let mut sink = Sink::new(target);
+    let o = Opts::parse(opts, Tracked(&*cc));
+    proof {
+        if opts@.addr != 0 {
+            cc.open_writes(cbuf::CArg::Str(opts as *const u8));
+        }
+    }
+    let tracked u = axiom_unlocked();
+    let mut sink = Sink::new(target, Tracked(u));
     let _ = if o.json {
         json_report(&mut sink, shared, &o)
     } else {
@@ -939,18 +1183,17 @@ fn stats_print(target: Target, opts: *const c_char, _cc: Tracked<&mut cbuf::CCal
 
 /// `malloc_stats_print(write_cb, cbopaque, opts)`. The C entry points
 /// take `write_cb` as a [`WriteCallback`] (its ABI is the function
-/// pointer's), and `_cc` is the call's token.
-pub fn malloc_stats_print(
-    write_cb: WriteCallback,
-    cbopaque: *mut c_void,
-    opts: *const c_char,
-    _cc: Tracked<cbuf::CCall>,
-) {
-    stats_print(
-        Target::Callback(write_cb, cbopaque),
-        opts,
-        Tracked::assume_new(),
-    )
+/// pointer's), and `cc` is the call's token, minted
+/// for exactly these arguments ([`cbuf::CEntry::StatsPrint`]) by
+/// `exports::stats_print_entry`.
+pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char, Tracked(cc): Tracked<cbuf::CCall>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        cc.fresh(cbuf::CEntry::StatsPrint { opts: opts as *const u8 }),
+{
+    let tracked mut cc = cc;
+    stats_print(Target::Callback(write_cb, cbopaque), opts, Tracked(&mut cc))
 }
 
 // ---------------------------------------------------------------------------
@@ -964,7 +1207,10 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
     // `for b in s.bins[..NBINS].iter()` with its `continue`, with an index
     // and an `if`.
     let nbins = nbins();
-    for j in 0..nbins {
+    for j in 0..nbins
+        invariant
+            nbins <= NCLASSES,
+    {
         let b = &s.bins[j];
         if b.curregs != 0 {
             count = fig_add(count, b.curregs);
@@ -992,21 +1238,29 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
     writeln!(out, "</heap>")
 }
 
-fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
     writeln!(out, "<malloc version=\"1\">")?;
     // Every arena, as in `text_report`.
     let n = shared.arenas.count() as usize;
-    for i in 0..n {
+    for i in 0..n
+        invariant
+            n <= crate::arena::MAX_ARENAS,
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+    {
         if let Some(a) = stats::arena_at(shared, i) {
-            let s = stats::collect_arena(shared, a, vstd::prelude::Tracked::assume_new());
+            let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
             xml_heap(out, a.index() as usize, &s)?;
         }
     }
-    let all = stats::collect_all(
-        shared,
-        vstd::prelude::Tracked::assume_new(),
-        vstd::prelude::Tracked::assume_new(),
-    );
+    let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
+    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut axiom_entry()));
     // The two `iter().map(..).sum()`s over `bins[..NBINS]` and
     // `bins[NBINS..]`, as one indexed loop.
     let (mut count, mut large) = (0usize, 0usize);
@@ -1039,17 +1293,22 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
 /// glibc's `malloc_info(options, stream)`: the `<malloc version="1">`
 /// document with one `<heap>` per arena and the totals. `options` must be
 /// 0 and `stream` non-null, else `-1` with `errno = EINVAL`, as in glibc.
-pub fn malloc_info(
-    options: c_int,
-    stream: *mut libc::FILE,
-    errno: Tracked<&mut ThreadErrno>,
-) -> c_int {
+pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        r == 0 || r == -1,
+        r == -1 <==> options != 0 || stream@.addr == 0,
+        r == -1 ==> final(errno).val() == crate::sys::Errno::EINVAL.0,
+{
     if options != 0 || stream.is_null() {
-        set_errno(crate::sys::Errno::EINVAL.0, errno);
+        set_errno(crate::sys::Errno::EINVAL.0, Tracked(errno));
         return -1;
     }
     let shared = super::shared();
-    let mut sink = Sink::new(Target::File(stream));
+    let tracked u = axiom_unlocked();
+    let mut sink = Sink::new(file_target(stream), Tracked(u));
     let _ = xml_report(&mut sink, shared);
     sink.flush();
     0
@@ -1057,21 +1316,36 @@ pub fn malloc_info(
 
 /// glibc's `malloc_stats()`: a few lines on stderr in glibc's layout, with
 /// challoc's meaning of each figure (see `glibc.rs` for the mapping).
-pub fn malloc_stats() {
+pub fn malloc_stats()
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let shared = super::shared();
-    let mut sink = Sink::new(Target::Stderr);
+    let tracked u = axiom_unlocked();
+    let mut sink = Sink::new(stderr_target(), Tracked(u));
     let _ = glibc_stats(&mut sink, shared);
     sink.flush();
 }
 
 /// The lines of [`malloc_stats`]: the immediately called closure, as a
 /// function.
-fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result {
-    // Every arena, as in `text_report`.
+fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
     let n = shared.arenas.count() as usize;
-    for i in 0..n {
+    for i in 0..n
+        invariant
+            n <= crate::arena::MAX_ARENAS,
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+    {
         if let Some(a) = stats::arena_at(shared, i) {
-            let s = stats::collect_arena(shared, a, vstd::prelude::Tracked::assume_new());
+            let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
             writeln!(sink, "Arena {}:", a.index())?;
             writeln!(
                 sink,
@@ -1081,17 +1355,28 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result {
             writeln!(sink, "in use bytes     = {:>10}", s.small_allocated)?;
         }
     }
-    let all = stats::collect_all(
-        shared,
-        vstd::prelude::Tracked::assume_new(),
-        vstd::prelude::Tracked::assume_new(),
-    );
+    let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
+    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut axiom_entry()));
     writeln!(sink, "Total (incl. mmap):")?;
     writeln!(sink, "system bytes     = {:>10}", all.resident)?;
-    writeln!(sink, "in use bytes     = {:>10}", all.allocated())?;
+    writeln!(sink, "in use bytes     = {:>10}", fig_add(all.small_allocated, all.large_allocated))?;
     writeln!(sink, "max mmap regions = {:>10}", all.large_runs)?;
     writeln!(sink, "max mmap bytes   = {:>10}", all.large_allocated)
 }
+
+/// `Target::File(stream)`.
+#[inline(always)]
+fn file_target(stream: *mut libc::FILE) -> Target {
+    Target::File(stream)
+}
+
+/// `Target::Stderr`.
+#[inline(always)]
+fn stderr_target() -> Target {
+    Target::Stderr
+}
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see `libc.rs`).
@@ -1099,25 +1384,70 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result {
 
 #[cfg(not(test))]
 mod exports {
+    #[cfg(verus_keep_ghost)]
+    use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::{c_char, c_int, c_void};
+    use vstd::prelude::{Tracked, verus};
 
-    export_pair! {
+    // `verified_export_pair!` expands inside its own `verus!`; this outer
+    // block holds it (Verus passes the invocation through) and the mint.
+    verus! {
+
+    /// Trusted (the C contract of the entry point, `vspec::cbuf`): the
+    /// token of this call from C, through the entry point and with the
+    /// arguments `e` names, which C passed under its contract
+    /// ([`CCall::fresh`]: the string `opts`, of memory of the program's,
+    /// and its view). Private to this module, whose functions are the C
+    /// entry points: [`stats_print_entry`], the verified half of the
+    /// `malloc_stats_print` exports, mints its call's token once, from its
+    /// own parameters. A string that breaks the contract (not
+    /// NUL-terminated, wrapping the address space, in challoc's memory
+    /// other than a published counter) makes it false.
+    axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+        requires
+            e is StatsPrint,
+        ensures
+            c.fresh(e),
+    ;
+
+    /// The body of the `malloc_stats_print` exports: the call's token for
+    /// `opts`, and the Rust entry point.
+    #[inline(always)]
+    fn stats_print_entry(write_cb: super::WriteCallback, cbopaque: *mut c_void, opts: *const c_char)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+    {
+        let tracked cc = axiom_c_call(CEntry::StatsPrint { opts: opts as *const u8 });
+        super::malloc_stats_print(write_cb, cbopaque, opts, Tracked(cc))
+    }
+
+    verified_export_pair! {
         fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
-            super::malloc_stats_print(write_cb, cbopaque, opts, vstd::prelude::Tracked::assume_new())
+            stats_print_entry(write_cb, cbopaque, opts)
         }
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
-        // Unverified: the `errno` token is a placeholder until the export
-        // is verified.
-        super::malloc_info(options, stream, vstd::prelude::Tracked::assume_new())
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::malloc_info(options, stream, Tracked(&mut errno))
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_stats() {
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
         super::malloc_stats()
     }
+
+    } // verus!
 }
 
 #[cfg(test)]
@@ -1170,10 +1500,10 @@ mod tests {
     fn sink_splits_a_character_at_the_buffer_end() {
         let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
         CAPTURE.lock().unwrap().clear();
-        let mut sink = Sink::new(Target::Callback(
-            WriteCallback(Some(capture)),
-            0xC0FFEE as *mut c_void,
-        ));
+        let mut sink = Sink::new(
+            Target::Callback(WriteCallback(Some(capture)), 0xC0FFEE as *mut c_void),
+            Tracked::assume_new(),
+        );
         let head = "x".repeat(1022);
         sink.write_str(&head).unwrap();
         sink.write_str("\u{e9} tail").unwrap();

@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `ffi::c_void` | ext_type_spec | core library | Kani | trusted |
+| `ffi::CStr` | ext_type_spec | core library | Kani | trusted |
 | `<*const...t::<U>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `char::to_digit` | assume_spec | core library | Kani | trusted |
 
@@ -22,9 +23,20 @@ Tool: Kani. Status: trusted.
 pub struct ExCVoid(core::ffi::c_void);
 ```
 
+## `core::ffi::CStr`
+
+src/vspec/config.rs:20. Kind: ext_type_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `core::ffi::CStr`, opaque: verified code only passes the static names of `config::Value::Str` on.
+
+```rust
+pub struct ExCStr(core::ffi::CStr);
+```
+
 ## `<*const T>::cast::<U>`
 
-src/vspec/config.rs:18. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/config.rs:24. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*const T>::cast`: a pointer to `U`; nothing is claimed about it (`config::linux` only tests the result for null before a trusted read).
@@ -35,7 +47,7 @@ pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U
 
 ## `char::to_digit`
 
-src/vspec/config.rs:23. Kind: assume_spec. Category: core library.
+src/vspec/config.rs:29. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `char::to_digit` (`core` documentation): the digits are `0`..`9`, then `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count; panics for a radix outside `2..=36`.
