@@ -514,4 +514,21 @@ impl CCall {
     }
 }
 
+/// The permission to the `T` a C caller's out-pointer names, if it is not
+/// null: the token of the call for that argument, handed to the Rust
+/// entry point; its writes take it out and put it back.
+///
+/// The same shape as `arena::Held` (a tracked `Option` of a permission,
+/// so that a `&mut` to it is ghost) but not the same thing, and not to be
+/// merged with it: `Held` is an allocator-internal field's storage under
+/// construction, while a `COut`'s specification is tied to the C caller's
+/// pointer argument (it holds the permission exactly when that pointer is
+/// not null, and it is that pointer's), which lands with the proofs of the
+/// entry points that write through one.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct COut<T> {
+    tracked perm: Option<vstd::raw_ptr::PointsTo<T>>,
+}
+
 } // verus!

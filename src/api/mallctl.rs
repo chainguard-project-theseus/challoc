@@ -3292,7 +3292,7 @@ mod tests {
     #[test]
     fn batch_query_rejects_a_count_whose_triples_overflow() {
         let mib = mib_of("experimental.utilization.batch_query");
-        let p = malloc(16);
+        let p = malloc(16, vstd::prelude::Tracked::assume_new());
         let ptrs = [p as *const c_void];
         let mut out = [0usize; 1];
         let mut outlen = size_of::<usize>();
@@ -3312,7 +3312,7 @@ mod tests {
             newlen,
         );
         assert_eq!(rc, EINVAL);
-        free(p);
+        free(p, vstd::prelude::Tracked::assume_new());
     }
 
     fn get_mib<T: Copy + Default>(mib: &[usize]) -> T {
@@ -3941,7 +3941,9 @@ mod tests {
             assert_eq!(call("thread.tcache.flush"), 0);
             let e0 = epoch();
             let a0: usize = get("stats.allocated");
-            live = (0..300).map(|_| malloc(200)).collect();
+            live = (0..300)
+                .map(|_| malloc(200, vstd::prelude::Tracked::assume_new()))
+                .collect();
             assert_eq!(get::<usize>("stats.allocated"), a0, "no epoch, no change");
             let e1 = epoch();
             assert_eq!(e1, e0 + 1);
@@ -3952,7 +3954,7 @@ mod tests {
             }
             assert!(attempt < 19, "allocated {a0} -> {a1} on every attempt");
             for p in live.drain(..) {
-                free(p);
+                free(p, vstd::prelude::Tracked::assume_new());
             }
         }
         let active: usize = get("stats.active");
@@ -4006,7 +4008,7 @@ mod tests {
             ENOENT
         );
         for p in live {
-            free(p);
+            free(p, vstd::prelude::Tracked::assume_new());
         }
     }
 
@@ -4137,8 +4139,8 @@ mod tests {
         assert_eq!(set("arena.4096.dirty_decay_ms", default), 0);
         assert_eq!(get::<isize>("arena.4096.dirty_decay_ms"), default);
         // Free everything in the arena, then purge: its Empty slab goes.
-        dallocx(p, 0);
-        dallocx(h, 0);
+        dallocx(p, 0, vstd::prelude::Tracked::assume_new());
+        dallocx(h, 0, vstd::prelude::Tracked::assume_new());
         let arena = s
             .arena(a as u16, vstd::prelude::Tracked::assume_new())
             .unwrap();
@@ -4224,7 +4226,7 @@ mod tests {
             0,
             "destroy is repeatable"
         );
-        dallocx(again, 0);
+        dallocx(again, 0, vstd::prelude::Tracked::assume_new());
     }
 
     #[test]
@@ -4240,19 +4242,21 @@ mod tests {
         let dp: *const u64 = get("thread.deallocatedp");
         assert!(!ap.is_null() && !dp.is_null());
         assert_eq!(unsafe { *ap }, a0);
-        let p = malloc(1000);
+        let p = malloc(1000, vstd::prelude::Tracked::assume_new());
         let size = crate::layout::class_size_of(1000).unwrap() as u64;
         // The pointer is stale until a counter is read again.
         assert_eq!(unsafe { *ap }, a0);
         assert_eq!(get::<u64>("thread.allocated"), a0 + size);
         assert_eq!(unsafe { *ap }, a0 + size, "materialised by the read");
-        free(p);
+        free(p, vstd::prelude::Tracked::assume_new());
         assert_eq!(get::<u64>("thread.deallocated"), d0 + size);
         assert_eq!(unsafe { *dp }, d0 + size);
         // thread.tcache.flush empties this thread's caches.
-        let many: Vec<*mut u8> = (0..64).map(|_| malloc(48)).collect();
+        let many: Vec<*mut u8> = (0..64)
+            .map(|_| malloc(48, vstd::prelude::Tracked::assume_new()))
+            .collect();
         for q in many {
-            free(q);
+            free(q, vstd::prelude::Tracked::assume_new());
         }
         let c = crate::layout::class_of(48).unwrap();
         let h = heap::heap_for_thread(s).unwrap();
@@ -4268,15 +4272,15 @@ mod tests {
         let h = heap::heap_for_thread(s).unwrap();
         assert!(h.cache(c).is_none(), "caches were freed");
         assert_eq!(get::<u64>("thread.allocated"), a_before);
-        let q = malloc(48);
+        let q = malloc(48, vstd::prelude::Tracked::assume_new());
         assert!(h.cache(c).is_none(), "no cache is created while disabled");
         assert_eq!(get::<u64>("thread.allocated"), a_before + 48);
-        free(q);
+        free(q, vstd::prelude::Tracked::assume_new());
         assert!(h.cache(c).is_none());
         assert_eq!(set("thread.tcache.enabled", true), 0);
-        let q = malloc(48);
+        let q = malloc(48, vstd::prelude::Tracked::assume_new());
         assert!(h.cache(c).is_some(), "caches come back");
-        free(q);
+        free(q, vstd::prelude::Tracked::assume_new());
         // thread.arena moves the home arena.
         let home: c_uint = get("thread.arena");
         assert_eq!(home as u16, h.arena());
@@ -4284,13 +4288,13 @@ mod tests {
         assert_eq!(set("thread.arena", a), 0);
         assert_eq!(get::<c_uint>("thread.arena"), a);
         // Plain malloc comes from that arena through the thread's own caches.
-        let q = malloc(200);
+        let q = malloc(200, vstd::prelude::Tracked::assume_new());
         assert_eq!(
             s.classify_free(q, vstd::prelude::Tracked::assume_new())
                 .map(|x| x.1),
             Ok(a as u16)
         );
-        free(q);
+        free(q, vstd::prelude::Tracked::assume_new());
         assert_eq!(set("thread.arena", 4000 as c_uint), EFAULT);
         assert_eq!(set("thread.arena", 5000 as c_uint), EFAULT);
         assert_eq!(set("thread.arena", home), 0);
@@ -4300,7 +4304,7 @@ mod tests {
         let flags = mallocx_tcache(t as u16) as c_int;
         let e = mallocx(200, flags);
         let c = crate::layout::class_of(200).unwrap();
-        dallocx(e, flags);
+        dallocx(e, flags, vstd::prelude::Tracked::assume_new());
         let th = s.tcaches.get(t as u16).unwrap();
         assert!(th.cache_in(th.arena(), c).unwrap().len() >= 1);
         assert_eq!(set("tcache.flush", t), 0);
@@ -4446,18 +4450,26 @@ mod tests {
         let mid = mallocx(8 << 10, 0);
         assert!(crate::layout::class_of(8 << 10).unwrap() >= NBINS);
         assert_eq!(owner_of(s, mid as *const c_void), Some(home));
-        dallocx(mid, 0);
-        dallocx(m, 0);
-        dallocx(h, 0);
+        dallocx(mid, 0, vstd::prelude::Tracked::assume_new());
+        dallocx(m, 0, vstd::prelude::Tracked::assume_new());
+        dallocx(h, 0, vstd::prelude::Tracked::assume_new());
         // A freed slot (direct release, so the bit is clear) is zeros too.
         let gone = ptrs[2] as *const c_void;
-        dallocx(ptrs[2], MALLOCX_TCACHE_NONE as c_int);
+        dallocx(
+            ptrs[2],
+            MALLOCX_TCACHE_NONE as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(utilization(s, gone, true), Utilization::ZERO);
         assert_eq!(owner_of(s, gone), None);
         assert_eq!(owner_of(s, ptrs[3] as *const c_void), Some(first));
         for (i, p) in ptrs.into_iter().enumerate() {
             if i != 2 {
-                dallocx(p, MALLOCX_TCACHE_NONE as c_int);
+                dallocx(
+                    p,
+                    MALLOCX_TCACHE_NONE as c_int,
+                    vstd::prelude::Tracked::assume_new(),
+                );
             }
         }
     }
