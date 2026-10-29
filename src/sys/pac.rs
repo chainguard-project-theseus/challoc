@@ -33,6 +33,20 @@ use vstd::prelude::*;
 
 verus! {
 
+/// The signed form of `p` under `modifier`, as `pacda` with data key A
+/// computes it: one value per pair, because every thread signs with the
+/// key it got at `exec` and inherited through `clone`, provided the
+/// program never resets that key
+/// (`prctl(PR_PAC_RESET_KEYS)` resets the calling thread's alone, after
+/// which entries signed before fail to authenticate) and never toggles it
+/// (`prctl(PR_PAC_SET_ENABLED_KEYS)`: a disabled key makes `pacda` and
+/// `autda` leave the pointer as it is).
+pub uninterp spec fn spec_sign(p: usize, modifier: usize) -> usize;
+
+/// The authenticated form of `p` under `modifier`, as `autda` computes
+/// it.
+pub uninterp spec fn spec_auth(p: usize, modifier: usize) -> usize;
+
 /// The end of the user addresses the kernel hands out to a process that
 /// asks for no more (an `mmap` hint above them): `2^VA_BITS` of the
 /// kernel, capped by its default map window. Left abstract, because
@@ -47,6 +61,18 @@ pub uninterp spec fn user_va_limit() -> int;
 pub axiom fn axiom_user_va_limit()
     ensures
         user_va_limit() <= 0x1_0000_0000_0000,
+;
+
+/// Trusted (Armv8.3 PAuth, and the identity on x86_64): authenticating
+/// what signing a plain user address returned, with the same modifier,
+/// gives the address back. `pacda` puts the PAC in the bits above VA_BITS
+/// and `autda` checks it and restores them from bit 55, which is clear
+/// below [`user_va_limit`].
+pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
+    requires
+        p < user_va_limit(),
+    ensures
+        #[trigger] spec_auth(spec_sign(p, modifier), modifier) == p,
 ;
 
 } // verus!

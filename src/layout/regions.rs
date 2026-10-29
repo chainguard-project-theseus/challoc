@@ -2693,3 +2693,32 @@ fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)
 }
 
 } // verus!
+
+verus! {
+
+impl Regions {
+    /// A slot start lies below `sys::pac::user_va_limit`: inside
+    /// its class region, inside its stride of the superblock, which
+    /// [`separated`](Regions::separated) puts below it. What lets a slot
+    /// pointer round-trip through `pac::sign` and `pac::auth`.
+    pub proof fn lemma_slot_below_user_va(self, c: int, p: usize)
+        requires
+            self.wf(),
+            self.separated(),
+            self.is_slot(c, p),
+        ensures
+            (p as int) < crate::sys::pac::user_va_limit(),
+    {
+        let stride = (1usize << self.lg_stride) as int;
+        self.lemma_slot_in_region(c, p);
+        crate::vspec::class::axiom_class_table_wf(c);
+        assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+            requires
+                c < NCLASSES,
+                stride >= 0,
+        ;
+    }
+
+}
+
+} // verus!
