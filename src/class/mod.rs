@@ -5475,3 +5475,164 @@ impl ClassState {
 }
 
 } // verus!
+
+verus! {
+
+/// An empty range has no addresses.
+pub proof fn lemma_aset_empty(a: Seq<int>, lo: int, hi: int)
+    requires
+        hi <= lo,
+    ensures
+        aset(a, lo, hi) == VSet::<int>::empty(),
+{
+    broadcast use lemma_aset;
+    assert(aset(a, lo, hi) =~= VSet::<int>::empty());
+}
+
+/// Two distinct halves with disjoint addresses make a distinct whole.
+#[verifier::spinoff_prover]
+pub proof fn lemma_distinct_join(a: Seq<int>, lo: int, mid: int, hi: int)
+    requires
+        lo <= mid <= hi,
+        distinct(a, lo, mid),
+        distinct(a, mid, hi),
+        aset(a, lo, mid).disjoint(aset(a, mid, hi)),
+    ensures
+        distinct(a, lo, hi),
+{
+    broadcast use lemma_aset;
+    assert forall|i: int, j: int| lo <= i < j < hi implies a[i] != a[j] by {
+        if i < mid && mid <= j {
+            assert(aset(a, lo, mid).contains(a[i]));
+            assert(aset(a, mid, hi).contains(a[j]));
+        }
+    }
+}
+
+/// `c` is `a[off..off + n]` reversed: the same addresses, as distinct.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_rev(a: Seq<int>, c: Seq<int>, off: int, n: int)
+    requires
+        0 <= n,
+        forall|k: int| 0 <= k < n ==> #[trigger] c[k] == a[off + n - 1 - k],
+    ensures
+        aset(c, 0, n) == aset(a, off, off + n),
+        distinct(c, 0, n) ==> distinct(a, off, off + n),
+{
+    broadcast use lemma_aset;
+    assert forall|x: int| aset(c, 0, n).contains(x) <==> aset(a, off, off + n).contains(x) by {
+        if aset(c, 0, n).contains(x) {
+            let k = choose|k: int| 0 <= k < n && c[k] == x;
+            assert(a[off + n - 1 - k] == x);
+        }
+        if aset(a, off, off + n).contains(x) {
+            let i = choose|i: int| off <= i < off + n && a[i] == x;
+            assert(c[off + n - 1 - i] == x);
+        }
+    }
+    assert(aset(c, 0, n) =~= aset(a, off, off + n));
+    if distinct(c, 0, n) {
+        assert forall|i: int, j: int| off <= i < j < off + n implies a[i] != a[j] by {
+            assert(c[off + n - 1 - i] == a[i]);
+            assert(c[off + n - 1 - j] == a[j]);
+        }
+    }
+}
+
+/// [`gather`] of keys `0..hi`, `hi > 0`, into a bag of their own.
+#[verifier::spinoff_prover]
+pub proof fn gather_all(tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<int>, loc: vstd::resource::Loc, hi: int) -> (tracked bag: GhostSubset<int>)
+    requires
+        0 < hi,
+        keyed(*old(m), a, loc, 0, hi),
+    ensures
+        bag.id() == loc,
+        bag@ == aset(a, 0, hi),
+        distinct(a, 0, hi),
+        keyed_frame(*final(m), *old(m), 0, hi),
+{
+    broadcast use lemma_aset;
+    let ghost m0 = *m;
+    assert(m0.contains_key(0) && m0[0].id() == loc && m0[0]@ == a[0]);
+    let tracked t = m.tracked_remove(0);
+    let tracked mut bag = t.subset();
+    let ghost m1 = *m;
+    let ghost b1 = bag@;
+    assert(bag.id() == loc);
+    assert(keyed(m1, a, loc, 1, hi)) by {
+        reveal_with_fuel(keyed, 1);
+        assert forall|i: int| #![trigger m1.contains_key(i)] #![trigger m1[i]] 1 <= i < hi implies m1.contains_key(i) && m1[i].id() == loc && m1[i]@ == a[i] by {
+            assert(m0.contains_key(i));
+            assert(m0[i] == m1[i]);
+        }
+    }
+    gather(&mut bag, m, a, 1, hi);
+    lemma_aset_front(a, 0, hi);
+    assert(bag@ =~= aset(a, 0, hi));
+    assert forall|i: int, j: int| 0 <= i < j < hi implies a[i] != a[j] by {
+        if i == 0 {
+            lemma_aset_step(a, 1, j, hi);
+            assert(b1.contains(a[0]));
+        }
+    }
+    assert forall|k: int| #![trigger m.contains_key(k)] #![trigger m0.contains_key(k)] !(0 <= k < hi) implies {
+        &&& m.contains_key(k) == m0.contains_key(k)
+        &&& m0.contains_key(k) ==> m[k] == m0[k]
+    } by {
+        assert(m.contains_key(k) == m1.contains_key(k));
+    }
+    assert(keyed_frame(*m, m0, 0, hi));
+    bag
+}
+
+/// Move the tokens of `a[lo..hi]` (keys `lo..hi` of `m`) into `bag`; they
+/// are distinct because tokens of one authority are disjoint.
+#[verifier::spinoff_prover]
+pub proof fn gather(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<int>, lo: int, hi: int)
+    requires
+        lo <= hi,
+        keyed(*old(m), a, old(bag).id(), lo, hi),
+    ensures
+        final(bag).id() == old(bag).id(),
+        final(bag)@ == old(bag)@.union(aset(a, lo, hi)),
+        old(bag)@.disjoint(aset(a, lo, hi)),
+        distinct(a, lo, hi),
+        keyed_frame(*final(m), *old(m), lo, hi),
+    decreases hi - lo,
+{
+    broadcast use lemma_aset;
+    if lo < hi {
+        let ghost b0 = bag@;
+        let ghost m0 = *m;
+        assert(m0.contains_key(lo) && m0[lo].id() == bag.id() && m0[lo]@ == a[lo]);
+        let tracked t = m.tracked_remove(lo);
+        bag.combine_singleton(t);
+        let ghost b1 = bag@;
+        assert forall|i: int| #![trigger m.contains_key(i)] #![trigger m[i]] lo + 1 <= i < hi implies {
+            &&& m.contains_key(i)
+            &&& m[i].id() == bag.id()
+            &&& m[i]@ == a[i]
+        } by {
+            assert(m0.contains_key(i));
+        }
+        gather(bag, m, a, lo + 1, hi);
+        lemma_aset_front(a, lo, hi);
+        assert(bag@ =~= b0.union(aset(a, lo, hi)));
+        assert forall|i: int, j: int| lo <= i < j < hi implies a[i] != a[j] by {
+            if i == lo {
+                assert(aset(a, lo + 1, hi).contains(a[j]));
+                assert(b1.contains(a[lo]));
+            }
+        }
+        assert forall|k: int| #![trigger m.contains_key(k)] #![trigger m0.contains_key(k)] !(lo <= k < hi) implies {
+            &&& m.contains_key(k) == m0.contains_key(k)
+            &&& m0.contains_key(k) ==> m[k] == m0[k]
+        } by {
+        }
+    } else {
+        assert(aset(a, lo, hi) =~= VSet::empty());
+        assert(bag@ =~= bag@.union(aset(a, lo, hi)));
+    }
+}
+
+} // verus!

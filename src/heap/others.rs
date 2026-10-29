@@ -11,8 +11,16 @@ use crate::layout::NCLASSES;
 use crate::arena::field_at;
 
 use super::{CacheHeader, CachePerms, FOREIGN, Heap, Shared};
+#[cfg(verus_keep_ghost)]
+use crate::arena::field_ptr;
 use crate::meta::MetaClaim;
+#[cfg(verus_keep_ghost)]
+use vstd::layout::{align_of, size_of};
+#[cfg(verus_keep_ghost)]
+use vstd::map::Map;
 use vstd::prelude::verus;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int};
 use vstd::raw_ptr::{PointsTo, PointsToRaw};
 
@@ -59,6 +67,149 @@ pub tracked struct NodeHead {
     pub rest: PointsToRaw,
     pub claim: MetaClaim,
 }
+
+
+/// The address of node `n`'s `next` field (the `const` assertion below).
+pub open spec fn next_ptr(n: *mut ArenaCaches) -> *mut *mut ArenaCaches {
+    field_ptr::<ArenaCaches, *mut ArenaCaches>(n, 8)
+}
+
+/// The address of node `n`'s `pad` field (the `const` assertion below).
+pub open spec fn pad_ptr(n: *mut ArenaCaches) -> *mut u8 {
+    field_ptr::<ArenaCaches, u8>(n, 2)
+}
+
+/// The size of the block an `others` node is carved from
+/// ([`node_block_layout`]).
+pub open spec fn block_size() -> int {
+    size_of::<ArenaCaches>() as int + 64 * 15
+}
+
+/// [`block_size`]'s value: the node's lines and the 15 spare ones.
+pub(super) proof fn lemma_block_size()
+    ensures
+        block_size() == 64 + 64 * NCLASSES + 64 * 15,
+{
+}
+
+/// The block node `n` was carved from, `pad` lines below it
+/// (`Heap::other_caches`), as `Heap::destroy` computes it.
+pub open spec fn node_block(n: *mut ArenaCaches, pad: u8) -> *mut u8 {
+    crate::vspec::ptr::ptr_sub(n as *mut u8, (64 * pad) as usize)
+}
+
+/// The bytes of the block node `n` was carved from, `pad` lines below it,
+/// outside the node's `arena`, `pad` and `next` fields and its headers.
+pub open spec fn rest_dom(n: *mut ArenaCaches, pad: u8) -> Set<int> {
+    let (a, b) = (n@.addr as int, n@.addr - 64 * pad);
+    Set::range(b, b + block_size()).difference(Set::range(a, a + 3)).difference(Set::range(a + 8, a + 16)).difference(
+        Set::range(a + 64, a + 64 + 64 * NCLASSES),
+    )
+}
+
+/// The permissions to node `n`'s block in `nh` other than to its
+/// `arena` and `next` fields: its `pad` field, holding the node's line
+/// offset in the block, the rest of the block outside the node's
+/// headers, and the block's claim from the process's `Meta`.
+pub open spec fn block_ok(nh: NodeHead, n: *mut ArenaCaches) -> bool {
+    let pad = nh.pad.value();
+    &&& nh.pad.ptr() == pad_ptr(n)
+    &&& nh.pad.is_init()
+    &&& pad < 16
+    &&& 64 * pad <= n@.addr
+    &&& nh.rest.dom() == rest_dom(n, pad)
+    &&& nh.rest.provenance() == n@.provenance
+    &&& nh.claim.held(crate::meta::process_live_id(), node_block(n, pad), block_size(), 64)
+}
+
+/// Node `i` of the list `l` with keys `k` has its first-line permissions
+/// in `heads`: its `arena` holds its key and its `next` the node after it,
+/// null after the last; and the rest of its block's
+/// ([`block_ok`]).
+pub open spec fn head_ok(heads: Map<*mut ArenaCaches, NodeHead>, l: Seq<*mut ArenaCaches>, k: Seq<u16>, i: int) -> bool {
+    let n = l[i];
+    &&& heads.contains_key(n)
+    &&& heads[n].arena.ptr() == n as *mut u16
+    &&& heads[n].arena.is_init()
+    &&& heads[n].arena.value() == k[i]
+    &&& heads[n].next.ptr() == next_ptr(n)
+    &&& heads[n].next.is_init()
+    &&& i + 1 < l.len() ==> heads[n].next.value() == l[i + 1]
+    &&& i + 1 == l.len() ==> heads[n].next.value()@.addr == 0
+    &&& block_ok(heads[n], n)
+}
+
+/// Every node of the list `l` with keys `k` is [`head_ok`] in `heads`
+/// ([`Heap::list_ok`]). Opaque: a proof that needs a node's head
+/// reveals it.
+#[verifier::opaque]
+pub open spec fn heads_ok(heads: Map<*mut ArenaCaches, NodeHead>, l: Seq<*mut ArenaCaches>, k: Seq<u16>) -> bool {
+    forall|i: int| 0 <= i < l.len() ==> #[trigger] head_ok(heads, l, k, i)
+}
+
+/// `p`, 64-byte aligned, plus `off` (a multiple of `size_of::<T>()`,
+/// which divides 64) is aligned for a `T`.
+pub(super) proof fn lemma_field_aligned<T>(p: int, off: int)
+    requires
+        p % 64 == 0,
+        0 < size_of::<T>(),
+        64int % (size_of::<T>() as int) == 0,
+        off % (size_of::<T>() as int) == 0,
+    ensures
+        (p + off) % (align_of::<T>() as int) == 0,
+{
+    broadcast use vstd::layout::group_align_properties;
+
+    let s = size_of::<T>() as int;
+    crate::layout::lemma_aligned_down(p, 64, s);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p, s);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(off, s);
+    let (a, b) = (p / s, off / s);
+    assert(p + off == (a + b) * s) by (nonlinear_arith)
+        requires
+            p == s * a + p % s,
+            off == s * b + off % s,
+            p % s == 0,
+            off % s == 0;
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(a + b, s);
+    crate::layout::lemma_aligned_down(p + off, s, align_of::<T>() as int);
+}
+
+/// Pairwise distinct `u16`s are at most 2^16 (the bound on the `others`
+/// list, whose nodes' keys are: `Heap::lemma_list_bound`).
+pub(super) proof fn lemma_distinct_u16s(k: Seq<u16>)
+    requires
+        forall|i: int, j: int| #![trigger k[i], k[j]] 0 <= i < j < k.len() ==> k[i] != k[j],
+    ensures
+        k.len() <= 0x1_0000,
+{
+    let ki = k.map_values(|x: u16| x as int);
+    assert(ki.no_duplicates()) by {
+        assert forall|i: int, j: int| 0 <= i < ki.len() && 0 <= j < ki.len() && i != j implies ki[i] != ki[j] by {
+            if i < j {
+                assert(k[i] != k[j]);
+            } else {
+                assert(k[j] != k[i]);
+            }
+        }
+    }
+    ki.unique_seq_to_set();
+    let r = vstd::set_lib::set_int_range(0, 0x1_0000);
+    assert(ki.to_set().subset_of(r)) by {
+        assert forall|x: int| #[trigger] ki.to_set().contains(x) implies r.contains(x) by {
+            let i = choose|i: int| 0 <= i < ki.len() && ki[i] == x;
+            assert(ki[i] == k[i] as int);
+        }
+    }
+    vstd::set_lib::lemma_int_range(0, 0x1_0000);
+    vstd::set_lib::lemma_len_subset(ki.to_set(), r);
+}
+
+// Verus checks the sizes the node offsets use.
+#[cfg(feature = "quantum16")]
+global layout ArenaCaches is size == 3392, align == 64;
+#[cfg(feature = "quantum8")]
+global layout ArenaCaches is size == 3648, align == 64;
 
 } // verus!
 

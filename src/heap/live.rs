@@ -757,3 +757,36 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
 }
 
 } // verus!
+
+verus! {
+
+impl Live {
+    /// A live slot's token and any other token of its class's authority
+    /// (a cached slot's, a bitmap word's, a claim's) are of different
+    /// slots: the live block is held nowhere else.
+    pub proof fn lemma_slot_apart(tracked &mut self, tracked t: &GhostSingleton<int>, c: int)
+        requires
+            old(self).slot_of(c),
+            t.id() == slot_loc(c),
+        ensures
+            t@ != old(self).addr() as int,
+            final(self).slot_of(c),
+            final(self).addr() == old(self).addr(),
+            final(self).len() == old(self).len(),
+            final(self).mem() == old(self).mem(),
+            final(self).wf() == old(self).wf(),
+            forall|p: *mut u8| #[trigger] old(self).claims(p) ==> final(self).claims(p),
+    {
+        let ghost o = *self;
+        let tracked mut s = self.slot.tracked_take();
+        s.disjoint(t);
+        self.slot = Some(s);
+        assert forall|p: *mut u8| #[trigger] o.claims(p) implies self.claims(p) by {
+            if crate::heap::slot_start(p) {
+                assert(o.slot_of(o.class));
+            }
+        }
+    }
+}
+
+} // verus!
