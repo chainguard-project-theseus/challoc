@@ -123,6 +123,7 @@ pub use sets::SET_GROUPS;
 pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
+pub(crate) use table::word_index;
 #[cfg(verus_keep_ghost)]
 use table::{
     bits_ghost, bits_shape, desc_at, guard_marked, lemma_bit_in_slab, slab_marked, slab_mask_of,

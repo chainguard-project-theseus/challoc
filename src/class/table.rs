@@ -977,7 +977,8 @@ unsafe fn store_owner(
     unsafe { (*w).store(arena, Ordering::Relaxed) }
 }
 
-/// `index` itself, for [`SlabTable::is_set_unchecked`]'s word index. On
+/// `index` itself, for the bitmap word index of [`SlabTable::is_set_unchecked`]
+/// and `heap::ClassLine::set_slab`. On
 /// aarch64 it goes through an empty `asm!` (the next item): left alone,
 /// LLVM rewrites `(bit >> 6) << 3` as `(bit >> 3) & !7`, a shift and a
 /// mask ahead of the load on `free`'s dependent chain, where `bit >> 6`
@@ -985,7 +986,7 @@ unsafe fn store_owner(
 /// in the load, and this is the identity.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-fn word_index(index: usize) -> (r: usize)
+pub(crate) fn word_index(index: usize) -> (r: usize)
     ensures
         r == index,
     opens_invariants none
@@ -1000,7 +1001,7 @@ fn word_index(index: usize) -> (r: usize)
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[verifier::external_body]
-fn word_index(index: usize) -> (r: usize)
+pub(crate) fn word_index(index: usize) -> (r: usize)
     ensures
         r == index,
     opens_invariants none
@@ -4440,3 +4441,41 @@ impl SlabTable {
 }
 
 } // verus!
+
+impl SlabTable {
+    /// The bitmap word `index` of this table's committed bitmap at
+    /// `bits_base` (the class line's copy of [`SlabTable::bits_base`]):
+    /// the word of `bit`, the bit of slot `slot` of slab `slab`. One
+    /// relaxed load.
+    ///
+    /// # Safety
+    /// `bits_base` is this table's `bits_base`, `index == bit / 64`, and
+    /// `slab` is below a value the watermark held and `slot` below the
+    /// class's `nslots`, so the word is in the committed bitmap.
+    #[inline(always)]
+    pub(crate) unsafe fn bit_word(
+        &self,
+        bits_base: usize,
+        index: usize,
+        _slab: Ghost<usize>,
+        _slot: Ghost<usize>,
+        _bit: Ghost<usize>,
+    ) -> u64 {
+        let word = (bits_base + index * 8) as *const AtomicU64;
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*word).load(Ordering::Relaxed) }
+    }
+
+    /// The owner word of `slab`'s group, through the class line's copies
+    /// of [`SlabTable::owners_base`] and the group size: one relaxed load.
+    ///
+    /// # Safety
+    /// `owners_base` and `lg_group` are this table's, and `slab` is below a
+    /// value the watermark held.
+    #[inline(always)]
+    pub(crate) unsafe fn owner_from(&self, owners_base: usize, lg_group: u8, slab: usize) -> u16 {
+        let word = (owners_base + (slab >> lg_group) * 2) as *const AtomicU16;
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*word).load(Ordering::Relaxed) }
+    }
+}
