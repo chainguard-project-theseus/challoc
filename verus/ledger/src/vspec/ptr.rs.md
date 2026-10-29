@@ -15,6 +15,7 @@ file.
 | `<*mut T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `<*const T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `axiom_array_elem` | axiom | core library | none (assumption) | trusted |
+| `ref_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
 
 ## `axiom_plain_u64`
 
@@ -156,4 +157,18 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
         r.is_init(),
         r.value() == a.value()[i as int],
 ;
+```
+
+## `ref_ptr`
+
+src/vspec/ptr.rs:234. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
+
+```rust
+pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
+    ensures
+        valid_reads(r, vstd::layout::size_of::<T>() as int),
+        r@.addr + vstd::layout::size_of::<T>() <= usize::MAX,
 ```
