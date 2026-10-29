@@ -8,8 +8,9 @@
 //! `verus!` but is one of those; and *outside* when it is not inside
 //! `verus!` at all. `spec` and `proof` functions are ghost code, erased
 //! from ordinary builds, and are counted apart. Items under `#[cfg(test)]`
-//! are left out. Lines run from a function's `fn` keyword to its closing
-//! brace.
+//! are left out, and so are executable functions whose own `cfg` only
+//! `test` or `verus_keep_ghost` builds meet (`UNSHIPPED`). Lines run from a
+//! function's `fn` keyword to its closing brace.
 //!
 //! Usage: `cargo run --release -- [--list] [--floor FILE [--base-rev REV]]
 //! ROOT` from verus/count, with ROOT the repository root (default `../..`).
@@ -68,7 +69,7 @@ fn test_module_files(file: &Path, items: &[Item], out: &mut Vec<PathBuf>) {
     for item in items {
         if let Item::Mod(m) = item
             && m.content.is_none()
-            && has_cfg_test(&m.attrs)
+            && cfg_needs(&m.attrs, TEST)
         {
             let name = m.ident.to_string();
             out.push(dir.join(format!("{name}.rs")));
@@ -77,25 +78,63 @@ fn test_module_files(file: &Path, items: &[Item], out: &mut Vec<PathBuf>) {
     }
 }
 
-fn has_cfg_test(attrs: &[Attribute]) -> bool {
+/// Names whose `cfg` holds only in test builds. Verus never sees an item
+/// under such a `cfg`, and no build ships it.
+const TEST: &[&str] = &["test"];
+
+/// Names a shipped build never sets: `test`, and `verus_keep_ghost`, which
+/// is set only while Verus verifies. Verus sees an item that needs only
+/// these, so a proof under it still counts, but no build ships it.
+const UNSHIPPED: &[&str] = &["test", "verus_keep_ghost"];
+
+/// Whether one of `attrs` is a `cfg` that holds only when one of `names`
+/// is set (`cfg_predicate_needs`).
+fn cfg_needs(attrs: &[Attribute], names: &[&str]) -> bool {
     attrs.iter().any(|a| {
         a.path().is_ident("cfg")
-            && matches!(&a.meta, Meta::List(l) if cfg_needs_test(&l.tokens.to_string()))
+            && matches!(&a.meta, Meta::List(l) if cfg_predicate_needs(&l.tokens.to_string(), names))
     })
 }
 
-/// Whether a `cfg` predicate holds only under `test`: `test` itself, or
-/// `all(..)` with `test` as one of its arguments. `not(test)`,
-/// `any(test, ..)` and features named like `test-util` can hold in a
-/// shipped build, so their items count.
-fn cfg_needs_test(tokens: &str) -> bool {
+/// Whether a `cfg` predicate holds only when one of `names` is set: a name
+/// in `names` itself, `all(..)` with such an argument, or `any(..)` whose
+/// every argument is one. `not(..)` and other names (`unix`, or a feature
+/// named like `test-util`) can hold without them.
+fn cfg_predicate_needs(tokens: &str, names: &[&str]) -> bool {
     let t = tokens.trim();
-    t == "test"
-        || t.strip_prefix("all")
-            .map(str::trim_start)
-            .and_then(|r| r.strip_prefix('('))
-            .and_then(|r| r.strip_suffix(')'))
-            .is_some_and(|inner| inner.split(',').any(|w| w.trim() == "test"))
+    if names.contains(&t) {
+        return true;
+    }
+    if let Some(args) = cfg_args(t, "all") {
+        return args.into_iter().any(|a| cfg_predicate_needs(a, names));
+    }
+    cfg_args(t, "any").is_some_and(|args| args.into_iter().all(|a| cfg_predicate_needs(a, names)))
+}
+
+/// The arguments of the `cfg` predicate `t` when it is `name(..)`, split at
+/// its top-level commas, so a nested `all(..)` stays one argument.
+fn cfg_args<'a>(t: &'a str, name: &str) -> Option<Vec<&'a str>> {
+    let inner = t
+        .strip_prefix(name)?
+        .trim_start()
+        .strip_prefix('(')?
+        .strip_suffix(')')?;
+    let mut args = Vec::new();
+    let (mut depth, mut start) = (0usize, 0);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                args.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(&inner[start..]);
+    args.retain(|a| !a.trim().is_empty());
+    Some(args)
 }
 
 fn is_external(attrs: &[Attribute]) -> bool {
@@ -173,7 +212,8 @@ impl Counter {
         start: usize,
         end: usize,
     ) {
-        if has_cfg_test(attrs) {
+        // A proof under `verus_keep_ghost` still counts: Verus uses it.
+        if cfg_needs(attrs, TEST) || (!is_ghost(sig) && cfg_needs(attrs, UNSHIPPED)) {
             return;
         }
         let t = self.tallies.entry(self.krate.clone()).or_default();
@@ -222,7 +262,7 @@ impl Counter {
                     );
                     self.record(in_verus, &f.attrs, &f.sig, body, start, end);
                 }
-                Item::Impl(i) if !has_cfg_test(&i.attrs) => {
+                Item::Impl(i) if !cfg_needs(&i.attrs, TEST) => {
                     for ii in &i.items {
                         if let ImplItem::Fn(f) = ii {
                             let start = f.sig.fn_token.span.start().line;
@@ -245,7 +285,7 @@ impl Counter {
                         }
                     }
                 }
-                Item::Trait(t) if !has_cfg_test(&t.attrs) => {
+                Item::Trait(t) if !cfg_needs(&t.attrs, TEST) => {
                     for ti in &t.items {
                         if let TraitItem::Fn(f) = ti
                             && let Some(block) = &f.default
@@ -263,7 +303,7 @@ impl Counter {
                         }
                     }
                 }
-                Item::Mod(m) if !has_cfg_test(&m.attrs) => {
+                Item::Mod(m) if !cfg_needs(&m.attrs, TEST) => {
                     if let Some((_, inner)) = &m.content {
                         self.items(inner, in_verus);
                     }
@@ -676,22 +716,34 @@ mod tests {
     }
 
     #[test]
-    fn cfg_predicates_that_hold_only_under_test() {
-        for (cfg, want) in [
-            ("test", true),
-            ("all (test , feature = \"x\")", true),
-            ("all (feature = \"x\" , test)", true),
-            ("not (test)", false),
-            ("any (test , feature = \"x\")", false),
-            ("feature = \"test-util\"", false),
-            ("all (not (test) , unix)", false),
+    fn cfg_predicates_that_hold_only_under_test_or_verification() {
+        // (predicate, holds only under `test`, holds only under `test` or
+        // `verus_keep_ghost`)
+        for (cfg, test, unshipped) in [
+            ("test", true, true),
+            ("all (test , feature = \"x\")", true, true),
+            ("all (feature = \"x\" , test)", true, true),
+            ("not (test)", false, false),
+            ("any (test , feature = \"x\")", false, false),
+            ("feature = \"test-util\"", false, false),
+            ("all (not (test) , unix)", false, false),
+            ("verus_keep_ghost", false, true),
+            ("not (verus_keep_ghost)", false, false),
+            ("all (verus_keep_ghost , not (test))", false, true),
+            ("any (test , verus_keep_ghost)", false, true),
+            ("any (all (test , unix) , verus_keep_ghost)", false, true),
+            ("any (test , unix)", false, false),
+            ("any (verus_keep_ghost , feature = \"x\")", false, false),
+            ("any (not (test) , verus_keep_ghost)", false, false),
         ] {
-            assert_eq!(
-                cfg_needs_test(cfg),
-                want,
-                "{cfg}: got = {}, wanted = {want}",
-                !want
-            );
+            for (names, want) in [(TEST, test), (UNSHIPPED, unshipped)] {
+                assert_eq!(
+                    cfg_predicate_needs(cfg, names),
+                    want,
+                    "{cfg} needs one of {names:?}: got = {}, wanted = {want}",
+                    !want
+                );
+            }
         }
     }
 
@@ -717,7 +769,17 @@ mod tests {
                 proof fn mints_in_proof() { let tracked t: u8 = Tracked::<u8>::assume_new().get(); }
                 #[cfg(test)]
                 fn test_only() {}
+                #[cfg(any(test, verus_keep_ghost))]
+                fn verification_only() {}
+                #[cfg(verus_keep_ghost)]
+                fn verification_build_only() {}
+                #[cfg(verus_keep_ghost)]
+                axiom fn verification_axiom() ensures true;
+                #[cfg(verus_keep_ghost)]
+                spec fn verification_spec() -> bool { true }
             }
+            #[cfg(verus_keep_ghost)]
+            mod lemmas { verus! { axiom fn lemma_axiom() ensures true; } }
             fn outside() {}
             #[cfg(not(test))]
             fn shipped_outside() {}
@@ -730,11 +792,11 @@ mod tests {
         assert_eq!(errors, 0, "errors: got = {errors}, wanted = 0");
         assert_eq!(
             t.fns,
-            [1, 9, 2],
-            "verified, trusted, outside: got = {:?}, wanted = [1, 9, 2]",
+            [1, 11, 2],
+            "verified, trusted, outside: got = {:?}, wanted = [1, 11, 2]",
             t.fns
         );
-        assert_eq!(t.ghost, 2, "ghost: got = {}, wanted = 2", t.ghost);
+        assert_eq!(t.ghost, 3, "ghost: got = {}, wanted = 3", t.ghost);
     }
 
     #[test]

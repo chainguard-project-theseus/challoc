@@ -72,11 +72,15 @@ calling `assume`, `admit` or `Tracked::assume_new`) or outside `verus!`.
 Ghost functions (`spec`, `proof`) are counted apart, except a proof taken
 on trust (an `axiom fn`, or a `proof fn` that is `external_body` or calls
 `assume`, `admit` or `Tracked::assume_new`), which counts as trusted. Code
-compiled only under `test` (`cfg(test)`, or `test` inside `cfg(all(..))`)
-is left out, and so is a test module's directory. It reads source and does
-not run Verus, so "verified" means "under `verus!` and not trusted";
-`cargo verus verify` is what checks it. Shares are to a tenth of a
-percent, rounded down.
+compiled only under `test` (`cfg(test)`, `test` inside `cfg(all(..))`, or
+`cfg(any(..))` with only such arguments) is left out, and so is a test
+module's directory. So is an executable function whose own `cfg` holds
+only under `test` or `verus_keep_ghost`, such as
+`cfg(any(test, verus_keep_ghost))`: Verus verifies it, but no build ships
+it. A proof under `verus_keep_ghost` still counts, because Verus uses it.
+It reads source and does not run Verus, so "verified" means "under
+`verus!` and not trusted"; `cargo verus verify` is what checks it. Shares
+are to a tenth of a percent, rounded down.
 
 `--floor FILE` holds the crate to [FLOOR](FLOOR): the verified share of
 functions and of lines. The run fails below either figure, and above one
