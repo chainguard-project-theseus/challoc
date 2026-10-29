@@ -615,10 +615,10 @@ pub(super) unsafe fn zero_slot(class: usize, p: *mut u8) {
 #[cold]
 #[inline(never)]
 pub(super) fn cached_twice(p: *mut u8) -> ! {
-    panic!(
+    crate::sys::abort_fmt(format_args!(
         "double free of {:#x}: the slot is already in the thread cache",
         p as usize
-    )
+    ))
 }
 
 /// `CLASSES[class].size()` without the bounds check: every `class` on the
