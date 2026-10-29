@@ -65,6 +65,8 @@ pub use paths::free_fast;
 pub use paths::{
     alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast_slot, free_sized_fast,
 };
+#[cfg(verus_keep_ghost)]
+pub use shared::Built;
 pub use shared::Shared;
 #[cfg(verus_keep_ghost)]
 pub use shared::shared_storage;

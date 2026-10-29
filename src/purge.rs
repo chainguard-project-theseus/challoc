@@ -190,13 +190,13 @@ impl Drop for Explicit {
     }
 }
 
+verus! {
+
 /// Turn the `check_zero` debug mode on or off (init, from the config key;
 /// the tests, directly).
 pub fn set_check_zero(on: bool) {
     CHECK_ZERO.store(on, Ordering::Relaxed);
 }
-
-verus! {
 
 /// Whether the `check_zero` debug mode is on: `ClassState::claim` and
 /// `Huge::alloc` then read the first and last word of every slot or page
