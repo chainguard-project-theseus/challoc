@@ -468,8 +468,8 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
   Ubuntu image: Axion, N4A, Turin, Sapphire Rapids, Genoa, Altra),
   `exp-floor` and `tripwire` (public kernel images from 5.10 to 7.x,
   default and privileged containers, 64 KiB pages), `exp-narenas`
-  (CPU-quota containers) and the internal overlay's cells (Chainguard OS;
-  `docs/runbooks/chainguard-os-gce.md`). `cb cells --resolve` checks that
+  (CPU-quota containers) and whatever cells an internal overlay
+  (`bench/cells/internal-*.toml`) adds. `cb cells --resolve` checks that
   every family still resolves; a family that does not makes its cell
   PENDING, never a failure.
 - **Traps.** GCE NICs have a 1460-byte MTU (boot.sh sets Docker's);
