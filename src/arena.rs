@@ -2824,7 +2824,6 @@ impl Arenas {
     /// [`Arenas::get_existing`] with the arena's persistent record
     /// ([`Published`]) from the registry's invariant, the same code. For
     /// the `free` flush path (`Shared::owner`).
-    #[verifier::external_body]
     pub fn get_existing_published(&self, index: u16) -> (r: Option<(&Arena, Tracked<&'static Published>)>)
         ensures
             r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc() && (self.is_process() ==> w@.id() == process_pub_loc())
@@ -2861,7 +2860,6 @@ impl Arenas {
     /// again): for `Shared::owner` and `Shared::arena`, which return
     /// arena 0 without a load of its entry. Ghost, but for the `Tracked`.
     #[inline(always)]
-    #[verifier::external_body]
     pub fn published0(&self) -> (r: Tracked<&'static Published>)
         ensures
             r@.id() == self.spec_pub_loc(),

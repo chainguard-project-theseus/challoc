@@ -1566,14 +1566,16 @@ impl Deferred {
     /// when the other thread's discovery does), and otherwise returns at
     /// once with the record still pending.
     ///
-    /// `seen` gets the cell's frozen permission when the wait ends on an
-    /// acquire load of `DONE`. [`Deferred::published`] reads the record
-    /// through it.
+    /// `seen` gets the cell's frozen permission whenever `wait`: from this
+    /// call's `DONE` store, or from the acquire load of `DONE` that ended
+    /// its wait. [`Deferred::published`] reads the record through it.
     #[verifier::exec_allows_no_decreases_clause]
     pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F, Tracked(seen): Tracked<&mut CellSeen>) -> bool
         requires
             crate::sys::may_syscall(),
             forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
+        ensures
+            wait ==> self.seen_done(*final(seen)),
     {
         let tracked mut claimed = CellClaim { cell: None };
         match self.claim(Tracked(&mut claimed)) {
@@ -1584,7 +1586,10 @@ impl Deferred {
                 // permission; no reader looks at the cell before `DONE`.
                 let cg = self.cell_write(cg, Tracked(&mut cell));
                 found(cg);
-                self.publish(Tracked(cell));
+                let Tracked(frozen) = self.publish(Tracked(cell));
+                proof {
+                    seen.frozen = Some(frozen);
+                }
                 true
             },
             Err(_) => {
@@ -1603,8 +1608,8 @@ impl Deferred {
     }
 
     /// The published record, read through the cell's frozen permission
-    /// that `seen` holds ([`Deferred::seen_done`]); no load of the phase.
-    #[verifier::external_body]
+    /// that a waiting [`Deferred::discover`] handed back; no load of the
+    /// phase.
     #[inline]
     pub fn published(&self, Tracked(seen): Tracked<CellSeen>) -> &Cgroup
         requires
@@ -1681,11 +1686,14 @@ impl Deferred {
     }
 
     /// The phase's `DONE` store, `Release`, with the cell's permission
-    /// frozen into the invariant for every reader ([`PhasePred`]).
+    /// frozen into the invariant for every reader ([`PhasePred`]); the
+    /// frozen permission is handed back to the publisher too.
     #[inline(always)]
-    fn publish(&self, Tracked(cell): Tracked<CellPerm>)
+    fn publish(&self, Tracked(cell): Tracked<CellPerm>) -> (r: Tracked<&'static CellPerm>)
         requires
             cell_done(cell, self.cell.id()),
+        ensures
+            *r@ == cell,
     {
         proof {
             use_type_invariant(self);
@@ -1697,6 +1705,7 @@ impl Deferred {
                 v.2 = Some(frozen);
             }
         });
+        Tracked(frozen)
     }
 
     /// The discovered record in the cell, through its permission.

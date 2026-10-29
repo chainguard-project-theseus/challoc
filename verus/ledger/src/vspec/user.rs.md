@@ -7,25 +7,20 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `zero_user` | external_body | raw pointer (internal) | Verus | trusted |
+| `axiom_z..._bytes` | external_body proof | allocator invariant | none (assumption) | trusted |
 
-## `zero_user`
+## `axiom_zeroed_bytes`
 
-src/vspec/user.rs:130. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
+src/vspec/user.rs:161. Kind: external_body proof. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
-> Clear the `n` bytes at `p` with the permission `m` to them (`write_bytes(p, 0, n)`), returning the token for what it wrote; `m`'s byte state reads them as zero after.
-
-Body mints Tracked at line 142.
+> The bytes a [`Zeroed`] token covers read as zero, so a permission's byte state for them is zero.
 
 ```rust
-pub unsafe fn zero_user(p: *mut u8, n: usize, Tracked(m): Tracked<&mut UserMem>) -> (z: Tracked<Zeroed>)
+proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
     requires
-        old(m).provenance() == p@.provenance,
-        forall|i: int| p@.addr <= i < p@.addr + n ==> #[trigger] old(m).dom().contains(i),
+        forall|i: int| z.addr() <= i < z.addr() + z.len() ==> #[trigger] old(m).dom().contains(i),
     ensures
-        z@.addr() == p@.addr,
-        z@.len() == n,
-        final(m).frame(*old(m), p@.addr as int, n as int),
-        final(m).reads_zero(p@.addr as int, n as int),
+        final(m).frame(*old(m), z.addr(), z.len()),
+        final(m).reads_zero(z.addr(), z.len()),
 ```
