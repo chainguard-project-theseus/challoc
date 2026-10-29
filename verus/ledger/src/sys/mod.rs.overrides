@@ -4,3 +4,5 @@ axiom_write_count	platform/kernel fact	none (assumption)
 getrandom_exact	termination	none (assumption)
 read_full	termination	none (assumption)
 write_all	termination	none (assumption)
+# The calling thread's signal mask (the kernel's per-thread state).
+axiom_thread_mask	platform/kernel fact	none (assumption)

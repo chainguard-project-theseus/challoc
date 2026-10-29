@@ -27,6 +27,7 @@ use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{
     axiom_entry, rank_arenas, rank_class, rank_huge, rank_meta, rank_stats, rank_table,
+    rank_tcaches,
 };
 use crate::meta::Meta;
 use crate::policy::Policy;
@@ -2263,6 +2264,69 @@ impl Shared {
         self.tables
     }
 
+    /// The fork handlers' locks that live in `Shared` itself, by value
+    /// (`api::lock_at`): the explicit-cache table lock, the arena
+    /// creation lock, the huge, metadata and process statistics locks.
+    pub closed spec fn spec_fork_locks(&self) -> (RawLock, RawLock, RawLock, RawLock, RawLock) {
+        (
+            self.tcaches.spec_raw_lock(),
+            self.arenas.spec_raw_lock(),
+            self.huge.spec_raw_lock(),
+            self.meta.spec_raw_lock(),
+            self.stats.spec_raw(),
+        )
+    }
+
+    /// The arena creation lock of [`Shared::spec_fork_locks`] is the
+    /// registry's (`Arenas::lock_held` takes it for the fork handlers).
+    pub(crate) proof fn lemma_arenas_lock(&self)
+        ensures
+            self.spec_fork_locks().1 == self.arenas.spec_raw_lock(),
+    {
+    }
+
+    /// The explicit-cache table lock, for the fork handlers.
+    #[inline(always)]
+    pub fn tcaches_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().0,
+            r.rank() == rank_tcaches(),
+    {
+        self.tcaches.raw_lock()
+    }
+
+    /// The huge lock, for the fork handlers.
+    #[inline(always)]
+    pub fn huge_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().2,
+            r.rank() == rank_huge(),
+    {
+        self.huge.raw_lock()
+    }
+
+    /// The metadata lock, for the fork handlers.
+    #[inline(always)]
+    pub fn meta_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().3,
+            r.rank() == rank_meta(),
+    {
+        self.meta.raw_lock()
+    }
+
+    /// The process statistics lock, for the fork handlers. Its rank is
+    /// `init`'s, so it is stated of a well-formed `Shared` only
+    /// ([`Shared::lemma_ranks`]).
+    #[inline(always)]
+    pub fn stats_lock(&self) -> (r: &RawLock)
+        ensures
+            *r == self.spec_fork_locks().4,
+            self.wf() ==> r.rank() == rank_stats(),
+    {
+        self.stats.raw()
+    }
+
     /// Slab table for `class`, without the bounds check the fast paths do
     /// not need (`class` comes from `class_of`).
     #[inline(always)]
@@ -2961,36 +3025,23 @@ impl Shared {
 
 } // verus!
 
+verus! {
+
 impl Shared {
-    /// The explicit-cache table lock, for the fork handlers.
-    #[inline(always)]
-    pub fn tcaches_lock(&self) -> &RawLock {
-        self.tcaches.raw_lock()
-    }
-
-    /// The huge lock, for the fork handlers.
-    #[inline(always)]
-    pub fn huge_lock(&self) -> &RawLock {
-        self.huge.raw_lock()
-    }
-
-    /// The metadata lock, for the fork handlers.
-    #[inline(always)]
-    pub fn meta_lock(&self) -> &RawLock {
-        self.meta.raw_lock()
-    }
-
-    /// The process statistics lock, for the fork handlers.
-    #[inline(always)]
-    pub fn stats_lock(&self) -> &RawLock {
-        self.stats.raw()
-    }
-
     /// The child of a `fork`: see `sys::cgroup::Deferred::fork_child`.
-    pub fn cgroup_fork_child(&self) {
+    /// Only the child's fork handler holds the capability it requires
+    /// (`api::fork_child`).
+    pub fn cgroup_fork_child(&self)
+        requires
+            crate::sys::cgroup::in_fork_child(),
+    {
         self.cgroup.fork_child();
     }
+}
 
+} // verus!
+
+impl Shared {
     /// The sized free's check (`sdallocx`, `free_sized`; design 6.3): `p`
     /// must be a slot start in a non-guard slab of the class the size hint
     /// names, `hint` (`class_for(size, align)`, `None` for a huge size).

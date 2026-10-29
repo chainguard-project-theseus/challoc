@@ -194,9 +194,11 @@ impl RawLock {
 /// Ghost: its owner holds the raw lock [`LockHeld::held`].
 /// [`RawLock::lock_held`] makes one after its `lock` returns, and
 /// [`RawLock::unlock_held`] takes it back as it unlocks. The field is
-/// private to this module, so outside it only `lock_held` builds one. The
-/// token is not `Copy`, so each token is handed back at most once. A
-/// token names its lock by value (Verus has no addresses of
+/// private to this module, so outside it only `lock_held` and
+/// [`Lock::lock_held_perm`] build one; the fork handlers' handoff axioms
+/// (`api::axiom_fork_resumed_state`, `api::resume::axiom_fork_resumed`)
+/// assume theirs. The token is not `Copy`, so each token is handed back
+/// at most once. A token names its lock by value (Verus has no addresses of
 /// references): a proof matches it to the accessor path it was taken
 /// through, not to an address. That `lock` returns only once this thread
 /// holds the lock, and that no other thread does until `unlock`, is the
@@ -374,7 +376,11 @@ impl<'a> LockOrder<'a> {
 ///   token per reader or per `utilization` and `owner_of` call: the entry
 ///   point holds no allocator lock, `ctl` and the readers take none
 ///   themselves, and each call the token is passed to releases every lock
-///   it takes before it returns.
+///   it takes before it returns;
+/// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
+///   `fork_release` has handed back every lock token, the child is
+///   single-threaded, and `empty_bytes` releases every lock it takes
+///   before it returns.
 ///
 /// No allocator entry point is re-entered while a lock is held: allocator
 /// code calls nothing that may allocate with a lock held, and a signal
@@ -384,6 +390,25 @@ pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.top() == 0,
         !o.root(),
+;
+
+/// Premise (the fork prepare handler's entry): the calling thread holds no
+/// allocator lock, as for [`axiom_entry`], and keeps this token for the
+/// whole handler, which takes every lock with [`RawLock::lock_held`] and
+/// releases none of them before it returns: a root. Its one use is
+/// `api::fork_prepare` (the fork handlers block signals before their
+/// first lock, so nothing re-enters the allocator under it).
+///
+/// A `fork` from a signal handler that interrupted this thread inside
+/// the allocator, with a lock held, breaks the premise: `fork_prepare`
+/// would then wait forever on that lock. `fork` runs the atfork handlers
+/// and is not async-signal-safe in glibc or in POSIX.1-2024, which list
+/// `_Fork` instead, so that call is outside the C contract, as the
+/// allocating handler of [`axiom_entry`] is.
+pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.top() == 0,
+        o.root(),
 ;
 
 /// Premise: the calling thread holds only allocator locks ranked below
@@ -501,9 +526,11 @@ pub uninterp spec fn lock_frame<T>(init: T, v: T) -> bool;
 /// cell out of the raw lock's invariant, and the value in the cell
 /// satisfies [`lock_inv`] (every earlier holder restored it) and keeps
 /// [`lock_frame`] of the value the lock was created with. Private, and
-/// used only by [`Lock::lock`] and [`Lock::try_lock`] right after the
-/// acquire, for the guard they build, which keeps the permission in a
-/// field private to this module until its drop releases the lock: a call
+/// used only right after an acquire: by [`Lock::lock`] and
+/// [`Lock::try_lock`], for the guard they build, which keeps the
+/// permission in a field private to this module until its drop releases
+/// the lock, and by [`Lock::lock_held_perm`], whose holder hands the
+/// permission back with the token to [`Lock::unlock_held_perm`]. A call
 /// while an earlier permission is alive would give two permissions to
 /// one cell, and nothing but that discipline stops such a call.
 axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
@@ -695,6 +722,73 @@ impl<T> Lock<T> {
         let tracked perm = axiom_held(*self, held);
         self.value.borrow_mut(Tracked(perm))
     }
+
+    /// [`RawLock::lock_held`] for a holder that also keeps the value:
+    /// acquire, and return the hold's token with the permission of the
+    /// cell, taken out of the free lock's invariant as [`Lock::lock`]
+    /// takes it for its guard ([`axiom_acquired`]). The holder reads the
+    /// value through it ([`Lock::value_held`]), and nothing can write the
+    /// value while it keeps it: the fork handlers keep the creation
+    /// lock's (`arena::Created`) from `fork_prepare` to the release, which
+    /// hands the permission back with the token ([`Lock::unlock_held_perm`]).
+    /// The caller must not take a guard of this lock (or call
+    /// [`Lock::get_unlocked`]) while it keeps the permission, nor release
+    /// the lock through `RawLock::unlock_held` instead: either would leave
+    /// a second permission to the cell possible (the lock order already
+    /// refuses a guard's scope here, `ord` must be a root). Crate-private,
+    /// for the arena registry's creation lock (`Arenas::lock_held`).
+    ///
+    /// Lock order: as [`RawLock::lock_held`].
+    #[inline(always)]
+    pub(crate) fn lock_held_perm(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Tracked<(LockHeld, PointsTo<T>)>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).root(),
+            old(ord).allows(self.rank()),
+        ensures
+            r@.0.held() == self.spec_raw(),
+            self.has_perm(r@.1),
+            lock_inv(*r@.1.value()),
+            lock_frame(lock_init(*self), *r@.1.value()),
+            final(ord).root(),
+            final(ord).top() == self.rank(),
+    {
+        self.raw.lock();
+        proof {
+            ord.top = self.rank();
+        }
+        Tracked((LockHeld { lock: self.raw }, axiom_acquired(*self)))
+    }
+
+    /// The value, read through the permission `perm` of the cell, which a
+    /// holder keeps ([`Lock::lock_held_perm`]).
+    #[inline(always)]
+    pub(crate) fn value_held<'a>(&'a self, perm: Tracked<&'a PointsTo<T>>) -> (r: &'a T)
+        requires
+            self.has_perm(*perm@),
+        ensures
+            *r == *perm@.value(),
+    {
+        self.value.borrow(perm)
+    }
+
+    /// `p` is the permission of this lock's cell.
+    pub closed spec fn has_perm(&self, p: PointsTo<T>) -> bool {
+        p.id() == self.value.id()
+    }
+
+    /// [`RawLock::unlock_held`] for a [`Lock::lock_held_perm`] holder:
+    /// release, handing back the token and the permission of the cell,
+    /// which the free lock's invariant holds again.
+    #[inline(always)]
+    pub(crate) fn unlock_held_perm(&self, Tracked(t): Tracked<LockHeld>, Tracked(perm): Tracked<PointsTo<T>>)
+        requires
+            crate::sys::may_syscall(),
+            t.held() == self.spec_raw(),
+            self.has_perm(perm),
+    {
+        self.raw.release();
+    }
 }
 
 /// Exclusive access to a [`Lock`]'s value; unlocks on drop. Holds the
@@ -816,35 +910,6 @@ impl<T> Drop for LockGuard<'_, T> {
 
 } // verus!
 
-impl<T> Lock<T> {
-    /// [`RawLock::lock_held`] for a holder that also keeps the value:
-    /// acquire, and return the hold's token with the permission of the
-    /// cell, which the holder keeps until the release (the fork handlers,
-    /// for the arena creation lock).
-    #[inline(always)]
-    pub(crate) fn lock_held_perm(
-        &self,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> Tracked<(LockHeld, PointsTo<T>)> {
-        self.raw.lock();
-        Tracked::assume_new()
-    }
-
-    /// The value, read through the permission `perm` of the cell, which a
-    /// holder keeps ([`Lock::lock_held_perm`]).
-    #[inline(always)]
-    pub(crate) fn value_held<'a>(&'a self, _perm: Tracked<&'a PointsTo<T>>) -> &'a T {
-        self.value.borrow(Tracked::assume_new())
-    }
-
-    /// [`RawLock::unlock_held`] for a [`Lock::lock_held_perm`] holder:
-    /// release, handing back the token and the permission of the cell.
-    #[inline(always)]
-    pub(crate) fn unlock_held_perm(&self, _t: Tracked<LockHeld>, _perm: Tracked<PointsTo<T>>) {
-        self.raw.release();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -882,7 +947,7 @@ mod tests {
                 h.push(func);
             }
         }
-        assert_eq!(a, ["lock", "try_lock"]);
+        assert_eq!(a, ["lock", "try_lock", "lock_held_perm"]);
         assert_eq!(h, ["get_unlocked"]);
     }
 
