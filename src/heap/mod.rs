@@ -105,7 +105,7 @@ use vstd::map::Map;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
-use vstd::raw_ptr::{PointsTo, ptr_mut_ref};
+use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::set::GhostSingleton;
 
 verus! {
@@ -4212,53 +4212,6 @@ impl Heap {
         }
     }
 
-    /// Trade the values of owned headers `a` and `b` of one class
-    /// (`thread.arena`'s exchange of the home caches with a node's,
-    /// [`Heap::set_arena`]); each stack goes with its header.
-    ///
-    /// Unsafe for its caller's precondition; a later proof PR can make it
-    /// a safe `fn` again once a Verus `requires` carries that precondition.
-    ///
-    /// # Safety
-    /// `a` and `b` are distinct headers this heap owns.
-    unsafe fn swap_hdrs(&mut self, a: *mut CacheHeader, b: *mut CacheHeader) {
-        // The caller gives two distinct owned headers, so the two
-        // references do not alias.
-        core::mem::swap(
-            ptr_mut_ref(a, Tracked::assume_new()),
-            ptr_mut_ref(b, Tracked::assume_new()),
-        );
-    }
-
-    /// `&*cache` for an owned header (a `(*cache).field` load).
-    ///
-    /// Unsafe for its caller's precondition; a later proof PR can make it
-    /// a safe `fn` again once a Verus `requires` carries that precondition.
-    ///
-    /// # Safety
-    /// `cache` is a header this heap owns (a home header or one of a live
-    /// `others` node's), and nothing writes it while the reference lives.
-    #[inline(always)]
-    unsafe fn hdr_ref(&self, cache: *mut CacheHeader) -> &CacheHeader {
-        // SAFETY: guaranteed by the caller.
-        unsafe { &*cache }
-    }
-
-    /// `&mut *cache` for an owned header (`(*cache).field` stores).
-    ///
-    /// Unsafe for its caller's precondition; a later proof PR can make it
-    /// a safe `fn` again once a Verus `requires` carries that precondition.
-    ///
-    /// # Safety
-    /// `cache` is a header this heap owns (a home header or one of a live
-    /// `others` node's), and nothing else reads or writes it while the
-    /// reference lives.
-    #[inline(always)]
-    unsafe fn hdr_mut(&mut self, cache: *mut CacheHeader) -> &mut CacheHeader {
-        // SAFETY: guaranteed by the caller.
-        unsafe { &mut *cache }
-    }
-
     /// The `Shared` this heap was created on.
     #[cfg(test)]
     pub fn shared(&self) -> &Shared {
@@ -4270,12 +4223,6 @@ impl Heap {
     #[cfg(test)]
     pub fn tid(&self) -> u32 {
         self.tid
-    }
-
-    /// Home arena (design 6.2 `heap.arena`; `thread.arena`).
-    #[inline]
-    pub fn arena(&self) -> u16 {
-        self.arena
     }
 
     /// Change the home arena (`thread.arena`). The caches of the old home
@@ -4453,71 +4400,6 @@ impl Heap {
         Self::fold_counters(&mut self.uncached, &self.caches);
         // SAFETY: the home array (null).
         unsafe { self.free_caches_in(shared, ptr::null_mut(), Tracked::assume_new()) };
-    }
-
-    /// Add the byte counters a cache array stands for (`allocs` pops and
-    /// `len + allocs - moved` pushes per cache, each worth the class size)
-    /// to `into`. [`Heap::stats`] derives the thread counters this way on
-    /// every read; a cache that is about to be freed is folded into
-    /// `uncached` first so that `thread.allocated` never goes backwards.
-    #[allow(
-        clippy::while_let_loop,
-        reason = "the desugared `for`, which Verus needs for `continue`"
-    )]
-    fn fold_counters(into: &mut ThreadStats, caches: &[CacheHeader; NCLASSES]) {
-        // `for (class, c) in caches.iter().enumerate()`, spelled out: Verus
-        // has no `Enumerate` and rejects `continue` in a `for` loop. The
-        // count is taken and bumped as `Enumerate::next` does.
-        let mut iter = caches.iter();
-        let mut count: usize = 0;
-        loop {
-            let c = match iter.next() {
-                Some(c) => c,
-                None => break,
-            };
-            let class = count;
-            count += 1;
-            if c.cap == 0 {
-                continue;
-            }
-            let frees = (c.len as u64).wrapping_add(c.allocs).wrapping_sub(c.moved);
-            into.add(CLASSES.table()[class].size() as u64, c.allocs, frees);
-        }
-    }
-
-    /// Byte counters for this thread: the uncached part plus what every
-    /// cache of every arena stands for ([`Heap::fold_counters`]).
-    pub fn stats(&self) -> ThreadStats {
-        let mut s = self.uncached;
-        Self::fold_counters(&mut s, &self.caches);
-        // `for o in Self::nodes(self.others)`, spelled out: Verus has no
-        // `from_fn`.
-        let mut o = self.others;
-        while !o.is_null() {
-            // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap.
-            let next = unsafe { self.node_next(o, Ghost::assume_new()) };
-            // SAFETY: as above.
-            unsafe { Self::fold_counters(&mut s, self.node_caches(o, Ghost::assume_new())) };
-            o = next;
-        }
-        s
-    }
-
-    /// [`Heap::stats`] materialised into the heap for `thread.allocatedp`
-    /// and `thread.deallocatedp` (design 13.4). The counters are derived
-    /// on every read, so the pointers those keys hand out refer to this
-    /// copy, which is refreshed by every read of any of the four
-    /// `thread.*allocated*` keys and stale in between.
-    pub fn materialise_stats(&mut self) -> &ThreadStats {
-        self.snapshot = self.stats();
-        &self.snapshot
-    }
-
-    /// `thread.tcache.enabled`.
-    #[inline]
-    pub fn tcache_enabled(&self) -> bool {
-        self.tcache_enabled
     }
 
     /// `thread.tcache.enabled` write. Turning caches off folds the derived
@@ -4728,3 +4610,289 @@ impl Heap {
         }
     }
 }
+
+verus! {
+
+impl Heap {
+    /// `self` is `old` with at most its headers' values changed: the same
+    /// headers, caching the same classes, the same `others` list and
+    /// keys (and the permissions to its nodes' `arena` and `next`), home
+    /// headers and home arena.
+    pub closed spec fn same_shape(&self, old: Heap) -> bool {
+        &&& self.perms@.hdrs.dom() == old.perms@.hdrs.dom()
+        &&& self.perms@.cls == old.perms@.cls
+        &&& self.list == old.list
+        &&& self.keys == old.keys
+        &&& self.arena == old.arena
+        &&& self.bound == old.bound
+        &&& self.rehome == old.rehome
+        &&& self.homed == old.homed
+        &&& self.others == old.others
+        &&& self.shared == old.shared
+        &&& self.home_hdrs == old.home_hdrs
+        &&& self.heads == old.heads
+    }
+
+    /// [`Heap::same_shape`] keeps [`Heap::owns_node`].
+    proof fn lemma_same_node(a: Heap, b: Heap, node: *mut ArenaCaches)
+        requires
+            b.same_shape(a),
+            a.owns_node(node),
+        ensures
+            b.owns_node(node),
+    {
+        assert forall|c: int| #![trigger node_hdr(node, c)] 0 <= c < NCLASSES implies b.owns(node_hdr(node, c)) && b.hdr_class(node_hdr(node, c)) == c by {
+            assert(a.owns(node_hdr(node, c)) && a.hdr_class(node_hdr(node, c)) == c);
+            assert(a.perms@.hdrs.dom().contains(node_hdr(node, c)));
+        }
+    }
+
+    /// [`Heap::same_shape`] keeps [`Heap::list_ok`].
+    proof fn lemma_same_list(a: Heap, b: Heap)
+        requires
+            b.same_shape(a),
+            a.list_ok(),
+        ensures
+            b.list_ok(),
+    {
+        assert forall|i: int| 0 <= i < b.list@.len() implies (#[trigger] b.list@[i])@.addr != 0 && b.owns_node(b.list@[i]) by {
+            Heap::lemma_same_node(a, b, a.list@[i]);
+        }
+    }
+
+    /// `self` is `old` with owned header `cache` holding `v`, its stack
+    /// untouched.
+    pub closed spec fn updates(&self, old: Heap, cache: *mut CacheHeader, v: CacheHeader) -> bool {
+        &&& self.perms@.slots == old.perms@.slots
+        &&& self.perms@.hdrs == old.perms@.hdrs.insert(cache, self.perms@.hdrs[cache])
+        &&& self.perms@.zero == old.perms@.zero
+        &&& self.perms@.toks == old.perms@.toks
+        &&& self.perms@.blocks == old.perms@.blocks
+        &&& self.perms@.owner == old.perms@.owner
+        &&& self.perms@.cls == old.perms@.cls
+        &&& self.perms@.hdrs[cache].ptr() == cache
+        &&& self.perms@.hdrs[cache].is_init()
+        &&& self.perms@.hdrs[cache].value() == v
+        &&& self.list == old.list
+        &&& self.keys == old.keys
+        &&& self.arena == old.arena
+        &&& self.bound == old.bound
+        &&& self.rehome == old.rehome
+        &&& self.homed == old.homed
+        &&& self.others == old.others
+        &&& self.shared == old.shared
+        &&& self.home_hdrs == old.home_hdrs
+        &&& self.heads == old.heads
+    }
+
+    /// Trade the values of owned headers `a` and `b` of one class
+    /// (`thread.arena`'s exchange of the home caches with a node's,
+    /// [`Heap::set_arena`]); each stack goes with its header, through the
+    /// headers' permissions, and the heap stays well formed with the same
+    /// shape.
+    ///
+    /// Unsafe for its callers' sake: the requires carry its precondition,
+    /// and its caller (`set_arena`) is unverified.
+    ///
+    /// # Safety
+    /// `a` and `b` are distinct headers of one class this heap owns (the
+    /// requires).
+    unsafe fn swap_hdrs(&mut self, a: *mut CacheHeader, b: *mut CacheHeader)
+        requires
+            old(self).wf(),
+            old(self).owns(a),
+            old(self).owns(b),
+            a != b,
+            old(self).hdr_class(a) == old(self).hdr_class(b),
+        ensures
+            final(self).wf(),
+            final(self).same_shape(*old(self)),
+            final(self).hdr(a) == old(self).hdr(b),
+            final(self).hdr(b) == old(self).hdr(a),
+    {
+        let ghost o = self.perms@;
+        let tracked mut pa = self.perms.borrow_mut().hdrs.tracked_remove(a);
+        let tracked mut pb = self.perms.borrow_mut().hdrs.tracked_remove(b);
+        proof {
+            assert(cell_ok(a, o.hdrs[a], o.slots));
+            assert(cell_ok(b, o.hdrs[b], o.slots));
+        }
+        core::mem::swap(ptr_mut_ref(a, Tracked(&mut pa)), ptr_mut_ref(b, Tracked(&mut pb)));
+        proof {
+            self.perms.borrow_mut().hdrs.tracked_insert(a, pa);
+            self.perms.borrow_mut().hdrs.tracked_insert(b, pb);
+            self.perms.borrow_mut().owner = swap_owner(o.owner, a, b);
+            assert(self.perms@.hdrs =~= o.hdrs.insert(a, self.perms@.hdrs[a]).insert(b, self.perms@.hdrs[b]));
+            CachePerms::lemma_swap(o, self.perms@, a, b);
+            assert(self.perms@.hdrs.dom() =~= o.hdrs.dom());
+            Heap::lemma_same_list(*old(self), *self);
+            Heap::lemma_home_kept(*old(self), *self);
+            reveal(CachePerms::claimed);
+            assert forall|p: *mut CacheHeader| #[trigger] self.perms@.hdrs.contains_key(p) && self.perms@.hdr(p).cap != 0 implies stack_claimed(self.perms@.hdr(p), self.perms@.blocks) by {
+                if p == a {
+                    assert(stack_claimed(o.hdr(b), o.blocks));
+                } else if p == b {
+                    assert(stack_claimed(o.hdr(a), o.blocks));
+                } else {
+                    assert(stack_claimed(o.hdr(p), o.blocks));
+                }
+            }
+        }
+    }
+
+    /// `&*cache` for an owned header (a `(*cache).field` load), through
+    /// its permission.
+    ///
+    /// Unsafe for its callers' sake: the requires carry its precondition,
+    /// and most of its callers are unverified.
+    ///
+    /// # Safety
+    /// `cache` is a header this heap owns (a home header or one of a live
+    /// `others` node's), and nothing writes it while the reference lives.
+    #[inline(always)]
+    unsafe fn hdr_ref(&self, cache: *mut CacheHeader) -> (r: &CacheHeader)
+        requires
+            self.wf(),
+            self.owns(cache),
+        ensures
+            *r == self.hdr(cache),
+            r.inv(),
+    {
+        proof {
+            assert(cell_ok(cache, self.perms@.hdrs[cache], self.perms@.slots));
+        }
+        ptr_ref(cache, Tracked(self.perms.borrow().hdrs.tracked_borrow(cache)))
+    }
+
+    /// `&mut *cache` for an owned header (`(*cache).field` stores),
+    /// through its permission ([`Heap::updates`]: the header holds the
+    /// stored value, the rest of the heap is as it was).
+    ///
+    /// Unsafe for its callers' sake: the requires carry its precondition,
+    /// and most of its callers are unverified.
+    ///
+    /// # Safety
+    /// `cache` is a header this heap owns (a home header or one of a live
+    /// `others` node's), and nothing else reads or writes it while the
+    /// reference lives (the requires).
+    #[inline(always)]
+    unsafe fn hdr_mut(&mut self, cache: *mut CacheHeader) -> (r: &mut CacheHeader)
+        requires
+            old(self).wf(),
+            old(self).owns(cache),
+        ensures
+            *r == old(self).hdr(cache),
+            r.inv(),
+            final(self).updates(*old(self), cache, *final(r)),
+    {
+        proof {
+            assert(cell_ok(cache, self.perms@.hdrs[cache], self.perms@.slots));
+        }
+        ptr_mut_ref(cache, Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)))
+    }
+
+    /// Home arena (design 6.2 `heap.arena`; `thread.arena`).
+    #[inline]
+    pub fn arena(&self) -> u16 {
+        self.arena
+    }
+
+    /// Add the byte counters a cache array stands for (`allocs` pops and
+    /// `len + allocs - moved` pushes per cache, each worth the class size)
+    /// to `into`. [`Heap::stats`] derives the thread counters this way on
+    /// every read; a cache that is about to be freed is folded into
+    /// `uncached` first so that `thread.allocated` never goes backwards.
+    #[allow(
+        clippy::while_let_loop,
+        reason = "the desugared `for`, which Verus needs for `continue`"
+    )]
+    fn fold_counters(into: &mut ThreadStats, caches: &[CacheHeader; NCLASSES]) {
+        // `for (class, c) in caches.iter().enumerate()`, spelled out: Verus
+        // has no `Enumerate` and rejects `continue` in a `for` loop. The
+        // count is taken and bumped as `Enumerate::next` does.
+        let mut iter = caches.iter();
+        let mut count: usize = 0;
+        loop
+            invariant
+                count + vstd::std_specs::iter::IteratorSpec::remaining(&iter).len() == NCLASSES,
+            decreases NCLASSES - count,
+        {
+            let c = match iter.next() {
+                Some(c) => c,
+                None => break,
+            };
+            let class = count;
+            count += 1;
+            if c.cap == 0 {
+                continue;
+            }
+            let frees = (c.len as u64).wrapping_add(c.allocs).wrapping_sub(c.moved);
+            into.add(CLASSES.table()[class].size() as u64, c.allocs, frees);
+        }
+    }
+
+    /// Byte counters for this thread: the uncached part plus what every
+    /// cache of every arena stands for ([`Heap::fold_counters`]).
+    pub fn stats(&self) -> ThreadStats
+        requires
+            self.wf(),
+    {
+        let mut s = self.uncached;
+        Self::fold_counters(&mut s, &self.caches);
+        // `for o in Self::nodes(self.others)`, spelled out: Verus has no
+        // `from_fn`. `r` counts the nodes left, this one included.
+        let mut o = self.others;
+        let ghost mut r = self.list_len();
+        proof {
+            self.lemma_list(r);
+        }
+        while !o.is_null()
+            invariant
+                self.wf(),
+                0 <= r <= self.list_len(),
+                r > 0 ==> o == self.node_from_end(r),
+                r == 0 ==> o@.addr == 0,
+            decreases r,
+        {
+            proof {
+                self.lemma_list(r);
+            }
+            // SAFETY: `o` is the `r`-th node from the end of this heap's
+            // `others` list (the invariant).
+            let next = unsafe { self.node_next(o, Ghost(r)) };
+            // SAFETY: as above.
+            unsafe { Self::fold_counters(&mut s, self.node_caches(o, Ghost(r))) };
+            proof {
+                r = r - 1;
+            }
+            o = next;
+        }
+        s
+    }
+
+    /// [`Heap::stats`] materialised into the heap for `thread.allocatedp`
+    /// and `thread.deallocatedp` (design 13.4). The counters are derived
+    /// on every read, so the pointers those keys hand out refer to this
+    /// copy, which is refreshed by every read of any of the four
+    /// `thread.*allocated*` keys and stale in between.
+    pub fn materialise_stats(&mut self) -> &ThreadStats
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+    {
+        self.snapshot = self.stats();
+        &self.snapshot
+    }
+
+    /// `thread.tcache.enabled`.
+    #[inline]
+    pub fn tcache_enabled(&self) -> (r: bool)
+        ensures
+            r == self.tcache_on(),
+    {
+        self.tcache_enabled
+    }
+}
+
+} // verus!
