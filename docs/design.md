@@ -972,9 +972,11 @@ under a class lock and its slab table lock when a group is handed
 out), the huge lock, the metadata lock, the per-arena statistics locks
 (leaves), and the background thread's state lock last. The parent and
 child handlers release them in reverse and restore the signal mask. The
-test `fork_handlers_take_and_release_every_lock` derives the list of
-`Lock` fields from the source tree, so a lock added later fails it
-until the handler takes it. The signal blocking is needed because
+test `fork_lock_list_matches_the_source_tree` derives the list of
+`Lock` fields from the source tree and fails until a lock added later
+is in the tests' `FORK_LOCKS` list, and
+`fork_handlers_take_and_release_every_lock` fails until the handlers
+take it. The signal blocking is needed because
 glibc restores the caller's mask before the parent handlers run, so
 a signal handler that forks there (glibc's `tst-mallocfork`) would
 re-enter prepare with the locks held. Other threads' heaps are left
