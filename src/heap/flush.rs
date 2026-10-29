@@ -323,7 +323,10 @@ const GROUP_BUCKETS: usize = 256;
 pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8]) -> *mut u8 {
     let base = shared.regions.class_base[class];
     let lg = CLASSES.table()[class].lg_slab as u32;
-    let key = |p: *mut u8| (p as usize).wrapping_sub(base) >> lg;
+    let key = |p: *mut u8| {
+        let a = (p as usize).wrapping_sub(base);
+        a >> lg
+    };
     let mut low = high[0];
     let (mut kmin, mut kmax) = (usize::MAX, 0usize);
     for &p in high.iter() {
@@ -390,10 +393,10 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
 #[cold]
 #[inline(never)]
 pub(super) fn straddling_double_free(p: *mut u8, class: usize) -> ! {
-    panic!(
+    crate::sys::abort_fmt(format_args!(
         "double free of {:#x} (class {class}): both copies cached, one at the flush boundary",
         p as usize
-    )
+    ))
 }
 
 /// `Config::slot_randomize` (design section 4), read on the slow path.
