@@ -1,10 +1,15 @@
 # Contributing to challoc
 
-Thanks for helping. This file covers the development environment, the
-rules every change follows, how changes to performance-sensitive code are
-justified, and how to send a change. Read `README.md` first, then
-`docs/design.md` (the design, section by section), `docs/testing.md` (the
-test layout) and `docs/benchmarking.md` (how numbers are produced).
+We don't accept pull requests from external contributors. If you and your
+organization would seriously like to get involved, email
+dlorenc@chainguard.dev.
+
+The rest of this file is how maintainers work on challoc: the
+development environment, the rules every change follows, how changes to
+performance-sensitive code are justified, and how to send a change. Read
+`README.md` first, then `docs/design.md` (the design, section by
+section), `docs/testing.md` (the test layout) and `docs/benchmarking.md`
+(how numbers are produced).
 `docs/tuning.md` is the operator's guide and `docs/research.md` has the
 sources behind design decisions; check it before re-researching anything.
 
