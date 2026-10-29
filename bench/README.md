@@ -252,8 +252,8 @@ when every cell is pending the exit code is 2).
 publication, and `cb cells --lint` fails when one of an overlay's
 `[lint] markers` appears in a public file. Suites name such cells only
 through tags (`exp-slice` selects `tag:exp-slice`), so a public tree
-without the overlay still parses. The overlay records its own host facts
-and the bootstrap spike (startup scripts run on those images, 2026-10-01).
+without the overlay still parses; there such a tag selects no cells. An
+overlay records the host facts of its own images.
 
 ### Variants and host knobs
 
@@ -468,8 +468,8 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
   Ubuntu image: Axion, N4A, Turin, Sapphire Rapids, Genoa, Altra),
   `exp-floor` and `tripwire` (public kernel images from 5.10 to 7.x,
   default and privileged containers, 64 KiB pages), `exp-narenas`
-  (CPU-quota containers) and the internal overlay's cells (Chainguard OS;
-  `docs/runbooks/chainguard-os-gce.md`). `cb cells --resolve` checks that
+  (CPU-quota containers) and whatever cells an internal overlay
+  (`bench/cells/internal-*.toml`) adds. `cb cells --resolve` checks that
   every family still resolves; a family that does not makes its cell
   PENDING, never a failure.
 - **Traps.** GCE NICs have a 1460-byte MTU (boot.sh sets Docker's);

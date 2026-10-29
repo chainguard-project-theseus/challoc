@@ -6,7 +6,9 @@
 # and the cost of one thread switch from the 10 vs 1000 rows. spe-probe
 # adds the event sources and, where the CPU has SPE, an SPE recording
 # (#60). One VM per cell (shard_seconds above the suite's length): meant
-# for the bare-metal cells, which take ~11 minutes to boot.
+# for bare-metal cells, which take ~11 minutes to boot. `tag:profile`
+# selects cells an internal overlay tags `profile`; none in the public
+# tree, so name a cell with --cells.
 #
 #   cb launch exp-churn --cells <metal cell> --head <rev>
 description = "#94 thread churn: larson1/N at 10/100/1000 rounds per thread, challoc vs jemalloc, PMU counts"
