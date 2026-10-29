@@ -259,6 +259,45 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
         r.value() == a.value()[i as int],
 ;
 
+/// Element `i` of the `[T; N]` at `a`: `size_of::<T>()` bytes apart from
+/// `a`'s address, with its provenance.
+pub open spec fn array_elem_ptr<T, const N: usize>(a: *mut [T; N], i: int) -> *mut T {
+    vstd::raw_ptr::ptr_mut_from_data(
+        vstd::raw_ptr::PtrData::<T> {
+            addr: (a@.addr + i * vstd::layout::size_of::<T>()) as usize,
+            provenance: a@.provenance,
+            metadata: (),
+        },
+    )
+}
+
+/// A shared view of the `[T; N]` at `a` lent by its elements' permissions:
+/// `perms` holds an initialised permission to each element
+/// ([`array_elem_ptr`]), so it holds the array, whose value is theirs, for
+/// as long as they stay borrowed. Trusted: the `core` layout of arrays
+/// (`N` elements `size_of::<T>()` apart from the array's address, aligned
+/// as `T`) and the meaning of a permission (one to an array owns its
+/// elements' bytes), neither of which vstd states (vstd joins no typed
+/// permissions; [`axiom_array_elem`] is the other direction, for frozen
+/// arrays). Shared only: nothing is written through either side while the
+/// borrow lives, and no permission is duplicated that could be written.
+/// The array has an element (element 0's permission gives it the non-null,
+/// `T`-aligned address an array of `T` needs) and does not wrap the
+/// address space (so its elements are the permissions' objects).
+pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut T, vstd::raw_ptr::PointsTo<T>>, a: *mut [T; N]) -> (tracked r: &'a vstd::raw_ptr::PointsTo<[T; N]>)
+    requires
+        0 < N,
+        0 < vstd::layout::size_of::<T>(),
+        a@.addr + N * vstd::layout::size_of::<T>() <= usize::MAX,
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms.contains_key(array_elem_ptr(a, i)),
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms[array_elem_ptr(a, i)].ptr() == array_elem_ptr(a, i),
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms[array_elem_ptr(a, i)].is_init(),
+    ensures
+        r.ptr() == a,
+        r.is_init(),
+        forall|i: int| 0 <= i < N ==> #[trigger] r.value()[i] == perms[array_elem_ptr(a, i)].value(),
+;
+
 } // verus!
 
 verus! {

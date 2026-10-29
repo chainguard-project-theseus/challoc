@@ -18,6 +18,7 @@ file.
 | `<*mut T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `<*const T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `axiom_array_elem` | axiom | core library | none (assumption) | trusted |
+| `axiom_array_view` | axiom | core library | none (assumption) | trusted |
 | `ref_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `ptr::re...d::<T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
 | `<*const...ligned` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
@@ -210,9 +211,32 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
 ;
 ```
 
+## `axiom_array_view`
+
+src/vspec/ptr.rs:287. Kind: axiom. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> A shared view of the `[T; N]` at `a` lent by its elements' permissions: `perms` holds an initialised permission to each element ([`array_elem_ptr`]), so it holds the array, whose value is theirs, for as long as they stay borrowed.
+
+```rust
+pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut T, vstd::raw_ptr::PointsTo<T>>, a: *mut [T; N]) -> (tracked r: &'a vstd::raw_ptr::PointsTo<[T; N]>)
+    requires
+        0 < N,
+        0 < vstd::layout::size_of::<T>(),
+        a@.addr + N * vstd::layout::size_of::<T>() <= usize::MAX,
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms.contains_key(array_elem_ptr(a, i)),
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms[array_elem_ptr(a, i)].ptr() == array_elem_ptr(a, i),
+        forall|i: int| #![trigger array_elem_ptr(a, i)] 0 <= i < N ==> perms[array_elem_ptr(a, i)].is_init(),
+    ensures
+        r.ptr() == a,
+        r.is_init(),
+        forall|i: int| 0 <= i < N ==> #[trigger] r.value()[i] == perms[array_elem_ptr(a, i)].value(),
+;
+```
+
 ## `ref_ptr`
 
-src/vspec/ptr.rs:276. Kind: external_body. Category: raw pointer (internal).
+src/vspec/ptr.rs:315. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
@@ -226,7 +250,7 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
 
 ## `core::ptr::read_unaligned::<T>`
 
-src/vspec/ptr.rs:310. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:349. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::read_unaligned`.
@@ -242,7 +266,7 @@ pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> 
 
 ## `<*const T>::read_unaligned`
 
-src/vspec/ptr.rs:318. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:357. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*const T>::read_unaligned`.
@@ -258,7 +282,7 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
 
 ## `core::ptr::write_unaligned::<T>`
 
-src/vspec/ptr.rs:326. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:365. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::write_unaligned`.
@@ -275,7 +299,7 @@ pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src:
 
 ## `<*mut T>::write_unaligned`
 
-src/vspec/ptr.rs:335. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:374. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*mut T>::write_unaligned`.

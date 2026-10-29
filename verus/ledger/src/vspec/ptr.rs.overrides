@@ -1,5 +1,6 @@
 axiom_ptr_add_addr	core library	Kani
 axiom_array_elem	core library	none (assumption)
+axiom_array_view	core library	none (assumption)
 axiom_raw_valid	raw pointer (internal)	none (assumption)
 # A `u64` has no padding and every bit pattern is a value.
 axiom_plain_u64	core library	none (assumption)
