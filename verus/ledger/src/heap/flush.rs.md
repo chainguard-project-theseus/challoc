@@ -11,7 +11,7 @@ file.
 
 ## `addr_mix`
 
-src/heap/flush.rs:1160. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1156. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.

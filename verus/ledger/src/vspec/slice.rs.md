@@ -17,6 +17,7 @@ file.
 | `<core::array...rator>::next` | assume_spec | core library | Kani | trusted |
 | `sort_ptrs` | external_body | core library | Kani | trusted |
 | `<&'a mut [T]...>::into_iter` | assume_spec | core library | Kani | trusted |
+| `slice_mut_elems` | external_body | raw pointer (internal) | RefinedRust | trusted |
 
 ## `core::slice::from_raw_parts::<'a, T>`
 
@@ -200,4 +201,39 @@ pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into
         vstd::std_specs::iter::IteratorSpec::will_return_none(&iter),
         vstd::std_specs::iter::IteratorSpec::decrease(&iter) is Some,
 ;
+```
+
+## `slice_mut_elems`
+
+src/vspec/slice.rs:225. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `elems` holds keyed by their pointers, element `i`'s at `base.add(i)`, and no other permission: the slice of those elements, for as long as `elems` stays borrowed.
+
+```rust
+pub unsafe fn slice_mut_elems<'a, T>(
+    base: *mut T,
+    start: usize,
+    n: usize,
+    Tracked(elems): Tracked<&'a mut Map<*mut T, vstd::raw_ptr::PointsTo<T>>>,
+) -> (r: &'a mut [T])
+    requires
+        0 < n,
+        forall|q: *mut T| #[trigger] old(elems).contains_key(q) ==> elem_key(base, start as int, n as int, q),
+        forall|i: int| start <= i < start + n ==> {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            old(elems).contains_key(q) && old(elems)[q].ptr() == q
+        },
+    ensures
+        r@.len() == n,
+        final(r)@.len() == n,
+        forall|i: int| start <= i < start + n ==> {
+            let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
+            &&& final(elems).contains_key(q)
+            &&& final(elems)[q].ptr() == q
+            &&& final(elems)[q].opt_value() == vstd::raw_ptr::MemContents::Init(final(r)@[i - start])
+        },
+        forall|i: int|
+            start <= i < start + n && old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init()
+                ==> r@[i - start] == #[trigger] old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].value(),
 ```
