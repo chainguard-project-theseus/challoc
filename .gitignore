@@ -3,3 +3,5 @@
 /dist
 /.ci
 /verus/count/target
+# Local-only internal cell overlays (internal-project.toml is tracked and unaffected)
+/bench/cells/internal-*.toml

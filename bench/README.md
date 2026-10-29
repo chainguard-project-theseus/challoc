@@ -252,8 +252,8 @@ when every cell is pending the exit code is 2).
 publication, and `cb cells --lint` fails when one of an overlay's
 `[lint] markers` appears in a public file. Suites name such cells only
 through tags (`exp-slice` selects `tag:exp-slice`), so a public tree
-without the overlay still parses. The overlay records its own host facts
-and the bootstrap spike (startup scripts run on those images, 2026-10-01).
+without the overlay still parses; there such a tag selects no cells. An
+overlay records the host facts of its own images.
 
 ### Variants and host knobs
 
