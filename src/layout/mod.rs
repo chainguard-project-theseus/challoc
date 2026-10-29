@@ -575,6 +575,183 @@ pub(crate) proof fn lemma_slot_test(c: Class, offset: usize, q: u32)
     }
 }
 
+/// Multiplication modulo `2^64` is associative.
+pub(crate) proof fn lemma_wmul64_assoc(a: u64, b: u64, c: u64)
+    ensures
+        a.wrapping_mul(b).wrapping_mul(c) == a.wrapping_mul(b.wrapping_mul(c)),
+{
+    let m = 0x1_0000_0000_0000_0000int;
+    vstd::arithmetic::div_mod::lemma_mul_mod_noop_right(a as int, (b as int) * (c as int), m);
+    vstd::arithmetic::div_mod::lemma_mul_mod_noop_left((a as int) * (b as int), c as int, m);
+    vstd::arithmetic::mul::lemma_mul_is_associative(a as int, b as int, c as int);
+}
+
+/// The rotate of the 64-bit slot-start test ([`lemma_rotate`] on 64
+/// bits): `q`, `y` rotated right by `t`, is below a bound of `2^22 >> t`
+/// or less only if the low `t` bits of `y` are clear, so `y` is `q << t`.
+proof fn lemma_rotate64(y: u64, t: u64, q: u64, bound: u64)
+    requires
+        t < 64,
+        q == crate::vspec::core_int::rotr64(y, t as u32),
+        bound <= 0x40_0000u64 >> t,
+    ensures
+        q < bound ==> y == q << t,
+{
+    assert(q < bound ==> y == q << t) by (bit_vector)
+        requires
+            t < 64,
+            t == 0 ==> q == y,
+            t != 0 ==> q == (y >> t) | (y << sub(64u64, t)),
+            bound <= 0x40_0000u64 >> t,
+    ;
+}
+
+/// The sized free's exact-division test on 64 bits
+/// (`heap::ClassLine::sized_ok`, [`lemma_slot_test`] widened): with
+/// `size = d << tz`, `d` odd and `inv` its inverse modulo `2^64`, a `q =
+/// (x * inv).rotate_right(tz)` below `nslots` means `x` is `q * size`,
+/// whatever bits `x` has: the product was `q << tz`, and multiplying it
+/// back by `d` gives `x` modulo `2^64` and `q * size`, below `2^22`.
+pub(crate) proof fn lemma_slot_test64(c: Class, inv: u64, x: u64, q: u64)
+    requires
+        c.wf(),
+        ((c.size as u64) >> (c.tz as u64)).wrapping_mul(inv) == 1,
+        q == crate::vspec::core_int::rotr64(x.wrapping_mul(inv), c.tz as u32),
+        q < c.nslots as u64,
+    ensures
+        x as int == q as int * c.size as int,
+        (q as int * c.size as int) < 0x40_0000,
+{
+    let s32 = c.size;
+    let t32 = c.tz as u32;
+    let s = c.size as u64;
+    let t = c.tz as u64;
+    let d = s >> t;
+    let n = c.nslots as u64;
+    assert(MEDIUM_MAX == 0x4_0000);
+    assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+    let d32 = s32 >> t32;
+    assert(t <= 18 && d << t == s && d & 1 == 1 && (1u64 << t) <= s && d <= s) by (bit_vector)
+        requires
+            d32 << t32 == s32,
+            d32 & 1 == 1,
+            t32 < 32,
+            s32 <= 0x4_0000u32,
+            d32 == s32 >> t32,
+            s == s32 as u64,
+            t == t32 as u64,
+            d == s >> t,
+    ;
+    vstd::bits::lemma_u64_pow2_no_overflow(t as nat);
+    vstd::bits::lemma_u64_shl_is_mul(1, t);
+    vstd::bits::lemma_u64_shr_is_div(0x40_0000u64, t);
+    vstd::arithmetic::power2::lemma_pow2_pos(t as nat);
+    let p = vstd::arithmetic::power2::pow2(t as nat) as int;
+    assert(n as int * p <= 0x40_0000) by (nonlinear_arith)
+        requires
+            n as int * s as int <= 0x40_0000,
+            p <= s as int,
+            n >= 1,
+            p > 0,
+    ;
+    vstd::arithmetic::div_mod::lemma_div_is_ordered(n as int * p, 0x40_0000, p);
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(n as int, p);
+    assert(n <= 0x40_0000u64 >> t);
+    let y = x.wrapping_mul(inv);
+    lemma_rotate64(y, t, q, n);
+    // `y` is `q << t`; times `d` it is `x` (`inv * d` is 1) and `q * s`.
+    assert(y == q << t);
+    lemma_wmul64_assoc(x, inv, d);
+    assert(inv.wrapping_mul(d) == d.wrapping_mul(inv)) by (bit_vector);
+    vstd::arithmetic::div_mod::lemma_small_mod(x as nat, 0x1_0000_0000_0000_0000);
+    assert(x.wrapping_mul(1u64) == x);
+    assert(y.wrapping_mul(d) == x);
+    assert((q as int * s as int) < 0x40_0000) by (nonlinear_arith)
+        requires
+            q < n,
+            n as int * s as int <= 0x40_0000,
+            s > 0,
+    ;
+    assert(q as int * p < 0x1_0000_0000_0000_0000 && d as int * p <= 0x10_0000_0000) by (nonlinear_arith)
+        requires
+            (q as int * s as int) < 0x40_0000,
+            p <= s as int,
+            q >= 0,
+            d as int <= s as int,
+            s as int <= 0x4_0000,
+            p >= 1,
+    ;
+    vstd::bits::lemma_u64_shl_is_mul(q, t);
+    vstd::bits::lemma_u64_shl_is_mul(d, t);
+    assert((q as int * p) * (d as int) == q as int * s as int) by (nonlinear_arith)
+        requires
+            s as int == d as int * p,
+    ;
+    assert(q as int * p < 0x1_0000_0000_0000_0000) by (nonlinear_arith)
+        requires
+            q as int * s as int <= 0x40_0000,
+            p <= s as int,
+            q >= 0,
+    ;
+    assert(y as int == q as int * p);
+    vstd::arithmetic::div_mod::lemma_small_mod((q as int * s as int) as nat, 0x1_0000_0000_0000_0000);
+    assert(y.wrapping_mul(d) as int == q as int * s as int);
+}
+
+/// The low half of the 64-bit inverse of a class's odd part is its
+/// 32-bit inverse, `inv_odd` (the inverse modulo `2^32` is unique), and
+/// the inverse of `size >> trailing_zeros(size)` is that of `size >> tz`.
+pub(crate) proof fn lemma_inv_low(c: Class, inv: u64)
+    requires
+        c.wf(),
+        ((c.size as u64) >> (vstd::std_specs::bits::u64_trailing_zeros(c.size as u64) as u64)).wrapping_mul(inv) == 1,
+    ensures
+        ((c.size as u64) >> (c.tz as u64)).wrapping_mul(inv) == 1,
+        inv as u32 == c.inv_odd,
+{
+    let s32 = c.size;
+    let t32 = c.tz as u32;
+    let s = c.size as u64;
+    let d32 = s32 >> t32;
+    vstd::std_specs::bits::axiom_u64_trailing_zeros(s);
+    let tz = vstd::std_specs::bits::u64_trailing_zeros(s) as u64;
+    let t = c.tz as u64;
+    assert(MEDIUM_MAX == 0x4_0000);
+    // `tz` is the size's trailing zero count: the odd part is `d`.
+    assert(tz == t) by (bit_vector)
+        requires
+            d32 << t32 == s32,
+            d32 & 1 == 1,
+            t32 < 32,
+            d32 == s32 >> t32,
+            s == s32 as u64,
+            t == t32 as u64,
+            1 <= s,
+            tz <= 64,
+            tz < 64 ==> (s >> tz) & 1u64 == 1u64,
+            s << sub(64, tz) == 0,
+            s == 0 <==> tz == 64,
+    ;
+    let d = s >> t;
+    let a = inv as u32;
+    assert(d as u32 == d32) by (bit_vector)
+        requires d == s >> t, s == s32 as u64, t == t32 as u64, t32 < 32, d32 == s32 >> t32;
+    // `d * a` is the low half of `d * inv`, 1.
+    let dw = d.wrapping_mul(inv);
+    assert(dw as u32 == (d as u32).wrapping_mul(inv as u32)) by (bit_vector)
+        requires dw == d.wrapping_mul(inv);
+    assert(d32.wrapping_mul(a) == 1);
+    // So `a == a * (d * inv_odd) == (a * d) * inv_odd == inv_odd`.
+    let w = c.inv_odd;
+    assert(d32.wrapping_mul(w) == 1);
+    lemma_wmul_assoc(a, d32, w);
+    assert(a.wrapping_mul(d32) == d32.wrapping_mul(a)) by (bit_vector);
+    lemma_wmul_one(a);
+    let one: u32 = 1;
+    assert(one.wrapping_mul(w) == w) by (bit_vector)
+        requires one == 1u32;
+}
+
 } // verus!
 
 verus! {

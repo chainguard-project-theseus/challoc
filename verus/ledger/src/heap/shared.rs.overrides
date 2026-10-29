@@ -30,5 +30,5 @@ axiom_shared_built	raw pointer (internal)	none (assumption)
 Shared::begin	raw pointer from C caller	none (assumption)
 # Temporary seam, discharged by 37b (planned, tracked in #138), which
 # strengthens `built` and proves it in `Shared::init` after #261: the
-# facts of `built` the slow paths use beyond `lemma_wf`'s.
-Shared::lemma_wf_slow	allocator invariant	Verus
+# facts of `wf` the slow paths use that `built` does not carry yet.
+Shared::axiom_wf_slow	allocator invariant	Verus

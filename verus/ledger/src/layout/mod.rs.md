@@ -15,7 +15,7 @@ file.
 
 ## `ClassTable`
 
-src/layout/mod.rs:1175. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1352. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The size-class table in use, indexed by class number: [`BASE_CLASSES`] with the slab geometry of the classes below the kernel page raised to the page by [`adopt_page_geometry`] once at init.
@@ -26,7 +26,7 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ## `axiom_class_table`
 
-src/layout/mod.rs:1186. Kind: axiom. Category: allocator invariant.
+src/layout/mod.rs:1363. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: what [`class_table`] names, the contents of [`CLASSES`] after init, is what a frozen permission to its storage holds.
@@ -43,7 +43,7 @@ pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Clas
 
 ## `ClassTable::new`
 
-src/layout/mod.rs:1196. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1373. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 ```rust
@@ -52,7 +52,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ## `ClassTable::table`
 
-src/layout/mod.rs:1211. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1388. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The table, for verified code.
@@ -67,7 +67,7 @@ pub fn table(&self) -> (r: &[Class; NCLASSES])
 
 ## `classes_ptr`
 
-src/layout/mod.rs:1262. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1439. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The storage of [`CLASSES`]' table, as a raw pointer.
