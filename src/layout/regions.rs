@@ -1898,29 +1898,107 @@ mod linux {
         LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED, LG_REGION_MIN,
         LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions, colour,
     };
+    #[cfg(verus_keep_ghost)]
+    use super::{MAX_SEALED, disjoint, offset_ok, shared_static_addr, shared_static_len};
     use crate::layout::CLASSES;
+    #[cfg(verus_keep_ghost)]
+    use crate::layout::class_table;
+    #[cfg(verus_keep_ghost)]
+    use crate::sys::pac::user_va_limit;
     use crate::sys::{self, Errno, MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
     use crate::vspec::unbacked::Unbacked;
+    #[cfg(verus_keep_ghost)]
+    use vstd::arithmetic::power2::pow2;
     use vstd::prelude::*;
 
     verus! {
 
-    /// Ghost ownership of one live reservation that [`try_reserve`]
-    /// obtained from the kernel. Tokens are never duplicated, so two of
-    /// them are two live mappings. The reservations are never unmapped
-    /// (`Regions::release` is test-only), so a token stays true for the
-    /// life of the process.
+    /// Ghost ownership of one live reservation, `len()` bytes from
+    /// `addr()`, that [`try_reserve`] obtained from the kernel. Tokens are
+    /// never duplicated, so two of them are two live mappings, which the
+    /// kernel keeps apart ([`Reserved::is_disjoint`]). The reservations
+    /// are never unmapped (`Regions::release` is test-only), so a token
+    /// stays true for the life of the process.
     #[verifier::external_body]
     pub tracked struct Reserved {
         _no_copy: (),
     }
 
-    } // verus!
+    impl Reserved {
+        pub uninterp spec fn addr(&self) -> usize;
+
+        pub uninterp spec fn len(&self) -> usize;
+
+        /// Trusted (the kernel's `mmap` contract): a live reservation does
+        /// not overlap the process's `Shared` static
+        /// ([`shared_static_addr`]). The static is in the writable data of
+        /// the object challoc is linked into, which the loader mapped before
+        /// any allocator code ran and which stays mapped for the life of the
+        /// process; `mmap` without `MAP_FIXED` never places a mapping over a
+        /// live one.
+        #[verifier::external_body]
+        pub proof fn is_apart_from_static(tracked &self)
+            requires
+                self.len() > 0,
+            ensures
+                disjoint(self.addr() as int, self.len() as int, shared_static_addr(), shared_static_len()),
+        {
+            unimplemented!()
+        }
+
+        /// Trusted (the kernel's `mmap` contract): two live mappings do not
+        /// overlap. `mmap` without `MAP_FIXED` never places a mapping over
+        /// a live one, and nothing unmaps a reservation. Both are
+        /// non-empty: [`disjoint`] of an empty range inside another is
+        /// false (`mmap` of 0 bytes fails, but [`try_reserve`]'s contract
+        /// does not say so), and likewise for
+        /// [`Reserved::is_apart_from_static`].
+        #[verifier::external_body]
+        pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
+            requires
+                old(self).len() > 0,
+                other.len() > 0,
+            ensures
+                *final(self) == *old(self),
+                disjoint(old(self).addr() as int, old(self).len() as int, other.addr() as int, other.len() as int),
+        {
+            unimplemented!()
+        }
+
+        /// The reservation as uncommitted address space this process owns,
+        /// for the one owner that commits it piece by piece (`Meta`, for the
+        /// metadata region). Trusted (the kernel's `mmap` contract): the range
+        /// is this process's alone. The token is consumed, so the range is
+        /// handed out once. Verified code has no other source of an
+        /// `Unbacked` token (`vspec::unbacked` keeps its fields private;
+        /// the test-only `Meta::new` assumes one).
+        #[verifier::external_body]
+        pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
+            ensures
+                u.addr() == self.addr(),
+                u.len() == self.len(),
+        {
+            unimplemented!()
+        }
+    }
 
     /// Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on
-    /// success, the address and the token for the `len` bytes there,
-    /// taken on trust (the kernel's `mmap` contract).
-    fn try_reserve(len: usize) -> Result<(usize, Tracked<Reserved>), Errno> {
+    /// success, the address and the token for the `len` bytes there.
+    ///
+    /// Trusted (the kernel's `mmap` contract): a successful anonymous
+    /// mapping without `MAP_FIXED` is a new mapping of `len` bytes (the
+    /// token, apart from every other live one) that ends in user space,
+    /// below `sys::pac::user_va_limit` (the kernel's default map window,
+    /// at most `2^48`), and never at address 0: the kernel places a
+    /// mapping without `MAP_FIXED` at or above `max(PAGE_SIZE,
+    /// mmap_min_addr)`.
+    #[verifier::external_body]
+    fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && 0 < a && a + len <= user_va_limit(),
+    {
         // SAFETY: fresh anonymous private mapping, no fixed address.
         let addr = unsafe {
             sys::mmap(
@@ -1935,26 +2013,54 @@ mod linux {
         Ok((addr, Tracked::assume_new()))
     }
 
+    /// A reservation [`try_reserve`] made: `m` with its token, below
+    /// `sys::pac::user_va_limit`.
+    pub open spec fn reserved(m: Mapping, t: Reserved) -> bool {
+        &&& t.addr() == m.addr
+        &&& t.len() == m.len
+        &&& m.addr > 0
+        &&& m.addr + m.len <= user_va_limit()
+    }
+
     /// The abort of [`reserve_shrinking`] when even `2^lg_min` bytes
     /// cannot be reserved.
     #[cold]
     #[inline(never)]
-    fn cannot_reserve(what: &str, lg: u32, e: Errno) -> ! {
-        sys::abort_fmt(format_args!(
-            "cannot reserve {what} region of 2^{lg} bytes: {e}"
-        ))
+    fn cannot_reserve(what: &str, lg: u32, e: Errno) -> !
+        requires
+            crate::sys::may_abort(),
+    {
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
+        sys::abort_fmt(format_args!("cannot reserve {what} region of 2^{lg} bytes: {e}"))
     }
 
     /// Reserve `2^lg + extra` bytes, halving `lg` down to `lg_min` on any
-    /// failure. Returns the mapping, the `lg` that fit and the
-    /// reservation's token.
-    fn reserve_shrinking(
-        what: &str,
-        mut lg: u32,
-        lg_min: u32,
-        extra: usize,
-    ) -> (Mapping, u32, Tracked<Reserved>) {
-        loop {
+    /// failure. Returns the mapping and the `lg` that fit.
+    fn reserve_shrinking(what: &str, mut lg: u32, lg_min: u32, extra: usize) -> (r: (Mapping, u32, Tracked<Reserved>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            lg_min <= lg <= 40,
+            extra <= 0x8000_0000,
+        ensures
+            lg_min <= r.1 <= 40,
+            r.0.len == (1usize << r.1) + extra,
+            reserved(r.0, r.2@),
+    {
+        let ghost lg0 = lg;
+        loop
+            invariant
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                lg_min <= lg <= lg0 <= 40,
+                extra <= 0x8000_0000,
+            decreases lg,
+        {
+            proof {
+                assert((1usize << lg) <= 0x100_0000_0000) by (bit_vector)
+                    requires lg <= 40;
+            }
             let len = (1usize << lg) + extra;
             match try_reserve(len) {
                 Ok((addr, t)) => return (Mapping { addr, len }, lg, t),
@@ -1971,7 +2077,12 @@ mod linux {
     /// cannot be reserved.
     #[cold]
     #[inline(never)]
-    fn cannot_reserve_superblock(lg_stride: u32, e: Errno) -> ! {
+    fn cannot_reserve_superblock(lg_stride: u32, e: Errno) -> !
+        requires
+            crate::sys::may_abort(),
+    {
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
         sys::abort_fmt(format_args!(
             "cannot reserve class superblock of {NCLASSES} x 2^{lg_stride} bytes: {e}"
         ))
@@ -1981,11 +2092,33 @@ mod linux {
     /// Prefers a stride of 4x the region (gap 3x). Shrinks the region down to
     /// the minimum, then as a last resort drops the stride to 2x the region
     /// (gap 1x, below the design's 1.25x preference but still a full gap).
-    /// Returns the reservation's token too.
-    fn reserve_superblock() -> (Mapping, u32, u32, Tracked<Reserved>) {
+    fn reserve_superblock() -> (r: (Mapping, u32, u32, Tracked<Reserved>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+        ensures
+            LG_REGION_MIN <= r.1 <= LG_REGION_PREFERRED,
+            r.1 < r.2 <= r.1 + 2,
+            r.0.len == (NCLASSES << r.2) + MAX_SLAB,
+            reserved(r.0, r.3@),
+    {
         let mut lg_region = LG_REGION_PREFERRED;
         let mut lg_stride = lg_region + 2;
-        loop {
+        loop
+            invariant
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                LG_REGION_MIN <= lg_region <= LG_REGION_PREFERRED,
+                lg_region < lg_stride <= lg_region + 2,
+            decreases lg_region + lg_stride,
+        {
+            proof {
+                let n = NCLASSES;
+                assert(n <= 64);
+                assert((n << lg_stride) + 0x40_0000 <= 0x100_0000_0000_0000) by (bit_vector)
+                    requires n <= 64, lg_stride <= 40;
+                assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+            }
             let len = (NCLASSES << lg_stride) + MAX_SLAB;
             match try_reserve(len) {
                 Ok((addr, t)) => return (Mapping { addr, len }, lg_region, lg_stride, t),
@@ -2003,17 +2136,16 @@ mod linux {
 
     /// The reservations' VMA names, NUL-terminated (spelled as bytes so
     /// the verifier sees the NUL `set_vma_anon_name` requires).
-    const CLASSES_NAME: [u8; 16] = [
-        b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'c', b'l', b'a', b's', b's', b'e', b's', 0,
-    ];
-    const HUGE_NAME: [u8; 13] = [
-        b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'h', b'u', b'g', b'e', 0,
-    ];
-    const META_NAME: [u8; 13] = [
-        b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'm', b'e', b't', b'a', 0,
-    ];
+    const CLASSES_NAME: [u8; 16] = [b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'c', b'l', b'a', b's', b's', b'e', b's', 0];
+    const HUGE_NAME: [u8; 13] = [b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'h', b'u', b'g', b'e', 0];
+    const META_NAME: [u8; 13] = [b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'm', b'e', b't', b'a', 0];
 
-    fn name_mapping(m: Mapping, name: &'static [u8]) {
+    fn name_mapping(m: Mapping, name: &'static [u8])
+        requires
+            crate::sys::may_syscall(),
+            name@.len() > 0,
+            name@.last() == 0,
+    {
         // SAFETY: `m` is a live mapping we own; the name is NUL-terminated.
         let _ = unsafe { sys::set_vma_anon_name(m.addr, m.len, name) };
     }
@@ -2021,20 +2153,61 @@ mod linux {
     /// `addr` rounded up to a multiple of `MAX_SLAB`: `mmap` only promises
     /// page alignment, so each mapping carries `MAX_SLAB` of slack for it.
     #[inline(always)]
-    fn align_base(addr: usize) -> usize {
+    fn align_base(addr: usize) -> (r: usize)
+        requires
+            addr + MAX_SLAB <= usize::MAX,
+        ensures
+            addr <= r < addr + MAX_SLAB,
+            r & ((MAX_SLAB - 1) as usize) == 0,
+    {
+        proof {
+            assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+            let r = ((addr + 0x3f_ffff) as usize) & !0x3f_ffffusize;
+            assert(addr <= r < addr + 0x40_0000 && r & 0x3f_ffff == 0) by (bit_vector)
+                requires addr + 0x40_0000 <= usize::MAX, r == ((addr + 0x3f_ffff) as usize) & !0x3f_ffffusize;
+        }
         (addr + MAX_SLAB - 1) & !(MAX_SLAB - 1)
+    }
+
+    /// Two multiples of `MAX_SLAB` add to one.
+    proof fn lemma_add_aligned(a: usize, b: usize)
+        requires
+            a + b <= usize::MAX,
+            a & 0x3f_ffff == 0,
+            b & 0x3f_ffff == 0,
+        ensures
+            ((a + b) as usize) & 0x3f_ffff == 0,
+    {
+        assert(((a + b) as usize) & 0x3f_ffff == 0) by (bit_vector)
+            requires a + b <= usize::MAX, a & 0x3f_ffff == 0, b & 0x3f_ffff == 0;
     }
 
     /// A multiple of `MAX_SLAB` below `steps` of them, picked by `w`:
     /// `w % steps` slabs.
     #[inline(always)]
-    fn slab_multiple(w: usize, steps: usize) -> usize {
-        (w % steps) << LG_MAX_SLAB
+    fn slab_multiple(w: usize, steps: usize) -> (r: usize)
+        requires
+            0 < steps <= 0x4_0000,
+        ensures
+            r & 0x3f_ffff == 0,
+            r + 0x40_0000 <= steps << 22,
+    {
+        let m = w % steps;
+        proof {
+            assert((m << 22) & 0x3f_ffff == 0 && (m << 22) + 0x40_0000 <= steps << 22) by (bit_vector)
+                requires m < steps, steps <= 0x4_0000;
+        }
+        m << LG_MAX_SLAB
     }
 
     /// Word `i` of the random bytes (`8 * i` on, the target's byte order).
+    /// Trusted: `copy_from_slice` and `from_ne_bytes`; any word will do.
+    #[verifier::external_body]
     #[inline(always)]
-    fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64 {
+    fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
+        requires
+            i < NCLASSES + 3,
+    {
         let mut b = [0u8; 8];
         b.copy_from_slice(&rnd[8 * i..8 * i + 8]);
         u64::from_ne_bytes(b)
@@ -2043,7 +2216,12 @@ mod linux {
     /// The abort of [`Regions::reserve_owning`] when `getrandom` fails.
     #[cold]
     #[inline(never)]
-    fn getrandom_failed(e: Errno) -> ! {
+    fn getrandom_failed(e: Errno) -> !
+        requires
+            crate::sys::may_abort(),
+    {
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
         sys::abort_fmt(format_args!("getrandom failed: {e}"))
     }
 
@@ -2052,7 +2230,10 @@ mod linux {
     /// anything in them is committed; the huge region follows the host's
     /// policy (`thp::Reservation`), so `thp.rs` skips it by kind.
     #[inline(always)]
-    fn advise_reservations(sb_map: Mapping, huge_map: Mapping, meta_map: Mapping) {
+    fn advise_reservations(sb_map: Mapping, huge_map: Mapping, meta_map: Mapping)
+        requires
+            crate::sys::may_syscall(),
+    {
         use crate::thp::{Reservation, advise_reservation};
         advise_reservation(Reservation::Classes, sb_map.addr, sb_map.len);
         advise_reservation(Reservation::Huge, huge_map.addr, huge_map.len);
@@ -2061,13 +2242,42 @@ mod linux {
 
     /// The abort of [`Regions::reserve_owning`] for a page size that is not a
     /// power of two from 4 KiB to `MAX_SLAB`, with the message of an
-    /// `assert!`.
+    /// `assert!` of that condition.
     #[cold]
     #[inline(never)]
-    fn bad_page_size() -> ! {
+    fn bad_page_size() -> !
+        requires
+            crate::sys::may_abort(),
+    {
         sys::abort_fmt(format_args!(
             "assertion failed: page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)"
         ))
+    }
+
+    /// `1 << k` has `k` trailing zeros.
+    proof fn lemma_tz_pow2(x: usize, k: nat)
+        requires
+            k < 64,
+            x as nat == pow2(k),
+        ensures
+            vstd::std_specs::bits::u64_trailing_zeros(x as u64) == k,
+            x == 1usize << (k as usize),
+    {
+        broadcast use vstd::std_specs::bits::axiom_u64_trailing_zeros;
+        vstd::bits::lemma_usize_pow2_no_overflow(k);
+        vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+        let kk = k as u64;
+        let y = x as u64;
+        let t = vstd::std_specs::bits::u64_trailing_zeros(y) as u64;
+        assert(y == 1u64 << kk) by (bit_vector)
+            requires x == 1usize << kk, y == x as u64, kk < 64;
+        if t < kk {
+            assert((y >> t) & 1u64 == 0u64) by (bit_vector)
+                requires y == 1u64 << kk, t < kk, kk < 64;
+        } else if t > kk {
+            assert((y >> kk) & 1u64 == 1u64) by (bit_vector)
+                requires y == 1u64 << kk, kk < 64;
+        }
     }
 
     impl Regions {
@@ -2075,25 +2285,55 @@ mod linux {
         /// space, for the tests.
         #[cfg(test)]
         #[inline(always)]
-        pub fn reserve(page_size: usize, anon_name: bool) -> Regions {
+        pub fn reserve(page_size: usize, anon_name: bool) -> (r: Regions)
+            ensures
+                r.wf(),
+                r.separated(),
+                r.ready(),
+                r.mapped(),
+        {
             Regions::reserve_owning(page_size, anon_name).0
         }
 
         /// Probe and reserve every region (design section 10 step 2). Never
         /// allocates. Aborts if even the minimum layout cannot be reserved.
         /// `anon_name` should be the probed `PR_SET_VMA_ANON_NAME` support.
-        /// Returns the metadata region's uncommitted address space with the
-        /// regions, for `Meta::owning`, which commits it as it hands it out.
+        /// The result is well formed, separated and inside its three
+        /// reservations ([`Regions::wf`], [`Regions::separated`],
+        /// [`Regions::mapped`]), from the kernel's `mmap` contract
+        /// ([`try_reserve`]), and ready for `Shared::init` ([`Regions::ready`]),
+        /// with the metadata region's uncommitted address space, for
+        /// `Meta::owning`, which commits it as it hands it out.
         /// The page size must be the kernel's (`api::init` passes the probed
         /// one): a power of two from 4 KiB, the smallest page of any Linux
         /// target, to `MAX_SLAB`; anything else aborts.
         // The index carries a Verus invariant.
         #[allow(clippy::needless_range_loop)]
-        pub fn reserve_owning(page_size: usize, anon_name: bool) -> (Regions, Tracked<Unbacked>) {
+        pub fn reserve_owning(page_size: usize, anon_name: bool) -> (res: (Regions, Tracked<Unbacked>))
+            requires
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+            ensures
+                res.0.wf(),
+                res.0.separated(),
+                res.0.ready(),
+                res.0.mapped(),
+                res.1@.addr() == res.0.meta_base,
+                res.1@.len() == res.0.meta_len,
+        {
             if !(page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)) {
                 bad_page_size();
             }
             let lg_page = page_size.trailing_zeros();
+            proof {
+                crate::sys::pac::axiom_user_va_limit();
+                let k = choose|k: nat| k < 64 && page_size as nat == #[trigger] pow2(k);
+                lemma_tz_pow2(page_size, k);
+                let lg = lg_page;
+                assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+                assert(12 <= lg <= 22) by (bit_vector)
+                    requires page_size == 1usize << lg, 0x1000 <= page_size <= 0x40_0000, lg < 64;
+            }
 
             // One 64-bit random per class offset, one each for the two
             // slides, one for the reservation order.
@@ -2116,8 +2356,42 @@ mod linux {
             let mut sb: Option<(Mapping, u32, u32, Tracked<Reserved>)> = None;
             let mut huge: Option<(Mapping, u32, Tracked<Reserved>)> = None;
             let mut meta: Option<(Mapping, u32, Tracked<Reserved>)> = None;
+            proof {
+                assert(slide == 0x4000_0000) by (bit_vector)
+                    requires slide == 1usize << 30u32;
+                assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+            }
             let mut i = 0;
-            while i < 3 {
+            while i < 3
+                invariant
+                    crate::sys::may_abort(),
+                    crate::sys::may_syscall(),
+                    0 <= i <= 3,
+                    slide == 0x4000_0000,
+                    MAX_SLAB == 0x40_0000,
+                    forall|j: int| 0 <= j < i ==> {
+                        &&& (#[trigger] order[j] == 0 ==> sb is Some)
+                        &&& (order[j] == 1 ==> huge is Some)
+                        &&& (order[j] != 0 && order[j] != 1 ==> meta is Some)
+                    },
+                    sb matches Some(s) ==> {
+                        &&& LG_REGION_MIN <= s.1 <= LG_REGION_PREFERRED
+                        &&& s.1 < s.2 <= s.1 + 2
+                        &&& s.0.len == (NCLASSES << s.2) + MAX_SLAB
+                        &&& reserved(s.0, s.3@)
+                    },
+                    huge matches Some(h) ==> {
+                        &&& LG_HUGE_MIN <= h.1 <= 40
+                        &&& h.0.len == (1usize << h.1) + slide + MAX_SLAB
+                        &&& reserved(h.0, h.2@)
+                    },
+                    meta matches Some(m) ==> {
+                        &&& LG_META_MIN <= m.1 <= 40
+                        &&& m.0.len == (1usize << m.1) + slide + MAX_SLAB
+                        &&& reserved(m.0, m.2@)
+                    },
+                decreases 3 - i,
+            {
                 match order[i] {
                     0 => sb = Some(reserve_superblock()),
                     1 => {
@@ -2142,25 +2416,108 @@ mod linux {
             let (sb_map, lg_region, lg_stride, _sb_tok) = sb.unwrap();
             let (huge_map, lg_huge, _huge_tok) = huge.unwrap();
             let (meta_map, lg_meta, _meta_tok) = meta.unwrap();
+            proof {
+                assert(lg_region < lg_stride <= lg_region + 2);
+                assert(LG_REGION_MIN <= lg_region <= LG_REGION_PREFERRED);
+                assert(SLIDE_STEPS == 256) by (bit_vector)
+                    requires SLIDE_STEPS == (1usize << 30u32) >> 22u32;
+                let tracked mut a = _sb_tok.get();
+                let tracked mut b = _huge_tok.get();
+                a.is_disjoint(&b);
+                a.is_disjoint(_meta_tok.borrow());
+                b.is_disjoint(_meta_tok.borrow());
+                a.is_apart_from_static();
+                b.is_apart_from_static();
+                _meta_tok.borrow().is_apart_from_static();
+            }
 
             let superblock = align_base(sb_map.addr);
+            proof {
+                let (lr, ls) = (lg_region, lg_stride);
+                assert((1usize << ls) > (1usize << lr)) by (bit_vector)
+                    requires 32 <= lr < ls <= 40;
+            }
             let gap = (1usize << lg_stride) - (1usize << lg_region);
+            proof {
+                let (lr, ls) = (lg_region, lg_stride);
+                assert(gap >> 22 > 0 && gap & 0x3f_ffff == 0 && gap <= 0x100_0000_0000 && (gap >> 22) <= 0x4_0000) by (bit_vector)
+                    requires gap == (1usize << ls) - (1usize << lr), 32 <= lr < ls <= 40;
+            }
             let mut offsets = [0usize; NCLASSES];
             // `thp:always` commits PMD-sized chunks measured from the
             // region base, so its regions stay `MAX_SLAB`-aligned.
             let coloured = crate::thp::decision().mode != crate::thp::Mode::Chunks;
-            for c in 0..NCLASSES {
+            for c in 0..NCLASSES
+                invariant
+                    gap >> 22 > 0,
+                    gap & 0x3f_ffff == 0,
+                    gap <= 0x100_0000_0000,
+                    (gap >> 22) <= 0x4_0000,
+                    gap == (1usize << lg_stride) - (1usize << lg_region),
+                    12 <= lg_page <= 22,
+                    MAX_SLAB == 0x40_0000,
+                    forall|j: int| 0 <= j < c ==>
+                        offset_ok(#[trigger] offsets[j], class_table()[j].lg_slab as u32, lg_page) && offsets[j] < gap,
+            {
                 offsets[c] = slab_multiple(word(&rnd, c) as usize, gap >> LG_MAX_SLAB);
+                let ghost a = offsets[c as int];
+                proof {
+                    let g = gap;
+                    assert(a < g) by (bit_vector)
+                        requires a + 0x40_0000 <= (g >> 22) << 22, g & 0x3f_ffff == 0;
+                }
                 if coloured {
                     let lg_slab = CLASSES.table()[c].lg_slab as u32;
+                    proof {
+                        crate::vspec::class::axiom_class_table_wf(c as int);
+                    }
                     offsets[c] += colour(c, lg_slab, lg_page);
+                    proof {
+                        // The colour sits in the low 22 bits the random
+                        // multiple of `MAX_SLAB` leaves clear.
+                        let (o, k, g, ls, lp) = (offsets[c as int], (offsets[c as int] - a) as usize, gap, lg_slab, lg_page);
+                        assert(o < g && o & 0xffff == 0 && o & sub(1usize << ls, 1) == 0
+                            && o & sub(1usize << lp, 1) == 0) by (bit_vector)
+                            requires
+                                o == add(a, k),
+                                a & 0x3f_ffff == 0,
+                                a + 0x40_0000 <= (g >> 22) << 22,
+                                a < g,
+                                g <= 0x100_0000_0000,
+                                k < 0x40_0000,
+                                k & 0xffff == 0,
+                                k & sub(1usize << ls, 1) == 0,
+                                k & sub(1usize << lp, 1) == 0,
+                                ls <= 22,
+                                lp <= 22;
+                    }
                     assert!(offsets[c] & ((1usize << lg_slab) - 1) == 0);
+                } else {
+                    proof {
+                        crate::vspec::class::axiom_class_table_wf(c as int);
+                        let (ls, lp) = (class_table()[c as int].lg_slab as u32, lg_page);
+                        assert(a & 0xffff == 0 && a & sub(1usize << ls, 1) == 0 && a & sub(1usize << lp, 1) == 0) by (bit_vector)
+                            requires a & 0x3f_ffff == 0, ls <= 22, lp <= 22;
+                    }
                 }
             }
             let huge_align = align_base(huge_map.addr);
             let huge_slide = slab_multiple(word(&rnd, NCLASSES) as usize, SLIDE_STEPS);
             let meta_align = align_base(meta_map.addr);
             let meta_slide = slab_multiple(word(&rnd, NCLASSES + 1) as usize, SLIDE_STEPS);
+            proof {
+                let n = NCLASSES;
+                let ls = lg_stride;
+                assert((n << ls) <= 0x100_0000_0000_0000) by (bit_vector)
+                    requires n <= 64, ls <= 40;
+                assert(SLIDE_STEPS << 22 == 0x4000_0000) by (bit_vector)
+                    requires SLIDE_STEPS == 256;
+                let (lh, lm) = (lg_huge, lg_meta);
+                assert((1usize << lh) <= 0x100_0000_0000 && (1usize << lm) <= 0x100_0000_0000) by (bit_vector)
+                    requires lh <= 40, lm <= 40;
+                lemma_add_aligned(huge_align, huge_slide);
+                lemma_add_aligned(meta_align, meta_slide);
+            }
             let huge_base = huge_align + huge_slide;
             let meta_base = meta_align + meta_slide;
 
@@ -2170,40 +2527,73 @@ mod linux {
                 name_mapping(meta_map, &META_NAME);
             }
             advise_reservations(sb_map, huge_map, meta_map);
+            proof {
+                // `Regions::ready`: the page, the metadata base and the huge
+                // region's page count.
+                let (mb, lp, lm, lh) = (meta_base, lg_page, lg_meta, lg_huge);
+                assert(mb % (1usize << lp) == 0 && (1usize << lm) % (1usize << lp) == 0 && (1usize << lm) > 0 && (1usize << lp) >= 16
+                    && ((1usize << lh) >> lp) > 0 && ((1usize << lh) >> lp) <= 0xffff_ffff) by (bit_vector)
+                    requires mb & 0x3f_ffff == 0, 12 <= lp <= 22, 30 <= lm <= 40, 34 <= lh <= 40;
+            }
 
-            (
-                Regions::from_parts(
-                    superblock,
-                    lg_region,
-                    lg_stride,
-                    &offsets,
-                    (huge_base, 1usize << lg_huge),
-                    (meta_base, 1usize << lg_meta),
-                    lg_page,
-                    [sb_map, huge_map, meta_map],
-                ),
-                // The metadata region's address space, taken on trust: the
-                // proofs make it from `_meta_tok`.
-                Tracked::assume_new(),
-            )
+            let r = Regions::from_parts(
+                superblock,
+                lg_region,
+                lg_stride,
+                &offsets,
+                (huge_base, 1usize << lg_huge),
+                (meta_base, 1usize << lg_meta),
+                lg_page,
+                [sb_map, huge_map, meta_map],
+            );
+            // The metadata region's address space, for `Meta`, which commits
+            // it as it hands it out.
+            let tracked meta_space = _meta_tok.get().into_unbacked().split(meta_base - meta_map.addr).1.split((1usize << lg_meta) as int).0;
+            (r, Tracked(meta_space))
         }
+    }
 
+    } // verus!
+
+    verus! {
+
+    impl Regions {
         /// Seal every range [`Regions::never_committed`] lists (design 10
         /// step 5): `mseal` forbids `munmap`, `mremap`, `mprotect` and
         /// `MAP_FIXED` over them for the rest of the process, so nothing can
         /// land a mapping in the gap between two class regions or unmap
         /// part of a reservation. Only for kernels whose probe said
         /// `mseal=yes`; each call splits the enclosing VMA, so the VMA count
-        /// grows by at most `2 * MAX_SEALED`. Returns the number of ranges
+        /// grows by at most `2 * MAX_SEALED`. Every range it hands `mseal`
+        /// is a [`Regions::seal_target`] (inside a reservation, apart from
+        /// every region and the `Shared` static), from the regions being
+        /// separated and inside their mappings, which
+        /// [`Regions::reserve_owning`] ensures. Returns the number of ranges
         /// sealed. A refusal after a successful probe (`ENOMEM` at the VMA
         /// limit, for instance) stops the sweep and leaves the rest
         /// unsealed rather than aborting: sealing is a hardening extra, not
         /// a heap invariant, and the count is reported by
         /// `malloc_stats_print`.
-        pub fn seal(&self) -> u32 {
+        pub fn seal(&self) -> u32
+            requires
+                crate::sys::may_syscall(),
+                self.wf(),
+                self.separated(),
+                self.mapped(),
+        {
             let (ranges, n) = self.never_committed();
             let mut sealed: u32 = 0;
-            for m in &ranges[..n] {
+            for m in it: &ranges[..n]
+                invariant
+                    crate::sys::may_syscall(),
+                    sealed as int <= it.index(),
+                    it.seq().len() == n,
+                    n <= MAX_SEALED,
+                    forall|i: int| 0 <= i < it.seq().len() ==> self.seal_target(*#[trigger] it.seq()[i]),
+            {
+                // What `mseal` gets is inside a reservation and apart from
+                // every region and the `Shared` static.
+                assert(self.seal_target(*m));
                 // SAFETY: the range is inside a reservation this process
                 // owns and, by construction, is never committed, purged,
                 // reprotected or unmapped (`release` is test-only and is
@@ -2215,7 +2605,11 @@ mod linux {
             }
             sealed
         }
+    }
 
+    } // verus!
+
+    impl Regions {
         /// Give the reservations back. The allocator never does this; it
         /// exists so tests can reserve repeatedly in one process. Must not
         /// be called after [`seal`](Regions::seal): the kernel refuses and

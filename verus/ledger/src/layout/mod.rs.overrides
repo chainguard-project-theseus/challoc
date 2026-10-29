@@ -1,1 +1,3 @@
 ClassTable	UnsafeCell/volatile/transmute	none (assumption)
+# The class table after init is what its one frozen permission holds.
+axiom_class_table	allocator invariant	none (assumption)

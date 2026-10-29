@@ -25,6 +25,6 @@ axiom_process_shared	allocator invariant	none (assumption)
 # A field fixed once its permission is frozen: no vstd counterpart.
 axiom_shared_regions	raw pointer (internal)	none (assumption)
 axiom_shared_meta	raw pointer (internal)	none (assumption)
-axiom_shared_stats	raw pointer (internal)	none (assumption)
+axiom_shared_built	raw pointer (internal)	none (assumption)
 # The caller's storage (`init`'s safety contract), once per process.
 Shared::begin	raw pointer from C caller	none (assumption)

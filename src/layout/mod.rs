@@ -1177,6 +1177,20 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 /// The contents of [`CLASSES`] after init.
 pub uninterp spec fn class_table() -> [Class; NCLASSES];
 
+/// Trusted: what [`class_table`] names, the contents of [`CLASSES`] after
+/// init, is what a frozen permission to its storage holds. `api::init`
+/// freezes the one permission to it (`api::axiom_statics` hands it out
+/// once, for the process's one-shot token) after [`adopt_page_geometry`],
+/// and nothing writes the table through a `'static` shared permission, so
+/// every such permission holds that one value.
+pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
+    requires
+        t.ptr() == classes_storage(),
+        t.is_init(),
+    ensures
+        class_table() == t.value(),
+;
+
 impl ClassTable {
     #[verifier::external_body]
     const fn new(table: [Class; NCLASSES]) -> ClassTable {
@@ -1253,13 +1267,12 @@ fn classes_ptr() -> (p: *mut [Class; NCLASSES])
     CLASSES.0.get()
 }
 
-} // verus!
-
 /// Raise the slab of every class whose table slab is smaller than the
 /// kernel page to the page ([`lg_slab_at`]), writing `lg_slab`,
 /// `slab_mask`, `nslots` and `slab_bits` of those classes in [`CLASSES`],
-/// through `perm`, the permission to its storage. Returns how many
-/// classes changed (0 on a 4 KiB kernel, where the table is untouched).
+/// through `perm`, the permission to its storage, and keeping
+/// [`table_ok`]. Returns how many classes changed (0 on a 4 KiB kernel,
+/// where the table is untouched).
 ///
 /// # Safety
 /// Must be called once, before the allocator is published to any other
@@ -1267,13 +1280,22 @@ fn classes_ptr() -> (p: *mut [Class; NCLASSES])
 /// again: nothing may access the table concurrently.
 pub unsafe fn adopt_page_geometry(
     lg_page: u32,
-    _perm: Tracked<&mut vstd::raw_ptr::PointsTo<[Class; NCLASSES]>>,
-) -> usize {
-    apply_page_geometry(
-        vstd::raw_ptr::ptr_mut_ref(classes_ptr(), Tracked::assume_new()),
-        lg_page,
-    )
+    Tracked(perm): Tracked<&mut vstd::raw_ptr::PointsTo<[Class; NCLASSES]>>,
+) -> (changed: usize)
+    requires
+        old(perm).ptr() == classes_storage(),
+        old(perm).is_init(),
+        table_ok(old(perm).value()),
+    ensures
+        final(perm).ptr() == classes_storage(),
+        final(perm).is_init(),
+        table_ok(final(perm).value()),
+        changed <= NCLASSES,
+{
+    apply_page_geometry(vstd::raw_ptr::ptr_mut_ref(classes_ptr(), Tracked(perm)), lg_page)
 }
+
+} // verus!
 
 verus! {
 
