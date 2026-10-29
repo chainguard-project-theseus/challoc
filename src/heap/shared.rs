@@ -6,7 +6,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(verus_keep_ghost)]
 use crate::arena::published;
@@ -568,9 +568,14 @@ impl ClassLine {
     /// region, in the gap after it or below its base yields a slab number
     /// of at least `nslabs`, which no watermark reaches).
     ///
+    /// `table` is the class's table, whose bitmap word the bit test reads
+    /// through ([`SlabTable::bit_word`]); nothing is loaded from it.
+    ///
     /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
     #[inline(always)]
-    fn set_slab(&self, p: usize) -> Option<usize> {
+    // The `let ... else` stands for `?`, as the proofs spell it.
+    #[allow(clippy::question_mark)]
+    fn set_slab(&self, p: usize, table: &SlabTable) -> Option<usize> {
         // On aarch64 every field is read up front, before the first
         // branch: read after it, LLVM rebuilt the line's address (one more
         // `add`), and up front the two compares fold into a `ccmp`. On
@@ -579,7 +584,9 @@ impl ClassLine {
         #[cfg(target_arch = "aarch64")]
         let (lg_slab, slab_bits, bits_base, committed) = self.bit_fields();
         let rel = p.wrapping_sub(self.class_base);
-        let slot = self.slot_start(rel)?;
+        let Some(slot) = self.slot_start(rel) else {
+            return None;
+        };
         #[cfg(not(target_arch = "aarch64"))]
         let lg_slab = self.lg_slab;
         let slab = rel >> lg_slab;
@@ -591,19 +598,21 @@ impl ClassLine {
         #[cfg(not(target_arch = "aarch64"))]
         let (slab_bits, bits_base) = (self.slab_bits, self.bits_base);
         let bit = slab * slab_bits as usize + slot as usize;
-        #[allow(unused_mut)]
-        let mut index = bit / 64;
         // As in `SlabTable::is_set_unchecked`: on aarch64 `bit >> 6` and a
-        // scaled `ldr`, not LLVM's `(bit >> 3) & !7`.
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: an empty template; `index` comes out unchanged.
-        unsafe {
-            core::arch::asm!("/* {0} */", inout(reg) index, options(pure, nomem, nostack, preserves_flags))
-        };
-        let word = (bits_base + index * 8) as *const AtomicU64;
+        // scaled `ldr`, not LLVM's `(bit >> 3) & !7` (`class::word_index`).
+        let index = crate::class::word_index(bit / 64);
         // SAFETY: `slab` is below a value the watermark held and `slot`
         // below `nslots`, so the word is in the committed bitmap.
-        if (unsafe { (*word).load(Ordering::Relaxed) } >> (bit % 64)) & 1 == 0 {
+        let word = unsafe {
+            table.bit_word(
+                bits_base,
+                index,
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+                Ghost::assume_new(),
+            )
+        };
+        if (word >> (bit % 64)) & 1 == 0 {
             return None;
         }
         Some(slab)
@@ -622,15 +631,15 @@ impl ClassLine {
         )
     }
 
-    /// The arena that owns `slab`'s group.
+    /// The arena that owns `slab`'s group, through `table`, the class's
+    /// table ([`SlabTable::owner_from`]; nothing is loaded from it).
     ///
     /// # Safety
     /// `slab` is one [`set_slab`](ClassLine::set_slab) returned.
     #[inline(always)]
-    unsafe fn owner(&self, slab: usize) -> u16 {
-        let word = (self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
+    unsafe fn owner(&self, slab: usize, table: &SlabTable) -> u16 {
         // SAFETY: as `SlabTable::owner_at`.
-        unsafe { (*word).load(Ordering::Relaxed) }
+        unsafe { table.owner_from(self.owners_base, self.lg_group, slab) }
     }
 }
 
@@ -3136,7 +3145,7 @@ impl Shared {
         let class = hint?;
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`.
-        let line = unsafe { self.lines.get_unchecked(class) };
+        let line = unsafe { crate::vspec::slice::array_get_unchecked(&self.lines, class) };
         let rel = (p as usize).wrapping_sub(line.class_base);
         if !line.sized_ok(rel, self.region_hi) {
             return None;
@@ -3158,15 +3167,16 @@ impl Shared {
     /// [`set_slot`]: Shared::set_slot
     #[inline(always)]
     pub(super) fn home_owns(&self, class: usize, slab: usize, h: &Heap) -> bool {
-        // The home arena is read on the multi-arena branch only. A plain
-        // load is hoisted above the flag test (the heap is known valid)
-        // and then every single-arena `free` touches the heap's header
-        // line, which nothing else on the fast paths reads; a volatile
-        // read stays here.
-        // SAFETY: `h` is a live heap and `arena` a plain field.
-        let home = unsafe { ptr::read_volatile(&raw const h.arena) };
+        // The home arena is read on the multi-arena branch only, through a
+        // volatile load (`Heap::arena_volatile`).
+        let home = h.arena_volatile();
         // SAFETY: the caller's `class` and `slab` came from `set_slot`.
-        unsafe { self.lines.get_unchecked(class).owner(slab) == home }
+        unsafe {
+            crate::vspec::slice::array_get_unchecked(&self.lines, class).owner(
+                slab,
+                crate::vspec::slice::array_get_unchecked(&self.tables, class),
+            ) == home
+        }
     }
 
     /// The bit test the two `free` fast-path checks share: `Some((class,
@@ -3179,6 +3189,8 @@ impl Shared {
     ///
     /// [`checked_slot`]: Shared::checked_slot
     #[inline(always)]
+    // The `let ... else` stands for `?`, as the proofs spell it.
+    #[allow(clippy::question_mark)]
     pub(super) fn set_slot(&self, p: *mut u8) -> Option<(usize, usize)> {
         let p = p as usize;
         let class = p.wrapping_sub(self.regions.superblock) >> self.regions.lg_stride;
@@ -3186,8 +3198,12 @@ impl Shared {
             return None;
         }
         // SAFETY: `class < NCLASSES` was just checked.
-        let line = unsafe { self.lines.get_unchecked(class) };
-        let slab = line.set_slab(p)?;
+        let line = unsafe { crate::vspec::slice::array_get_unchecked(&self.lines, class) };
+        // SAFETY: as above.
+        let table = unsafe { crate::vspec::slice::array_get_unchecked(&self.tables, class) };
+        let Some(slab) = line.set_slab(p, table) else {
+            return None;
+        };
         Some((class, slab))
     }
 

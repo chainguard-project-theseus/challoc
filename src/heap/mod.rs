@@ -4799,6 +4799,22 @@ impl Heap {
         self.arena
     }
 
+    /// [`Heap::arena`] through a volatile load, for the `free` check's
+    /// arena test ([`Shared::home_owns`]): a plain load is hoisted above
+    /// the multi-arena test (`FREE_ROUTE`) and touches the heap's header
+    /// line on every single-arena `free`.
+    ///
+    /// Trusted: Verus has no volatile read; the value is not specified,
+    /// since `home_owns` only compares it.
+    #[inline(always)]
+    #[verifier::external_body]
+    pub(super) fn arena_volatile(&self) -> u16
+        opens_invariants none
+    {
+        // SAFETY: `self` is a live heap and `arena` a plain field.
+        unsafe { ptr::read_volatile(&raw const self.arena) }
+    }
+
     /// Add the byte counters a cache array stands for (`allocs` pops and
     /// `len + allocs - moved` pushes per cache, each worth the class size)
     /// to `into`. [`Heap::stats`] derives the thread counters this way on
