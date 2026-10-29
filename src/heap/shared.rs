@@ -23,7 +23,7 @@ use crate::huge::{Huge, RunState};
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
-use crate::lock::{Lock, LockOrder};
+use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{
     axiom_entry, rank_arenas, rank_class, rank_huge, rank_meta, rank_stats, rank_table,
@@ -2962,6 +2962,30 @@ impl Shared {
 } // verus!
 
 impl Shared {
+    /// The explicit-cache table lock, for the fork handlers.
+    #[inline(always)]
+    pub fn tcaches_lock(&self) -> &RawLock {
+        self.tcaches.raw_lock()
+    }
+
+    /// The huge lock, for the fork handlers.
+    #[inline(always)]
+    pub fn huge_lock(&self) -> &RawLock {
+        self.huge.raw_lock()
+    }
+
+    /// The metadata lock, for the fork handlers.
+    #[inline(always)]
+    pub fn meta_lock(&self) -> &RawLock {
+        self.meta.raw_lock()
+    }
+
+    /// The process statistics lock, for the fork handlers.
+    #[inline(always)]
+    pub fn stats_lock(&self) -> &RawLock {
+        self.stats.raw()
+    }
+
     /// The child of a `fork`: see `sys::cgroup::Deferred::fork_child`.
     pub fn cgroup_fork_child(&self) {
         self.cgroup.fork_child();

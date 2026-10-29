@@ -115,17 +115,20 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
+use crate::arena::Arena;
 use crate::config;
 use crate::heap::Shared;
 use crate::layout::{self, NCLASSES, Regions};
+use crate::lock::LockHeld;
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
 use crate::vspec::once;
+use crate::vspec::word::WordPerm;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
-use vstd::prelude::{Map, Tracked, verus};
+use vstd::prelude::{Ghost, Map, Tracked, int, verus};
 use vstd::raw_ptr::PointsTo;
 
 /// The crate version as a NUL-terminated static string (`"0.1.0"`; the
@@ -1257,6 +1260,66 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
 
 } // verus!
 
+verus! {
+
+/// A lock the fork handlers take, named by its place in the allocator
+/// (design section 9).
+// Ghost: named only by proof code.
+#[allow(dead_code)]
+pub ghost enum ForkLock {
+    /// The explicit-cache table lock.
+    Tcaches,
+    /// The arena creation lock.
+    Arenas,
+    /// Arena `i`'s class `c` lock.
+    Class(int, int),
+    /// Arena `i`'s slab-set lock.
+    Sets(int),
+    /// Class `c`'s slab table lock.
+    Table(int),
+    /// The huge lock.
+    Huge,
+    /// The metadata lock.
+    Meta,
+    /// The process statistics lock.
+    Stats,
+    /// Arena `i`'s statistics lock.
+    ArenaStats(int),
+}
+
+/// The hold of the fork lock list: the arenas `fork_prepare` found, one
+/// [`LockHeld`] per listed lock, the content of [`FORK_SIGMASK`] and the
+/// word it is in, the permission to that word in the release's hold, and
+/// the permission of the creation lock's cell.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct ForkHeld {
+    ghost n: int,
+    ghost arenas: Map<int, Arena>,
+    tracked toks: Map<ForkLock, LockHeld>,
+    ghost saved: Option<u64>,
+    ghost slot_addr: usize,
+    tracked slot: Option<WordPerm>,
+    tracked created: crate::arena::CreatedPerm,
+}
+
+} // verus!
+
+/// `s.arenas.get_existing(i as u16)` while `held` holds the creation
+/// lock: the arena `fork_prepare` found at `i`, through the permission of
+/// the creation lock's cell the hold keeps (`Arenas::get_frozen`).
+#[inline(always)]
+fn arena_held<'a>(s: &'a Shared, i: usize, _held: Tracked<&ForkHeld>) -> Option<&'a Arena> {
+    s.arenas.get_frozen(i as u16, Tracked::assume_new())
+}
+
+/// `s.arenas.count()` while `held` holds the creation lock: the count
+/// `fork_prepare` read (`Arenas::count_frozen`).
+#[inline(always)]
+fn count_held(s: &Shared, _held: Tracked<&ForkHeld>) -> u32 {
+    s.arenas.count_frozen(Tracked::assume_new())
+}
+
 /// Block signals, then take every allocator lock so the child inherits a
 /// consistent heap and no signal handler on this thread can re-enter the
 /// allocator (or fork again) while the locks are held.
@@ -1281,90 +1344,113 @@ extern "C" fn fork_prepare() {
     // for one this thread's own interrupted code is running, when `fork`
     // is called from a signal handler): the child then starts that one
     // over (`fork_child`), and the parent's finishes as usual.
-    shared().discover_cgroup_for_fork(vstd::prelude::Tracked::assume_new());
-    // Unverified: the signal-mask token is a placeholder until the fork
-    // handlers are verified.
+    shared().discover_cgroup_for_fork(Tracked::assume_new());
     let mask = sys::block_all_signals(Tracked::assume_new());
     let s = shared();
-    s.tcaches.raw_lock().lock_held(Tracked::assume_new());
-    s.arenas.raw_lock().lock_held(Tracked::assume_new());
-    s.stats.raw().lock_held(Tracked::assume_new());
-    // Each `for a in s.arenas.iter()` is spelled as the scan
-    // `Arenas::iter` makes, every index below the count through
-    // `Arenas::get_existing`, and `a.classes[c]` as `Arena::class`, as in
-    // `fork_release`. The creation lock is held, so the count and the
-    // table stay as read here until the release.
-    let n = s.arenas.count() as usize;
+    let _ = s.tcaches_lock().lock_held(Tracked::assume_new());
+    // With the permission of the creation lock's cell, which the hold
+    // keeps: the count and the table stay as read below until the release.
+    let _ = s.arenas.lock_held(Tracked::assume_new());
+    let _ = s.stats_lock().lock_held(Tracked::assume_new());
+    // Each `for a in s.arenas.iter()` is spelled as the scan `Arenas::iter`
+    // makes, through `Arenas::get_frozen` (`get_existing` with the
+    // creation lock's half), and `a.classes[c]` as `Arena::class`, as in
+    // `fork_release`.
+    let n = s.arenas.count_frozen(Tracked::assume_new()) as usize;
     for i in 0..n {
-        if let Some(a) = s.arenas.get_existing(i as u16) {
+        if let Some(a) = s.arenas.get_frozen(i as u16, Tracked::assume_new()) {
             for c in 0..NCLASSES {
-                a.class(c).raw_lock().lock_held(Tracked::assume_new());
+                let _ = a.class(c).raw_lock().lock_held(Tracked::assume_new());
             }
         }
     }
     for c in 0..NCLASSES {
-        s.tables()[c].raw_lock().lock_held(Tracked::assume_new());
+        let _ = s.tables()[c].raw_lock().lock_held(Tracked::assume_new());
     }
     // `take_group` takes an arena's slab-set lock under a class lock and
     // that class's slab table lock, so the slab-set locks come after
     // every slab table lock.
     for i in 0..n {
-        if let Some(a) = s.arenas.get_existing(i as u16) {
-            a.sets().raw_lock().lock_held(Tracked::assume_new());
+        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
+            let _ = a.sets().raw_lock().lock_held(Tracked::assume_new());
         }
     }
-    s.huge.raw_lock().lock_held(Tracked::assume_new());
-    s.meta.raw_lock().lock_held(Tracked::assume_new());
+    let _ = s.huge_lock().lock_held(Tracked::assume_new());
+    let _ = s.meta_lock().lock_held(Tracked::assume_new());
     for i in 0..n {
-        if let Some(a) = s.arenas.get_existing(i as u16) {
-            a.stats_raw_lock().lock_held(Tracked::assume_new());
+        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
+            let _ = a.stats_raw_lock().lock_held(Tracked::assume_new());
         }
     }
-    purge::background::fork_lock(Tracked::assume_new());
+    let _ = purge::background::fork_lock(Tracked::assume_new());
     // Every allocator lock is held, so no other forking thread can touch
     // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
-    save_sigmask(mask);
+    save_sigmask(
+        mask,
+        Ghost::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }
 
-/// Save the forking thread's signal mask in [`FORK_SIGMASK`], under every
-/// allocator lock.
+/// Save the signal mask for `fork_release`, recorded in the hold, under
+/// every allocator lock (ghost: `held` and `state`).
 #[inline(always)]
-fn save_sigmask(mask: u64) {
-    fork_slot().store(mask, Ordering::Relaxed);
+fn save_sigmask(
+    mask: u64,
+    _s: Ghost<Shared>,
+    _held: Tracked<&mut ForkHeld>,
+    _state: Tracked<&LockHeld>,
+) {
+    let slot = fork_slot();
+    slot.store(mask, Ordering::Relaxed);
 }
 
-/// The signal mask [`save_sigmask`] stored in [`FORK_SIGMASK`].
+/// The signal mask `fork_prepare` saved: read from `w` ([`FORK_SIGMASK`])
+/// through the hold's permission to it.
 #[inline(always)]
-fn saved_sigmask() -> u64 {
-    fork_slot().load(Ordering::Relaxed)
+fn saved_sigmask(
+    w: &AtomicU64,
+    _s: Ghost<Shared>,
+    _held: Tracked<&ForkHeld>,
+    _state: Tracked<&LockHeld>,
+) -> u64 {
+    crate::vspec::word::load(w, Ordering::Relaxed, Tracked::assume_new())
 }
 
 /// Release the locks taken by `fork_prepare`, in reverse order, then let
-/// signals through again.
-fn fork_release() {
+/// signals through again. `state` is the background thread's state
+/// lock's token.
+fn fork_release(state: Tracked<LockHeld>) {
     let s = shared();
+    let (slot, _held) = resume::resumed(s, Tracked::assume_new());
     // Written by the `fork_prepare` that paired with this release, and
     // still ours because every lock is held until the unlocks below.
-    let mask = saved_sigmask();
-    purge::background::fork_unlock(Tracked::assume_new());
+    let mask = saved_sigmask(
+        slot,
+        Ghost::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    purge::background::fork_unlock(state);
     // Arenas cannot appear while the creation lock is held, so this is the
     // same set `fork_prepare` locked, in reverse. Each `for i in
     // (0..n).rev()` is spelled as a countdown, and `a.classes[c]` as
     // `Arena::class`.
-    let n = s.arenas.count() as usize;
+    let n = count_held(s, Tracked::assume_new()) as usize;
     let mut i = n;
     while i > 0 {
         i -= 1;
-        if let Some(a) = s.arenas.get_existing(i as u16) {
+        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
             a.stats_raw_lock().unlock_held(Tracked::assume_new());
         }
     }
-    s.meta.raw_lock().unlock_held(Tracked::assume_new());
-    s.huge.raw_lock().unlock_held(Tracked::assume_new());
+    s.meta_lock().unlock_held(Tracked::assume_new());
+    s.huge_lock().unlock_held(Tracked::assume_new());
     let mut i = n;
     while i > 0 {
         i -= 1;
-        if let Some(a) = s.arenas.get_existing(i as u16) {
+        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
             a.sets().raw_lock().unlock_held(Tracked::assume_new());
         }
     }
@@ -1376,7 +1462,7 @@ fn fork_release() {
     let mut i = n;
     while i > 0 {
         i -= 1;
-        if let Some(a) = s.arenas.get_existing(i as u16) {
+        if let Some(a) = arena_held(s, i, Tracked::assume_new()) {
             let mut c = NCLASSES;
             while c > 0 {
                 c -= 1;
@@ -1384,14 +1470,15 @@ fn fork_release() {
             }
         }
     }
-    s.stats.raw().unlock_held(Tracked::assume_new());
-    s.arenas.raw_lock().unlock_held(Tracked::assume_new());
-    s.tcaches.raw_lock().unlock_held(Tracked::assume_new());
+    s.stats_lock().unlock_held(Tracked::assume_new());
+    s.arenas
+        .unlock_held(Tracked::assume_new(), Tracked::assume_new());
+    s.tcaches_lock().unlock_held(Tracked::assume_new());
     sys::set_signal_mask(mask, Tracked::assume_new());
 }
 
 extern "C" fn fork_parent() {
-    fork_release();
+    fork_release(Tracked::assume_new());
 }
 
 /// The child has one thread; the locks were held by the forking thread, so
@@ -1399,9 +1486,10 @@ extern "C" fn fork_parent() {
 /// locked, the background thread is marked absent (design 8.1).
 extern "C" fn fork_child() {
     purge::background::fork_child(Tracked::assume_new());
-    shared().cgroup_fork_child();
-    feature_line_fork_child();
-    fork_release();
+    let s = shared();
+    s.cgroup_fork_child();
+    feature_line_fork_child(Tracked::assume_new());
+    fork_release(Tracked::assume_new());
     // The dirty bytes this child inherited, the lazy start's baseline: read
     // after the release (the sum takes the class and huge locks), while
     // the child is still single-threaded, so nothing has moved them. Only
@@ -1416,11 +1504,11 @@ extern "C" fn fork_child() {
 
 /// The child of a `fork` has only the forking thread: a feature line
 /// another thread was building is not coming, so the child's first
-/// request builds it again rather than waiting forever. (If the forking
-/// thread itself was building it, from a signal handler that forked, it
-/// finishes when the handler returns; a second build in between writes
-/// the same bytes.)
-fn feature_line_fork_child() {
+/// request builds it again rather than waiting forever, through the line's
+/// invariant in `published`. (If the forking thread itself was building
+/// it, from a signal handler that forked, it finishes when the handler
+/// returns; a second build in between writes the same bytes.)
+fn feature_line_fork_child(_published: Tracked<&'static Published>) {
     let _ = line_compare_exchange(
         LINE_BUILDING,
         LINE_UNBUILT,
@@ -1428,6 +1516,25 @@ fn feature_line_fork_child() {
         Ordering::Relaxed,
         Tracked::assume_new(),
     );
+}
+
+/// The release's handoff of the fork hold, in a module of its own.
+mod resume {
+    use super::{ForkHeld, fork_slot};
+    use crate::heap::Shared;
+    use crate::lock::LockHeld;
+    use core::sync::atomic::AtomicU64;
+    use vstd::prelude::Tracked;
+
+    /// The slot, [`fork_slot`], and the release's hold of every lock, with
+    /// the permission to that slot.
+    #[inline(always)]
+    pub(super) fn resumed(
+        _s: &Shared,
+        _state: Tracked<&LockHeld>,
+    ) -> (&'static AtomicU64, Tracked<ForkHeld>) {
+        (fork_slot(), Tracked::assume_new())
+    }
 }
 
 #[cfg(test)]
