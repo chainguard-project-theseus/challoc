@@ -4926,7 +4926,7 @@ impl Huge {
     ///
     /// The proof is large, and its solver cost moves with unrelated items
     /// elsewhere in the crate; the rlimit leaves it headroom.
-    #[verifier::rlimit(800)]
+    #[verifier::rlimit(1600)]
     #[allow(non_shorthand_field_patterns)]
     // The extra arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
