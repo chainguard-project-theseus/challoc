@@ -79,16 +79,18 @@ use core::alloc::Layout;
 use core::ptr;
 
 #[cfg(verus_keep_ghost)]
-use crate::class::aset;
-#[cfg(verus_keep_ghost)]
 use crate::class::slot_loc;
+#[cfg(verus_keep_ghost)]
+use crate::class::{aset, distinct};
 use crate::layout::{CLASSES, NCLASSES};
 #[cfg(verus_keep_ghost)]
-use crate::layout::{class_table, process_regions};
+use crate::layout::{class_table, process_regions, slots_in};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::set::GhostSubset;
 
 use crate::arena::Homed;
+#[cfg(verus_keep_ghost)]
+use crate::arena::homed_on;
 use crate::lock::LockOrder;
 use crate::vspec::zero::Zeroed;
 use fresh::FreshHeap;
@@ -143,12 +145,12 @@ pub const fn default_cap(class: usize) -> u32 {
     crate::config::ladder(class, MAX_CAP, 1)
 }
 
+verus! {
+
 /// The `others` key of the one flush-only cache per class that plain
 /// frees of another arena's slots go onto ([`ArenaCaches`]); never an
 /// arena index (`arena::MAX_ARENAS` is 4096).
 pub const FOREIGN: u16 = u16::MAX;
-
-verus! {
 
 /// `Shared::push_flags` bit: `double_free_scan` (compare the pushed slot
 /// against the top four cache entries).
@@ -1949,6 +1951,763 @@ impl CachePerms {
     }
 }
 
+/// The first `n` entries of `t` are entries of `s`: what a permutation of
+/// `s` into `t` (a selection, a sort) leaves.
+spec fn from_all(t: Seq<*mut u8>, s: Seq<*mut u8>, n: int) -> bool {
+    forall|i: int| 0 <= i < n ==> s.contains(#[trigger] t[i])
+}
+
+/// Every entry of `s` is an entry of `s`.
+proof fn lemma_from_refl(s: Seq<*mut u8>)
+    ensures
+        from_all(s, s, s.len() as int),
+{
+    assert forall|i: int| 0 <= i < s.len() implies s.contains(#[trigger] s[i]) by {
+        // A named copy: `s[i] == s[i]` alone simplifies away before the
+        // witness `i` can be matched.
+        let x = s[i];
+        assert(s[i] == x);
+    }
+}
+
+/// Entries of a prefix of `t` are entries of `t`.
+proof fn lemma_from_sub(t: Seq<*mut u8>, n: int, u: Seq<*mut u8>)
+    requires
+        0 <= n <= t.len(),
+        from_all(u, t.subrange(0, n), n),
+    ensures
+        from_all(u, t, n),
+{
+    assert forall|i: int| 0 <= i < n implies t.contains(#[trigger] u[i]) by {
+        assert(t.subrange(0, n).contains(u[i]));
+        let j = choose|j: int| 0 <= j < n && t.subrange(0, n)[j] == u[i];
+        assert(t[j] == t.subrange(0, n)[j]);
+    }
+}
+
+/// Entries of entries of `s` are entries of `s`.
+proof fn lemma_from_trans(s: Seq<*mut u8>, t: Seq<*mut u8>, u: Seq<*mut u8>, n: int)
+    requires
+        from_all(t, s, t.len() as int),
+        from_all(u, t, n),
+    ensures
+        from_all(u, s, n),
+{
+    assert forall|i: int| 0 <= i < n implies s.contains(#[trigger] u[i]) by {
+        assert(t.contains(u[i]));
+        let j = choose|j: int| 0 <= j < t.len() && t[j] == u[i];
+        assert(s.contains(t[j]));
+    }
+}
+
+/// The first `n` entries of `t` stand for slots of `c` in the stack at
+/// `base` ([`plain`]) when every entry of `s` does and they are entries
+/// of `s`.
+proof fn lemma_from_slots(s: Seq<*mut u8>, t: Seq<*mut u8>, c: int, n: int, base: *mut *mut u8)
+    requires
+        forall|j: int| 0 <= j < s.len() ==> process_regions().is_slot(c, plain(#[trigger] s[j], base)),
+        from_all(t, s, n),
+    ensures
+        forall|i: int| 0 <= i < n ==> process_regions().is_slot(c, plain(#[trigger] t[i], base)),
+{
+    assert forall|i: int| 0 <= i < n implies process_regions().is_slot(c, plain(#[trigger] t[i], base)) by {
+        assert(s.contains(t[i]));
+        let j = choose|j: int| 0 <= j < s.len() && s[j] == t[i];
+        assert(process_regions().is_slot(c, plain(s[j], base)));
+    }
+}
+
+/// The run rebuild's moves ([`Heap::rebuild_run`]: the block of `n`
+/// swapped with the bottom `n` of the `len` old entries, or rotated under
+/// them) leave the first `len + n` entries entries of what was there.
+proof fn lemma_rebuild_moves(a: Seq<*mut u8>, b: Seq<*mut u8>, len: int, n: int)
+    requires
+        a.len() == len + n,
+        b.len() == len + n,
+        0 <= len,
+        0 <= n,
+        len >= n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] b[i] == if i < n { a[len + i] } else if i < len { a[i] } else { a[i - len] },
+        len < n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] b[i] == if i < n { a[len + i] } else { a[i - n] },
+    ensures
+        from_all(b, a, len + n),
+{
+    assert forall|i: int| 0 <= i < len + n implies a.contains(#[trigger] b[i]) by {
+        let j = if len >= n {
+            if i < n { len + i } else if i < len { i } else { i - len }
+        } else {
+            if i < n { len + i } else { i - n }
+        };
+        assert(0 <= j < a.len());
+        assert(a[j] == b[i]);
+    }
+}
+
+/// The entry the run rebuild's moves ([`lemma_rebuild_moves`]) take entry
+/// `i` of the first `len + n` from.
+spec fn rebuild_src(len: int, n: int, i: int) -> int {
+    if len >= n {
+        if i < n { len + i } else if i < len { i } else { i - len }
+    } else {
+        if i < n { len + i } else { i - n }
+    }
+}
+
+/// The run rebuild's moves are a permutation of the first `len + n`
+/// entries ([`rebuild_src`]): `f` stays injective on them.
+#[verifier::spinoff_prover]
+proof fn lemma_rebuild_distinct(a: Seq<*mut u8>, b: Seq<*mut u8>, len: int, n: int, f: spec_fn(*mut u8) -> int)
+    requires
+        a.len() == len + n,
+        b.len() == len + n,
+        0 <= len,
+        0 <= n,
+        len >= n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] b[i] == if i < n { a[len + i] } else if i < len { a[i] } else { a[i - len] },
+        len < n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] b[i] == if i < n { a[len + i] } else { a[i - n] },
+        forall|i: int, j: int| #![trigger f(a[i]), f(a[j])] 0 <= i < j < len + n ==> f(a[i]) != f(a[j]),
+    ensures
+        forall|i: int, j: int| #![trigger f(b[i]), f(b[j])] 0 <= i < j < len + n ==> f(b[i]) != f(b[j]),
+        forall|i: int| 0 <= i < len + n ==> 0 <= #[trigger] rebuild_src(len, n, i) < len + n && b[i] == a[rebuild_src(len, n, i)],
+{
+    assert forall|i: int| 0 <= i < len + n implies 0 <= #[trigger] rebuild_src(len, n, i) < len + n && b[i] == a[rebuild_src(len, n, i)] by {
+        // Names `b[i]`, which instantiates the moves' quantifier at `i`.
+        assert(b[i] == b[i]);
+    }
+    assert forall|i: int, j: int| 0 <= i < j < len + n implies f(b[i]) != f(b[j]) by {
+        let si = rebuild_src(len, n, i);
+        let sj = rebuild_src(len, n, j);
+        assert(0 <= si < len + n && b[i] == a[si]);
+        assert(0 <= sj < len + n && b[j] == a[sj]);
+        assert(si != sj);
+        if si < sj {
+            assert(f(a[si]) != f(a[sj]));
+        } else {
+            assert(f(a[sj]) != f(a[si]));
+        }
+    }
+}
+
+/// The tracking after [`Heap::rebuild_run`]'s two slices: the block of
+/// `n` claimed slots (`claimed`, reversed into `outf`) went into entries
+/// `len..len + want` of the stack of `p` (from `old` to `mid`), and entries
+/// `0..len + n` were then moved (`all0` to `allf`, from `mid` to `new`).
+proof fn lemma_rebuild_tracks(
+    old: CachePerms,
+    mid: Map<*mut *mut u8, PointsTo<*mut u8>>,
+    new: CachePerms,
+    p: *mut CacheHeader,
+    len: int,
+    want: int,
+    n: int,
+    claimed: Seq<*mut u8>,
+    outf: Seq<*mut u8>,
+    all0: Seq<*mut u8>,
+    allf: Seq<*mut u8>,
+)
+    requires
+        old.wf(),
+        old.tracks(),
+        old.hdrs.contains_key(p),
+        len == old.hdr(p).len,
+        0 <= n <= want,
+        len + want <= old.hdr(p).cap,
+        new.hdrs == old.hdrs.insert(p, new.hdrs[p]),
+        new.cls == old.cls,
+        new.owner == old.owner,
+        new.hdr(p).slots == old.hdr(p).slots,
+        new.hdr(p).cap == old.hdr(p).cap,
+        new.hdr(p).len == len + n,
+        slots_in(claimed, old.cls[p], 0, n),
+        claimed.len() == want,
+        outf.len() == want,
+        forall|k: int| 0 <= k < n ==> (#[trigger] outf[k])@.addr == stored(claimed[n - 1 - k]@.addr, old.hdr(p).slots),
+        regions_ok(),
+        all0.len() == len + n,
+        from_all(allf, all0, len + n),
+        // The first slice (`len..len + want`, from `old.slots` to `mid`).
+        slots_grow(old.slots, mid),
+        forall|q: *mut *mut u8|
+            old.slots.contains_key(q) && (forall|i: int| len <= i < len + want ==> q != #[trigger] slot_ptr(old.hdr(p).slots, i))
+                ==> #[trigger] mid[q] == old.slots[q],
+        forall|i: int| len <= i < len + want ==> #[trigger] mid[slot_ptr(old.hdr(p).slots, i)].is_init(),
+        forall|i: int| len <= i < len + want ==> #[trigger] mid[slot_ptr(old.hdr(p).slots, i)].value() == outf[i - len],
+        // The second (`0..len + n`, from `mid` to `new.slots`).
+        forall|i: int|
+            0 <= i < len + n && mid[slot_ptr(old.hdr(p).slots, i)].is_init()
+                ==> all0[i] == #[trigger] mid[slot_ptr(old.hdr(p).slots, i)].value(),
+        forall|i: int| 0 <= i < len + n ==> #[trigger] new.slots[slot_ptr(old.hdr(p).slots, i)].value() == allf[i],
+        forall|q: *mut *mut u8|
+            mid.contains_key(q) && (forall|i: int| 0 <= i < len + n ==> q != #[trigger] slot_ptr(old.hdr(p).slots, i))
+                ==> #[trigger] new.slots[q] == mid[q],
+    ensures
+        new.tracks(),
+        new.follows(old),
+{
+    let slots = old.hdr(p).slots;
+    let c = old.cls[p];
+    CachePerms::lemma_slice_frame(old, old.slots, mid, p, len, want);
+    assert(slots_grow(old.slots, mid));
+    CachePerms::lemma_slice_frame(old, mid, new.slots, p, 0, len + n);
+    assert forall|j: int| 0 <= j < all0.len() implies process_regions().is_slot(c, plain(#[trigger] all0[j], slots)) by {
+        assert(cell_ok(p, old.hdrs[p], old.slots));
+        if j < len {
+            assert(old.ent(p, j) == slot_ptr(slots, j));
+            assert(old.owner[old.ent(p, j)] == (p, j));
+            assert(old.slots[slot_ptr(slots, j)].is_init());
+            assert(mid[old.ent(p, j)] == old.slots[old.ent(p, j)]);
+            assert(mid[slot_ptr(slots, j)].is_init());
+            assert(all0[j] == mid[slot_ptr(slots, j)].value());
+            assert(old.holds(c, old.ent(p, j), old.hdr(p).slots));
+        } else {
+            assert(mid[slot_ptr(slots, j)].is_init());
+            assert(all0[j] == mid[slot_ptr(slots, j)].value());
+            let k = j - len;
+            assert(mid[slot_ptr(slots, j)].value() == outf[k]);
+            assert(process_regions().is_slot(c, claimed[n - 1 - k]@.addr));
+            lemma_plain_stored(outf[k], claimed[n - 1 - k], c, slots);
+        }
+    }
+    lemma_from_slots(all0, allf, c, len + n, slots);
+    assert forall|i: int| 0 <= i < new.hdr(p).len implies #[trigger] new.holds(new.cls[p], new.ent(p, i), new.hdr(p).slots) by {
+        assert(new.ent(p, i) == slot_ptr(slots, i));
+    }
+    assert forall|p2: *mut CacheHeader, j: int|
+        old.hdrs.contains_key(p2) && p2 != p && 0 <= j < old.hdr(p2).cap
+            implies #[trigger] new.slots[old.ent(p2, j)] == old.slots[old.ent(p2, j)] by {
+    }
+    CachePerms::lemma_tracks_stack(old, new, p);
+}
+
+/// Entries `k..n` of the stack at `slots` take the tokens `from[n - 1 - i]`:
+/// a claimed batch of `n` slots, reversed onto the stack.
+#[verifier::spinoff_prover]
+proof fn move_reversed(
+    tracked from: &mut Map<int, GhostSingleton<int>>,
+    tracked to: &mut Map<*mut *mut u8, GhostSingleton<int>>,
+    slots: *mut *mut u8,
+    n: int,
+    k: int,
+)
+    requires
+        0 <= k <= n,
+        forall|i: int| k <= i < n ==> #[trigger] old(from).contains_key(n - 1 - i),
+        forall|i: int, j: int| #![trigger slot_ptr(slots, i), slot_ptr(slots, j)] k <= i < j < n ==> slot_ptr(slots, i) != slot_ptr(slots, j),
+    ensures
+        forall|i: int| k <= i < n ==> {
+            &&& final(to).contains_key(#[trigger] slot_ptr(slots, i))
+            &&& final(to)[slot_ptr(slots, i)] == old(from)[n - 1 - i]
+        },
+        forall|q: *mut *mut u8| #![trigger final(to).contains_key(q)] #![trigger old(to).contains_key(q)] !in_entries(slots, q, k, n) ==> {
+            &&& final(to).contains_key(q) == old(to).contains_key(q)
+            &&& old(to).contains_key(q) ==> final(to)[q] == old(to)[q]
+        },
+    decreases n - k,
+{
+    if k < n {
+        let ghost from0 = *from;
+        let ghost to0 = *to;
+        let tracked t = from.tracked_remove(n - 1 - k);
+        to.tracked_insert(slot_ptr(slots, k), t);
+        let ghost to1 = *to;
+        assert forall|i: int| k + 1 <= i < n implies #[trigger] from.contains_key(n - 1 - i) by {
+            assert(from0.contains_key(n - 1 - i));
+        }
+        move_reversed(from, to, slots, n, k + 1);
+        assert(!in_entries(slots, slot_ptr(slots, k), k + 1, n)) by {
+            if in_entries(slots, slot_ptr(slots, k), k + 1, n) {
+                let i = choose|i: int| k + 1 <= i < n && slot_ptr(slots, k) == slot_ptr(slots, i);
+            }
+        }
+        assert(to.contains_key(slot_ptr(slots, k)) == to1.contains_key(slot_ptr(slots, k)));
+        assert forall|q: *mut *mut u8| #![trigger to.contains_key(q)] #![trigger to0.contains_key(q)] !in_entries(slots, q, k, n) implies {
+            &&& to.contains_key(q) == to0.contains_key(q)
+            &&& to0.contains_key(q) ==> to[q] == to0[q]
+        } by {
+            assert(q != slot_ptr(slots, k));
+            if in_entries(slots, q, k + 1, n) {
+                let i = choose|i: int| k + 1 <= i < n && q == slot_ptr(slots, i);
+                assert(in_entries(slots, q, k, n));
+            }
+        }
+    }
+}
+
+/// `m` holds the token of `a[i]` under entry `i` of the stack at `slots`,
+/// of authority `loc`, for every `lo <= i < hi`.
+spec fn keyed_ents(m: Map<*mut *mut u8, GhostSingleton<int>>, slots: *mut *mut u8, a: Seq<int>, loc: vstd::resource::Loc, lo: int, hi: int) -> bool {
+    forall|i: int| lo <= i < hi ==> {
+        let q = #[trigger] slot_ptr(slots, i);
+        &&& m.contains_key(q)
+        &&& m[q].id() == loc
+        &&& m[q]@ == a[i]
+    }
+}
+
+/// Entries `lo..hi` of the stack at `slots` are distinct words.
+spec fn ents_distinct(slots: *mut *mut u8, lo: int, hi: int) -> bool {
+    forall|i: int, j: int| #![trigger slot_ptr(slots, i), slot_ptr(slots, j)] lo <= i < j < hi ==> slot_ptr(slots, i) != slot_ptr(slots, j)
+}
+
+/// Every key of `new` but entries `lo..hi` of the stack at `slots` is as
+/// in `old`.
+spec fn ents_frame(new: Map<*mut *mut u8, GhostSingleton<int>>, old: Map<*mut *mut u8, GhostSingleton<int>>, slots: *mut *mut u8, lo: int, hi: int) -> bool {
+    forall|q: *mut *mut u8| #![trigger new.contains_key(q)] #![trigger old.contains_key(q)] !in_entries(slots, q, lo, hi) ==> {
+        &&& new.contains_key(q) == old.contains_key(q)
+        &&& old.contains_key(q) ==> new[q] == old[q]
+    }
+}
+
+/// Entry `i` of the stack at `slots` is not one of entries `lo..hi`
+/// other than itself.
+proof fn lemma_not_in_entries(slots: *mut *mut u8, i: int, lo: int, hi: int)
+    requires
+        ents_distinct(slots, lo, hi),
+        lo <= i < hi,
+    ensures
+        !in_entries(slots, slot_ptr(slots, i), i + 1, hi),
+        !in_entries(slots, slot_ptr(slots, i), lo, i),
+{
+    if in_entries(slots, slot_ptr(slots, i), i + 1, hi) {
+        let k = choose|k: int| i + 1 <= k < hi && slot_ptr(slots, i) == slot_ptr(slots, k);
+    }
+    if in_entries(slots, slot_ptr(slots, i), lo, i) {
+        let k = choose|k: int| lo <= k < i && slot_ptr(slots, i) == slot_ptr(slots, k);
+    }
+}
+
+/// Move the tokens of entries `lo..hi` (of `a[lo..hi]`) into `bag`; they
+/// are distinct, since tokens of one authority are disjoint.
+#[verifier::spinoff_prover]
+proof fn gather_ents(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<*mut *mut u8, GhostSingleton<int>>, slots: *mut *mut u8, a: Seq<int>, lo: int, hi: int)
+    requires
+        lo <= hi,
+        keyed_ents(*old(m), slots, a, old(bag).id(), lo, hi),
+        ents_distinct(slots, lo, hi),
+    ensures
+        final(bag).id() == old(bag).id(),
+        final(bag)@ == old(bag)@.union(aset(a, lo, hi)),
+        old(bag)@.disjoint(aset(a, lo, hi)),
+        distinct(a, lo, hi),
+        ents_frame(*final(m), *old(m), slots, lo, hi),
+    decreases hi - lo,
+{
+    broadcast use crate::class::lemma_aset;
+    if lo < hi {
+        let ghost b0 = bag@;
+        let ghost m0 = *m;
+        let ghost q0 = slot_ptr(slots, lo);
+        assert(m0.contains_key(q0) && m0[q0].id() == bag.id() && m0[q0]@ == a[lo]);
+        let tracked t = m.tracked_remove(q0);
+        bag.combine_singleton(t);
+        let ghost b1 = bag@;
+        let ghost m1 = *m;
+        assert forall|i: int| lo + 1 <= i < hi implies {
+            let q = #[trigger] slot_ptr(slots, i);
+            &&& m.contains_key(q)
+            &&& m[q].id() == bag.id()
+            &&& m[q]@ == a[i]
+        } by {
+            assert(q0 != slot_ptr(slots, i));
+            assert(m0.contains_key(slot_ptr(slots, i)));
+        }
+        gather_ents(bag, m, slots, a, lo + 1, hi);
+        crate::class::lemma_aset_front(a, lo, hi);
+        assert(bag@ =~= b0.union(aset(a, lo, hi)));
+        assert forall|i: int, j: int| lo <= i < j < hi implies a[i] != a[j] by {
+            if i == lo {
+                crate::class::lemma_aset_step(a, lo + 1, j, hi);
+                assert(b1.contains(a[lo]));
+            }
+        }
+        lemma_not_in_entries(slots, lo, lo, hi);
+        assert forall|q: *mut *mut u8| #![trigger m.contains_key(q)] #![trigger m0.contains_key(q)] !in_entries(slots, q, lo, hi) implies {
+            &&& m.contains_key(q) == m0.contains_key(q)
+            &&& m0.contains_key(q) ==> m[q] == m0[q]
+        } by {
+            assert(q != q0);
+            if in_entries(slots, q, lo + 1, hi) {
+                let k = choose|k: int| lo + 1 <= k < hi && q == slot_ptr(slots, k);
+                assert(in_entries(slots, q, lo, hi));
+            }
+            assert(m.contains_key(q) == m1.contains_key(q));
+        }
+    } else {
+        crate::class::lemma_aset_empty(a, lo, hi);
+        assert(bag@ =~= bag@.union(aset(a, lo, hi)));
+    }
+}
+
+/// [`gather_ents`] of entries `0..hi`, `hi > 0`, into a bag of their own.
+#[verifier::spinoff_prover]
+proof fn gather_all_ents(tracked m: &mut Map<*mut *mut u8, GhostSingleton<int>>, slots: *mut *mut u8, a: Seq<int>, loc: vstd::resource::Loc, hi: int) -> (tracked bag: GhostSubset<int>)
+    requires
+        0 < hi,
+        keyed_ents(*old(m), slots, a, loc, 0, hi),
+        ents_distinct(slots, 0, hi),
+    ensures
+        bag.id() == loc,
+        bag@ == aset(a, 0, hi),
+        distinct(a, 0, hi),
+        ents_frame(*final(m), *old(m), slots, 0, hi),
+{
+    broadcast use crate::class::lemma_aset;
+    let ghost m0 = *m;
+    let ghost q0 = slot_ptr(slots, 0);
+    assert(m0.contains_key(q0) && m0[q0].id() == loc && m0[q0]@ == a[0]);
+    let tracked t = m.tracked_remove(q0);
+    let tracked mut bag = t.subset();
+    let ghost m1 = *m;
+    assert forall|i: int| 1 <= i < hi implies {
+        let q = #[trigger] slot_ptr(slots, i);
+        &&& m.contains_key(q)
+        &&& m[q].id() == bag.id()
+        &&& m[q]@ == a[i]
+    } by {
+        assert(q0 != slot_ptr(slots, i));
+        assert(m0.contains_key(slot_ptr(slots, i)));
+    }
+    let ghost b1 = bag@;
+    gather_ents(&mut bag, m, slots, a, 1, hi);
+    crate::class::lemma_aset_front(a, 0, hi);
+    assert(bag@ =~= aset(a, 0, hi));
+    assert forall|i: int, j: int| 0 <= i < j < hi implies a[i] != a[j] by {
+        if i == 0 {
+            crate::class::lemma_aset_step(a, 1, j, hi);
+            assert(b1.contains(a[0]));
+        }
+    }
+    lemma_not_in_entries(slots, 0, 0, hi);
+    assert forall|q: *mut *mut u8| #![trigger m.contains_key(q)] #![trigger m0.contains_key(q)] !in_entries(slots, q, 0, hi) implies {
+        &&& m.contains_key(q) == m0.contains_key(q)
+        &&& m0.contains_key(q) ==> m[q] == m0[q]
+    } by {
+        assert(q != q0);
+        if in_entries(slots, q, 1, hi) {
+            let k = choose|k: int| 1 <= k < hi && q == slot_ptr(slots, k);
+            assert(in_entries(slots, q, 0, hi));
+        }
+        assert(m.contains_key(q) == m1.contains_key(q));
+    }
+    bag
+}
+
+/// Move the tokens of `a[lo..hi]` out of `bag` into entries `lo..hi` of
+/// the stack at `slots`.
+#[verifier::spinoff_prover]
+proof fn scatter_ents(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<*mut *mut u8, GhostSingleton<int>>, slots: *mut *mut u8, a: Seq<int>, lo: int, hi: int)
+    requires
+        lo <= hi,
+        distinct(a, lo, hi),
+        aset(a, lo, hi) <= old(bag)@,
+        ents_distinct(slots, lo, hi),
+    ensures
+        final(bag).id() == old(bag).id(),
+        final(bag)@ == old(bag)@ - aset(a, lo, hi),
+        keyed_ents(*final(m), slots, a, old(bag).id(), lo, hi),
+        ents_frame(*final(m), *old(m), slots, lo, hi),
+    decreases hi - lo,
+{
+    broadcast use crate::class::lemma_aset;
+    if lo < hi {
+        let ghost b0 = bag@;
+        let ghost id = bag.id();
+        let ghost m0 = *m;
+        let ghost q0 = slot_ptr(slots, lo);
+        crate::class::lemma_aset_step(a, lo, lo, hi);
+        crate::class::lemma_aset_front(a, lo, hi);
+        let tracked t = bag.split_singleton(a[lo]);
+        m.tracked_insert(q0, t);
+        let ghost m1 = *m;
+        assert forall|i: int, j: int| lo + 1 <= i < j < hi implies a[i] != a[j] by {
+            assert(a[i] != a[j]);
+        }
+        assert forall|x: int| aset(a, lo + 1, hi).contains(x) implies bag@.contains(x) by {
+            let i = choose|i: int| lo + 1 <= i < hi && a[i] == x;
+            assert(a[i] != a[lo]);
+        }
+        scatter_ents(bag, m, slots, a, lo + 1, hi);
+        assert(bag@ =~= b0 - aset(a, lo, hi));
+        lemma_not_in_entries(slots, lo, lo, hi);
+        assert(!in_entries(slots, q0, lo + 1, hi));
+        assert(m.contains_key(q0) == m1.contains_key(q0));
+        assert(m[q0] == m1[q0]);
+        assert forall|i: int| lo <= i < hi implies {
+            let q = #[trigger] slot_ptr(slots, i);
+            &&& m.contains_key(q)
+            &&& m[q].id() == id
+            &&& m[q]@ == a[i]
+        } by {
+        }
+        assert forall|q: *mut *mut u8| #![trigger m.contains_key(q)] #![trigger m0.contains_key(q)] !in_entries(slots, q, lo, hi) implies {
+            &&& m.contains_key(q) == m0.contains_key(q)
+            &&& m0.contains_key(q) ==> m[q] == m0[q]
+        } by {
+            assert(q != q0);
+            if in_entries(slots, q, lo + 1, hi) {
+                let k = choose|k: int| lo + 1 <= k < hi && q == slot_ptr(slots, k);
+                assert(in_entries(slots, q, lo, hi));
+            }
+            assert(m.contains_key(q) == m1.contains_key(q));
+        }
+    } else {
+        crate::class::lemma_aset_empty(a, lo, hi);
+        assert(bag@ =~= bag@ - aset(a, lo, hi));
+    }
+}
+
+impl CachePerms {
+    /// The compacting pop's token moves ([`Heap::pop_compact_run`]): entry
+    /// `at` takes the top entry's slot and token, the served slot's token
+    /// leaves, and every other entry keeps its own.
+    #[verifier::spinoff_prover]
+    proof fn lemma_tokened_compact(tracked toks: &mut Map<*mut *mut u8, GhostSingleton<int>>, o: CachePerms, new: CachePerms, p: *mut CacheHeader, at: int, top: int) -> (tracked served: GhostSingleton<int>)
+        requires
+            o.wf(),
+            o.tracks(),
+            o.tokened(),
+            o.hdrs.contains_key(p),
+            0 <= at <= top,
+            top + 1 == o.hdr(p).len,
+            *old(toks) == o.toks,
+            new.hdrs == o.hdrs.insert(p, new.hdrs[p]),
+            new.cls == o.cls,
+            new.hdr(p).slots == o.hdr(p).slots,
+            new.hdr(p).len == top,
+            new.slots == o.slots.insert(o.ent(p, at), new.slots[o.ent(p, at)]),
+            new.slots[o.ent(p, at)].value() == o.slots[o.ent(p, top)].value(),
+        ensures
+            (CachePerms { toks: *final(toks), ..new }).tokened(),
+            served.id() == slot_loc(o.cls[p]),
+            served@ == plain(o.slots[o.ent(p, at)].value(), o.hdr(p).slots) as int,
+    {
+        let q = o.ent(p, at);
+        let qt = o.ent(p, top);
+        assert(cell_ok(p, o.hdrs[p], o.slots));
+        o.lemma_tok_get(p, at);
+        o.lemma_tok_get(p, top);
+        let tracked served = toks.tracked_remove(q);
+        if top != at {
+            let tracked u = toks.tracked_remove(qt);
+            toks.tracked_insert(q, u);
+        }
+        let r = CachePerms { toks: *toks, ..new };
+        assert forall|p2: *mut CacheHeader, j: int|
+            o.hdrs.contains_key(p2) && p2 != p && 0 <= j < o.hdr(p2).cap implies {
+                let e = #[trigger] o.ent(p2, j);
+                &&& r.slots[e] == o.slots[e]
+                &&& (o.toks.contains_key(e) ==> r.toks.contains_key(e) && r.toks[e] == o.toks[e])
+            } by {
+            o.lemma_ent_apart(p, at, p2, j);
+            o.lemma_ent_apart(p, top, p2, j);
+        }
+        assert forall|i: int| 0 <= i < r.hdr(p).len implies #[trigger] r.tok_at(p, i) by {
+            assert(r.ent(p, i) == o.ent(p, i));
+            if i != at {
+                o.lemma_tok_get(p, i);
+                o.lemma_ent_apart(p, i, p, at);
+                o.lemma_ent_apart(p, i, p, top);
+            }
+        }
+        CachePerms::lemma_tok_update(o, r, p);
+        served
+    }
+
+    /// [`Heap::rebuild_run`]'s token step, from the facts its slices and
+    /// moves leave: the old entries' tokens (`p1`) and the claim's (`ctoks`,
+    /// of `claimed[..n]`) end up under the entries holding
+    /// their slots, and nothing but the tokens changes.
+    #[verifier::spinoff_prover]
+    #[verifier::rlimit(50)]
+    proof fn lemma_rebuild_step(
+        tracked perms: &mut CachePerms,
+        tracked ctoks: &mut crate::class::SlotToks,
+        p1: CachePerms,
+        s2: Map<*mut *mut u8, PointsTo<*mut u8>>,
+        p: *mut CacheHeader,
+        len: int,
+        want: int,
+        n: int,
+        claimed: Seq<*mut u8>,
+        outf: Seq<*mut u8>,
+        all0: Seq<*mut u8>,
+        allf: Seq<*mut u8>,
+    )
+        requires
+            p1.wf(),
+            p1.tracks(),
+            p1.tokened(),
+            p1.hdrs.contains_key(p),
+            regions_ok(),
+            len == p1.hdr(p).len,
+            0 < n <= want,
+            len + want <= p1.hdr(p).cap,
+            old(perms).toks == p1.toks,
+            old(perms).hdrs == p1.hdrs.insert(p, old(perms).hdrs[p]),
+            old(perms).cls == p1.cls,
+            old(perms).hdr(p).slots == p1.hdr(p).slots,
+            old(perms).hdr(p).len == len + n,
+            claimed.len() == want,
+            slots_in(claimed, p1.cls[p], 0, n),
+            crate::class::keyed(old(ctoks).toks, crate::class::ptr_addrs(claimed.subrange(0, n)), slot_loc(p1.cls[p]), 0, n),
+            outf.len() == want,
+            forall|k: int| 0 <= k < n ==> (#[trigger] outf[k])@.addr == stored(claimed[n - 1 - k]@.addr, p1.hdr(p).slots),
+            forall|k: int|
+                0 <= k < p1.hdr(p).cap && !(len <= k < len + want)
+                    ==> #[trigger] s2[p1.ent(p, k)] == p1.slots[p1.ent(p, k)],
+            forall|i: int| len <= i < len + want ==> #[trigger] s2[slot_ptr(p1.hdr(p).slots, i)].is_init(),
+            forall|i: int| len <= i < len + want ==> #[trigger] s2[slot_ptr(p1.hdr(p).slots, i)].value() == outf[i - len],
+            all0.len() == len + n,
+            allf.len() == len + n,
+            forall|i: int|
+                0 <= i < len + n && s2[slot_ptr(p1.hdr(p).slots, i)].is_init()
+                    ==> all0[i] == #[trigger] s2[slot_ptr(p1.hdr(p).slots, i)].value(),
+            len >= n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else if i < len { all0[i] } else { all0[i - len] },
+            len < n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else { all0[i - n] },
+            forall|i: int| 0 <= i < len + n ==> #[trigger] old(perms).slots[slot_ptr(p1.hdr(p).slots, i)].value() == allf[i],
+            forall|p2: *mut CacheHeader, j: int|
+                p1.hdrs.contains_key(p2) && p2 != p && 0 <= j < p1.hdr(p2).cap
+                    ==> #[trigger] old(perms).slots[p1.ent(p2, j)] == p1.slots[p1.ent(p2, j)],
+        ensures
+            *final(perms) == (CachePerms { toks: final(perms).toks, ..*old(perms) }),
+            final(perms).tokened(),
+    {
+        let slots = p1.hdr(p).slots;
+        let c = p1.cls[p];
+        let ca = crate::class::ptr_addrs(claimed.subrange(0, n));
+        let np = *perms;
+        assert(cell_ok(p, p1.hdrs[p], p1.slots));
+        assert forall|i: int| 0 <= i < len implies plain(#[trigger] all0[i], slots) == plain(p1.slots[slot_ptr(slots, i)].value(), slots) by {
+            assert(p1.ent(p, i) == slot_ptr(slots, i));
+            assert(p1.slots[slot_ptr(slots, i)].is_init());
+            assert(s2[p1.ent(p, i)] == p1.slots[p1.ent(p, i)]);
+        }
+        assert forall|k: int| 0 <= k < n implies #[trigger] ca[k] == plain(all0[len + n - 1 - k], slots) as int by {
+            let j = n - 1 - k;
+            assert(claimed.subrange(0, n)[k] == claimed[k]);
+            assert(s2[slot_ptr(slots, len + j)].is_init());
+            assert(s2[slot_ptr(slots, len + j)].value() == outf[j]);
+            assert(all0[len + j] == outf[j]);
+            assert((outf[j])@.addr == stored(claimed[n - 1 - j]@.addr, slots));
+            assert(process_regions().is_slot(c, claimed[n - 1 - j]@.addr));
+            lemma_plain_stored(outf[j], claimed[n - 1 - j], c, slots);
+        }
+        CachePerms::lemma_rebuild_tokens(&mut perms.toks, &mut ctoks.toks, p1, np, p, len, n, all0, allf, ca);
+        assert(*perms == (CachePerms { toks: perms.toks, ..np }));
+    }
+
+    /// The run rebuild's token moves ([`Heap::rebuild_run`]): the old
+    /// entries' tokens and the claim's (`ctoks`, key `k` for address
+    /// `ca[k]`, the block reversed) are gathered by address and given back
+    /// to the entries the moves left their slots in.
+    #[verifier::spinoff_prover]
+    #[verifier::rlimit(50)]
+    proof fn lemma_rebuild_tokens(
+        tracked toks: &mut Map<*mut *mut u8, GhostSingleton<int>>,
+        tracked ctoks: &mut Map<int, GhostSingleton<int>>,
+        p1: CachePerms,
+        np: CachePerms,
+        p: *mut CacheHeader,
+        len: int,
+        n: int,
+        all0: Seq<*mut u8>,
+        allf: Seq<*mut u8>,
+        ca: Seq<int>,
+    )
+        requires
+            p1.wf(),
+            p1.tracks(),
+            p1.tokened(),
+            p1.hdrs.contains_key(p),
+            *old(toks) == p1.toks,
+            np.hdrs == p1.hdrs.insert(p, np.hdrs[p]),
+            np.cls == p1.cls,
+            np.hdr(p).slots == p1.hdr(p).slots,
+            np.hdr(p).len == len + n,
+            len == p1.hdr(p).len,
+            0 < n,
+            len + n <= p1.hdr(p).cap,
+            all0.len() == len + n,
+            allf.len() == len + n,
+            len >= n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else if i < len { all0[i] } else { all0[i - len] },
+            len < n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else { all0[i - n] },
+            forall|i: int| 0 <= i < len ==> plain(#[trigger] all0[i], p1.hdr(p).slots) == plain(p1.slots[slot_ptr(p1.hdr(p).slots, i)].value(), p1.hdr(p).slots),
+            forall|k: int| 0 <= k < n ==> #[trigger] ca[k] == plain(all0[len + n - 1 - k], p1.hdr(p).slots) as int,
+            forall|i: int| 0 <= i < len + n ==> #[trigger] np.slots[slot_ptr(p1.hdr(p).slots, i)].value() == allf[i],
+            forall|p2: *mut CacheHeader, j: int|
+                p1.hdrs.contains_key(p2) && p2 != p && 0 <= j < p1.hdr(p2).cap
+                    ==> #[trigger] np.slots[p1.ent(p2, j)] == p1.slots[p1.ent(p2, j)],
+            crate::class::keyed(*old(ctoks), ca, slot_loc(p1.cls[p]), 0, n),
+        ensures
+            (CachePerms { toks: *final(toks), ..np }).tokened(),
+    {
+        broadcast use crate::class::lemma_aset;
+        let slots = p1.hdr(p).slots;
+        let c = p1.cls[p];
+        let f = |e: *mut u8| plain(e, slots) as int;
+        let aold = Seq::new((len + n) as nat, |i: int| f(all0[i]));
+        assert(cell_ok(p, p1.hdrs[p], p1.slots));
+        assert forall|i: int| 0 <= i < len implies {
+            let q = #[trigger] slot_ptr(slots, i);
+            &&& toks.contains_key(q)
+            &&& toks[q].id() == slot_loc(c)
+            &&& toks[q]@ == aold[i]
+        } by {
+            p1.lemma_tok_get(p, i);
+            assert(p1.ent(p, i) == slot_ptr(slots, i));
+            assert(f(all0[i]) == plain(all0[i], slots) as int);
+        }
+        assert forall|i: int, j: int| 0 <= i < j < len + n implies slot_ptr(slots, i) != slot_ptr(slots, j) by {
+            p1.lemma_ent_apart(p, i, p, j);
+        }
+        assert forall|k: int| 0 <= k < n implies #[trigger] ca[k] == aold[len + n - 1 - k] by {
+        }
+        let tracked mut bag = crate::class::gather_all(ctoks, ca, slot_loc(c), n);
+        gather_ents(&mut bag, toks, slots, aold, 0, len);
+        crate::class::lemma_aset_rev(aold, ca, len, n);
+        crate::class::lemma_aset_split(aold, 0, len, len + n);
+        crate::class::lemma_distinct_join(aold, 0, len, len + n);
+        assert forall|i: int, j: int| 0 <= i < j < len + n implies f(all0[i]) != f(all0[j]) by {
+            assert(aold[i] != aold[j]);
+        }
+        lemma_rebuild_distinct(all0, allf, len, n, f);
+        let af = Seq::new((len + n) as nat, |i: int| f(allf[i]));
+        assert forall|i: int, j: int| 0 <= i < j < len + n implies af[i] != af[j] by {
+            assert(f(allf[i]) != f(allf[j]));
+        }
+        assert forall|v: int| crate::class::aset(af, 0, len + n).contains(v) implies bag@.contains(v) by {
+            let i = choose|i: int| 0 <= i < len + n && af[i] == v;
+            let k = rebuild_src(len, n, i);
+            assert(allf[i] == all0[k]);
+            assert(aold[k] == v);
+        }
+        let ghost t1 = *toks;
+        scatter_ents(&mut bag, toks, slots, af, 0, len + n);
+        let r = CachePerms { toks: *toks, ..np };
+        assert forall|p2: *mut CacheHeader, j: int|
+            p1.hdrs.contains_key(p2) && p2 != p && 0 <= j < p1.hdr(p2).cap implies {
+                let q = #[trigger] p1.ent(p2, j);
+                &&& r.slots[q] == p1.slots[q]
+                &&& (p1.toks.contains_key(q) ==> r.toks.contains_key(q) && r.toks[q] == p1.toks[q])
+            } by {
+            let q = p1.ent(p2, j);
+            if in_entries(slots, q, 0, len + n) {
+                let k = choose|k: int| 0 <= k < len + n && q == slot_ptr(slots, k);
+                p1.lemma_ent_apart(p, k, p2, j);
+            }
+            if in_entries(slots, q, 0, len) {
+                let k = choose|k: int| 0 <= k < len && q == slot_ptr(slots, k);
+                assert(in_entries(slots, q, 0, len + n));
+            }
+            assert(t1.contains_key(q) == p1.toks.contains_key(q));
+            assert(r.toks.contains_key(q) == t1.contains_key(q));
+        }
+        assert forall|i: int| 0 <= i < r.hdr(p).len implies #[trigger] r.tok_at(p, i) by {
+            assert(r.ent(p, i) == slot_ptr(slots, i));
+        }
+        CachePerms::lemma_tok_update(p1, r, p);
+    }
+
+}
+
 /// Per-thread byte counters (`thread.allocated`, `thread.deallocated`).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ThreadStats {
@@ -2061,6 +2820,1108 @@ pub struct Heap {
     /// rest of the block, and its claim.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     heads: Tracked<Map<*mut ArenaCaches, others::NodeHead>>,
+}
+
+} // verus!
+
+verus! {
+
+impl Heap {
+    /// The heap's cache permissions are well formed ([`CachePerms::wf`]):
+    /// every header it owns satisfies [`CacheHeader::inv`] and owns its
+    /// stack; and they track what the caches hold
+    /// ([`CachePerms::tracks`]): every stack entry belongs to one header
+    /// and index, and each of a header's first `len` entries is a slot
+    /// start of the header's class. Each of those entries holds its slot's
+    /// token ([`CachePerms::tokened`]), each entry of a zero prefix holds
+    /// its zero token ([`CachePerms::zero_ok`]), and each stack holds its
+    /// claim ([`CachePerms::claimed`]). [`CachePerms::fresh`] states the
+    /// permissions of a heap that caches nothing. The process's regions
+    /// are well formed ([`regions_ok`]) and its `Shared` is published
+    /// ([`crate::api::ready`]), and the heap's `shared` field is that
+    /// `Shared`, at its storage. The `others` list is [`Heap::list`]
+    /// ([`Heap::list_ok`]). The home headers are [`Heap::home_hdrs`]
+    /// ([`Heap::home_ok`]); they are also the plain field `caches`, whose
+    /// value Verus models apart from the permissions to the same bytes. A
+    /// heap counted in its home arena's bound count holds its ticket
+    /// ([`Heap::homed_ok`]).
+    pub closed spec fn wf(&self) -> bool {
+        &&& self.perms@.wf()
+        &&& self.perms@.tracks()
+        &&& self.perms@.zero_ok()
+        &&& self.perms@.tokened()
+        &&& self.perms@.claimed()
+        &&& regions_ok()
+        &&& crate::api::ready()
+        &&& self.shared == Shared::storage() as *const Shared
+        &&& self.list_ok()
+        &&& self.home_ok()
+        &&& self.homed_ok()
+    }
+
+    /// The heap's ticket ([`Homed`]): a heap counted in `Arenas::bound`
+    /// (its `bound` field) holds the ticket for its home arena, a heap
+    /// that is not counted holds none, and a heap that may still move its
+    /// home (`rehome`) is counted.
+    pub closed spec fn homed_ok(&self) -> bool {
+        &&& self.bound == self.homed@ is Some
+        &&& self.homed@ matches Some(t) ==> homed_on(t, self.arena as int)
+        &&& self.rehome ==> self.bound
+    }
+
+    /// `self` is well formed, owns every header `old` owned, and every
+    /// header that had a stack still has the same one; its `others` list
+    /// is `old`'s with nodes added at the head, if any (their keys with
+    /// them), and its home headers and home arena are `old`'s, with its
+    /// ticket ([`Heap::homed_ok`]).
+    pub closed spec fn keeps(&self, old: Heap) -> bool {
+        &&& self.perms@.keeps(old.perms@)
+        &&& self.perms@.follows(old.perms@)
+        &&& self.perms@.zero_ok()
+        &&& self.perms@.tokened()
+        &&& self.perms@.claimed()
+        &&& regions_ok()
+        &&& crate::api::ready()
+        &&& self.shared == Shared::storage() as *const Shared
+        &&& self.list_ok()
+        &&& self.home_ok()
+        &&& self.home_hdrs == old.home_hdrs
+        &&& list_grows(self.list@, old.list@)
+        &&& list_grows(self.keys@, old.keys@)
+        &&& self.arena == old.arena
+        &&& self.bound == old.bound
+        &&& self.homed == old.homed
+        &&& self.homed_ok()
+    }
+
+    /// The home headers ([`Heap::home_hdrs`]): one per class, owned, caching
+    /// that class, and none a header of a node on the `others` list (each
+    /// node lives in a metadata block of its own, `Heap::other_caches`).
+    pub closed spec fn home_ok(&self) -> bool {
+        &&& self.home_hdrs@.len() == NCLASSES
+        &&& forall|c: int| 0 <= c < NCLASSES ==> self.owns(#[trigger] self.home_hdrs@[c]) && self.hdr_class(self.home_hdrs@[c]) == c
+        &&& forall|c: int, i: int, k: int|
+            0 <= c < NCLASSES && 0 <= i < self.list@.len() && 0 <= k < NCLASSES
+                ==> #[trigger] self.home_hdrs@[c] != #[trigger] node_hdr(self.list@[i], k)
+    }
+
+    /// The heap's home headers are those inside the heap at `h`
+    /// ([`home_hdr`]), and the heap's block, from `h`, does not wrap the
+    /// address space (it is a metadata block).
+    pub(super) closed spec fn home_at(&self, h: *mut Heap) -> bool {
+        &&& self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c))
+        &&& h@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX
+    }
+
+    /// The home header for `class` ([`Heap::home_ok`]).
+    pub closed spec fn home_ptr(&self, class: int) -> *mut CacheHeader {
+        self.home_hdrs@[class]
+    }
+
+    /// [`Heap::home_ok`] survives a change that keeps the home headers'
+    /// record, the headers themselves and their classes, and the
+    /// `others` list.
+    proof fn lemma_home_kept(old: Heap, new: Heap)
+        requires
+            old.home_ok(),
+            new.home_hdrs == old.home_hdrs,
+            new.list == old.list,
+            new.keys == old.keys,
+            new.arena == old.arena,
+            forall|p: *mut CacheHeader| #[trigger] old.owns(p) ==> new.owns(p) && new.hdr_class(p) == old.hdr_class(p),
+        ensures
+            new.home_ok(),
+    {
+        assert forall|c: int| 0 <= c < NCLASSES implies new.owns(#[trigger] new.home_hdrs@[c]) && new.hdr_class(new.home_hdrs@[c]) == c by {
+            assert(old.owns(old.home_hdrs@[c]));
+        }
+    }
+
+    /// The `others` list as [`Heap::list`] has it: `others` heads it (null
+    /// when it is empty), and its nodes are distinct, non-null and owned
+    /// ([`Heap::owns_node`]). Each node's `next` is the one after it
+    /// (null after the last) and its `arena` is its key, through the
+    /// permissions to those fields the heap holds ([`Heap::heads`],
+    /// [`others::heads_ok`]). The nodes' keys ([`Heap::keys`]: the arena a
+    /// node caches, or [`FOREIGN`]) are pairwise distinct and none is the
+    /// home arena.
+    pub closed spec fn list_ok(&self) -> bool {
+        let l = self.list@;
+        let k = self.keys@;
+        &&& l.len() == 0 ==> self.others@.addr == 0
+        &&& l.len() > 0 ==> self.others == l[0]
+        &&& forall|i: int| 0 <= i < l.len() ==> (#[trigger] l[i])@.addr != 0 && self.owns_node(l[i])
+        &&& forall|i: int, j: int| #![trigger l[i], l[j]] 0 <= i < j < l.len() ==> l[i] != l[j]
+        &&& k.len() == l.len()
+        &&& forall|i: int, j: int| #![trigger k[i], k[j]] 0 <= i < j < k.len() ==> k[i] != k[j]
+        &&& forall|i: int| 0 <= i < k.len() ==> #[trigger] k[i] != self.arena
+        &&& others::heads_ok(self.heads@, l, k)
+    }
+
+    /// `n` is a node of the `others` list ([`Heap::list`]).
+    pub closed spec fn in_list(&self, n: *mut ArenaCaches) -> bool {
+        self.list@.contains(n)
+    }
+
+    /// The node `r` places from the end of the list is on it.
+    proof fn lemma_in_list(&self, r: int)
+        requires
+            1 <= r <= self.list_len(),
+        ensures
+            self.in_list(self.node_from_end(r)),
+    {
+        assert(self.list@[self.list@.len() - r] == self.node_from_end(r));
+    }
+
+    /// A heap whose cache permissions are those creation returns
+    /// ([`CachePerms::fresh`]), whose `others` list is empty and whose home
+    /// headers are where creation wrote them at `h` is well formed, once
+    /// the process's `Shared` is published ([`regions_ok`], [`crate::api::ready`])
+    /// and its `shared` is that one; a thread heap, counted and holding its
+    /// ticket ([`Heap::homed_ok`]).
+    proof fn lemma_fresh_wf(&self, h: *mut Heap)
+        requires
+            self.perms@.fresh(h),
+            self.list@.len() == 0,
+            self.keys@.len() == 0,
+            self.others@.addr == 0,
+            self.shared == Shared::storage() as *const Shared,
+            self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c)),
+            regions_ok(),
+            crate::api::ready(),
+            self.bound,
+            self.homed@ matches Some(t) && homed_on(t, self.arena as int),
+        ensures
+            self.wf(),
+    {
+        reveal(others::heads_ok);
+        reveal(CachePerms::claimed);
+        assert forall|c: int| 0 <= c < NCLASSES implies self.owns(#[trigger] self.home_hdrs@[c]) && self.hdr_class(self.home_hdrs@[c]) == c by {
+            assert(self.home_hdrs@[c] == home_hdr(h, c));
+        }
+    }
+
+    /// The heap may still move its home ([`Heap::rehome`]); the measure
+    /// of the free paths' recursion through [`Heap::rehome_on_free`].
+    pub closed spec fn spec_rehome(&self) -> bool {
+        self.rehome
+    }
+
+    /// The home arena ([`Heap::arena`]).
+    pub closed spec fn home(&self) -> u16 {
+        self.arena
+    }
+
+    /// The length of the `others` list ([`Heap::list`]).
+    pub closed spec fn list_len(&self) -> int {
+        self.list@.len() as int
+    }
+
+    /// The node `r` places from the end of the `others` list (`r` counts
+    /// from 1), which nodes added at the head do not move.
+    pub closed spec fn node_from_end(&self, r: int) -> *mut ArenaCaches {
+        self.list@[self.list@.len() - r]
+    }
+
+    /// The key of the node `r` places from the end of the `others` list
+    /// ([`Heap::keys`]): the arena it caches, or [`FOREIGN`].
+    pub closed spec fn node_key(&self, r: int) -> u16 {
+        self.keys@[self.keys@.len() - r]
+    }
+
+    /// `node` is on the `others` list, with key `arena`.
+    pub closed spec fn keyed(&self, node: *mut ArenaCaches, arena: u16) -> bool {
+        exists|i: int| 0 <= i < self.list@.len() && self.list@[i] == node && #[trigger] self.keys@[i] == arena
+    }
+
+    /// Some node of the `others` list has key `arena`.
+    pub closed spec fn has_key(&self, arena: u16) -> bool {
+        exists|i: int| 0 <= i < self.keys@.len() && #[trigger] self.keys@[i] == arena
+    }
+
+    /// Cache routing: `cache` is the header for `class` of `arena`'s cache
+    /// in this heap, the home header for the home arena, else the node
+    /// keyed `arena`'s.
+    pub closed spec fn routes(&self, arena: u16, class: int, cache: *mut CacheHeader) -> bool {
+        if arena == self.arena {
+            cache == self.home_ptr(class)
+        } else {
+            exists|i: int| 0 <= i < self.list@.len() && #[trigger] self.keys@[i] == arena && cache == node_hdr(self.list@[i], class)
+        }
+    }
+
+    /// A header a pop may take from: the header for `class` of the home
+    /// arena or of a node whose key is an arena, never [`FOREIGN`]. A pop
+    /// that requires it never takes from the [`FOREIGN`] node.
+    pub open spec fn poppable(&self, class: int, cache: *mut CacheHeader) -> bool {
+        exists|a: u16| (a != FOREIGN || a == self.home()) && #[trigger] self.routes(a, class, cache)
+    }
+
+    /// A header routed for an arena that is not [`FOREIGN`], or for the
+    /// home arena, may be popped.
+    pub proof fn lemma_poppable(&self, arena: u16, class: int, cache: *mut CacheHeader)
+        requires
+            self.routes(arena, class, cache),
+            arena != FOREIGN || arena == self.home(),
+        ensures
+            self.poppable(class, cache),
+    {
+    }
+
+    /// The home header for `class` routes the home arena.
+    pub proof fn lemma_routes_home(&self, class: int)
+        ensures
+            self.routes(self.home(), class, self.home_ptr(class)),
+            self.poppable(class, self.home_ptr(class)),
+    {
+        self.lemma_poppable(self.home(), class, self.home_ptr(class));
+    }
+
+    /// A node on the `others` list with key `arena` holds the header
+    /// `arena` routes to; its key is not the home arena.
+    proof fn lemma_keyed_routes(&self, node: *mut ArenaCaches, arena: u16, class: int)
+        requires
+            self.wf(),
+            self.keyed(node, arena),
+        ensures
+            arena != self.home(),
+            self.routes(arena, class, node_hdr(node, class)),
+    {
+        let i = choose|i: int| 0 <= i < self.list@.len() && self.list@[i] == node && #[trigger] self.keys@[i] == arena;
+        assert(self.keys@[i] != self.arena);
+    }
+
+    /// [`Heap::keeps`] keeps routing: the home arena and headers, and
+    /// every node and key in its place counted from the end.
+    proof fn lemma_keeps_routes(a: Heap, b: Heap, arena: u16, class: int, cache: *mut CacheHeader)
+        requires
+            a.list_ok(),
+            b.keeps(a),
+            a.routes(arena, class, cache),
+        ensures
+            b.routes(arena, class, cache),
+    {
+        if arena != a.arena {
+            let i = choose|i: int| 0 <= i < a.list@.len() && #[trigger] a.keys@[i] == arena && cache == node_hdr(a.list@[i], class);
+            let r = a.list@.len() - i;
+            let j = b.list@.len() - r;
+            assert(b.list@[b.list@.len() - r] == a.list@[a.list@.len() - r]);
+            assert(b.keys@[b.keys@.len() - r] == a.keys@[a.keys@.len() - r]);
+            assert(b.keys@[j] == arena && cache == node_hdr(b.list@[j], class));
+        }
+    }
+
+    /// [`Heap::poppable`] depends only on the home arena and headers and
+    /// the `others` list and keys, not on what the caches hold.
+    proof fn lemma_poppable_same(a: Heap, b: Heap, class: int, cache: *mut CacheHeader)
+        requires
+            a.poppable(class, cache),
+            b.arena == a.arena,
+            b.home_hdrs == a.home_hdrs,
+            b.list == a.list,
+            b.keys == a.keys,
+        ensures
+            b.poppable(class, cache),
+    {
+        let x = choose|x: u16| (x != FOREIGN || x == a.home()) && #[trigger] a.routes(x, class, cache);
+        b.lemma_poppable(x, class, cache);
+    }
+
+    /// [`Heap::keeps`] keeps [`Heap::poppable`].
+    proof fn lemma_keeps_poppable(a: Heap, b: Heap, class: int, cache: *mut CacheHeader)
+        requires
+            a.list_ok(),
+            b.keeps(a),
+            a.poppable(class, cache),
+        ensures
+            b.poppable(class, cache),
+    {
+        let x = choose|x: u16| (x != FOREIGN || x == a.home()) && #[trigger] a.routes(x, class, cache);
+        Heap::lemma_keeps_routes(a, b, x, class, cache);
+        b.lemma_poppable(x, class, cache);
+    }
+
+    /// Cache routing, on a
+    /// well-formed heap: the `others` keys are pairwise distinct and none
+    /// is the home arena; a header is routed for at most one arena
+    /// ([`Heap::routes`]); and no header [`Heap::poppable`] admits is one
+    /// of the [`FOREIGN`] node's, so a pop that requires it never takes
+    /// from that node.
+    pub proof fn theorem_cache_routing(&self, class: int, cache: *mut CacheHeader, a: u16, b: u16)
+        requires
+            self.wf(),
+            0 <= class < NCLASSES,
+        ensures
+            forall|r: int, s: int| #![trigger self.node_key(r), self.node_key(s)] 1 <= r < s <= self.list_len() ==> self.node_key(r) != self.node_key(s),
+            forall|r: int| 1 <= r <= self.list_len() ==> #[trigger] self.node_key(r) != self.home(),
+            self.routes(a, class, cache) && self.routes(b, class, cache) ==> a == b,
+            self.poppable(class, cache) ==> forall|r: int, k: int|
+                1 <= r <= self.list_len() && self.node_key(r) == FOREIGN && 0 <= k < NCLASSES
+                    ==> cache != node_hdr(self.node_from_end(r), k),
+    {
+        let n = self.list@.len();
+        assert forall|r: int, s: int| 1 <= r < s <= self.list_len() implies self.node_key(r) != self.node_key(s) by {
+            assert(self.keys@[n - s] != self.keys@[n - r]);
+        }
+        assert forall|r: int| 1 <= r <= self.list_len() implies self.node_key(r) != self.home() by {
+            assert(self.keys@[n - r] != self.arena);
+        }
+        if self.routes(a, class, cache) && self.routes(b, class, cache) && a != b {
+            if a == self.arena {
+                let j = choose|j: int| 0 <= j < n && #[trigger] self.keys@[j] == b && cache == node_hdr(self.list@[j], class);
+                self.lemma_home_apart(class, j, class);
+            } else if b == self.arena {
+                let i = choose|i: int| 0 <= i < n && #[trigger] self.keys@[i] == a && cache == node_hdr(self.list@[i], class);
+                self.lemma_home_apart(class, i, class);
+            } else {
+                let i = choose|i: int| 0 <= i < n && #[trigger] self.keys@[i] == a && cache == node_hdr(self.list@[i], class);
+                let j = choose|j: int| 0 <= j < n && #[trigger] self.keys@[j] == b && cache == node_hdr(self.list@[j], class);
+                self.lemma_nodes_apart(i, j, class, class);
+            }
+        }
+        if self.poppable(class, cache) {
+            let x = choose|x: u16| (x != FOREIGN || x == self.home()) && #[trigger] self.routes(x, class, cache);
+            assert forall|r: int, k: int|
+                1 <= r <= self.list_len() && self.node_key(r) == FOREIGN && 0 <= k < NCLASSES
+                    implies cache != node_hdr(self.node_from_end(r), k) by {
+                let j = n - r;
+                if x == self.arena {
+                    self.lemma_home_apart(class, j, k);
+                } else {
+                    let i = choose|i: int| 0 <= i < n && #[trigger] self.keys@[i] == x && cache == node_hdr(self.list@[i], class);
+                    if cache == node_hdr(self.node_from_end(r), k) {
+                        assert(i != j);
+                        self.lemma_nodes_apart(i, j, class, k);
+                    }
+                }
+            }
+        }
+    }
+
+    /// What a well-formed heap tells its callers outside this module: the
+    /// process's regions are well formed and separated, and the allocator
+    /// is published ([`crate::api::ready`]).
+    pub proof fn lemma_wf_regions(&self)
+        requires
+            self.wf(),
+        ensures
+            regions_ok(),
+            crate::api::ready(),
+    {
+    }
+
+    /// A well-formed heap's `shared` is the process's `Shared`, at its
+    /// storage, which is published.
+    proof fn lemma_wf_shared(&self)
+        requires
+            self.wf(),
+        ensures
+            self.shared == Shared::storage() as *const Shared,
+            crate::api::ready(),
+    {
+    }
+
+    /// Owned header `p`'s capacity.
+    pub closed spec fn hdr_cap(&self, p: *mut CacheHeader) -> int {
+        self.perms@.hdr(p).cap as int
+    }
+
+    /// The address of entry `i` of owned header `p`'s stack: where the
+    /// permission that pushes write and pops read it through points.
+    pub closed spec fn entry_addr(&self, p: *mut CacheHeader, i: int) -> int {
+        self.perms@.ent(p, i)@.addr as int
+    }
+
+    /// The cache memory a heap reads and writes through its permissions
+    /// is metadata: an owned header's 64
+    /// bytes and each of its stack's entries.
+    pub proof fn lemma_caches_in_meta(&self, p: *mut CacheHeader, i: int)
+        requires
+            self.wf(),
+            self.owns(p),
+        ensures
+            process_regions().in_meta(p@.addr as int, 64),
+            0 <= i < self.hdr_cap(p) ==> process_regions().in_meta(self.entry_addr(p, i), 8),
+    {
+        let h = self.perms@.hdr(p);
+        assert(cell_ok(p, self.perms@.hdrs[p], self.perms@.slots));
+        if 0 <= i < h.cap {
+            assert(stack_ok(h, self.perms@.slots));
+            let _q = slot_ptr(h.slots, i);
+            assert(slot_in(h.slots, i));
+            assert(vstd::layout::size_of::<*mut u8>() == 8);
+            assert(regions_ok());
+            assert(cell_in_meta(p, h));
+            assert(process_regions().in_meta(h.slots@.addr as int, 8 * h.cap));
+            assert(process_regions().meta_base + process_regions().meta_len <= usize::MAX);
+            assert((i as usize) as int == i);
+            assert(h.slots@.addr + (i as usize) as int * 8 <= usize::MAX);
+            crate::vspec::ptr::axiom_ptr_add_addr(h.slots, i as usize);
+        }
+    }
+
+    /// The token the last pop handed out is that of slot `p` of class `c`
+    /// ([`CachePerms::handed`]).
+    pub closed spec fn handed_ok(&self, p: *mut u8, c: int) -> bool {
+        CachePerms::handed_ok(self.perms@.handed, p, c)
+    }
+
+    /// `p` is a header this heap owns.
+    pub closed spec fn owns(&self, p: *mut CacheHeader) -> bool {
+        self.perms@.hdrs.contains_key(p)
+    }
+
+    /// The value of owned header `p`.
+    pub closed spec fn hdr(&self, p: *mut CacheHeader) -> CacheHeader {
+        self.perms@.hdr(p)
+    }
+
+    /// Every header of `node` is one this heap owns, the header for class
+    /// `c` caching class `c`, and the node is placed ([`node_placed`]).
+    pub closed spec fn owns_node(&self, node: *mut ArenaCaches) -> bool {
+        &&& forall|c: int| #![trigger node_hdr(node, c)] 0 <= c < NCLASSES ==> self.owns(node_hdr(node, c)) && self.hdr_class(node_hdr(node, c)) == c
+        &&& node_placed(node)
+    }
+
+
+    /// The headers of a node the heap owns: each has its initialised
+    /// permission in the heap's ([`cell_ok`]), which holds its value.
+    proof fn lemma_node_cells(&self, o: *mut ArenaCaches)
+        requires
+            self.wf(),
+            self.owns_node(o),
+        ensures
+            forall|c: int| 0 <= c < NCLASSES ==> self.perms@.hdrs.contains_key(#[trigger] node_hdr(o, c)),
+            forall|c: int| 0 <= c < NCLASSES ==> self.perms@.hdrs[#[trigger] node_hdr(o, c)].ptr() == node_hdr(o, c),
+            forall|c: int| 0 <= c < NCLASSES ==> self.perms@.hdrs[#[trigger] node_hdr(o, c)].is_init(),
+            forall|c: int| 0 <= c < NCLASSES ==> self.hdr(#[trigger] node_hdr(o, c)) == self.perms@.hdrs[node_hdr(o, c)].value(),
+    {
+        assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] cell_ok(node_hdr(o, c), self.perms@.hdrs[node_hdr(o, c)], self.perms@.slots) by {
+            assert(self.owns(node_hdr(o, c)));
+        }
+    }
+
+    /// The class owned header `p` caches ([`CachePerms::cls`]).
+    pub closed spec fn hdr_class(&self, p: *mut CacheHeader) -> int {
+        self.perms@.cls[p]
+    }
+
+    /// Every slot this heap's caches hold holds its token
+    /// ([`CachePerms::tokened`]).
+    pub closed spec fn tokened(&self) -> bool {
+        self.perms@.tokened()
+    }
+
+    /// The slot address entry `i` of owned header `p` stands for: the
+    /// entry itself, or with [`pac_mode`] the word `pac::auth` gives back
+    /// with the stack base as the modifier ([`plain`]).
+    pub closed spec fn cached(&self, p: *mut CacheHeader, i: int) -> usize {
+        plain(self.perms@.slots[self.perms@.ent(p, i)].value(), self.perms@.hdr(p).slots)
+    }
+
+    /// Owned header `p`'s length: its first `len` entries are the slots
+    /// it caches.
+    pub closed spec fn cached_len(&self, p: *mut CacheHeader) -> int {
+        self.perms@.hdr(p).len as int
+    }
+
+    /// What owned header `p` caches, as `(class, address)` pairs: the
+    /// slots of its first `len` entries ([`Heap::cached`]), whose tokens
+    /// the heap holds ([`Heap::tokened`]).
+    pub closed spec fn held(&self, p: *mut CacheHeader) -> Seq<(int, int)> {
+        tagged(self.hdr_class(p), Seq::new(self.cached_len(p) as nat, |i: int| self.cached(p, i) as int))
+    }
+
+    /// The slots this heap's flushes have released so far
+    /// ([`CachePerms::released`]).
+    pub closed spec fn released(&self) -> Seq<(int, int)> {
+        self.perms@.released
+    }
+
+    /// The header for `class` of the cache array `node` names: the home
+    /// header ([`Heap::home_ptr`]) when `node` is null, else the node's.
+    pub closed spec fn array_hdr(&self, node: *mut ArenaCaches, class: int) -> *mut CacheHeader {
+        if node@.addr == 0 { self.home_ptr(class) } else { node_hdr(node, class) }
+    }
+
+    /// The slots the headers for classes below `k` of the array `node`
+    /// hold ([`Heap::held`], [`Heap::array_hdr`]).
+    pub closed spec fn array_held(&self, node: *mut ArenaCaches, k: int) -> Set<(int, int)>
+        decreases k,
+    {
+        if k <= 0 {
+            Set::empty()
+        } else {
+            self.array_held(node, k - 1) + self.held(self.array_hdr(node, k - 1)).to_set()
+        }
+    }
+
+    /// The slots the home array and the first `k` nodes of the `others`
+    /// list hold.
+    pub closed spec fn held_upto(&self, k: int) -> Set<(int, int)>
+        decreases k,
+    {
+        if k <= 0 {
+            self.array_held(ptr::null_mut(), NCLASSES as int)
+        } else {
+            self.held_upto(k - 1) + self.array_held(self.list@[k - 1], NCLASSES as int)
+        }
+    }
+
+    /// Every slot the heap's caches hold: those
+    /// of its home headers and of the headers of every node on its
+    /// `others` list, the cache memory `destroy` frees.
+    pub closed spec fn held_all(&self) -> Set<(int, int)> {
+        self.held_upto(self.list@.len() as int)
+    }
+
+    /// Every header of the home array and of every node on the `others`
+    /// list caches nothing.
+    pub closed spec fn drained(&self) -> bool {
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.cached_len(self.home_ptr(c)) == 0
+        &&& forall|i: int, c: int| 0 <= i < self.list@.len() && 0 <= c < NCLASSES ==> #[trigger] self.cached_len(node_hdr(self.list@[i], c)) == 0
+    }
+
+    /// Every header of the home array and of every node on the `others`
+    /// list has no stack (capacity 0), so caches nothing
+    /// ([`Heap::lemma_cleared_drained`]).
+    pub closed spec fn cleared(&self) -> bool {
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.hdr_cap(self.home_ptr(c)) == 0
+        &&& forall|i: int, c: int| 0 <= i < self.list@.len() && 0 <= c < NCLASSES ==> #[trigger] self.hdr_cap(node_hdr(self.list@[i], c)) == 0
+    }
+
+    /// A well-formed [`Heap::cleared`] heap is [`Heap::drained`]: a
+    /// header's length is at most its capacity ([`CacheHeader::inv`]).
+    pub proof fn lemma_cleared_drained(&self)
+        requires
+            self.wf(),
+            self.cleared(),
+        ensures
+            self.drained(),
+    {
+        assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] self.cached_len(self.home_ptr(c)) == 0 by {
+            let p = self.home_ptr(c);
+            assert(self.hdr_cap(p) == 0);
+            assert(cell_ok(p, self.perms@.hdrs[p], self.perms@.slots));
+        }
+        assert forall|i: int, c: int| 0 <= i < self.list@.len() && 0 <= c < NCLASSES implies #[trigger] self.cached_len(node_hdr(self.list@[i], c)) == 0 by {
+            let p = node_hdr(self.list@[i], c);
+            assert(self.owns_node(self.list@[i]));
+            assert(self.hdr_cap(p) == 0);
+            assert(cell_ok(p, self.perms@.hdrs[p], self.perms@.slots));
+        }
+    }
+
+    /// An owned header without a stack caches nothing
+    /// ([`CacheHeader::inv`]: `len <= cap`).
+    pub proof fn lemma_cap_len(&self, p: *mut CacheHeader)
+        requires
+            self.wf(),
+            self.owns(p),
+            self.hdr_cap(p) == 0,
+        ensures
+            self.cached_len(p) == 0,
+    {
+        assert(cell_ok(p, self.perms@.hdrs[p], self.perms@.slots));
+    }
+
+    /// [`Heap::held_all`] depends only on the cache permissions, the
+    /// `others` list and the home headers.
+    proof fn lemma_held_all_same(a: Heap, b: Heap)
+        requires
+            a.perms@ == b.perms@,
+            a.list@ == b.list@,
+            a.home_hdrs@ == b.home_hdrs@,
+        ensures
+            a.held_all() == b.held_all(),
+    {
+        Heap::lemma_held_upto_same(a, b, a.list@.len() as int);
+    }
+
+    /// [`Heap::held_upto`] depends only on the same three.
+    proof fn lemma_held_upto_same(a: Heap, b: Heap, k: int)
+        requires
+            a.perms@ == b.perms@,
+            a.list@ == b.list@,
+            a.home_hdrs@ == b.home_hdrs@,
+            k <= a.list@.len(),
+        ensures
+            a.held_upto(k) == b.held_upto(k),
+        decreases k,
+    {
+        let node = if k <= 0 { ptr::null_mut() } else { a.list@[k - 1] };
+        assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] a.held(a.array_hdr(node, c)) == b.held(b.array_hdr(node, c)) by {
+            assert(a.array_hdr(node, c) == b.array_hdr(node, c));
+        }
+        Heap::lemma_array_held_same(a, b, node, NCLASSES as int);
+        if k > 0 {
+            Heap::lemma_held_upto_same(a, b, k - 1);
+        }
+    }
+
+    /// Whether this heap may create caches (`thread.tcache.enabled`).
+    pub closed spec fn tcache_on(&self) -> bool {
+        self.tcache_enabled
+    }
+
+    /// What a GC step (design 6.4) leaves in owned header `p`, which held
+    /// `old.hdr(p)` before it: nothing if the header is the `FOREIGN`
+    /// arena's (`foreign`), else its length less `lw - lw / 4` (three
+    /// quarters, rounded up, of the `lw` entries unused since the last GC,
+    /// `lw` its low-water mark); a subset of what it held; and a low-water
+    /// mark restarted at the new length.
+    pub closed spec fn gc_left(&self, old: Heap, p: *mut CacheHeader, foreign: bool) -> bool {
+        let lw = old.hdr(p).low_water as int;
+        &&& self.cached_len(p) == if foreign { 0 } else { old.cached_len(p) - (lw - lw / 4) }
+        &&& self.held(p).to_set() <= old.held(p).to_set()
+        &&& self.hdr(p).low_water == self.hdr(p).len
+    }
+
+    /// Every header of the home array and of every node on `old`'s
+    /// `others` list is left as [`Heap::gc_left`] says relative to `old`:
+    /// a home header emptied if the home arena is `FOREIGN`, a node's
+    /// emptied or trimmed, whatever its key.
+    pub closed spec fn gc_all(&self, old: Heap) -> bool {
+        &&& forall|c: int| #![trigger old.home_ptr(c)] 0 <= c < NCLASSES ==> self.gc_left(old, old.home_ptr(c), old.home() == FOREIGN)
+        &&& forall|i: int, c: int|
+            0 <= i < old.list@.len() && 0 <= c < NCLASSES
+                ==> #[trigger] self.gc_left(old, node_hdr(old.list@[i], c), false) || self.gc_left(old, node_hdr(old.list@[i], c), true)
+    }
+
+    /// `perms` are this heap's cache permissions, lent to a proof
+    /// (`heap.perms.borrow_mut()`).
+    pub closed spec fn perms_are(&self, perms: CachePerms) -> bool {
+        self.perms@ == perms
+    }
+
+    /// `perms` gave back what [`Heap::theorem_uniqueness`] borrowed: the
+    /// same headers, stacks, entries and tokens' slots, so the heap is
+    /// as it was.
+    pub closed spec fn perms_back(&self, perms: CachePerms) -> bool {
+        &&& perms.hdrs == self.perms@.hdrs
+        &&& perms.slots == self.perms@.slots
+        &&& perms.cls == self.perms@.cls
+        &&& perms.owner == self.perms@.owner
+        &&& perms.zero == self.perms@.zero
+        &&& perms.handed == self.perms@.handed
+        &&& perms.blocks == self.perms@.blocks
+        &&& perms.released == self.perms@.released
+        &&& perms.tokened()
+    }
+
+    /// `self` caches exactly what `old` cached: the same cache
+    /// permissions (headers, stacks, entries, and the slot tokens and zero
+    /// tokens under them), the same `caches` field, `shared` pointer,
+    /// `others` list and keys, home headers, home arena, binding, ticket
+    /// and `rehome`. The other fields (`tid`, `slow_ticks`, `last_gc`,
+    /// `uncached`, `snapshot`, `tcache_enabled`, `rng`, `rehome_from`) are
+    /// unconstrained.
+    pub closed spec fn caches_same(&self, old: Heap) -> bool {
+        &&& self.perms@ == old.perms@
+        &&& self.caches == old.caches
+        &&& self.others == old.others
+        &&& self.shared == old.shared
+        &&& self.list@ == old.list@
+        &&& self.keys@ == old.keys@
+        &&& self.home_hdrs@ == old.home_hdrs@
+        &&& self.heads == old.heads
+        &&& self.arena == old.arena
+        &&& self.bound == old.bound
+        &&& self.rehome == old.rehome
+        &&& self.homed == old.homed
+    }
+
+    /// What [`Heap::caches_same`] means outside this module: every header
+    /// `old` owns is still owned, no other is, and each holds the same
+    /// value, so the same length and the same entries standing for the
+    /// same slots; no cache gained or lost a slot. Well-formedness and the
+    /// home arena carry over.
+    pub proof fn lemma_caches_same(&self, old: Heap, p: *mut CacheHeader, i: int)
+        requires
+            self.caches_same(old),
+        ensures
+            self.owns(p) == old.owns(p),
+            self.hdr(p) == old.hdr(p),
+            self.hdr_class(p) == old.hdr_class(p),
+            self.cached_len(p) == old.cached_len(p),
+            self.cached(p, i) == old.cached(p, i),
+            self.tokened() == old.tokened(),
+            self.home() == old.home(),
+            old.wf() ==> self.wf(),
+    {
+    }
+
+    /// Uniqueness, for one cached entry of a well-formed
+    /// heap: it stands for a slot of its header's class, and that slot is
+    /// in no `held`, any other holder of tokens of the class's authority
+    /// (the bitmap words' invariants, which hold the free slots'; a claim
+    /// in flight; a live block's token, `heap::live::Live`, which the
+    /// program holds from the allocation to the free).
+    pub proof fn theorem_uniqueness_held(
+        h: Heap,
+        tracked perms: &CachePerms,
+        tracked held: &mut GhostSubset<int>,
+        p: *mut CacheHeader,
+        i: int,
+    )
+        requires
+            h.wf(),
+            h.perms_are(*perms),
+            h.owns(p),
+            0 <= i < h.cached_len(p),
+            old(held).id() == slot_loc(h.hdr_class(p)),
+        ensures
+            process_regions().is_slot(h.hdr_class(p), h.cached(p, i)),
+            !old(held)@.contains(h.cached(p, i) as int),
+            final(held).id() == old(held).id(),
+            final(held)@ == old(held)@,
+    {
+        assert(perms.ent(p, i) == h.perms@.ent(p, i));
+        CachePerms::theorem_uniqueness_held(perms, held, p, i);
+    }
+
+    /// Uniqueness within one well-formed heap: two different
+    /// cached entries of one class stand for two different slots.
+    pub proof fn theorem_uniqueness(
+        h: Heap,
+        tracked perms: &mut CachePerms,
+        p1: *mut CacheHeader,
+        i1: int,
+        p2: *mut CacheHeader,
+        i2: int,
+    )
+        requires
+            h.wf(),
+            h.perms_are(*old(perms)),
+            h.owns(p1),
+            h.owns(p2),
+            0 <= i1 < h.cached_len(p1),
+            0 <= i2 < h.cached_len(p2),
+            p1 != p2 || i1 != i2,
+            h.hdr_class(p1) == h.hdr_class(p2),
+        ensures
+            h.cached(p1, i1) != h.cached(p2, i2),
+            h.perms_back(*final(perms)),
+    {
+        CachePerms::theorem_uniqueness_cached(perms, p1, i1, p2, i2);
+    }
+
+    /// Uniqueness against the program's blocks: a slot this
+    /// heap caches is no live block of its class ([`Live`], the token the
+    /// program holds from the allocation to the free), so no slot is
+    /// handed out while a cache still holds it, nor cached while it is
+    /// live.
+    pub proof fn theorem_uniqueness_live(
+        h: Heap,
+        tracked perms: &CachePerms,
+        tracked blk: &mut Live,
+        p: *mut CacheHeader,
+        i: int,
+    )
+        requires
+            h.wf(),
+            h.perms_are(*perms),
+            h.owns(p),
+            0 <= i < h.cached_len(p),
+            old(blk).slot_of(h.hdr_class(p)),
+        ensures
+            h.cached(p, i) != old(blk).addr(),
+            final(blk).slot_of(h.hdr_class(p)),
+            final(blk).addr() == old(blk).addr(),
+            final(blk).len() == old(blk).len(),
+            final(blk).wf() == old(blk).wf(),
+    {
+        perms.lemma_tok_get(p, i);
+        blk.lemma_slot_apart(perms.toks.tracked_borrow(perms.ent(p, i)), h.hdr_class(p));
+    }
+
+    /// Uniqueness across heaps: a slot two well-formed
+    /// heaps' caches both hold would have two tokens of one authority, so
+    /// cached entries of one class in two heaps stand for different slots.
+    pub proof fn theorem_uniqueness_apart(
+        h1: Heap,
+        tracked perms1: &mut CachePerms,
+        p1: *mut CacheHeader,
+        i1: int,
+        h2: Heap,
+        tracked perms2: &CachePerms,
+        p2: *mut CacheHeader,
+        i2: int,
+    )
+        requires
+            h1.wf(),
+            h1.perms_are(*old(perms1)),
+            h2.wf(),
+            h2.perms_are(*perms2),
+            h1.owns(p1),
+            h2.owns(p2),
+            0 <= i1 < h1.cached_len(p1),
+            0 <= i2 < h2.cached_len(p2),
+            h1.hdr_class(p1) == h2.hdr_class(p2),
+        ensures
+            h1.cached(p1, i1) != h2.cached(p2, i2),
+            h1.perms_back(*final(perms1)),
+    {
+        let ghost o = *perms1;
+        let q1 = perms1.ent(p1, i1);
+        let q2 = perms2.ent(p2, i2);
+        perms1.lemma_tok_get(p1, i1);
+        perms2.lemma_tok_get(p2, i2);
+        let tracked mut t1 = perms1.toks.tracked_remove(q1);
+        t1.disjoint(perms2.toks.tracked_borrow(q2));
+        perms1.toks.tracked_insert(q1, t1);
+        assert forall|p: *mut CacheHeader, i: int|
+            #![trigger perms1.ent(p, i)]
+            perms1.hdrs.contains_key(p) && 0 <= i < perms1.hdr(p).len implies perms1.tok_at(p, i) by {
+            o.lemma_tok_get(p, i);
+        }
+    }
+
+    /// [`Heap::keeps`] keeps [`Heap::owns_node`].
+    pub proof fn lemma_keeps_node(a: Heap, b: Heap, node: *mut ArenaCaches)
+        requires
+            b.keeps(a),
+            a.owns_node(node),
+        ensures
+            b.owns_node(node),
+    {
+        assert forall|c: int| #![trigger node_hdr(node, c)] 0 <= c < NCLASSES implies b.owns(node_hdr(node, c)) && b.hdr_class(node_hdr(node, c)) == c by {
+            assert(a.owns(node_hdr(node, c)) && a.hdr_class(node_hdr(node, c)) == c);
+            assert(a.perms@.hdrs.contains_key(node_hdr(node, c)));
+        }
+    }
+
+    /// What [`Heap::list_ok`] gives a walk of the `others` list: `others`
+    /// is the node farthest from the end (null for an empty list), and
+    /// every node is non-null and owned.
+    proof fn lemma_list(&self, r: int)
+        requires
+            self.wf(),
+        ensures
+            self.list_len() >= 0,
+            self.list_len() == 0 ==> self.others@.addr == 0,
+            self.list_len() > 0 ==> self.others == self.node_from_end(self.list_len()),
+            1 <= r <= self.list_len() ==> self.node_from_end(r)@.addr != 0 && self.owns_node(self.node_from_end(r)),
+    {
+        if 1 <= r <= self.list_len() {
+            assert(self.list@[self.list@.len() - r] == self.node_from_end(r));
+        }
+    }
+
+    /// The `others` list of a well-formed heap has fewer than `usize::MAX`
+    /// nodes: its nodes' keys ([`Heap::list_ok`]) are pairwise distinct
+    /// `u16`s, so there are at most 2^16 of them.
+    proof fn lemma_list_bound(&self)
+        requires
+            self.wf(),
+        ensures
+            self.list_len() <= 0x1_0000,
+    {
+        others::lemma_distinct_u16s(self.keys@);
+    }
+
+    /// [`Heap::keeps`] keeps every node of the `others` list in its place
+    /// counted from the end.
+    proof fn lemma_keeps_list(a: Heap, b: Heap, r: int)
+        requires
+            b.keeps(a),
+            1 <= r <= a.list_len(),
+        ensures
+            a.list_len() <= b.list_len(),
+            b.node_from_end(r) == a.node_from_end(r),
+    {
+        assert(b.list@[b.list@.len() - r] == a.list@[a.list@.len() - r]);
+    }
+
+    /// A change to the cache permissions alone, which keeps them as
+    /// [`Heap::keeps`] asks, keeps the heap: the `others` list and its
+    /// nodes' ownership come along unchanged. For writers that never touch
+    /// the list, so their proofs need not carry [`Heap::list_ok`].
+    proof fn lemma_keeps_perms(old: Heap, new: Heap)
+        requires
+            old.wf(),
+            new.list == old.list,
+            new.keys == old.keys,
+            new.arena == old.arena,
+            new.others == old.others,
+            new.shared == old.shared,
+            new.home_hdrs == old.home_hdrs,
+            new.heads == old.heads,
+            new.bound == old.bound,
+            new.homed == old.homed,
+            new.rehome == old.rehome,
+            new.perms@.keeps(old.perms@),
+            new.perms@.follows(old.perms@),
+            new.perms@.zero_ok(),
+            new.perms@.tokened(),
+            new.perms@.claimed(),
+        ensures
+            new.keeps(old),
+    {
+        Heap::lemma_home_kept(old, new);
+        assert forall|i: int| 0 <= i < new.list@.len() implies new.owns_node(#[trigger] new.list@[i]) by {
+            assert(old.owns_node(old.list@[i]));
+            assert forall|c: int| #![trigger node_hdr(new.list@[i], c)] 0 <= c < NCLASSES implies new.owns(node_hdr(new.list@[i], c)) && new.hdr_class(node_hdr(new.list@[i], c)) == c by {
+                assert(old.perms@.hdrs.contains_key(node_hdr(old.list@[i], c)));
+            }
+        }
+    }
+
+    /// [`Heap::keeps`] is transitive.
+    pub proof fn lemma_keeps_trans(a: Heap, b: Heap, c: Heap)
+        requires
+            b.keeps(a),
+            c.keeps(b),
+        ensures
+            c.keeps(a),
+    {
+        assert forall|r: int| 1 <= r <= a.list@.len() implies c.list@[c.list@.len() - r] == #[trigger] a.list@[a.list@.len() - r] by {
+            assert(b.list@[b.list@.len() - r] == a.list@[a.list@.len() - r]);
+        }
+    }
+
+    /// A well-formed heap [`Heap::keeps`] itself.
+    proof fn lemma_keeps_refl(a: Heap)
+        requires
+            a.wf(),
+        ensures
+            a.keeps(a),
+    {
+    }
+
+    /// A heap that differs from a well-formed one only in the token its
+    /// last pop handed out keeps it ([`CachePerms::handed`]).
+    proof fn lemma_keeps_handed(a: Heap, b: Heap)
+        requires
+            a.wf(),
+            b.perms@.hdrs == a.perms@.hdrs,
+            b.perms@.slots == a.perms@.slots,
+            b.perms@.cls == a.perms@.cls,
+            b.perms@.owner == a.perms@.owner,
+            b.perms@.toks == a.perms@.toks,
+            b.perms@.zero == a.perms@.zero,
+            b.perms@.blocks == a.perms@.blocks,
+            b.list == a.list,
+            b.keys == a.keys,
+            b.arena == a.arena,
+            b.bound == a.bound,
+            b.homed == a.homed,
+            b.rehome == a.rehome,
+            b.others == a.others,
+            b.shared == a.shared,
+            b.home_hdrs == a.home_hdrs,
+            b.heads == a.heads,
+        ensures
+            b.keeps(a),
+    {
+        reveal(CachePerms::claimed);
+        Heap::lemma_home_kept(a, b);
+        CachePerms::lemma_zero_same(a.perms@, b.perms@);
+        CachePerms::lemma_keeps_refl(a.perms@);
+        CachePerms::lemma_tracks_same(a.perms@);
+        CachePerms::lemma_same_but_tokens(a.perms@, b.perms@, a.perms@);
+    }
+
+
+}
+
+
+/// The home header for `class` of the heap at `h`: `h + 128 + 64 *
+/// class`, where [`Heap::create_detached`] writes it and
+/// [`Heap::cache_ptr`] computes it.
+pub(super) open spec fn home_hdr(h: *mut Heap, class: int) -> *mut CacheHeader {
+    vstd::raw_ptr::ptr_mut_from_data(vstd::raw_ptr::PtrData::<CacheHeader> {
+        addr: (h@.addr + 128 + 64 * class) as usize,
+        provenance: h@.provenance,
+        metadata: (),
+    })
+}
+/// [`Heap::handed_ok`] unfolded, for the heap's pops and their callers.
+broadcast proof fn lemma_handed_ok(h: Heap, p: *mut u8, c: int)
+    ensures
+        #[trigger] h.handed_ok(p, c) == CachePerms::handed_ok(h.perms@.handed, p, c),
+{
+}
+
+
+impl CachePerms {
+    /// The cache permissions of a heap [`Heap::create_detached`] has just
+    /// made at `h`: well formed and tracking, and holding nothing (every
+    /// header it owns is empty, with no stack, and it holds no stack entry
+    /// and no slot token, [`CachePerms::tokened`]); among its headers are
+    /// the heap's home headers, the one for class `c` caching class `c`.
+    spec fn fresh(&self, h: *mut Heap) -> bool {
+        &&& self.wf()
+        &&& self.tracks()
+        &&& self.zero_ok()
+        &&& self.tokened()
+        &&& self.slots.is_empty()
+        &&& self.toks.is_empty()
+        &&& forall|p: *mut CacheHeader| #[trigger] self.hdrs.contains_key(p) ==> self.hdr(p).len == 0 && self.hdr(p).cap == 0
+        &&& forall|c: int| #![trigger self.hdrs.contains_key(home_hdr(h, c))] #![trigger self.cls.contains_key(home_hdr(h, c))] #![trigger self.cls[home_hdr(h, c)]] 0 <= c < NCLASSES ==> self.hdrs.contains_key(home_hdr(h, c)) && self.cls.contains_key(home_hdr(h, c)) && self.cls[home_hdr(h, c)] == c
+    }
+
+}
+
+impl Heap {
+    /// A home header is no header of a node on the `others` list.
+    proof fn lemma_home_apart(&self, c: int, i: int, k: int)
+        requires
+            self.wf(),
+            0 <= c < NCLASSES,
+            0 <= i < self.list@.len(),
+            0 <= k < NCLASSES,
+        ensures
+            self.home_ptr(c) != node_hdr(self.list@[i], k),
+    {
+        assert(self.home_hdrs@[c] != node_hdr(self.list@[i], k));
+    }
+
+    /// The headers of two different nodes on the `others` list are
+    /// different headers.
+    proof fn lemma_nodes_apart(&self, i: int, j: int, c: int, k: int)
+        requires
+            self.wf(),
+            0 <= i < self.list@.len(),
+            0 <= j < self.list@.len(),
+            i != j,
+            0 <= c < NCLASSES,
+            0 <= k < NCLASSES,
+        ensures
+            node_hdr(self.list@[i], c) != node_hdr(self.list@[j], k),
+    {
+        let a = self.list@[i];
+        let b = self.list@[j];
+        assert(self.owns_node(a));
+        assert(self.owns_node(b));
+        if node_hdr(a, c) == node_hdr(b, k) {
+            assert(self.hdr_class(node_hdr(a, c)) == c);
+            assert(self.hdr_class(node_hdr(b, k)) == k);
+            assert(node_hdr(a, c)@.addr == node_hdr(b, k)@.addr);
+            assert(a@.addr == b@.addr);
+            assert(a@.provenance == b@.provenance);
+            assert(a@ == b@);
+            assert(a == b);
+            if i < j {
+                assert(self.list@[i] != self.list@[j]);
+            } else {
+                assert(self.list@[j] != self.list@[i]);
+            }
+        }
+    }
+
+    /// [`Heap::array_held`] depends only on what the array's headers hold.
+    proof fn lemma_array_held_same(a: Heap, b: Heap, node: *mut ArenaCaches, k: int)
+        requires
+            forall|c: int| 0 <= c < k ==> #[trigger] a.held(a.array_hdr(node, c)) == b.held(b.array_hdr(node, c)),
+        ensures
+            a.array_held(node, k) == b.array_held(node, k),
+        decreases k,
+    {
+        if k > 0 {
+            Heap::lemma_array_held_same(a, b, node, k - 1);
+        }
+    }
 }
 
 } // verus!

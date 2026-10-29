@@ -11,6 +11,19 @@ verus! {
 /// so nothing about the address itself is needed.
 pub uninterp spec fn ptr_add<T>(p: *mut T, count: usize) -> *mut T;
 
+/// `p.sub(count)`: the pointer `count` elements before `p`, with `p`'s
+/// provenance and metadata.
+pub open spec fn ptr_sub<T>(p: *mut T, count: usize) -> *mut T {
+    vstd::raw_ptr::ptr_mut_from_data(
+        vstd::raw_ptr::PtrData::<T> {
+            addr: (p@.addr - count as int * vstd::layout::size_of::<T>()) as usize,
+            provenance: p@.provenance,
+            metadata: p@.metadata,
+        },
+    )
+}
+
+
 /// How many bytes from `addr` to the end of the allocation that a pointer
 /// with provenance `prov` and address `addr` is derived from (negative
 /// when there is none). Uninterpreted: verified code cannot learn it on

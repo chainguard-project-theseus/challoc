@@ -389,6 +389,52 @@ impl CachePerms {
     }
 }
 
+/// A run rebuild's entries: after the block of `n` claimed slots
+/// (stored reversed in `outf`, written at `len..len + want` of the stack
+/// at `base` in `mid`) is moved to the bottom (`allf`, from `all0` the
+/// way `lemma_rebuild_moves` describes), entry `i < n` holds slot
+/// `claimed[n - 1 - i]`, as [`plain`] reads it.
+pub(super) proof fn lemma_rebuild_entries(
+    new_slots: Map<*mut *mut u8, vstd::raw_ptr::PointsTo<*mut u8>>,
+    mid: Map<*mut *mut u8, vstd::raw_ptr::PointsTo<*mut u8>>,
+    base: *mut *mut u8,
+    len: int,
+    want: int,
+    n: int,
+    c: int,
+    claimed: Seq<*mut u8>,
+    outf: Seq<*mut u8>,
+    all0: Seq<*mut u8>,
+    allf: Seq<*mut u8>,
+)
+    requires
+        super::regions_ok(),
+        0 <= len,
+        0 <= n <= want,
+        claimed.len() == want,
+        crate::layout::slots_in(claimed, c, 0, n),
+        forall|k: int| 0 <= k < n ==> (#[trigger] outf[k])@.addr == super::stored(claimed[n - 1 - k]@.addr, base),
+        forall|i: int| len <= i < len + want ==> #[trigger] mid[super::slot_ptr(base, i)].is_init(),
+        forall|i: int| len <= i < len + want ==> #[trigger] mid[super::slot_ptr(base, i)].value() == outf[i - len],
+        forall|i: int|
+            0 <= i < len + n && mid[super::slot_ptr(base, i)].is_init() ==> all0[i] == #[trigger] mid[super::slot_ptr(base, i)].value(),
+        len >= n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else if i < len { all0[i] } else { all0[i - len] },
+        len < n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else { all0[i - n] },
+        forall|i: int| 0 <= i < len + n ==> #[trigger] new_slots[super::slot_ptr(base, i)].value() == allf[i],
+    ensures
+        forall|i: int| 0 <= i < n ==> #[trigger] plain(new_slots[super::slot_ptr(base, i)].value(), base) == claimed[n - 1 - i]@.addr,
+{
+    assert forall|i: int| 0 <= i < n implies #[trigger] plain(new_slots[super::slot_ptr(base, i)].value(), base) == claimed[n - 1 - i]@.addr by {
+        assert(new_slots[super::slot_ptr(base, i)].value() == allf[i]);
+        assert(allf[i] == all0[len + i]);
+        assert(mid[super::slot_ptr(base, len + i)].is_init());
+        assert(all0[len + i] == mid[super::slot_ptr(base, len + i)].value());
+        assert(mid[super::slot_ptr(base, len + i)].value() == outf[i]);
+        assert(crate::layout::process_regions().is_slot(c, claimed[n - 1 - i]@.addr));
+        super::lemma_plain_stored(outf[i], claimed[n - 1 - i], c, base);
+    }
+}
+
 } // verus!
 
 impl super::Heap {
