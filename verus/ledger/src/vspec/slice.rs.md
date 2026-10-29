@@ -17,6 +17,12 @@ file.
 | `<core::array...rator>::next` | assume_spec | core library | Kani | trusted |
 | `sort_ptrs` | external_body | core library | Kani | trusted |
 | `<&'a mut [T]...>::into_iter` | assume_spec | core library | Kani | trusted |
+| `<[T]>::is_sorted` | assume_spec | core library | Kani | trusted |
+| `<[T]>::is_so...::<'a, F, K>` | assume_spec | core library | Kani | trusted |
+| `<[T]>::select_nth_unstable` | assume_spec | core library | Kani | trusted |
+| `<[T]>::selec..._key::<K, F>` | assume_spec | core library | Kani | trusted |
+| `sort_ptrs_by_key` | external_body | core library | Kani | trusted |
+| `<[T]>::get_u...ked_mut::<I>` | assume_spec | core library | Kani | trusted |
 | `slice_mut_elems` | external_body | raw pointer (internal) | RefinedRust | trusted |
 
 ## `core::slice::from_raw_parts::<'a, T>`
@@ -203,9 +209,107 @@ pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into
 ;
 ```
 
+## `<[T]>::is_sorted`
+
+src/vspec/slice.rs:198. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `s.is_sorted()`.
+
+```rust
+pub assume_specification<T: PartialOrd>[ <[T]>::is_sorted ](s: &[T]) -> bool;
+```
+
+## `<[T]>::is_sorted_by_key::<'a, F, K>`
+
+src/vspec/slice.rs:201. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `s.is_sorted_by_key(f)`.
+
+```rust
+pub assume_specification<'a, T, F: FnMut(&'a T) -> K, K: PartialOrd>[ <[T]>::is_sorted_by_key::<'a, F, K> ](s: &'a [T], f: F) -> bool
+    requires
+        forall|x: &'a T| #[trigger] f.requires((x,)),
+;
+```
+
+## `<[T]>::select_nth_unstable`
+
+src/vspec/slice.rs:213. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `s.select_nth_unstable(index)`: panics unless `index` is in bounds; permutes `s` and returns it as the `index` elements before position `index`, the element there and the rest.
+
+```rust
+pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], index: usize) -> (r: (&mut [T], &mut T, &mut [T]))
+    requires
+        index < old(s)@.len(),
+    ensures
+        r.0@.len() == index,
+        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
+        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
+        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
+;
+```
+
+## `<[T]>::select_nth_unstable_by_key::<K, F>`
+
+src/vspec/slice.rs:225. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `s.select_nth_unstable_by_key(index, f)`, as `select_nth_unstable`.
+
+```rust
+pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstable_by_key::<K, F> ](s: &mut [T], index: usize, f: F) -> (r: (&mut [T], &mut T, &mut [T]))
+    requires
+        index < old(s)@.len(),
+        forall|x: &T| #[trigger] f.requires((x,)),
+    ensures
+        r.0@.len() == index,
+        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
+        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
+        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
+;
+```
+
+## `sort_ptrs_by_key`
+
+src/vspec/slice.rs:249. Kind: external_body. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `s.sort_unstable_by_key(f)` on a slice of raw pointers with a `usize` key: permutes `s`.
+
+```rust
+pub fn sort_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], f: F)
+    requires
+        forall|x: &*mut u8| #[trigger] f.requires((x,)),
+    ensures
+        final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+```
+
+## `<[T]>::get_unchecked_mut::<I>`
+
+src/vspec/slice.rs:263. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `get_unchecked_mut` is `index_mut` without the bounds check: its safety contract is that the index is in bounds, so it has `index_mut`'s precondition.
+
+```rust
+pub assume_specification<T, I>[ <[T]>::get_unchecked_mut::<I> ](slice: &mut [T], i: I) -> (b: &mut <I as core::slice::SliceIndex<[T]>>::Output)
+    where I: core::slice::SliceIndex<[T]>
+    requires call_requires(<I as core::slice::SliceIndex<[T]>>::index_mut, (i, old(slice))),
+    ensures call_ensures(<I as core::slice::SliceIndex<[T]>>::index_mut, (i, old(slice)), b),
+;
+```
+
 ## `slice_mut_elems`
 
-src/vspec/slice.rs:225. Kind: external_body. Category: raw pointer (internal).
+src/vspec/slice.rs:305. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `elems` holds keyed by their pointers, element `i`'s at `base.add(i)`, and no other permission: the slice of those elements, for as long as `elems` stays borrowed.
@@ -227,6 +331,7 @@ pub unsafe fn slice_mut_elems<'a, T>(
     ensures
         r@.len() == n,
         final(r)@.len() == n,
+        final(elems).dom() == old(elems).dom(),
         forall|i: int| start <= i < start + n ==> {
             let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
             &&& final(elems).contains_key(q)

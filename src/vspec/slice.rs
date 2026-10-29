@@ -190,6 +190,86 @@ pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into
 
 verus! {
 
+// Since Rust 1.81 the sorts and selections may panic when `Ord` is not a
+// total order; that is not stated, and the one instantiation here
+// (`*mut u8` and `usize` keys) is total.
+
+/// `s.is_sorted()`. Nothing is claimed about the result.
+pub assume_specification<T: PartialOrd>[ <[T]>::is_sorted ](s: &[T]) -> bool;
+
+/// `s.is_sorted_by_key(f)`. Nothing is claimed about the result.
+pub assume_specification<'a, T, F: FnMut(&'a T) -> K, K: PartialOrd>[ <[T]>::is_sorted_by_key::<'a, F, K> ](s: &'a [T], f: F) -> bool
+    requires
+        forall|x: &'a T| #[trigger] f.requires((x,)),
+;
+
+/// `s.select_nth_unstable(index)`: panics unless `index` is in bounds;
+/// permutes `s` and returns it as the `index` elements before position
+/// `index`, the element there and the rest. The permutation is stated of
+/// the three parts' values on return, and `s`'s final value is theirs:
+/// a caller may write through them (the parts reborrow `s`), so a
+/// contract on `final(s)` alone would let a verified caller prove `s`
+/// still a permutation after such a write.
+pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], index: usize) -> (r: (&mut [T], &mut T, &mut [T]))
+    requires
+        index < old(s)@.len(),
+    ensures
+        r.0@.len() == index,
+        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
+        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
+        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
+;
+
+/// `s.select_nth_unstable_by_key(index, f)`, as `select_nth_unstable`.
+pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstable_by_key::<K, F> ](s: &mut [T], index: usize, f: F) -> (r: (&mut [T], &mut T, &mut [T]))
+    requires
+        index < old(s)@.len(),
+        forall|x: &T| #[trigger] f.requires((x,)),
+    ensures
+        r.0@.len() == index,
+        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
+        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
+        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
+;
+
+
+/// `s.sort_unstable_by_key(f)` on a slice of raw pointers with a `usize`
+/// key: permutes `s`. Trusted: `core` documents panics for an `Ord` that
+/// is not a total order or that panics itself, and `usize`'s `Ord` is a
+/// total order that does not panic, so with `f` callable on every entry
+/// the call returns with `s` a permutation of what it held. A wrapper for
+/// `*mut u8` entries and `usize` keys alone, where an
+/// `assume_specification` of `<[T]>::sort_unstable_by_key` would cover
+/// every `K: Ord`. `#[inline(always)]` leaves the machine code of the
+/// bare call.
+#[inline(always)]
+#[verifier::external_body]
+pub fn sort_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], f: F)
+    requires
+        forall|x: &*mut u8| #[trigger] f.requires((x,)),
+    ensures
+        final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+{
+    s.sort_unstable_by_key(f)
+}
+
+/// `get_unchecked_mut` is `index_mut` without the bounds check: its safety
+/// contract is that the index is in bounds, so it has `index_mut`'s
+/// precondition.
+pub assume_specification<T, I>[ <[T]>::get_unchecked_mut::<I> ](slice: &mut [T], i: I) -> (b: &mut <I as core::slice::SliceIndex<[T]>>::Output)
+    where I: core::slice::SliceIndex<[T]>
+    requires call_requires(<I as core::slice::SliceIndex<[T]>>::index_mut, (i, old(slice))),
+    ensures call_ensures(<I as core::slice::SliceIndex<[T]>>::index_mut, (i, old(slice)), b),
+;
+
+} // verus!
+
+verus! {
+
 /// `q` is one of the `ptr_add` keys `start..start + n` from `base`.
 pub open spec fn elem_key<T>(base: *mut T, start: int, n: int, q: *mut T) -> bool {
     exists|i: int| start <= i < start + n && q == #[trigger] crate::vspec::ptr::ptr_add(base, i as usize)
@@ -202,8 +282,8 @@ pub open spec fn elem_key<T>(base: *mut T, start: int, n: int, q: *mut T) -> boo
 /// stays borrowed. Each permission must be owned, not necessarily
 /// initialised; the slice starts out holding the initialised elements'
 /// values, and when the borrow ends `elems` holds each element's
-/// permission again, with its pointer, initialised to the slice's final
-/// value there. Trusted: such permissions give what `from_raw_parts_mut` asks
+/// permission again and no other, with its pointer, initialised to the
+/// slice's final value there. Trusted: such permissions give what `from_raw_parts_mut` asks
 /// for (the elements valid for reads and writes and aligned, and accessed
 /// through the slice alone while it lives, which the borrow of `elems`
 /// keeps), and a write through a slice leaves the element initialised.
@@ -238,6 +318,7 @@ pub unsafe fn slice_mut_elems<'a, T>(
     ensures
         r@.len() == n,
         final(r)@.len() == n,
+        final(elems).dom() == old(elems).dom(),
         forall|i: int| start <= i < start + n ==> {
             let q = #[trigger] crate::vspec::ptr::ptr_add(base, i as usize);
             &&& final(elems).contains_key(q)
@@ -283,6 +364,7 @@ pub unsafe fn slice_mut_from_perms<'a, T>(
     ensures
         r@.len() == n,
         final(r)@.len() == n,
+        final(perms).dom() == old(perms).dom(),
         forall|q: *mut T| #![trigger old(perms).contains_key(q)] #![trigger final(perms).contains_key(q)] #![trigger final(perms)[q]] old(perms).contains_key(q) ==> {
             &&& final(perms).contains_key(q)
             &&& final(perms)[q].ptr() == old(perms)[q].ptr()

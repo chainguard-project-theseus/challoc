@@ -11,6 +11,7 @@ file.
 | `axiom_auth_sign` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `sign` | external_body | inline asm | Islaris/Isla | trusted |
 | `auth` | external_body | inline asm | Islaris/Isla | trusted |
+| `strip` | external_body | inline asm | Islaris/Isla | trusted |
 
 ## `axiom_user_va_limit`
 
@@ -73,4 +74,17 @@ pub fn auth(p: usize, modifier: usize) -> (r: usize)
     ensures
         r == spec_auth(p, modifier),
     opens_invariants none
+```
+
+## `strip`
+
+src/sys/pac.rs:273. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
+
+> Strip the PAC from `p` without authenticating it (`xpacd`): the address a signed or corrupted entry names, for abort messages and tests.
+
+```rust
+pub fn strip(p: usize) -> usize
+    requires
+        pac_available(),
 ```

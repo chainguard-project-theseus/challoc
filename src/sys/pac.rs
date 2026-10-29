@@ -264,13 +264,16 @@ pub fn auth(p: usize, modifier: usize) -> (r: usize)
     }
 }
 
-} // verus!
-
 /// Strip the PAC from `p` without authenticating it (`xpacd`): the address
 /// a signed or corrupted entry names, for abort messages and tests. Only
-/// when [`available`] is true.
+/// when [`pac_available`].
+/// Inline assembly on aarch64, outside what Verus checks.
+#[verifier::external_body]
 #[inline]
-pub fn strip(p: usize) -> usize {
+pub fn strip(p: usize) -> usize
+    requires
+        pac_available(),
+{
     #[cfg(target_arch = "aarch64")]
     {
         #[cfg(test)]
@@ -299,12 +302,17 @@ pub fn strip(p: usize) -> usize {
 /// whose value `xpacd` extends into the field), found by asking `xpacd`
 /// what it clears from an address with bits 54:0 set. `!mask()` is the
 /// address key a signed entry sorts by without authentication. Only when
-/// [`available`] is true; `0` on x86_64.
+/// [`pac_available`]; `0` on x86_64.
 #[inline]
-pub fn mask() -> usize {
+pub fn mask() -> usize
+    requires
+        pac_available(),
+{
     let probe = 0x007f_ffff_ffff_ffffusize;
     probe & !strip(probe)
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

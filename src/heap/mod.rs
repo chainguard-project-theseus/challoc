@@ -468,11 +468,13 @@ pub proof fn lemma_huge_fits(p: *mut u8, size: usize, a1: usize, a2: usize)
 }
 
 /// Whether cache entries are stored signed: the process's `Shared` has
-/// [`PUSH_PAC`] set. Uninterpreted, and no axiom ties it to a `Shared`'s
-/// `push_flags`. One value, since a process publishes one `Shared` and
-/// `push_flags` is written once, before the `Shared` is published. The
-/// unit tests build several with different flags, so the spec stands for
-/// the shipped library only.
+/// [`PUSH_PAC`] set. Uninterpreted; [`Shared::pac`]'s trusted ensures is
+/// the seam that ties it to what a well-formed `Shared`'s `pac` returns
+/// (`push_flags & PUSH_PAC`, in a trusted body). One
+/// value, since a process publishes one `Shared` and `push_flags` is
+/// written once, before the `Shared` is published. The unit tests build
+/// several with different flags, which that tie would contradict, so the
+/// spec stands for the shipped library only.
 pub uninterp spec fn pac_mode() -> bool;
 
 /// A slot start of class `c` has no other class, so the hint `Some(c)`
@@ -3824,7 +3826,80 @@ impl Heap {
         CachePerms::lemma_same_but_tokens(a.perms@, b.perms@, a.perms@);
     }
 
+    /// The accounting for one [`Heap::flush`] of `cache`, from
+    /// what its proof establishes: `a` are the addresses `cache` held, `k`
+    /// those it keeps (its new entries), `r` those it released, and the
+    /// released log gained `r`. The slots `cache` no longer holds are then
+    /// exactly the log's new entries, and no other header's holdings change.
+    proof fn lemma_flush_accounting(old: Heap, new: Heap, cache: *mut CacheHeader, a: Seq<int>, k: Seq<int>, r: Seq<int>)
+        requires
+            old.wf(),
+            old.owns(cache),
+            new.perms@.hdrs == old.perms@.hdrs.insert(cache, new.perms@.hdrs[cache]),
+            new.perms@.cls == old.perms@.cls,
+            new.list == old.list,
+            new.keys == old.keys,
+            new.arena == old.arena,
+            new.bound == old.bound,
+            new.homed == old.homed,
+            new.rehome == old.rehome,
+            new.others == old.others,
+            new.shared == old.shared,
+            new.home_hdrs == old.home_hdrs,
+            new.heads == old.heads,
+            forall|p2: *mut CacheHeader, j: int|
+                old.perms@.hdrs.contains_key(p2) && p2 != cache && 0 <= j < old.perms@.hdr(p2).cap
+                    ==> new.perms@.slots[#[trigger] old.perms@.ent(p2, j)] == old.perms@.slots[old.perms@.ent(p2, j)],
+            a.len() == old.perms@.hdr(cache).len,
+            forall|i: int| 0 <= i < a.len() ==> a[i] == plain(old.perms@.slots[slot_ptr(old.perms@.hdr(cache).slots, i)].value(), old.perms@.hdr(cache).slots) as int,
+            k.len() == new.perms@.hdr(cache).len,
+            forall|i: int| 0 <= i < k.len() ==> k[i] == plain(new.perms@.slots[#[trigger] new.perms@.ent(cache, i)].value(), new.perms@.hdr(cache).slots) as int,
+            split_ok(a, k, r),
+            new.perms@.released == old.perms@.released + tagged(old.perms@.cls[cache], r),
+        ensures
+            new.same_shape(old),
+            forall|p: *mut CacheHeader| old.owns(p) && p != cache ==> #[trigger] new.held(p) == old.held(p),
+            forall|p: *mut CacheHeader| old.owns(p) && p != cache ==> #[trigger] new.hdr(p) == old.hdr(p),
+            new.held(cache).to_set() <= old.held(cache).to_set(),
+            log_adds(new.released(), old.released(), old.held(cache).to_set() - new.held(cache).to_set()),
+    {
+        let c = old.hdr_class(cache);
+        assert(new.perms@.hdrs.dom() =~= old.perms@.hdrs.dom());
+        assert(old.held(cache) =~= tagged(c, a));
+        assert(new.held(cache) =~= tagged(c, k));
+        lemma_tagged_split(c, a, k, r);
+        lemma_log_append(old.released(), tagged(c, r));
+        assert forall|p: *mut CacheHeader| old.owns(p) && p != cache implies #[trigger] new.held(p) == old.held(p) by {
+            assert(cell_ok(p, old.perms@.hdrs[p], old.perms@.slots));
+            assert(new.perms@.hdr(p) == old.perms@.hdr(p));
+            assert forall|i: int| 0 <= i < old.cached_len(p) implies new.cached(p, i) == old.cached(p, i) by {
+                assert(new.perms@.ent(p, i) == old.perms@.ent(p, i));
+                assert(new.perms@.slots[old.perms@.ent(p, i)] == old.perms@.slots[old.perms@.ent(p, i)]);
+            }
+            assert(new.held(p) =~= old.held(p));
+        }
+    }
 
+    /// `&*cache` for an owned header through the header's permission
+    /// alone, for the refill and the flush, which hold the stack
+    /// permissions apart from the heap for a while, so [`Heap::hdr_ref`]'s
+    /// `Heap::wf` does not hold there.
+    ///
+    /// # Safety
+    /// `cache` is a header this heap owns (a home header or one of a live
+    /// `others` node's), and nothing writes it while the reference lives;
+    /// a verified caller proves it with the `requires`.
+    #[inline(always)]
+    unsafe fn hdr_at(&self, cache: *mut CacheHeader) -> (r: &CacheHeader)
+        requires
+            self.perms@.hdrs.contains_key(cache),
+            self.perms@.hdrs[cache].ptr() == cache,
+            self.perms@.hdrs[cache].is_init(),
+        ensures
+            *r == self.perms@.hdrs[cache].value(),
+    {
+        vstd::raw_ptr::ptr_ref(cache, Tracked(self.perms.borrow().hdrs.tracked_borrow(cache)))
+    }
 }
 
 
@@ -3930,27 +4005,63 @@ impl Heap {
 
 const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
 
+verus! {
+
 /// `slots[start..start + len]` as a slice, for the slice operations of
 /// the refill, the flush and the run rebuild (claims, selections, sorts,
-/// reversals).
+/// reversals). The slice borrows the entries' permissions: every entry it
+/// covers must be owned (not necessarily written: a refill claims into
+/// unwritten ones), and when the borrow ends every entry it covered is
+/// written (a slice holds values) and every permission keeps its address
+/// and, if it was written, stays written. The slice starts out holding
+/// the written entries' values, the entries end up holding the slice's
+/// final values, and no other permission changes
+/// ([`slice_mut_from_perms`](crate::vspec::slice::slice_mut_from_perms)
+/// over the stack entries, keyed by [`slot_ptr`]).
 ///
 /// # Safety
 /// The entries are this heap's stack storage and nothing else reads or
 /// writes them while the slice lives.
 #[inline(always)]
-#[allow(
-    clippy::needless_lifetimes,
-    reason = "the permission and the slice share the lifetime in the Verus signature"
-)]
+#[allow(clippy::needless_lifetimes, reason = "the permission and the slice share the lifetime in the Verus signature")]
+// Its own solver: in the module's shared one the per-entry
+// postconditions fail on the earlier queries' state.
+#[verifier::spinoff_prover]
 unsafe fn stack_mut<'a>(
     slots: *mut *mut u8,
     start: usize,
     len: usize,
-    perms: Tracked<&'a mut Map<*mut *mut u8, PointsTo<*mut u8>>>,
-) -> &'a mut [*mut u8] {
+    Tracked(perms): Tracked<&'a mut Map<*mut *mut u8, PointsTo<*mut u8>>>,
+) -> (r: &'a mut [*mut u8])
+    requires
+        forall|i: int| start <= i < start + len ==> {
+            let q = #[trigger] slot_ptr(slots, i);
+            old(perms).contains_key(q) && old(perms)[q].ptr() == q
+        },
+        len > 0,
+    ensures
+        r@.len() == len,
+        final(r)@.len() == len,
+        slots_grow(*old(perms), *final(perms)),
+        final(perms).dom() == old(perms).dom(),
+        forall|i: int| start <= i < start + len ==> #[trigger] final(perms)[slot_ptr(slots, i)].is_init(),
+        forall|i: int|
+            start <= i < start + len && old(perms)[slot_ptr(slots, i)].is_init()
+                ==> r@[i - start] == #[trigger] old(perms)[slot_ptr(slots, i)].value(),
+        forall|i: int| start <= i < start + len ==> #[trigger] final(perms)[slot_ptr(slots, i)].value() == final(r)@[i - start],
+        forall|q: *mut *mut u8|
+            old(perms).contains_key(q) && (forall|i: int| start <= i < start + len ==> q != #[trigger] slot_ptr(slots, i))
+                ==> #[trigger] final(perms)[q] == old(perms)[q],
+{
+    proof {
+        // The primitive's contract names the entries by `ptr_add`.
+        assert forall|i: int| #[trigger] crate::vspec::ptr::ptr_add(slots, i as usize) == slot_ptr(slots, i) by {}
+    }
     // SAFETY: guaranteed by the caller.
-    unsafe { crate::vspec::slice::slice_mut_from_perms(slots, start, len, perms) }
+    unsafe { crate::vspec::slice::slice_mut_from_perms(slots, start, len, Tracked(perms)) }
 }
+
+} // verus!
 
 /// `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and
 /// [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0`
@@ -3961,13 +4072,26 @@ fn assert_flushed(len: &u32) {
     assert_eq!(*len, 0, "heap: freeing a cache that was not flushed");
 }
 
+verus! {
+
 /// `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap
 /// inconsistency: `*len == 0` after it returns.
+///
+/// Trusted: `assert_eq!` calls `core::panicking::assert_failed`, which
+/// Verus cannot specify on stable Rust.
+#[verifier::external_body]
 #[inline(always)]
 #[track_caller]
-fn assert_refill_empty(len: &u32) {
+fn assert_refill_empty(len: &u32)
+    requires
+        crate::sys::may_abort() || *len == 0,
+    ensures
+        *len == 0,
+{
     assert_eq!(*len, 0, "heap: refill of a cache that is not empty");
 }
+
+} // verus!
 
 /// `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache
 /// that still holds slots: `*len == 0` after it returns.
@@ -4212,22 +4336,6 @@ impl Heap {
             }
             *h = CacheHeader::EMPTY;
         }
-    }
-
-    /// `&*cache` for an owned header, for the refill and the flush, which
-    /// hold the stack permissions apart from the heap for a while, so
-    /// [`Heap::hdr_ref`]'s `Heap::wf` does not hold there. It reads through
-    /// `ptr_ref` with a permission it makes up (`Tracked::assume_new`),
-    /// not one it is given, so it is unsafe for its caller's precondition;
-    /// a later proof PR can make it safe once it takes the header's
-    /// permission.
-    ///
-    /// # Safety
-    /// `cache` is a header this heap owns (a home header or one of a live
-    /// `others` node's), and nothing writes it while the reference lives.
-    #[inline(always)]
-    unsafe fn hdr_at(&self, cache: *mut CacheHeader) -> &CacheHeader {
-        vstd::raw_ptr::ptr_ref(cache, Tracked::assume_new())
     }
 
     /// The `Shared` this heap was created on.
