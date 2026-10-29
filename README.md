@@ -22,32 +22,8 @@ instead of jemalloc. Three things set it apart:
   whatever newer kernels and CPUs offer, found at init, never at build time.
 
 `docs/overview.md` has the goals, the case against staying on jemalloc and
-a few pages on how it works; `docs/design.md` is the full design.
-
-## Status
-
-challoc 0.1.0 is not released. On the reference machines (Google Axion
-and Intel Xeon VMs) it is at parity with jemalloc 5.3 on throughput and
-returns memory better under cgroup limits: in a `docker run
---memory=512m` container, 400 MiB allocated and freed at about 80% of the
-limit is back to 13 MiB of RSS within 50 ms (jemalloc 5.3.1 still holds 190 MiB
-2 s later), and a live
-set swinging between 200 and 480 MiB runs for 5 minutes where jemalloc and
-mimalloc are OOM-killed within 12 s (`docs/tuning.md` section 4).
-
-Known limitations are listed in `docs/tuning.md` section 8, each with
-its issue. The largest: on a 16-thread Ruby soak on x86_64, challoc's
-peak RSS is about 13% above jemalloc's (on aarch64 it is 6% below), and
-`narenas:1` brings the x86_64 peak close to jemalloc's (#43).
-
-The test suite (unit tests, C programs under `LD_PRELOAD`, the vendored
-glibc and mimalloc suites, cgroup container tests, a fuzz driver) runs in
-the dev container (`docs/testing.md`), and Wolfi's Valkey 9.1 and Ruby 3.4
-are built and tested on challoc on both architectures (`make valkey`,
-`make ruby`, `contrib/wolfi/`).
-
-Tagged pointers (MTE, or a software tag in the ignored top bits) are
-designed but not implemented (design section 18, #50).
+a few pages on how it works; `docs/design.md` is the full design. Where
+the project stands is under "Status and contributing" below.
 
 ## Support
 
@@ -185,6 +161,41 @@ seccomp profile hides `mseal`.
 - `docs/benchmarking.md`: how numbers are produced; `bench/README.md` for the harness
 - `docs/research.md`: the survey behind the design decisions
 - `CONTRIBUTING.md`, `SECURITY.md`
+
+## Status and contributing
+
+We're building challoc in the open at Chainguard. We don't publish it to
+any package registry; it ships only from Chainguard's own repositories.
+
+We don't accept pull requests from external contributors. If you and your
+organization would seriously like to get involved, email
+dlorenc@chainguard.dev.
+
+Use of the challoc and Chainguard names is governed by Chainguard's
+trademark policy.
+
+challoc 0.1.0 is not released. On the reference machines (Google Axion
+and Intel Xeon VMs) it is at parity with jemalloc 5.3 on throughput and
+returns memory better under cgroup limits: in a `docker run
+--memory=512m` container, 400 MiB allocated and freed at about 80% of the
+limit is back to 13 MiB of RSS within 50 ms (jemalloc 5.3.1 still holds 190 MiB
+2 s later), and a live
+set swinging between 200 and 480 MiB runs for 5 minutes where jemalloc and
+mimalloc are OOM-killed within 12 s (`docs/tuning.md` section 4).
+
+Known limitations are listed in `docs/tuning.md` section 8, each with
+its issue. The largest: on a 16-thread Ruby soak on x86_64, challoc's
+peak RSS is about 13% above jemalloc's (on aarch64 it is 6% below), and
+`narenas:1` brings the x86_64 peak close to jemalloc's (#43).
+
+The test suite (unit tests, C programs under `LD_PRELOAD`, the vendored
+glibc and mimalloc suites, cgroup container tests, a fuzz driver) runs in
+the dev container (`docs/testing.md`), and Wolfi's Valkey 9.1 and Ruby 3.4
+are built and tested on challoc on both architectures (`make valkey`,
+`make ruby`, `contrib/wolfi/`).
+
+Tagged pointers (MTE, or a software tag in the ignored top bits) are
+designed but not implemented (design section 18, #50).
 
 ## License
 
