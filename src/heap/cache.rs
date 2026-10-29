@@ -87,7 +87,7 @@ const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 impl CacheHeader {
     /// A header that has never been used: both fast paths fall through to
     /// the slow path, which gives it a capacity and a stack.
-    pub const EMPTY: CacheHeader = CacheHeader {
+    pub(super) const EMPTY: CacheHeader = CacheHeader {
         len: 0,
         cap: 0,
         low_water: 0,

@@ -4324,8 +4324,12 @@ impl Heap {
         for class in 0..NCLASSES {
             // SAFETY: `node` is null or a live node owned by this heap.
             let cache = unsafe { self.header_in(node, class) };
-            // SAFETY: `header_in` returned one of this heap's headers.
-            let h = unsafe { self.hdr_mut(cache) };
+            // `header_in` returned one of this heap's headers, which nothing
+            // else touches while the heap is borrowed. `ptr_mut_ref` stands
+            // for `hdr_mut` here, with a placeholder permission: the verified
+            // form takes the header's permission from the heap's cache
+            // permissions, and needs no `Heap::wf`, which `hdr_mut` requires.
+            let h = ptr_mut_ref(cache, Tracked::assume_new());
             if h.cap != 0 {
                 assert_flushed(&h.len);
                 shared.meta.free(
