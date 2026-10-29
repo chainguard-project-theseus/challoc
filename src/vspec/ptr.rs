@@ -119,23 +119,26 @@ pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
     opens_invariants none
 ;
 
-/// `core::ptr::write_bytes` filled the `len` bytes at `p` with zero. Only
-/// `write_bytes`' specification states it; `vspec::zero::axiom_wrote_zero`
-/// turns it into the token that the bytes read as zero.
-pub uninterp spec fn wrote_zero(p: *mut u8, len: int) -> bool;
-
 /// `core::ptr::write_bytes`, with the safety contract of the `core`
 /// documentation: `dst` is non-null and properly aligned and, unless the
 /// fill is empty, valid for writes of `count * size_of::<T>()` bytes. Its
 /// effect is not stated, so Verus assumes it changes no memory a ghost
-/// permission covers, except that a zero fill is recorded ([`wrote_zero`]).
+/// permission covers: as for the unaligned writes below, unless the fill
+/// is empty, the bytes must be apart from challoc's memory
+/// (`vspec::cbuf::c_apart`), where verified code holds its permissions,
+/// and writes through their provenance must be open
+/// (`vspec::cbuf::c_writes`). Verified code fills its own memory through
+/// `vspec::zero::zero_raw` and `vspec::user::zero_user`, which take the
+/// permission `&mut`.
 pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8, count: usize)
     requires
         dst@.addr != 0,
         dst@.addr as int % vstd::layout::align_of::<T>() as int == 0,
-        count as int * vstd::layout::size_of::<T>() == 0 || valid_writes(dst, count as int * vstd::layout::size_of::<T>()),
-    ensures
-        val == 0 ==> wrote_zero(dst as *mut u8, count as int * vstd::layout::size_of::<T>()),
+        count as int * vstd::layout::size_of::<T>() == 0 || {
+            &&& valid_writes(dst, count as int * vstd::layout::size_of::<T>())
+            &&& crate::vspec::cbuf::c_apart(dst@.addr as int, count as int * vstd::layout::size_of::<T>())
+            &&& crate::vspec::cbuf::c_writes(dst@.provenance)
+        },
 ;
 
 /// A permission to the `len` bytes from `p`, of `p`'s provenance, makes

@@ -318,7 +318,8 @@ impl CStr {
 /// read permission minted from the token before is still held, and the
 /// token mints none after. The premise of the write bound of a C caller's
 /// buffer ([`c_buffer`]), and so of every write into one (the unaligned
-/// writes of `vspec::ptr` and `copy_nonoverlapping`, which require it).
+/// writes and `write_bytes` of `vspec::ptr`, and `copy_nonoverlapping`,
+/// which require it).
 /// It belongs to a provenance, not to a token:
 /// it is sound with one token per proof context, which holds since only
 /// the export wrappers mint them, each one, and no verified function

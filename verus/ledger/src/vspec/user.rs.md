@@ -12,7 +12,7 @@ file.
 
 ## `axiom_zeroed_bytes`
 
-src/vspec/user.rs:163. Kind: external_body proof. Category: allocator invariant.
+src/vspec/user.rs:158. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The bytes a [`Zeroed`] token covers read as zero, so a permission's byte state for them is zero.
@@ -28,7 +28,7 @@ proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
 
 ## `axiom_cast`
 
-src/vspec/user.rs:188. Kind: external_body proof. Category: platform/kernel fact.
+src/vspec/user.rs:183. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The permission to bytes of challoc's memory, of any provenance, as the permission to them through an integer-to-pointer cast ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr), of [`cast_provenance`](crate::vspec::addr::cast_provenance)), the bytes and their values unchanged.
