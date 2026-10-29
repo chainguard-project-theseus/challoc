@@ -31,6 +31,30 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
     addr as *mut u8
 }
 
+/// `core::ptr::copy_nonoverlapping`, with the safety contract of the
+/// `core` documentation: both pointers are properly aligned and, unless
+/// the copy is empty, `src` is valid for reads and `dst` for writes of
+/// `count * size_of::<T>()` bytes, and the two ranges do not overlap. Its
+/// effect is not stated, so Verus assumes it changes no memory a ghost
+/// permission covers: as for `vspec::ptr`'s unaligned writes, the
+/// destination must be a C caller's buffer apart from challoc's memory
+/// (`vspec::cbuf::c_apart`) whose writes are open
+/// (`vspec::cbuf::c_writes`), so no permission the call's token lent is
+/// held across the copy.
+pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T, dst: *mut T, count: usize)
+    requires
+        src@.addr as int % vstd::layout::align_of::<T>() as int == 0,
+        dst@.addr as int % vstd::layout::align_of::<T>() as int == 0,
+        count as int * vstd::layout::size_of::<T>() == 0 || {
+            let len = count as int * vstd::layout::size_of::<T>();
+            &&& crate::vspec::ptr::valid_reads(src, len)
+            &&& crate::vspec::ptr::valid_writes(dst, len)
+            &&& crate::vspec::cbuf::c_apart(dst@.addr as int, len)
+            &&& crate::vspec::cbuf::c_writes(dst@.provenance)
+            &&& (src@.addr + len <= dst@.addr || dst@.addr + len <= src@.addr)
+        },
+;
+
 /// `<*mut T>::is_null`: the address is zero.
 pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: *mut T) -> (r: bool)
     ensures

@@ -7,12 +7,29 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `axiom_c_writes` | axiom | C-program contract | none (assumption) | trusted |
 | `CCall::str_byte` | axiom | C-program contract | none (assumption) | trusted |
 | `CCall::...c_byte` | axiom | C-program contract | none (assumption) | trusted |
+| `CCall::sized` | axiom | C-program contract | none (assumption) | trusted |
+| `CCall::counted` | axiom | C-program contract | none (assumption) | trusted |
+
+## `axiom_c_writes`
+
+src/vspec/cbuf.rs:330. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> Trusted: what [`CCall::open_writes`] stands for (private: only it takes the step, with the token taken `&mut`).
+
+```rust
+axiom fn axiom_c_writes(prov: Provenance)
+    ensures
+        c_writes(prov),
+;
+```
 
 ## `CCall::str_byte`
 
-src/vspec/cbuf.rs:256. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:420. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a string argument): the read permission to byte `i` of the call's string `p`, through `q`, a pointer to it derived from the caller's; shared, for as long as the token is borrowed, and holding the byte the view names ([`CCall::string`]).
@@ -33,7 +50,7 @@ pub axiom fn str_byte<'a>(tracked &'a self, p: *const u8, q: *const u8, i: int) 
 
 ## `CCall::str_c_byte`
 
-src/vspec/cbuf.rs:271. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:435. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > [`CCall::str_byte`] through a `c_char` pointer (`malloc_stats_print`'s `opts`): the `c_char` whose bits are the byte.
@@ -49,5 +66,45 @@ pub axiom fn str_c_byte<'a>(tracked &'a self, p: *const u8, q: *const core::ffi:
         r.ptr() == q as *mut core::ffi::c_char,
         r.is_init(),
         r.value() as u8 == self.string().bytes()[i],
+;
+```
+
+## `CCall::sized`
+
+src/vspec/cbuf.rs:455. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> Trusted (the C contract of a sized buffer): the shared read permission to the call's `size_t` at `lenp`, initialised, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the buffer at `p` it gives the length of, that many bytes ([`c_buffer`]).
+
+```rust
+pub axiom fn sized<'a>(tracked &'a self, p: *mut u8, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)
+    requires
+        !self.written(),
+        self.has(CArg::Sized(p, lenp)),
+    ensures
+        r.ptr() == lenp as *mut usize,
+        r.is_init(),
+        r.value() == self.len(lenp),
+        c_buffer(p, r.value() as int),
+;
+```
+
+## `CCall::counted`
+
+src/vspec/cbuf.rs:473. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> Trusted (the C contract of a counted array): the shared read permission to the call's initialised `size_t` at `lenp`, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the array at `p` it gives the length of, that many `size_t`s ([`c_buffer`]).
+
+```rust
+pub axiom fn counted<'a>(tracked &'a self, p: *mut usize, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)
+    requires
+        !self.written(),
+        self.has(CArg::Counted(p, lenp)),
+    ensures
+        r.ptr() == lenp as *mut usize,
+        r.is_init(),
+        r.value() == self.len(lenp),
+        c_buffer(p, r.value() as int * vstd::layout::size_of::<usize>()),
 ;
 ```

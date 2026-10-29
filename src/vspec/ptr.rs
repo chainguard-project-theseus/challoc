@@ -48,11 +48,11 @@ pub open spec fn valid_writes<T>(p: *mut T, len: int) -> bool {
     0 <= len <= rw_len(p@.provenance, p@.addr)
 }
 
-/// `p` is valid for reads of `len` bytes: inside the read-write bound.
-/// Closed, so that read validity (from [`lemma_writes_read`]) does not
-/// unfold into write validity outside this module.
-pub closed spec fn valid_reads<T>(p: *const T, len: int) -> bool {
-    0 <= len <= rw_len(p@.provenance, p@.addr)
+/// `p` is valid for reads of `len` bytes: inside the read-write bound, or
+/// the read-only one ([`r_len`]). Read validity does not give write
+/// validity: the bound it holds by may be the read-only one.
+pub open spec fn valid_reads<T>(p: *const T, len: int) -> bool {
+    0 <= len && (len <= rw_len(p@.provenance, p@.addr) || len <= r_len(p@.provenance, p@.addr))
 }
 
 /// Bytes valid for writes are valid for reads.
@@ -77,8 +77,9 @@ pub proof fn lemma_reads_cast<T>(p: *mut u8, len: int)
 /// Every initialised value of `T`'s size is a `T` with no ghost content:
 /// a volatile read of a `T` makes a valid value out of any initialised
 /// bytes.
-/// Uninterpreted; [`axiom_plain_u64`] states it for `u64`, the only type
-/// verified code reads that way.
+/// Uninterpreted; [`axiom_plain_u64`], [`axiom_plain_u8`] and
+/// [`axiom_plain_usize`] state it for the types verified code reads that
+/// way (volatile and unaligned reads).
 pub uninterp spec fn plain<T>() -> bool;
 
 /// [`plain`] for `u64`: every initialised eight bytes are a `u64`, which
@@ -87,6 +88,21 @@ pub uninterp spec fn plain<T>() -> bool;
 pub axiom fn axiom_plain_u64()
     ensures
         plain::<u64>(),
+;
+
+/// [`plain`] for `u8`: every initialised byte is a `u8`. Trusted: the
+/// `core` documentation of the integer types (no invalid bit patterns).
+pub axiom fn axiom_plain_u8()
+    ensures
+        plain::<u8>(),
+;
+
+/// [`plain`] for `usize`: every initialised `size_of::<usize>()` bytes are
+/// a `usize`. Trusted: the `core` documentation of the integer types (no
+/// invalid bit patterns).
+pub axiom fn axiom_plain_usize()
+    ensures
+        plain::<usize>(),
 ;
 
 /// `core::ptr::read_volatile`, with the safety contract of the `core`
@@ -238,5 +254,65 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
 {
     core::ptr::from_ref(v)
 }
+
+} // verus!
+
+verus! {
+
+// The unaligned reads and writes of `mallctl`'s value transfer, through
+// the C caller's buffers (`vspec::cbuf::c_buffer`). Each has the safety
+// contract of the `core` documentation: the pointer is valid for reads or
+// writes of `size_of::<T>()` bytes, with no alignment needed. As for
+// `copy_nonoverlapping` (`vspec::addr`), the effect is not stated, so
+// Verus assumes a write changes no memory a ghost permission covers: the
+// writes require the bytes apart from the metadata mapping and the
+// `Shared` static (`vspec::cbuf::c_apart`), where verified code holds its
+// permissions, and the other holders (a block's `UserMem`, the frozen
+// init-once statics, lock values, the fork slot, `errno`) are memory no
+// contract-keeping C argument names while they are held (the `cbuf`
+// module doc), so the writes are for the C caller's buffers only; and the
+// writes through the pointer's provenance open (`vspec::cbuf::c_writes`:
+// the call's token was taken `&mut` and mints no read permission from
+// then on; a caller's buffer is writable only under it, `c_buffer`), so
+// no permission the token minted is held across one. The value a read
+// returns is not stated either. A read also needs the bytes to be a valid
+// `T`: the reads require [`plain`], as `read_volatile` does, which only
+// the `axiom_plain_*` axioms give, for types valid for any initialised
+// bytes.
+
+/// `core::ptr::read_unaligned`.
+pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> T
+    requires
+        plain::<T>(),
+        valid_reads(src, vstd::layout::size_of::<T>() as int),
+    opens_invariants none
+;
+
+/// `<*const T>::read_unaligned`.
+pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
+    requires
+        plain::<T>(),
+        valid_reads(src, vstd::layout::size_of::<T>() as int),
+    opens_invariants none
+;
+
+/// `core::ptr::write_unaligned`.
+pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src: T)
+    requires
+        valid_writes(dst, vstd::layout::size_of::<T>() as int),
+        crate::vspec::cbuf::c_apart(dst@.addr as int, vstd::layout::size_of::<T>() as int),
+        crate::vspec::cbuf::c_writes(dst@.provenance),
+    opens_invariants none
+;
+
+/// `<*mut T>::write_unaligned`.
+pub assume_specification<T>[ <*mut T>::write_unaligned ](dst: *mut T, val: T)
+    requires
+        valid_writes(dst, vstd::layout::size_of::<T>() as int),
+        crate::vspec::cbuf::c_apart(dst@.addr as int, vstd::layout::size_of::<T>() as int),
+        crate::vspec::cbuf::c_writes(dst@.provenance),
+    opens_invariants none
+;
+
 
 } // verus!
