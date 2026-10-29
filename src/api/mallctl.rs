@@ -1926,26 +1926,37 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             // that the quotient is a bin size (jemalloc's slabs are exact
             // multiples of their region size).
             u.size = cls.nslots() * cls.size();
-            if verbose && let Some(a) = shared.arenas.get_existing(d.arena()) {
-                let cs = a.class(class);
-                let (st, curregs) = cs.bin_stats(vstd::prelude::Tracked::assume_new());
-                u.bin_nregs = st.curslabs() * cls.nslots();
-                u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
-                if let Some(s) = cs.lowest_partial(vstd::prelude::Tracked::assume_new()) {
-                    u.slabcur_addr = addr_to_ptr(shared.regions.slab_addr(class, s)) as *mut c_void;
+            // Two `if`s, not a let chain: Verus takes no let chain.
+            #[allow(clippy::collapsible_if)]
+            if verbose {
+                if let Some(a) = shared.arenas.get_existing(d.arena()) {
+                    let cs = a.class(class);
+                    let (st, curregs) = cs.bin_stats(vstd::prelude::Tracked::assume_new());
+                    u.bin_nregs = st.curslabs() * cls.nslots();
+                    u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
+                    if let Some(s) = cs.lowest_partial(vstd::prelude::Tracked::assume_new()) {
+                        // No code (the body is empty): a step for the
+                        // verifier, that the slab is one of the class
+                        // region's.
+                        cs.nslabs_are_the_region_s();
+                        u.slabcur_addr =
+                            addr_to_ptr(shared.regions.slab_addr(class, s)) as *mut c_void;
+                    }
                 }
             }
         }
         Kind::Huge { page } => {
+            // As above, two `if`s.
+            #[allow(clippy::collapsible_if)]
             if let Some(r) = shared.huge.lookup(
                 page,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
-            ) && r.start == page
-                && r.state == RunState::Active
-            {
-                u.nregs = 1;
-                u.size = r.usable;
+            ) {
+                if r.start == page && r.state == RunState::Active {
+                    u.nregs = 1;
+                    u.size = r.usable;
+                }
             }
         }
         Kind::Invalid => {}
