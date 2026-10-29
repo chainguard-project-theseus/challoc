@@ -3501,6 +3501,40 @@ impl Meta {
     }
 }
 
+verus! {
+
+/// The identity of the live-object records of the process's `Meta`, the
+/// one in the `Shared` `api::init` builds in its storage: the
+/// [`MetaClaim`]s of the thread caches' stacks name it.
+pub closed spec fn process_live_id() -> Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).meta.live_id()
+}
+
+} // verus!
+
+verus! {
+
+impl MetaClaim {
+    /// Two claims from one `Meta` are to different objects: the records
+    /// they hold are entries of one map, each the one of its key.
+    pub proof fn lemma_apart(tracked &mut self, tracked other: &MetaClaim, id: Loc, p: *mut u8, size: int, align: int)
+        requires
+            old(self).held(id, p, size, align),
+        ensures
+            final(self).held(id, p, size, align),
+            forall|q: *mut u8, s: int, a: int| #[trigger] other.held(id, q, s, a) ==> q != p,
+    {
+        if exists|q: *mut u8, s: int, a: int| #[trigger] other.held(id, q, s, a) {
+            let tracked mut c = self.claim.tracked_take();
+            c.disjoint(other.claim.tracked_borrow());
+            self.claim = Some(c);
+        }
+    }
+
+}
+
+} // verus!
+
 #[cfg(test)]
 mod tests {
     use super::*;

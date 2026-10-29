@@ -1713,6 +1713,14 @@ pub tracked struct Homed {
     pub ghost arena: int,
 }
 
+/// `t` is a ticket for arena `i` of the process's registry
+/// ([`bound_loc`]).
+pub(crate) open spec fn homed_on(t: Homed, i: int) -> bool {
+    &&& t.arena == i
+    &&& 0 <= i < MAX_ARENAS
+    &&& t.tok.id() == bound_loc(i)
+}
+
 /// What a bound count's invariant holds: the counter's permission, the
 /// authority over the arena's tickets, and a bound above every ticket
 /// (where the next fresh one comes from).
@@ -1733,6 +1741,13 @@ impl InvariantPredicate<BoundKey, BoundVal> for BoundPred {
 
 /// The invariant of one bound count.
 pub type BoundInv = AtomicInvariant<BoundKey, BoundVal, BoundPred>;
+
+/// The ticket set of arena `i` of the process's registry: a heap holding
+/// a [`Homed`] of this location is counted in `bound[i]` of the published
+/// `Shared`.
+pub(crate) open spec fn bound_loc(i: int) -> Loc {
+    Shared::built_at(Shared::storage()).arenas.spec_loc(i)
+}
 
 } // verus!
 
