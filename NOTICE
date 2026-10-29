@@ -84,7 +84,35 @@ tests/mimalloc/README.md records the upstream commit.
 Valkey patches (BSD-3-Clause context)
 
   contrib/valkey/*.patch
+  contrib/wolfi/valkey/valkey-9.1/*.patch
 
 Patches against Valkey's source tree. Their context and removed lines are
 Valkey source, Copyright (c) Valkey contributors and Redis Ltd., under
 Valkey's BSD-3-Clause licence; they are not built into libchalloc.
+
+--------------------------------------------------------------------------
+Other consumer patches (upstream licences; not built into libchalloc)
+
+  contrib/wolfi/keydb/keydb/*.patch      KeyDB (BSD-3-Clause) and its
+                                         bundled RocksDB (GPL-2.0 or
+                                         Apache-2.0)
+  contrib/ruby/*.patch                   Ruby (Ruby licence or
+  contrib/wolfi/ruby/ruby-3.4/*.patch    BSD-2-Clause)
+
+Patches against those projects' source trees, applied only when the
+consumer test builds them. Their context and removed lines are upstream
+source under the upstream project's licence. The Ruby test exclusion lists
+in contrib/ruby/excludes/ are challoc's own.
+
+--------------------------------------------------------------------------
+Wolfi package definitions (Apache-2.0)
+
+  contrib/wolfi/valkey/valkey-9.1.yaml
+  contrib/wolfi/keydb/keydb.yaml
+  contrib/wolfi/rethinkdb/rethinkdb.yaml
+  contrib/wolfi/ruby/ruby-3.4.yaml
+
+These consumer package definitions are derived from Wolfi's
+(https://github.com/wolfi-dev/os), which are licensed under the Apache
+License, Version 2.0, the same licence as challoc.
+contrib/wolfi/challoc.yaml is challoc's own.
