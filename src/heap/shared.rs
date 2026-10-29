@@ -3030,6 +3030,67 @@ impl Shared {
 verus! {
 
 impl Shared {
+    /// The flag byte [`Shared::push_flags`] returns.
+    pub closed spec fn flags(&self) -> u8 {
+        self.push_flags
+    }
+
+    /// The bits of [`Shared::free_flags`]' byte other than [`FREE_ROUTE`],
+    /// fixed when `init` made it (`put_flags`;
+    /// [`fixed`](crate::vspec::flags::fixed)).
+    pub closed spec fn route_fixed(&self) -> u8 {
+        crate::vspec::flags::fixed(&self.free_flags)
+    }
+
+    /// The `free` fast path's dispatch byte (see the field): `push_flags`,
+    /// plus [`FREE_ROUTE`] once a second arena exists. Its bits other than
+    /// [`FREE_ROUTE`] are [`Shared::route_fixed`]; that they are
+    /// `push_flags`' is a fact of `Shared::init` that `Shared::built` does
+    /// not state.
+    #[inline(always)]
+    pub fn free_flags(&self) -> (r: u8)
+        ensures
+            r & !FREE_ROUTE == self.route_fixed(),
+        opens_invariants none
+    {
+        crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)
+    }
+
+    /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
+    /// and [`PUSH_PAC`]; 0 in the default configuration, PAC host or not.
+    #[inline(always)]
+    pub fn push_flags(&self) -> (r: u8)
+        ensures
+            r == self.flags(),
+        opens_invariants none
+    {
+        self.push_flags
+    }
+
+    /// Whether pushes compare against the top four cache entries
+    /// (`double_free_scan`).
+    #[inline(always)]
+    pub fn double_free_scan(&self) -> (r: bool)
+        ensures
+            r == (self.flags() & PUSH_SCAN != 0),
+        opens_invariants none
+    {
+        self.push_flags & PUSH_SCAN != 0
+    }
+
+    /// Whether a freed block is cleared before it is cached or released
+    /// (`zero_on_free`).
+    #[inline(always)]
+    pub fn zero_on_free(&self) -> (r: bool)
+        ensures
+            r == (self.flags() & PUSH_ZERO != 0),
+        opens_invariants none
+    {
+        self.push_flags & PUSH_ZERO != 0
+    }
+}
+
+impl Shared {
     /// The child of a `fork`: see `sys::cgroup::Deferred::fork_child`.
     /// Only the child's fork handler holds the capability it requires
     /// (`api::fork_child`).
@@ -3083,38 +3144,10 @@ impl Shared {
         Some(class)
     }
 
-    /// The `free` fast path's dispatch byte (see the field): `push_flags`,
-    /// plus [`FREE_ROUTE`] once a second arena exists.
-    #[inline(always)]
-    pub fn free_flags(&self) -> u8 {
-        crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)
-    }
-
-    /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
-    /// and [`PUSH_PAC`]; 0 in the default configuration, PAC host or not.
-    #[inline(always)]
-    pub fn push_flags(&self) -> u8 {
-        self.push_flags
-    }
-
     /// Whether cache and heap pointers are signed ([`PUSH_PAC`]).
     #[inline(always)]
     pub fn pac(&self) -> bool {
         self.push_flags & PUSH_PAC != 0
-    }
-
-    /// Whether pushes compare against the top four cache entries
-    /// (`double_free_scan`).
-    #[inline(always)]
-    pub fn double_free_scan(&self) -> bool {
-        self.push_flags & PUSH_SCAN != 0
-    }
-
-    /// Whether a freed block is cleared before it is cached or released
-    /// (`zero_on_free`).
-    #[inline(always)]
-    pub fn zero_on_free(&self) -> bool {
-        self.push_flags & PUSH_ZERO != 0
     }
 
     /// The arena half of [`checked_slot`]: whether the group owner word of
