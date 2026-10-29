@@ -10,6 +10,7 @@ file.
 | `ffi::c_void` | ext_type_spec | core library | Kani | trusted |
 | `ffi::CStr` | ext_type_spec | core library | Kani | trusted |
 | `<*const...t::<U>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `ffi::CStr::as_ptr` | assume_spec | core library | Kani | trusted |
 | `char::to_digit` | assume_spec | core library | Kani | trusted |
 
 ## `core::ffi::c_void`
@@ -45,9 +46,20 @@ Tool: RefinedRust. Status: trusted.
 pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U> ](p: *const T) -> *const U;
 ```
 
+## `core::ffi::CStr::as_ptr`
+
+src/vspec/config.rs:28. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `CStr::as_ptr`: the address of the string; nothing is claimed about it.
+
+```rust
+pub assume_specification[ core::ffi::CStr::as_ptr ](s: &core::ffi::CStr) -> *const core::ffi::c_char;
+```
+
 ## `char::to_digit`
 
-src/vspec/config.rs:29. Kind: assume_spec. Category: core library.
+src/vspec/config.rs:33. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `char::to_digit` (`core` documentation): the digits are `0`..`9`, then `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count; panics for a radix outside `2..=36`.

@@ -368,7 +368,13 @@ impl<'a> LockOrder<'a> {
 ///   `policy::empty_bytes`: the report's C caller holds no allocator lock,
 ///   the report takes none itself, and each of those calls releases every
 ///   lock it takes before it returns (none returns a guard), so none is
-///   held at the next call.
+///   held at the next call;
+/// - the readers of `api::mallctl` (under `mallctl` and `mallctlbymib`,
+///   `batch_query` and `experimental.utilization.query` among them), one
+///   token per reader or per `utilization` and `owner_of` call: the entry
+///   point holds no allocator lock, `ctl` and the readers take none
+///   themselves, and each call the token is passed to releases every lock
+///   it takes before it returns.
 ///
 /// No allocator entry point is re-entered while a lock is held: allocator
 /// code calls nothing that may allocate with a lock held, and a signal

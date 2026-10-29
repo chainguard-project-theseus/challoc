@@ -23,6 +23,10 @@ pub struct ExCStr(core::ffi::CStr);
 /// (`config::linux` only tests the result for null before a trusted read).
 pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U> ](p: *const T) -> *const U;
 
+/// `CStr::as_ptr`: the address of the string; nothing is claimed about
+/// it.
+pub assume_specification[ core::ffi::CStr::as_ptr ](s: &core::ffi::CStr) -> *const core::ffi::c_char;
+
 /// `char::to_digit` (`core` documentation): the digits are `0`..`9`, then
 /// `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count;
 /// panics for a radix outside `2..=36`.

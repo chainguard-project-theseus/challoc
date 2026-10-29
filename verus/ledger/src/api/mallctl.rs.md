@@ -8,11 +8,15 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `VERSION` | external_body const | core library | none (assumption) | trusted |
+| `thread_allocated` | external_body | allocator invariant | Verus | trusted |
+| `thread_allocatedp` | external_body | allocator invariant | Verus | trusted |
+| `thread_...located` | external_body | allocator invariant | Verus | trusted |
+| `thread_...ocatedp` | external_body | allocator invariant | Verus | trusted |
 | `root` | external_body | allocator invariant | Verus | trusted |
 
 ## `VERSION`
 
-src/api/mallctl.rs:104. Kind: external_body const. Category: core library.
+src/api/mallctl.rs:108. Kind: external_body const. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`VERSION_STR`] for verified code, its value opaque to the verifier.
@@ -21,9 +25,57 @@ Tool: none (assumption). Status: trusted.
 pub(crate) const VERSION: &'static str = VERSION_STR;
 ```
 
+## `thread_allocated`
+
+src/api/mallctl.rs:785. Kind: external_body. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+```rust
+fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+```
+
+## `thread_allocatedp`
+
+src/api/mallctl.rs:794. Kind: external_body. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+```rust
+fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+```
+
+## `thread_deallocated`
+
+src/api/mallctl.rs:803. Kind: external_body. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+```rust
+fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+```
+
+## `thread_deallocatedp`
+
+src/api/mallctl.rs:812. Kind: external_body. Category: allocator invariant.
+Tool: Verus. Status: trusted.
+
+```rust
+fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+```
+
 ## `root`
 
-src/api/mallctl.rs:955. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1137. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > [`ROOT`].
