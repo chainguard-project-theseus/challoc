@@ -791,6 +791,21 @@ pub fn shared_base() -> *const Shared {
     p
 }
 
+/// The allocator state at `p` (outside the tests, a [`shared_base`]
+/// result), without the readiness check: `&*p`, as the free paths write it.
+///
+/// # Safety
+/// `p` points to a live, initialised `Shared` this thread can read: the
+/// process's, once the calling thread has observed `READY`, or run after a
+/// thread that did (through [`shared`] or [`shared_if_ready`]); or, in the
+/// unit tests, a `Shared` of their own (`testutil`), which they never free.
+#[inline(always)]
+#[allow(clippy::let_and_return, reason = "named for the proof")]
+pub unsafe fn shared_deref(p: *const Shared) -> &'static Shared {
+    let r = vstd::raw_ptr::ptr_ref(p, Tracked::assume_new());
+    r
+}
+
 verus! {
 
 /// The feature line, through `line`, its permissions frozen at
