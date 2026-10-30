@@ -29,17 +29,25 @@ mod count;
 #[cfg(test)]
 mod dpor;
 #[cfg(test)]
+mod exit;
+#[cfg(test)]
 mod flags;
 #[cfg(test)]
 mod free;
 #[cfg(test)]
 mod futex;
 #[cfg(test)]
+mod init;
+#[cfg(test)]
 mod lock;
 #[cfg(test)]
 mod narenas;
 #[cfg(test)]
+mod oncecell;
+#[cfg(test)]
 mod position;
+#[cfg(test)]
+mod publish;
 #[cfg(test)]
 mod slab;
 #[cfg(test)]
