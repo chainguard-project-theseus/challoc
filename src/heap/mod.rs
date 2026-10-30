@@ -532,6 +532,15 @@ pub open spec fn plain(e: *mut u8, base: *mut *mut u8) -> usize {
     if pac_mode() { crate::sys::pac::spec_auth(e@.addr, base@.addr) } else { e@.addr }
 }
 
+/// Cache entry `e` of the stack at `base` holds a slot start of class `c`
+/// the way a push stores it: the address it stands for ([`plain`]) is a
+/// slot of `c`, and `e` is that address [`stored`] (signed with
+/// [`pac_mode`], so `pac::auth` accepts it).
+pub open spec fn slot_entry(c: int, e: *mut u8, base: *mut *mut u8) -> bool {
+    &&& process_regions().is_slot(c, plain(e, base))
+    &&& e@.addr == stored(plain(e, base), base)
+}
+
 /// A slot start stored in the stack at `base` the way a push stores it
 /// (signed with [`pac_mode`]) stands for itself.
 pub proof fn lemma_plain_stored(e: *mut u8, p: *mut u8, c: int, base: *mut *mut u8)
@@ -541,10 +550,25 @@ pub proof fn lemma_plain_stored(e: *mut u8, p: *mut u8, c: int, base: *mut *mut 
         e@.addr == stored(p@.addr, base),
     ensures
         plain(e, base) == p@.addr,
-        process_regions().is_slot(c, plain(e, base)),
+        slot_entry(c, e, base),
 {
     process_regions().lemma_slot_below_user_va(c, p@.addr);
     crate::sys::pac::axiom_auth_sign(p@.addr, base@.addr);
+}
+
+/// With [`pac_mode`], an entry that holds a slot the way a push stores it
+/// ([`slot_entry`]) is signed with the stack base, so `pac::auth` takes no
+/// integrity abort on it.
+pub proof fn lemma_entry_signed(c: int, e: *mut u8, base: *mut *mut u8)
+    requires
+        regions_ok(),
+        pac_mode(),
+        slot_entry(c, e, base),
+    ensures
+        crate::sys::pac::signed(e@.addr, base@.addr),
+{
+    process_regions().lemma_slot_below_user_va(c, plain(e, base));
+    assert(e@.addr == crate::sys::pac::spec_sign(plain(e, base), base@.addr));
 }
 
 /// The header for `class` in `others` node `node` ([`Heap::node_cache_ptr`]):
@@ -1151,11 +1175,12 @@ impl CachePerms {
     }
 
     /// Stack entry `q` of the stack at `base` holds a slot start of class
-    /// `c` in the process's regions: the word itself, or with
-    /// [`pac_mode`] the word `pac::auth` gives back with the stack base as
-    /// the modifier ([`plain`]).
+    /// `c` in the process's regions, stored as a push stores it
+    /// ([`slot_entry`]): the word itself, or with [`pac_mode`] the slot
+    /// start signed with the stack base as the modifier, which `pac::auth`
+    /// gives back ([`plain`]).
     spec fn holds(&self, c: int, q: *mut *mut u8, base: *mut *mut u8) -> bool {
-        process_regions().is_slot(c, plain(self.slots[q].value(), base))
+        slot_entry(c, self.slots[q].value(), base)
     }
 
     /// What the caches hold: every entry of an owned header's stack is
@@ -2004,20 +2029,20 @@ proof fn lemma_from_trans(s: Seq<*mut u8>, t: Seq<*mut u8>, u: Seq<*mut u8>, n: 
     }
 }
 
-/// The first `n` entries of `t` stand for slots of `c` in the stack at
-/// `base` ([`plain`]) when every entry of `s` does and they are entries
-/// of `s`.
+/// The first `n` entries of `t` hold slots of `c` in the stack at `base`
+/// as a push stores them ([`slot_entry`]) when every entry of `s` does and
+/// they are entries of `s`.
 proof fn lemma_from_slots(s: Seq<*mut u8>, t: Seq<*mut u8>, c: int, n: int, base: *mut *mut u8)
     requires
-        forall|j: int| 0 <= j < s.len() ==> process_regions().is_slot(c, plain(#[trigger] s[j], base)),
+        forall|j: int| 0 <= j < s.len() ==> slot_entry(c, #[trigger] s[j], base),
         from_all(t, s, n),
     ensures
-        forall|i: int| 0 <= i < n ==> process_regions().is_slot(c, plain(#[trigger] t[i], base)),
+        forall|i: int| 0 <= i < n ==> slot_entry(c, #[trigger] t[i], base),
 {
-    assert forall|i: int| 0 <= i < n implies process_regions().is_slot(c, plain(#[trigger] t[i], base)) by {
+    assert forall|i: int| 0 <= i < n implies slot_entry(c, #[trigger] t[i], base) by {
         assert(s.contains(t[i]));
         let j = choose|j: int| 0 <= j < s.len() && s[j] == t[i];
-        assert(process_regions().is_slot(c, plain(s[j], base)));
+        assert(slot_entry(c, s[j], base));
     }
 }
 
@@ -2151,7 +2176,7 @@ proof fn lemma_rebuild_tracks(
     CachePerms::lemma_slice_frame(old, old.slots, mid, p, len, want);
     assert(slots_grow(old.slots, mid));
     CachePerms::lemma_slice_frame(old, mid, new.slots, p, 0, len + n);
-    assert forall|j: int| 0 <= j < all0.len() implies process_regions().is_slot(c, plain(#[trigger] all0[j], slots)) by {
+    assert forall|j: int| 0 <= j < all0.len() implies slot_entry(c, #[trigger] all0[j], slots) by {
         assert(cell_ok(p, old.hdrs[p], old.slots));
         if j < len {
             assert(old.ent(p, j) == slot_ptr(slots, j));
@@ -4891,7 +4916,7 @@ impl Heap {
     fn drop_home_caches(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             shared.meta.live_id() == crate::meta::process_live_id(),
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -4920,7 +4945,7 @@ impl Heap {
     /// the slots they held, and no other header has changed what it holds.
     fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -4945,7 +4970,7 @@ impl Heap {
         }
         for class in 0..NCLASSES
             invariant
-                crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
@@ -5046,7 +5071,7 @@ impl Heap {
     /// `Shared::release_routed`, which proves it used up their tokens.
     pub fn flush_all(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -5084,7 +5109,7 @@ impl Heap {
         }
         while !o.is_null()
             invariant
-                crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 self.tcache_on() == old(self).tcache_on(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
@@ -5204,7 +5229,7 @@ impl Heap {
     /// if the node's key is `FOREIGN`, else trimmed ([`Heap::gc_all`]).
     pub fn gc(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -5237,7 +5262,7 @@ impl Heap {
         }
         while !o.is_null()
             invariant
-                crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
@@ -5363,7 +5388,7 @@ impl Heap {
     #[allow(clippy::while_let_loop, reason = "the desugared `for`, which Verus needs for `continue`")]
     fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, Tracked(ord): Tracked<&mut LockOrder>)
         requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             shared.wf(),
@@ -5386,7 +5411,7 @@ impl Heap {
         let mut iter = 0..NCLASSES;
         loop
             invariant
-                crate::sys::may_abort() || (crate::sys::valid_aborts() && crate::sys::may_abort_corrupt()),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
