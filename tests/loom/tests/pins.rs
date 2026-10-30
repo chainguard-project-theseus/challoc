@@ -50,6 +50,56 @@ const PINS: &[(&str, &[&str])] = &[
             "let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };",
         ],
     ),
+    // `RawLock`: try_acquire, lock, lock_slow, release and the futex
+    // calls (tests/loom/src/lock.rs).
+    (
+        "src/lock.rs",
+        &[
+            "const UNLOCKED: u32 = 0;",
+            "const LOCKED: u32 = 1;",
+            "const CONTENDED: u32 = 2;",
+            "const SPINS: u32 = 100;",
+            ".compare_exchange(UNLOCKED, LOCKED, Ordering::Acquire, Ordering::Relaxed)",
+            "if !self.try_acquire() {",
+            "self.lock_slow();",
+            "for _ in 0..SPINS {",
+            "if self.state.load(Ordering::Relaxed) == UNLOCKED && self.try_acquire() {",
+            "return;",
+            "core::hint::spin_loop();",
+            "let mut c = self.state.swap(CONTENDED, Ordering::Acquire);",
+            "while c != UNLOCKED",
+            "wait(&self.state, CONTENDED);",
+            "c = self.state.swap(CONTENDED, Ordering::Acquire);",
+            "if self.state.swap(UNLOCKED, Ordering::Release) == CONTENDED {",
+            "wake(&self.state);",
+            "let _ = unsafe { crate::sys::futex_wait(state.as_ptr(), val, None) };",
+            "let _ = unsafe { crate::sys::futex_wake(state.as_ptr(), 1) };",
+        ],
+    ),
+    // `SlabDesc`'s accessors of the lock-protected fields: init,
+    // state_byte_held, dirty_held, set_state, arena_held, set_dirty_at
+    // (tests/loom/src/slab.rs).
+    (
+        "src/slab.rs",
+        &[
+            "self.state.store(State::Fresh as u8, Ordering::Relaxed);",
+            "self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);",
+            "self.arena.store(arena, Ordering::Relaxed);",
+            "self.live.store(0, Ordering::Relaxed);",
+            "self.dirty_at.store(0, Ordering::Relaxed);",
+            "fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u8)",
+            "self.state.load(Ordering::Relaxed)",
+            "pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u64)",
+            "self.dirty_at.load(Ordering::Relaxed)",
+            "pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.state.store(s as u8, Ordering::Relaxed);",
+            "self.shadow.store(s as u8 + 1, Ordering::Relaxed);",
+            "pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u16)",
+            "self.arena.load(Ordering::Relaxed)",
+            "pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.dirty_at.store(ns, Ordering::Relaxed);",
+        ],
+    ),
 ];
 
 #[test]
