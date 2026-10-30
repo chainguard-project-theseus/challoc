@@ -3762,8 +3762,11 @@ fn an_others_node_for_the_home_arena_aborts() {
     let t = TestHeap::new(s);
     let h = t.heap();
     let home = h.arena;
-    assert!(h.other_caches(s, home, false).is_null());
-    h.other_caches(s, home, true);
+    assert!(
+        h.other_caches(s, home, false, Tracked::assume_new())
+            .is_null()
+    );
+    h.other_caches(s, home, true, Tracked::assume_new());
 }
 
 /// The cold walks of the `others` list ([`Heap::nodes`]) see every node,

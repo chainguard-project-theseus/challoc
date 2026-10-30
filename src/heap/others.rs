@@ -7,6 +7,7 @@ use core::alloc::Layout;
 use core::ptr;
 
 use crate::layout::NCLASSES;
+use crate::lock::LockOrder;
 
 use crate::arena::field_at;
 
@@ -580,7 +581,7 @@ impl Heap {
         arena: u16,
         class: usize,
     ) -> (*mut u8, bool) {
-        let node = self.other_caches(shared, arena, false);
+        let node = self.other_caches(shared, arena, false, Tracked::assume_new());
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap.
             let cache = unsafe { Self::node_cache_ptr(node, class) };
@@ -605,7 +606,7 @@ impl Heap {
     #[cold]
     #[inline(never)]
     pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8) {
-        let node = self.other_caches(shared, FOREIGN, false);
+        let node = self.other_caches(shared, FOREIGN, false, Tracked::assume_new());
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
@@ -635,6 +636,7 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         create: bool,
+        _ord: Tracked<&mut LockOrder>,
     ) -> *mut ArenaCaches {
         let mut o = self.others;
         let mut n = 0usize;
@@ -653,7 +655,7 @@ impl Heap {
             return ptr::null_mut();
         }
         assert_not_home(&arena, &self.arena);
-        let block = shared.meta.alloc(node_block_layout());
+        let (block, _) = shared.meta.alloc_raw(node_block_layout());
         if block.is_null() {
             return ptr::null_mut();
         }
@@ -669,8 +671,7 @@ impl Heap {
         for c in 0..NCLASSES {
             // SAFETY: `c < NCLASSES`, inside the block.
             let cache = unsafe { Self::node_cache_ptr(node, c) };
-            // SAFETY: as above.
-            unsafe { ptr::write(cache, CacheHeader::EMPTY) };
+            ptr_mut_write(cache, Tracked::assume_new(), CacheHeader::EMPTY);
         }
         self.others = node;
         node
@@ -687,7 +688,7 @@ impl Heap {
         if arena == self.arena {
             return self.cache_ptr(class);
         }
-        let node = self.other_caches(shared, arena, true);
+        let node = self.other_caches(shared, arena, true, Tracked::assume_new());
         if node.is_null() {
             return ptr::null_mut();
         }
