@@ -874,7 +874,6 @@ impl Heap {
             crate::sys::may_syscall(),
             class < NCLASSES,
             shared.wf(),
-            shared.meta.live_id() == crate::meta::process_live_id(),
             old(ord).allows(rank_meta()),
             old(self).wf(),
         ensures

@@ -212,6 +212,23 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 {
 }
 
+/// `<*mut T>::sub`, with the safety contract of the `core` documentation:
+/// the byte offset `count * size_of::<T>()` fits in an `isize` and is at
+/// most `p`'s address, and, when it is not zero, the whole range from
+/// the result to `p` is inside the allocation `p` points into
+/// ([`in_alloc`] of the result). Trusted: the `core` documentation of
+/// `sub` (an offset of `count * size_of::<T>()` bytes down, keeping `p`'s
+/// provenance and metadata), which Verus does not model for raw pointers.
+pub assume_specification<T>[ <*mut T>::sub ](p: *mut T, count: usize) -> (r: *mut T)
+    requires
+        count as int * vstd::layout::size_of::<T>() <= isize::MAX,
+        count as int * vstd::layout::size_of::<T>() <= p@.addr,
+        count as int * vstd::layout::size_of::<T>() == 0 || in_alloc(ptr_sub(p, count), count as int * vstd::layout::size_of::<T>()),
+    ensures
+        r == ptr_sub(p, count),
+    opens_invariants none
+;
+
 /// `<*mut T>::add`, with the safety contract of the `core` documentation:
 /// the byte offset `count * size_of::<T>()` fits in an `isize`, and, when
 /// it is not zero, the whole range from `p` to the result is inside the

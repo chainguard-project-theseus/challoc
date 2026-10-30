@@ -267,10 +267,31 @@ impl Tcaches {
 } // verus!
 
 impl Tcaches {
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+verus! {
+
+impl Tcaches {
     /// `tcache.destroy`: flush and free `id`. `false` if there is no such
     /// cache.
-    pub fn destroy(&self, shared: &Shared, id: u16, _ord: Tracked<&mut LockOrder>) -> bool {
-        let _g = self.lock.lock(Tracked::assume_new(), Tracked::assume_new());
+    pub fn destroy(&self, shared: &Shared, id: u16, Tracked(ord): Tracked<&mut LockOrder>) -> bool
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            old(ord).allows(rank_tcaches()),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked mut under = LockOrder::spare();
+        let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));
         let i = id as usize;
         if i >= MAX_TCACHES {
             return false;
@@ -281,12 +302,9 @@ impl Tcaches {
         }
         // SAFETY: `p` came from `create_detached` and is now unreachable
         // through the table.
-        unsafe { Heap::destroy(p, shared, Tracked::assume_new()) };
+        unsafe { Heap::destroy(p, shared, Tracked(&mut under)) };
         true
     }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
+
+} // verus!

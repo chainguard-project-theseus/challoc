@@ -659,7 +659,6 @@ impl Heap {
             class < NCLASSES,
             old(self).wf(),
             shared.wf(),
-            shared.meta.live_id() == crate::meta::process_live_id(),
             old(ord).allows(rank_meta()),
         ensures
             *final(ord) == *old(ord),
@@ -667,6 +666,9 @@ impl Heap {
             r@.addr != 0 ==> final(self).owns(r) && final(self).hdr_class(r) == class,
             r@.addr != 0 ==> final(self).routes(arena, class as int, r),
     {
+        proof {
+            shared.lemma_wf_slow();
+        }
         if arena == self.arena {
             proof {
                 Heap::lemma_keeps_refl(*self);
@@ -723,7 +725,6 @@ impl Heap {
             shared.wf(),
             create ==> arena != old(self).arena,
             create ==> old(ord).allows(rank_meta()),
-            create ==> shared.meta.live_id() == crate::meta::process_live_id(),
         ensures
             *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
@@ -733,6 +734,9 @@ impl Heap {
             r@.addr != 0 ==> final(self).keyed(r, arena),
             r@.addr == 0 ==> !final(self).has_key(arena),
     {
+        proof {
+            shared.lemma_wf_slow();
+        }
         proof {
             self.lemma_list(0);
             self.lemma_list_bound();
