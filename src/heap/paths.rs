@@ -893,6 +893,25 @@ pub fn free_direct(shared: &Shared, p: *mut u8, _blk: Tracked<Live>) {
 
 verus! {
 
+/// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`
+/// stores in a new heap: the process's `Shared`, at its storage. Trusted:
+/// a reference-to-pointer conversion, whose address Verus does not model;
+/// a well-formed `Shared` is the one at [`Shared::storage`], the only
+/// place one is built (`Shared::init` requires it; one `Shared` per
+/// process; the unit tests build others, and the claim is about the
+/// shipped library).
+#[inline(always)]
+#[verifier::external_body]
+pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
+    requires
+        shared.wf(),
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+{
+    ptr::from_ref(shared)
+}
+
 #[cold]
 #[inline(never)]
 pub(super) fn invalid_free(p: usize) -> !
@@ -994,12 +1013,6 @@ fn debug_scheduled(allocs: u64, mask: u32)
 }
 
 } // verus!
-
-/// `shared` as the raw pointer the slot readers take.
-#[inline(always)]
-pub(crate) fn shared_ptr(shared: &Shared) -> *const Shared {
-    ptr::from_ref(shared)
-}
 
 /// The `free` fast path on an existing heap: check the slot and push it
 /// onto the home cache. `false` whenever anything is off the fast path (not

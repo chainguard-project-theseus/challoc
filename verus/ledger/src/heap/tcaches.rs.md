@@ -9,6 +9,7 @@ file.
 |---|---|---|---|---|
 | `axiom_t...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 | `EMPTY_TABLE` | external_body const | core library | Kani | trusted |
+| `heap_at` | external_body | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_tcaches_lock_inv`
 
@@ -33,4 +34,18 @@ Tool: Kani. Status: trusted.
 
 ```rust
 const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] = [const { AtomicPtr::new(ptr::null_mut()) }; MAX_TCACHES];
+```
+
+## `heap_at`
+
+src/heap/tcaches.rs:149. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the heap `Heap::destroy` is handed.
+
+```rust
+pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
+    ensures
+        r.wf(),
+        r.home_at(p),
 ```
