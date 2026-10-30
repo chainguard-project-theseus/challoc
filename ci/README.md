@@ -30,7 +30,8 @@ the diff: a key that appears is coverage lost.
 Every pull request (`Chainguard Checks (presubmit)` is the aggregate to
 require); each file is a workflow:
 
-- `lint.yaml`: rustfmt, the loom models, shellcheck, msrv-build (1.94);
+- `lint.yaml`: rustfmt, the loom models, shellcheck, the codegen-fncmp
+  fixtures, msrv-build (1.94);
   clippy is advisory until a clippy baseline.
 - `test.yaml`: `linux` {x86_64, aarch64} x quantum {16, 8}, `privileged`
   per arch (`hosted-<arch>-*` cells in `expected-skips/`).

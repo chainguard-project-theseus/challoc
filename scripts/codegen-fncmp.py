@@ -2,7 +2,8 @@
 """Per-function comparison of two objdump -d --no-show-raw-insn dumps.
 
 Exact: instruction text identical once addresses and <symbol> targets are
-stripped.  Reloc-only: identical once hex/decimal immediates are masked too.
+stripped.  Reloc-only: identical once hex/decimal immediates are masked too,
+with an AArch64 offset-0 operand `[xN]` read as `[xN, #I]`.
 Everything else is listed with the nearest baseline function by name (or by
 size) and a unified diff.
 """
@@ -33,6 +34,11 @@ def mask(insns):
     for t in insns:
         t = re.sub(r'0x[0-9a-f]+', '0xI', t)
         t = re.sub(r'#-?[0-9]+', '#I', t)
+        # AArch64 offset 0: objdump prints `[x9]` where any other offset
+        # prints `[x9, #16]`, so a :lo12: relocation that resolves to 0
+        # drops the immediate. Spell it `[x9, #I]` like the others. A
+        # following `!` or `,` (pre- or post-index) keeps the bare form.
+        t = re.sub(r'\[(x[0-9]+|sp)\](?!\s*[!,])', r'[\1, #I]', t)
         t = re.sub(r'\b[0-9a-f]{3,} <sym>', 'A <sym>', t)
         t = re.sub(r'// #-?[0-9]+', '// #I', t)
         out.append(t)

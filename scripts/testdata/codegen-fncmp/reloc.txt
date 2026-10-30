@@ -1,0 +1,13 @@
+
+reloc.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000001000 <claim_with>:
+    1000:	adrp	x9, 5000 <claim_with+0x4000>
+    1004:	ldr	q0, [x8, #16]
+    1008:	str	q0, [sp, #32]
+    100c:	ldr	q0, [x9, #3952]
+    1010:	str	q0, [sp, #48]
+    1014:	ret
