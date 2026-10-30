@@ -1,5 +1,5 @@
-# Lint (the CI design's section 1): rustfmt, the loom models and shellcheck
-# block; clippy reports without blocking until there is a clippy baseline
+# Lint (the CI design's section 1): rustfmt, the loom models, shellcheck
+# and the codegen-fncmp fixtures block; clippy reports without blocking until there is a clippy baseline
 # (delete its `advisory: true` then). msrv-build builds the shipped cdylib
 # with the rust-version toolchain. The toolchains run in the guest
 # directly, no container.
@@ -63,6 +63,17 @@ checks:
         - release-assets.githubusercontent.com
         - objects.githubusercontent.com
     cmd: [sh, ci/shellcheck.sh]
+
+  codegen-fncmp:
+    description: >-
+      ci/codegen-fncmp-test.sh: scripts/codegen-fncmp.py on the dump pairs
+      in scripts/testdata/codegen-fncmp. An AArch64 offset-0 load against
+      the same load at a nonzero offset must count as reloc-only, and a
+      post-indexed load as changed.
+    environment:
+      packages: [python-3.13, busybox]
+    timeout: 5m
+    cmd: [sh, ci/codegen-fncmp-test.sh]
 
   msrv-build:
     description: >-
