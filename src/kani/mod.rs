@@ -25,7 +25,10 @@ mod atomic;
 mod core_int;
 mod eq;
 mod fmt;
+mod misc;
+mod ptr;
 mod report;
+mod slice;
 mod stats;
 
 /// The end of a `#[kani::should_panic]` harness on the inputs for which
