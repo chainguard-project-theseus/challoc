@@ -203,6 +203,16 @@ impl Live {
         &&& self.slot_of(c)
     }
 
+    /// A slot's token covers the class's size.
+    pub proof fn lemma_slot_len(&self, p: *mut u8, c: int)
+        requires
+            self.slot_block(p, c),
+        ensures
+            self.len() == class_table()[c].size,
+            process_regions().is_slot(c, p@.addr),
+    {
+    }
+
     /// A live block has usable bytes: a class's size, or a run's pages.
     pub proof fn lemma_len_pos(&self)
         requires
@@ -534,6 +544,23 @@ impl Live {
         if !crate::heap::slot_start(p) {
             lemma_not_slot(p);
         }
+    }
+
+    /// The slot class of the block a token claims, for a pointer the free
+    /// paths classified as a slot of class `c`: a slot start has one class
+    /// (`zero::lemma_slot_unique`).
+    pub proof fn lemma_claims_slot(&self, p: *mut u8, c: int)
+        requires
+            crate::heap::regions_ok(),
+            self.claims(p),
+            process_regions().is_slot(c, p@.addr),
+        ensures
+            self.slot_of(c),
+            self.slot_tok().id() == slot_loc(c),
+            self.slot_tok()@ == p@.addr as int,
+            self.has_slot(),
+    {
+        crate::vspec::zero::lemma_slot_unique(self.class, c, p@.addr);
     }
 
 }

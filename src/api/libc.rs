@@ -38,14 +38,22 @@ use core::ptr;
 
 use crate::QUANTUM;
 use crate::heap::{self, Live, Shared};
+#[cfg(verus_keep_ghost)]
+use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, SMALL_MAX, class_of, class_of_small};
 use crate::sys::Errno;
 use crate::vspec::cbuf::{CCall, COut};
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::usable::Stored;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::usable::usable_of;
 use crate::vspec::zero::Zeroed;
-use vstd::prelude::{Ghost, Tracked};
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked, verus};
 use vstd::raw_ptr::ptr_mut_write;
+
+verus! {
 
 // The codes as `c_int`, for `errno` and `posix_memalign`'s return; the
 // numbers live in `sys::errno`.
@@ -55,32 +63,158 @@ const EINVAL: c_int = Errno::EINVAL.0;
 /// Null with `errno = ENOMEM`.
 #[cold]
 #[inline(never)]
-fn enomem(_errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
-    set_errno(ENOMEM, Tracked::assume_new());
+fn enomem(Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    ensures
+        r@.addr == 0,
+        final(errno).val() == ENOMEM,
+{
+    set_errno(ENOMEM, Tracked(errno));
     ptr::null_mut()
 }
 
 /// Null with `errno = EINVAL`.
 #[cold]
 #[inline(never)]
-fn einval(_errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
-    set_errno(EINVAL, Tracked::assume_new());
+fn einval(Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    ensures
+        r@.addr == 0,
+        final(errno).val() == EINVAL,
+{
+    set_errno(EINVAL, Tracked(errno));
     ptr::null_mut()
 }
 
-/// [`class_of`], the form the entry points call: the smallest class whose
-/// slot holds `n` bytes.
+/// [`class_of`] with the facts about the class table the entry points
+/// rely on: the class is in the table, its slot size is at least `n`, and
+/// so is every later class's (the table is sorted by size), and no
+/// earlier class's: the class is the smallest that holds `n` bytes.
 #[inline(always)]
-pub(super) fn class_index(n: usize) -> Option<usize> {
-    class_of(n)
+pub(super) fn class_index(n: usize) -> (r: Option<usize>)
+    ensures
+        r is Some <==> n <= MEDIUM_MAX,
+        r matches Some(c) ==> c < NCLASSES,
+        r matches Some(c) ==> forall|j: int| c <= j < NCLASSES ==> n <= #[trigger] class_table()[j].size,
+        r matches Some(c) ==> forall|j: int| 0 <= j < c ==> #[trigger] class_table()[j].size < n,
+        // The smallest class that serves `n` bytes at no alignment.
+        r == spec_class_for(n, 1),
+    opens_invariants none
+{
+    let r = class_of(n);
+    proof {
+        lemma_class_index(n, r);
+    }
+    r
 }
 
 /// [`class_index`] of a request of at most [`SMALL_MAX`] bytes, from the
 /// small table alone ([`class_of_small`]): the same class.
 #[inline(always)]
-pub(super) fn class_index_small(n: usize) -> usize {
-    class_of_small(n)
+pub(super) fn class_index_small(n: usize) -> (r: usize)
+    requires
+        n <= SMALL_MAX,
+    ensures
+        r < NCLASSES,
+        forall|j: int| r <= j < NCLASSES ==> n <= #[trigger] class_table()[j].size,
+        forall|j: int| 0 <= j < r ==> #[trigger] class_table()[j].size < n,
+        Some(r) == spec_class_for(n, 1),
+    opens_invariants none
+{
+    let r = class_of_small(n);
+    proof {
+        lemma_class_index(n, Some(r));
+    }
+    r
 }
+
+/// What [`class_index`] ensures, from what `class_of` (and
+/// `class_of_small`) ensure of `r`.
+proof fn lemma_class_index(n: usize, r: Option<usize>)
+    requires
+        r is Some <==> n <= MEDIUM_MAX,
+        r matches Some(c) ==> c < NCLASSES && n <= crate::layout::spec_class_size(c as int),
+        r matches Some(c) ==> crate::layout::classes_below(c as int, n as int),
+    ensures
+        r matches Some(c) ==> forall|j: int| c <= j < NCLASSES ==> n <= #[trigger] class_table()[j].size,
+        r matches Some(c) ==> forall|j: int| 0 <= j < c ==> #[trigger] class_table()[j].size < n,
+        r == spec_class_for(n, 1),
+{
+    reveal(crate::layout::classes_below);
+    if let Some(c) = r {
+        assert forall|j: int| c <= j < NCLASSES implies n <= #[trigger] class_table()[j].size by {
+            crate::vspec::class::axiom_class_table_wf(j);
+            if j > c {
+                crate::layout::lemma_class_size_mono(c as int, j);
+            }
+        }
+        assert forall|j: int| 0 <= j < c implies #[trigger] class_table()[j].size < n by {
+            crate::vspec::class::axiom_class_table_wf(j);
+            assert(crate::layout::spec_class_size(j) < n);
+        }
+        assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, n as int, 1) by {
+            assert(class_table()[j].size < n);
+        }
+        lemma_class_for_some(n, 1, c as int);
+    } else {
+        assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, n as int, 1) by {
+            crate::vspec::class::axiom_class_table_wf(j);
+        }
+        lemma_class_for_none(n, 1);
+    }
+}
+
+/// Class `c` serves `size` bytes at `align`: its slots hold `size` bytes
+/// and, above the quantum, its size is a multiple of `align`.
+pub open spec fn class_serves(c: int, size: int, align: usize) -> bool {
+    &&& size <= class_table()[c].size
+    &&& align <= QUANTUM || class_table()[c].size as usize & (align - 1) as usize == 0
+}
+
+/// `c` is the smallest class that serves `size` bytes at `align`.
+pub open spec fn least_class(c: int, size: int, align: usize) -> bool {
+    &&& 0 <= c < NCLASSES
+    &&& class_serves(c, size, align)
+    &&& forall|j: int| 0 <= j < c ==> !#[trigger] class_serves(j, size, align)
+}
+
+/// The smallest class that serves `size` bytes at a power-of-two
+/// `align`, `None` when no class does.
+pub open spec fn spec_class_for(size: usize, align: usize) -> Option<usize> {
+    if exists|c: int| least_class(c, size as int, align) {
+        Some((choose|c: int| least_class(c, size as int, align)) as usize)
+    } else {
+        None
+    }
+}
+
+/// The smallest serving class is unique.
+proof fn lemma_class_for_some(size: usize, align: usize, c: int)
+    requires
+        least_class(c, size as int, align),
+    ensures
+        spec_class_for(size, align) == Some(c as usize),
+{
+    let d = choose|d: int| least_class(d, size as int, align);
+    if d < c {
+        assert(!class_serves(d, size as int, align));
+    } else if c < d {
+        assert(!class_serves(c, size as int, align));
+    }
+}
+
+/// No class serves `size` bytes at `align`.
+proof fn lemma_class_for_none(size: usize, align: usize)
+    requires
+        forall|j: int| 0 <= j < NCLASSES ==> !#[trigger] class_serves(j, size as int, align),
+    ensures
+        spec_class_for(size, align) is None,
+{
+    if exists|c: int| least_class(c, size as int, align) {
+        let c = choose|c: int| least_class(c, size as int, align);
+        assert(class_serves(c, size as int, align));
+    }
+}
+
+} // verus!
 
 /// Huge allocation on the calling thread, counted in its heap when it has
 /// one. `align` is a power of two; `1` means none.
@@ -456,25 +590,67 @@ fn free_before_init(p: *mut u8) -> ! {
     ))
 }
 
+verus! {
+
 /// Usable bytes of the live allocation `p`. Aborts unless `p` is a live
 /// slab slot or huge run start. A slab pointer takes the `free` fast
 /// path's route (design 6.3): `Regions::classify` finds class, slab and
 /// slot from the dense arrays, `check_live` tests the bit, and the size is
-/// the class's.
+/// the class's. A huge run's is what its descriptor records
+/// ([`crate::huge::Huge::usable_size`]). With a token that claims `p`
+/// ([`Live::claims`]), the result is the block's usable bytes.
 #[inline(always)]
-pub fn usable_size(shared: &Shared, p: *mut u8, _blk: Tracked<&Live>) -> usize {
+pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) -> (r: usize)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+    ensures
+        heap::free_target(p),
+        crate::layout::process_regions().is_huge_block(p as usize, 1) ==> shared.huge_run_usable(p as usize, r),
+        usable_of(p, r as int),
+        blk.claims(p) ==> blk.block(p) && r == blk.len(),
+        // No block at address 0: NULL aborts, and the size is positive.
+        p@.addr != 0,
+        0 < r,
+{
+    proof {
+        shared.lemma_wf_slow();
+        shared.lemma_wf_ready();
+        shared.lemma_wf();
+        shared.lemma_huge_pages();
+        shared.lemma_regions_ok();
+        heap::theorem_no_block_at_zero(p, 0, 0);
+    }
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(
-                slab as usize,
-                slot as usize,
-                p as usize,
-                Tracked::assume_new(),
-            );
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
+            proof {
+                // `check_live` returned: not a guard slab.
+                crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
+                crate::vspec::usable::lemma_usable_slot(p, class as int);
+                crate::vspec::usable::lemma_usable_of_pos(p, class_table()[class as int].size as int);
+                if blk.claims(p) {
+                    blk.lemma_claims_slot(p, class as int);
+                    blk.lemma_claimed_block(p);
+                    blk.lemma_slot_len(p, class as int);
+                }
+            }
             class_size(class)
         }
-        Kind::Huge { page } => shared.huge.usable_size(page, Tracked::assume_new()),
+        Kind::Huge { page } => {
+            let r = shared.huge.usable_size(page, Tracked(blk.run_ref()));
+            proof {
+                shared.lemma_huge_run_usable(p as usize, r);
+                crate::vspec::usable::lemma_usable_run(shared, p, r);
+                crate::vspec::usable::lemma_usable_of_pos(p, r as int);
+                if blk.claims(p) {
+                    shared.lemma_run_page(p, page, *blk);
+                }
+            }
+            r
+        },
         Kind::Invalid => not_an_allocation(p),
     }
 }
@@ -483,9 +659,14 @@ pub fn usable_size(shared: &Shared, p: *mut u8, _blk: Tracked<&Live>) -> usize {
 /// out of line so the query needs no frame for the message.
 #[cold]
 #[inline(never)]
-fn not_an_allocation(p: *mut u8) -> ! {
+fn not_an_allocation(p: *mut u8) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!("{:#x} is not an allocation", p as usize))
 }
+
+} // verus!
 
 /// `malloc_usable_size`. Zero for null.
 #[inline(always)]
@@ -676,15 +857,24 @@ fn store_usable(usable: *mut usize, n: usize, _uout: Tracked<&mut COut<usize>>) 
     Tracked::assume_new()
 }
 
+verus! {
+
 /// `CLASSES[class].size()` for a class a fast path produced: below
 /// `NCLASSES` by construction (`class_of`, `checked_slot`), so no bounds
 /// check and no panic call sits in the inlined body (design 6.3).
 #[inline(always)]
-fn class_size(class: usize) -> usize {
+fn class_size(class: usize) -> (r: usize)
+    requires
+        class < NCLASSES,
+    ensures
+        r == class_table()[class as int].size,
+{
     debug_assert!(class < NCLASSES);
     // SAFETY: as above.
     unsafe { CLASSES.table().get_unchecked(class) }.size()
 }
+
+} // verus!
 
 /// `challoc_malloc_usable(size, usable)`: `malloc(size)`, and the block's
 /// usable size, what `malloc_usable_size` would return for it, stored
@@ -1136,16 +1326,29 @@ pub fn aligned_alloc_block(
     alloc_aligned(align, size, Tracked::assume_new(), Tracked::assume_new())
 }
 
+verus! {
+
 /// Store the allocation through `posix_memalign`'s out-pointer, with
-/// `oout`, the permission `posix_memalign` was handed for it, which then
-/// holds `p`.
+/// `oout`, the permission `posix_memalign` was handed for it
+/// (`exports::axiom_c_out`), which then holds `p`.
 #[inline(always)]
-fn store_out(out: *mut *mut u8, p: *mut u8, _oout: Tracked<&mut COut<*mut u8>>) {
-    // The caller passes a valid out-pointer (`posix_memalign`'s
-    // contract). The permission is assumed (`Tracked::assume_new()`)
-    // until the proofs supply `oout`'s.
-    ptr_mut_write(out, Tracked::assume_new(), p);
+fn store_out(out: *mut *mut u8, p: *mut u8, Tracked(oout): Tracked<&mut COut<*mut u8>>)
+    requires
+        old(oout).of(out),
+        out@.addr != 0,
+    ensures
+        final(oout).of(out),
+        final(oout).opt() matches Some(q) && q.is_init() && q.value() == p,
+{
+    let tracked mut perm = oout.take();
+    // The caller's out-pointer, through its permission.
+    ptr_mut_write(out, Tracked(&mut perm), p);
+    proof {
+        oout.put(perm);
+    }
 }
+
+} // verus!
 
 /// `posix_memalign`. Returns 0, `EINVAL` (alignment not a power of two or
 /// not a multiple of `sizeof(void *)`) or `ENOMEM`; never touches `errno`
@@ -1191,13 +1394,37 @@ pub fn posix_memalign_block(
     0
 }
 
+verus! {
+
 /// `shared.regions.page_size()`, the process's page (`1 << lg_page` of
 /// its regions), a power of two: `Regions::wf` (part of `Shared::wf`)
 /// bounds `lg_page` below 64.
 #[inline(always)]
-fn page_size(shared: &Shared) -> usize {
-    shared.regions.page_size()
+fn page_size(shared: &Shared) -> (r: usize)
+    requires
+        shared.wf(),
+    ensures
+        crate::meta::is_pow2(r),
+        r == 1usize << crate::layout::process_regions().lg_page,
+{
+    proof {
+        shared.lemma_wf();
+    }
+    let r = shared.regions.page_size();
+    proof {
+        let k = shared.regions.lg_page as nat;
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        if k < 63 {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(k, 63);
+        }
+        vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+        assert(r as nat == vstd::arithmetic::power2::pow2(k));
+    }
+    r
 }
+
+} // verus!
 
 /// `valloc`: page-aligned.
 pub fn valloc(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
@@ -1326,9 +1553,40 @@ mod exports {
         super::free(p as *mut u8, Tracked::assume_new())
     }
 
-    fn memptr_out(_out: *mut *mut u8) -> Tracked<COut<*mut u8>> {
-        Tracked::assume_new()
+    verus! {
+
+    /// Trusted (the C contract of an out-pointer argument,
+    /// `vspec::cbuf`): the token of this call for the C caller's
+    /// out-pointer `p`, the permission to write the `T` it names: none for
+    /// a null `p`, and `p` is not null when the contract does not allow
+    /// null (`nullable` false: `posix_memalign`'s `memptr`). Linear, and
+    /// private to this module, whose functions are the C entry points: an
+    /// export mints its call's token once, for its own parameter, and
+    /// hands it to the Rust entry point. No other verified code can mint
+    /// one; a second permission for `p` would prove `false`, and so would
+    /// a null `p` with `nullable` false (a C caller that passes one breaks
+    /// the contract).
+    axiom fn axiom_c_out<T>(p: *mut T, nullable: bool) -> (tracked o: COut<T>)
+        ensures
+            o.of(p),
+            !nullable ==> p@.addr != 0,
+    ;
+
+    /// The token of a `posix_memalign` call for its `memptr`
+    /// ([`axiom_c_out`], not nullable), as a `Tracked` value for the
+    /// export's body. Called once by each of the two exports.
+    // The parameter is read by the ghost code only.
+    #[allow(unused_variables)]
+    fn memptr_out(out: *mut *mut u8) -> (o: Tracked<COut<*mut u8>>)
+        ensures
+            o@.of(out),
+            out@.addr != 0,
+    {
+        let tracked o = axiom_c_out(out, false);
+        Tracked(o)
     }
+
+    } // verus!
 
     // The alignment of the sections `malloc` and `free` are placed in: a
     // cache line, with `.space` padding (zeros, never executed) ahead of
