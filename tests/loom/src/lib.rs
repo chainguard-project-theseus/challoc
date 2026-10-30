@@ -25,13 +25,21 @@ mod background;
 #[cfg(test)]
 mod bitmap;
 #[cfg(test)]
+mod count;
+#[cfg(test)]
 mod dpor;
+#[cfg(test)]
+mod flags;
 #[cfg(test)]
 mod free;
 #[cfg(test)]
 mod futex;
 #[cfg(test)]
 mod lock;
+#[cfg(test)]
+mod narenas;
+#[cfg(test)]
+mod position;
 #[cfg(test)]
 mod slab;
 #[cfg(test)]
