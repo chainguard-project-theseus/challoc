@@ -12,7 +12,7 @@ file.
 
 ## `Heap::home_ptr_at`
 
-src/heap/cache.rs:319. Kind: external_body. Category: allocator invariant.
+src/heap/cache.rs:320. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The home header for `class`: `heap + 128 + 64 * class`, no load.
@@ -30,7 +30,7 @@ fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
 
 ## `Heap::cached_recently`
 
-src/heap/cache.rs:673. Kind: external_body. Category: raw pointer (internal).
+src/heap/cache.rs:683. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
 
 > `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.
