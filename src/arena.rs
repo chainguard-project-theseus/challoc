@@ -1390,7 +1390,7 @@ impl Arena {
     /// `None` when nothing is `Empty`; `NEVER` does nothing.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
@@ -1402,7 +1402,7 @@ impl Arena {
         let mut next: Option<u64> = None;
         for cs in self.classes.iter()
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
@@ -1452,7 +1452,7 @@ impl Arena {
     /// ([`Left::clean`]).
     pub fn purge_all(&self, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
@@ -1483,7 +1483,7 @@ impl Arena {
         let mut c = 0;
         while c < NCLASSES
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 c <= NCLASSES,
                 ord.allows(rank_class(0, 0)),

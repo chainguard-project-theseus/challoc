@@ -330,7 +330,7 @@ pub(super) trait EmptyVisitor {
     /// slab visited.
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).inv(cs, *old(g)),
             old(self).last() < slab,
@@ -380,7 +380,7 @@ impl ClassState {
         spp: usize,
     ) -> (r: bool)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             spp > 1,
             slab + spp <= usize::MAX,
             g.arena@ == self.arena,
@@ -405,7 +405,7 @@ impl ClassState {
         let mut slabs = first..first + spp;
         loop
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 first == slab & !((spp - 1) as usize),
                 first <= slabs.start <= slabs.end,
                 slabs.end == first + spp,
@@ -486,7 +486,7 @@ impl ClassState {
     /// of the set above the last slab visited.
     pub(super) fn walk_empty<V: EmptyVisitor>(&self, g: &mut Inner, v: &mut V)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             walk_ok(self, *old(g)),
             old(v).inv(self, *old(g)),
@@ -505,7 +505,7 @@ impl ClassState {
         }
         while let Some(slab) = next
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 walk_ok(self, *g),
                 v.inv(self, *g),
@@ -742,7 +742,7 @@ impl Purger {
     #[inline(always)]
     fn visit(&mut self, cs: &ClassState, g: &mut Inner, slab: usize, dirty_at: u64, purge: bool)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).inv(cs, *old(g)),
             old(self).t.last@ < slab,
@@ -858,7 +858,7 @@ impl ClassState {
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
@@ -1164,7 +1164,7 @@ impl ClassState {
     /// [`settle`]: ClassState::settle
     fn push_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch, t: &mut Tally) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(t).inv(self, *old(g), old(batch).pieces()),
             old(batch).wf(),
@@ -1288,7 +1288,7 @@ impl ClassState {
         Ghost(pend): Ghost<spec_fn((int, int)) -> bool>,
     )
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             old(t).inv(self, *old(g), pend),
             0 < piece <= len,
             len as int % piece == 0,
@@ -1351,7 +1351,7 @@ impl ClassState {
         let mut slabs = first..first + len / slab_size;
         loop
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 g.inv(),
                 g.nbits() == g1.nbits(),
                 g.table == g1.table,
@@ -1615,7 +1615,7 @@ impl ClassState {
     /// survivors. Returns the number purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures
@@ -1693,7 +1693,7 @@ impl ClassState {
     /// slabs on top of the curve's allowance.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
         ensures

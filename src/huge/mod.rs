@@ -7029,7 +7029,7 @@ impl Huge {
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             old(ord).allows(rank_huge()),
@@ -7071,7 +7071,7 @@ impl Huge {
         }
         while !d.is_null()
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 self.is_process(),
                 batch.wf(),
@@ -7158,7 +7158,7 @@ impl Huge {
     /// [`settle`]: Huge::settle
     fn push_extent(&self, g: &mut Inner, d: *mut HugeDesc, batch: &mut Batch, t: &mut Tally) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(t).inv(self, *old(g), old(batch).pieces()),
             old(batch).wf(),
@@ -7272,7 +7272,7 @@ impl Huge {
     #[inline(always)]
     fn purge_desc(&self, g: &mut Inner, d: *mut HugeDesc) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             old(g).wf(),
             old(g).elist@.contains(d),
         ensures
@@ -7470,7 +7470,7 @@ impl Huge {
         Ghost(pend): Ghost<spec_fn((int, int)) -> bool>,
     )
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             old(t).inv(self, *old(g), pend),
             0 < piece <= len,
             len as int % piece == 0,
@@ -7567,7 +7567,7 @@ impl Huge {
         let ghost mut once = false;
         while page < end
             invariant
-                crate::sys::may_abort(),
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
                 end == v.start + v.pages,
                 v == g0.descs@[dd].value(),
                 v.pages >= 1,
@@ -7672,7 +7672,7 @@ impl Huge {
     /// purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             old(ord).allows(rank_huge()),
@@ -7774,7 +7774,7 @@ impl Huge {
             }
             while !d.is_null() && excess > 0
                 invariant
-                    crate::sys::may_abort(),
+                    crate::sys::may_abort() || crate::sys::valid_aborts(),
                     crate::sys::may_syscall(),
                     self.is_process(),
                     batch.wf(),
@@ -7856,7 +7856,7 @@ impl Huge {
     /// a walk is due.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             old(ord).allows(rank_huge()),
