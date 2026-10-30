@@ -6,8 +6,12 @@
 use core::alloc::Layout;
 use core::ptr;
 
+#[cfg(verus_keep_ghost)]
+use super::cell_ok;
 use crate::layout::NCLASSES;
 use crate::lock::LockOrder;
+#[cfg(verus_keep_ghost)]
+use crate::lock::rank_meta;
 
 use crate::arena::field_at;
 
@@ -557,15 +561,27 @@ impl Heap {
 
 } // verus!
 
-/// [`Heap::other_caches`]'s abort on a node for the home arena.
+verus! {
+
+/// [`Heap::other_caches`]'s abort on a node for the home arena, which its
+/// callers rule out (the requires).
+///
+/// Trusted: `assert_ne!` calls `core::panicking::assert_failed`, which
+/// Verus cannot specify on stable Rust.
 #[inline(always)]
 #[track_caller]
-fn assert_not_home(arena: &u16, home: &u16) {
+#[verifier::external_body]
+fn assert_not_home(arena: &u16, home: &u16)
+    requires
+        *arena != *home,
+{
     assert_ne!(
         *arena, *home,
         "heap: others node requested for the home arena"
     );
 }
+
+} // verus!
 
 impl Heap {
     /// Allocation of `class` from another arena than the home one: through
@@ -625,58 +641,6 @@ impl Heap {
         self.free_slow_in(shared, FOREIGN, class, p, Tracked::assume_new())
     }
 
-    /// The `others` node for `arena`, created (if `create`) on first use.
-    /// Null when there is none (and none could be allocated). Never called
-    /// with the home arena: creating a node for it would split the home
-    /// caches in two, which the creation branch aborts on (the lookup walk
-    /// is xmalloc's per-free path and cannot find a node that was never
-    /// created).
-    pub(super) fn other_caches(
-        &mut self,
-        shared: &Shared,
-        arena: u16,
-        create: bool,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> *mut ArenaCaches {
-        let mut o = self.others;
-        let mut n = 0usize;
-        while !o.is_null() {
-            // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap.
-            unsafe {
-                if self.node_arena(o, Ghost::assume_new()) == arena {
-                    return o;
-                }
-                o = self.node_next(o, Ghost::assume_new());
-            }
-            n += 1;
-        }
-        if !create {
-            return ptr::null_mut();
-        }
-        assert_not_home(&arena, &self.arena);
-        let (block, _) = shared.meta.alloc_raw(node_block_layout());
-        if block.is_null() {
-            return ptr::null_mut();
-        }
-        let pad = n % NODE_STAGGER_LINES;
-        // SAFETY: the block has room for the node at any of the
-        // `NODE_STAGGER_LINES` line offsets and is exclusively ours. Field
-        // by field: a whole `ArenaCaches` temporary would put 3 KiB on the
-        // stack of every call (this function sits on the cross-arena free
-        // path).
-        let node = unsafe { block.add(64 * pad) } as *mut ArenaCaches;
-        // SAFETY: as above.
-        unsafe { node_link(node, arena, pad as u8, &self.others, Tracked::assume_new()) };
-        for c in 0..NCLASSES {
-            // SAFETY: `c < NCLASSES`, inside the block.
-            let cache = unsafe { Self::node_cache_ptr(node, c) };
-            ptr_mut_write(cache, Tracked::assume_new(), CacheHeader::EMPTY);
-        }
-        self.others = node;
-        node
-    }
-
     /// The header for `(arena, class)`, creating the `others` node if
     /// needed. Null if no node could be allocated.
     pub(super) fn cache_slot(
@@ -696,6 +660,297 @@ impl Heap {
         unsafe { Self::node_cache_ptr(node, class) }
     }
 }
+
+verus! {
+
+impl Heap {
+    /// The `others` list's nodes are [`heads_ok`] ([`Heap::list_ok`]).
+    pub(super) proof fn lemma_heads(&self)
+        requires
+            self.list_ok(),
+        ensures
+            heads_ok(self.heads@, self.list@, self.keys@),
+    {
+    }
+
+    /// The `others` node for `arena`, created (if `create`) on first use.
+    /// Null when there is none (and none could be allocated). Never called
+    /// with the home arena: creating a node for it would split the home
+    /// caches in two, which the creation branch aborts on (the lookup walk
+    /// is xmalloc's per-free path and cannot find a node that was never
+    /// created).
+    ///
+    /// The lookup walk reads each node's `arena` and `next` through
+    /// [`Heap::node_arena`] and [`Heap::node_next`]. A created node's
+    /// headers come out of the block's permission ([`Meta::alloc_raw`]),
+    /// written `EMPTY`; that they are new to the heap follows from the
+    /// permissions it already holds (`PointsTo::is_disjoint`).
+    ///
+    /// [`Meta::alloc_raw`]: crate::meta::Meta::alloc_raw
+    pub(super) fn other_caches(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        create: bool,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: *mut ArenaCaches)
+        requires
+            crate::sys::may_syscall(),
+            old(self).wf(),
+            shared.wf(),
+            create ==> arena != old(self).arena,
+            create ==> old(ord).allows(rank_meta()),
+            create ==> shared.meta.live_id() == crate::meta::process_live_id(),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).keeps(*old(self)),
+            !create ==> *final(self) == *old(self),
+            r@.addr != 0 ==> final(self).owns_node(r),
+            r@.addr != 0 ==> final(self).in_list(r),
+            r@.addr != 0 ==> final(self).keyed(r, arena),
+            r@.addr == 0 ==> !final(self).has_key(arena),
+    {
+        proof {
+            self.lemma_list(0);
+            self.lemma_list_bound();
+            Heap::lemma_keeps_refl(*self);
+        }
+        let mut o = self.others;
+        let mut n = 0usize;
+        let ghost mut r = self.list_len();
+        while !o.is_null()
+            invariant
+                *self == *old(self),
+                self.wf(),
+                self.keeps(*old(self)),
+                self.list_len() < usize::MAX,
+                0 <= r <= self.list_len(),
+                r > 0 ==> o == self.node_from_end(r),
+                r == 0 ==> o@.addr == 0,
+                n == self.list_len() - r,
+                forall|i: int| 0 <= i < self.list_len() - r ==> #[trigger] self.keys@[i] != arena,
+                self.keys@.len() == self.list_len(),
+            decreases r,
+        {
+            proof {
+                self.lemma_list(r);
+                self.lemma_in_list(r);
+            }
+            // SAFETY: `others` is a list of live metadata blocks owned by
+            // this heap.
+            unsafe {
+                if self.node_arena(o, Ghost(r)) == arena {
+                    proof {
+                        assert(self.keys@[self.list_len() - r] == arena);
+                    }
+                    return o;
+                }
+                o = self.node_next(o, Ghost(r));
+            }
+            n += 1;
+            proof {
+                r = r - 1;
+            }
+        }
+        if !create {
+            return ptr::null_mut();
+        }
+        assert_not_home(&arena, &self.arena);
+        proof {
+            shared.lemma_wf();
+            assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
+        }
+        let (block, Tracked(blk)) = shared.meta.alloc_raw(node_block_layout());
+        let tracked (raw, claim) = blk;
+        if block.is_null() {
+            return ptr::null_mut();
+        }
+        let pad = n % NODE_STAGGER_LINES;
+        let ghost size = vstd::layout::size_of::<ArenaCaches>() + 64 * 15;
+        proof {
+            // The block's bound for the pointer arithmetic below (`in_alloc`);
+            // every write to the block goes through a typed permission split
+            // from `raw`, never through this fact's `valid_writes`.
+            crate::vspec::ptr::axiom_raw_valid(&raw, block, size as int);
+            crate::vspec::ptr::axiom_ptr_add_addr(block, (64 * pad) as usize);
+            assert(size == 64 + 64 * NCLASSES + 64 * 15);
+        }
+        // SAFETY: the block has room for the node at any of the
+        // `NODE_STAGGER_LINES` line offsets and is exclusively ours. Field
+        // by field: a whole `ArenaCaches` temporary would put 3 KiB on the
+        // stack of every call (this function sits on the cross-arena free
+        // path).
+        let node = unsafe { block.add(64 * pad) } as *mut ArenaCaches;
+        let ghost base = node@.addr as int;
+        proof {
+            assert(base == block@.addr + 64 * pad);
+            assert(base % 64 == 0) by {
+                assert(block@.addr as int % 64 == 0);
+            }
+        }
+        let tracked (head, mut rest) = raw.split(Set::range(base, base + 64));
+        proof {
+            // Bounds only (`node_placed`'s `in_alloc`), as for the block above.
+            crate::vspec::ptr::axiom_raw_valid(&head, node as *mut u8, 64);
+            assert(rest.dom() =~= Set::range(block@.addr as int, block@.addr + size).difference(Set::range(base, base + 64)));
+            assert(claim.held(crate::meta::process_live_id(), block, size as int, 64));
+            assert(node@.provenance == block@.provenance);
+            assert(Set::range(base + 64, base + 64 + 64 * NCLASSES) <= rest.dom());
+            crate::vspec::ptr::axiom_raw_valid(&rest, node_hdr(node, 0) as *mut u8, 64 * NCLASSES);
+            assert(node_placed(node));
+        }
+        let ghost h0 = *self;
+        let ghost others0 = self.others;
+        // SAFETY: as above.
+        let Tracked(nh) = unsafe { node_link(node, arena, pad as u8, &self.others, Tracked(head)) };
+        for c in 0..NCLASSES
+            invariant
+                self.wf(),
+                self.keeps(h0),
+                h0 == *old(self),
+                self.list == h0.list,
+                self.keys == h0.keys,
+                self.arena == h0.arena,
+                self.others == others0,
+                self.heads == h0.heads,
+                nh.arena.ptr() == node as *mut u16,
+                nh.arena.is_init(),
+                nh.arena.value() == arena,
+                nh.next.ptr() == next_ptr(node),
+                nh.next.is_init(),
+                nh.next.value() == others0,
+                nh.pad.ptr() == pad_ptr(node),
+                nh.pad.is_init(),
+                nh.pad.value() == pad as u8,
+                nh.rest.dom() == Set::range(node@.addr + 3, node@.addr + 8) + Set::range(node@.addr + 16, node@.addr + 64),
+                nh.rest.provenance() == node@.provenance,
+                pad < NODE_STAGGER_LINES,
+                claim.held(crate::meta::process_live_id(), block, size as int, 64),
+                node@.provenance == block@.provenance,
+                others0 == old(self).others,
+                rest.provenance() == node@.provenance,
+                rest.contains_range(base + 64 + 64 * c, 64 * (NCLASSES - c)),
+                rest.dom() == Set::range(block@.addr as int, block@.addr + size).difference(Set::range(base, base + 64 + 64 * c)),
+                base == block@.addr + 64 * pad,
+                size == 64 + 64 * NCLASSES + 64 * 15,
+                base == node@.addr,
+                base % 64 == 0,
+                node_placed(node),
+                crate::layout::process_regions().in_meta(base, 64 + 64 * NCLASSES),
+                forall|k: int| 0 <= k < c ==> self.owns(#[trigger] node_hdr(node, k)) && self.hdr_class(node_hdr(node, k)) == k,
+                forall|k: int| 0 <= k < c ==> !h0.owns(#[trigger] node_hdr(node, k)),
+        {
+            let ghost a = base + 64 + 64 * c;
+            proof {
+                super::cache::lemma_header_layout();
+                assert(a % 64 == 0) by (nonlinear_arith)
+                    requires
+                        a == base + 64 + 64 * c,
+                        base % 64 == 0;
+            }
+            let tracked (hraw, rest2) = rest.split(Set::range(a, a + 64));
+            proof {
+                rest = rest2;
+                assert(rest.dom() =~= Set::range(block@.addr as int, block@.addr + size).difference(Set::range(base, base + 64 + 64 * (c + 1))));
+                assert(Set::range(a + 64, a + 64 + 64 * (NCLASSES - c - 1)) <= rest.dom());
+            }
+            let tracked mut hp = hraw.into_typed::<CacheHeader>(a as usize);
+            // SAFETY: `c < NCLASSES`.
+            let cache = unsafe { Self::node_cache_ptr(node, c) };
+            proof {
+                assert(hp.ptr() == cache);
+                if self.perms@.hdrs.contains_key(cache) {
+                    let tracked other = self.perms.borrow().hdrs.tracked_borrow(cache);
+                    assert(cell_ok(cache, self.perms@.hdrs[cache], self.perms@.slots));
+                    hp.is_disjoint(other);
+                    assert(false);
+                }
+                assert(!h0.owns(cache));
+            }
+            ptr_mut_write(cache, Tracked(&mut hp), CacheHeader::EMPTY);
+            let ghost before = *self;
+            proof {
+                let ghost old_perms = self.perms@;
+                self.perms.borrow_mut().hdrs.tracked_insert(cache, hp);
+                self.perms.borrow_mut().cls = old_perms.cls.insert(cache, c as int);
+                assert(cell_ok(cache, self.perms@.hdrs[cache], self.perms@.slots));
+                CachePerms::lemma_insert_unused(old_perms, self.perms@, cache, c as int);
+                CachePerms::lemma_claimed_frame(before.perms@, self.perms@);
+                Heap::lemma_keeps_trans(h0, before, *self);
+            }
+        }
+        let ghost s1 = *self;
+        self.others = node;
+        proof {
+            self.list = Ghost(seq![node] + h0.list@);
+            self.keys = Ghost(seq![arena] + h0.keys@);
+            // The node keeps the rest of its block, the part before it and
+            // after its headers with the rest of its first line, and the
+            // block's claim ([`block_ok`]).
+            let tracked NodeHead { arena: na, next: nn, pad: np, rest: nr, claim: _ } = nh;
+            let tracked full = nr.join(rest);
+            assert(full.dom() =~= rest_dom(node, pad as u8));
+            assert(node_block(node, pad as u8) == block) by {
+                broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
+                assert(node_block(node, pad as u8)@ == block@);
+            }
+            let tracked nh = NodeHead { arena: na, next: nn, pad: np, rest: full, claim };
+            assert(block_ok(nh, node));
+            self.heads.borrow_mut().tracked_insert(node, nh);
+            assert forall|i: int| 0 <= i < h0.list@.len() implies h0.list@[i] != node by {
+                h0.lemma_list(h0.list@.len() - i);
+                assert(h0.list@[i] == h0.node_from_end(h0.list@.len() - i));
+                assert(h0.owns(node_hdr(h0.list@[i], 0)));
+            }
+            assert(self.list@[0] == node);
+            assert(self.list@.contains(node));
+            assert(h0.keys@.len() == h0.list@.len());
+            assert forall|i: int| 0 <= i < h0.keys@.len() implies #[trigger] h0.keys@[i] != arena by {
+                assert(h0.keys@[i] == old(self).keys@[i]);
+            }
+            assert(self.keys@[0] == arena);
+            assert forall|i: int| 1 <= i < self.keys@.len() implies self.keys@[i] == h0.keys@[i - 1] by {}
+            assert forall|i: int| 1 <= i < self.list@.len() implies self.list@[i] == h0.list@[i - 1] by {}
+            assert forall|i: int| 0 <= i < h0.list@.len() implies self.owns_node(#[trigger] h0.list@[i]) by {
+                h0.lemma_list(h0.list@.len() - i);
+                assert(h0.list@[i] == h0.node_from_end(h0.list@.len() - i));
+                Heap::lemma_keeps_node(h0, s1, h0.list@[i]);
+            }
+            // The new node's headers were not the heap's before, so none
+            // is a home header.
+            assert forall|cc: int, i: int, k: int|
+                0 <= cc < NCLASSES && 0 <= i < self.list@.len() && 0 <= k < NCLASSES
+                    implies #[trigger] self.home_hdrs@[cc] != #[trigger] node_hdr(self.list@[i], k) by {
+                assert(h0.owns(h0.home_hdrs@[cc]));
+                if i > 0 {
+                    assert(self.list@[i] == h0.list@[i - 1]);
+                }
+            }
+            // The new node's `next` is the old head, and every other
+            // node's permissions are where they were.
+            h0.lemma_heads();
+            reveal(heads_ok);
+            assert forall|i: int| 0 <= i < self.list@.len() implies #[trigger] head_ok(self.heads@, self.list@, self.keys@, i) by {
+                if i > 0 {
+                    assert(head_ok(h0.heads@, h0.list@, h0.keys@, i - 1));
+                    assert(self.list@[i] == h0.list@[i - 1]);
+                    if i + 1 < self.list@.len() {
+                        assert(self.list@[i + 1] == h0.list@[i]);
+                    }
+                } else {
+                    h0.lemma_list(h0.list@.len() as int);
+                    if h0.list@.len() > 0 {
+                        assert(self.list@[1] == h0.list@[0]);
+                    }
+                }
+            }
+        }
+        node
+    }
+}
+
+} // verus!
 
 verus! {
 
