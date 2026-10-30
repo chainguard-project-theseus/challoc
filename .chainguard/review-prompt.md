@@ -20,21 +20,18 @@ get wrong.
   `sdallocx`, `free_sized` and every function inlined into them must stay
   identical unless the change is a fast-path change that says so. A change
   to Rust source needs a `scripts/codegen-diff.sh compare` verdict on
-  x86_64 and aarch64 for the head under review. The head's `codegen` and
-  `codegen-arm64` checks run that compare against the merge base, so their
-  conclusions are the verdict. Only conclusion `success` counts as passing;
-  every other completed conclusion (`failure`, `neutral`, `skipped`,
-  `cancelled`, `timed_out`) counts as failing. Both passing means
-  `changed 0` on every function (`reloc-only` is fine) on both
-  architectures. For each failing check, the pull request body quotes that
-  check's per-variant `functions old .. changed N` lines and names every
-  changed function, per architecture and quantum, with its cause. The
-  verdict exists only when both checks have completed on the head. A check
-  that is missing or still pending, or a failing check whose `changed N`
-  lines the body does not quote, counts as a missing verdict. A missing
-  verdict, a failing codegen check with no account in the body, or a
-  changed hot-set function in a change that does not claim a fast-path
-  change, is Blocking.
+  x86_64 and aarch64, at q16 and q8, for the head under review. The
+  `codegen` and `codegen-arm64` jobs inside the head's `Chainguard Checks
+  (presubmit)` run compute it against the merge base. They are advisory
+  jobs, not separate check runs, and their logs are not readable here, so
+  the verdict is what the pull request body quotes from that run: the run
+  id, the head it ran on, and for each architecture and quantum either the
+  `.text hash .. IDENTICAL` line or the `functions old .. changed N` line,
+  with every changed function named with its cause. A body that quotes a
+  different head, or lacks any of the four architecture and quantum
+  results, has a missing verdict. A missing verdict, or a changed hot-set
+  function in a change that does not claim a fast-path change, is
+  Blocking.
 - Fast-path evidence. A change meant to change code under `src/heap/`,
   `src/class/`, `src/slab.rs` or `src/api/*.rs` needs the `make quick`
   go/no-go verdict, a per-operation cycle attribution on the workload it
@@ -145,8 +142,8 @@ disagree with that thread, say so in the summary with the evidence.
   bug the change fixes; a proof counts for what its `ensures` states.
   Every check above that the change touches has a verdict with evidence.
   Every non-trivial claim in the title and body was re-derived from the
-  code, or is named as one you could not verify (benchmark results). The
-  change is complete on its own. When in doubt, `comment`.
+  code, or is named as one you could not verify (codegen and benchmark
+  results). The change is complete on its own. When in doubt, `comment`.
 - `comment` otherwise.
 
 ## Summary
@@ -194,10 +191,9 @@ large change, the slices that could land on their own.
 
 ## Evidence
 
-- Ignore CI, with one exception. Call `list_checks` only to read the head's
-  `codegen` and `codegen-arm64` conclusions for the hot-set rule, and cite
-  only those two. Do not cite or ask about any other check run or status
-  in a finding or the summary.
+- Ignore CI. Do not call `list_checks`, and do not cite or ask about check
+  runs or statuses in a finding or the summary. The codegen verdict is read
+  from the pull request body, as the hot-set rule says.
 - Evidence is a file and a line at the head, never a guess from a name.
   Read the callers and callees needed to judge a change, not only the
   diff.
