@@ -230,6 +230,75 @@ const PINS: &[(&str, &[&str])] = &[
             "t.next_slab",
         ],
     ),
+    // `Arenas`: unbind, the walk below the count (get_existing), assign,
+    // load_bound, count_in, count, try_bind_idle, bind_if_idle, build's
+    // set_multi_arena and entry store, create (tests/loom/src/count.rs,
+    // narenas.rs, flags.rs).
+    (
+        "src/arena.rs",
+        &[
+            "prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));",
+            "if prev == 0 {",
+            "unbind_unbound(index);",
+            "pub fn get_existing(&self, index: u16) -> (r: Option<&Arena>)",
+            "p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));",
+            "pub fn get_existing_published(&self, index: u16) -> (r: Option<(&Arena, Tracked<&'static Published>)>)",
+            "let _g = self.lock.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
+            "let mut best_key = (u32::MAX, true);",
+            "let key = (self.load_bound(i), self.table[i].load(Ordering::Relaxed).is_null());",
+            "if key_less(key, best_key) {",
+            "if key == (0, false) {",
+            "let t = self.count_in(best);",
+            "n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));",
+            "crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));",
+            "r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));",
+            "if self.load_bound(i) != 0 {",
+            "return (false, Tracked(no_ticket(index)));",
+            "self.bind_if_idle(i)",
+            "r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm));",
+            "shared.set_multi_arena();",
+            "crate::vspec::entry::store(&self.table[index as usize], p, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(index as int)));",
+            "let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));",
+            "let index = g.n;",
+            "if index as usize >= MAX_ARENAS {",
+            "return None;",
+            "self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under))?;",
+            "c.n = index + 1;",
+            "crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut v.count));",
+        ],
+    ),
+    // `Policy::position` and `apply`'s swap (tests/loom/src/position.rs),
+    // and `empty_bytes`'s walk below the arena count (narenas.rs).
+    (
+        "src/policy.rs",
+        &[
+            "f = crate::vspec::count::load(&self.scaled16, Ordering::Relaxed, Tracked(&perm));",
+            "prev_frac = crate::vspec::count::swap(&self.scaled16, scaled, Ordering::Relaxed, Tracked(&mut perm));",
+            "changed = (prev_frac != scaled) || changed;",
+            "let n = shared.arenas.count() as usize;",
+            "if let Some(arena) = shared.arenas.get_existing(i as u16) {",
+        ],
+    ),
+    // `put_flags`, `set_multi_arena`, `free_flags` (tests/loom/src/flags.rs).
+    (
+        "src/heap/shared.rs",
+        &[
+            "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);",
+            "ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);",
+            "ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));",
+            "crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)",
+        ],
+    ),
+    // `RouteByte`'s new, load, fetch_or (tests/loom/src/flags.rs).
+    (
+        "src/vspec/flags.rs",
+        &[
+            "pub const ROUTE: u8 = 8;",
+            "RouteByte { b: AtomicU8::new(v) }",
+            "b.b.load(ordering)",
+            "b.b.fetch_or(v, ordering)",
+        ],
+    ),
 ];
 
 #[test]
