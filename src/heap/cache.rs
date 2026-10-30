@@ -158,11 +158,28 @@ impl CacheHeader {
             e
         }
     }
+}
 
+verus! {
+
+impl CacheHeader {
     /// Re-key a flushed (empty) header with a stack to `arena` for
     /// [`Heap::try_rehome`]: the probe restarts from the new arena's
     /// refill counter, and the stack, `cap` and the counters stay.
-    pub(super) fn rekey(&mut self, arena: u16, refilled: u32) {
+    pub(super) fn rekey(&mut self, arena: u16, refilled: u32)
+        requires
+            crate::sys::may_abort() || old(self).len == 0,
+            old(self).inv(),
+        ensures
+            final(self).inv(),
+            final(self).len == 0,
+            final(self).cap == old(self).cap,
+            final(self).slots == old(self).slots,
+            final(self).zeroed == 0,
+            final(self).arena == arena,
+            final(self).mode == MODE_PROBE,
+            final(self).probe_refilled == refilled,
+    {
         assert_rekey_flushed(&self.len);
         self.low_water = 0;
         self.zeroed = 0;
@@ -172,11 +189,7 @@ impl CacheHeader {
         self.arena = arena;
         self.set_mode(MODE_PROBE);
     }
-}
 
-verus! {
-
-impl CacheHeader {
     /// A header that has never been used: both fast paths fall through to
     /// the slow path, which gives it a capacity and a stack.
     pub(super) exec const EMPTY: CacheHeader

@@ -124,8 +124,6 @@ pub const MAX_CAP: u32 = 1024;
 /// Smallest cache capacity.
 pub const MIN_CAP: u32 = 8;
 
-} // verus!
-
 /// Slow-path entries between two periodic-work checks (design 6.4).
 pub const PERIODIC_EVERY: u32 = 64;
 /// Slow-path entries ([`Heap::slow_ticks`]) before which a new thread heap
@@ -138,6 +136,8 @@ pub const PERIODIC_EVERY: u32 = 64;
 /// its own data at home. Below the limit a heap has refilled at most a
 /// few caches, so the move's flush is small and abandons nothing.
 pub const REHOME_TICKS: u32 = 8;
+
+} // verus!
 
 /// Default cache capacity for a class: [`MAX_CAP`] (1024) slots for classes
 /// up to 128 bytes, halved for every doubling of the class size, never
@@ -4129,17 +4129,20 @@ fn assert_refill_empty(len: &u32)
     assert_eq!(*len, 0, "heap: refill of a cache that is not empty");
 }
 
-} // verus!
-
 /// `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache
-/// that still holds slots: `*len == 0` after it returns.
+/// that still holds slots: `*len == 0` after it returns. Trusted: as
+/// [`assert_refill_empty`].
+#[verifier::external_body]
 #[inline(always)]
 #[track_caller]
-fn assert_rekey_flushed(len: &u32) {
+fn assert_rekey_flushed(len: &u32)
+    requires
+        crate::sys::may_abort() || *len == 0,
+    ensures
+        *len == 0,
+{
     assert_eq!(*len, 0, "heap: re-keying a cache that was not flushed");
 }
-
-verus! {
 
 /// `head` is the permission to the 128 bytes of the heap at `h` before
 /// its home headers (its plain fields): what [`Heap::create_detached`]
@@ -4259,6 +4262,473 @@ impl CachePerms {
         };
         r.lemma_zero_intro();
         r
+    }
+}
+
+impl Heap {
+    /// `thread.tcache.enabled` write. Turning caches off folds the derived
+    /// counters into `uncached` (so `thread.allocated` keeps counting),
+    /// flushes and frees every cache of every arena, and makes
+    /// `ensure_cache` refuse to create new ones; turning them on lets the
+    /// next slow path create caches again.
+    ///
+    /// The heap stays well formed: the headers are reset through their
+    /// permissions ([`Heap::free_caches_in`]). Turning caches on changes no cache;
+    /// turning them off leaves every home header and every header of a
+    /// node on the `others` list without a stack ([`Heap::cleared`]), so
+    /// caching nothing ([`Heap::drained`]), with the released log extended
+    /// by exactly what they held, as [`Heap::flush_all`] states.
+    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).wf(),
+            final(self).tcache_on() == on,
+            on ==> final(self).caches_same(*old(self)),
+            !on ==> final(self).same_shape(*old(self)),
+            !on ==> final(self).cleared(),
+            !on ==> final(self).drained(),
+            !on ==> log_adds(final(self).released(), old(self).released(), old(self).held_all()),
+    {
+        proof {
+            shared.lemma_wf_slow();
+        }
+        self.tcache_enabled = on;
+        if on {
+            return;
+        }
+        let ghost h_off = *self;
+        self.flush_all(shared, Tracked(ord));
+        let ghost hf = *self;
+        proof {
+            Heap::lemma_held_all_same(*old(self), h_off);
+        }
+        Self::fold_counters(&mut self.uncached, &self.caches);
+        proof {
+            assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] self.cached_len(self.array_hdr(ptr::null_mut(), c)) == 0 by {
+                assert(hf.cached_len(hf.home_ptr(c)) == 0);
+            }
+        }
+        let ghost h2 = *self;
+        // SAFETY: the home array (null).
+        unsafe { self.free_caches_in(shared, ptr::null_mut(), Tracked(ord)) };
+        // The walk of `flush_all`. Folding and freeing a node's headers
+        // leaves the list as it is.
+        let mut o = self.others;
+        let ghost mut r = self.list_len();
+        let ghost l = old(self).list@;
+        proof {
+            self.lemma_list(r);
+            assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] self.hdr_cap(self.home_ptr(c)) == 0 by {
+                assert(h2.array_hdr(ptr::null_mut(), c) == self.home_ptr(c));
+                assert(self.hdr_cap(h2.array_hdr(ptr::null_mut(), c)) == 0);
+            }
+            assert forall|i: int, c: int| 0 <= i < l.len() && 0 <= c < NCLASSES implies #[trigger] self.cached_len(node_hdr(l[i], c)) == 0 by {
+                let p = node_hdr(l[i], c);
+                assert(hf.owns_node(l[i]));
+                assert forall|k: int| 0 <= k < NCLASSES implies p != #[trigger] h2.array_hdr(ptr::null_mut(), k) by {
+                    hf.lemma_home_apart(k, i, c);
+                }
+                assert(self.hdr(p) == h2.hdr(p));
+                assert(hf.cached_len(node_hdr(hf.list@[i], c)) == 0);
+            }
+        }
+        while !o.is_null()
+            invariant
+                self.tcache_on() == on,
+                crate::sys::may_syscall(),
+                shared.wf(),
+                shared.meta.live_id() == crate::meta::process_live_id(),
+                ord.allows(rank_class(0, 0)),
+                *ord == *old(ord),
+                self.wf(),
+                self.same_shape(*old(self)),
+                self.released() == hf.released(),
+                l == old(self).list@,
+                0 <= r <= self.list_len(),
+                r > 0 ==> o == self.node_from_end(r),
+                r == 0 ==> o@.addr == 0,
+                forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.hdr_cap(self.home_ptr(c)) == 0,
+                forall|i: int, c: int| 0 <= i < l.len() - r && 0 <= c < NCLASSES ==> #[trigger] self.hdr_cap(node_hdr(l[i], c)) == 0,
+                forall|i: int, c: int| 0 <= i < l.len() && 0 <= c < NCLASSES ==> #[trigger] self.cached_len(node_hdr(l[i], c)) == 0,
+            decreases r,
+        {
+            let ghost d = l.len() - r;
+            proof {
+                self.lemma_list(r);
+                assert(o == l[d]);
+            }
+            // SAFETY: `others` is a list of live metadata blocks owned by
+            // this heap.
+            let next = unsafe { self.node_next(o, Ghost(r)) };
+            let ghost h = *self;
+            // SAFETY: as above; the fold only reads the headers.
+            unsafe {
+                Self::fold_counters(&mut self.uncached, node_caches_detached(o, Tracked(self.perms.borrow()), Ghost(h), Ghost(r)));
+            }
+            proof {
+                assert(self.owns_node(o));
+                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] self.cached_len(self.array_hdr(o, c)) == 0 by {
+                    assert(self.array_hdr(o, c) == node_hdr(l[d], c));
+                    assert(h.cached_len(node_hdr(l[d], c)) == 0);
+                }
+            }
+            let ghost h1 = *self;
+            // SAFETY: `o` is a live node of this heap's `others` list.
+            unsafe { self.free_caches_in(shared, o, Tracked(ord)) };
+            proof {
+                Heap::lemma_same_trans(*old(self), h1, *self);
+                // Only `o`'s headers changed.
+                assert forall|k: int, c: int| 0 <= k < l.len() && 0 <= c < NCLASSES && k != d
+                    implies #[trigger] self.hdr(node_hdr(l[k], c)) == h1.hdr(node_hdr(l[k], c)) by {
+                    assert(h1.owns_node(l[k]));
+                    assert forall|j: int| 0 <= j < NCLASSES implies node_hdr(l[k], c) != #[trigger] h1.array_hdr(o, j) by {
+                        h1.lemma_nodes_apart(k, d, c, j);
+                    }
+                }
+                assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] self.hdr_cap(self.home_ptr(c)) == 0 by {
+                    let p = self.home_ptr(c);
+                    assert forall|j: int| 0 <= j < NCLASSES implies p != #[trigger] h1.array_hdr(o, j) by {
+                        h1.lemma_home_apart(c, d, j);
+                    }
+                    assert(self.hdr(p) == h1.hdr(p));
+                    assert(h.hdr_cap(h.home_ptr(c)) == 0);
+                }
+                assert forall|i: int, c: int| 0 <= i < d + 1 && 0 <= c < NCLASSES implies #[trigger] self.hdr_cap(node_hdr(l[i], c)) == 0 by {
+                    if i == d {
+                        assert(h1.array_hdr(o, c) == node_hdr(l[i], c));
+                        assert(self.hdr_cap(h1.array_hdr(o, c)) == 0);
+                    } else {
+                        assert(self.hdr(node_hdr(l[i], c)) == h1.hdr(node_hdr(l[i], c)));
+                        assert(h.hdr_cap(node_hdr(l[i], c)) == 0);
+                    }
+                }
+                assert forall|i: int, c: int| 0 <= i < l.len() && 0 <= c < NCLASSES implies #[trigger] self.cached_len(node_hdr(l[i], c)) == 0 by {
+                    if i == d {
+                        assert(h1.array_hdr(o, c) == node_hdr(l[i], c));
+                        assert(self.owns(node_hdr(l[i], c)));
+                        assert(self.hdr_cap(h1.array_hdr(o, c)) == 0);
+                        self.lemma_cap_len(node_hdr(l[i], c));
+                    } else {
+                        assert(self.hdr(node_hdr(l[i], c)) == h1.hdr(node_hdr(l[i], c)));
+                        assert(h.cached_len(node_hdr(l[i], c)) == 0);
+                    }
+                }
+                r = r - 1;
+            }
+            o = next;
+        }
+        proof {
+            self.lemma_list(r);
+            if r > 0 {
+                assert(o@.addr != 0);
+            }
+            assert(self.list@ == l);
+            self.lemma_cleared_drained();
+        }
+    }
+
+    /// Change the home arena (`thread.arena`). The caches of the old home
+    /// move to the `others` list and the new home's, if any, take their
+    /// place, so nothing is flushed. `arena` is below `MAX_ARENAS`;
+    /// callers (mallctl) also check that it exists.
+    ///
+    /// The heap stays well formed: the exchange goes header by header
+    /// through their permissions ([`Heap::swap_hdrs`]).
+    pub fn set_arena(&mut self, shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            shared.wf(),
+            old(self).wf(),
+            (arena as usize) < crate::arena::MAX_ARENAS,
+        ensures
+            *final(ord) == *old(ord),
+            final(self).wf(),
+            final(self).home() == arena,
+    {
+        proof {
+            shared.lemma_wf_slow();
+        }
+        // An explicit home is kept, even one equal to the current home:
+        // no late move away from it ([`Heap::try_rehome`]).
+        self.rehome = false;
+        if arena == self.arena {
+            return;
+        }
+        let old = self.arena;
+        let node = self.other_caches(shared, arena, true, Tracked(ord));
+        let ghost h1 = *self;
+        if node.is_null() {
+            // No metadata for a new node: the caches of the new home start
+            // empty and the old home's must go back first.
+            self.drop_home_caches(shared, Tracked(ord));
+        } else {
+            // The node's headers and the home headers trade places, and
+            // the node becomes the cache of `old`, the home arena being
+            // left.
+            for c in 0..NCLASSES
+                invariant
+                    self.wf(),
+                    self.owns_node(node),
+                    self.in_list(node),
+                    self.list == h1.list,
+                    self.keys == h1.keys,
+                    self.arena == h1.arena,
+                    self.heads == h1.heads,
+            {
+                let a = self.cache_ptr(c);
+                // SAFETY: `node` is a live block owned by this heap.
+                let b = unsafe { Self::node_cache_ptr(node, c) };
+                let ghost h0 = *self;
+                // SAFETY: a home header and a header of the node, both
+                // this heap's, so distinct.
+                unsafe { self.swap_hdrs(a, b) };
+                proof {
+                    Heap::lemma_same_node(h0, *self, node);
+                }
+            }
+            let ghost i = choose|i: int| 0 <= i < h1.list@.len() && h1.list@[i] == node && #[trigger] h1.keys@[i] == arena;
+            proof {
+                h1.lemma_heads();
+                reveal(others::heads_ok);
+                assert(others::head_ok(h1.heads@, h1.list@, h1.keys@, i));
+            }
+            let tracked mut hd = self.heads.borrow_mut().tracked_remove(node);
+            // SAFETY: as above.
+            unsafe { node_set_arena(node, old, Tracked(&mut hd.arena)) };
+            proof {
+                self.heads.borrow_mut().tracked_insert(node, hd);
+                // The node keyed `arena` (the only one, keys being
+                // distinct) is now keyed `old`, which no node was; the
+                // other nodes' first lines are as they were.
+                self.keys = Ghost(h1.keys@.update(i, old));
+                reveal(others::heads_ok);
+                assert forall|j: int| 0 <= j < self.list@.len() implies #[trigger] others::head_ok(self.heads@, self.list@, self.keys@, j) by {
+                    assert(others::head_ok(h1.heads@, h1.list@, h1.keys@, j));
+                    if j < i {
+                        assert(h1.list@[j] != h1.list@[i]);
+                    } else if j > i {
+                        assert(h1.list@[i] != h1.list@[j]);
+                    }
+                }
+                assert forall|j: int| 0 <= j < self.keys@.len() implies #[trigger] self.keys@[j] != arena by {
+                    if j != i {
+                        if j < i {
+                            assert(h1.keys@[j] != h1.keys@[i]);
+                        } else {
+                            assert(h1.keys@[i] != h1.keys@[j]);
+                        }
+                    }
+                }
+                assert forall|j: int, k: int| 0 <= j < k < self.keys@.len() implies self.keys@[j] != self.keys@[k] by {
+                    assert(h1.keys@[j] != old && h1.keys@[k] != old);
+                    assert(h1.keys@[j] != h1.keys@[k]);
+                }
+            }
+        }
+        self.arena = arena;
+        if self.bound {
+            proof {
+                shared.lemma_wf();
+                shared.lemma_wf_slow();
+            }
+            // The ticket for the old home goes back and one for the new
+            // home takes its place (`homed_ok`).
+            let tracked t = self.homed.borrow_mut().tracked_take();
+            proof {
+                shared.arenas.lemma_homed(t, old as int);
+            }
+            shared.arenas.unbind(old, Tracked(t));
+            let Tracked(t) = shared.arenas.bind(arena);
+            proof {
+                shared.arenas.lemma_homed(t, arena as int);
+                self.homed = Tracked(Some(t));
+            }
+        }
+    }
+
+    /// Move the home of a young thread heap onto `to`, the arena owning a
+    /// slot it is freeing, if no heap is homed there (design 6.5). Called
+    /// from the cross-arena `free` ([`Heap::rehome_on_free`]) while
+    /// [`Heap::rehome`] is set, which this clears once the heap has made
+    /// [`REHOME_TICKS`] slow-path entries; true when the heap moved.
+    ///
+    /// Why: a thread that takes over a dead thread's data was homed when
+    /// it started, while that thread still held its arena, so it was put
+    /// on another one, and every `free` of the inherited data took the
+    /// foreign cache while its own allocations came from fresh refills of
+    /// its own arena (larson: each successor alternated between two
+    /// arenas, `narenas:1` was 31% faster at 10 rounds per thread on the
+    /// C4A). Most successors now create their heap after the exiting
+    /// thread's unbind ([`Heap::destroy`] unbinds before its flush) and
+    /// are homed on its arena directly; one started earlier moves there
+    /// here once that arena is idle, and the inherited slots feed its
+    /// home caches again.
+    ///
+    /// The move flushes the home caches and the `FOREIGN` caches through
+    /// the ordinary flush (every cached slot goes back to its slab, its bit
+    /// cleared, so a stale free of one aborts as before; nothing stays
+    /// cached across the move), keeps the stacks and re-keys the home
+    /// headers to `to`. Only an automatic arena, only one with no heap
+    /// homed on it (`Arenas::try_bind_idle`, one compare-and-swap, so two
+    /// heaps never both take it), never one this heap already keeps an
+    /// `others` node for, and at most once per heap.
+    ///
+    /// Only while the heap is young by its slow-path count: a thread that
+    /// has built data of its own at home and then frees other threads'
+    /// data (mstress's workers take transfer slots from every arena) would
+    /// strand its own data on the arena it leaves and send every later
+    /// free of it to the `FOREIGN` cache. Moving on the first free from
+    /// any idle arena cost mstress 6% (700 of its 775 workers moved, after
+    /// about 140 slow-path entries each); under the limit 46 still moved
+    /// (+2.3%). Hence the second condition: two cross-arena frees in a
+    /// row seen here went to the same arena (an inherited data set comes
+    /// from one arena; mstress's transfer slots from all of them).
+    ///
+    /// The heap stays well formed: the home headers are re-keyed through
+    /// their permissions ([`Heap::hdr_mut`], [`Heap::lemma_set`]), the new
+    /// home is no `others` node's key (the lookup above found none), and
+    /// the binding moves with the tickets (`homed_ok`): `try_bind_idle`'s
+    /// for `to` replaces the old home's, which `unbind` takes back. On a
+    /// false return the code changes only `rehome` or `rehome_from`, and
+    /// the spec states `keeps`.
+    fn try_rehome(&mut self, shared: &Shared, to: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: bool)
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            shared.wf(),
+            old(self).wf(),
+            old(self).rehome,
+        ensures
+            *final(ord) == *old(ord),
+            final(self).wf(),
+            !r ==> final(self).keeps(*old(self)),
+            r ==> final(self).home() == to,
+            r ==> !final(self).spec_rehome(),
+    {
+        proof {
+            shared.lemma_wf_slow();
+        }
+        debug_assert!(self.bound);
+        proof {
+            Heap::lemma_keeps_refl(*self);
+        }
+        if self.slow_ticks >= REHOME_TICKS {
+            self.rehome = false;
+            return false;
+        }
+        if to != self.rehome_from {
+            self.rehome_from = to;
+            return false;
+        }
+        proof {
+            shared.lemma_wf();
+            shared.lemma_wf_slow();
+            shared.arenas.lemma_wf();
+        }
+        if to as u32 >= shared.arenas.auto()
+            || to == self.arena
+            || shared.arenas.bound(to) != 0
+            || !self.other_caches(shared, to, false, Tracked(&mut LockOrder::spare())).is_null()
+        {
+            return false;
+        }
+        let (won, Tracked(t)) = shared.arenas.try_bind_idle(to);
+        if !won {
+            return false;
+        }
+        let ghost h0 = *self;
+        let old = self.arena;
+        self.flush_arena(shared, old, ptr::null_mut(), Tracked(ord));
+        let ghost h1 = *self;
+        let foreign = self.other_caches(shared, FOREIGN, false, Tracked(&mut LockOrder::spare()));
+        if !foreign.is_null() {
+            self.flush_arena(shared, FOREIGN, foreign, Tracked(ord));
+        }
+        let ghost h2 = *self;
+        proof {
+            Heap::lemma_same_trans(h0, h1, h2);
+            // The home headers cache nothing (`rekey`'s precondition): the
+            // home flush emptied them and the `FOREIGN` flush kept them.
+            h1.lemma_array_hdr(ptr::null_mut());
+            assert forall|k: int| 0 <= k < NCLASSES implies #[trigger] self.cached_len(self.home_ptr(k)) == 0 by {
+                assert(h0.array_hdr(ptr::null_mut(), k) == h0.home_ptr(k));
+                assert(h1.array_hdr(ptr::null_mut(), k) == h1.home_ptr(k));
+                if foreign@.addr != 0 {
+                    let i = choose|i: int| 0 <= i < h1.list@.len() && h1.list@[i] == foreign;
+                    assert forall|j: int| 0 <= j < NCLASSES implies h1.home_ptr(k) != #[trigger] h1.array_hdr(foreign, j) by {
+                        h1.lemma_home_apart(k, i, j);
+                    }
+                    assert(self.held(h1.home_ptr(k)) == h1.held(h1.home_ptr(k)));
+                    assert(self.held(h1.home_ptr(k)).len() == self.cached_len(h1.home_ptr(k)));
+                }
+            }
+        }
+        let a = shared.owner(to).0;
+        for class in 0..NCLASSES
+            invariant
+                self.wf(),
+                self.same_shape(h0),
+                shared.wf(),
+                a.spec_index() == to,
+                crate::sys::may_abort() || crate::sys::valid_aborts(),
+                forall|k: int| class <= k < NCLASSES ==> #[trigger] self.cached_len(self.home_ptr(k)) == 0,
+        {
+            let c = self.cache_ptr(class);
+            proof {
+                self.lemma_array_hdr(ptr::null_mut());
+                assert(self.array_hdr(ptr::null_mut(), class as int) == self.home_ptr(class as int));
+            }
+            // SAFETY: `cache_ptr` is this heap's home header for `class`.
+            if unsafe { self.hdr_ref(c) }.cap != 0 {
+                let refilled = a.class(class).refilled() as u32;
+                let ghost hb = *self;
+                proof {
+                    assert(hb.cached_len(hb.home_ptr(class as int)) == 0);
+                }
+                // SAFETY: as above.
+                let h = unsafe { self.hdr_mut(c) };
+                h.rekey(to, refilled);
+                proof {
+                    Heap::lemma_set(hb, *self, c, *h);
+                    assert(self.perms@.hdrs.dom() =~= hb.perms@.hdrs.dom());
+                    Heap::lemma_same_trans(h0, hb, *self);
+                    // The other home headers kept their values.
+                    assert forall|k: int| class < k < NCLASSES implies #[trigger] self.cached_len(self.home_ptr(k)) == 0 by {
+                        let q = hb.home_ptr(k);
+                        assert(hb.cached_len(q) == 0);
+                        assert(hb.array_hdr(ptr::null_mut(), k) == hb.home_ptr(k));
+                        assert(hb.hdr_class(hb.home_ptr(k)) == k);
+                        assert(self.home_ptr(k) != c);
+                        assert(self.perms@.hdrs[q] == hb.perms@.hdrs[q]);
+                        assert(self.hdr(self.home_ptr(k)) == hb.hdr(self.home_ptr(k)));
+                    }
+                }
+            }
+        }
+        self.arena = to;
+        self.rehome = false;
+        proof {
+            shared.lemma_wf();
+        }
+        // The ticket for the old home goes back and the one for `to` takes
+        // its place (`homed_ok`).
+        let tracked t_old = self.homed.borrow_mut().tracked_take();
+        proof {
+            shared.arenas.lemma_homed(t_old, old as int);
+            shared.arenas.lemma_homed(t, to as int);
+            self.homed = Tracked(Some(t));
+        }
+        shared.arenas.unbind(old, Tracked(t_old));
+        true
     }
 }
 
@@ -4578,46 +5048,6 @@ impl Heap {
         self.tid
     }
 
-    /// Change the home arena (`thread.arena`). The caches of the old home
-    /// move to the `others` list and the new home's, if any, take their
-    /// place, so nothing is flushed. `arena` must exist.
-    pub fn set_arena(&mut self, shared: &Shared, arena: u16, _ord: Tracked<&mut LockOrder>) {
-        // An explicit home is kept, even one equal to the current home:
-        // no late move away from it ([`Heap::try_rehome`]).
-        self.rehome = false;
-        if arena == self.arena {
-            return;
-        }
-        let old = self.arena;
-        let node = self.other_caches(shared, arena, true, Tracked::assume_new());
-        if node.is_null() {
-            // No metadata for a new node: the caches of the new home start
-            // empty and the old home's must go back first.
-            self.drop_home_caches(shared, Tracked::assume_new());
-        } else {
-            // The node's headers and the home headers trade places, and
-            // the node becomes the cache of `old`, the home arena being
-            // left.
-            for c in 0..NCLASSES {
-                let a = self.cache_ptr(c);
-                // SAFETY: `node` is a live block owned by this heap.
-                let b = unsafe { Self::node_cache_ptr(node, c) };
-                // SAFETY: a home header and a header of the node, both
-                // this heap's, so distinct.
-                unsafe { self.swap_hdrs(a, b) };
-            }
-            // SAFETY: as above.
-            unsafe { node_set_arena(node, old, Tracked::assume_new()) };
-        }
-        self.arena = arena;
-        if self.bound {
-            shared
-                .arenas
-                .unbind(old, vstd::prelude::Tracked::assume_new());
-            let _ticket = shared.arenas.bind(arena);
-        }
-    }
-
     /// The `FOREIGN` slow path of a young heap's cross-arena `free`
     /// ([`Heap::rehome`] set): the first free of each class, while the
     /// class has no `FOREIGN` cache yet, and the flush of a full one. The
@@ -4661,130 +5091,6 @@ impl Heap {
         }
         self.push(shared, class, p, Tracked::assume_new());
         true
-    }
-
-    /// Move the home of a young thread heap onto `to`, the arena owning a
-    /// slot it is freeing, if no heap is homed there (design 6.5). Called
-    /// from the cross-arena `free` ([`Heap::rehome_on_free`]) while
-    /// [`Heap::rehome`] is set, which this clears once the heap has made
-    /// [`REHOME_TICKS`] slow-path entries; true when the heap moved.
-    ///
-    /// Why: a thread that takes over a dead thread's data was homed when
-    /// it started, while that thread still held its arena, so it was put
-    /// on another one, and every `free` of the inherited data took the
-    /// foreign cache while its own allocations came from fresh refills of
-    /// its own arena (larson: each successor alternated between two
-    /// arenas, `narenas:1` was 31% faster at 10 rounds per thread on the
-    /// C4A). Most successors now create their heap after the exiting
-    /// thread's unbind ([`Heap::destroy`] unbinds before its flush) and
-    /// are homed on its arena directly; one started earlier moves there
-    /// here once that arena is idle, and the inherited slots feed its
-    /// home caches again.
-    ///
-    /// The move flushes the home caches and the `FOREIGN` caches through
-    /// the ordinary flush (every cached slot goes back to its slab, its bit
-    /// cleared, so a stale free of one aborts as before; nothing stays
-    /// cached across the move), keeps the stacks and re-keys the home
-    /// headers to `to`. Only an automatic arena, only one with no heap
-    /// homed on it (`Arenas::try_bind_idle`, one compare-and-swap, so two
-    /// heaps never both take it), never one this heap already keeps an
-    /// `others` node for, and at most once per heap.
-    ///
-    /// Only while the heap is young by its slow-path count: a thread that
-    /// has built data of its own at home and then frees other threads'
-    /// data (mstress's workers take transfer slots from every arena) would
-    /// strand its own data on the arena it leaves and send every later
-    /// free of it to the `FOREIGN` cache. Moving on the first free from
-    /// any idle arena cost mstress 6% (700 of its 775 workers moved, after
-    /// about 140 slow-path entries each); under the limit 46 still moved
-    /// (+2.3%). Hence the second condition: two cross-arena frees in a
-    /// row seen here went to the same arena (an inherited data set comes
-    /// from one arena; mstress's transfer slots from all of them).
-    fn try_rehome(&mut self, shared: &Shared, to: u16, _ord: Tracked<&mut LockOrder>) -> bool {
-        debug_assert!(self.bound);
-        if self.slow_ticks >= REHOME_TICKS {
-            self.rehome = false;
-            return false;
-        }
-        if to != self.rehome_from {
-            self.rehome_from = to;
-            return false;
-        }
-        if to as u32 >= shared.arenas.auto()
-            || to == self.arena
-            || shared.arenas.bound(to) != 0
-            || !self
-                .other_caches(shared, to, false, Tracked::assume_new())
-                .is_null()
-        {
-            return false;
-        }
-        let (won, _ticket) = shared.arenas.try_bind_idle(to);
-        if !won {
-            return false;
-        }
-        let old = self.arena;
-        self.flush_arena(shared, old, ptr::null_mut(), Tracked::assume_new());
-        let foreign = self.other_caches(shared, FOREIGN, false, Tracked::assume_new());
-        if !foreign.is_null() {
-            self.flush_arena(shared, FOREIGN, foreign, Tracked::assume_new());
-        }
-        let a = shared.owner(to).0;
-        for class in 0..NCLASSES {
-            let c = self.cache_ptr(class);
-            // SAFETY: `cache_ptr` is this heap's home header for `class`.
-            if unsafe { self.hdr_ref(c) }.cap != 0 {
-                let refilled = a.class(class).refilled() as u32;
-                // SAFETY: as above.
-                let h = unsafe { self.hdr_mut(c) };
-                h.rekey(to, refilled);
-            }
-        }
-        self.arena = to;
-        self.rehome = false;
-        shared
-            .arenas
-            .unbind(old, vstd::prelude::Tracked::assume_new());
-        true
-    }
-
-    /// `thread.tcache.enabled` write. Turning caches off folds the derived
-    /// counters into `uncached` (so `thread.allocated` keeps counting),
-    /// flushes and frees every cache of every arena, and makes
-    /// `ensure_cache` refuse to create new ones; turning them on lets the
-    /// next slow path create caches again.
-    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool, _ord: Tracked<&mut LockOrder>) {
-        self.tcache_enabled = on;
-        if on {
-            return;
-        }
-        self.flush_all(shared, Tracked::assume_new());
-        Self::fold_counters(&mut self.uncached, &self.caches);
-        // SAFETY: the home array (null).
-        unsafe { self.free_caches_in(shared, ptr::null_mut(), Tracked::assume_new()) };
-        // The walk of `flush_all`. Folding and freeing a node's headers
-        // leaves the list as it is.
-        let mut o = self.others;
-        while !o.is_null() {
-            // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap.
-            let next = unsafe { self.node_next(o, Ghost::assume_new()) };
-            // SAFETY: as above; the fold only reads the headers.
-            unsafe {
-                Self::fold_counters(
-                    &mut self.uncached,
-                    node_caches_detached(
-                        o,
-                        Tracked::assume_new(),
-                        Ghost::assume_new(),
-                        Ghost::assume_new(),
-                    ),
-                )
-            };
-            // SAFETY: `o` is a live node of this heap's `others` list.
-            unsafe { self.free_caches_in(shared, o, Tracked::assume_new()) };
-            o = next;
-        }
     }
 
     /// Slow-path entries so far (the periodic tick's counter).

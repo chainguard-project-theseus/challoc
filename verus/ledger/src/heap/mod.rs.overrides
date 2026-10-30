@@ -7,3 +7,5 @@ assert_flushed	panic/abort	none (assumption)
 mark_bound	raw pointer (internal)	RefinedRust
 # As `mark_bound`, for `rehome`, which the token does not record.
 mark_rehome	raw pointer (internal)	RefinedRust
+# Trusted: `assert_eq!` reaches `core::panicking::assert_failed`.
+assert_rekey_flushed	panic/abort	none (assumption)
