@@ -4651,7 +4651,7 @@ impl Heap {
                 }
             }
         }
-        if !self.try_rehome(shared, to) {
+        if !self.try_rehome(shared, to, Tracked::assume_new()) {
             return false;
         }
         // The flush released every cached slot: test `p`'s bit again.
@@ -4700,7 +4700,7 @@ impl Heap {
     /// (+2.3%). Hence the second condition: two cross-arena frees in a
     /// row seen here went to the same arena (an inherited data set comes
     /// from one arena; mstress's transfer slots from all of them).
-    fn try_rehome(&mut self, shared: &Shared, to: u16) -> bool {
+    fn try_rehome(&mut self, shared: &Shared, to: u16, _ord: Tracked<&mut LockOrder>) -> bool {
         debug_assert!(self.bound);
         if self.slow_ticks >= REHOME_TICKS {
             self.rehome = false;
@@ -4716,8 +4716,11 @@ impl Heap {
             || !self
                 .other_caches(shared, to, false, Tracked::assume_new())
                 .is_null()
-            || !shared.arenas.try_bind_idle(to).0
         {
+            return false;
+        }
+        let (won, _ticket) = shared.arenas.try_bind_idle(to);
+        if !won {
             return false;
         }
         let old = self.arena;
@@ -4726,12 +4729,12 @@ impl Heap {
         if !foreign.is_null() {
             self.flush_arena(shared, FOREIGN, foreign, Tracked::assume_new());
         }
-        let a = shared.owner(to);
+        let a = shared.owner(to).0;
         for class in 0..NCLASSES {
             let c = self.cache_ptr(class);
             // SAFETY: `cache_ptr` is this heap's home header for `class`.
             if unsafe { self.hdr_ref(c) }.cap != 0 {
-                let refilled = a.0.class(class).refilled() as u32;
+                let refilled = a.class(class).refilled() as u32;
                 // SAFETY: as above.
                 let h = unsafe { self.hdr_mut(c) };
                 h.rekey(to, refilled);
