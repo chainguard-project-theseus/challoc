@@ -303,12 +303,14 @@ impl fmt::Write for FeatureLine {
 /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
 /// guessing a page size would corrupt every mapping we make. The abort
 /// is unreachable: the kernel's page is a power of two of at most 64 KiB
-/// (the `getauxval` specification).
+/// (the `getauxval` specification, which also says it is the process
+/// regions' page).
 pub fn page_size() -> (r: usize)
     ensures
         r != 0,
         crate::meta::is_pow2(r),
         r <= 0x1_0000,
+        r == (1usize << crate::layout::process_regions().lg_page),
 {
     let v = getauxval(AT_PAGESZ);
     if v != 0 && v.is_power_of_two() {

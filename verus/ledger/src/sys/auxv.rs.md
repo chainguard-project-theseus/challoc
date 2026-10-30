@@ -12,7 +12,7 @@ file.
 
 ## `getauxval#1`
 
-src/sys/auxv.rs:40. Kind: assume_spec. Category: FFI/syscall.
+src/sys/auxv.rs:42. Kind: assume_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > glibc's `getauxval(3)`: some word, 0 when the key is absent.
@@ -21,12 +21,13 @@ Tool: none (assumption). Status: trusted.
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
     ensures
         kind == AT_PAGESZ ==> r != 0 && crate::meta::is_pow2(r) && r <= 0x1_0000,
+        kind == AT_PAGESZ ==> r == (1usize << crate::layout::process_regions().lg_page),
 ;
 ```
 
 ## `getauxval#2`
 
-src/sys/auxv.rs:52. Kind: assume_spec. Category: FFI/syscall.
+src/sys/auxv.rs:55. Kind: assume_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > As above, and on arm64: an `AT_HWCAP` word with `HWCAP_PACA` and `HWCAP_PACG` set means the process may execute the data-key A instructions ([`crate::sys::pac::pac_available`]).
@@ -35,6 +36,7 @@ Tool: none (assumption). Status: trusted.
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
     ensures
         kind == AT_PAGESZ ==> r != 0 && crate::meta::is_pow2(r) && r <= 0x1_0000,
+        kind == AT_PAGESZ ==> r == (1usize << crate::layout::process_regions().lg_page),
         kind == AT_HWCAP ==> (r as u64 & crate::sys::pac::HWCAP_PACA != 0 && r as u64 & crate::sys::pac::HWCAP_PACG != 0 ==> crate::sys::pac::pac_available()),
 ;
 ```
