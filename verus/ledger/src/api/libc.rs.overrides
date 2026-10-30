@@ -1,0 +1,3 @@
+# The C contract of an out-pointer argument: the permission to write the
+# object it names, none for null.
+axiom_c_out	C-program contract	none (assumption)

@@ -2405,9 +2405,44 @@ impl Shared {
         vstd::arithmetic::div_mod::lemma_mod_multiples_basic(s, pg);
     }
 
+    /// A token that claims `p`, a page start of the huge region with page
+    /// index `page`, is the live block's, and holds the token of the run
+    /// at `page` whose usable bytes, in this `Shared`'s pages, are the
+    /// block's.
+    pub(crate) proof fn lemma_run_page(&self, p: *mut u8, page: usize, blk: super::Live)
+        requires
+            self.wf(),
+            blk.claims(p),
+            crate::layout::process_regions().is_huge_block(p@.addr, 1),
+            page == ((p@.addr - crate::layout::process_regions().huge_base) as usize) >> crate::layout::process_regions().lg_page,
+        ensures
+            blk.block(p),
+            blk.run_opt() is Some,
+            blk.run_opt().unwrap().wf(),
+            blk.run_opt().unwrap().start() == page,
+            blk.len() == (blk.run_opt().unwrap().npages() - crate::huge::GUARD_PAGES) * self.huge.spec_page(),
+    {
+        self.lemma_regions_ok();
+        blk.lemma_run_page(p, page);
+        blk.lemma_claimed_block(p);
+    }
+
     /// The usable bytes of a huge run for `size` ([`Huge::spec_usable`]).
     pub closed spec fn huge_usable(&self, size: usize) -> int {
         self.huge.spec_usable(size)
+    }
+
+    /// `r` is the usable size of a huge run at the page start `p`
+    /// ([`Huge::spec_run_usable`] of its page), for specs outside `heap`.
+    pub closed spec fn huge_run_usable(&self, p: usize, r: usize) -> bool {
+        self.huge.spec_run_usable(((p - self.regions.huge_base) as usize) >> self.regions.lg_page, r)
+    }
+
+    /// [`Shared::huge_run_usable`] unfolded.
+    pub(crate) proof fn lemma_huge_run_usable(&self, p: usize, r: usize)
+        ensures
+            self.huge_run_usable(p, r) == self.huge.spec_run_usable(((p - self.regions.huge_base) as usize) >> self.regions.lg_page, r),
+    {
     }
 
     /// `z` starts at the address of page `page` and covers a usable size
