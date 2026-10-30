@@ -994,6 +994,7 @@ pub(super) fn ncpus() -> u32
     crate::sys::ncpus()
 }
 
+/// The coarse monotonic clock, in nanoseconds (`sys::now_coarse_ns`).
 pub(super) fn now_ns() -> u64
     requires
         crate::sys::may_syscall(),

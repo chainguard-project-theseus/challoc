@@ -393,4 +393,21 @@ pub unsafe fn slice_mut_from_perms<'a, T>(
     unsafe { slice_mut_elems(base, start, n, Tracked(elems)) }
 }
 
+/// `a.swap_with_slice(b)`: panics unless the lengths are equal.
+pub assume_specification<T>[ <[T]>::swap_with_slice ](a: &mut [T], b: &mut [T])
+    requires
+        old(a)@.len() == old(b)@.len(),
+    ensures
+        final(a)@ == old(b)@,
+        final(b)@ == old(a)@,
+;
+
+/// `s.rotate_left(mid)`: panics unless `mid <= s.len()`.
+pub assume_specification<T>[ <[T]>::rotate_left ](s: &mut [T], mid: usize)
+    requires
+        mid <= old(s)@.len(),
+    ensures
+        final(s)@ == old(s)@.subrange(mid as int, old(s)@.len() as int) + old(s)@.subrange(0, mid as int),
+;
+
 } // verus!
