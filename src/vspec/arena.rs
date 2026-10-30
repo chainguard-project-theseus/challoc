@@ -33,6 +33,13 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::store ](
 /// `AtomicPtr::new`, which vstd does not specify.
 pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut T) -> core::sync::atomic::Atomic<*mut T>;
 
+/// `AtomicPtr::swap`, which vstd does not specify: any previous pointer.
+pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
+    a: &core::sync::atomic::Atomic<*mut T>,
+    val: *mut T,
+    order: core::sync::atomic::Ordering,
+) -> *mut T;
+
 /// Assumption (`lock.rs`): the value of an arena's statistics lock keeps
 /// the accounting identities (`ArenaStats::identities`) while the lock is
 /// free. Its writers: `Arena::init` creates the lock with
