@@ -7,45 +7,11 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `hdr_mut` | external_body | raw pointer (internal) | Verus | trusted |
 | `addr_mix` | external_body | raw pointer (internal) | RefinedRust | trusted |
-
-## `hdr_mut`
-
-src/heap/flush.rs:685. Kind: external_body. Category: raw pointer (internal).
-Tool: Verus. Status: trusted.
-
-> [`vstd::raw_ptr::ptr_mut_ref`] on the header `cache`, with its permission in `perms.hdrs`: `Heap::flush`'s three header writes.
-
-Body mints Tracked at line 707.
-
-```rust
-unsafe fn hdr_mut(perms: &mut Tracked<CachePerms>, cache: *mut CacheHeader) -> (r: &mut CacheHeader)
-    requires
-        old(perms)@.hdrs.contains_key(cache),
-        old(perms)@.hdrs[cache].ptr() == cache,
-        old(perms)@.hdrs[cache].is_init(),
-    ensures
-        *r == old(perms)@.hdrs[cache].value(),
-        final(perms)@.hdrs == old(perms)@.hdrs.insert(cache, final(perms)@.hdrs[cache]),
-        final(perms)@.hdrs[cache].ptr() == cache,
-        final(perms)@.hdrs[cache].is_init(),
-        final(perms)@.hdrs[cache].value() == *final(r),
-        final(perms)@.slots == old(perms)@.slots,
-        final(perms)@.cls == old(perms)@.cls,
-        final(perms)@.owner == old(perms)@.owner,
-        final(perms)@.toks == old(perms)@.toks,
-        final(perms)@.zero == old(perms)@.zero,
-        final(perms)@.handed == old(perms)@.handed,
-        final(perms)@.released == old(perms)@.released,
-        final(perms)@.blocks == old(perms)@.blocks,
-    opens_invariants none
-    no_unwind
-```
 
 ## `addr_mix`
 
-src/heap/flush.rs:1985. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1935. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
