@@ -1,8 +1,13 @@
 # Checks code reviewers for challoc. Read from the default branch by the
 # Checks code reviewer (mono's ai-cicd/sandbox/cmd/code-reviewer), so a
 # change here takes effect once it merges. The reviewer named here is the
-# advisory `bot:challoc` owner of every path in .github/codeowners.yaml.
+# `bot:challoc` owner of every path in .github/codeowners.yaml, on a gated
+# entry: with `approve: true` below, Checks submits an approving review as
+# chainguard[bot] when its verdict at a head is approve (mono's code-reviewer
+# README, "The approving review"). Paths the reviewers read as their own
+# definitions still need a person.
 version: 1
+approve: true
 # Per-pass limits (mono's code-reviewer README, "Limits"), at their
 # ceilings: a challoc proof pull request reaches 2,000 to 3,000 changed
 # lines, often in one source file plus its generated ledger file under
