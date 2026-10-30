@@ -1,0 +1,2 @@
+# Trusted: `assert_ne!` reaches `core::panicking::assert_failed`.
+assert_not_home	panic/abort	none (assumption)
