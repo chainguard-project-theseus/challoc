@@ -1,0 +1,3 @@
+# Temporary seam until the hot set: the heap has not moved since
+# `create_detached` recorded its home headers.
+Heap::cache_ptr	raw pointer (internal)	none (assumption)

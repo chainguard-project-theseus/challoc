@@ -85,32 +85,6 @@ const _: () = assert!(CACHE_HEADER == 64 && CACHE_HEADER == crate::layout::CLASS
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 
 impl CacheHeader {
-    /// A header that has never been used: both fast paths fall through to
-    /// the slow path, which gives it a capacity and a stack.
-    pub(super) const EMPTY: CacheHeader = CacheHeader {
-        len: 0,
-        cap: 0,
-        low_water: 0,
-        zeroed: 0,
-        slots: ptr::null_mut(),
-        allocs: 0,
-        compact_mask: u32::MAX,
-        run_end: 0,
-        moved: 0,
-        probe_refilled: 0,
-        arena: 0,
-        mode: MODE_OFF,
-        unsorted_flushes: 0,
-    };
-
-    /// Metadata layout of a stack of `cap` slots.
-    pub const fn slots_layout(cap: u32) -> Layout {
-        match Layout::from_size_align(8 * cap as usize, 16) {
-            Ok(l) => l,
-            Err(_) => unreachable!(),
-        }
-    }
-
     #[inline]
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -201,6 +175,48 @@ impl CacheHeader {
 verus! {
 
 impl CacheHeader {
+    /// A header that has never been used: both fast paths fall through to
+    /// the slow path, which gives it a capacity and a stack.
+    pub(super) exec const EMPTY: CacheHeader
+        ensures
+            Self::EMPTY.len == 0,
+            Self::EMPTY.cap == 0,
+            Self::EMPTY.low_water == 0,
+            Self::EMPTY.zeroed == 0,
+            Self::EMPTY.run_end == 0,
+    {
+        CacheHeader {
+            len: 0,
+            cap: 0,
+            low_water: 0,
+            zeroed: 0,
+            slots: ptr::null_mut(),
+            allocs: 0,
+            compact_mask: u32::MAX,
+            run_end: 0,
+            moved: 0,
+            probe_refilled: 0,
+            arena: 0,
+            mode: MODE_OFF,
+            unsorted_flushes: 0,
+        }
+    }
+
+    /// Metadata layout of a stack of `cap` slots.
+    pub const fn slots_layout(cap: u32) -> (r: Layout)
+        ensures
+            crate::vspec::layout::layout_size(r) == 8 * cap,
+            crate::vspec::layout::layout_align(r) == 16,
+    {
+        proof {
+            assert(16usize & sub(16usize, 1) == 0) by (bit_vector);
+        }
+        match Layout::from_size_align(8 * cap as usize, 16) {
+            Ok(l) => l,
+            Err(_) => unreachable!(),
+        }
+    }
+
     /// Sign every entry of `entries` (plain pointers) in place with the
     /// stack base `slots` as the modifier ([`PUSH_PAC`]).
     #[inline]
@@ -257,13 +273,36 @@ impl CacheHeader {
 
 } // verus!
 
+verus! {
+
 impl Heap {
-    /// The home header for `class`: `heap + 128 + 64 * class`, no load.
+    /// The home header for `class`: [`Heap::home_ptr`], by address. That it
+    /// is owned and caches `class` follows from `wf` ([`Heap::home_ok`]).
+    ///
+    /// Temporary seam: the body is the allocation fast path's address
+    /// computation (`heap + 128 + 64 * class`, no load), left as written so
+    /// the hot set's codegen does not move. Trusted: the heap is still at
+    /// the address whose home headers `Heap::create_detached` recorded
+    /// (`home_hdrs`; a heap never moves), so the address is
+    /// [`Heap::home_ptr`].
+    #[verifier::external_body]
     #[inline(always)]
-    pub(super) fn cache_ptr(&mut self, class: usize) -> *mut CacheHeader {
+    pub(super) fn cache_ptr(&mut self, class: usize) -> (r: *mut CacheHeader)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            *final(self) == *old(self),
+            r == old(self).home_ptr(class as int),
+        opens_invariants none
+    {
         self.home_ptr_at(class)
     }
+}
 
+} // verus!
+
+impl Heap {
     /// The home header of `class`, by address: the `caches` array's
     /// element.
     #[inline(always)]
