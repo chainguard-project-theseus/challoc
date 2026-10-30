@@ -5,14 +5,56 @@
 //! still has the copied lines, in order.
 //!
 //! ```sh
-//! cd tests/loom && cargo test --release
+//! sh tests/loom/run.sh
 //! ```
 //!
-//! Stock loom 0.7.2; every model is exhaustive unless `LOOM_MAX_PREEMPTIONS`
-//! sets a bound.
-//! `LOOM_LOG=info` prints loom's execution count per model.
+//! `run.sh` runs the models under loom 0.7.2 with `loom-0.7.2-dpor.patch`:
+//! stock loom's DPOR may never run an atomic store ahead of another
+//! thread's earlier load when the storing thread loaded the atomic last,
+//! and misses executions the models need (`dpor.rs`, which fails without
+//! the patch).
+//!
+//! Every model is exhaustive but `lock::loom_lock_three_threads` and its
+//! control `lock::loom_lock_dropped_mark_loses_a_wake_up`, bounded at 5
+//! preemptions. `LOOM_MAX_PREEMPTIONS` sets a bound for all of them
+//! (`run.sh` unsets it). `LOOM_LOG=info` prints loom's execution count per
+//! model.
 
 #[cfg(test)]
 mod background;
 #[cfg(test)]
+mod dpor;
+#[cfg(test)]
 mod futex;
+#[cfg(test)]
+mod lock;
+#[cfg(test)]
+mod slab;
+
+/// Run `f` under every interleaving loom reaches (exhaustive: no
+/// preemption bound unless `LOOM_MAX_PREEMPTIONS` sets one).
+#[cfg(test)]
+fn model<F: Fn() + Sync + Send + 'static>(f: F) {
+    loom::model::Builder::new().check(f);
+}
+
+/// Run `f` with at most `bound` preemptions (unless
+/// `LOOM_MAX_PREEMPTIONS` sets another), for a model too large to
+/// exhaust. loom's documentation finds a bound of 2 or 3 enough for most
+/// bugs.
+#[cfg(test)]
+fn model_bounded<F: Fn() + Sync + Send + 'static>(bound: usize, f: F) {
+    let mut b = loom::model::Builder::new();
+    if b.preemption_bound.is_none() {
+        b.preemption_bound = Some(bound);
+    }
+    b.check(f);
+}
+
+/// Leaked, not an `Arc`: a failed model ends the execution with threads
+/// parked, and dropping a loom object while that panic unwinds aborts the
+/// test binary.
+#[cfg(test)]
+fn leak<T>(v: T) -> &'static T {
+    Box::leak(Box::new(v))
+}

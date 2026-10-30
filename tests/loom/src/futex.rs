@@ -27,7 +27,13 @@ fn bucket(word: &AtomicU32) -> (MutexGuard<'static, usize>, &'static Condvar) {
 }
 
 /// `FUTEX_WAIT` with no timeout: sleep while `*word == val`. The compare
-/// is `Relaxed`, as the kernel's read is no C11 access.
+/// is `Relaxed`, as the kernel's read is no C11 access. The mutex does add
+/// an edge: a woken waiter re-takes it in `cv.wait`, so everything the
+/// waker did before its `wake` happens before the waiter's return. The
+/// callers do not rely on that (each re-checks the word with its own
+/// acquiring access after a wait), but on a path through a wake the models
+/// cannot show they do not: an ordering missing from that re-check would
+/// be supplied here.
 pub(crate) fn wait(word: &AtomicU32, val: u32) {
     let (g, cv) = bucket(word);
     if word.load(Ordering::Relaxed) == val {

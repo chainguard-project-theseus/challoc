@@ -21,7 +21,8 @@ FROM cgr.dev/chainguard/wolfi-base@sha256:31cfe087eb48bde827a6e0f607a12865f6f37d
 # floor); `rust` alone would follow Wolfi's default stream when it moves.
 # gcc includes g++, which build.rs needs for src/api/cxx_handler.cpp.
 # posix-libc-utils gives `getconf` (the harnesses read the page size and
-# CLK_TCK), procps `ps`/`pgrep`.
+# CLK_TCK), procps `ps`/`pgrep`, patch the loom DPOR patch
+# (tests/loom/run.sh; busybox has no `patch` applet).
 RUN apk add --no-cache \
       rust-1.98 \
       build-base \
@@ -30,6 +31,7 @@ RUN apk add --no-cache \
       cmake \
       procps \
       posix-libc-utils \
+      patch \
  && rustc --version && cargo --version && getconf PAGESIZE
 
 WORKDIR /src
