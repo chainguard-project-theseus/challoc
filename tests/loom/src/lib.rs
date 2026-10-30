@@ -23,13 +23,19 @@
 #[cfg(test)]
 mod background;
 #[cfg(test)]
+mod bitmap;
+#[cfg(test)]
 mod dpor;
+#[cfg(test)]
+mod free;
 #[cfg(test)]
 mod futex;
 #[cfg(test)]
 mod lock;
 #[cfg(test)]
 mod slab;
+#[cfg(test)]
+mod watermark;
 
 /// Run `f` under every interleaving loom reaches (exhaustive: no
 /// preemption bound unless `LOOM_MAX_PREEMPTIONS` sets one).
