@@ -12,12 +12,12 @@ file.
 
 ## `hdr_mut`
 
-src/heap/flush.rs:725. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:685. Kind: external_body. Category: raw pointer (internal).
 Tool: Verus. Status: trusted.
 
 > [`vstd::raw_ptr::ptr_mut_ref`] on the header `cache`, with its permission in `perms.hdrs`: `Heap::flush`'s three header writes.
 
-Body mints Tracked at line 747.
+Body mints Tracked at line 707.
 
 ```rust
 unsafe fn hdr_mut(perms: &mut Tracked<CachePerms>, cache: *mut CacheHeader) -> (r: &mut CacheHeader)
@@ -45,7 +45,7 @@ unsafe fn hdr_mut(perms: &mut Tracked<CachePerms>, cache: *mut CacheHeader) -> (
 
 ## `addr_mix`
 
-src/heap/flush.rs:1861. Kind: external_body. Category: raw pointer (internal).
+src/heap/flush.rs:1985. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.

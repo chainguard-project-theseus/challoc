@@ -257,12 +257,12 @@ impl CacheHeader {
 
     /// Authenticate every entry of `entries` (signed) in place. A corrupt
     /// entry kills the process (`pac::auth`), so the caller may abort at an
-    /// integrity check.
+    /// integrity check or shows every entry is signed with `slots`.
     #[inline]
     pub(super) fn auth_all(slots: *mut *mut u8, entries: &mut [*mut u8])
         requires
             pac::pac_available(),
-            crate::sys::may_abort_corrupt(),
+            crate::sys::may_abort_corrupt() || forall|i: int| 0 <= i < old(entries)@.len() ==> pac::signed((#[trigger] old(entries)@[i])@.addr, slots@.addr),
         ensures
             final(entries)@.len() == old(entries)@.len(),
             forall|i: int| 0 <= i < old(entries)@.len() ==>
@@ -274,7 +274,7 @@ impl CacheHeader {
             invariant
                 m == slots@.addr,
                 pac::pac_available(),
-                crate::sys::may_abort_corrupt(),
+                crate::sys::may_abort_corrupt() || forall|i: int| 0 <= i < e0.len() ==> pac::signed((#[trigger] e0[i])@.addr, m),
                 it.seq().len() == e0.len(),
                 forall|i: int| 0 <= i < it.seq().len() ==> *(#[trigger] it.seq()[i]) == e0[i],
                 forall|i: int| 0 <= i < it.index() ==> (*final(#[trigger] it.seq()[i]))@.addr == pac::spec_auth(e0[i]@.addr, m),

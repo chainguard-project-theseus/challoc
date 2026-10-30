@@ -75,6 +75,12 @@ pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
         #[trigger] spec_auth(spec_sign(p, modifier), modifier) == p,
 ;
 
+/// `p` is what [`sign`] returns for a plain user address (below
+/// [`user_va_limit`]) with `modifier`: a word [`auth`] accepts.
+pub open spec fn signed(p: usize, modifier: usize) -> bool {
+    exists|q: usize| q < user_va_limit() && p == #[trigger] spec_sign(q, modifier)
+}
+
 } // verus!
 
 /// Test-only count of PAC instructions this module has executed
@@ -226,17 +232,23 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
 /// (`autda`): the plain pointer, or, when the two disagree, a fault or a
 /// non-canonical pointer (module doc). The fault (FEAT_FPAC's `SIGILL`)
 /// kills the process and, with the keys fixed as `spec_sign` assumes,
-/// fires only on a corrupt entry: an integrity abort, so the caller holds
-/// `sys::may_abort_corrupt`.
+/// fires only on a word that is not [`signed`] with `modifier`, a corrupt
+/// entry: an integrity abort, so the caller holds `sys::may_abort_corrupt`
+/// or shows `p` is signed. A signed `p` gives back the address it was
+/// signed from, as [`axiom_auth_sign`] states. The no-fault claim for a
+/// signed `p` rests on the same fixed keys: a program that resets or
+/// disables data key A (the `prctl` calls in [`spec_sign`]'s doc) breaks
+/// it.
 /// Inline assembly on aarch64, outside what Verus checks.
 #[verifier::external_body]
 #[inline(always)]
 pub fn auth(p: usize, modifier: usize) -> (r: usize)
     requires
         pac_available(),
-        super::may_abort_corrupt(),
+        super::may_abort_corrupt() || signed(p, modifier),
     ensures
         r == spec_auth(p, modifier),
+        forall|q: usize| q < user_va_limit() && p == #[trigger] spec_sign(q, modifier) ==> r == q,
     opens_invariants none
 {
     #[cfg(target_arch = "aarch64")]
