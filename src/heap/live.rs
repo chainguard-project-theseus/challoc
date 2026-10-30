@@ -308,20 +308,54 @@ impl Live {
         self.slot.unwrap()
     }
 
+    /// `self` without its slot token and the permission, which leave
+    /// together.
+    pub closed spec fn without_slot(self) -> Live {
+        Live { slot: None, mem: None, ..self }
+    }
+
     /// Take the slot token out. The permission to the slot's bytes is used
     /// up with it (dropped): a slot token is never apart from a permission
     /// that is still held, so [`axiom_hand_out`] never mints a second one
-    /// ([`Live::from_slot`] takes a bare token).
-    pub proof fn take_slot(tracked self, c: int) -> (tracked t: GhostSingleton<int>)
+    /// ([`Live::from_slot`] and [`Live::put_slot`] take a bare token).
+    pub proof fn take_slot(tracked &mut self, c: int) -> (tracked t: GhostSingleton<int>)
         requires
-            self.slot_of(c),
+            old(self).slot_of(c),
+            old(self).mem_ok(),
         ensures
-            t == self.slot_tok(),
+            t == old(self).slot_tok(),
             t.id() == slot_loc(c),
-            t@ == self.addr() as int,
+            t@ == old(self).addr() as int,
+            *final(self) == old(self).without_slot(),
     {
-        let tracked Live { addr, class, slot, run, mem } = self;
-        slot.tracked_unwrap()
+        let tracked mut m = None;
+        vstd::modes::tracked_swap(&mut self.mem, &mut m);
+        self.slot.tracked_take()
+    }
+
+    /// Put back a slot token [`Live::take_slot`] took, with a fresh
+    /// permission to the slot's bytes ([`Live::from_slot`]; the one
+    /// `take_slot` dropped is gone, and the token was bare), their values
+    /// unknown: a free that declined (a full cache) leaves the token as
+    /// it was but for its byte state.
+    pub proof fn put_slot(tracked &mut self, tracked t: GhostSingleton<int>, orig: Live, p: *mut u8, c: int)
+        requires
+            crate::heap::regions_ok(),
+            *old(self) == orig.without_slot(),
+            t == orig.slot_tok(),
+            orig.slot_block(p, c),
+        ensures
+            final(self).slot_block(p, c),
+            final(self).addr() == orig.addr(),
+            final(self).len() == orig.len(),
+            forall|q: *mut u8| #[trigger] orig.claims(q) ==> final(self).claims(q),
+    {
+        *self = Live::from_slot(t, c, p);
+        assert forall|q: *mut u8| #[trigger] orig.claims(q) implies self.claims(q) by {
+            if crate::heap::slot_start(q) {
+                assert(orig.slot_of(orig.class));
+            }
+        }
     }
 
     /// Take the permission out, for a fill or a copy that takes it
@@ -575,6 +609,9 @@ impl Live {
 /// the premises: the axiom trusts that its callers' slot tokens come from
 /// a claim and their run tokens from `Huge::take` (the callers of
 /// [`Live::from_slot`] and [`Live::from_run`]: the `check_zero` reads,
+/// `heap::hand_out`, whose token a cache pop took from the stack that
+/// held it since its free, [`Live::put_slot`], whose token
+/// [`Live::take_slot`] took from a live block with its permission,
 /// `Shared::alloc_direct` and `Shared::alloc_huge`). A slot
 /// token still in the class bitmap's word invariants (a free slot, maybe
 /// of a slab above the commit watermark) would get a permission to

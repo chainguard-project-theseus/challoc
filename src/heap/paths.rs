@@ -21,6 +21,15 @@ use super::thread::heap_from_slot;
 use super::{
     CacheHeader, FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread,
 };
+#[cfg(verus_keep_ghost)]
+use super::{
+    CachePerms, PUSH_ZERO, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok, lemma_hint_ok,
+    lemma_plain_stored, pac_mode, regions_ok, slot_ptr, slot_start, slot_token,
+};
+#[cfg(verus_keep_ghost)]
+use crate::layout::{class_table, process_regions};
+#[cfg(verus_keep_ghost)]
+use crate::lock::axiom_entry;
 
 impl Heap {
     /// `malloc` of a non-huge class in the home arena: the cache pop, then
@@ -32,10 +41,15 @@ impl Heap {
             None => self.alloc_slow(shared, class, Tracked::assume_new()).0,
         }
     }
+}
 
+verus! {
+
+impl Heap {
     /// The cache pop alone: `None` when the cache is empty (or still the
     /// sentinel) and the caller must take a slow path. `flags` is
-    /// `Shared::push_flags` (only [`PUSH_PAC`] matters to a pop).
+    /// `Shared::push_flags` (only [`PUSH_PAC`] matters to a pop). `blk`
+    /// gets the popped slot's token.
     #[inline(always)]
     // The `match` stands for `Option::map`, which Verus does not specify.
     #[allow(clippy::manual_map)]
@@ -43,12 +57,32 @@ impl Heap {
         &mut self,
         class: usize,
         flags: u8,
-        _blk: Tracked<&mut Live>,
-    ) -> Option<*mut u8> {
-        match self.pop_fast(class, flags, Tracked::assume_new()) {
+        Tracked(blk): Tracked<&mut Live>,
+    ) -> (r: Option<*mut u8>)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+            (flags & PUSH_PAC != 0) ==> pac::pac_available(),
+            (flags & PUSH_PAC != 0) ==> crate::sys::may_abort_corrupt(),
+        ensures
+            final(self).keeps(*old(self)),
+            r matches Some(p) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> process_regions().is_slot(class as int, p@.addr)),
+            r matches Some(p) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> final(blk).slot_block(p, class as int)),
+        opens_invariants none
+    {
+        let tracked mut out = Map::<int, GhostSingleton<int>>::tracked_empty();
+        let r = match self.pop_fast(class, flags, Tracked(&mut out)) {
             Some((p, _)) => Some(p),
             None => None,
+        };
+        proof {
+            if let Some(p) = r {
+                if (flags & PUSH_PAC != 0) == pac_mode() {
+                    hand_out(&mut out, blk, class as int, p);
+                }
+            }
         }
+        r
     }
 
     /// [`Heap::alloc_fast`] with the zero flag: the one body of the home
@@ -61,39 +95,81 @@ impl Heap {
     /// `pop_compact` would be the one call inside the inlined pop, and a
     /// call in the body costs `malloc` a frame it needs for nothing else
     /// (the same move as the scan's `cached_twice` in
-    /// [`Heap::push_cache`]).
+    /// [`Heap::push_cache`]). With the cached slots holding their tokens,
+    /// `out[0]` is the popped slot's.
     #[inline(always)]
     pub(super) fn pop_fast(
         &mut self,
         class: usize,
         flags: u8,
-        _out: Tracked<&mut Map<int, GhostSingleton<int>>>,
-    ) -> Option<(*mut u8, bool)> {
+        Tracked(out): Tracked<&mut Map<int, GhostSingleton<int>>>,
+    ) -> (r: Option<(*mut u8, bool)>)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+            (flags & PUSH_PAC != 0) ==> pac::pac_available(),
+            (flags & PUSH_PAC != 0) ==> crate::sys::may_abort_corrupt(),
+        ensures
+            final(self).keeps(*old(self)),
+            r matches Some((p, _)) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> process_regions().is_slot(class as int, p@.addr)),
+            old(self).tokened() ==> final(self).tokened(),
+            old(self).tokened() ==> (r matches Some((p, _)) ==> slot_token(*final(out), class as int, (flags & PUSH_PAC != 0) == pac_mode(), p)),
+            r matches Some((p, true)) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> final(self).handed_ok(p, class as int)),
+        opens_invariants none
+    {
+        broadcast use lemma_handed_ok;
         let cache = self.cache_ptr(class);
+        let ghost old_perms = self.perms@;
+        proof {
+            assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
+        }
         // This thread's own header, unused (`len == 0`) or with a stack of
         // `len` entries.
-        let h = ptr_mut_ref(cache, Tracked::assume_new());
+        let h = ptr_mut_ref(cache, Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)));
         let len = h.len;
         if len == 0 {
+            proof {
+                CachePerms::lemma_update(old_perms, self.perms@, cache);
+                CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+                if old_perms.tokened() {
+                    CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                    CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
+                }
+                CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+            }
             return None;
         }
         let allocs = h.allocs.wrapping_add(1);
         if ((allocs as u32) & h.compact_mask) == 0 {
+            proof {
+                CachePerms::lemma_update(old_perms, self.perms@, cache);
+                CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+                if old_perms.tokened() {
+                    CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                    CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
+                }
+                CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+            }
             return None;
         }
         h.allocs = allocs;
+        proof {
+            CachePerms::lemma_update(old_perms, self.perms@, cache);
+            CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+            if old_perms.tokened() {
+                CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
+            }
+            CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+        }
         // SAFETY: `len` is the non-empty stack's length.
-        Some(unsafe {
-            Self::pop_top(
-                cache,
-                len,
-                flags & PUSH_PAC != 0,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            )
-        })
+        Some(unsafe { Self::pop_top(cache, len, flags & PUSH_PAC != 0, Tracked(self.perms.borrow_mut()), Tracked(out)) })
     }
+}
 
+} // verus!
+
+impl Heap {
     /// Fast path of `calloc`: the flag is true when the memory is known to
     /// read as zero, so the caller can skip its `memset`.
     #[inline(always)]
@@ -165,7 +241,11 @@ impl Heap {
         let arena = self.arena;
         self.alloc_huge_in(shared, size, align, arena, Tracked::assume_new())
     }
+}
 
+verus! {
+
+impl Heap {
     /// Huge allocation on this thread in `arena` (which must exist).
     pub fn alloc_huge_in(
         &mut self,
@@ -173,15 +253,27 @@ impl Heap {
         size: usize,
         align: usize,
         arena: u16,
-        _blk: Tracked<&mut Live>,
-    ) -> (*mut u8, bool, Tracked<Zeroed>) {
-        let (p, zero, z) = shared.alloc_huge(
-            size,
-            align,
-            arena,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        );
+        Tracked(blk): Tracked<&mut Live>,
+    ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(self).wf(),
+            shared.wf(),
+            crate::meta::is_pow2(align),
+        ensures
+            final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
+            r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
+            r.0@.addr != 0 ==> size <= shared.huge_usable(size),
+            r.0@.addr != 0 ==> shared.huge_ok(size),
+            r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+            r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
+            r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
+    {
+        // Premise (lock order): huge allocations come from the entry points
+        // and the slow paths, which hold no lock.
+        let (p, zero, z) = shared.alloc_huge(size, align, arena, Tracked(blk), Tracked(&mut axiom_entry()));
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
         }
@@ -191,11 +283,31 @@ impl Heap {
     /// Free of a huge run on this thread.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, _blk: Tracked<Live>) {
+    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(blk): Tracked<Live>)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(self).wf(),
+            shared.wf(),
+            page <= shared.huge_pages(),
+            blk.run_block(page as int),
+        ensures
+            final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
+    {
+        let tracked mut blk = blk;
         if shared.zero_on_free() {
-            let _ = shared.zero_huge(page, Tracked::assume_new());
+            // The token for the cleared run (`theorem_zero_on_free_huge`).
+            let Tracked(z) = shared.zero_huge(page, Tracked(&mut blk));
+            proof {
+                super::zero::theorem_zero_on_free_huge(&z, blk, page as int);
+            }
         }
-        let n = shared.free_huge(page, Tracked::assume_new(), Tracked::assume_new());
+        // The run's token; the permission to its bytes is dropped with it.
+        let tracked tok = blk.into_run(page as int);
+        // Premise (lock order): a free of a huge run comes from an entry
+        // point, which holds no lock.
+        let n = shared.free_huge(page, Tracked(tok), Tracked(&mut axiom_entry()));
         self.count_uncached_free(n);
     }
 
@@ -203,30 +315,60 @@ impl Heap {
     /// cache (a huge run, or a slot served straight from a slab): count
     /// them in `thread.allocated` (wrapping). The one way `uncached` grows.
     #[inline]
-    pub(super) fn count_uncached_alloc(&mut self, bytes: usize) {
+    pub(super) fn count_uncached_alloc(&mut self, bytes: usize)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
+    {
         self.uncached.allocated = self.uncached.allocated.wrapping_add(bytes as u64);
     }
 
     /// `bytes` were freed on this thread without passing through a cache:
     /// count them in `thread.deallocated` (wrapping).
     #[inline]
-    pub(super) fn count_uncached_free(&mut self, bytes: usize) {
+    pub(super) fn count_uncached_free(&mut self, bytes: usize)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
+    {
         self.uncached.deallocated = self.uncached.deallocated.wrapping_add(bytes as u64);
     }
 
     /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) on
     /// this thread: count it.
     #[inline(always)]
-    pub fn count_direct_alloc(&mut self, class: usize) {
+    pub fn count_direct_alloc(&mut self, class: usize)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
+    {
         self.count_uncached_alloc(class_size(class));
     }
 
     /// A slot of `class` was released directly on this thread: count it.
     #[inline(always)]
-    pub fn count_direct_free(&mut self, class: usize) {
+    pub fn count_direct_free(&mut self, class: usize)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
+    {
         self.count_uncached_free(class_size(class));
     }
+}
 
+} // verus!
+
+impl Heap {
     /// Refill the home cache and pop, allocating the cache first if this
     /// is the class's first use. Serves directly from the slab when there
     /// is no cache to be had.
@@ -315,9 +457,15 @@ impl Heap {
         let arena = self.arena;
         self.free_slow_in(shared, arena, class, p, Tracked::assume_new())
     }
+}
 
+verus! {
+
+impl Heap {
     /// `double_free_scan`'s slow-path compare: abort by name when `p` is
     /// among the top four entries of `cache` (signed as the push signs it).
+    /// When no entry stands for `p` (the second disjunct of the
+    /// precondition) the abort is unreachable.
     ///
     /// # Safety
     /// `cache` is one of this heap's real caches.
@@ -327,7 +475,13 @@ impl Heap {
         shared: &Shared,
         cache: *mut CacheHeader,
         p: *mut u8,
-    ) {
+    )
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && process_regions().is_slot(self.hdr_class(cache), p@.addr) && forall|i: int| 0 <= i < self.hdr(cache).len ==> #[trigger] self.cached_addr(cache, i) != p@.addr as int),
+            shared.wf(),
+            self.wf(),
+            self.owns(cache),
+    {
         // SAFETY: guaranteed by the caller.
         let slots = unsafe { self.hdr_ref(cache) }.slots;
         let e = if shared.pac() {
@@ -337,12 +491,26 @@ impl Heap {
         };
         // SAFETY: guaranteed by the caller.
         if unsafe {
-            Self::cached_recently(slots, self.hdr_ref(cache).len, e, Tracked::assume_new())
+            Self::cached_recently(slots, self.hdr_ref(cache).len, e, Tracked(&self.perms.borrow().slots))
         } {
+            proof {
+                // The hit's entry stands for `p` (`e` is `p` as stored).
+                shared.lemma_regions_ok();
+                let i = choose|i: int| 0 <= i < self.hdr(cache).len && self.perms@.slots[#[trigger] slot_ptr(slots, i)].value()@.addr == e@.addr;
+                assert(self.perms@.ent(cache, i) == slot_ptr(slots, i));
+                if process_regions().is_slot(self.hdr_class(cache), p@.addr) {
+                    lemma_plain_stored(e, p, self.hdr_class(cache), slots);
+                    assert(self.cached_addr(cache, i) == p@.addr as int);
+                }
+            }
             cached_twice(p);
         }
     }
+}
 
+} // verus!
+
+impl Heap {
     /// The slow free path for any arena. With `zero_on_free` every cached
     /// free arrives here (the fast push declines, see
     /// [`Heap::push_cache_flags`]) and the slot is cleared first: the
@@ -522,13 +690,17 @@ unsafe fn free_fast_tail(
     if pushed { Some(class) } else { None }
 }
 
+verus! {
+
 /// The sized free's fast path on an existing heap (`sdallocx`,
 /// `free_sized`): verify the size hint's class against the pointer
 /// arithmetically and push onto the home cache without loading the slab
 /// descriptor (design 6.3). `false` for anything off the fast path (not a
 /// slot of a committed slab, a hint naming another class or a huge size, a
 /// full cache); the caller then goes through [`Shared::check_size_hint`]
-/// and the exact [`free`]. Contains no call.
+/// and the exact [`free`]. Contains no call. `blk` holds the token for
+/// `p`: a push takes its slot token, and a declined push gives `blk` back
+/// the token with a fresh permission to the slot, its bytes unknown.
 #[inline(always)]
 pub fn free_sized_fast(
     shared: &Shared,
@@ -536,13 +708,71 @@ pub fn free_sized_fast(
     p: *mut u8,
     hint: Option<usize>,
     flags: u8,
-    _blk: Tracked<&mut Live>,
-) -> bool {
+    Tracked(blk): Tracked<&mut Live>,
+) -> (r: bool)
+    requires
+        shared.wf(),
+        (flags & PUSH_PAC != 0) == pac_mode(),
+        (flags & PUSH_PAC != 0) ==> pac::pac_available(),
+        hint matches Some(c) ==> c < NCLASSES,
+        old(h).wf(),
+        old(blk).claims(p),
+    ensures
+        final(h).keeps(*old(h)),
+        flags & PUSH_ZERO != 0 ==> !r,
+        r ==> free_target(p),
+        r ==> hint_ok(p, hint),
+        r ==> slot_start(p),
+        !r ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
+        !r ==> *final(blk) == *old(blk) || old(blk).block(p),
+        r ==> old(blk).block(p),
+{
     match shared.sized_slot(p, hint) {
-        Some(class) => h.push_fast(class, p, flags, Tracked::assume_new()),
+        Some(class) => {
+            let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+            let ghost orig = *blk;
+            proof {
+                shared.lemma_regions_ok();
+                lemma_hint_ok(p, class as int);
+                lend_slot(blk, &mut tk, class as int, p);
+                assert(process_regions().is_slot(class as int, p@.addr));
+            }
+            let r = h.push_fast(class, p, flags, Tracked(&mut tk));
+            proof {
+                if !r {
+                    blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
+                }
+            }
+            r
+        },
         None => false,
     }
 }
+
+/// The freed slot `p` of class `c`'s token, from the caller's token for
+/// `p`, into `tk[0]` for a cache push ([`slot_token`]); the permission to
+/// the slot's bytes is dropped with it ([`Live::take_slot`]), and a push
+/// that declines puts the token back with a fresh one ([`Live::put_slot`]).
+proof fn lend_slot(tracked blk: &mut Live, tracked tk: &mut Map<int, GhostSingleton<int>>, c: int, p: *mut u8)
+    requires
+        regions_ok(),
+        old(blk).claims(p),
+        process_regions().is_slot(c, p@.addr),
+        *old(tk) == Map::<int, GhostSingleton<int>>::empty(),
+    ensures
+        slot_token(*final(tk), c, true, p),
+        *final(blk) == old(blk).without_slot(),
+        final(tk)[0] == old(blk).slot_tok(),
+        old(blk).slot_block(p, c),
+{
+    old(blk).lemma_claims_slot(p, c);
+    old(blk).lemma_claimed_block(p);
+    blk.lemma_mem();
+    let tracked t = blk.take_slot(c);
+    tk.tracked_insert(0, t);
+}
+
+} // verus!
 
 /// `malloc` of a non-huge class on the calling thread.
 #[inline(always)]
@@ -672,14 +902,13 @@ pub(super) fn invalid_free(p: usize) -> !
     crate::sys::abort_fmt(format_args!("invalid free of {p:#x}: not an allocation"))
 }
 
-} // verus!
-
 /// `zero_on_free`: clear the class-size bytes of slot `p`. Called from the
 /// slow paths only (`Heap::free_slow_in`, `free_direct`), so the default
 /// `free` carries nothing of it but the flag test; a `memset` of the class
 /// size, so a 1 KiB value costs a 1 KiB store (and the slow-path call) per
 /// free, which is why the key is off by default. Returns the token for
-/// the cleared bytes.
+/// the cleared bytes, for a caller to hold until it gives the slot up
+/// ([`theorem_zero_on_free`](super::zero::theorem_zero_on_free)).
 ///
 /// # Safety
 /// `p` is a slot start of `class` in a committed slab, and `blk` holds the
@@ -689,12 +918,31 @@ pub(super) fn invalid_free(p: usize) -> !
 pub(super) unsafe fn zero_slot(
     class: usize,
     p: *mut u8,
-    _blk: Tracked<&mut Live>,
-) -> Tracked<Zeroed> {
-    // SAFETY: guaranteed by the caller; the slot is `size` writable bytes.
-    unsafe {
-        crate::vspec::user::zero_user(p, CLASSES.table()[class].size(), Tracked::assume_new())
+    Tracked(blk): Tracked<&mut Live>,
+) -> (z: Tracked<Zeroed>)
+    requires
+        class < NCLASSES,
+        regions_ok(),
+        process_regions().is_slot(class as int, p@.addr),
+        old(blk).slot_block(p, class as int),
+    ensures
+        z@.covers(p, class_table()[class as int].size as int),
+        final(blk).slot_block(p, class as int),
+{
+    let ghost orig = *blk;
+    proof {
+        blk.lemma_mem();
+        blk.lemma_slot_len(p, class as int);
+        process_regions().lemma_block_nonzero(class as int, p@.addr, 0, 0);
     }
+    let tracked mut mem = blk.take_mem();
+    // SAFETY: guaranteed by the caller; `mem` makes the slot's `size`
+    // bytes writable.
+    let z = unsafe { crate::vspec::user::zero_user(p, CLASSES.table()[class].size(), Tracked(&mut mem)) };
+    proof {
+        blk.put_mem(mem, orig);
+    }
+    z
 }
 
 /// `double_free_scan`: the slot being pushed is one of the top four cache
@@ -704,14 +952,15 @@ pub(super) unsafe fn zero_slot(
 /// frame for this call.
 #[cold]
 #[inline(never)]
-pub(super) fn cached_twice(p: *mut u8) -> ! {
+pub(super) fn cached_twice(p: *mut u8) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!(
         "double free of {:#x}: the slot is already in the thread cache",
         p as usize
     ))
 }
-
-verus! {
 
 /// `CLASSES[class].size()` without the bounds check: every `class` on the
 /// fast paths came from `class_of` or a slab descriptor, so it is below
@@ -728,14 +977,23 @@ pub(super) fn class_size(class: usize) -> (r: usize)
     unsafe { crate::vspec::slice::array_get_unchecked(CLASSES.table(), class) }.size()
 }
 
-} // verus!
-
 /// The scheduled pop's check, in debug builds: `allocs` is a multiple of
 /// the compaction period.
+///
+/// Trusted: the check is a protocol between the fast pop and the entry
+/// points that call the slow path after it, which no contract here
+/// states; nothing is claimed. A failed check panics (in debug builds),
+/// so it requires `may_abort`.
 #[inline(always)]
-fn debug_scheduled(allocs: u64, mask: u32) {
+#[verifier::external_body]
+fn debug_scheduled(allocs: u64, mask: u32)
+    requires
+        crate::sys::may_abort(),
+{
     debug_assert!(((allocs as u32) & mask) == 0);
 }
+
+} // verus!
 
 /// `shared` as the raw pointer the slot readers take.
 #[inline(always)]
