@@ -1,0 +1,3 @@
+# A `debug_assert!` with no contract (the pop's schedule is a protocol
+# between the fast pop and the slow path that no specification states).
+debug_scheduled	panic/abort	Kani

@@ -468,10 +468,10 @@ pub proof fn theorem_zero_on_free(tracked z: &Zeroed, p: *mut u8, c: int)
 /// the run's usable length (`Live::len`, the run token's pages before the
 /// guard), so it covers the run's whole usable size, a block of the huge
 /// region. The second `ensures` restates the `requires` through
-/// [`Zeroed::has`], for callers. Its callers are the two callers of
-/// `Shared::free_huge` on the free paths, `Heap::free_huge` and
-/// `heap::free_direct`, which are unverified on main and drop
-/// `zero_huge`'s token there.
+/// [`Zeroed::has`], for callers. `Heap::free_huge` calls it with
+/// `zero_huge`'s token before it frees the run; `heap::free_direct`, the
+/// other caller of `Shared::free_huge` on the free paths, is unverified
+/// and drops the token.
 pub(crate) proof fn theorem_zero_on_free_huge(tracked z: &Zeroed, blk: Live, page: int)
     requires
         blk.run_block(page),

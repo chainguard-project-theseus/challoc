@@ -15,7 +15,7 @@ use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
 use super::{
     ArenaCaches, cell_ok, lemma_plain_stored, lemma_stack_push, lemma_stack_shrink, node_hdr,
-    pac_mode, popped, regions_ok, slot_in, slot_ptr, slot_start, slot_token,
+    pac_mode, plain, popped, regions_ok, slot_in, slot_ptr, slot_start, slot_token,
 };
 use super::{CachePerms, FOREIGN, Heap, Live, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE, assert_rekey_flushed};
@@ -685,6 +685,12 @@ impl Heap {
                 (1..=len as usize).any(|i| *top.sub(i) == e)
             }
         }
+    }
+
+    /// The address entry `i` of owned header `cache` stands for
+    /// ([`plain`](super::plain)).
+    pub(super) open spec fn cached_addr(&self, cache: *mut CacheHeader, i: int) -> int {
+        plain(self.perms@.slots[self.perms@.ent(cache, i)].value(), self.hdr(cache).slots) as int
     }
 
     /// Push onto `cache` unless it is full. With `scan`, compare `p`
