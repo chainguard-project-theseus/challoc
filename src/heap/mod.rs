@@ -3906,7 +3906,7 @@ impl Heap {
 
 /// The home header for `class` of the heap at `h`: `h + 128 + 64 *
 /// class`, where [`Heap::create_detached`] writes it and
-/// [`Heap::cache_ptr`] computes it.
+/// [`Heap::home_ptr_at`] computes it.
 pub(super) open spec fn home_hdr(h: *mut Heap, class: int) -> *mut CacheHeader {
     vstd::raw_ptr::ptr_mut_from_data(vstd::raw_ptr::PtrData::<CacheHeader> {
         addr: (h@.addr + 128 + 64 * class) as usize,
