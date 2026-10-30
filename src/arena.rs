@@ -2761,6 +2761,26 @@ impl Arenas {
         self.count_inv@.constant().arena0
     }
 
+    /// In the process registry, a ticket for arena `i` of the process
+    /// ([`homed_on`]) is one of this registry ([`Arenas::ticket_of`]).
+    pub(crate) proof fn lemma_homed(&self, t: Homed, i: int)
+        requires
+            self.is_process(),
+            0 <= i < MAX_ARENAS,
+        ensures
+            homed_on(t, i) <==> self.ticket_of(t, i),
+    {
+    }
+
+    /// [`Arenas::wf`]'s automatic arena count.
+    pub proof fn lemma_wf(&self)
+        requires
+            self.wf(),
+        ensures
+            1 <= self.spec_auto() <= MAX_ARENAS,
+    {
+    }
+
     /// `t` is a ticket for arena `i` of this registry.
     pub open spec fn ticket_of(&self, t: Homed, i: int) -> bool {
         &&& t.arena == i

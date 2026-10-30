@@ -21,20 +21,20 @@ verus! {
 /// The plain fields of the fresh heap at [`FreshHeap::heap`]: the
 /// permission to them ([`FreshHeap::head`], the 128 bytes before
 /// `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here,
-/// and what [`init_fields`] stored in them: the `Shared`, the home arena
-/// and `bound`, which it stores as `false`. Linear and not `Copy` (it
-/// holds the permission): the one holder of the heap-head permission,
-/// made by [`init_fields`] once per heap. That `shared`, `arena` and
-/// `bound` are what the heap's fields hold is not a fact Verus checks
-/// (the permission forgets the values): `init_fields` sets them to what
-/// it stores, and nothing else builds, takes apart or changes one (its
-/// fields are private to this module). It records only `init_fields`'
-/// stores: `mark_bound` and `mark_rehome` (heap/mod.rs) set `bound` and
-/// `rehome` through the raw heap pointer and leave the token as it was,
-/// so after them its `bound` no longer matches the field. It is valid
-/// while its heap is live, and must be dropped before `destroy`, which
-/// gets the whole heap block back, head included. `Tcaches::create`
-/// drops it.
+/// and what the field writers stored in them: the `Shared` and the home
+/// arena ([`init_fields`]), and `bound`, which `init_fields` stores as
+/// `false` and [`mark_bound`](super::mark_bound) sets. Linear and not
+/// `Copy` (it holds the permission): the one holder of the heap-head
+/// permission, made by [`init_fields`] once per heap. That `shared`,
+/// `arena` and `bound` are what the heap's fields hold is not a fact
+/// Verus checks (the permission forgets the values): `init_fields` sets
+/// them to what it stores, and nothing else builds, takes apart or
+/// changes one (its fields are private to this module) but `mark_bound`,
+/// which records its store of `bound` in it. `mark_rehome` stores
+/// `rehome`, a field the token does not record, and leaves it as it was.
+/// It is valid while its heap is live, and must be dropped before
+/// `destroy`, which gets the whole heap block back, head included.
+/// `Tcaches::create` drops it.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub(super) tracked struct FreshHeap {
     ghost heap: *mut Heap,
@@ -60,7 +60,8 @@ impl FreshHeap {
         self.arena
     }
 
-    /// The `bound` [`init_fields`] stored: `false`.
+    /// `bound`: `false` as [`init_fields`] stored it, `true` once
+    /// [`mark_bound`](super::mark_bound) has recorded its store.
     pub(super) closed spec fn bound(&self) -> bool {
         self.bound
     }
