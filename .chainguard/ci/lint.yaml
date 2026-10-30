@@ -12,6 +12,7 @@ environment:
     - bash
     - curl             # ci/shellcheck.sh fetches the pinned release
     - xz
+    - patch            # tests/loom/run.sh applies the loom DPOR patch
 
 checks:
   rustfmt:
@@ -38,9 +39,11 @@ checks:
 
   loom:
     description: >-
-      The loom models of the atomics protocol (tests/loom, its own crate):
-      cargo fmt --check, then cargo test --release --locked. Worth a look on
-      any change to the claim, release or purge atomics.
+      The loom models of the atomics protocols (tests/loom, its own crate):
+      cargo fmt --check, then tests/loom/run.sh, which checks Cargo.lock
+      and runs cargo test --release under loom 0.7.2 with the DPOR patch
+      (tests/loom/loom-0.7.2-dpor.patch). Worth a look on any change to
+      the atomics a model copies (tests/loom/tests/pins.rs).
     resources: medium
     timeout: 20m
     network: *crates
@@ -48,10 +51,10 @@ checks:
       - name: rustfmt (tests/loom)
         cmd: [cargo, fmt, --check, --manifest-path, tests/loom/Cargo.toml]
       - name: loom models
-        cmd: [cargo, test, --release, --locked, --manifest-path, tests/loom/Cargo.toml]
+        cmd: [sh, tests/loom/run.sh]
 
   shellcheck:
-    description: shellcheck (pinned upstream release) over ci/*.sh and verus/*.sh.
+    description: shellcheck (pinned upstream release) over ci/*.sh, verus/*.sh and tests/loom/*.sh.
     timeout: 5m
     network:
       egress:
