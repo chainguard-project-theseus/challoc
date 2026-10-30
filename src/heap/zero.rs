@@ -448,8 +448,8 @@ pub(super) proof fn lemma_rebuild_entries(
 /// A free path that releases the slot under `Shared::zero_on_free` holds
 /// such a token once it has cleared the slot. The callers
 /// (`Heap::free_slow_in` and `heap::free_direct`, after `zero_slot`) are
-/// unverified exec code on main and do not call it yet: `zero_slot`
-/// returns no token there.
+/// unverified and do not call it: they drop the token `zero_slot`
+/// returns.
 pub proof fn theorem_zero_on_free(tracked z: &Zeroed, p: *mut u8, c: int)
     requires
         super::regions_ok(),
