@@ -19,6 +19,8 @@
 //! never writes below `len`.
 
 use core::ptr;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
 use vstd::prelude::{Tracked, verus};
 
 use crate::layout::CLASSES;
@@ -35,17 +37,34 @@ pub const MODE_OFF: u16 = 0;
 pub const MODE_PROBE: u16 = 1;
 pub const MODE_COMPACT: u16 = 2;
 
-} // verus!
-
 /// Pops between two fragmentation probes of a class (minus one).
-pub const PROBE_MASK: u32 = (1 << 12) - 1;
+pub exec const PROBE_MASK: u32
+    ensures
+        PROBE_MASK == 0xfff,
+{
+    proof {
+        assert((1u32 << 12u32) == 0x1000) by (bit_vector);
+    }
+    (1 << 12) - 1
+}
 /// A compacting cache serves every `2^COMPACT_SHIFT`th pop of a class
 /// from the lowest-address cached slot instead of the top of the stack
 /// (design 6.4).
 pub const COMPACT_SHIFT: u32 = 3;
 /// The scheduled-pop mask of a compacting cache: a pop whose count has
 /// no bit of it set is served from the bottom of the run.
-pub const COMPACT_MASK: u32 = (1 << COMPACT_SHIFT) - 1;
+pub exec const COMPACT_MASK: u32
+    ensures
+        COMPACT_MASK == 7,
+{
+    proof {
+        assert((1u32 << 3u32) == 8) by (bit_vector);
+    }
+    (1 << COMPACT_SHIFT) - 1
+}
+
+} // verus!
+
 /// A class is worth compacting when its slabs hold at least this many
 /// slabs' worth of holes (free slots not in any cache) and at least a
 /// [`COMPACT_MIN_RATIO`]th of their capacity. Two or three slabs of holes
@@ -90,12 +109,27 @@ impl CacheHeader {
     pub fn compacting(&self) -> bool {
         self.mode == MODE_COMPACT
     }
+}
+
+verus! {
+
+impl CacheHeader {
+    /// This header with `mode` and `compact_mask` replaced: what
+    /// [`CacheHeader::set_mode`] leaves.
+    pub(super) open spec fn with_mode(self, mode: u16, compact_mask: u32) -> CacheHeader {
+        CacheHeader { mode, compact_mask, ..self }
+    }
 
     /// The scheduled-pop mask `mode` implies: [`PROBE_MASK`] while
     /// probing, [`COMPACT_MASK`] while compacting, `u32::MAX` when off (one pop in 2^32 then reaches
     /// `pop_compact`, which pops the top). The one home of the
     /// mode-to-mask rule; [`CacheHeader::set_mode`] applies it.
-    pub(super) fn mask_for(mode: u16) -> u32 {
+    pub(super) fn mask_for(mode: u16) -> (r: u32)
+        ensures
+            mode == MODE_PROBE ==> r == 0xfff,
+            mode == MODE_COMPACT ==> r == 7,
+            mode != MODE_PROBE && mode != MODE_COMPACT ==> r == u32::MAX,
+    {
         match mode {
             MODE_PROBE => PROBE_MASK,
             MODE_COMPACT => COMPACT_MASK,
@@ -105,11 +139,19 @@ impl CacheHeader {
 
     /// Enter `mode` and derive the scheduled-pop mask from it
     /// ([`CacheHeader::mask_for`]), so the two fields never disagree.
-    pub(super) fn set_mode(&mut self, mode: u16) {
+    pub(super) fn set_mode(&mut self, mode: u16)
+        ensures
+            *final(self) == old(self).with_mode(mode, final(self).compact_mask),
+            mode == MODE_PROBE ==> final(self).compact_mask == 0xfff,
+            mode == MODE_COMPACT ==> final(self).compact_mask == 7,
+            mode != MODE_PROBE && mode != MODE_COMPACT ==> final(self).compact_mask == u32::MAX,
+    {
         self.mode = mode;
         self.compact_mask = Self::mask_for(mode);
     }
 }
+
+} // verus!
 
 impl Heap {
     /// The scheduled pop (design 6.4). Probing: run the periodic work, ask
