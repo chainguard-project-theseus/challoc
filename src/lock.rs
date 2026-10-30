@@ -359,6 +359,9 @@ impl<'a> LockOrder<'a> {
 ///   path, whose callers (`api::libc`'s `free_sized_slow` and
 ///   `api::jemalloc`'s `sdallocx_routed`) are reached from the C entry
 ///   points through code that takes no lock;
+/// - `Heap::alloc_huge_in`'s `Shared::alloc_huge` and `Heap::free_huge`'s
+///   `Shared::free_huge`, reached from the entry points and the slow
+///   paths, which hold no allocator lock;
 /// - `Shared::init`, which runs before the `Shared` is published, so no
 ///   allocator lock exists yet;
 /// - the background thread's `main` (`purge::background`), since a new

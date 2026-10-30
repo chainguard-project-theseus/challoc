@@ -11,7 +11,7 @@ file.
 
 ## `axiom_hand_out`
 
-src/heap/live.rs:600. Kind: axiom. Category: allocator invariant.
+src/heap/live.rs:637. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the `len` usable bytes of the block at `p`, a slot of a class (`len` its size) or a huge run, valid through `p`.
