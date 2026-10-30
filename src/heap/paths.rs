@@ -201,17 +201,17 @@ impl Heap {
 
     /// `bytes` were allocated on this thread without passing through a
     /// cache (a huge run, or a slot served straight from a slab): count
-    /// them in `thread.allocated`. The one way `uncached` grows.
+    /// them in `thread.allocated` (wrapping). The one way `uncached` grows.
     #[inline]
     pub(super) fn count_uncached_alloc(&mut self, bytes: usize) {
-        self.uncached.allocated += bytes as u64;
+        self.uncached.allocated = self.uncached.allocated.wrapping_add(bytes as u64);
     }
 
     /// `bytes` were freed on this thread without passing through a cache:
-    /// count them in `thread.deallocated`.
+    /// count them in `thread.deallocated` (wrapping).
     #[inline]
     pub(super) fn count_uncached_free(&mut self, bytes: usize) {
-        self.uncached.deallocated += bytes as u64;
+        self.uncached.deallocated = self.uncached.deallocated.wrapping_add(bytes as u64);
     }
 
     /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) on
@@ -364,7 +364,7 @@ impl Heap {
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check),
             // and `blk` holds the permission to its bytes.
-            unsafe { zero_slot(class, p) };
+            let _ = unsafe { zero_slot(class, p, Tracked::assume_new()) };
         }
         // `arena` is the home arena, or `FOREIGN` for another arena's
         // slot (`free_other`); a real arena is materialised first, since
@@ -636,7 +636,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, _blk: Tracked<Live>) {
             if shared.zero_on_free() {
                 // SAFETY: `classify_free` verified `p` as an allocated slot
                 // of `class`, and `blk` holds the permission to its bytes.
-                unsafe { zero_slot(class, p) };
+                let _ = unsafe { zero_slot(class, p, Tracked::assume_new()) };
             }
             shared.free_direct(
                 arena,
@@ -678,15 +678,23 @@ pub(super) fn invalid_free(p: usize) -> !
 /// slow paths only (`Heap::free_slow_in`, `free_direct`), so the default
 /// `free` carries nothing of it but the flag test; a `memset` of the class
 /// size, so a 1 KiB value costs a 1 KiB store (and the slow-path call) per
-/// free, which is why the key is off by default.
+/// free, which is why the key is off by default. Returns the token for
+/// the cleared bytes.
 ///
 /// # Safety
-/// `p` is a slot start of `class` in a committed slab.
+/// `p` is a slot start of `class` in a committed slab, and `blk` holds the
+/// permission to its bytes.
 #[cold]
 #[inline(never)]
-pub(super) unsafe fn zero_slot(class: usize, p: *mut u8) {
+pub(super) unsafe fn zero_slot(
+    class: usize,
+    p: *mut u8,
+    _blk: Tracked<&mut Live>,
+) -> Tracked<Zeroed> {
     // SAFETY: guaranteed by the caller; the slot is `size` writable bytes.
-    unsafe { ptr::write_bytes(p, 0, CLASSES[class].size()) };
+    unsafe {
+        crate::vspec::user::zero_user(p, CLASSES.table()[class].size(), Tracked::assume_new())
+    }
 }
 
 /// `double_free_scan`: the slot being pushed is one of the top four cache
