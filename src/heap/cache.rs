@@ -887,15 +887,16 @@ impl Heap {
         } else {
             shared.owner(arena).0.class(class).refilled() as u32
         };
-        let cache = self.cache_slot(shared, arena, class);
+        let cache = self.cache_slot(shared, arena, class, Tracked::assume_new());
         if cache.is_null() {
             return ptr::null_mut();
         }
-        // SAFETY: `cache` points into this heap's own header array.
+        // SAFETY: `cache` is this heap's own header for `(arena, class)`
+        // (`cache_slot`), in its home array or one of its `others` nodes.
         if unsafe { self.hdr_ref(cache) }.cap != 0 {
             return cache;
         }
-        let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
+        let (slots, _) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap));
         if slots.is_null() {
             return ptr::null_mut();
         }

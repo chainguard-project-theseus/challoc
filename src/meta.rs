@@ -621,6 +621,7 @@ impl Meta {
     /// Aborts for a layout this allocator does not serve (`size >
     /// MAX_BINNED` or `align > MAX_ALIGN`): that is a bug, not a resource
     /// failure.
+    #[allow(dead_code, reason = "Meta's general entry; outside the tests every caller uses alloc_raw")]
     pub fn alloc(&self, layout: Layout) -> (p: *mut u8)
         requires
             crate::sys::may_syscall(),

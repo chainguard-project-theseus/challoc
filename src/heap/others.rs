@@ -648,6 +648,7 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
+        _ord: Tracked<&mut LockOrder>,
     ) -> *mut CacheHeader {
         if arena == self.arena {
             return self.cache_ptr(class);
