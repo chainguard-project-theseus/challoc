@@ -1,3 +1,9 @@
-# Temporary seam until the hot set: the heap has not moved since
-# `create_detached` recorded its home headers.
-Heap::cache_ptr	raw pointer (internal)	none (assumption)
+# The home header's address: the cast is checkable, but the trust is that
+# the ghost record of home headers names this heap's, which unverified
+# `create_detached` sets up and nothing moves afterwards.
+Heap::home_ptr_at	allocator invariant	none (assumption)
+
+# The scan's compare: four plain loads, or for a stack of fewer than four
+# an iterator Verus does not verify; a bounded fact about plain loads, for
+# a model checker over every `len` up to and past the four compares.
+Heap::cached_recently	raw pointer (internal)	Kani
