@@ -392,7 +392,7 @@ axiom fn axiom_arenas_assemble(
 
 ## `axiom_arenas_lock_frame`
 
-src/arena.rs:3356. Kind: axiom. Category: allocator invariant.
+src/arena.rs:3376. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): what the creation lock's value keeps from the value it was created with is exactly the snapshot half's location and a count at or above the one it was created with (the automatic count, `Arenas::type_inv`).
