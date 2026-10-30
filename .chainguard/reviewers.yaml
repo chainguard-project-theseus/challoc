@@ -6,10 +6,9 @@ version: 1
 # Per-pass limits (mono's code-reviewer README, "Limits"), at their
 # ceilings: a challoc proof pull request reaches 2,000 to 3,000 changed
 # lines, often in one source file plus its generated ledger file under
-# verus/ledger/, so each file's diff is computed up to the ceiling and each
-# pass may read it and its context.
+# verus/ledger/, so each pass may read the diff and its context up to these
+# ceilings.
 limits:
-  diff_lines: 6000
   read_calls: 60
   read_kib: 800
 reviewers:
