@@ -6867,10 +6867,11 @@ impl Huge {
     /// The result is the bytes of the run's usable pages, as its descriptor
     /// counts them (`Huge::take` writes `usable` from the pages it commits):
     /// the usable pages of the run token `tok` holds, if it is this run's.
-    /// With that token neither abort can fire.
+    /// With that token neither abort can fire, so the caller needs only
+    /// `valid_aborts`.
     pub fn usable_size(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>) -> (r: usize)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_run(*tok, page as int)),
             crate::sys::may_syscall(),
             page <= self.spec_npages(),
         ensures
