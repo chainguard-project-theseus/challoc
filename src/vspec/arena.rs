@@ -1,4 +1,4 @@
-//! Specifications for `arena.rs`: `AtomicPtr::new` and `load`, and the
+//! Specifications for `arena.rs`: `AtomicPtr::new`, `load` and `store`, and the
 //! invariant of its statistics lock.
 
 use vstd::prelude::*;
@@ -15,6 +15,18 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
 ) -> *mut T
     requires
         !(order is Release),
+        !(order is AcqRel),
+;
+
+/// `AtomicPtr::store`, which vstd does not specify. It panics for an
+/// `Acquire` or `AcqRel` ordering.
+pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::store ](
+    a: &core::sync::atomic::Atomic<*mut T>,
+    val: *mut T,
+    order: core::sync::atomic::Ordering,
+)
+    requires
+        !(order is Acquire),
         !(order is AcqRel),
 ;
 

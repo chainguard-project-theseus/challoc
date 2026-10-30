@@ -7,11 +7,28 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `shared_ptr` | external_body | allocator invariant | none (assumption) | trusted |
 | `debug_scheduled` | external_body | panic/abort | Kani | trusted |
+
+## `shared_ptr`
+
+src/heap/paths.rs:905. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> `shared` as the raw pointer [`existing_heap`] takes and `init_fields` stores in a new heap: the process's `Shared`, at its storage.
+
+```rust
+pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
+    requires
+        shared.wf(),
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+```
 
 ## `debug_scheduled`
 
-src/heap/paths.rs:989. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1008. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > The scheduled pop's check, in debug builds: `allocs` is a multiple of the compaction period.

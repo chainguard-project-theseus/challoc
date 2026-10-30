@@ -976,11 +976,14 @@ impl ThreadKey {
     }
 }
 
-pub(super) fn tid() -> u32 {
+verus! {
+
+pub(super) fn tid() -> u32
+    requires
+        crate::sys::may_syscall(),
+{
     crate::sys::gettid() as u32
 }
-
-verus! {
 
 pub(super) fn ncpus() -> u32
     requires
@@ -989,13 +992,12 @@ pub(super) fn ncpus() -> u32
     crate::sys::ncpus()
 }
 
-} // verus!
-
-pub(super) fn now_ns() -> u64 {
+pub(super) fn now_ns() -> u64
+    requires
+        crate::sys::may_syscall(),
+{
     crate::sys::now_coarse_ns()
 }
-
-verus! {
 
 /// Eight random bytes from `getrandom(2)` for `slot_randomize`; on a
 /// kernel that refuses (not seen on any supported one) the clock, so

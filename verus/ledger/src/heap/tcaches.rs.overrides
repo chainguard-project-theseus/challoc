@@ -2,3 +2,9 @@
 axiom_tcaches_lock_inv	allocator invariant	none (assumption)
 # An array fill Verus cannot state; nothing is claimed of its entries.
 EMPTY_TABLE	core library	Kani
+# A raw-pointer dereference: a live heap from creation, one reference at a
+# time, is well formed and has its home headers at `p`. Nothing enforces
+# the one-reference rule: two calls (or two `Tcaches::get(id)`) hand
+# verified code two copies of the heap's permissions, from which Verus
+# could derive false (#138, G3).
+heap_at	allocator invariant	none (assumption)

@@ -4170,6 +4170,195 @@ fn assign_home(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> (u16, Tracked<
     (arena, t)
 }
 
+verus! {
+
+/// `head` is the permission to the 128 bytes of the heap at `h` before
+/// its home headers (its plain fields): what [`Heap::create_detached`]
+/// splits off the heap's block for [`init_fields`], which keeps it in the
+/// [`FreshHeap`] returned with the heap; `h` is not null and aligned for a
+/// `Heap` (64 bytes).
+pub(super) open spec fn heap_head(h: *mut Heap, head: vstd::raw_ptr::PointsToRaw) -> bool {
+    &&& head.is_range(h@.addr as int, 128)
+    &&& head.provenance() == h@.provenance
+    &&& h@.addr != 0
+    &&& h@.addr as int % 64 == 0
+}
+
+impl CachePerms {
+    /// Permissions that own nothing.
+    proof fn tracked_empty() -> (tracked r: CachePerms)
+        ensures
+            r.hdrs.is_empty(),
+            r.slots.is_empty(),
+            r.toks.is_empty(),
+            r.zero.is_empty(),
+            r.wf(),
+            r.tracks(),
+            r.zero_ok(),
+            r.tokened(),
+            r.claimed(),
+    {
+        reveal(CachePerms::claimed);
+        let tracked r = CachePerms {
+            hdrs: Map::tracked_empty(),
+            slots: Map::tracked_empty(),
+            cls: Map::empty(),
+            owner: Map::empty(),
+            toks: Map::tracked_empty(),
+            zero: Map::tracked_empty(),
+            handed: None,
+            released: Seq::empty(),
+            blocks: Map::tracked_empty(),
+        };
+        r.lemma_zero_intro();
+        r
+    }
+}
+
+// The size `Layout::new::<Heap>()` gives `Meta::alloc_raw`: the 128 bytes
+// before `caches` and one line per class.
+#[cfg(feature = "quantum16")]
+global layout Heap is size == 3456, align == 64;
+#[cfg(feature = "quantum8")]
+global layout Heap is size == 3712, align == 64;
+
+impl Heap {
+    /// Create a heap homed on `arena` (an explicit cache, or a thread heap
+    /// before it is registered). Null if the region is exhausted. With the
+    /// heap, the permissions to its caches ([`CachePerms::fresh`]) and the
+    /// token holding the permission to its plain fields, with what was
+    /// stored in them ([`FreshHeap`]).
+    fn create_detached(
+        shared: &Shared,
+        arena: u16,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: (*mut Heap, Tracked<CachePerms>, Tracked<Option<FreshHeap>>))
+        requires
+            crate::sys::may_syscall(),
+            shared.wf(),
+            old(ord).allows(crate::lock::rank_meta()),
+        ensures
+            r.0@.addr != 0 ==> r.1@.fresh(r.0),
+            r.0@.addr != 0 ==> (r.2@ matches Some(st) && st.heap() == r.0 && st.arena() == arena as int && !st.bound()
+                && heap_head(r.0, st.head()) && st.shared() == Shared::storage() as *const Shared),
+            *final(ord) == *old(ord),
+    {
+        proof {
+            shared.lemma_wf();
+            cache::lemma_header_layout();
+            assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
+        }
+        let (block, Tracked(blk)) = shared.meta.alloc_raw(Layout::new::<Heap>());
+        let tracked (raw, claim) = blk;
+        let h = block as *mut Heap;
+        if h.is_null() {
+            let tracked none = CachePerms::tracked_empty();
+            return (h, Tracked(none), Tracked(None));
+        }
+        let ghost size = vstd::layout::size_of::<Heap>() as int;
+        let ghost base = h@.addr as int;
+        proof {
+            assert(size == 128 + 64 * NCLASSES);
+            crate::vspec::ptr::axiom_raw_valid(&raw, block, size);
+            crate::vspec::ptr::axiom_ptr_add_addr(block, 128);
+        }
+        let tracked (head, mut rest) = raw.split(Set::range(base, base + 128));
+        // SAFETY: `h` is a fresh, exclusively owned metadata block of the
+        // right size and alignment. Field by field: a whole `Heap`
+        // temporary (3.4 KiB with the headers inline) would deepen the
+        // stack of every thread's first allocation by one page, which
+        // larson's thread churn turns into +1.7 MiB of RSS per 437
+        // threads (thread stacks stay mapped; measured on arm64).
+        let Tracked(stored) = unsafe { init_fields(h, shared, arena, Tracked((head, claim))) };
+        // SAFETY: as above; `caches` is 128 bytes in (the `const`
+        // assertion after `Heap`).
+        let caches = unsafe { block.add(128) } as *mut CacheHeader;
+        let tracked mut perms = CachePerms::tracked_empty();
+        proof {
+            assert(Set::range(base + 128, base + size) <= rest.dom());
+            crate::vspec::ptr::axiom_raw_valid(&rest, caches as *mut u8, 64 * NCLASSES);
+            assert(caches@.addr == base + 128 && caches@.provenance == h@.provenance);
+            assert(base % 64 == 0) by {
+                assert(block@.addr as int % 64 == 0);
+            }
+            assert(process_regions().in_meta(base, size));
+        }
+        for c in 0..NCLASSES
+            invariant
+                rest.provenance() == h@.provenance,
+                rest.contains_range(base + 128 + 64 * c, 64 * (NCLASSES - c)),
+                base == h@.addr,
+                base == block@.addr,
+                base % 64 == 0,
+                caches@.addr == base + 128,
+                caches@.provenance == h@.provenance,
+                caches@.metadata == (),
+                size == 128 + 64 * NCLASSES,
+                process_regions().in_meta(base, size),
+                process_regions().meta_base + process_regions().meta_len <= usize::MAX,
+                crate::vspec::ptr::in_alloc(caches, 64 * NCLASSES),
+                perms.wf(),
+                perms.tracks(),
+                perms.zero_ok(),
+                perms.tokened(),
+                perms.slots.is_empty(),
+                perms.toks.is_empty(),
+                forall|p: *mut CacheHeader| #[trigger] perms.hdrs.contains_key(p) ==> perms.hdr(p).len == 0 && perms.hdr(p).cap == 0,
+                forall|p: *mut CacheHeader| #[trigger] perms.hdrs.contains_key(p) ==> p@.addr < base + 128 + 64 * c,
+                forall|k: int| 0 <= k < c ==> perms.hdrs.contains_key(#[trigger] home_hdr(h, k)) && perms.cls.contains_key(home_hdr(h, k)) && perms.cls[home_hdr(h, k)] == k,
+        {
+            let ghost a = base + 128 + 64 * c;
+            proof {
+                cache::lemma_header_layout();
+                assert(a % 64 == 0) by (nonlinear_arith)
+                    requires
+                        a == base + 128 + 64 * c,
+                        base % 64 == 0;
+                assert(c as int * 64 <= 64 * NCLASSES) by (nonlinear_arith)
+                    requires
+                        c < NCLASSES;
+            }
+            let tracked (hraw, rest2) = rest.split(Set::range(a, a + 64));
+            proof {
+                rest = rest2;
+                assert(Set::range(a + 64, a + 64 + 64 * (NCLASSES - c - 1)) <= rest.dom());
+            }
+            let tracked mut hp = hraw.into_typed::<CacheHeader>(a as usize);
+            proof {
+                crate::vspec::ptr::axiom_ptr_add_addr(caches, c);
+            }
+            // SAFETY: `c < NCLASSES`, inside the block.
+            let cache = unsafe { caches.add(c) };
+            proof {
+                assert(cache@.addr == a);
+                assert(hp.ptr() == cache);
+                assert(cache == home_hdr(h, c as int));
+            }
+            vstd::raw_ptr::ptr_mut_write(cache, Tracked(&mut hp), CacheHeader::EMPTY);
+            proof {
+                let ghost old_perms = perms;
+                assert(!old_perms.hdrs.contains_key(cache));
+                perms.hdrs.tracked_insert(cache, hp);
+                perms.cls = old_perms.cls.insert(cache, c as int);
+                assert(process_regions().in_meta(a, 64));
+                assert(cell_ok(cache, perms.hdrs[cache], perms.slots));
+                CachePerms::lemma_insert_unused(old_perms, perms, cache, c as int);
+                assert forall|k: int| 0 <= k <= c implies perms.hdrs.contains_key(#[trigger] home_hdr(h, k)) && perms.cls.contains_key(home_hdr(h, k)) && perms.cls[home_hdr(h, k)] == k by {
+                    if k < c {
+                        assert(home_hdr(h, k) != cache) by {
+                            assert(home_hdr(h, k)@.addr != cache@.addr);
+                        }
+                    }
+                }
+                assert(forall|k: int| 0 <= k < c + 1 ==> perms.hdrs.contains_key(#[trigger] home_hdr(h, k)) && perms.cls.contains_key(home_hdr(h, k)) && perms.cls[home_hdr(h, k)] == k);
+            }
+        }
+        (h, Tracked(perms), Tracked(Some(stored)))
+    }
+}
+
+} // verus!
+
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
     /// on the least-loaded automatic arena and counted there
@@ -4198,38 +4387,6 @@ impl Heap {
             unsafe { mark_rehome(h, Tracked::assume_new()) };
         }
         (h, perms, Tracked::assume_new())
-    }
-
-    /// Create a heap homed on `arena` (an explicit cache, or a thread heap
-    /// before it is registered). Null if the region is exhausted. With
-    /// the heap, the permissions to its caches and the token for its plain
-    /// fields (ghost).
-    fn create_detached(
-        shared: &Shared,
-        arena: u16,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> (*mut Heap, Tracked<CachePerms>, Tracked<Option<FreshHeap>>) {
-        let (block, _blk) = shared.meta.alloc_raw(Layout::new::<Heap>());
-        let h = block as *mut Heap;
-        if h.is_null() {
-            return (h, Tracked::assume_new(), Tracked::assume_new());
-        }
-        // SAFETY: `h` is a fresh, exclusively owned metadata block of the
-        // right size and alignment. Field by field: a whole `Heap`
-        // temporary (3.4 KiB with the headers inline) would deepen the
-        // stack of every thread's first allocation by one page, which
-        // larson's thread churn turns into +1.7 MiB of RSS per 437
-        // threads (thread stacks stay mapped; measured on arm64).
-        let _stored = unsafe { init_fields(h, shared, arena, Tracked::assume_new()) };
-        // SAFETY: as above; `caches` is 128 bytes in (the `const`
-        // assertion after `Heap`).
-        let caches = unsafe { block.add(128) } as *mut CacheHeader;
-        for c in 0..NCLASSES {
-            // SAFETY: `c < NCLASSES`, inside the block.
-            let cache = unsafe { caches.add(c) };
-            vstd::raw_ptr::ptr_mut_write(cache, Tracked::assume_new(), CacheHeader::EMPTY);
-        }
-        (h, Tracked::assume_new(), Tracked::assume_new())
     }
 
     /// Flush every cache, free them and the heap itself back to the
