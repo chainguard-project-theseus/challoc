@@ -213,6 +213,7 @@ impl Heap {
                         self.hdr_ref(cache).arena,
                         class,
                         self.hdr_ref(cache).probe_refilled,
+                        Tracked::assume_new(),
                     );
                     let h = self.hdr_mut(cache);
                     h.probe_refilled = refilled;
@@ -374,11 +375,13 @@ impl Heap {
         arena: u16,
         class: usize,
         prev_refilled: u32,
+        _ord: Tracked<&mut crate::lock::LockOrder>,
     ) -> (u32, Verdict) {
         let cs = shared.owner(arena).0.class(class);
         let refilled = cs.refilled() as u32;
         let delta = refilled.wrapping_sub(prev_refilled) as usize;
-        let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
+        let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots()
+        {
             if Self::fragmented(shared, arena, class, Tracked::assume_new()) {
                 cs.note_gate_refill();
             }
