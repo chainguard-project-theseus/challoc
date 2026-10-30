@@ -32,7 +32,9 @@ use crate::lock::rank_class;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
+use super::paths::shared_of;
 use super::{CacheHeader, Heap, Shared, stack_mut};
+use vstd::raw_ptr::ptr_mut_ref;
 
 verus! {
 
@@ -192,7 +194,7 @@ impl Heap {
                     // balanced churn on a dense class takes no other slow
                     // path, and without it no GC or decay would ever run on
                     // a thread without a background thread.
-                    self.tick::<true>(shared);
+                    self.tick::<true>(shared, Tracked::assume_new(), Tracked::assume_new());
                     let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
@@ -280,7 +282,7 @@ impl Heap {
             }
             let mut len = len;
             if self.hdr_ref(cache).run_end == 0 {
-                self.rebuild_run(cache, class);
+                self.rebuild_run(cache, class, Tracked::assume_new());
                 len = self.hdr_ref(cache).len;
                 if self.hdr_ref(cache).run_end == 0 {
                     if len == 0 {
@@ -371,11 +373,16 @@ impl Heap {
     /// `cache` is this heap's real cache for `class`, in compact mode.
     #[cold]
     #[inline(never)]
-    pub(super) unsafe fn rebuild_run(&mut self, cache: *mut CacheHeader, class: usize) {
+    pub(super) unsafe fn rebuild_run(
+        &mut self,
+        cache: *mut CacheHeader,
+        class: usize,
+        _errno: Tracked<&mut crate::vspec::errno::ThreadErrno>,
+    ) {
         // SAFETY: a heap never outlives the `Shared` it was created on; the
         // unbounded lifetime lets `self` be borrowed mutably below.
-        let shared: &Shared = unsafe { &*self.shared };
-        self.tick::<true>(shared);
+        let shared: &Shared = unsafe { shared_of(self.shared) };
+        self.tick::<true>(shared, Tracked::assume_new(), Tracked::assume_new());
         // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
         // `cap - len` slots of storage follow them.
         unsafe {
@@ -407,12 +414,13 @@ impl Heap {
             }
             let slots = self.hdr_ref(cache).slots;
             let out = stack_mut(slots, len, want, Tracked::assume_new());
+            let (oa, ow) = shared.owner(arena);
             let (claim, _) = self.claim(
                 shared,
-                shared.owner(arena).0.class(class),
+                oa.class(class),
                 out,
                 Tracked::assume_new(),
-                Tracked::assume_new(),
+                ow,
                 Tracked::assume_new(),
             );
             let n = claim.n;
@@ -433,7 +441,13 @@ impl Heap {
                 // The block is bigger than what was there: rotate it down.
                 all.rotate_left(len);
             }
-            let h = self.hdr_mut(cache);
+            // `cache` is this heap's own header, which nothing else touches
+            // while the heap is borrowed. `ptr_mut_ref` stands for `hdr_mut`
+            // here, with a placeholder permission: the verified form takes the
+            // header's permission from the heap's cache permissions while the
+            // stack's permissions are held apart, so `Heap::wf`, which
+            // `hdr_mut` requires, does not hold.
+            let h = ptr_mut_ref(cache, Tracked::assume_new());
             let new_len = (len + n) as u32;
             h.len = new_len;
             h.moved = h.moved.wrapping_add(n as u64);
