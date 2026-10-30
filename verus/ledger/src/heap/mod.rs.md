@@ -16,7 +16,7 @@ file.
 
 ## `assert_flushed`
 
-src/heap/mod.rs:4102. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4286. Kind: external_body. Category: panic/abort.
 Tool: none (assumption). Status: trusted.
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
@@ -31,7 +31,7 @@ fn assert_flushed(len: &u32)
 
 ## `assert_refill_empty`
 
-src/heap/mod.rs:4123. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4307. Kind: external_body. Category: panic/abort.
 Tool: none (assumption). Status: trusted.
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns.
@@ -46,7 +46,7 @@ fn assert_refill_empty(len: &u32)
 
 ## `assert_rekey_flushed`
 
-src/heap/mod.rs:4138. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4322. Kind: external_body. Category: panic/abort.
 Tool: none (assumption). Status: trusted.
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
@@ -61,7 +61,7 @@ fn assert_rekey_flushed(len: &u32)
 
 ## `mark_bound`
 
-src/heap/mod.rs:4194. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4378. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*h).bound = true` for a heap [`Heap::create`] has just made.
@@ -81,7 +81,7 @@ unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ## `mark_rehome`
 
-src/heap/mod.rs:4225. Kind: external_body. Category: raw pointer (internal).
+src/heap/mod.rs:4409. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `(*h).rehome = true` for a thread heap [`Heap::create`] has just made and marked bound ([`mark_bound`]): it may still move its home ([`Heap::try_rehome`]).
@@ -98,7 +98,7 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 
 ## `Heap::arena_volatile`
 
-src/heap/mod.rs:6388. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:6572. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.

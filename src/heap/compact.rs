@@ -24,6 +24,11 @@ use vstd::prelude::*;
 use vstd::prelude::{Tracked, verus};
 
 use crate::layout::CLASSES;
+#[cfg(verus_keep_ghost)]
+use crate::layout::NCLASSES;
+use crate::lock::LockOrder;
+#[cfg(verus_keep_ghost)]
+use crate::lock::rank_class;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
@@ -63,8 +68,6 @@ pub exec const COMPACT_MASK: u32
     (1 << COMPACT_SHIFT) - 1
 }
 
-} // verus!
-
 /// A class is worth compacting when its slabs hold at least this many
 /// slabs' worth of holes (free slots not in any cache) and at least a
 /// [`COMPACT_MIN_RATIO`]th of their capacity. Two or three slabs of holes
@@ -102,6 +105,8 @@ pub(super) enum Verdict {
     /// Fragmented and left alone by refills: enter compact mode.
     Fragmented,
 }
+
+} // verus!
 
 impl CacheHeader {
     /// Whether the cache is currently compacting its class.
@@ -352,49 +357,6 @@ impl Heap {
         }
     }
 
-    /// Whether `class` in `arena` is worth compacting (design 6.4).
-    pub(super) fn fragmented(
-        shared: &Shared,
-        arena: u16,
-        class: usize,
-        _ord: Tracked<&mut crate::lock::LockOrder>,
-    ) -> bool {
-        let cs = shared.owner(arena).0.class(class);
-        let (holes, capacity) = cs.holes(vstd::prelude::Tracked::assume_new());
-        holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
-            && holes * COMPACT_MIN_RATIO >= capacity
-    }
-
-    /// The compaction probe's gate (design 6.4) for the scheduled pops
-    /// ([`Heap::pop_compact`]): the class's refill counter now (the caller stores it as the
-    /// header's `probe_refilled`) and the verdict, given the counter at
-    /// the previous probe. Records the class's `note_gate_refill` and
-    /// `note_compact_mode(true)` statistics as it decides.
-    pub(super) fn probe_verdict(
-        shared: &Shared,
-        arena: u16,
-        class: usize,
-        prev_refilled: u32,
-        _ord: Tracked<&mut crate::lock::LockOrder>,
-    ) -> (u32, Verdict) {
-        let cs = shared.owner(arena).0.class(class);
-        let refilled = cs.refilled() as u32;
-        let delta = refilled.wrapping_sub(prev_refilled) as usize;
-        let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots()
-        {
-            if Self::fragmented(shared, arena, class, Tracked::assume_new()) {
-                cs.note_gate_refill();
-            }
-            Verdict::Refilling
-        } else if !Self::fragmented(shared, arena, class, Tracked::assume_new()) {
-            Verdict::Dense
-        } else {
-            cs.note_compact_mode(true);
-            Verdict::Fragmented
-        };
-        (refilled, verdict)
-    }
-
     /// Rebuild the run for a scheduled pop that found it exhausted: run the
     /// periodic work (under a balanced churn this is the only slow path a
     /// class ever takes), drop back to probing if the class is no longer
@@ -481,3 +443,62 @@ impl Heap {
         }
     }
 }
+
+verus! {
+
+impl Heap {
+    /// Whether `class` in `arena` is worth compacting (design 6.4).
+    pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize, Tracked(ord): Tracked<&mut LockOrder>) -> bool
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        let cs = shared.owner(arena).0.class(class);
+        let (holes, capacity) = cs.holes(Tracked(ord));
+        holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
+            && holes * COMPACT_MIN_RATIO >= capacity
+    }
+
+    /// The compaction probe's gate (design 6.4) for the scheduled pops
+    /// ([`Heap::pop_compact`]): the class's refill counter now (the caller stores it as the
+    /// header's `probe_refilled`) and the verdict, given the counter at
+    /// the previous probe. Records the class's `note_gate_refill` and
+    /// `note_compact_mode(true)` statistics as it decides.
+    pub(super) fn probe_verdict(
+        shared: &Shared,
+        arena: u16,
+        class: usize,
+        prev_refilled: u32,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (u32, Verdict)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        let cs = shared.owner(arena).0.class(class);
+        let refilled = cs.refilled() as u32;
+        let delta = refilled.wrapping_sub(prev_refilled) as usize;
+        let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots() {
+            if Self::fragmented(shared, arena, class, Tracked(ord)) {
+                cs.note_gate_refill();
+            }
+            Verdict::Refilling
+        } else if !Self::fragmented(shared, arena, class, Tracked(ord)) {
+            Verdict::Dense
+        } else {
+            cs.note_compact_mode(true);
+            Verdict::Fragmented
+        };
+        (refilled, verdict)
+    }
+}
+
+} // verus!

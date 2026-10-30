@@ -1004,6 +1004,117 @@ spec fn swap_owner(
     )
 }
 
+/// Entries `lo..cap` of the stack at `base` are no keys of `s` when `m`
+/// holds their permissions (`elems_at`) and every such key of `s` would
+/// hold a permission to its own address: two permissions to one word
+/// are disjoint ([`PointsTo::is_disjoint`]), which they cannot be.
+proof fn lemma_keys_fresh(
+    tracked m: &mut Map<int, PointsTo<*mut u8>>,
+    tracked s: &Map<*mut *mut u8, PointsTo<*mut u8>>,
+    base: *mut *mut u8,
+    lo: int,
+    cap: int,
+)
+    requires
+        0 <= lo <= cap,
+        crate::arena::elems_at(*old(m), base, lo, cap),
+        forall|i: int| lo <= i < cap && #[trigger] s.contains_key(slot_ptr(base, i)) ==> s[slot_ptr(base, i)].ptr() == slot_ptr(base, i),
+    ensures
+        *final(m) == *old(m),
+        forall|i: int| lo <= i < cap ==> !s.contains_key(#[trigger] slot_ptr(base, i)),
+    decreases cap - lo,
+{
+    if lo < cap {
+        let q = slot_ptr(base, lo);
+        if s.contains_key(q) {
+            assert(vstd::layout::size_of::<*mut u8>() == 8);
+            assert(m.contains_key(lo));
+            let tracked mut e = m.tracked_remove(lo);
+            e.is_disjoint(s.tracked_borrow(q));
+            m.tracked_insert(lo, e);
+            assert(false);
+        }
+        lemma_keys_fresh(m, s, base, lo + 1, cap);
+    }
+}
+
+/// Entries `lo..n` of the stack at `base`, whose permissions `m` holds
+/// (`elems_at`), join `perms` as entries of header `hdr`. None is a key
+/// of `perms` yet, and their addresses are distinct, so every key
+/// `perms` had keeps its permission and its owner.
+proof fn lemma_put_entries(
+    tracked perms: &mut CachePerms,
+    tracked m: Map<int, PointsTo<*mut u8>>,
+    hdr: *mut CacheHeader,
+    base: *mut *mut u8,
+    lo: int,
+    n: int,
+)
+    requires
+        0 <= lo <= n,
+        crate::arena::elems_at(m, base, lo, n),
+        forall|i: int| lo <= i < n ==> !old(perms).slots.contains_key(#[trigger] slot_ptr(base, i)),
+        forall|i: int| 0 <= i < n ==> #[trigger] slot_ptr(base, i)@.addr == base@.addr + 8 * i,
+    ensures
+        final(perms).hdrs == old(perms).hdrs,
+        final(perms).cls == old(perms).cls,
+        final(perms).toks == old(perms).toks,
+        final(perms).zero == old(perms).zero,
+        final(perms).handed == old(perms).handed,
+        final(perms).blocks == old(perms).blocks,
+        final(perms).released == old(perms).released,
+        forall|q: *mut *mut u8| #[trigger] old(perms).slots.contains_key(q) ==> final(perms).slots.contains_key(q) && final(perms).slots[q] == old(perms).slots[q],
+        forall|q: *mut *mut u8| #[trigger] final(perms).slots.contains_key(q) && !old(perms).slots.contains_key(q) ==> final(perms).slots[q].ptr() == q,
+        forall|q: *mut *mut u8|
+            old(perms).slots.contains_key(q) && #[trigger] old(perms).owner.contains_key(q) ==> final(perms).owner.contains_key(q) && final(perms).owner[q] == old(perms).owner[q],
+        forall|i: int| lo <= i < n ==> {
+            let q = #[trigger] slot_ptr(base, i);
+            &&& final(perms).slots.contains_key(q)
+            &&& final(perms).slots[q].ptr() == q
+            &&& final(perms).owner.contains_key(q)
+            &&& final(perms).owner[q] == (hdr, i)
+        },
+    decreases n - lo,
+{
+    if lo < n {
+        let q = slot_ptr(base, lo);
+        let tracked mut m = m;
+        assert(m.contains_key(lo));
+        let tracked e = m.tracked_remove(lo);
+        let p0 = *perms;
+        perms.slots.tracked_insert(q, e);
+        perms.owner = perms.owner.insert(q, (hdr, lo));
+        assert forall|i: int| lo + 1 <= i < n implies !perms.slots.contains_key(#[trigger] slot_ptr(base, i)) by {
+            assert(slot_ptr(base, i)@.addr != q@.addr);
+            assert(!p0.slots.contains_key(slot_ptr(base, i)));
+        }
+        assert forall|i: int| #![trigger m.contains_key(i)] #![trigger m[i]] lo + 1 <= i < n implies m.contains_key(i) && m[i].ptr() == crate::vspec::ptr::ptr_add(base, i as usize) by {}
+        let p1 = *perms;
+        assert forall|q2: *mut *mut u8| #[trigger] p0.slots.contains_key(q2) implies p1.slots.contains_key(q2) && p1.slots[q2] == p0.slots[q2] by {
+            assert(q2 != q);
+        }
+        assert forall|q2: *mut *mut u8| p0.slots.contains_key(q2) && #[trigger] p0.owner.contains_key(q2) implies p1.owner.contains_key(q2) && p1.owner[q2] == p0.owner[q2] by {
+            assert(q2 != q);
+        }
+        lemma_put_entries(perms, m, hdr, base, lo + 1, n);
+        assert(p1.slots.contains_key(q) && p1.owner.contains_key(q));
+        assert(perms.slots[q] == p1.slots[q] && perms.owner[q] == (hdr, lo));
+        assert(p1.slots[q].ptr() == q);
+        assert forall|q2: *mut *mut u8| #[trigger] perms.slots.contains_key(q2) && !p0.slots.contains_key(q2) implies perms.slots[q2].ptr() == q2 by {
+            if p1.slots.contains_key(q2) {
+                assert(q2 == q);
+            }
+        }
+        assert forall|q2: *mut *mut u8| #[trigger] p0.slots.contains_key(q2) implies perms.slots.contains_key(q2) && perms.slots[q2] == p0.slots[q2] by {
+            assert(p1.slots.contains_key(q2));
+        }
+        assert forall|q2: *mut *mut u8| p0.slots.contains_key(q2) && #[trigger] p0.owner.contains_key(q2) implies perms.owner.contains_key(q2) && perms.owner[q2] == p0.owner[q2] by {
+            assert(p1.slots.contains_key(q2));
+            assert(p1.owner.contains_key(q2));
+        }
+    }
+}
+
 impl CachePerms {
     /// Every owned header is [`cell_ok`], and every stack-entry permission
     /// is filed under its own address.
@@ -1127,6 +1238,79 @@ impl CachePerms {
             if h.slots == base {
                 assert(before.blocks[base].held(id, h.slots as *mut u8, 8 * h.cap, 16));
             }
+        }
+    }
+
+    /// The `cap` entries of the fresh stack `slots` join `self`, unwritten,
+    /// as entries `0..cap` of header `hdr` (`CachePerms::owner`), each
+    /// with the permission to its word carved from `raw`, the permission
+    /// to the block's `8 * cap` bytes that `Meta::alloc_raw` handed out
+    /// with it ([`CacheHeader::slots_layout`]).
+    ///
+    /// No entry is a key `self` already has ([`lemma_keys_fresh`]): `wf`
+    /// files every key under its own address, so such a key would hold a
+    /// second permission to a word of `raw`. Every other key keeps its
+    /// permission, and every owned stack's entries keep their owners,
+    /// since they are keys `self` already has.
+    proof fn lemma_fresh_stack(
+        tracked &mut self,
+        hdr: *mut CacheHeader,
+        slots: *mut *mut u8,
+        cap: u32,
+        tracked raw: vstd::raw_ptr::PointsToRaw,
+    )
+        requires
+            slots@.addr != 0,
+            slots@.addr as int % 8 == 0,
+            slots@.addr + 8 * cap <= usize::MAX,
+            crate::vspec::ptr::in_alloc(slots, 8 * cap),
+            old(self).wf(),
+            raw.is_range(slots@.addr as int, 8 * cap),
+            raw.provenance() == slots@.provenance,
+        ensures
+            final(self).hdrs == old(self).hdrs,
+            final(self).cls == old(self).cls,
+            slots_grow(old(self).slots, final(self).slots),
+            forall|q: *mut *mut u8| #[trigger] old(self).slots.contains_key(q) ==> final(self).slots[q] == old(self).slots[q],
+            final(self).toks == old(self).toks,
+            final(self).zero == old(self).zero,
+            final(self).handed == old(self).handed,
+            final(self).blocks == old(self).blocks,
+            final(self).released == old(self).released,
+            forall|i: int| 0 <= i < cap ==> {
+                let q = #[trigger] slot_ptr(slots, i);
+                &&& final(self).slots.contains_key(q)
+                &&& final(self).slots[q].ptr() == q
+                &&& final(self).owner.contains_key(q)
+                &&& final(self).owner[q] == (hdr, i)
+            },
+            forall|i: int| 0 <= i < cap ==> #[trigger] slot_in(slots, i),
+            forall|p: *mut CacheHeader, j: int|
+                old(self).hdrs.contains_key(p) && 0 <= j < old(self).hdr(p).cap && old(self).owner.contains_key(old(self).ent(p, j)) ==> {
+                    let q = #[trigger] old(self).ent(p, j);
+                    &&& final(self).owner.contains_key(q)
+                    &&& final(self).owner[q] == old(self).owner[q]
+                },
+    {
+        broadcast use vstd::layout::align_properties, vstd::raw_ptr::group_raw_ptr_axioms;
+
+        let n = cap as int;
+        assert(vstd::layout::size_of::<*mut u8>() == 8);
+        // The word's alignment divides its size (8), so 8-aligned entries
+        // are aligned.
+        crate::layout::lemma_aligned_down(slots@.addr as int, 8, vstd::layout::align_of::<*mut u8>() as int);
+        // Entry `i`'s address, for every entry: the entries are distinct.
+        assert forall|i: int| 0 <= i < n implies #[trigger] slot_ptr(slots, i)@.addr == slots@.addr + 8 * i && slot_in(slots, i) by {
+            crate::vspec::ptr::axiom_ptr_add_addr(slots, i as usize);
+        }
+        assert(0 * 8 == 0int);
+        let tracked mut m = crate::arena::split_elems::<*mut u8>(raw, slots, 0, cap as nat);
+        lemma_keys_fresh(&mut m, &self.slots, slots, 0, n);
+        let old_self = *self;
+        lemma_put_entries(self, m, hdr, slots, 0, n);
+        assert forall|p: *mut CacheHeader, j: int|
+            old_self.hdrs.contains_key(p) && 0 <= j < old_self.hdr(p).cap implies #[trigger] old_self.slots.contains_key(old_self.ent(p, j)) by {
+            assert(cell_ok(p, old_self.hdrs[p], old_self.slots));
         }
     }
 

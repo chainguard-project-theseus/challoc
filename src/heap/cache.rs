@@ -15,10 +15,12 @@ use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
 use super::{
     ArenaCaches, cell_ok, lemma_plain_stored, lemma_stack_push, lemma_stack_shrink, node_hdr,
-    pac_mode, plain, popped, regions_ok, slot_in, slot_ptr, slot_start, slot_token,
+    pac_mode, plain, popped, regions_ok, slot_in, slot_ptr, slot_start, slot_token, stack_ok,
 };
 use super::{CachePerms, FOREIGN, Heap, Live, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE, assert_rekey_flushed};
+#[cfg(verus_keep_ghost)]
+use crate::lock::rank_meta;
 use vstd::map::Map;
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
@@ -849,19 +851,46 @@ impl Heap {
     }
 }
 
-} // verus!
-
 impl Heap {
     /// The usable cache for `(arena, class)`, giving the header its
-    /// capacity and stack on first use. Null if the metadata region is
-    /// exhausted or caches are off (`tcache:false`).
+    /// capacity and stack on first use. Null if caches are off
+    /// (`tcache:false`, or `thread.tcache.enabled` false), the class is not
+    /// cached for `arena` (`Config::cap_for` is 0), or the metadata region
+    /// is exhausted (for the stack or an `others` node).
+    ///
+    /// The stack's entries join the heap's permissions through
+    /// [`CachePerms::lemma_fresh_stack`], carved from the permission
+    /// `Meta::alloc_raw` returns with the block, and its claim joins the
+    /// heap's claims by the stack's base.
     pub(super) fn ensure_cache(
         &mut self,
         shared: &Shared,
         arena: u16,
         class: usize,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> *mut CacheHeader {
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: *mut CacheHeader)
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            shared.wf(),
+            shared.meta.live_id() == crate::meta::process_live_id(),
+            old(ord).allows(rank_meta()),
+            old(self).wf(),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).keeps(*old(self)),
+            r@.addr != 0 ==> final(self).owns(r) && final(self).hdr(r).cap != 0 && final(self).hdr_class(r) == class,
+            r@.addr != 0 ==> final(self).routes(arena, class as int, r),
+            // Caches off (`tcache:false`, or `thread.tcache.enabled` false):
+            // no cache, and the heap is left as it was.
+            !shared.config.tcache || !old(self).tcache_on() ==> r@.addr == 0 && *final(self) == *old(self),
+    {
+        proof {
+            shared.lemma_wf();
+            shared.lemma_wf_slow();
+            CachePerms::lemma_keeps_refl(self.perms@);
+        }
         // The capacity first: a class that is never cached for this arena
         // must not create an `others` node. This is the one place the
         // placement rule is consulted on the allocation and free paths.
@@ -879,6 +908,10 @@ impl Heap {
         } else {
             cap
         };
+        proof {
+            assert(0 < cap <= 65536);
+            assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
+        }
         // The arena before the node: `arena` came from an owner word on
         // the free path, and a word naming an arena that was never built
         // aborts here (`Shared::owner`) before a node is created for it.
@@ -887,7 +920,7 @@ impl Heap {
         } else {
             shared.owner(arena).0.class(class).refilled() as u32
         };
-        let cache = self.cache_slot(shared, arena, class, Tracked::assume_new());
+        let cache = self.cache_slot(shared, arena, class, Tracked(ord));
         if cache.is_null() {
             return ptr::null_mut();
         }
@@ -896,15 +929,36 @@ impl Heap {
         if unsafe { self.hdr_ref(cache) }.cap != 0 {
             return cache;
         }
-        let (slots, _) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap));
+        let (slots, Tracked(blk)) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap));
+        let tracked (raw, mc) = blk;
         if slots.is_null() {
             return ptr::null_mut();
         }
+        let ghost h0 = *self;
+        proof {
+            // The stack's bounds (`slot_in` up to `cap`); its entries are
+            // written only through the permissions carved from `raw`,
+            // never through this fact's `valid_writes`.
+            crate::vspec::ptr::axiom_raw_valid(&raw, slots, 8 * cap as int);
+            assert(vstd::layout::size_of::<*mut u8>() == 8);
+            assert((slots as *mut *mut u8)@.addr == slots@.addr);
+            assert((slots as *mut *mut u8)@.provenance == slots@.provenance);
+            assert(slot_in(slots as *mut *mut u8, cap as int));
+            assert(slots@.addr as int % 8 == 0) by {
+                assert(slots@.addr as int % 16 == 0);
+            }
+            self.perms.borrow_mut().lemma_fresh_stack(cache, slots as *mut *mut u8, cap, raw);
+            CachePerms::lemma_claimed_frame(h0.perms@, self.perms@);
+            // The stack's claim joins the heap's, by the stack's base.
+            assert(((slots as *mut *mut u8) as *mut u8)@ == slots@);
+            self.perms.borrow_mut().tracked_put_claim(slots as *mut *mut u8, cap as int, mc);
+        }
+        let ghost pc = self.perms@;
         // `cache` is this heap's own header (still `EMPTY`) and `slots`
         // has room for `cap` pointers, exclusively ours.
         ptr_mut_write(
             cache,
-            Tracked::assume_new(),
+            Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)),
             CacheHeader {
                 len: 0,
                 cap,
@@ -927,12 +981,42 @@ impl Heap {
         } else {
             MODE_PROBE
         };
+        let ghost h1 = *self;
+        proof {
+            let hp = self.perms@.hdrs[cache];
+            assert(stack_ok(hp.value(), self.perms@.slots));
+            CachePerms::lemma_update(h0.perms@, self.perms@, cache);
+            CachePerms::lemma_tracks_frame(h0.perms@, self.perms@, cache);
+            CachePerms::lemma_zero_update(h0.perms@, self.perms@, cache);
+            // The fresh header caches nothing yet; every other entry keeps
+            // its value and token.
+            assert forall|p2: *mut CacheHeader, j: int|
+                h0.perms@.hdrs.contains_key(p2) && p2 != cache && 0 <= j < h0.perms@.hdr(p2).cap implies {
+                    let q = #[trigger] h0.perms@.ent(p2, j);
+                    &&& self.perms@.slots[q] == h0.perms@.slots[q]
+                    &&& (h0.perms@.toks.contains_key(q) ==> self.perms@.toks.contains_key(q) && self.perms@.toks[q] == h0.perms@.toks[q])
+                } by {
+                assert(cell_ok(p2, h0.perms@.hdrs[p2], h0.perms@.slots));
+                assert(h0.perms@.slots.contains_key(h0.perms@.ent(p2, j)));
+            }
+            CachePerms::lemma_tok_update(h0.perms@, self.perms@, cache);
+            CachePerms::lemma_claimed_new(pc, self.perms@, cache);
+        }
         // SAFETY: as above.
         let h = unsafe { self.hdr_mut(cache) };
         h.set_mode(mode);
+        proof {
+            Heap::lemma_set(h1, *self, cache, *h);
+            Heap::lemma_keeps_trans(*old(self), h0, h1);
+            Heap::lemma_keeps_trans(*old(self), h1, *self);
+            Heap::lemma_keeps_trans(h0, h1, *self);
+            Heap::lemma_keeps_routes(h0, *self, arena, class as int, cache);
+        }
         cache
     }
 }
+
+} // verus!
 
 verus! {
 

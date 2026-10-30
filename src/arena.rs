@@ -332,7 +332,7 @@ pub open spec fn elems_uninit<T>(m: Map<int, PointsTo<T>>, lo: int, hi: int) -> 
 
 /// The permissions of elements `i..n` from `base`, out of `raw`, which
 /// holds their bytes.
-proof fn split_elems<T>(tracked raw: PointsToRaw, base: *mut T, i: nat, n: nat) -> (tracked m: Map<int, PointsTo<T>>)
+pub(crate) proof fn split_elems<T>(tracked raw: PointsToRaw, base: *mut T, i: nat, n: nat) -> (tracked m: Map<int, PointsTo<T>>)
     requires
         i <= n,
         n <= usize::MAX,
