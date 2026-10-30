@@ -24,6 +24,8 @@ file.
 | `sort_ptrs_by_key` | external_body | core library | Kani | trusted |
 | `<[T]>::get_u...ked_mut::<I>` | assume_spec | core library | Kani | trusted |
 | `slice_mut_elems` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `<[T]>::swap_with_slice` | assume_spec | core library | Kani | trusted |
+| `<[T]>::rotate_left` | assume_spec | core library | Kani | trusted |
 
 ## `core::slice::from_raw_parts::<'a, T>`
 
@@ -341,4 +343,37 @@ pub unsafe fn slice_mut_elems<'a, T>(
         forall|i: int|
             start <= i < start + n && old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].is_init()
                 ==> r@[i - start] == #[trigger] old(elems)[crate::vspec::ptr::ptr_add(base, i as usize)].value(),
+```
+
+## `<[T]>::swap_with_slice`
+
+src/vspec/slice.rs:397. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `a.swap_with_slice(b)`: panics unless the lengths are equal.
+
+```rust
+pub assume_specification<T>[ <[T]>::swap_with_slice ](a: &mut [T], b: &mut [T])
+    requires
+        old(a)@.len() == old(b)@.len(),
+    ensures
+        final(a)@ == old(b)@,
+        final(b)@ == old(a)@,
+;
+```
+
+## `<[T]>::rotate_left`
+
+src/vspec/slice.rs:406. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `s.rotate_left(mid)`: panics unless `mid <= s.len()`.
+
+```rust
+pub assume_specification<T>[ <[T]>::rotate_left ](s: &mut [T], mid: usize)
+    requires
+        mid <= old(s)@.len(),
+    ensures
+        final(s)@ == old(s)@.subrange(mid as int, old(s)@.len() as int) + old(s)@.subrange(0, mid as int),
+;
 ```

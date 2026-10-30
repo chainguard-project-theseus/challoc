@@ -5307,7 +5307,11 @@ impl Heap {
         let c = unsafe { &(*node).caches[class] };
         if c.cap == 0 { None } else { Some(c) }
     }
+}
 
+verus! {
+
+impl Heap {
     /// Count a slow-path entry and run periodic work every
     /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
     /// then decay (or starting the background thread that will do it,
@@ -5322,28 +5326,33 @@ impl Heap {
     fn tick<const ALLOC: bool>(
         &mut self,
         shared: &Shared,
-        _ord: Tracked<&mut LockOrder>,
-        _errno: Tracked<&mut crate::vspec::errno::ThreadErrno>,
-    ) {
+        Tracked(ord): Tracked<&mut LockOrder>,
+        Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>,
+    )
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && !ALLOC),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            old(self).wf(),
+            shared.wf(),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).keeps(*old(self)),
+    {
+        proof {
+            Heap::lemma_keeps_refl(*self);
+        }
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {
             let now = now_ns();
             if now.wrapping_sub(self.last_gc) >= shared.gc_interval() {
                 self.last_gc = now;
-                self.gc(shared, Tracked::assume_new());
+                self.gc(shared, Tracked(ord));
             }
-            crate::purge::on_tick(
-                shared,
-                now,
-                ALLOC,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
-            );
+            crate::purge::on_tick(shared, now, ALLOC, Tracked(ord), Tracked(errno));
         }
     }
 }
-
-verus! {
 
 impl Heap {
     /// [`Heap::same_shape`] is transitive.

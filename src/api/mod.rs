@@ -791,22 +791,36 @@ pub fn shared_base() -> *const Shared {
     p
 }
 
+verus! {
+
 /// The allocator state at `p` (outside the tests, a [`shared_base`]
-/// result), without the readiness check: `&*p`, as the free paths write it.
+/// result), without the readiness check: `&*p`, as the free paths write it,
+/// through the permission frozen at `READY` ([`axiom_published`]).
 ///
 /// # Safety
 /// `p` points to a live, initialised `Shared` this thread can read: the
 /// process's, once the calling thread has observed `READY`, or run after a
 /// thread that did (through [`shared`] or [`shared_if_ready`]); or, in the
 /// unit tests, a `Shared` of their own (`testutil`), which they never free.
+/// A verified caller states the first case in the `requires` (the storage
+/// address and [`ready`]); the tests are outside the proof.
 #[inline(always)]
 #[allow(clippy::let_and_return, reason = "named for the proof")]
-pub unsafe fn shared_deref(p: *const Shared) -> &'static Shared {
-    let r = vstd::raw_ptr::ptr_ref(p, Tracked::assume_new());
+pub unsafe fn shared_deref(p: *const Shared) -> (r: &'static Shared)
+    requires
+        p == Shared::storage() as *const Shared,
+        ready(),
+    ensures
+        r.wf(),
+    opens_invariants none
+{
+    let tracked published = axiom_published();
+    let r = vstd::raw_ptr::ptr_ref(p, Tracked(published.shared));
+    proof {
+        r.lemma_built_wf();
+    }
     r
 }
-
-verus! {
 
 /// The feature line, through `line`, its permissions frozen at
 /// `LINE_READY` ([`feature_line_ready`] hands them to a thread whose
