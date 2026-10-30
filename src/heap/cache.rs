@@ -952,3 +952,58 @@ impl CacheHeader {
 }
 
 } // verus!
+
+/// Kani check of `Heap::cached_recently` (`verus/ledger/src/heap/cache.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_cache {
+    use super::Heap;
+    use vstd::prelude::Tracked;
+
+    /// The call on a stack of exactly `N` entries (an array, the one
+    /// allocation the pointers come from), each entry and `e` any
+    /// address: it reads only inside the stack and returns whether `e`
+    /// is one of the top `min(4, N)` entries.
+    fn on<const N: usize>() {
+        let vals: [usize; N] = kani::any();
+        let mut a = vals.map(core::ptr::without_provenance_mut::<u8>);
+        let e = core::ptr::without_provenance_mut::<u8>(kani::any());
+        // SAFETY: the contract's precondition: `a` holds the `N` entries
+        // from its start, written.
+        let r =
+            unsafe { Heap::cached_recently(a.as_mut_ptr(), N as u32, e, Tracked::assume_new()) };
+        let mut hit = false;
+        for i in 1..=N.min(4) {
+            hit |= a[N - i] == e;
+        }
+        assert_eq!(r, hit);
+    }
+
+    /// `Heap::cached_recently`, `requires` the `len` entries from `slots`
+    /// permitted and written and, unless `len` is 0, in one allocation
+    /// (`slot_in`), `ensures` a hit is an entry among the `len` with `e`'s
+    /// address. The harness checks more: the result is exactly whether one
+    /// of the top `min(len, 4)` entries is `e`, and the call reads only
+    /// inside the stack, for every `len` from 0 to 8 (both branches, the short
+    /// stack's iterator and the four compares, and their boundary at 4),
+    /// every entry and every `e`; and with `len == 0` (no entry or range
+    /// required) on any pointer, even null or dangling.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn cached_recently_reads_the_top_entries() {
+        on::<0>();
+        on::<1>();
+        on::<2>();
+        on::<3>();
+        on::<4>();
+        on::<5>();
+        on::<6>();
+        on::<7>();
+        on::<8>();
+        let p = core::ptr::without_provenance_mut::<*mut u8>(kani::any());
+        let e = core::ptr::without_provenance_mut::<u8>(kani::any());
+        // SAFETY: `len == 0`: the precondition names no entry.
+        let r = unsafe { Heap::cached_recently(p, 0, e, Tracked::assume_new()) };
+        assert!(!r);
+    }
+}
