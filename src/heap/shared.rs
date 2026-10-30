@@ -187,10 +187,12 @@ pub uninterp spec fn shared_at(p: *mut Shared) -> Shared;
 /// ([`process_regions`](crate::layout::process_regions)) are those of
 /// the `Shared` in its storage, which `api::init` builds once, before it
 /// publishes `READY`, and [`pac_mode`](super::pac_mode) is whether that
-/// `Shared`'s `push_flags` has [`PUSH_PAC`] set. Both are uninterpreted
-/// and no other axiom relates them to a value, so this defines them. The unit tests build
-/// further `Shared`s elsewhere; the assumption is about the shipped
-/// library.
+/// `Shared`'s `push_flags` has [`PUSH_PAC`] set. Both are uninterpreted,
+/// and this defines them. One more trusted fact states the regions'
+/// page: `getauxval`'s specification (`sys::auxv`), which agrees with
+/// this one because `api::init` reserves the regions with that page.
+/// The unit tests build further `Shared`s elsewhere; the assumption is
+/// about the shipped library.
 axiom fn axiom_process_shared()
     ensures
         crate::layout::process_regions() == shared_at(shared_storage()).regions,

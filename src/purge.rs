@@ -847,7 +847,7 @@ pub trait Settle {
         pend: Ghost<Pieces>,
     )
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).inv(o, *old(c), pend@),
             0 < piece@ <= len,
@@ -1160,7 +1160,7 @@ impl Batch {
     /// invariant must already count the range as pushed.
     pub fn push<S: Settle>(&mut self, addr: usize, len: usize, s: &mut S, o: &S::Owner, c: &mut S::Ctx)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).wf(),
             addr + len <= usize::MAX,
@@ -1384,7 +1384,7 @@ impl Batch {
     #[inline(always)]
     pub fn flush<S: Settle>(&mut self, s: &mut S, o: &S::Owner, c: &mut S::Ctx)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).wf(),
             old(s).inv(o, *old(c), old(self).pieces()),
@@ -1419,7 +1419,7 @@ impl Batch {
         Ghost(keep): Ghost<Pieces>,
     )
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).wf(),
             old(s).inv(o, *old(c), either(old(self).pieces(), keep)),
@@ -1478,7 +1478,7 @@ impl Batch {
             let mut i = 0;
             while i < self.n
                 invariant
-                    crate::sys::may_abort(),
+                    crate::sys::may_abort() || crate::sys::valid_aborts(),
                     crate::sys::may_syscall(),
                     self.ranges@ == r,
                     self.n == n,
@@ -1561,7 +1561,7 @@ impl Batch {
                 }
                 while at < addr + len
                     invariant
-                        crate::sys::may_abort(),
+                        crate::sys::may_abort() || crate::sys::valid_aborts(),
                         crate::sys::may_syscall(),
                         self.ranges@ == r,
                         self.n == n,
@@ -1670,7 +1670,7 @@ proof fn lemma_apart_range(r: Seq<(usize, usize, usize)>, n: int, addr: int, len
 /// (`Huge::free_run`'s purge at free time).
 pub fn discard_one(addr: usize, len: usize, Ghost(free): Ghost<Bytes>) -> bool
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         addr + len <= usize::MAX,
         frees(free, addr as int, len as int),
@@ -2098,7 +2098,7 @@ verus! {
 #[inline(never)]
 pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
@@ -2117,7 +2117,7 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
     let count = arena_count(shared);
     for i in 0..count
         invariant
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             shared.wf(),
             ord.allows(rank_class(0, 0)),
@@ -2157,7 +2157,7 @@ pub fn decay_arena(shared: &Shared, index: u16, now: u64, Tracked(ord): Tracked<
 /// One arena's walks on its own period, scaled by the policy's band.
 fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
     ensures
@@ -2176,7 +2176,7 @@ fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32, Tracked(ord)
 /// the policy's band.
 fn decay_huge(shared: &Shared, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
@@ -2237,7 +2237,7 @@ fn arena_count(shared: &Shared) -> (n: usize)
 /// `madvise` refused ([`Left::clean`]).
 pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
@@ -2258,7 +2258,7 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
     let count = arena_count(shared);
     for i in 0..count
         invariant
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             shared.wf(),
             ord.allows(rank_class(0, 0)),
@@ -2359,9 +2359,12 @@ pub fn purge_arena(
 /// lock held (`pthread_join`'s TLS teardown, the stack cache trim) and
 /// `pthread_create` takes that lock again. Such a tick purges in the
 /// foreground and leaves the start to the next allocation's tick.
+/// So it needs only `valid_aborts`: the thread start, which may abort,
+/// runs only on an allocation's tick, and decay reaches only resource
+/// failures and pending checks.
 pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && !alloc),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
@@ -2432,7 +2435,8 @@ pub fn note_decay_changed()
 /// kernel): every byte of it is one the batch's `free` admits. It is
 /// also [`well_formed`]: non-empty, page-aligned, and in the huge region
 /// or a class region outside its guard slabs, so never metadata
-/// ([`theorem_purge_well_formed`]). Whether the kernel took it: on a refusal (`EINVAL` for a
+/// ([`theorem_purge_well_formed`]); the page-alignment check never fails.
+/// Whether the kernel took it: on a refusal (`EINVAL` for a
 /// range with `mlock`ed pages, under `mlockall` every range) the pages
 /// keep their contents, or some of them do (Linux applies the advice to
 /// the VMAs before the one it refuses). Every supported kernel has
@@ -2445,15 +2449,20 @@ pub fn note_decay_changed()
 #[allow(clippy::manual_is_multiple_of)]
 fn discard(addr: usize, len: usize, advice: Advice, Ghost(free): Ghost<Bytes>) -> bool
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
         frees(free, addr as int, len as int),
         well_formed(addr as int, len as int),
 {
     broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
-    // The range must be whole pages (checked against the page size here).
+    // The range must be whole pages (checked against the page size here):
+    // the check never fails, by the precondition, so only the `madvise`
+    // failure aborts.
     let page = sys::features::page_size();
+    proof {
+        lemma_well_formed(addr as int, len as int);
+    }
     if !(addr % page == 0 && len % page == 0 && len != 0) {
         sys::abort_fmt(format_args!("purge: discard of {addr:#x}+{len:#x} is not page-aligned"));
     }
