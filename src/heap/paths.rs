@@ -413,7 +413,7 @@ impl Heap {
         class: usize,
         _blk: Tracked<&mut Live>,
     ) -> (*mut u8, bool) {
-        self.tick::<true>(shared);
+        self.tick::<true>(shared, Tracked::assume_new(), Tracked::assume_new());
         let Some((a, w)) = shared.arena(arena, Tracked::assume_new()) else {
             return (ptr::null_mut(), false);
         };
@@ -545,7 +545,7 @@ impl Heap {
             ptr::null_mut()
         };
         if cache.is_null() {
-            self.tick::<false>(shared);
+            self.tick::<false>(shared, Tracked::assume_new(), Tracked::assume_new());
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
             shared.free_direct(
@@ -569,7 +569,7 @@ impl Heap {
             if shared.double_free_scan() {
                 self.scan_or_abort(shared, cache, p);
             }
-            self.tick::<false>(shared);
+            self.tick::<false>(shared, Tracked::assume_new(), Tracked::assume_new());
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.
@@ -1061,4 +1061,20 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> 
             Tracked::assume_new(),
         )
     }
+}
+
+/// The `Shared` a heap was created on, with a lifetime free of the heap's
+/// borrow (so the heap can be borrowed mutably while it is used): the
+/// heap's `shared` field, read as `api::shared_deref` reads it. For every
+/// heap the allocator creates that is the process's `Shared` at its
+/// storage; the unit tests also build heaps over a `Shared` of their own
+/// (`testutil`), which they never free.
+///
+/// # Safety
+/// `p` is the `shared` field of a live heap, so it points to a live,
+/// initialised `Shared`.
+#[inline(always)]
+pub(super) unsafe fn shared_of<'a>(p: *const Shared) -> &'a Shared {
+    // SAFETY: guaranteed by the caller.
+    unsafe { crate::api::shared_deref(p) }
 }

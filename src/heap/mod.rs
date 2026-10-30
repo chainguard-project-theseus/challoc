@@ -5317,7 +5317,12 @@ impl Heap {
     /// lock, from `pthread_join`'s TLS teardown).
     // Hot slow-path tick: left as written so its codegen does not move.
     #[allow(clippy::manual_is_multiple_of)]
-    fn tick<const ALLOC: bool>(&mut self, shared: &Shared) {
+    fn tick<const ALLOC: bool>(
+        &mut self,
+        shared: &Shared,
+        _ord: Tracked<&mut LockOrder>,
+        _errno: Tracked<&mut crate::vspec::errno::ThreadErrno>,
+    ) {
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {
             let now = now_ns();
