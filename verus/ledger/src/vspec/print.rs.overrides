@@ -1,5 +1,2 @@
 # `Cgroup`'s `Display` is outside `verus!`; that it needs no precondition is trusted.
 DisplaySpecImpl for sys::cgroup::Cgroup	allocator invariant	Verus
-# Temporary seam, discharged by lane C (branch verus-c-create), which
-# verifies `Tcaches::len`.
-tcaches_len	allocator invariant	Verus

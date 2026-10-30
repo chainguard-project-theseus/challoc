@@ -11,11 +11,10 @@ file.
 | `base_slab_sizes` | external_body | function pointer | Kani | trusted |
 | `DisplaySp...p::Cgroup` | spec_impl | allocator invariant | Verus | trusted |
 | `PartialEqSpec...::PercpuArena` | spec_impl | core library | Kani | trusted |
-| `tcaches_len` | external_body | allocator invariant | Verus | trusted |
 
 ## `libc::FILE`
 
-src/vspec/print.rs:17. Kind: ext_type_spec. Category: core library.
+src/vspec/print.rs:16. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > libc's `FILE`, opaque: `malloc_info` only passes the caller's stream on.
@@ -26,7 +25,7 @@ pub struct ExFile(libc::FILE);
 
 ## `base_slab_sizes`
 
-src/vspec/print.rs:29. Kind: external_body. Category: function pointer.
+src/vspec/print.rs:28. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > The smallest and largest [`crate::layout::BASE_CLASSES`] slab size of the classes `lo..=hi` (0 for an empty range), the table geometry the report compares a page-raised range with.
@@ -39,7 +38,7 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
 
 ## `DisplaySpecImpl for sys::cgroup::Cgroup`
 
-src/vspec/print.rs:47. Kind: spec_impl. Category: allocator invariant.
+src/vspec/print.rs:46. Kind: spec_impl. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -52,7 +51,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
 
 ## `PartialEqSpecImpl for config::PercpuArena`
 
-src/vspec/print.rs:56. Kind: spec_impl. Category: core library.
+src/vspec/print.rs:55. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -65,15 +64,4 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::PercpuArena {
         *self == *other
     }
 }
-```
-
-## `tcaches_len`
-
-src/vspec/print.rs:75. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> `shared.tcaches.len()`, the number of live explicit caches.
-
-```rust
-pub(crate) fn tcaches_len(shared: &crate::heap::Shared) -> usize
 ```

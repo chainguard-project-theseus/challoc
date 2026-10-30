@@ -4139,37 +4139,6 @@ fn assert_rekey_flushed(len: &u32) {
     assert_eq!(*len, 0, "heap: re-keying a cache that was not flushed");
 }
 
-/// `(*h).bound = true` for a heap [`Heap::create`] has just made: a field
-/// store through the raw heap pointer.
-///
-/// # Safety
-/// `h` is a fresh heap, exclusively owned.
-#[inline(always)]
-unsafe fn mark_bound(h: *mut Heap, _s: Tracked<&mut FreshHeap>) {
-    // SAFETY: guaranteed by the caller.
-    unsafe { (*h).bound = true };
-}
-
-/// `(*h).rehome = true` for a thread heap [`Heap::create`] has just made
-/// and marked bound ([`mark_bound`]): it may still move its home
-/// ([`Heap::try_rehome`]).
-///
-/// # Safety
-/// `h` is a fresh heap, exclusively owned.
-#[inline(always)]
-unsafe fn mark_rehome(h: *mut Heap, _s: Tracked<&mut FreshHeap>) {
-    // SAFETY: guaranteed by the caller.
-    unsafe { (*h).rehome = true };
-}
-
-/// [`Arenas::assign`](crate::arena::Arenas::assign) on the process's
-/// arenas, with the new heap's ticket for the arena it picked.
-#[inline(always)]
-fn assign_home(shared: &Shared, _ord: Tracked<&mut LockOrder>) -> (u16, Tracked<Homed>) {
-    let (arena, t, _) = shared.arenas.assign(Tracked::assume_new());
-    (arena, t)
-}
-
 verus! {
 
 /// `head` is the permission to the 128 bytes of the heap at `h` before
@@ -4182,6 +4151,84 @@ pub(super) open spec fn heap_head(h: *mut Heap, head: vstd::raw_ptr::PointsToRaw
     &&& head.provenance() == h@.provenance
     &&& h@.addr != 0
     &&& h@.addr as int % 64 == 0
+}
+
+/// [`Arenas::assign`](crate::arena::Arenas::assign) on the process's
+/// arenas, with the new heap's ticket for the arena it picked.
+#[inline(always)]
+fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u16, Tracked<Homed>))
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(crate::lock::rank_arenas()),
+    ensures
+        homed_on(r.1@, r.0 as int),
+        *final(ord) == *old(ord),
+{
+    proof {
+        shared.lemma_wf_slow();
+    }
+    let (arena, t, _) = shared.arenas.assign(Tracked(ord));
+    proof {
+        shared.arenas.lemma_wf();
+        shared.arenas.lemma_homed(t@, arena as int);
+    }
+    (arena, t)
+}
+
+/// `(*h).bound = true` for a heap [`Heap::create`] has just made.
+/// A field store through the raw heap pointer, to a field [`init_fields`]
+/// wrote, inside the 128 bytes `s` holds the permission to
+/// ([`FreshHeap::head`], [`heap_head`]); it leaves the permission as it
+/// was and records the store in `s`. Trusted: that the store changes
+/// only `bound`, and that this is what `s` records, rests on what
+/// [`FreshHeap`] stands for.
+///
+/// # Safety
+/// `h` is a fresh heap, exclusively owned.
+#[inline(always)]
+#[verifier::external_body]
+unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
+    requires
+        old(s).heap() == h,
+        heap_head(h, old(s).head()),
+    ensures
+        final(s).heap() == h,
+        final(s).head() == old(s).head(),
+        final(s).arena() == old(s).arena(),
+        final(s).bound(),
+        final(s).shared() == old(s).shared(),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*h).bound = true };
+}
+
+/// `(*h).rehome = true` for a thread heap [`Heap::create`] has just made
+/// and marked bound ([`mark_bound`]): it may still move its home
+/// ([`Heap::try_rehome`]). A field store through the raw heap pointer, to
+/// a field [`init_fields`] wrote (`false`), inside the 128 bytes `s` holds
+/// the permission to ([`FreshHeap::head`], [`heap_head`]) but after the
+/// fields the token records (`rehome` follows `rng`): it leaves the
+/// permission and the token as they were. Trusted: that the store
+/// changes only `rehome` (`arena` and `bound` among the bytes it keeps)
+/// rests on what [`FreshHeap`] stands for. A heap with `rehome` set is
+/// bound (a conjunct of [`Heap::homed_ok`]): the token must record
+/// [`mark_bound`]'s store first.
+///
+/// # Safety
+/// `h` is a fresh heap, exclusively owned.
+#[inline(always)]
+#[verifier::external_body]
+unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
+    requires
+        old(s).heap() == h,
+        heap_head(h, old(s).head()),
+        old(s).bound(),
+    ensures
+        *final(s) == *old(s),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*h).rehome = true };
 }
 
 impl CachePerms {
@@ -4223,6 +4270,56 @@ global layout Heap is size == 3456, align == 64;
 global layout Heap is size == 3712, align == 64;
 
 impl Heap {
+    /// Create a heap in the metadata region for the calling thread, homed
+    /// on the least-loaded automatic arena and counted there
+    /// (`Arenas::assign`; `destroy` releases the binding). Null if the
+    /// region is exhausted. Does not touch TLS or the thread key. With
+    /// the heap, the permissions to its caches ([`CachePerms::fresh`]),
+    /// and the heap's ticket for its home arena ([`Homed`]) with the
+    /// permission to the heap's plain fields and what was stored in its
+    /// `shared`, `arena` and `bound` ([`FreshHeap`]); on null, the ticket
+    /// is given back (`unbind`).
+    // The tracked results are part of the signature.
+    #[allow(clippy::type_complexity)]
+    fn create(
+        shared: &Shared,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: (*mut Heap, Tracked<CachePerms>, Tracked<Option<(Homed, FreshHeap)>>))
+        requires
+            crate::sys::may_abort_pending(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            old(ord).allows(crate::lock::rank_arenas()),
+        ensures
+            r.0@.addr != 0 ==> r.1@.fresh(r.0),
+            r.0@.addr != 0 ==> (r.2@ matches Some((t, s)) && homed_on(t, t.arena) && s.heap() == r.0 && s.arena() == t.arena
+                && s.bound() && heap_head(r.0, s.head()) && s.shared() == Shared::storage() as *const Shared),
+            *final(ord) == *old(ord),
+    {
+        proof {
+            shared.lemma_wf_slow();
+        }
+        let (arena, Tracked(t)) = assign_home(shared, Tracked(ord));
+        let (h, perms, Tracked(stored)) = Self::create_detached(shared, arena, Tracked(ord));
+        let tracked mut fresh = None;
+        if h.is_null() {
+            proof {
+                shared.arenas.lemma_homed(t, arena as int);
+            }
+            shared.arenas.unbind(arena, Tracked(t));
+        } else {
+            let tracked mut s = stored.tracked_unwrap();
+            // SAFETY: fresh, exclusively owned.
+            unsafe { mark_bound(h, Tracked(&mut s)) };
+            // SAFETY: as above.
+            unsafe { mark_rehome(h, Tracked(&mut s)) };
+            proof {
+                fresh = Some((t, s));
+            }
+        }
+        (h, perms, Tracked(fresh))
+    }
+
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
     /// before it is registered). Null if the region is exhausted. With the
     /// heap, the permissions to its caches ([`CachePerms::fresh`]) and the
@@ -4360,35 +4457,6 @@ impl Heap {
 } // verus!
 
 impl Heap {
-    /// Create a heap in the metadata region for the calling thread, homed
-    /// on the least-loaded automatic arena and counted there
-    /// (`Arenas::assign`; `destroy` releases the binding). Null if the
-    /// region is exhausted. Does not touch TLS or the thread key. With
-    /// the heap, the permissions to its caches, and its ticket for its
-    /// home arena with the token for its plain fields (ghost).
-    // The tracked results are part of the signature.
-    #[allow(clippy::type_complexity)]
-    fn create(
-        shared: &Shared,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> (
-        *mut Heap,
-        Tracked<CachePerms>,
-        Tracked<Option<(Homed, FreshHeap)>>,
-    ) {
-        let (arena, ticket) = assign_home(shared, Tracked::assume_new());
-        let (h, perms, _) = Self::create_detached(shared, arena, Tracked::assume_new());
-        if h.is_null() {
-            shared.arenas.unbind(arena, ticket);
-        } else {
-            // SAFETY: fresh, exclusively owned.
-            unsafe { mark_bound(h, Tracked::assume_new()) };
-            // SAFETY: as above.
-            unsafe { mark_rehome(h, Tracked::assume_new()) };
-        }
-        (h, perms, Tracked::assume_new())
-    }
-
     /// Flush every cache, free them and the heap itself back to the
     /// metadata allocator. `h` is dangling afterwards.
     ///

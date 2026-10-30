@@ -479,7 +479,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         "Arenas: {} ({} automatic), explicit caches: {}",
         snap.narenas,
         shared.arenas.auto(),
-        crate::vspec::print::tcaches_len(shared)
+        shared.tcaches.len()
     )?;
     writeln!(out, "Quantum size: {}", QUANTUM)?;
     writeln!(out, "Page size: {}", shared.regions.page_size())?;
