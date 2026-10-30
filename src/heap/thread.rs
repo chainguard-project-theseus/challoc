@@ -132,7 +132,7 @@ fn create_heap_for_thread<'a>(
     if slot != 0 {
         return None;
     }
-    let h = Heap::create(shared);
+    let (h, _, _) = Heap::create(shared, Tracked::assume_new());
     if h.is_null() {
         return None;
     }
