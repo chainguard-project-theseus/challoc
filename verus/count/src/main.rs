@@ -8,8 +8,9 @@
 //! `verus!` but is one of those; and *outside* when it is not inside
 //! `verus!` at all. `spec` and `proof` functions are ghost code, erased
 //! from ordinary builds, and are counted apart. Items under `#[cfg(test)]`
-//! are left out, and so are executable functions whose own `cfg` only
-//! `test` or `verus_keep_ghost` builds meet (`UNSHIPPED`). Lines run from a
+//! or `#[cfg(kani)]` (the Kani harnesses) are left out, and so are
+//! executable functions whose own `cfg` only `test`, `kani` or
+//! `verus_keep_ghost` builds meet (`UNSHIPPED`). Lines run from a
 //! function's `fn` keyword to its closing brace.
 //!
 //! Usage: `cargo run --release -- [--list] [--floor FILE [--base-rev REV]]
@@ -55,9 +56,11 @@ struct Counter {
     errors: usize,
 }
 
-/// The files of modules declared `#[cfg(test)] mod name;` in `file`: `name.rs`
-/// and the directory `name/` (its `mod.rs` and its submodules) beside it (or
-/// under its directory, for a `mod.rs` or crate root).
+/// The files of modules declared `#[cfg(test)] mod name;` (or under another
+/// [`TEST`] name) in `file`: `name.rs` and the directory `name/` (its `mod.rs`
+/// and its submodules) beside it (or under its directory, for a `mod.rs` or
+/// crate root); for a module with a `#[path = "p"]` attribute, `p` beside
+/// `file`, and the directory of `p` when `p` is a `mod.rs`.
 fn test_module_files(file: &Path, items: &[Item], out: &mut Vec<PathBuf>) {
     let dir = match file.file_name().and_then(|n| n.to_str()) {
         Some("mod.rs" | "lib.rs" | "main.rs") => file.parent().map(Path::to_path_buf),
@@ -71,21 +74,46 @@ fn test_module_files(file: &Path, items: &[Item], out: &mut Vec<PathBuf>) {
             && m.content.is_none()
             && cfg_needs(&m.attrs, TEST)
         {
-            let name = m.ident.to_string();
-            out.push(dir.join(format!("{name}.rs")));
-            out.push(dir.join(name));
+            let path = m.attrs.iter().find_map(|a| match &a.meta {
+                Meta::NameValue(nv) if nv.path.is_ident("path") => match &nv.value {
+                    verus_syn::Expr::Lit(l) => match &l.lit {
+                        verus_syn::Lit::Str(s) => Some(s.value()),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            });
+            match path {
+                Some(p) => {
+                    let p = file.parent().unwrap_or(Path::new("")).join(p);
+                    if p.file_name().is_some_and(|n| n == "mod.rs")
+                        && let Some(d) = p.parent()
+                    {
+                        out.push(d.to_path_buf());
+                    }
+                    out.push(p);
+                }
+                None => {
+                    let name = m.ident.to_string();
+                    out.push(dir.join(format!("{name}.rs")));
+                    out.push(dir.join(name));
+                }
+            }
         }
     }
 }
 
-/// Names whose `cfg` holds only in test builds. Verus never sees an item
-/// under such a `cfg`, and no build ships it.
-const TEST: &[&str] = &["test"];
+/// Names whose `cfg` holds only in test builds, or only in the builds Kani
+/// makes of its harnesses (`kani`). Verus never sees an item under such a
+/// `cfg`, and no build ships it.
+const TEST: &[&str] = &["test", "kani"];
 
-/// Names a shipped build never sets: `test`, and `verus_keep_ghost`, which
-/// is set only while Verus verifies. Verus sees an item that needs only
-/// these, so a proof under it still counts, but no build ships it.
-const UNSHIPPED: &[&str] = &["test", "verus_keep_ghost"];
+/// Names a shipped build never sets: the [`TEST`] names, and
+/// `verus_keep_ghost`, which is set only while Verus verifies. Verus sees
+/// an item that needs only these, so a proof under it still counts, but
+/// no build ships it.
+const UNSHIPPED: &[&str] = &["test", "kani", "verus_keep_ghost"];
 
 /// Whether one of `attrs` is a `cfg` that holds only when one of `names`
 /// is set (`cfg_predicate_needs`).
@@ -717,10 +745,15 @@ mod tests {
 
     #[test]
     fn cfg_predicates_that_hold_only_under_test_or_verification() {
-        // (predicate, holds only under `test`, holds only under `test` or
-        // `verus_keep_ghost`)
+        // (predicate, holds only under `test` or `kani`, holds only under
+        // `test`, `kani` or `verus_keep_ghost`)
         for (cfg, test, unshipped) in [
             ("test", true, true),
+            ("kani", true, true),
+            ("any (test , kani)", true, true),
+            ("not (kani)", false, false),
+            ("not (any (test , kani))", false, false),
+            ("any (kani , verus_keep_ghost)", false, true),
             ("all (test , feature = \"x\")", true, true),
             ("all (feature = \"x\" , test)", true, true),
             ("not (test)", false, false),
@@ -967,6 +1000,28 @@ mod tests {
         ] {
             let got = skip.iter().any(|s| Path::new(f).starts_with(s));
             assert_eq!(got, want, "{f}: got = {got}, wanted = {want}");
+        }
+    }
+
+    #[test]
+    fn a_kani_module_skips_the_files_its_path_names() {
+        let file = parse_file(
+            "#[cfg(kani)] #[path = \"kani/mod.rs\"] mod kani_proofs; #[cfg(kani)] #[path = \"one.rs\"] mod one; #[path = \"kept/mod.rs\"] mod kept;",
+        )
+        .expect("parses");
+        let mut skip = Vec::new();
+        test_module_files(Path::new("src/lib.rs"), &file.items, &mut skip);
+        for (f, want) in [
+            ("src/kani/mod.rs", true),
+            ("src/kani/ptr.rs", true),
+            ("src/one.rs", true),
+            ("src/kani_proofs.rs", false),
+            ("src/kani_proofs/mod.rs", false),
+            ("src/kept/mod.rs", false),
+            ("src/kanix.rs", false),
+        ] {
+            let got = skip.iter().any(|s| Path::new(f).starts_with(s));
+            assert_eq!(got, want, "{f}: got = {got}, want = {want}");
         }
     }
 

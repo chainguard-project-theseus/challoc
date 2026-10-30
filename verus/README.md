@@ -122,6 +122,24 @@ body; a line in the source file's overrides file
 wrong, and the run fails on a seam it cannot classify. [SEAMS.md](SEAMS.md)
 explains the kinds, categories, tools and statuses.
 
+## Kani
+
+`src/kani/` holds Kani harnesses (`cfg(kani)` only, so no ordinary build,
+test or Verus run sees them) for seams of the ledger, mostly those whose
+proposed tool is Kani: each checks a trusted item's body, or the `core`
+function an `assume_specification` describes, against the contract Verus
+assumes. Each harness's comment names its seam and its bounds. A harness
+is evidence; the ledger status stays "trusted" until an overrides line
+cites it. The `kani` check (`.chainguard/ci/kani.yaml`) runs them under
+both quanta; locally, with Kani 0.68.0 and CBMC 6.11.0 (Wolfi's `kani` and
+`cbmc` packages):
+
+```sh
+cargo kani -Z unstable-options -Z stubbing --ignore-global-asm \
+    --no-default-features --features quantum16      # or quantum8
+cargo kani ... --harness kani_proofs::stats::fig_add_exact   # one harness
+```
+
 ## Conventions
 
 - Keep the executable code as it is. A rewrite needed only to get through
