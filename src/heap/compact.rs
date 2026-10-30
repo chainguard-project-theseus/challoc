@@ -19,7 +19,7 @@
 //! never writes below `len`.
 
 use core::ptr;
-use vstd::prelude::Tracked;
+use vstd::prelude::{Tracked, verus};
 
 use crate::layout::CLASSES;
 use crate::sys::pac;
@@ -27,11 +27,15 @@ use crate::vspec::addr::addr_to_ptr;
 
 use super::{CacheHeader, Heap, Shared, stack_mut};
 
+verus! {
+
 /// Cache modes: off (the `FOREIGN` cache), probing the class for
 /// fragmentation every [`PROBE_MASK`] + 1 pops, compacting.
 pub const MODE_OFF: u16 = 0;
 pub const MODE_PROBE: u16 = 1;
 pub const MODE_COMPACT: u16 = 2;
+
+} // verus!
 
 /// Pops between two fragmentation probes of a class (minus one).
 pub const PROBE_MASK: u32 = (1 << 12) - 1;

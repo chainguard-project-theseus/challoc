@@ -1,2 +1,4 @@
 # Trusted: `assert_eq!` reaches `core::panicking::assert_failed`.
 assert_refill_empty	panic/abort	none (assumption)
+# Trusted: `assert_eq!` reaches `core::panicking::assert_failed`.
+assert_flushed	panic/abort	none (assumption)

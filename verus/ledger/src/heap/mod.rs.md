@@ -7,12 +7,28 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `assert_flushed` | external_body | panic/abort | none (assumption) | trusted |
 | `assert_..._empty` | external_body | panic/abort | none (assumption) | trusted |
 | `Heap::a...latile` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 
+## `assert_flushed`
+
+src/heap/mod.rs:4077. Kind: external_body. Category: panic/abort.
+Tool: none (assumption). Status: trusted.
+
+> `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
+
+```rust
+fn assert_flushed(len: &u32)
+    requires
+        crate::sys::may_abort() || *len == 0,
+    ensures
+        *len == 0,
+```
+
 ## `assert_refill_empty`
 
-src/heap/mod.rs:4083. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4098. Kind: external_body. Category: panic/abort.
 Tool: none (assumption). Status: trusted.
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns.
@@ -27,7 +43,7 @@ fn assert_refill_empty(len: &u32)
 
 ## `Heap::arena_volatile`
 
-src/heap/mod.rs:4937. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:5831. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.

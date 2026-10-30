@@ -694,7 +694,11 @@ impl Heap {
         // SAFETY: `node` is a live block owned by this heap.
         unsafe { Self::node_cache_ptr(node, class) }
     }
+}
 
+verus! {
+
+impl Heap {
     /// The header for `class` in the home array (`node` null) or in `node`.
     ///
     /// # Safety
@@ -704,7 +708,20 @@ impl Heap {
         &mut self,
         node: *mut ArenaCaches,
         class: usize,
-    ) -> *mut CacheHeader {
+    ) -> (r: *mut CacheHeader)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+            node@.addr == 0 || old(self).owns_node(node),
+        ensures
+            *final(self) == *old(self),
+            old(self).owns(r),
+            old(self).hdr_class(r) == class,
+            r == old(self).array_hdr(node, class as int),
+    {
+        proof {
+            old(self).lemma_array_hdr(node);
+        }
         // SAFETY: guaranteed by the caller.
         if node.is_null() {
             self.cache_ptr(class)
@@ -713,6 +730,8 @@ impl Heap {
         }
     }
 }
+
+} // verus!
 
 // `node_caches_ptr` and `Heap::node_cache_ptr`: the headers start at the
 // node's second line.
