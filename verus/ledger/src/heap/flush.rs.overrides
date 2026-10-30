@@ -1,7 +1,0 @@
-# Temporary seam, tracked in #138: vstd's ptr_mut_ref contract, restated
-# for a permission held in `perms.hdrs` by reference, so that
-# `Heap::flush`'s three header writes keep the unverified code's machine
-# code. Discharged once `flush` can pass the permission as `Tracked(..)`
-# without changing its machine code (an erasure without a closure, or a
-# rustc whose MIR inliner leaves `flush_arena` alone).
-hdr_mut	raw pointer (internal)	Verus

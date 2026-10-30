@@ -16,6 +16,7 @@ use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::zero::Zeroed;
 
+#[cfg(verus_keep_ghost)]
 use super::CachePerms;
 use super::shared::seed;
 use super::{CacheHeader, FOREIGN, Heap, Shared, assert_refill_empty, stack_mut};
@@ -357,16 +358,13 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
-    // Hot free path: the body is left as written, except that its two sorts
-    // go through the `#[inline(always)]` wrappers `sort_ptrs_by_key` and
-    // `sort_ptrs`, which compile to the bare calls' machine code, and its
-    // three cache-header writes go through `hdr_mut`, which passes
-    // `Tracked::assume_new()` as the unverified code does, so the machine
-    // code is the unverified code's. Passing the header's permission as
-    // `Tracked(..)` there would move the inliner: each erased `Tracked(..)`
-    // argument is a closure instance, and the three at the header writes
-    // push `flush_arena` past rustc's MIR-inliner cycle-check budget.
-    // `hdr_mut`'s contract is trusted, a seam tracked in #138.
+    // Hot free path: the body's source is as written, except that its two
+    // sorts go through the `#[inline(always)]` wrappers `sort_ptrs_by_key`
+    // and `sort_ptrs`, and its three header writes pass the header's own
+    // permission (`Tracked(..)`). Each erased `Tracked(..)` argument is a
+    // closure instance, and the three put `flush_arena` past rustc's
+    // MIR-inliner cycle-check budget, so the inliner lays this path out
+    // differently from a body with no such arguments.
     //
     // The proof's cost is the kept/released split's sequence facts. The
     // cache's re-establishment after the release (the stack's `stack_ok`,
@@ -433,18 +431,11 @@ impl Heap {
         let ghost mut g_old = Seq::<int>::empty();
         let ghost mut g_kept = Seq::<int>::empty();
         let ghost mut g_rel = Seq::<int>::empty();
-        // SAFETY: `n <= len <= cap` entries exist, and `cache` is this heap's
-        // header (`owns(cache)` in the requires): the `slots` and `len` reads
-        // below go through its permission, and the three header updates,
-        // their reads included, through `hdr_mut` with that permission.
+        // SAFETY: `n <= len <= cap` entries exist, and the header reads and
+        // writes below go through `cache`'s permission (`owns(cache)` in
+        // the requires).
         unsafe {
             let pac = shared.pac();
-            // The slot permissions sit in `sl` while `all` borrows them, so
-            // the header writes can take `self.perms` (`hdr_mut`).
-            let tracked mut sl = Map::tracked_empty();
-            proof {
-                tracked_swap(&mut self.perms.borrow_mut().slots, &mut sl);
-            }
             let tracked perms = self.perms.borrow_mut();
             let slots = ptr_ref(cache, Tracked(perms.hdrs.tracked_borrow(cache))).slots;
             // The cached slots' tokens, gathered by address for the
@@ -480,7 +471,7 @@ impl Heap {
                 slots,
                 0,
                 ptr_ref(cache, Tracked(perms.hdrs.tracked_borrow(cache))).len as usize,
-                Tracked(&mut sl),
+                Tracked(&mut perms.slots),
             );
             let ghost a0 = all@;
             proof {
@@ -497,8 +488,7 @@ impl Heap {
                 // stays sorted for the next flush. A whole flush keeps
                 // nothing, so nothing can straddle the split.
                 kept_max = if rest_len > 0 { *all.get_unchecked(rest_len - 1) } else { ptr::null_mut() };
-                let h = hdr_mut(&mut self.perms, cache);
-                h.unsorted_flushes = 0;
+                ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache))).unsorted_flushes = 0;
                 proof {
                     if rest_len > 0 {
                         km_at = rest_len - 1;
@@ -519,7 +509,7 @@ impl Heap {
                 } else {
                     ptr::null_mut()
                 };
-                let h = hdr_mut(&mut self.perms, cache);
+                let h = ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache)));
                 let k = h.unsorted_flushes;
                 h.unsorted_flushes = k.wrapping_add(1);
                 proof {
@@ -551,7 +541,6 @@ impl Heap {
                     }
                 }
             }
-            let tracked perms = self.perms.borrow_mut();
             let ghost a2 = all@;
             proof {
                 // Every kept entry was an entry before: the selection and
@@ -641,15 +630,13 @@ impl Heap {
                 g_kept = akept;
                 g_rel = hr;
                 perms.released = perms.released + tagged(class as int, hr);
-                tracked_swap(&mut perms.slots, &mut sl);
             }
-            let h = hdr_mut(&mut self.perms, cache);
+            let h = ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache)));
             h.len = rest_len as u32;
             h.moved = h.moved.wrapping_sub(n as u64);
             h.zeroed = 0;
             h.run_end = 0;
             h.low_water = h.low_water.min(rest_len as u32);
-            let tracked perms = self.perms.borrow_mut();
             proof {
                 lemma_stack_fill(old_h, *h, old_perms.slots, perms.slots, 0, old_h.len as int);
                 assert(perms.hdrs =~= old_perms.hdrs.insert(cache, perms.hdrs[cache]));
@@ -668,43 +655,6 @@ impl Heap {
             Heap::lemma_flush_accounting(*old(self), *self, cache, g_old, g_kept, g_rel);
         }
     }
-}
-
-/// [`vstd::raw_ptr::ptr_mut_ref`] on the header `cache`, with its
-/// permission in `perms.hdrs`: `Heap::flush`'s three header writes. An
-/// erased `Tracked(..)` argument is a closure instance, and passing the
-/// permission as one at each of the three sites pushes `flush_arena` past
-/// rustc's MIR-inliner cycle-check budget, so this passes
-/// `Tracked::assume_new()` and takes the permissions by reference
-/// (`&mut Tracked<CachePerms>`), as `lock::cell_mut` does. Trusted: the
-/// contract is vstd's for `ptr_mut_ref`, restated for the entry of
-/// `perms.hdrs` and the rest of `perms` unchanged.
-#[verifier::external_body]
-#[inline(always)]
-#[allow(unused_variables)]
-unsafe fn hdr_mut(perms: &mut Tracked<CachePerms>, cache: *mut CacheHeader) -> (r: &mut CacheHeader)
-    requires
-        old(perms)@.hdrs.contains_key(cache),
-        old(perms)@.hdrs[cache].ptr() == cache,
-        old(perms)@.hdrs[cache].is_init(),
-    ensures
-        *r == old(perms)@.hdrs[cache].value(),
-        final(perms)@.hdrs == old(perms)@.hdrs.insert(cache, final(perms)@.hdrs[cache]),
-        final(perms)@.hdrs[cache].ptr() == cache,
-        final(perms)@.hdrs[cache].is_init(),
-        final(perms)@.hdrs[cache].value() == *final(r),
-        final(perms)@.slots == old(perms)@.slots,
-        final(perms)@.cls == old(perms)@.cls,
-        final(perms)@.owner == old(perms)@.owner,
-        final(perms)@.toks == old(perms)@.toks,
-        final(perms)@.zero == old(perms)@.zero,
-        final(perms)@.handed == old(perms)@.handed,
-        final(perms)@.released == old(perms)@.released,
-        final(perms)@.blocks == old(perms)@.blocks,
-    opens_invariants none
-    no_unwind
-{
-    ptr_mut_ref(cache, Tracked::assume_new())
 }
 
 /// The flush's cache re-establishment, out of `flush`'s query: after the
