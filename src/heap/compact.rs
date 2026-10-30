@@ -33,7 +33,26 @@ use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
 use super::paths::shared_of;
-use super::{CacheHeader, Heap, Shared, stack_mut};
+use super::{CacheHeader, CachePerms, Heap, Shared, stack_mut};
+#[cfg(verus_keep_ghost)]
+use super::{
+    cell_ok, lemma_rebuild_moves, lemma_rebuild_tracks, lemma_stack_fill, pac_mode, plain,
+    regions_ok, slot_ptr, slots_grow, stored, zero,
+};
+#[cfg(verus_keep_ghost)]
+use crate::class::{ptr_addrs, slot_loc};
+#[cfg(verus_keep_ghost)]
+use crate::layout::{class_table, slots_in};
+#[cfg(verus_keep_ghost)]
+use crate::lock::axiom_entry;
+#[cfg(verus_keep_ghost)]
+use crate::vspec::zero::Zeroed;
+#[cfg(verus_keep_ghost)]
+use vstd::map::Map;
+#[cfg(verus_keep_ghost)]
+use vstd::modes::tracked_swap;
+#[cfg(verus_keep_ghost)]
+use vstd::raw_ptr::PointsTo;
 use vstd::raw_ptr::ptr_mut_ref;
 
 verus! {
@@ -358,7 +377,11 @@ impl Heap {
             (p, zero)
         }
     }
+}
 
+verus! {
+
+impl Heap {
     /// Rebuild the run for a scheduled pop that found it exhausted: run the
     /// periodic work (under a balanced churn this is the only slow path a
     /// class ever takes), drop back to probing if the class is no longer
@@ -369,28 +392,59 @@ impl Heap {
     /// address order and the entries it displaces are LIFO entries whose
     /// order does not matter.
     ///
+    /// The block is claimed into a slice over the stack and moved with
+    /// slice operations ([`stack_mut`](super::stack_mut)). The stores keep
+    /// [`CacheHeader::inv`]: the block of `n <= cap - len` entries makes
+    /// `len + n <= cap`, `run_end = n`, `low_water = max(low_water, n)` and
+    /// `zeroed <= n`.
+    ///
     /// # Safety
     /// `cache` is this heap's real cache for `class`, in compact mode.
     #[cold]
     #[inline(never)]
+    #[verifier::rlimit(50)]
+    // Own prover: in the module's shared Z3 context the proof goes past
+    // its rlimit under quantum8.
+    #[verifier::spinoff_prover]
     pub(super) unsafe fn rebuild_run(
         &mut self,
         cache: *mut CacheHeader,
         class: usize,
-        _errno: Tracked<&mut crate::vspec::errno::ThreadErrno>,
-    ) {
-        // SAFETY: a heap never outlives the `Shared` it was created on; the
-        // unbounded lifetime lets `self` be borrowed mutably below.
+        Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>,
+    )
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+        ensures
+            final(self).keeps(*old(self)),
+    {
+        // SAFETY: `self.shared` is the process's `Shared` and it is ready
+        // (`Heap::wf`), as `shared_of` requires; the unbounded lifetime lets
+        // `self` be borrowed mutably below.
         let shared: &Shared = unsafe { shared_of(self.shared) };
-        self.tick::<true>(shared, Tracked::assume_new(), Tracked::assume_new());
+        // Premise (lock order): the scheduled pops run from `Heap::pop`, whose
+        // callers (`alloc_in`, `alloc_other`, `alloc_slow_in` after `refill`,
+        // and `alloc_slow`'s declined scheduled pop) hold no allocator lock at
+        // the call, so this rebuild holds none either.
+        let tracked mut ord = axiom_entry();
+        self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno));
+        let ghost h0 = *self;
         // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
         // `cap - len` slots of storage follow them.
         unsafe {
             let arena = self.hdr_ref(cache).arena;
-            if !Self::fragmented(shared, arena, class, Tracked::assume_new()) {
+            if !Self::fragmented(shared, arena, class, Tracked(&mut ord)) {
                 shared.owner(arena).0.class(class).note_compact_mode(false);
                 let h = self.hdr_mut(cache);
                 h.set_mode(MODE_PROBE);
+                proof {
+                    Heap::lemma_set(h0, *self, cache, *h);
+                    Heap::lemma_keeps_trans(*old(self), h0, *self);
+                }
                 return;
             }
             let cap = self.hdr_ref(cache).cap as usize;
@@ -398,69 +452,110 @@ impl Heap {
             let block = (cap / 4).max(1);
             let len = self.hdr_ref(cache).len as usize;
             if len + block > cap && len > half {
-                self.flush(
-                    shared,
-                    arena,
-                    cache,
-                    class,
-                    len - half,
-                    Tracked::assume_new(),
-                );
+                self.flush(shared, arena, cache, class, len - half, Tracked(&mut ord));
+            }
+            let ghost h1 = *self;
+            proof {
+                Heap::lemma_keeps_trans(*old(self), h0, h1);
             }
             let len = self.hdr_ref(cache).len as usize;
             let want = block.min(cap - len);
             if want == 0 {
                 return;
             }
+            let ghost p1 = self.perms@;
+            proof {
+                assert(cell_ok(cache, p1.hdrs[cache], p1.slots));
+            }
             let slots = self.hdr_ref(cache).slots;
-            let out = stack_mut(slots, len, want, Tracked::assume_new());
+            // The stack's permissions move out of the heap while the slices
+            // borrow them, so that `claim` can take `self`.
+            let tracked mut sl = Map::tracked_empty();
+            proof {
+                tracked_swap(&mut self.perms.borrow_mut().slots, &mut sl);
+            }
+            let out = stack_mut(slots, len, want, Tracked(&mut sl));
+            let tracked mut toks = crate::class::SlotToks::empty();
             let (oa, ow) = shared.owner(arena);
-            let (claim, _) = self.claim(
-                shared,
-                oa.class(class),
-                out,
-                Tracked::assume_new(),
-                ow,
-                Tracked::assume_new(),
-            );
+            let (claim, Tracked(mut ztok)) = self.claim(shared, oa.class(class), out, Tracked(&mut toks), ow, Tracked(&mut ord));
+            let ghost claimed = out@;
             let n = claim.n;
             if n == 0 {
+                proof {
+                    tracked_swap(&mut self.perms.borrow_mut().slots, &mut sl);
+                    CachePerms::lemma_rebuild_none(p1, self.perms@, cache, len as int, want as int);
+                    CachePerms::lemma_claimed_frame(p1, self.perms@);
+                    Heap::lemma_keeps_trans(*old(self), h1, *self);
+                }
                 return;
             }
             shared.owner(arena).0.class(class).note_compact(n);
             out[..n].reverse();
+            let ghost reversed = out@;
             if shared.pac() {
                 CacheHeader::sign_all(slots, &mut out[..n]);
             }
-            let all = stack_mut(slots, 0, len + n, Tracked::assume_new());
+            let ghost s2 = sl;
+            let all = stack_mut(slots, 0, len + n, Tracked(&mut sl));
+            let ghost all0 = all@;
             if len >= n {
                 // [old..][block] -> [block][old[n..]][old[..n]]
                 let (bottom, rest) = all.split_at_mut(n);
                 bottom.swap_with_slice(&mut rest[len - n..]);
+                proof {
+                    assert(forall|i: int| 0 <= i < len + n ==> #[trigger] all@[i] == if i < n { all0[len + i] } else if i < len { all0[i] } else { all0[i - len] });
+                }
             } else {
                 // The block is bigger than what was there: rotate it down.
                 all.rotate_left(len);
+                proof {
+                    assert(forall|i: int| 0 <= i < len + n ==> #[trigger] all@[i] == if i < n { all0[len + i] } else { all0[i - n] });
+                }
             }
-            // `cache` is this heap's own header, which nothing else touches
-            // while the heap is borrowed. `ptr_mut_ref` stands for `hdr_mut`
-            // here, with a placeholder permission: the verified form takes the
-            // header's permission from the heap's cache permissions while the
-            // stack's permissions are held apart, so `Heap::wf`, which
-            // `hdr_mut` requires, does not hold.
-            let h = ptr_mut_ref(cache, Tracked::assume_new());
+            proof {
+                tracked_swap(&mut self.perms.borrow_mut().slots, &mut sl);
+            }
+            let tracked perms = self.perms.borrow_mut();
+            let h = ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache)));
             let new_len = (len + n) as u32;
             h.len = new_len;
             h.moved = h.moved.wrapping_add(n as u64);
             h.run_end = n as u32;
             h.low_water = h.low_water.max(n as u32);
             h.zeroed = if claim.zeroed { n as u32 } else { 0 };
+            proof {
+                let nn = n as int;
+                assert forall|k: int| 0 <= k < nn implies (#[trigger] out@[k])@.addr == stored(claimed[nn - 1 - k]@.addr, slots) by {
+                    assert(reversed[k] == claimed.subrange(0, nn).reverse()[k]);
+                    assert(claimed.subrange(0, nn).reverse()[k] == claimed[nn - 1 - k]);
+                    if !pac_mode() {
+                        assert(out@ == reversed);
+                    }
+                }
+                assert(perms.hdrs =~= p1.hdrs.insert(cache, perms.hdrs[cache]));
+                assert(crate::class::claim_zero_ok(claim, claimed, ztok, class as int));
+                assert(class_table()[p1.cls[cache]].size == class_table()[class as int].size);
+                if claim.zeroed {
+                    // One quantifier per conjunct, each instantiating
+                    // `claim_zero_ok` through its trigger term, so neither depends
+                    // on which conjunct Z3 splits on.
+                    assert forall|k: int| 0 <= k < nn implies #[trigger] ztok.contains_key(k) by {
+                        assert(0 <= k < claim.n);
+                        assert(ztok.contains_key(k));
+                    }
+                    assert forall|k: int| 0 <= k < nn implies #[trigger] ztok[k].covers(claimed[k], class_table()[p1.cls[cache]].size as int) by {
+                        assert(0 <= k < claim.n);
+                        assert(ztok.contains_key(k));
+                        assert(ztok[k].covers(claimed[k], class_table()[class as int].size as int));
+                    }
+                }
+                assert(p1.claimed());
+                CachePerms::lemma_rebuild_some(perms, ztok, &mut toks, p1, s2, cache, len as int, want as int, nn, claim.zeroed, claimed, out@, all0, all@);
+                Heap::lemma_keeps_trans(*old(self), h1, *self);
+            }
         }
     }
-}
 
-verus! {
-
-impl Heap {
     /// Whether `class` in `arena` is worth compacting (design 6.4).
     pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize, Tracked(ord): Tracked<&mut LockOrder>) -> bool
         requires
@@ -512,6 +607,184 @@ impl Heap {
             Verdict::Fragmented
         };
         (refilled, verdict)
+    }
+}
+
+impl CachePerms {
+    /// [`Heap::rebuild_run`] with an empty claim: the claim wrote entries
+    /// `len..len + want` of `p`'s stack through a slice ([`stack_mut`]'s
+    /// frame, from `o` to `new`), above `len`, and nothing else changed,
+    /// so every invariant still holds.
+    proof fn lemma_rebuild_none(o: CachePerms, new: CachePerms, p: *mut CacheHeader, len: int, want: int)
+        requires
+            o.wf(),
+            o.tracks(),
+            o.zero_ok(),
+            o.tokened(),
+            o.hdrs.contains_key(p),
+            len == o.hdr(p).len,
+            len + want <= o.hdr(p).cap,
+            new == (CachePerms { slots: new.slots, ..o }),
+            slots_grow(o.slots, new.slots),
+            forall|i: int| len <= i < len + want ==> #[trigger] new.slots[slot_ptr(o.hdr(p).slots, i)].is_init(),
+            forall|q: *mut *mut u8|
+                o.slots.contains_key(q) && (forall|i: int| len <= i < len + want ==> q != #[trigger] slot_ptr(o.hdr(p).slots, i))
+                    ==> #[trigger] new.slots[q] == o.slots[q],
+        ensures
+            new.keeps(o),
+            new.follows(o),
+            new.zero_ok(),
+            new.tokened(),
+    {
+        let hd = o.hdr(p);
+        assert(cell_ok(p, o.hdrs[p], o.slots));
+        lemma_stack_fill(hd, hd, o.slots, new.slots, 0, len);
+        assert(new.hdrs =~= o.hdrs.insert(p, new.hdrs[p]));
+        CachePerms::lemma_update(o, new, p);
+        CachePerms::lemma_slice_frame(o, o.slots, new.slots, p, len, want);
+        assert forall|i: int| 0 <= i < new.hdr(p).len implies #[trigger] new.holds(new.cls[p], new.ent(p, i), new.hdr(p).slots) by {
+            assert(new.ent(p, i) == o.ent(p, i));
+            assert(o.owner[o.ent(p, i)] == (p, i));
+        }
+        CachePerms::lemma_tracks_stack(o, new, p);
+        assert forall|i: int| #[trigger] CachePerms::in_prefix(new.hdr(p), i) implies new.zero_at(p, i) by {
+            o.lemma_zero_get(p, i);
+            assert(new.ent(p, i) == o.ent(p, i));
+        }
+        CachePerms::lemma_zero_update_ent(o, new, p);
+        assert forall|p2: *mut CacheHeader, j: int|
+            o.hdrs.contains_key(p2) && p2 != p && 0 <= j < o.hdr(p2).cap implies {
+                let q = #[trigger] o.ent(p2, j);
+                &&& new.slots[q] == o.slots[q]
+                &&& (o.toks.contains_key(q) ==> new.toks.contains_key(q) && new.toks[q] == o.toks[q])
+            } by {
+        }
+        assert forall|i: int| 0 <= i < new.hdr(p).len implies #[trigger] new.tok_at(p, i) by {
+            o.lemma_tok_get(p, i);
+            assert(new.ent(p, i) == o.ent(p, i));
+        }
+        CachePerms::lemma_tok_update(o, new, p);
+    }
+
+    /// [`Heap::rebuild_run`] with a claim of `n > 0` slots: the claim
+    /// (`claimed`, its tokens `ctoks` and its zero tokens `z`) went into
+    /// entries `len..len + want` of `p`'s stack through a first slice
+    /// (`o.slots` to `mid`, the block reversed and signed into `outf`),
+    /// the moves of a second slice over entries `0..len + n` (`all0` to
+    /// `allf`, `mid` to `new.slots`) put it at the bottom, and the header
+    /// took `len + n` entries, a run of `n` and a zero prefix of the block
+    /// at most. The claim's zero tokens become the prefix's, and the old
+    /// entries' slot tokens and the claim's go back under the entries
+    /// holding their slots.
+    #[verifier::spinoff_prover]
+    proof fn lemma_rebuild_some(
+        tracked perms: &mut CachePerms,
+        tracked z: Map<int, Zeroed>,
+        tracked ctoks: &mut crate::class::SlotToks,
+        o: CachePerms,
+        mid: Map<*mut *mut u8, PointsTo<*mut u8>>,
+        p: *mut CacheHeader,
+        len: int,
+        want: int,
+        n: int,
+        zeroed: bool,
+        claimed: Seq<*mut u8>,
+        outf: Seq<*mut u8>,
+        all0: Seq<*mut u8>,
+        allf: Seq<*mut u8>,
+    )
+        requires
+            o.wf(),
+            o.tracks(),
+            o.zero_ok(),
+            o.tokened(),
+            o.hdrs.contains_key(p),
+            regions_ok(),
+            len == o.hdr(p).len,
+            0 < n <= want,
+            len + want <= o.hdr(p).cap,
+            old(perms).hdrs == o.hdrs.insert(p, old(perms).hdrs[p]),
+            old(perms).cls == o.cls,
+            old(perms).owner == o.owner,
+            old(perms).toks == o.toks,
+            old(perms).zero == o.zero,
+            old(perms).blocks == o.blocks,
+            old(perms).hdr(p).slots == o.hdr(p).slots,
+            old(perms).hdr(p).cap == o.hdr(p).cap,
+            old(perms).hdr(p).len == len + n,
+            old(perms).hdrs[p].ptr() == p,
+            old(perms).hdrs[p].is_init(),
+            old(perms).hdr(p).inv(),
+            old(perms).hdr(p).zeroed <= (if zeroed { n } else { 0 }),
+            claimed.len() == want,
+            slots_in(claimed, o.cls[p], 0, n),
+            crate::class::keyed(old(ctoks).toks, ptr_addrs(claimed.subrange(0, n)), slot_loc(o.cls[p]), 0, n),
+            zeroed ==> forall|k: int| #![trigger z.contains_key(k)] #![trigger z[k]] 0 <= k < n ==> z.contains_key(k) && z[k].covers(claimed[k], class_table()[o.cls[p]].size as int),
+            outf.len() == want,
+            forall|k: int| 0 <= k < n ==> (#[trigger] outf[k])@.addr == stored(claimed[n - 1 - k]@.addr, o.hdr(p).slots),
+            // The first slice (`len..len + want`, from `o.slots` to `mid`).
+            slots_grow(o.slots, mid),
+            forall|q: *mut *mut u8|
+                o.slots.contains_key(q) && (forall|i: int| len <= i < len + want ==> q != #[trigger] slot_ptr(o.hdr(p).slots, i))
+                    ==> #[trigger] mid[q] == o.slots[q],
+            forall|i: int| len <= i < len + want ==> #[trigger] mid[slot_ptr(o.hdr(p).slots, i)].is_init(),
+            forall|i: int| len <= i < len + want ==> #[trigger] mid[slot_ptr(o.hdr(p).slots, i)].value() == outf[i - len],
+            // The second (`0..len + n`, from `mid` to `old(perms).slots`).
+            all0.len() == len + n,
+            allf.len() == len + n,
+            slots_grow(mid, old(perms).slots),
+            forall|i: int| 0 <= i < len + n ==> #[trigger] old(perms).slots[slot_ptr(o.hdr(p).slots, i)].is_init(),
+            forall|i: int|
+                0 <= i < len + n && mid[slot_ptr(o.hdr(p).slots, i)].is_init()
+                    ==> all0[i] == #[trigger] mid[slot_ptr(o.hdr(p).slots, i)].value(),
+            forall|i: int| 0 <= i < len + n ==> #[trigger] old(perms).slots[slot_ptr(o.hdr(p).slots, i)].value() == allf[i],
+            forall|q: *mut *mut u8|
+                mid.contains_key(q) && (forall|i: int| 0 <= i < len + n ==> q != #[trigger] slot_ptr(o.hdr(p).slots, i))
+                    ==> #[trigger] old(perms).slots[q] == mid[q],
+            len >= n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else if i < len { all0[i] } else { all0[i - len] },
+            len < n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else { all0[i - n] },
+        ensures
+            final(perms).keeps(o),
+            o.claimed() ==> final(perms).claimed(),
+            final(perms).follows(o),
+            final(perms).zero_ok(),
+            final(perms).tokened(),
+    {
+        let slots = o.hdr(p).slots;
+        let c = o.cls[p];
+        assert(cell_ok(p, o.hdrs[p], o.slots));
+        lemma_rebuild_moves(all0, allf, len, n);
+        assert forall|q: *mut *mut u8| #[trigger] o.slots.contains_key(q) implies {
+            &&& perms.slots.contains_key(q)
+            &&& perms.slots[q].ptr() == o.slots[q].ptr()
+            &&& (o.slots[q].is_init() ==> perms.slots[q].is_init())
+        } by {
+            assert(mid.contains_key(q));
+        }
+        lemma_stack_fill(o.hdr(p), perms.hdr(p), o.slots, perms.slots, 0, len + n);
+        CachePerms::lemma_update(o, *perms, p);
+        lemma_rebuild_tracks(o, mid, *perms, p, len, want, n, claimed, outf, all0, allf);
+        // The claim's tokens, reversed with its slots and moved to the
+        // bottom with them, are the new zero prefix.
+        CachePerms::lemma_slice_frame(o, o.slots, mid, p, len, want);
+        CachePerms::lemma_slice_frame(o, mid, perms.slots, p, 0, len + n);
+        let ghost mid2 = *perms;
+        zero::lemma_rebuild_entries(perms.slots, mid, slots, len, want, n, c, claimed, outf, all0, allf);
+        assert forall|i: int| 0 <= i < n implies #[trigger] plain(perms.slots[perms.ent(p, i)].value(), perms.hdr(p).slots) == claimed[n - 1 - i]@.addr by {
+            assert(perms.ent(p, i) == slot_ptr(slots, i));
+        }
+        CachePerms::lemma_install_claim(perms, z, o, p, n, zeroed, claimed);
+        CachePerms::lemma_same_but_tokens(mid2, *perms, o);
+        // The slot tokens: the old entries' and the claim's, by address, go
+        // back under the entries the moves left them in.
+        let ghost before_t = *perms;
+        CachePerms::lemma_rebuild_step(perms, ctoks, o, mid, p, len, want, n, claimed, outf, all0, allf);
+        assert(*perms == (CachePerms { toks: perms.toks, ..before_t }));
+        CachePerms::lemma_zero_same(before_t, *perms);
+        CachePerms::lemma_same_but_tokens(before_t, *perms, o);
+        if o.claimed() {
+            CachePerms::lemma_claimed_hdr(o, *perms, p);
+        }
     }
 }
 

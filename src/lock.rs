@@ -383,7 +383,13 @@ impl<'a> LockOrder<'a> {
 /// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes
-///   before it returns.
+///   before it returns;
+/// - `Heap::rebuild_run`, reached only from the scheduled pops
+///   (`Heap::pop_compact`, through `Heap::pop_compact_run`). They run from
+///   `Heap::pop`, which `alloc_in`, `alloc_other`, `alloc_slow_in` (after
+///   `refill`, whose `final(ord) == old(ord)` shows it released its locks)
+///   and `alloc_slow`'s declined scheduled pop call, none of them holding
+///   an allocator lock at the call.
 ///
 /// No allocator entry point is re-entered while a lock is held: allocator
 /// code calls nothing that may allocate with a lock held, and a signal
