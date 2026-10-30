@@ -4589,7 +4589,7 @@ impl Heap {
             return;
         }
         let old = self.arena;
-        let node = self.other_caches(shared, arena, true);
+        let node = self.other_caches(shared, arena, true, Tracked::assume_new());
         if node.is_null() {
             // No metadata for a new node: the caches of the new home start
             // empty and the old home's must go back first.
@@ -4639,7 +4639,7 @@ impl Heap {
     fn rehome_on_free(&mut self, shared: &Shared, class: usize, p: *mut u8) -> bool {
         let to = shared.arena_of_slot(class, p);
         if shared.double_free_scan() {
-            let foreign = self.other_caches(shared, FOREIGN, false);
+            let foreign = self.other_caches(shared, FOREIGN, false, Tracked::assume_new());
             if !foreign.is_null() {
                 // SAFETY: `foreign` is this heap's live `FOREIGN` node; a
                 // header with `cap != 0` is a real cache.
@@ -4713,14 +4713,16 @@ impl Heap {
         if to as u32 >= shared.arenas.auto()
             || to == self.arena
             || shared.arenas.bound(to) != 0
-            || !self.other_caches(shared, to, false).is_null()
+            || !self
+                .other_caches(shared, to, false, Tracked::assume_new())
+                .is_null()
             || !shared.arenas.try_bind_idle(to).0
         {
             return false;
         }
         let old = self.arena;
         self.flush_arena(shared, old, ptr::null_mut(), Tracked::assume_new());
-        let foreign = self.other_caches(shared, FOREIGN, false);
+        let foreign = self.other_caches(shared, FOREIGN, false, Tracked::assume_new());
         if !foreign.is_null() {
             self.flush_arena(shared, FOREIGN, foreign, Tracked::assume_new());
         }
