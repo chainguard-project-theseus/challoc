@@ -5174,17 +5174,19 @@ impl Heap {
             // purge and refault the same slabs at every exit); and not
             // when another heap has been homed there since the unbind
             // above. Design 13.3.
-            if shared.arenas.bound(arena) == 0
-                && !crate::purge::background::present()
-                && let Some(a) = shared.arenas.get_existing(arena)
-                && a.take_exit_purge(now_ns())
-            {
-                crate::purge::purge_arena(
-                    shared,
-                    arena,
-                    vstd::prelude::Tracked::assume_new(),
-                    vstd::prelude::Tracked::assume_new(),
-                );
+            // Nested, not a `let` chain: Verus does not take `let` chains.
+            #[allow(clippy::collapsible_if)]
+            if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
+                if let Some(a) = shared.arenas.get_existing(arena) {
+                    if a.take_exit_purge(now_ns()) {
+                        crate::purge::purge_arena(
+                            shared,
+                            arena,
+                            vstd::prelude::Tracked::assume_new(),
+                            vstd::prelude::Tracked::assume_new(),
+                        );
+                    }
+                }
             }
         }
         shared.meta.free(
