@@ -640,7 +640,11 @@ impl Heap {
         }
         self.free_slow_in(shared, FOREIGN, class, p, Tracked::assume_new())
     }
+}
 
+verus! {
+
+impl Heap {
     /// The header for `(arena, class)`, creating the `others` node if
     /// needed. Null if no node could be allocated.
     pub(super) fn cache_slot(
@@ -648,21 +652,39 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
-        _ord: Tracked<&mut LockOrder>,
-    ) -> *mut CacheHeader {
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: *mut CacheHeader)
+        requires
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            old(self).wf(),
+            shared.wf(),
+            shared.meta.live_id() == crate::meta::process_live_id(),
+            old(ord).allows(rank_meta()),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).keeps(*old(self)),
+            r@.addr != 0 ==> final(self).owns(r) && final(self).hdr_class(r) == class,
+            r@.addr != 0 ==> final(self).routes(arena, class as int, r),
+    {
         if arena == self.arena {
+            proof {
+                Heap::lemma_keeps_refl(*self);
+                self.lemma_routes_home(class as int);
+            }
             return self.cache_ptr(class);
         }
-        let node = self.other_caches(shared, arena, true, Tracked::assume_new());
+        let node = self.other_caches(shared, arena, true, Tracked(ord));
         if node.is_null() {
             return ptr::null_mut();
+        }
+        proof {
+            self.lemma_keyed_routes(node, arena, class as int);
         }
         // SAFETY: `node` is a live block owned by this heap.
         unsafe { Self::node_cache_ptr(node, class) }
     }
 }
-
-verus! {
 
 impl Heap {
     /// The `others` list's nodes are [`heads_ok`] ([`Heap::list_ok`]).
