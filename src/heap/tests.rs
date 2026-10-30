@@ -251,7 +251,7 @@ pub(crate) struct TestHeap {
 
 impl TestHeap {
     pub(crate) fn new(s: &'static Shared) -> TestHeap {
-        let h = Heap::create(s);
+        let (h, _, _) = Heap::create(s, Tracked::assume_new());
         assert!(!h.is_null());
         TestHeap { h, s }
     }

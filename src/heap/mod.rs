@@ -97,7 +97,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::rank_class;
 use crate::vspec::zero::Zeroed;
-use fresh::FreshHeap;
+use fresh::{FreshHeap, init_fields};
 use others::{node_block_layout, node_caches_detached, node_set_arena};
 use paths::invalid_free;
 #[cfg(test)]
@@ -4174,10 +4174,21 @@ impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
     /// on the least-loaded automatic arena and counted there
     /// (`Arenas::assign`; `destroy` releases the binding). Null if the
-    /// region is exhausted. Does not touch TLS or the thread key.
-    pub fn create(shared: &Shared) -> *mut Heap {
+    /// region is exhausted. Does not touch TLS or the thread key. With
+    /// the heap, the permissions to its caches, and its ticket for its
+    /// home arena with the token for its plain fields (ghost).
+    // The tracked results are part of the signature.
+    #[allow(clippy::type_complexity)]
+    fn create(
+        shared: &Shared,
+        _ord: Tracked<&mut LockOrder>,
+    ) -> (
+        *mut Heap,
+        Tracked<CachePerms>,
+        Tracked<Option<(Homed, FreshHeap)>>,
+    ) {
         let (arena, ticket) = assign_home(shared, Tracked::assume_new());
-        let (h, _, _) = Self::create_detached(shared, arena, Tracked::assume_new());
+        let (h, perms, _) = Self::create_detached(shared, arena, Tracked::assume_new());
         if h.is_null() {
             shared.arenas.unbind(arena, ticket);
         } else {
@@ -4186,7 +4197,7 @@ impl Heap {
             // SAFETY: as above.
             unsafe { mark_rehome(h, Tracked::assume_new()) };
         }
-        h
+        (h, perms, Tracked::assume_new())
     }
 
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
@@ -4198,7 +4209,7 @@ impl Heap {
         arena: u16,
         _ord: Tracked<&mut LockOrder>,
     ) -> (*mut Heap, Tracked<CachePerms>, Tracked<Option<FreshHeap>>) {
-        let block = shared.meta.alloc(Layout::new::<Heap>());
+        let (block, _blk) = shared.meta.alloc_raw(Layout::new::<Heap>());
         let h = block as *mut Heap;
         if h.is_null() {
             return (h, Tracked::assume_new(), Tracked::assume_new());
@@ -4209,29 +4220,14 @@ impl Heap {
         // stack of every thread's first allocation by one page, which
         // larson's thread churn turns into +1.7 MiB of RSS per 437
         // threads (thread stacks stay mapped; measured on arm64).
-        unsafe {
-            ptr::write(&raw mut (*h).shared, shared);
-            ptr::write(&raw mut (*h).tid, tid());
-            ptr::write(&raw mut (*h).arena, arena);
-            ptr::write(&raw mut (*h).slow_ticks, 0);
-            ptr::write(&raw mut (*h).last_gc, now_ns());
-            ptr::write(&raw mut (*h).uncached, ThreadStats::default());
-            ptr::write(&raw mut (*h).others, ptr::null_mut());
-            ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
-            ptr::write(&raw mut (*h).tcache_enabled, true);
-            ptr::write(&raw mut (*h).bound, false);
-            ptr::write(&raw mut (*h).rng, 0);
-            ptr::write(&raw mut (*h).rehome, false);
-            ptr::write(&raw mut (*h).rehome_from, FOREIGN);
-        }
+        let _stored = unsafe { init_fields(h, shared, arena, Tracked::assume_new()) };
         // SAFETY: as above; `caches` is 128 bytes in (the `const`
         // assertion after `Heap`).
         let caches = unsafe { block.add(128) } as *mut CacheHeader;
         for c in 0..NCLASSES {
             // SAFETY: `c < NCLASSES`, inside the block.
             let cache = unsafe { caches.add(c) };
-            // SAFETY: as above.
-            unsafe { ptr::write(cache, CacheHeader::EMPTY) };
+            vstd::raw_ptr::ptr_mut_write(cache, Tracked::assume_new(), CacheHeader::EMPTY);
         }
         (h, Tracked::assume_new(), Tracked::assume_new())
     }
