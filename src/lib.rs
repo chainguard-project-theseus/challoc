@@ -10,6 +10,9 @@
 #![no_std]
 #![deny(warnings)]
 #![deny(unsafe_op_in_unsafe_fn)]
+// Kani checks the exported `malloc` family against the libc signatures
+// `std` links to; challoc defines them, as it must.
+#![cfg_attr(kani, allow(suspicious_runtime_symbol_definitions))]
 
 #[cfg(test)]
 extern crate std;
@@ -72,6 +75,11 @@ pub(crate) mod thp;
 // `global` is a braced block.
 #[allow(unused_braces)]
 mod vspec;
+// Kani harnesses (`src/kani/`, `.chainguard/ci/kani.yaml`); never part of
+// an ordinary build.
+#[cfg(kani)]
+#[path = "kani/mod.rs"]
+mod kani_proofs;
 
 verus! {
 
@@ -80,8 +88,9 @@ verus! {
 /// failed debug assertion. It reports through `sys::abort_fmt`, which writes
 /// to stderr with `write(2)` and raises `SIGABRT`, never unwinding. The
 /// line reads `challoc: <message> [<file>:<line>]`: the message first, since
-/// it is what a user sees when their program frees a pointer twice.
-#[cfg(not(test))]
+/// it is what a user sees when their program frees a pointer twice. Not
+/// under Kani, whose harnesses link `std` and its handler.
+#[cfg(not(any(test, kani)))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     proof {
