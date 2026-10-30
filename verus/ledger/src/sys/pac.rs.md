@@ -45,7 +45,7 @@ pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
 
 ## `sign`
 
-src/sys/pac.rs:193. Kind: external_body. Category: inline asm.
+src/sys/pac.rs:199. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Sign `p` with data key A and `modifier` (`pacda`).
@@ -61,7 +61,7 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
 
 ## `auth`
 
-src/sys/pac.rs:234. Kind: external_body. Category: inline asm.
+src/sys/pac.rs:245. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Authenticate `p`, signed by [`sign`] with the same `modifier` (`autda`): the plain pointer, or, when the two disagree, a fault or a non-canonical pointer (module doc).
@@ -70,15 +70,16 @@ Tool: Islaris/Isla. Status: trusted.
 pub fn auth(p: usize, modifier: usize) -> (r: usize)
     requires
         pac_available(),
-        super::may_abort_corrupt(),
+        super::may_abort_corrupt() || signed(p, modifier),
     ensures
         r == spec_auth(p, modifier),
+        forall|q: usize| q < user_va_limit() && p == #[trigger] spec_sign(q, modifier) ==> r == q,
     opens_invariants none
 ```
 
 ## `strip`
 
-src/sys/pac.rs:273. Kind: external_body. Category: inline asm.
+src/sys/pac.rs:285. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Strip the PAC from `p` without authenticating it (`xpacd`): the address a signed or corrupted entry names, for abort messages and tests.
