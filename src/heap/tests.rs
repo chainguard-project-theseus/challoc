@@ -3853,7 +3853,10 @@ fn probe_verdict_applies_the_gate_and_records_it() {
     let ps: Vec<*mut u8> = (0..4).map(|_| t.alloc(c)).collect();
     assert!(!Heap::fragmented(s, 0, c, Tracked::assume_new()));
     let now = cs.refilled() as u32;
-    assert_eq!(Heap::probe_verdict(s, 0, c, now), (now, Verdict::Dense));
+    assert_eq!(
+        Heap::probe_verdict(s, 0, c, now, Tracked::assume_new()),
+        (now, Verdict::Dense)
+    );
     for p in &ps {
         t.free(*p);
     }
@@ -3862,7 +3865,7 @@ fn probe_verdict_applies_the_gate_and_records_it() {
     let now = cs.refilled() as u32;
     let before = cs.compaction_stats();
     assert_eq!(
-        Heap::probe_verdict(s, 0, c, now),
+        Heap::probe_verdict(s, 0, c, now, Tracked::assume_new()),
         (now, Verdict::Fragmented)
     );
     let after = cs.compaction_stats();
@@ -3874,7 +3877,7 @@ fn probe_verdict_applies_the_gate_and_records_it() {
     let gate = (COMPACT_MAX_REFILL_SLABS * CLASSES[c].compact_slots()) as u32;
     let before = cs.compaction_stats();
     assert_eq!(
-        Heap::probe_verdict(s, 0, c, now.wrapping_sub(gate)),
+        Heap::probe_verdict(s, 0, c, now.wrapping_sub(gate), Tracked::assume_new()),
         (now, Verdict::Refilling)
     );
     let after = cs.compaction_stats();
@@ -3884,7 +3887,7 @@ fn probe_verdict_applies_the_gate_and_records_it() {
         "(compact_on, gate_refill)"
     );
     assert_eq!(
-        Heap::probe_verdict(s, 0, c, now.wrapping_sub(gate - 1)).1,
+        Heap::probe_verdict(s, 0, c, now.wrapping_sub(gate - 1), Tracked::assume_new()).1,
         Verdict::Fragmented,
         "one refill short of the gate"
     );
