@@ -24,8 +24,9 @@ use super::{
 };
 #[cfg(verus_keep_ghost)]
 use super::{
-    CachePerms, PUSH_ZERO, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok, lemma_hint_ok,
-    lemma_plain_stored, pac_mode, regions_ok, slot_ptr, slot_start, slot_token,
+    CachePerms, PUSH_ZERO, TLS_EXITED, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok,
+    lemma_hint_ok, lemma_plain_stored, pac_mode, regions_ok, slot_ok, slot_ptr, slot_start,
+    slot_token,
 };
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
@@ -217,26 +218,36 @@ impl Heap {
             Err(page) => self.free_huge(shared, page, Tracked::assume_new()),
         }
     }
-
-    /// Huge allocation on this thread in its home arena: no cache, one
-    /// lock, counted in the thread's statistics.
-    #[cold]
-    #[inline(never)]
-    pub fn alloc_huge(
-        &mut self,
-        shared: &Shared,
-        size: usize,
-        align: usize,
-        _blk: Tracked<&mut Live>,
-    ) -> (*mut u8, bool, Tracked<Zeroed>) {
-        let arena = self.arena;
-        self.alloc_huge_in(shared, size, align, arena, Tracked::assume_new())
-    }
 }
 
 verus! {
 
 impl Heap {
+    /// Huge allocation on this thread in its home arena: no cache, one
+    /// lock, counted in the thread's statistics.
+    /// `blk` gets the run's token.
+    #[cold]
+    #[inline(never)]
+    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(self).wf(),
+            shared.wf(),
+            crate::meta::is_pow2(align),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
+            r.0@.addr != 0 ==> size <= shared.huge_usable(size),
+            r.0@.addr != 0 ==> shared.huge_ok(size),
+            r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+            r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
+            r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
+    {
+        let arena = self.arena;
+        self.alloc_huge_in(shared, size, align, arena, Tracked(blk))
+    }
+
     /// Allocation of `class` from `arena` through this heap's cache for
     /// that arena (`MALLOCX_ARENA`, or the home arena of an explicit
     /// cache). Null when `arena` does not exist or is exhausted. `blk`
@@ -742,19 +753,19 @@ impl Heap {
     }
 }
 
-} // verus!
-
 /// The entry points' form of [`free_fast_class`]: the heap comes as the
 /// thread's TLS slot value (`tls_heap_slot`, which proved the heap exists
 /// and so that this thread observed `READY`), and both it and the
 /// `free_flags` byte are produced only after the bit test. Nothing in the
 /// slot check needs them, and on x86_64 a byte loaded up front stays live
 /// across the bit arithmetic and costs `free` a callee-saved register
-/// (`push`/`pop` of `rbx`).
+/// (`push`/`pop` of `rbx`). `blk` is the caller's token for `p`
+/// ([`Live::claims`]): a `None` leaves it as it was, for the cold path.
 ///
 /// # Safety
 /// `(t, tp)` from [`tls_heap_slot`](super::thread::tls_heap_slot) on this
-/// thread.
+/// thread, with its token `tls` (the preconditions).
+#[verifier::external_body]
 #[inline(always)]
 // The `let ... else` stands for `?`, as the other paths spell it for Verus.
 #[allow(clippy::question_mark)]
@@ -763,9 +774,25 @@ pub unsafe fn free_fast_slot(
     t: usize,
     tp: usize,
     p: *mut u8,
-    _blk: Tracked<&mut Live>,
-    _tls: Tracked<&mut TlsSlot>,
-) -> Option<usize> {
+    Tracked(blk): Tracked<&mut Live>,
+    Tracked(tls): Tracked<&mut TlsSlot>,
+) -> (r: Option<usize>)
+    requires
+        shared.wf(),
+        old(blk).claims(p),
+        slot_ok(*old(tls)),
+        t == old(tls).value(),
+        t > TLS_EXITED,
+        tp == old(tls).tp(),
+    ensures
+        r matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
+        r is Some ==> free_target(p),
+        r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
+        r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
+        r matches Some(c) ==> old(blk).slot_block(p, c as int),
+        final(tls).lent(*old(tls)),
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns()]
+{
     let Some((class, slab)) = shared.set_slot(p) else {
         return None;
     };
@@ -785,6 +812,8 @@ pub unsafe fn free_fast_slot(
         )
     }
 }
+
+} // verus!
 
 /// After the bit test: the heap from the slot value `t`, authenticated
 /// against `tp` when `flags` carries [`PUSH_PAC`], the owner-word test
@@ -914,11 +943,20 @@ proof fn lend_slot(tracked blk: &mut Live, tracked tk: &mut Map<int, GhostSingle
     tk.tracked_insert(0, t);
 }
 
-} // verus!
-
 /// `malloc` of a non-huge class on the calling thread.
+/// `blk` gets the block's token.
+#[verifier::external_body]
 #[inline(always)]
-pub fn alloc(shared: &Shared, class: usize, _blk: Tracked<&mut Live>) -> *mut u8 {
+pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        class < NCLASSES,
+        shared.wf(),
+    ensures
+        r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
+        r@.addr != 0 ==> final(blk).slot_block(r, class as int),
+{
     match heap_for_thread(shared) {
         Some(h) => h.alloc(shared, class, Tracked::assume_new()),
         None => {
@@ -943,8 +981,19 @@ pub fn alloc(shared: &Shared, class: usize, _blk: Tracked<&mut Live>) -> *mut u8
 /// `alloc_slow`, not a second pass through its own fast path (measured:
 /// through `alloc` the mixed `valkey1` row paid 4 instructions per
 /// operation for the one pop in eight the compacting mode schedules).
+/// `blk` gets the block's token.
+#[verifier::external_body]
 #[inline(always)]
-pub fn alloc_declined(shared: &Shared, class: usize, _blk: Tracked<&mut Live>) -> *mut u8 {
+pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        class < NCLASSES,
+    ensures
+        r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
+        r@.addr != 0 ==> final(blk).slot_block(r, class as int),
+{
     match heap_for_thread(shared) {
         Some(h) => {
             h.alloc_slow(shared, class, Tracked::assume_new(), Tracked::assume_new())
@@ -966,12 +1015,23 @@ pub fn alloc_declined(shared: &Shared, class: usize, _blk: Tracked<&mut Live>) -
 
 /// `calloc` of a non-huge class on the calling thread; the flag says the
 /// memory is known zero.
+/// `blk` gets the block's token, and a known-zero token is the one the
+/// allocation that made the block (the pop, the slow path or the heapless
+/// `alloc_direct`) handed out, before any write to it: fresh for its bytes,
+/// which `covers` alone does not say.
+#[verifier::external_body]
 #[inline(always)]
-pub fn alloc_zeroed(
-    shared: &Shared,
-    class: usize,
-    _blk: Tracked<&mut Live>,
-) -> (*mut u8, bool, Tracked<Zeroed>) {
+pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        class < NCLASSES,
+        shared.wf(),
+    ensures
+        r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+        r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
+        r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+{
     match heap_for_thread(shared) {
         Some(h) => {
             let (p, zero) = h.alloc_zeroed(shared, class, Tracked::assume_new());
@@ -994,13 +1054,26 @@ pub fn alloc_zeroed(
 
 /// `free` of a non-null pointer on the calling thread. Aborts unless `p`
 /// is an allocated slab slot or a live huge run.
+/// `blk` is the caller's token for `p` ([`Live::claims`]).
+#[verifier::external_body]
 #[inline(always)]
-pub fn free(shared: &Shared, p: *mut u8, _blk: Tracked<Live>) {
+pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        blk.claims(p),
+    ensures
+        free_target(p),
+        blk.block(p),
+{
     match heap_for_thread(shared) {
         Some(h) => h.free(shared, p, Tracked::assume_new()),
         None => free_direct(shared, p, Tracked::assume_new()),
     }
 }
+
+} // verus!
 
 /// `free` of a non-null pointer straight to its slab bitmap or the huge
 /// allocator, through no cache (`MALLOCX_TCACHE_NONE`, or a thread without

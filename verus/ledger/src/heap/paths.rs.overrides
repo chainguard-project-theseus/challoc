@@ -5,3 +5,11 @@ debug_scheduled	panic/abort	Kani
 # the one at `Shared::storage`, the only place one is built in the shipped
 # library. False under `cfg(test)`, where the unit tests build others.
 shared_ptr	allocator invariant	none (assumption)
+# Temporary seams, discharged by lane 51b-3 (the heap entry points), which
+# verifies `free_fast_slot`, `alloc`, `alloc_declined`, `alloc_zeroed` and
+# `free` against these contracts.
+free_fast_slot	allocator invariant	Verus
+alloc	allocator invariant	Verus
+alloc_declined	allocator invariant	Verus
+alloc_zeroed	allocator invariant	Verus
+free	allocator invariant	Verus

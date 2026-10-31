@@ -158,10 +158,13 @@ impl UserMem {
 /// made for these bytes after their last write. A stale token (one kept
 /// across a write to its bytes, as `CachePerms::handed` may be) would set
 /// a false byte state; the token is borrowed, not used up, because the
-/// caller returns it too. Private: its one caller is [`zero_user`], with
-/// the token the fill it just made returned.
+/// callers return it too. Callers, each with the token the allocation or
+/// the fill it just made returned: the known-zero hand-out of
+/// `libc::calloc_zeroed` (`heap::alloc_zeroed`'s token, or the huge path's
+/// from `Heap::alloc_huge` or `Shared::alloc_huge`, each made by the
+/// allocation before any write to the block), and [`zero_user`].
 #[verifier::external_body]
-proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
+pub proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
     requires
         forall|i: int| z.addr() <= i < z.addr() + z.len() ==> #[trigger] old(m).dom().contains(i),
     ensures

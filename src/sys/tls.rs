@@ -84,9 +84,13 @@ verus! {
 /// Premise of the model (re-entrant heap registration): a token is not
 /// read after the slot has changed other than through it.
 /// [`entry`](TlsSlot::entry) makes one at each verified top-level user of
-/// the slot: `heap_for_thread`, `existing_heap` and `heap_destructor`.
-/// The other users (the background thread's `create`, the `free` entry
-/// points' slot readers) are unverified and pass placeholder tokens.
+/// the slot: `heap_for_thread`, `existing_heap`, `heap_destructor` and
+/// `api::libc::free_block`. The other users (the background thread's
+/// `create`, `api::libc::free_usable_block`'s slot reader) are unverified
+/// and pass placeholder tokens. `free_block` uses its token only on its
+/// fast path; the `free_slow` call it makes after a declined fast path
+/// reaches `heap_for_thread`, which makes its own after `free_block` is
+/// done with the first.
 /// An entry nested in another (the allocator re-entered from `pthread_setspecific`
 /// or the background thread's `pthread_create`) stands for the outer
 /// token lent to it, which the nested call leaves as it found it
@@ -164,9 +168,10 @@ impl TlsSlot {
     /// `heap_destructor` stores `TLS_EXITED` before `Heap::destroy` frees
     /// the heap, so a nested user that allocates during the destroy (a
     /// signal handler) finds a sentinel, not the heap being freed. Called
-    /// only at the three top-level users above, once each: a verified
-    /// function that made two tokens would hold two copies of the heap's
-    /// ghost state.
+    /// only at the four top-level users above, once each: a verified
+    /// function that used two tokens would hold two copies of the heap's
+    /// ghost state (`free_block` is done with its token before its slow
+    /// path makes the next one).
     ///
     /// [`heap::thread::slot_ok`]: crate::heap::slot_ok
     pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
