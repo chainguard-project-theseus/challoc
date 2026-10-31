@@ -16,7 +16,7 @@ file.
 
 ## `VERSION`
 
-src/api/mallctl.rs:108. Kind: external_body const. Category: core library.
+src/api/mallctl.rs:109. Kind: external_body const. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`VERSION_STR`] for verified code, its value opaque to the verifier.
@@ -27,7 +27,7 @@ pub(crate) const VERSION: &'static str = VERSION_STR;
 
 ## `thread_allocated`
 
-src/api/mallctl.rs:785. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:786. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -39,7 +39,7 @@ fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
 
 ## `thread_allocatedp`
 
-src/api/mallctl.rs:794. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:795. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -51,7 +51,7 @@ fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
 
 ## `thread_deallocated`
 
-src/api/mallctl.rs:803. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:804. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -63,7 +63,7 @@ fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
 
 ## `thread_deallocatedp`
 
-src/api/mallctl.rs:812. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:813. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -75,7 +75,7 @@ fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
 
 ## `root`
 
-src/api/mallctl.rs:1137. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1138. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > [`ROOT`].

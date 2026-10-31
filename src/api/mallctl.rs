@@ -80,6 +80,7 @@ use crate::vspec::cbuf::CCall;
 use crate::vspec::cbuf::{
     CArg, CEntry, c_buffer, c_readable, c_writes, lemma_c_buffer_at, lemma_c_readable_at,
 };
+use crate::vspec::errno::ThreadErrno;
 use crate::vspec::ptr::ref_ptr;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::ptr::{axiom_ptr_add_addr, ptr_add};
@@ -2664,7 +2665,7 @@ fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
 /// Return the calling thread's cached slots before a purge so the purge
 /// can reach the slabs they pin (`malloc_trim` does the same).
 fn flush_caller(shared: &Shared) {
-    if let Some(h) = heap::existing_heap(shared) {
+    if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
         h.flush_all(shared, vstd::prelude::Tracked::assume_new());
     }
 }
@@ -2726,7 +2727,8 @@ ghost enum Change {
 /// Perform the key `node` names with the numeric components of `mib`:
 /// a read-only key through its reader, an [`Op`] as an arm. `ENOENT` for
 /// an interior node. `_cc` is the call's token; `_fx` is ghost, what the
-/// call changed ([`Change`]).
+/// call changed ([`Change`]); `errno` is the calling thread's `errno`
+/// token, for `background_thread`'s start.
 fn ctl(
     shared: &Shared,
     node: &Node,
@@ -2734,6 +2736,7 @@ fn ctl(
     io: &Io,
     _cc: Tracked<&mut CCall>,
     _fx: Tracked<&mut Ghost<Change>>,
+    errno: Tracked<&mut ThreadErrno>,
 ) -> Result<(), c_int> {
     let op = match node.entry {
         Entry::Dir(_) => return Err(ENOENT),
@@ -2764,7 +2767,7 @@ fn ctl(
                     && !purge::background::start(
                         shared,
                         vstd::prelude::Tracked::assume_new(),
-                        vstd::prelude::Tracked::assume_new(),
+                        errno,
                     )
                 {
                     return Err(EAGAIN);
@@ -2773,10 +2776,12 @@ fn ctl(
             Ok(())
         }
         MaxBackgroundThreads => {
-            if let Some(n) = io.write::<usize>()?
-                && n == 0
-            {
-                return Err(EINVAL);
+            // Two `if`s, not a let chain: Verus takes no let chain.
+            #[allow(clippy::collapsible_if)]
+            if let Some(n) = io.write::<usize>()? {
+                if n == 0 {
+                    return Err(EINVAL);
+                }
             }
             io.read(1usize, Tracked::assume_new())
         }
@@ -2852,10 +2857,12 @@ fn ctl(
         ArenaDirtyDecayMs => {
             let i = at(mib, 1);
             let new = io.write::<isize>()?;
-            if let Some(ms) = new
-                && ms < -1
-            {
-                return Err(EFAULT);
+            // As above, two `if`s.
+            #[allow(clippy::collapsible_if)]
+            if let Some(ms) = new {
+                if ms < -1 {
+                    return Err(EFAULT);
+                }
             }
             // The old period is read before the new one is applied, so a
             // read error changes nothing.
@@ -2892,13 +2899,16 @@ fn ctl(
         ThreadArena => {
             let h = thread_heap(shared)?;
             let new = io.write::<c_uint>()?;
-            if let Some(a) = new
-                && (a as usize >= MAX_ARENAS
+            // As above, two `if`s.
+            #[allow(clippy::collapsible_if)]
+            if let Some(a) = new {
+                if a as usize >= MAX_ARENAS
                     || shared
                         .arena(a as u16, vstd::prelude::Tracked::assume_new())
-                        .is_none())
-            {
-                return Err(EFAULT);
+                        .is_none()
+                {
+                    return Err(EFAULT);
+                }
             }
             io.read(h.arena() as c_uint, Tracked::assume_new())?;
             if let Some(a) = new {
@@ -2912,7 +2922,7 @@ fn ctl(
             io.verify_read::<c_uint>(Tracked::assume_new())?;
             // `existing_heap(shared).map_or(0, |h| h.arena())`, spelled as
             // a `match`.
-            let home = match heap::existing_heap(shared) {
+            let home = match heap::existing_heap(heap::shared_ptr(shared)) {
                 Some(h) => h.arena(),
                 None => 0,
             };
@@ -2963,6 +2973,7 @@ pub fn mallctl(
     newp: *const c_void,
     newlen: usize,
     _cc: Tracked<CCall>,
+    errno: Tracked<&mut ThreadErrno>,
 ) -> c_int {
     let Some(name) = cstr(name, Tracked::assume_new()) else {
         return EINVAL;
@@ -2985,6 +2996,7 @@ pub fn mallctl(
         },
         Tracked::assume_new(),
         Tracked::assume_new(),
+        errno,
     ))
 }
 
@@ -3124,6 +3136,8 @@ unsafe fn mib_in(mib: *const usize, local: &mut [usize; MAX_MIB], miblen: usize)
 } // verus!
 
 /// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`.
+// The C arguments, the call's token and the `errno` token.
+#[allow(clippy::too_many_arguments)]
 pub fn mallctlbymib(
     mib: *const usize,
     miblen: usize,
@@ -3132,6 +3146,7 @@ pub fn mallctlbymib(
     newp: *const c_void,
     newlen: usize,
     _cc: Tracked<CCall>,
+    errno: Tracked<&mut ThreadErrno>,
 ) -> c_int {
     if mib.is_null() || miblen == 0 || miblen > MAX_MIB {
         return EINVAL;
@@ -3156,6 +3171,7 @@ pub fn mallctlbymib(
         },
         Tracked::assume_new(),
         Tracked::assume_new(),
+        errno,
     ))
 }
 
@@ -3175,9 +3191,17 @@ mod exports {
             newp: *const c_void,
             newlen: usize
         ) -> c_int {
-            // Unverified: the call's token is a placeholder until the export
-            // is verified.
-            super::mallctl(name, oldp, oldlenp, newp, newlen, vstd::prelude::Tracked::assume_new())
+            // Unverified: the call's and `errno`'s tokens are placeholders
+            // until the export is verified.
+            super::mallctl(
+                name,
+                oldp,
+                oldlenp,
+                newp,
+                newlen,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
         }
         fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
             super::mallctlnametomib(name, mibp, miblenp, vstd::prelude::Tracked::assume_new())
@@ -3190,7 +3214,16 @@ mod exports {
             newp: *const c_void,
             newlen: usize
         ) -> c_int {
-            super::mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen, vstd::prelude::Tracked::assume_new())
+            super::mallctlbymib(
+                mib,
+                miblen,
+                oldp,
+                oldlenp,
+                newp,
+                newlen,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
         }
     }
 }
@@ -3206,7 +3239,7 @@ mod tests {
     use std::vec::Vec;
 
     // The three entry points as the export wrappers call them, with a
-    // placeholder token for the call.
+    // placeholder token for the call and for `errno`.
     fn mallctl(
         name: *const c_char,
         oldp: *mut c_void,
@@ -3214,7 +3247,15 @@ mod tests {
         newp: *const c_void,
         newlen: usize,
     ) -> c_int {
-        super::mallctl(name, oldp, oldlenp, newp, newlen, Tracked::assume_new())
+        super::mallctl(
+            name,
+            oldp,
+            oldlenp,
+            newp,
+            newlen,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 
     fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
@@ -3236,6 +3277,7 @@ mod tests {
             oldlenp,
             newp,
             newlen,
+            Tracked::assume_new(),
             Tracked::assume_new(),
         )
     }
@@ -3366,6 +3408,7 @@ mod tests {
                 &io,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
+                Tracked::assume_new(),
             )
             .map(|()| e)
         };
@@ -3419,6 +3462,7 @@ mod tests {
                     node,
                     &mib[..len],
                     &io,
+                    Tracked::assume_new(),
                     Tracked::assume_new(),
                     Tracked::assume_new()
                 ),
