@@ -13,6 +13,7 @@ file.
 | `thread_...located` | external_body | allocator invariant | Verus | trusted |
 | `thread_...ocatedp` | external_body | allocator invariant | Verus | trusted |
 | `root` | external_body | allocator invariant | Verus | trusted |
+| `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
 ## `VERSION`
 
@@ -27,7 +28,7 @@ pub(crate) const VERSION: &'static str = VERSION_STR;
 
 ## `thread_allocated`
 
-src/api/mallctl.rs:786. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:791. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -39,7 +40,7 @@ fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
 
 ## `thread_allocatedp`
 
-src/api/mallctl.rs:795. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:800. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -51,7 +52,7 @@ fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
 
 ## `thread_deallocated`
 
-src/api/mallctl.rs:804. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:809. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -63,7 +64,7 @@ fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
 
 ## `thread_deallocatedp`
 
-src/api/mallctl.rs:813. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:818. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -75,7 +76,7 @@ fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
 
 ## `root`
 
-src/api/mallctl.rs:1138. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1143. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > [`ROOT`].
@@ -84,4 +85,20 @@ Tool: Verus. Status: trusted.
 fn root() -> (r: &'static [Node])
     ensures
         r@ == root_nodes(),
+```
+
+## `axiom_c_call`
+
+src/api/mallctl.rs:3262. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).
+
+```rust
+axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+    requires
+        e is NameToMib,
+    ensures
+        c.fresh(e),
+;
 ```

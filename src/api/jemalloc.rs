@@ -57,7 +57,9 @@ use crate::heap::{Live, Shared};
 use crate::layout::{CLASSES, Kind};
 use crate::vspec::cbuf::CCall;
 use crate::vspec::zero::Zeroed;
-use vstd::prelude::{Ghost, Tracked, int};
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked, int, verus};
 
 /// `void (*malloc_message)(void *cbopaque, const char *s)`; null when the
 /// program has not installed one.
@@ -82,14 +84,31 @@ pub static mut je_malloc_message: MallocMessage = None;
 #[unsafe(no_mangle)]
 pub static mut malloc_conf: *const c_char = ptr::null();
 
-/// An installed `malloc_message` hook. A newtype, which the verifier can
-/// name where it rejects function pointer types: [`malloc_write`] carries
-/// it and calls it through [`call_hook`].
+/// An installed `malloc_message` hook. A newtype, opaque to the verifier,
+/// which rejects function pointer types: [`malloc_write`] carries it and
+/// calls it through [`call_hook`].
 #[derive(Copy, Clone)]
 pub struct Hook(unsafe extern "C" fn(*mut c_void, *const c_char));
 
+/// Test stand-in for a program assigning `malloc_message`.
+#[cfg(test)]
+pub fn set_message_hook_for_tests(hook: MallocMessage) {
+    // SAFETY: tests that set the hook hold `testutil::global_state()`.
+    unsafe { ptr::write_volatile(&raw mut malloc_message, hook) };
+}
+
+verus! {
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+// Never constructed: it only names `Hook` to the verifier.
+#[allow(dead_code)]
+pub struct ExHook(Hook);
+
 /// The installed hook, if any: `malloc_message`, else `je_malloc_message`.
-/// Read volatile: C code stores them behind the compiler's back.
+/// Read volatile: C code stores them behind the compiler's back. Trusted:
+/// the two volatile reads; nothing is claimed about the hook.
+#[verifier::external_body]
 pub fn message_hook() -> Option<Hook> {
     // SAFETY: both statics are plain 8-byte slots that only ever hold null
     // or a function pointer stored by the program.
@@ -100,20 +119,19 @@ pub fn message_hook() -> Option<Hook> {
     }
 }
 
-/// Test stand-in for a program assigning `malloc_message`.
-#[cfg(test)]
-pub fn set_message_hook_for_tests(hook: MallocMessage) {
-    // SAFETY: tests that set the hook hold `testutil::global_state()`.
-    unsafe { ptr::write_volatile(&raw mut malloc_message, hook) };
-}
-
 /// `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc
-/// calls it, on the C string in `buf`, which holds a NUL. The permit `u`
-/// says that the calling thread holds no allocator lock, as for the
+/// calls it, on the C string in `buf`, which holds a NUL. Trusted: a call
+/// through the program's function pointer; claims nothing. The permit
+/// `u` says that the calling thread holds no allocator lock, as for the
 /// report's other calls out (`print::emit`), so a hook that allocates
 /// cannot deadlock on one.
+#[verifier::external_body]
 #[inline(always)]
-fn call_hook(cb: Hook, buf: &[u8; 512], _u: Tracked<&Unlocked>) {
+fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
+    requires
+        crate::sys::may_syscall(),
+        exists|i: int| 0 <= i < 512 && #[trigger] buf@[i] == 0,
+{
     // SAFETY: the program installed `cb` as a
     // `void (*)(void *, const char *)`; `buf` is NUL-terminated.
     unsafe { (cb.0)(ptr::null_mut(), buf.as_ptr() as *const c_char) };
@@ -123,7 +141,10 @@ fn call_hook(cb: Hook, buf: &[u8; 512], _u: Tracked<&Unlocked>) {
 /// NUL-terminated chunks (with a null `cbopaque`, as jemalloc does) or, with
 /// no hook, write it to stderr with `write(2)`. Under the report's permit
 /// (`print::Unlocked`): `print::emit` is the only caller.
-pub(super) fn malloc_write(s: &[u8], u: Tracked<&Unlocked>) {
+pub(super) fn malloc_write(s: &[u8], Tracked(u): Tracked<&Unlocked>)
+    requires
+        crate::sys::may_syscall(),
+{
     match message_hook() {
         None => crate::sys::write_all(crate::sys::STDERR_FILENO, s),
         Some(cb) => {
@@ -132,7 +153,12 @@ pub(super) fn malloc_write(s: &[u8], u: Tracked<&Unlocked>) {
             // Verus does not specify `chunks`. Each chunk is the next
             // `buf.len() - 1` bytes, or the rest when fewer remain.
             let mut at = 0;
-            while at < s.len() {
+            while at < s.len()
+                invariant
+                    crate::sys::may_syscall(),
+                    at <= s@.len(),
+                decreases s@.len() - at,
+            {
                 let n = if s.len() - at < buf.len() - 1 {
                     s.len() - at
                 } else {
@@ -141,21 +167,26 @@ pub(super) fn malloc_write(s: &[u8], u: Tracked<&Unlocked>) {
                 let chunk = &s[at..at + n];
                 buf[..chunk.len()].copy_from_slice(chunk);
                 buf[chunk.len()] = 0;
-                call_hook(cb, &buf, u);
+                assert(buf@[n as int] == 0);
+                call_hook(cb, &buf, Tracked(u));
                 at += n;
             }
         }
     }
 }
 
+/// The abort for a pointer that is not a live allocation, naming the
+/// entry point.
 #[cold]
 #[inline(never)]
-fn not_an_allocation(what: &str, p: *mut u8) -> ! {
-    crate::sys::abort_fmt(format_args!(
-        "{what} of {:#x}: not an allocation",
-        p as usize
-    ))
+fn not_an_allocation(what: &str, p: *mut u8) -> !
+    requires
+        crate::sys::may_abort(),
+{
+    crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
 }
+
+} // verus!
 
 /// The usable size `mallocx(size, flags)` gives: the class size at the
 /// flags' alignment, or the huge run's page-rounded size. `None` when no

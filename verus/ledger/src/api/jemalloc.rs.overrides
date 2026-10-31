@@ -1,0 +1,2 @@
+# Opaque wrapper of the program's `malloc_message` hook, a function pointer.
+Hook	function pointer	Kani

@@ -10,3 +10,5 @@ thread_allocated	allocator invariant	Verus
 thread_allocatedp	allocator invariant	Verus
 thread_deallocated	allocator invariant	Verus
 thread_deallocatedp	allocator invariant	Verus
+# The C caller passed the arguments under the entry point's contract.
+axiom_c_call	C-program contract	none (assumption)
