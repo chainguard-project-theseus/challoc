@@ -15,7 +15,7 @@ file.
 
 ## `axiom_c_writes`
 
-src/vspec/cbuf.rs:340. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:341. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: what [`CCall::open_writes`] stands for (private: only it takes the step, with the token taken `&mut`).
@@ -29,7 +29,7 @@ axiom fn axiom_c_writes(prov: Provenance)
 
 ## `CCall::str_byte`
 
-src/vspec/cbuf.rs:439. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:440. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a string argument): the read permission to byte `i` of the call's string `p`, through `q`, a pointer to it derived from the caller's; shared, for as long as the token is borrowed, and holding the byte the view names ([`CCall::string`]).
@@ -50,7 +50,7 @@ pub axiom fn str_byte<'a>(tracked &'a self, p: *const u8, q: *const u8, i: int) 
 
 ## `CCall::str_c_byte`
 
-src/vspec/cbuf.rs:454. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:455. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > [`CCall::str_byte`] through a `c_char` pointer (`malloc_stats_print`'s `opts`): the `c_char` whose bits are the byte.
@@ -71,7 +71,7 @@ pub axiom fn str_c_byte<'a>(tracked &'a self, p: *const u8, q: *const core::ffi:
 
 ## `CCall::sized`
 
-src/vspec/cbuf.rs:474. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:475. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a sized buffer): the shared read permission to the call's `size_t` at `lenp`, initialised, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the buffer at `p` it gives the length of, that many bytes ([`c_buffer`]).
@@ -91,7 +91,7 @@ pub axiom fn sized<'a>(tracked &'a self, p: *mut u8, lenp: *const usize) -> (tra
 
 ## `CCall::counted`
 
-src/vspec/cbuf.rs:492. Kind: axiom. Category: C-program contract.
+src/vspec/cbuf.rs:493. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a counted array): the shared read permission to the call's initialised `size_t` at `lenp`, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the array at `p` it gives the length of, that many `size_t`s ([`c_buffer`]).

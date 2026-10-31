@@ -6,12 +6,13 @@
 //! `Shared::zero_huge`'s clear, and while `ClassState::check_zero` or
 //! `Huge::check_zero` reads the block. Or to a `Fresh` slab's slots, lent
 //! under the class lock for `ClassState::check_fresh_slab_is_zero`
-//! (`class::axiom_fresh_slab_mem`).
+//! (`class::axiom_fresh_slab_mem`). `realloc` holds two at once, the old
+//! block's and the new one's, for its copy ([`copy_user`]).
 //!
 //! Reading a user block's bytes takes a capability too,
 //! [`may_read_user`], which `purge::check_zero` grants to the opt-in debug
-//! reads. [`copy_user`], realloc's copy of a moved block, reads one too,
-//! so it requires the capability.
+//! reads and the realloc cores to their copy of a moved block
+//! ([`copy_user`], which requires it).
 
 use crate::vspec::zero::Zeroed;
 use vstd::prelude::*;
@@ -32,15 +33,22 @@ verus! {
 ///
 /// Opaque, with no meaning: a capability, not a claim about the world. It
 /// marks the reads for audit; Verus does not restrict who calls
-/// [`grant_user_reads`] (its one caller is `purge::check_zero`).
+/// [`grant_user_reads`] (its callers are `purge::check_zero` and the
+/// realloc cores, `api::libc::realloc_block` and
+/// `api::libc::realloc_usable_stored`).
+/// `sys::tests::user_read_grants_only_in_listed_callers` checks the source
+/// for that.
 #[verifier::opaque]
 pub closed spec fn may_read_user() -> bool {
     true
 }
 
-/// Grant [`may_read_user`]. Called only by `purge::check_zero`, whose
-/// `true` (the opt-in debug mode is on) grants it to the `check_zero`
-/// reads.
+/// Grant [`may_read_user`]. Called by `purge::check_zero`, whose `true`
+/// (the opt-in debug mode is on) grants it to the `check_zero` reads, and
+/// by the realloc cores (`api::libc::realloc_block`,
+/// `api::libc::realloc_usable_stored`) for the copy of a moved block, and
+/// by nothing else: `sys::tests::user_read_grants_only_in_listed_callers`
+/// checks the source for that.
 pub proof fn grant_user_reads()
     ensures
         may_read_user(),
@@ -149,6 +157,29 @@ impl UserMem {
         crate::vspec::ptr::axiom_raw_valid(&self.raw, p, len);
         crate::vspec::ptr::lemma_writes_read(p, len);
     }
+
+    /// Two permissions held at once own no byte in common
+    /// (`vspec::ptr::lemma_raw_disjoint`). Both are unchanged.
+    pub proof fn lemma_apart(tracked &mut self, tracked other: &mut UserMem)
+        requires
+            forall|x: int| #[trigger] old(self).dom().contains(x) ==> 0 <= x <= usize::MAX,
+        ensures
+            *final(self) == *old(self),
+            *final(other) == *old(other),
+            final(self).dom().disjoint(final(other).dom()),
+    {
+        let ghost d = self.dom();
+        let tracked mut a = PointsToRaw::empty(self.raw.provenance());
+        let tracked mut b = PointsToRaw::empty(other.raw.provenance());
+        vstd::modes::tracked_swap(&mut self.raw, &mut a);
+        vstd::modes::tracked_swap(&mut other.raw, &mut b);
+        assert forall|x: int| #[trigger] a.dom().contains(x) implies 0 <= x <= usize::MAX by {
+            assert(d.contains(x));
+        }
+        let tracked (a, b) = crate::vspec::ptr::lemma_raw_disjoint(a, b);
+        self.raw = a;
+        other.raw = b;
+    }
 }
 
 /// The bytes a [`Zeroed`] token covers read as zero, so a permission's
@@ -160,7 +191,7 @@ impl UserMem {
 /// a false byte state; the token is borrowed, not used up, because the
 /// callers return it too. Callers, each with the token the allocation or
 /// the fill it just made returned: the known-zero hand-out of
-/// `libc::calloc_zeroed` (`heap::alloc_zeroed`'s token, or the huge path's
+/// `libc::calloc_zeroed` and `libc::calloc_usable_zeroed` (`heap::alloc_zeroed`'s token, or the huge path's
 /// from `Heap::alloc_huge` or `Shared::alloc_huge`, each made by the
 /// allocation before any write to the block), and [`zero_user`].
 #[verifier::external_body]
@@ -261,7 +292,8 @@ unsafe fn copy_raw(src: *const u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&
 
 /// `copy_nonoverlapping(src, dst, n)` with the permissions to both ranges:
 /// `s` to the `n` bytes at `src`, `d` to the `n` bytes at `dst`, which
-/// share no byte with them. Afterwards `d`'s byte state reads the `n`
+/// share no byte with them (two permissions held at once never do:
+/// [`UserMem::lemma_apart`]). Afterwards `d`'s byte state reads the `n`
 /// bytes at `dst` as `s`'s at `src` (through [`copy_raw`], with `d` taken
 /// `&mut`). It reads user memory, so it needs [`may_read_user`].
 #[inline(always)]
