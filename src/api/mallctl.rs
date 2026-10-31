@@ -402,21 +402,26 @@ const fn stat(name: &'static str, read: Reader) -> Node {
     }
 }
 
-} // verus!
-
 /// One `opt.<key>` node per [`KEYS`] entry, in order, each read by `read`
 /// ([`Reader::OptValue`]). The loop also tests `out`'s length, which is
-/// `KEYS.len()` by its type.
+/// `KEYS.len()` by its type: the verifier does not evaluate the array
+/// length.
 const fn opt_nodes(read: Reader) -> [Node; KEYS.len()] {
     let keys = KEYS;
     let mut out = [dir("", &[]); KEYS.len()];
     let mut i = 0;
-    while i < keys.len() && i < out.len() {
+    while i < keys.len() && i < out.len()
+        invariant
+            i <= keys@.len(),
+        decreases keys@.len() - i,
+    {
         out[i] = stat(keys[i], read);
         i += 1;
     }
     out
 }
+
+} // verus!
 
 static OPT: [Node; KEYS.len()] = opt_nodes(Reader::OptValue);
 
@@ -2958,12 +2963,20 @@ fn ctl(
     }
 }
 
-fn result(r: Result<(), c_int>) -> c_int {
+verus! {
+
+fn result(r: Result<(), c_int>) -> (c: c_int)
+    ensures
+        r is Ok ==> c == 0,
+        r matches Err(e) ==> c == e,
+{
     match r {
         Ok(()) => 0,
         Err(e) => e,
     }
 }
+
+} // verus!
 
 /// `mallctl(name, oldp, oldlenp, newp, newlen)`.
 pub fn mallctl(
@@ -3067,8 +3080,8 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
 /// `mallctlnametomib(name, mibp, miblenp)`: `*miblenp` is the capacity in
 /// and the length out. The pointers are C's, under the
 /// `mallctlnametomib` contract: `cc` is the call's token for exactly
-/// these arguments ([`CEntry::NameToMib`]; the export wrapper passes a
-/// placeholder until it is verified). A failure writes nothing through
+/// these arguments ([`CEntry::NameToMib`]), which the export wrapper
+/// mints from its own parameters. A failure writes nothing through
 /// `mibp` or `miblenp`: every error returns before the token's writes
 /// open.
 pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize, Tracked(cc): Tracked<&mut CCall>) -> (r: c_int)
@@ -3181,7 +3194,11 @@ pub fn mallctlbymib(
 
 #[cfg(not(test))]
 mod exports {
+    use crate::vspec::cbuf::CCall;
+    #[cfg(verus_keep_ghost)]
+    use crate::vspec::cbuf::CEntry;
     use core::ffi::{c_char, c_int, c_void};
+    use vstd::prelude::{Tracked, verus};
 
     export_pair! {
         fn mallctl / je_mallctl(
@@ -3203,9 +3220,6 @@ mod exports {
                 vstd::prelude::Tracked::assume_new(),
             )
         }
-        fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
-            super::mallctlnametomib(name, mibp, miblenp, vstd::prelude::Tracked::assume_new())
-        }
         fn mallctlbymib / je_mallctlbymib(
             mib: *const usize,
             miblen: usize,
@@ -3226,6 +3240,56 @@ mod exports {
             )
         }
     }
+
+    // `verified_export_pair!` expands inside its own `verus!`; this outer
+    // block holds it (Verus passes the invocation through) and the mint.
+    verus! {
+
+    /// Trusted (the C contract of the entry point, `vspec::cbuf`): the
+    /// token of this call from C, through the entry point and with the
+    /// arguments `e` names: the export wrapper's own parameters, which C
+    /// passed under the entry point's contract ([`CCall::fresh`]: each
+    /// pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of
+    /// the program's, and the string argument's view). Private to this
+    /// module, whose functions are the C entry points and their mint
+    /// below: the `mallctlnametomib` exports mint their call's token once,
+    /// from their own parameters, so no other verified code can mint one
+    /// or name another call's arguments. A C caller that breaks the
+    /// contract (a buffer past `isize::MAX` bytes or wrapping the address
+    /// space, a string that is not NUL-terminated, a pointer into
+    /// challoc's memory other than a published counter read as such)
+    /// makes it false.
+    axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+        requires
+            e is NameToMib,
+        ensures
+            c.fresh(e),
+    ;
+
+    /// The token of a `mallctlnametomib` call ([`axiom_c_call`]):
+    /// `verified_export_pair!` takes its bodies as Rust blocks, which have
+    /// no `tracked` bindings, so the mint is here and the token comes back
+    /// as a `Tracked` value, as `vspec::errno::lend`'s. Called once by each
+    /// of the two exports.
+    #[inline(always)]
+    // The parameters are read by the ghost code only.
+    #[allow(unused_variables)]
+    fn nametomib_call(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> (cc: Tracked<CCall>)
+        ensures
+            cc@.fresh(CEntry::NameToMib { name: name as *const u8, mibp, miblenp: miblenp as *const usize }),
+    {
+        let tracked cc = axiom_c_call(CEntry::NameToMib { name: name as *const u8, mibp, miblenp: miblenp as *const usize });
+        Tracked(cc)
+    }
+
+    verified_export_pair! {
+        fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
+            let Tracked(mut cc) = nametomib_call(name, mibp, miblenp);
+            super::mallctlnametomib(name, mibp, miblenp, Tracked(&mut cc))
+        }
+    }
+
+    } // verus!
 }
 
 #[cfg(test)]

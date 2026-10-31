@@ -137,6 +137,8 @@ use vstd::prelude::*;
 use vstd::prelude::{Ghost, Map, Tracked, int, verus};
 use vstd::raw_ptr::PointsTo;
 
+verus! {
+
 /// The crate version as a NUL-terminated static string (`"0.1.0"`; the
 /// soname's major, design 13.6, follows its major); with `challoc_features`
 /// and the size-returning entry points of design 13.7 (`libc.rs`) the whole
@@ -150,8 +152,6 @@ use vstd::raw_ptr::PointsTo;
 pub extern "C" fn challoc_version() -> *const core::ffi::c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const core::ffi::c_char
 }
-
-verus! {
 
 pub const UNINIT: u32 = 0;
 pub const INITIALISING: u32 = 1;
@@ -767,6 +767,8 @@ pub fn shared_ptr() -> *const Shared {
     (&raw const SHARED.0).cast::<Shared>()
 }
 
+verus! {
+
 /// [`shared_ptr`] for the free paths. On aarch64 the address goes through
 /// an empty `asm!`, so LLVM keeps it in one register and every field the
 /// free path reads (the push flags, the region geometry, the class
@@ -780,17 +782,32 @@ pub fn shared_ptr() -> *const Shared {
 /// state is formed, as in [`shared_ptr`].
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-pub fn shared_base() -> *const Shared {
+pub fn shared_base() -> (r: *const Shared)
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+{
     shared_storage_ptr() as *const Shared
 }
 
 /// [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
+///
+/// Trusted: a raw-pointer projection of a static, the pointer
+/// [`Shared::storage`] names, as [`shared_ptr`] and `shared_storage_ptr`:
+/// the same cell of the same static (`UnsafeCell` is `repr(transparent)`),
+/// so the same address and provenance; the template is empty, so the
+/// register the operand is in for input and output comes out unchanged.
 #[cfg(target_arch = "aarch64")]
+#[verifier::external_body]
 #[inline(always)]
 // The empty `asm!` is an optimization barrier on the pointer; it reads no
 // memory, so `nomem` is right.
 #[allow(clippy::pointers_in_nomem_asm_block)]
-pub fn shared_base() -> *const Shared {
+pub fn shared_base() -> (r: *const Shared)
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+{
     let mut p = shared_ptr();
     // SAFETY: an empty template; the pointer is unchanged.
     unsafe {
@@ -798,8 +815,6 @@ pub fn shared_base() -> *const Shared {
     }
     p
 }
-
-verus! {
 
 /// The allocator state at `p` (outside the tests, a [`shared_base`]
 /// result), without the readiness check: `&*p`, as the free paths write it,

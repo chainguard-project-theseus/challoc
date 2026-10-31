@@ -12,6 +12,7 @@ file.
 | `PartialEqSpec...uge::RunState` | spec_impl | core library | Kani | trusted |
 | `PartialEqSpec...r slab::State` | spec_impl | core library | Kani | trusted |
 | `fence` | assume_spec | core library | Kani | trusted |
+| `str::as_ptr` | assume_spec | core library | Kani | trusted |
 | `hint::assert_unchecked` | assume_spec | core library | Kani | trusted |
 | `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | trusted |
 | `Option::<T>::as_deref_mut` | assume_spec | core library | Kani | trusted |
@@ -100,9 +101,20 @@ pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic:
 ;
 ```
 
+## `str::as_ptr`
+
+src/vspec/misc.rs:66. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `str::as_ptr`: the address of the first byte; nothing is claimed about it.
+
+```rust
+pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
+```
+
 ## `core::hint::assert_unchecked`
 
-src/vspec/misc.rs:69. Kind: assume_spec. Category: core library.
+src/vspec/misc.rs:73. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `core::hint::assert_unchecked`: undefined behaviour unless `cond` holds (`core`'s safety contract), which this makes a precondition; it has no effect Verus models.
@@ -118,7 +130,7 @@ pub assume_specification[ core::hint::assert_unchecked ](cond: bool)
 
 ## `core::sync::atomic::Atomic::<u32>::as_ptr`
 
-src/vspec/misc.rs:79. Kind: assume_spec. Category: core library.
+src/vspec/misc.rs:83. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `AtomicU32::as_ptr`: the address of the atomic's value, for a futex syscall argument.
@@ -129,7 +141,7 @@ pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::
 
 ## `Option::<T>::as_deref_mut`
 
-src/vspec/misc.rs:89. Kind: assume_spec. Category: core library.
+src/vspec/misc.rs:93. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `Option::as_deref_mut`: a reborrow of the contents.
