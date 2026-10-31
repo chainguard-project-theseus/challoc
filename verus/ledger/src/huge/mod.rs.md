@@ -13,7 +13,7 @@ file.
 
 ## `axiom_run_locs`
 
-src/huge/mod.rs:1044. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:1074. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: outside tests, [`Huge::new`] runs once per process, for the process's `Shared` (`Shared::init`), so the run authorities it makes are the process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc` for the slot authorities.
@@ -30,7 +30,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:1873. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:2087. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -47,7 +47,7 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:1897. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:2111. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
