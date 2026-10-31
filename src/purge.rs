@@ -215,7 +215,7 @@ pub fn set_check_zero(on: bool) {
 /// Its `true` grants those reads the capability to read user memory
 /// (`vspec::user::may_read_user`). The only other verified code that reads
 /// a user block is `vspec::user::copy_user`, realloc's copy of a moved
-/// block.
+/// block, whose cores grant the capability themselves.
 #[inline]
 pub fn check_zero() -> (r: bool)
     ensures

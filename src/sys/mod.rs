@@ -1636,6 +1636,36 @@ mod tests {
         }
     }
 
+    /// `grant_user_reads` is called once in each of `purge::check_zero`
+    /// and the realloc cores `api::libc::realloc_block` and
+    /// `api::libc::realloc_usable_stored`, and nowhere else (the callers
+    /// [`crate::vspec::user::may_read_user`]'s doc lists).
+    #[test]
+    fn user_read_grants_only_in_listed_callers() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let sites = grant_sites(&format!("{}{}", "grant_", "user_reads"));
+        let callers = [
+            ("purge.rs:", "pub fn check_zero("),
+            ("api/libc.rs:", "pub fn realloc_block("),
+            ("api/libc.rs:", "pub fn realloc_usable_stored("),
+        ];
+        for (sig, at) in &sites {
+            assert!(
+                callers
+                    .iter()
+                    .any(|(file, f)| at.starts_with(file) && sig.starts_with(f)),
+                "{at}: a user-read grant in `{sig}`"
+            );
+        }
+        for (file, f) in callers {
+            let n = sites
+                .iter()
+                .filter(|(sig, at)| at.starts_with(file) && sig.starts_with(f))
+                .count();
+            assert_eq!(n, 1, "{file} `{f}`: got = {n} grants, want = 1");
+        }
+    }
+
     /// A fresh read/write private anonymous mapping of `len` bytes, for
     /// this module's tests and `features::linux_tests`.
     pub(super) fn map_anon(len: usize) -> usize {
