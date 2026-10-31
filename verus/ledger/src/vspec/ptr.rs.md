@@ -10,6 +10,8 @@ file.
 | `axiom_plain_u64` | axiom | core library | none (assumption) | trusted |
 | `axiom_plain_u8` | axiom | core library | none (assumption) | trusted |
 | `axiom_plain_usize` | axiom | core library | none (assumption) | trusted |
+| `axiom_plain_isize` | axiom | core library | none (assumption) | trusted |
+| `axiom_plain_u32` | axiom | core library | none (assumption) | trusted |
 | `axiom_plain_ptr` | axiom | core library | none (assumption) | trusted |
 | `ptr::re...e::<T>` | assume_spec | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 | `ptr::wr...s::<T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
@@ -28,7 +30,7 @@ file.
 
 ## `axiom_plain_u64`
 
-src/vspec/ptr.rs:101. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:102. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`plain`] for `u64`: every initialised eight bytes are a `u64`, which holds no ghost state.
@@ -42,7 +44,7 @@ pub axiom fn axiom_plain_u64()
 
 ## `axiom_plain_u8`
 
-src/vspec/ptr.rs:108. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:109. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`plain`] for `u8`: every initialised byte is a `u8`.
@@ -56,7 +58,7 @@ pub axiom fn axiom_plain_u8()
 
 ## `axiom_plain_usize`
 
-src/vspec/ptr.rs:116. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:117. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`plain`] for `usize`: every initialised `size_of::<usize>()` bytes are a `usize`.
@@ -68,9 +70,37 @@ pub axiom fn axiom_plain_usize()
 ;
 ```
 
+## `axiom_plain_isize`
+
+src/vspec/ptr.rs:125. Kind: axiom. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> [`plain`] for `isize`: every initialised `size_of::<isize>()` bytes are an `isize`.
+
+```rust
+pub axiom fn axiom_plain_isize()
+    ensures
+        plain::<isize>(),
+;
+```
+
+## `axiom_plain_u32`
+
+src/vspec/ptr.rs:133. Kind: axiom. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> [`plain`] for `u32` (C's `unsigned`): every initialised four bytes are a `u32`.
+
+```rust
+pub axiom fn axiom_plain_u32()
+    ensures
+        plain::<u32>(),
+;
+```
+
 ## `axiom_plain_ptr`
 
-src/vspec/ptr.rs:126. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:143. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`plain`] for `*const T` (sized `T`): every initialised pointer-sized bytes are a `*const T`.
@@ -84,7 +114,7 @@ pub axiom fn axiom_plain_ptr<T>()
 
 ## `core::ptr::read_volatile::<T>`
 
-src/vspec/ptr.rs:137. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
+src/vspec/ptr.rs:154. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::read_volatile`, with the safety contract of the `core` documentation: `src` is valid for reads of `size_of::<T>()` bytes and aligned for `T`, and the bytes are a valid `T`, which [`plain`] asserts for `T` (only `u64`).
@@ -101,7 +131,7 @@ pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
 
 ## `core::ptr::write_bytes::<T>`
 
-src/vspec/ptr.rs:156. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:173. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::write_bytes`, with the safety contract of the `core` documentation: `dst` is non-null and properly aligned and, unless the fill is empty, valid for writes of `count * size_of::<T>()` bytes.
@@ -121,7 +151,7 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 
 ## `axiom_raw_valid`
 
-src/vspec/ptr.rs:183. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/ptr.rs:200. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > A permission to the `len` bytes from `p`, of `p`'s provenance, makes them valid for writes through `p` and, when there are some, puts them inside the allocation `p` is derived from ([`in_alloc`]).
@@ -139,7 +169,7 @@ pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u
 
 ## `axiom_ptr_add_addr`
 
-src/vspec/ptr.rs:204. Kind: external_body proof. Category: core library.
+src/vspec/ptr.rs:221. Kind: external_body proof. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The address [`ptr_add`] stands for: `count` elements past `p`, when that stays inside the allocation `p` points into (the only case in which `<*mut T>::add` is defined, and so the only one verified code reaches), and the address does not wrap (the caller shows it: no allocation does, but `alloc_len` is not tied to the address space).
@@ -157,7 +187,7 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 
 ## `<*mut T>::sub`
 
-src/vspec/ptr.rs:222. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:239. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*mut T>::sub`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize` and is at most `p`'s address, and, when it is not zero, the whole range from the result to `p` is inside the allocation `p` points into ([`in_alloc`] of the result).
@@ -176,7 +206,7 @@ pub assume_specification<T>[ <*mut T>::sub ](p: *mut T, count: usize) -> (r: *mu
 
 ## `<*mut T>::add`
 
-src/vspec/ptr.rs:236. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:253. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*mut T>::add`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize`, and, when it is not zero, the whole range from `p` to the result is inside the allocation `p` points into ([`in_alloc`]).
@@ -194,7 +224,7 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
 
 ## `<*const T>::add`
 
-src/vspec/ptr.rs:248. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:265. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*const T>::add`, with the safety contract of `<*mut T>::add`: the result is [`ptr_add`] of the pointer as a `*mut T`, back as a `*const T` (`axiom_ptr_add_addr` gives its address).
@@ -212,7 +242,7 @@ pub assume_specification<T>[ <*const T>::add ](p: *const T, count: usize) -> (r:
 
 ## `axiom_array_elem`
 
-src/vspec/ptr.rs:267. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:284. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > Element `i` of a frozen array: a `'static` shared permission to a `[T; N]` gives one to each of its elements, holding that element, at [`ptr_add`] of the array's address as a `*mut T`; and the array's first `i` elements lie inside the allocation it is in, in fewer than `isize::MAX` bytes, so `<*mut T>::add(i)` is defined on that pointer.
@@ -233,7 +263,7 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
 
 ## `axiom_array_view`
 
-src/vspec/ptr.rs:304. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:321. Kind: axiom. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > A shared view of the `[T; N]` at `a` lent by its elements' permissions: `perms` holds an initialised permission to each element ([`array_elem_ptr`]), so it holds the array, whose value is theirs, for as long as they stay borrowed.
@@ -256,7 +286,7 @@ pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut
 
 ## `ref_ptr`
 
-src/vspec/ptr.rs:332. Kind: external_body. Category: raw pointer (internal).
+src/vspec/ptr.rs:349. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
@@ -270,7 +300,7 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
 
 ## `core::ptr::read_unaligned::<T>`
 
-src/vspec/ptr.rs:366. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:383. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::read_unaligned`.
@@ -286,7 +316,7 @@ pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> 
 
 ## `<*const T>::read_unaligned`
 
-src/vspec/ptr.rs:374. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:391. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*const T>::read_unaligned`.
@@ -302,7 +332,7 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
 
 ## `core::ptr::write_unaligned::<T>`
 
-src/vspec/ptr.rs:382. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:399. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `core::ptr::write_unaligned`.
@@ -319,7 +349,7 @@ pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src:
 
 ## `<*mut T>::write_unaligned`
 
-src/vspec/ptr.rs:391. Kind: assume_spec. Category: raw pointer (internal).
+src/vspec/ptr.rs:408. Kind: assume_spec. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `<*mut T>::write_unaligned`.

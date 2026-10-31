@@ -91,7 +91,8 @@ pub proof fn lemma_reads_cast<T>(p: *mut u8, len: int)
 /// a volatile read of a `T` makes a valid value out of any initialised
 /// bytes.
 /// Uninterpreted; [`axiom_plain_u64`], [`axiom_plain_u8`],
-/// [`axiom_plain_usize`] and [`axiom_plain_ptr`] state it for the types
+/// [`axiom_plain_usize`], [`axiom_plain_isize`], [`axiom_plain_u32`] and
+/// [`axiom_plain_ptr`] state it for the types
 /// verified code reads that way (volatile and unaligned reads).
 pub uninterp spec fn plain<T>() -> bool;
 
@@ -116,6 +117,22 @@ pub axiom fn axiom_plain_u8()
 pub axiom fn axiom_plain_usize()
     ensures
         plain::<usize>(),
+;
+
+/// [`plain`] for `isize`: every initialised `size_of::<isize>()` bytes are
+/// an `isize`. Trusted: the `core` documentation of the integer types (no
+/// invalid bit patterns).
+pub axiom fn axiom_plain_isize()
+    ensures
+        plain::<isize>(),
+;
+
+/// [`plain`] for `u32` (C's `unsigned`): every initialised four bytes are
+/// a `u32`. Trusted: the `core` documentation of the integer types (no
+/// invalid bit patterns).
+pub axiom fn axiom_plain_u32()
+    ensures
+        plain::<u32>(),
 ;
 
 /// [`plain`] for `*const T` (sized `T`): every initialised pointer-sized

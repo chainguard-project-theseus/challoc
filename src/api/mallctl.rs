@@ -67,8 +67,9 @@ use crate::huge::RunState;
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NBINS, NCLASSES};
+use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
-use crate::lock::axiom_entry;
+use crate::lock::{axiom_entry, rank_class};
 use crate::purge;
 use crate::stats::{self, ArenaStats, BinStats};
 use crate::sys;
@@ -787,7 +788,6 @@ fn stats_retained(_m: &[usize]) -> Result<Reading, c_int>
     Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.retained))
 }
 
-#[verifier::external_body]
 fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_abort(),
@@ -796,7 +796,6 @@ fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
     Ok(U64(thread_heap(shared())?.materialise_stats().allocated))
 }
 
-#[verifier::external_body]
 fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_abort(),
@@ -805,7 +804,6 @@ fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
     Ok(U64Ptr(ptr::from_ref(&thread_heap(shared())?.materialise_stats().allocated)))
 }
 
-#[verifier::external_body]
 fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_abort(),
@@ -814,7 +812,6 @@ fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
     Ok(U64(thread_heap(shared())?.materialise_stats().deallocated))
 }
 
-#[verifier::external_body]
 fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_abort(),
@@ -1810,8 +1807,8 @@ impl Io {
     /// `oldlenp` given, they are the call's sized buffer ([`CArg::Sized`]:
     /// `oldlenp` is an initialised `size_t` and `oldp` holds that many
     /// bytes); and the new value is [`Io::given`]. [`mallctl`] and
-    /// [`mallctlbymib`] are to give it for the pointers C passed once they
-    /// are verified (they pass placeholder tokens until then).
+    /// [`mallctlbymib`] give it for the pointers C passed, through their
+    /// call tokens ([`CCall::fresh`]).
     pub open spec fn handed(self, call: CCall) -> bool {
         &&& (self.oldp@.addr != 0 && self.oldlenp@.addr != 0 ==> call.has(CArg::Sized(self.oldp as *mut u8, self.oldlenp as *const usize)))
         &&& self.given()
@@ -2665,23 +2662,35 @@ fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
     stats::arena_stats(shared, arena_index(i)?, Tracked(&mut axiom_entry())).ok_or(ENOENT)
 }
 
-} // verus!
-
 /// Return the calling thread's cached slots before a purge so the purge
 /// can reach the slabs they pin (`malloc_trim` does the same).
-fn flush_caller(shared: &Shared) {
+fn flush_caller(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
-        h.flush_all(shared, vstd::prelude::Tracked::assume_new());
+        h.flush_all(shared, Tracked(ord));
     }
 }
 
 /// The calling thread's heap; `EAGAIN` when it has none to give (see
 /// `heap_for_thread`: being created, torn down, or not to be had).
-fn thread_heap(shared: &Shared) -> Result<&mut Heap, c_int> {
+fn thread_heap(shared: &Shared) -> (r: Result<&mut Heap, c_int>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+    ensures
+        r matches Err(e) ==> e == EAGAIN,
+        r matches Ok(h) ==> h.wf(),
+{
     heap::heap_for_thread(shared).ok_or(EAGAIN)
 }
-
-verus! {
 
 /// Copy a reading out with its type's size, through the call's token.
 fn read_out(io: &Io, r: Reading, Tracked(cc): Tracked<&mut CCall>) -> (res: Result<(), c_int>)
@@ -2703,22 +2712,19 @@ fn read_out(io: &Io, r: Reading, Tracked(cc): Tracked<&mut CCall>) -> (res: Resu
     }
 }
 
-} // verus!
-
-verus! {
-
 /// What a [`ctl`] call changed of the allocator state the `mallctl` keys
 /// set (ghost): the settings (`background_thread`'s request,
 /// `arena.<i>.dirty_decay_ms`, `thread.tcache.enabled`, `thread.arena`)
-/// and the explicit arenas and tcaches.
+/// and the explicit arenas and tcaches it creates (`tcache.destroy`
+/// reports none).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 ghost enum Change {
     /// Nothing of it.
     Unchanged,
     /// A setting took the key's new value; `read_first`: the call's read
-    /// through `oldp`, if it asked for one, had been made before, so it
-    /// got the old value.
+    /// through `oldp`, if it asked for one, had been made before
+    /// ([`CCall::written`]), so it got the old value.
     Set { read_first: bool },
     /// `arenas.create` or `tcache.create` created an arena or a tcache.
     Created,
@@ -2727,28 +2733,58 @@ ghost enum Change {
     Refreshed,
 }
 
-} // verus!
+/// The two errors that may follow a change `c`, both in jemalloc 5.3.0's
+/// order: `epoch`'s read after its refresh (`Change::Refreshed`; jemalloc's
+/// `epoch_ctl` reads after `ctl_refresh` too), and `background_thread`'s
+/// `EAGAIN` when the thread it requested does not start
+/// (`background_thread_ctl` keeps the enabled flag set and fails too).
+spec fn error_after_change(node: Node, r: Result<(), c_int>, c: Change) -> bool {
+    ||| c is Refreshed
+    ||| node.entry matches Entry::Op(Op::BackgroundThread) && r == Err::<(), c_int>(EAGAIN)
+}
 
 /// Perform the key `node` names with the numeric components of `mib`:
 /// a read-only key through its reader, an [`Op`] as an arm. `ENOENT` for
-/// an interior node. `_cc` is the call's token; `_fx` is ghost, what the
-/// call changed ([`Change`]); `errno` is the calling thread's `errno`
-/// token, for `background_thread`'s start.
+/// an interior node. `cc` is the call's token, before any write through
+/// its buffers. `fx` gets what the call changed: nothing when it fails,
+/// but for [`error_after_change`]; and a setting with the old value read
+/// first when the caller asked for it. `errno` is the calling thread's
+/// `errno` token, for `background_thread`'s start.
 fn ctl(
     shared: &Shared,
     node: &Node,
     mib: &[usize],
     io: &Io,
-    _cc: Tracked<&mut CCall>,
-    _fx: Tracked<&mut Ghost<Change>>,
-    errno: Tracked<&mut ThreadErrno>,
-) -> Result<(), c_int> {
+    Tracked(cc): Tracked<&mut CCall>,
+    Tracked(fx): Tracked<&mut Ghost<Change>>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> (r: Result<(), c_int>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        io.handed(*old(cc)),
+        !old(cc).written(),
+    ensures
+        r is Err && !error_after_change(*node, r, final(fx)@) ==> final(fx)@ is Unchanged,
+        io.oldp@.addr != 0 && io.oldlenp@.addr != 0 ==> (final(fx)@ matches Change::Set { read_first } ==> read_first),
+{
+    proof {
+        *fx = Ghost(Change::Unchanged);
+        crate::vspec::ptr::axiom_plain_u64();
+        crate::vspec::ptr::axiom_plain_usize();
+        crate::vspec::ptr::axiom_plain_isize();
+        crate::vspec::ptr::axiom_plain_u32();
+        crate::vspec::ptr::axiom_plain_ptr::<c_void>();
+    }
+    // Premise (lock order): `mallctl`'s caller holds no allocator lock.
+    let tracked mut ord = axiom_entry();
     let op = match node.entry {
         Entry::Dir(_) => return Err(ENOENT),
         Entry::Read(read) => {
             io.read_only()?;
-            return read_out(io, call(read, mib)?, Tracked::assume_new());
-        }
+            return read_out(io, call(read, mib)?, Tracked(cc));
+        },
         Entry::Op(op) => op,
     };
     match op {
@@ -2756,30 +2792,31 @@ fn ctl(
             // A write reads back the number its own refresh stored, not a
             // later writer's.
             let e = match io.write::<u64>()? {
-                Some(_) => stats::epoch(shared, vstd::prelude::Tracked::assume_new()),
-                None => stats::snapshot(shared, vstd::prelude::Tracked::assume_new()).epoch,
+                Some(_) => stats::epoch(shared, Tracked(&mut ord)),
+                None => stats::snapshot(shared, Tracked(&mut ord)).epoch,
             };
-            io.read(e, Tracked::assume_new())
-        }
+            proof {
+                if io.newp@.addr != 0 {
+                    *fx = Ghost(Change::Refreshed);
+                }
+            }
+            io.read(e, Tracked(cc))
+        },
         BackgroundThread => {
             let on = io.write_bool()?;
             // The old state, before the write changes it.
-            io.read(purge::background::present(), Tracked::assume_new())?;
+            io.read(purge::background::present(), Tracked(cc))?;
             if let Some(on) = on {
-                purge::background::request(on, vstd::prelude::Tracked::assume_new());
-                if on
-                    && !purge::background::present()
-                    && !purge::background::start(
-                        shared,
-                        vstd::prelude::Tracked::assume_new(),
-                        errno,
-                    )
-                {
+                proof {
+                    *fx = Ghost(Change::Set { read_first: cc.written() });
+                }
+                purge::background::request(on, Tracked(&mut ord));
+                if on && !purge::background::present() && !purge::background::start(shared, Tracked(&mut ord), Tracked(errno)) {
                     return Err(EAGAIN);
                 }
             }
             Ok(())
-        }
+        },
         MaxBackgroundThreads => {
             // Two `if`s, not a let chain: Verus takes no let chain.
             #[allow(clippy::collapsible_if)]
@@ -2788,77 +2825,58 @@ fn ctl(
                     return Err(EINVAL);
                 }
             }
-            io.read(1usize, Tracked::assume_new())
-        }
+            io.read(1usize, Tracked(cc))
+        },
         ArenasCreate => {
             // `newp` may carry extent hooks, which challoc has no use for.
             // A read that would fail must not leave an arena behind.
-            io.verify_read::<c_uint>(Tracked::assume_new())?;
-            let i = shared
-                .arenas
-                .create(shared, vstd::prelude::Tracked::assume_new())
-                .ok_or(EAGAIN)?;
-            io.read(i as c_uint, Tracked::assume_new())
-        }
+            io.verify_read::<c_uint>(Tracked(&*cc))?;
+            let i = shared.arenas.create(shared, Tracked(&mut ord)).ok_or(EAGAIN)?;
+            proof {
+                *fx = Ghost(Change::Created);
+            }
+            io.read(i as c_uint, Tracked(cc))
+        },
         ArenasLookup => {
             let p = io.write::<*const c_void>()?.ok_or(EINVAL)?;
             let a = owner_of(shared, p).ok_or(EFAULT)?;
-            io.read(a as c_uint, Tracked::assume_new())
-        }
+            io.read(a as c_uint, Tracked(cc))
+        },
         ArenaPurge => {
             io.void()?;
-            flush_caller(shared);
+            flush_caller(shared, Tracked(&mut ord));
             let i = at(mib, 1);
             if all_arenas(shared, i) {
-                purge::purge_all(
-                    shared,
-                    vstd::prelude::Tracked::assume_new(),
-                    vstd::prelude::Tracked::assume_new(),
-                );
+                let tracked mut left = Ghost(purge::Left::none());
+                purge::purge_all(shared, Tracked(&mut left), Tracked(&mut ord));
             } else {
-                purge::purge_arena(
-                    shared,
-                    arena_index(i)?,
-                    vstd::prelude::Tracked::assume_new(),
-                    vstd::prelude::Tracked::assume_new(),
-                )
-                .ok_or(ENOENT)?;
+                let tracked mut left = Ghost(purge::Left::none());
+                purge::purge_arena(shared, arena_index(i)?, Tracked(&mut left), Tracked(&mut ord)).ok_or(ENOENT)?;
             }
             Ok(())
-        }
+        },
         ArenaDecay => {
             io.void()?;
             let now = sys::now_coarse_ns();
             let i = at(mib, 1);
             if all_arenas(shared, i) {
-                purge::decay(shared, now, vstd::prelude::Tracked::assume_new());
+                purge::decay(shared, now, Tracked(&mut ord));
             } else {
-                purge::decay_arena(
-                    shared,
-                    arena_index(i)?,
-                    now,
-                    vstd::prelude::Tracked::assume_new(),
-                )
-                .ok_or(ENOENT)?;
+                purge::decay_arena(shared, arena_index(i)?, now, Tracked(&mut ord)).ok_or(ENOENT)?;
             }
             Ok(())
-        }
+        },
         ArenaDestroy => {
             io.void()?;
             let i = at(mib, 1);
             if i == 0 || i == ARENAS_ALL as usize {
                 return Err(EFAULT);
             }
-            flush_caller(shared);
-            purge::purge_arena(
-                shared,
-                arena_index(i)?,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
-            )
-            .ok_or(ENOENT)?;
+            flush_caller(shared, Tracked(&mut ord));
+            let tracked mut left = Ghost(purge::Left::none());
+            purge::purge_arena(shared, arena_index(i)?, Tracked(&mut left), Tracked(&mut ord)).ok_or(ENOENT)?;
             Ok(())
-        }
+        },
         ArenaDirtyDecayMs => {
             let i = at(mib, 1);
             let new = io.write::<isize>()?;
@@ -2872,71 +2890,77 @@ fn ctl(
             // The old period is read before the new one is applied, so a
             // read error changes nothing.
             if i == ARENAS_ALL as usize {
-                io.read(ms_of(shared.decay_ns()), Tracked::assume_new())?;
+                io.read(ms_of(shared.decay_ns()), Tracked(cc))?;
                 if let Some(ms) = new {
+                    proof {
+                        *fx = Ghost(Change::Set { read_first: cc.written() });
+                    }
                     shared.set_decay_ms(ms as i64);
                 }
                 return Ok(());
             }
-            let arena = shared
-                .arena(arena_index(i)?, vstd::prelude::Tracked::assume_new())
-                .ok_or(ENOENT)?;
-            io.read(ms_of(arena.0.decay_ns()), Tracked::assume_new())?;
+            let arena = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
+            io.read(ms_of(arena.0.decay_ns()), Tracked(cc))?;
             if let Some(ms) = new {
+                proof {
+                    *fx = Ghost(Change::Set { read_first: cc.written() });
+                }
                 arena.0.set_decay_ms(ms as i64);
             }
             Ok(())
-        }
+        },
         ThreadTcacheFlush => {
             io.void()?;
-            flush_caller(shared);
+            flush_caller(shared, Tracked(&mut ord));
             Ok(())
-        }
+        },
         ThreadTcacheEnabled => {
             let h = thread_heap(shared)?;
             let on = io.write_bool()?;
-            io.read(h.tcache_enabled(), Tracked::assume_new())?;
+            io.read(h.tcache_enabled(), Tracked(cc))?;
             if let Some(on) = on {
-                h.set_tcache_enabled(shared, on, vstd::prelude::Tracked::assume_new());
+                proof {
+                    *fx = Ghost(Change::Set { read_first: cc.written() });
+                }
+                h.set_tcache_enabled(shared, on, Tracked(&mut ord));
             }
             Ok(())
-        }
+        },
         ThreadArena => {
             let h = thread_heap(shared)?;
             let new = io.write::<c_uint>()?;
             // As above, two `if`s.
             #[allow(clippy::collapsible_if)]
             if let Some(a) = new {
-                if a as usize >= MAX_ARENAS
-                    || shared
-                        .arena(a as u16, vstd::prelude::Tracked::assume_new())
-                        .is_none()
-                {
+                if a as usize >= MAX_ARENAS || shared.arena(a as u16, Tracked(&mut ord)).is_none() {
                     return Err(EFAULT);
                 }
             }
-            io.read(h.arena() as c_uint, Tracked::assume_new())?;
+            io.read(h.arena() as c_uint, Tracked(cc))?;
             if let Some(a) = new {
-                h.set_arena(shared, a as u16, vstd::prelude::Tracked::assume_new());
+                proof {
+                    *fx = Ghost(Change::Set { read_first: cc.written() });
+                }
+                h.set_arena(shared, a as u16, Tracked(&mut ord));
             }
             Ok(())
-        }
+        },
         TcacheCreate => {
             io.read_only()?;
             // A read that would fail must not leave a tcache behind.
-            io.verify_read::<c_uint>(Tracked::assume_new())?;
+            io.verify_read::<c_uint>(Tracked(&*cc))?;
             // `existing_heap(shared).map_or(0, |h| h.arena())`, spelled as
             // a `match`.
             let home = match heap::existing_heap(heap::shared_ptr(shared)) {
                 Some(h) => h.arena(),
                 None => 0,
             };
-            let t = shared
-                .tcaches
-                .create(shared, home, vstd::prelude::Tracked::assume_new())
-                .ok_or(EFAULT)?;
-            io.read(t as c_uint, Tracked::assume_new())
-        }
+            let t = shared.tcaches.create(shared, home, Tracked(&mut ord)).ok_or(EFAULT)?;
+            proof {
+                *fx = Ghost(Change::Created);
+            }
+            io.read(t as c_uint, Tracked(cc))
+        },
         TcacheFlush | TcacheDestroy => {
             io.write_only()?;
             let t = io.write::<c_uint>()?.ok_or(EINVAL)?;
@@ -2944,26 +2968,18 @@ fn ctl(
                 return Err(EFAULT);
             }
             let ok = match op {
-                TcacheFlush => {
-                    shared
-                        .tcaches
-                        .flush(shared, t as u16, vstd::prelude::Tracked::assume_new())
-                }
-                _ => shared
-                    .tcaches
-                    .destroy(shared, t as u16, vstd::prelude::Tracked::assume_new()),
+                TcacheFlush => shared.tcaches.flush(shared, t as u16, Tracked(&mut ord)),
+                _ => shared.tcaches.destroy(shared, t as u16, Tracked(&mut ord)),
             };
             if ok { Ok(()) } else { Err(EFAULT) }
-        }
+        },
         UtilQuery => {
             let p = io.write::<*const c_void>()?.ok_or(EINVAL)?;
-            io.read(utilization(shared, p, true), Tracked::assume_new())
-        }
-        UtilBatchQuery => batch_query(shared, io, Tracked::assume_new()),
+            io.read(utilization(shared, p, true), Tracked(cc))
+        },
+        UtilBatchQuery => batch_query(shared, io, Tracked(cc)),
     }
 }
-
-verus! {
 
 fn result(r: Result<(), c_int>) -> (c: c_int)
     ensures
@@ -2976,19 +2992,33 @@ fn result(r: Result<(), c_int>) -> (c: c_int)
     }
 }
 
-} // verus!
-
-/// `mallctl(name, oldp, oldlenp, newp, newlen)`.
+/// `mallctl(name, oldp, oldlenp, newp, newlen)`. The pointers are C's,
+/// under the `mallctl` contract: `cc` is the call's token for exactly
+/// these arguments ([`CEntry::Mallctl`]), and `errno` the calling thread's `errno`
+/// token; the export wrapper passes placeholders for both.
 pub fn mallctl(
     name: *const c_char,
     oldp: *mut c_void,
     oldlenp: *mut usize,
     newp: *const c_void,
     newlen: usize,
-    _cc: Tracked<CCall>,
-    errno: Tracked<&mut ThreadErrno>,
-) -> c_int {
-    let Some(name) = cstr(name, Tracked::assume_new()) else {
+    Tracked(cc): Tracked<CCall>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> c_int
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        cc.fresh(CEntry::Mallctl {
+            name: name as *const u8,
+            oldp: oldp as *mut u8,
+            oldlenp: oldlenp as *const usize,
+            newp: newp as *mut u8,
+            newlen,
+        }),
+{
+    let tracked mut cc = cc;
+    let tracked mut fx = Ghost(Change::Unchanged);
+    let Some(name) = cstr(name, Tracked(&cc)) else {
         return EINVAL;
     };
     let mut mib = [0usize; MAX_MIB];
@@ -3007,13 +3037,11 @@ pub fn mallctl(
             newp,
             newlen,
         },
-        Tracked::assume_new(),
-        Tracked::assume_new(),
-        errno,
+        Tracked(&mut cc),
+        Tracked(&mut fx),
+        Tracked(errno),
     ))
 }
-
-verus! {
 
 /// `*miblenp`, through the read permission the call's token gives
 /// ([`CArg::Counted`], [`CCall::counted`]), which also makes `mibp` an
@@ -3146,9 +3174,10 @@ unsafe fn mib_in(mib: *const usize, local: &mut [usize; MAX_MIB], miblen: usize)
     }
 }
 
-} // verus!
-
-/// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`.
+/// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`. The pointers
+/// are C's, under the `mallctl` contract: `cc` is the call's token for
+/// exactly these arguments ([`CEntry::ByMib`]), and `errno` the calling thread's `errno`
+/// token; the export wrapper passes placeholders for both.
 // The C arguments, the call's token and the `errno` token.
 #[allow(clippy::too_many_arguments)]
 pub fn mallctlbymib(
@@ -3158,9 +3187,23 @@ pub fn mallctlbymib(
     oldlenp: *mut usize,
     newp: *const c_void,
     newlen: usize,
-    _cc: Tracked<CCall>,
-    errno: Tracked<&mut ThreadErrno>,
-) -> c_int {
+    Tracked(cc): Tracked<CCall>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> c_int
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        cc.fresh(CEntry::ByMib {
+            mib,
+            miblen,
+            oldp: oldp as *mut u8,
+            oldlenp: oldlenp as *const usize,
+            newp: newp as *mut u8,
+            newlen,
+        }),
+{
+    let tracked mut cc = cc;
+    let tracked mut fx = Ghost(Change::Unchanged);
     if mib.is_null() || miblen == 0 || miblen > MAX_MIB {
         return EINVAL;
     }
@@ -3182,11 +3225,13 @@ pub fn mallctlbymib(
             newp,
             newlen,
         },
-        Tracked::assume_new(),
-        Tracked::assume_new(),
-        errno,
+        Tracked(&mut cc),
+        Tracked(&mut fx),
+        Tracked(errno),
     ))
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see `libc.rs`).
