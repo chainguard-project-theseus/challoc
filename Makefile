@@ -144,8 +144,10 @@ test-cgroup-limit: image ## the cgroup-reading tests under --memory=512m (in `ma
 # run (scripts/cgroup-tests.sh; the exit status is the program's, 137 is an
 # OOM kill). test-cgroup-churn (about 40 s, in `make test`): tests/c/
 # cgroup_churn.c allocates 400 MiB, frees it and idles under --memory=512m;
-# RSS must be under 100 MiB within 2 s with the policy on (`purge`) and
-# must not be with MALLOC_CONF=cgroup:false (`keep`, the control); the same
+# with the policy on (`purge`), held memory (RSS less LazyFree) must be
+# under 100 MiB within 2 s and stats.cgroup.eager_purges must rise; with
+# MALLOC_CONF=cgroup:false (`keep`, the control) RSS must stay at 100 MiB or
+# more at 2 s; the same
 # at --memory=256m with the sizes scaled to the limit (200 MiB, 50 MiB).
 # test-cgroup-oscillate (OSC_SECS, default 300 s, plus 300 s more with
 # CONTROL=1: the same run under cgroup:false, recorded, not a criterion):

@@ -3,17 +3,36 @@
  * mix of 1 KiB slab objects, 32 KiB medium objects and 1 MiB huge runs,
  * touch it, free all of it and idle. In a
  * `docker run --memory=512m` container with the design 11 policy on
- * (the default) RSS must fall below 100 MiB within 2 s: the freed memory
+ * (the default) held memory (RSS less `LazyFree`, below) must fall below
+ * 100 MiB within 2 s, and some of it must go eagerly: the freed memory
  * exceeds the retention cap (5% of the limit) and the first decay walk
  * purges it. With the policy forced off (`MALLOC_CONF=cgroup:false`) the
  * same run keeps the memory: the default 10 s decay window lets at most a
- * few percent go in 2 s. Both RSS (`/proc/self/statm`) and the cgroup's
- * `memory.current` are printed every 100 ms; the criterion is on RSS.
+ * few percent go in 2 s. RSS (`/proc/self/statm`), its `LazyFree` part
+ * (`/proc/self/smaps_rollup`) and the cgroup's `memory.current` are
+ * printed every 100 ms. The purge criterion is on *held* memory, RSS less
+ * `LazyFree`; the keep criterion is on RSS.
+ *
+ * Why held memory: the purge is eager while the excess over the cap was
+ * first seen at 70% of the limit or above, and lazy (`MADV_FREE`, which
+ * stays in RSS until the kernel reclaims it) under 70% (design 8 and 11).
+ * When walks return the slab and medium objects before the huge runs are
+ * freed, retention comes back within the cap, which ends that eager
+ * return; the huge runs' excess is then a new one, seen under 70%, and
+ * goes lazily, as designed. Either way the allocator no longer holds the
+ * memory; lazily freed pages stay in RSS and `memory.current` until the
+ * kernel reclaims them. The eager return at 70% and above is checked
+ * through `stats.cgroup.eager_purges`, which must rise after the frees.
+ * So a passing run may end with RSS well over the threshold; the RSS fall
+ * itself is pinned by `cgroup_policy.c` (after freeing at 80% of the
+ * limit, RSS back to its base plus the cap and one extent) and by `cgroup_lazy.c`'s `eager` control
+ * (RSS under a quarter of the churn with `lazy_band:false`).
  *
  *   cgroup_churn MODE [MiB] [threshold_MiB] [--any-allocator]
  *
- *   MODE  purge   exit 0 iff RSS < threshold (100 MiB) at some point in
- *                 the 2 s window (challoc, policy on, under a limit)
+ *   MODE  purge   exit 0 iff RSS less LazyFree < threshold (100 MiB) at
+ *                 some point in the 2 s window and `eager_purges` rose
+ *                 (challoc, policy on, under a limit)
  *         keep    exit 0 iff RSS >= threshold at the end of the window
  *                 (the control: challoc with cgroup:false)
  *         report  no criterion; print and exit 0 (jemalloc, mimalloc)
@@ -35,8 +54,10 @@
  * trickle is the same in both modes; what differs is the policy: on, the
  * first walk after the frees sees retention over the cap and purges the
  * whole coalesced extent; off, the 10 s curve keeps 94% of it at 2 s.
- * Nothing else here can purge: single-threaded (no thread-exit flush), no
- * `malloc_trim`, no background thread.
+ * The free path's own periodic tick can run walks during the frees, and
+ * the background thread may start on its own after them (the lazy start,
+ * design 8.1: only an allocation's tick creates it); nothing else here
+ * can purge: one program thread (no thread-exit flush), no `malloc_trim`.
  */
 #include "common.h"
 #include <stdbool.h>
@@ -114,6 +135,30 @@ static const char *fmt_mib(long long v, char *buf, size_t n)
     return buf;
 }
 
+/* The `LazyFree` bytes of `/proc/self/smaps_rollup`: resident pages
+ * marked `MADV_FREE` and not yet reclaimed. 0 when the kernel does not
+ * report it. */
+static size_t lazyfree_bytes(void)
+{
+    FILE *f = fopen("/proc/self/smaps_rollup", "r");
+    if (!f)
+        return 0;
+    char line[256];
+    unsigned long kb = 0;
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "LazyFree: %lu kB", &kb) == 1)
+            break;
+    fclose(f);
+    return (size_t)kb * 1024;
+}
+
+/* RSS less its `LazyFree` part: the memory the process still holds. */
+static size_t held_bytes(size_t rss)
+{
+    size_t lazy = lazyfree_bytes();
+    return lazy < rss ? rss - lazy : 0;
+}
+
 /* One idle step: the event loop's transient allocations, 4096 objects of
  * 48 bytes allocated and freed, about 16 slow paths of the 48-byte class
  * under challoc (a refill or flush every 512 operations), so the periodic
@@ -172,6 +217,16 @@ static void challoc_policy_line(void)
            "purge_advice %s lazy_purges %zu eager_purges %zu\n",
            limit == SIZE_MAX ? 0 : limit / MIB, decay_ms, cap == SIZE_MAX ? 0 : cap / MIB, empty / MIB, full,
            advice ? "lazy" : "eager", lazy, eager);
+}
+
+/* `stats.cgroup.eager_purges`: the batches discarded with `MADV_DONTNEED`
+ * so far; 0 when it cannot be read. */
+static size_t eager_purges(void)
+{
+    size_t v = 0, len = sizeof v;
+    if (!mallctl || mallctl("stats.cgroup.eager_purges", &v, &len, NULL, 0) != 0)
+        return 0;
+    return v;
 }
 
 int main(int argc, char **argv)
@@ -234,6 +289,7 @@ int main(int argc, char **argv)
     printf("allocated %zu MiB in %ld ms (%zu x 1 MiB, %zu x 32 KiB, %zu x 1 KiB): rss %zu MiB, memory.current %s\n", total_mib,
            now_ms() - t0, huge_n, med_n, small_n, rss_peak / MIB, fmt_mib(cur_peak, b1, sizeof b1));
     challoc_policy_line();
+    size_t eager_peak = eager_purges();
     REQUIRE(rss_peak >= rss0 + total_mib * MIB * 9 / 10, "rss did not grow with the working set (%zu MiB)", rss_peak / MIB);
 
     /* Free everything, in an order that leaves each region's free pieces
@@ -253,8 +309,9 @@ int main(int argc, char **argv)
     printf("freed in %ld ms: rss %zu MiB, memory.current %s\n", freed_at - t0, rss_freed / MIB,
            fmt_mib(read_cgroup_ll("memory.current"), b1, sizeof b1));
 
-    /* Idle for the window, printing both figures every 100 ms. */
+    /* Idle for the window, printing the figures every 100 ms. */
     size_t threshold = threshold_mib * MIB, rss = rss_freed, rss_min = rss_freed;
+    size_t held = held_bytes(rss_freed), held_min = held;
     long below_at = -1;
     long next_print = freed_at + STEP_MS;
     for (;;) {
@@ -262,12 +319,15 @@ int main(int argc, char **argv)
         trickle();
         long t = now_ms();
         rss = rss_bytes();
+        held = held_bytes(rss);
         if (rss < rss_min)
             rss_min = rss;
-        if (rss < threshold && below_at < 0)
+        if (held < held_min)
+            held_min = held;
+        if (held < threshold && below_at < 0)
             below_at = t - freed_at;
         if (t >= next_print) {
-            printf("  t+%4ld ms: rss %4zu MiB, memory.current %s\n", t - freed_at, rss / MIB,
+            printf("  t+%4ld ms: rss %4zu MiB (lazyfree %4zu MiB), memory.current %s\n", t - freed_at, rss / MIB, (rss - held) / MIB,
                    fmt_mib(read_cgroup_ll("memory.current"), b1, sizeof b1));
             next_print += STEP_MS;
         }
@@ -275,19 +335,23 @@ int main(int argc, char **argv)
             break;
     }
     long long cur_end = read_cgroup_ll("memory.current");
-    printf("at %d ms: rss %zu MiB (min %zu MiB%s%ld ms), memory.current %s\n", WINDOW_MS, rss / MIB, rss_min / MIB,
+    printf("at %d ms: rss %zu MiB, held %zu MiB (min %zu MiB%s%ld ms), memory.current %s\n", WINDOW_MS, rss / MIB, held / MIB, held_min / MIB,
            below_at >= 0 ? ", under the threshold after " : ", never under the threshold; ", below_at >= 0 ? below_at : (long)WINDOW_MS,
            fmt_mib(cur_end, b1, sizeof b1));
     challoc_policy_line();
     /* One machine-readable line for the driver's table. */
-    printf("RESULT churn mode=%s mib=%zu threshold=%zu rss_peak=%zu rss_2s=%zu rss_min=%zu below_ms=%ld current_peak=%lld current_2s=%lld\n",
+    printf("RESULT churn mode=%s mib=%zu threshold=%zu rss_peak=%zu rss_2s=%zu rss_min=%zu below_ms=%ld current_peak=%lld current_2s=%lld "
+           "held_2s=%zu held_min=%zu\n",
            mode, total_mib, threshold_mib, rss_peak / MIB, rss / MIB, rss_min / MIB, below_at, cur_peak < 0 ? -1 : cur_peak / (long long)MIB,
-           cur_end < 0 ? -1 : cur_end / (long long)MIB);
+           cur_end < 0 ? -1 : cur_end / (long long)MIB, held / MIB, held_min / MIB);
 
-    if (strcmp(mode, "purge") == 0)
-        CHECK(below_at >= 0, "rss never fell below %zu MiB within %d ms (min %zu MiB, at %d ms %zu MiB)", threshold_mib, WINDOW_MS,
-              rss_min / MIB, WINDOW_MS, rss / MIB);
-    else if (strcmp(mode, "keep") == 0)
+    if (strcmp(mode, "purge") == 0) {
+        CHECK(below_at >= 0, "held memory (rss less lazyfree) never fell below %zu MiB within %d ms (min %zu MiB, at %d ms %zu MiB, rss %zu MiB)",
+              threshold_mib, WINDOW_MS, held_min / MIB, WINDOW_MS, held / MIB, rss / MIB);
+        size_t eager_end = eager_purges();
+        CHECK(eager_end > eager_peak, "no eager purge after the frees (eager_purges %zu at the peak, %zu at %d ms)", eager_peak, eager_end,
+              WINDOW_MS);
+    } else if (strcmp(mode, "keep") == 0)
         CHECK(rss >= threshold, "rss %zu MiB at %d ms is under %zu MiB with the policy off", rss / MIB, WINDOW_MS, threshold_mib);
     return finish("cgroup_churn");
 }
