@@ -49,12 +49,12 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
 
 ## `zero_raw`
 
-src/vspec/zero.rs:380. Kind: external_body. Category: raw pointer (internal).
+src/vspec/zero.rs:447. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > `write_bytes(p, 0, n)` through `raw`, the permission to the `n` bytes at `p`, taken `&mut` so that no other view of them (a `PointsTo` held from the same bytes, a [`ZeroRaw`] or a `UserMem` lending them) is held across the fill; the token for what it wrote.
 
-Body mints Tracked at line 392.
+Body mints Tracked at line 459.
 
 ```rust
 pub unsafe fn zero_raw(p: *mut u8, n: usize, Tracked(raw): Tracked<&mut PointsToRaw>) -> (z: Tracked<Zeroed>)

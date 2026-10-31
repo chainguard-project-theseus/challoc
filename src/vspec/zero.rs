@@ -365,6 +365,73 @@ pub proof fn lemma_covers_huge(z: Zeroed, p: *mut u8, from: int, size: int)
     }
 }
 
+/// Zeroed memory: what a zeroing entry point's token says, byte by byte.
+/// A block `p` that an allocation of `size` bytes returned
+/// ([`crate::heap::fits`]) with a token that covers its usable bytes from
+/// offset `from` ([`covers_usable`]) reads as zero at every byte from
+/// `from` to the end of its usable size ([`block_usable`]), which is at
+/// least `size`. `challoc_calloc_usable` (`libc::calloc_usable_zeroed`)
+/// returns such a token with `from` 0, so the whole block reads as zero:
+/// its class's size for a slot, and `n * m` rounded up to whole pages for
+/// a huge run.
+///
+/// A token holds at the moment of return: its bytes read as zero then, on
+/// the trusted facts the tokens are built from ([`Zeroed`]'s doc).
+pub proof fn theorem_zeroed_memory(z: Zeroed, p: *mut u8, from: int, size: int)
+    requires
+        crate::heap::fits(p, size, 1),
+        p@.addr != 0,
+        covers_usable(z, p, from, size),
+    ensures
+        size <= block_usable(p@.addr, size),
+        forall|a: int| p@.addr + from <= a < p@.addr + block_usable(p@.addr, size) ==> #[trigger] z.has(a),
+{
+    let r = crate::layout::process_regions();
+    let q = p@.addr;
+    if exists|c: int| #[trigger] r.is_slot(c, q) {
+        let c = choose|c: int| #[trigger] r.is_slot(c, q);
+        assert(r.is_slot(c, q));
+        assert(r.user_block(q, size));
+        if exists|c2: int| #[trigger] r.is_slot(c2, q) && size <= crate::layout::class_table()[c2].size {
+            let c2 = choose|c2: int| #[trigger] r.is_slot(c2, q) && size <= crate::layout::class_table()[c2].size;
+            lemma_slot_unique(c, c2, q);
+        } else {
+            // The huge half of `user_block`: no slot is a huge page start.
+            lemma_slot_not_huge(c, q);
+        }
+    } else {
+        assert(r.is_huge_block(q, if size < 1 { 1 } else { size }));
+        assert(r.is_huge_block(q, 1));
+        let pg = (1usize << r.lg_page) as int;
+        assert(pg > 0) by {
+            let lg = r.lg_page;
+            assert((1usize << lg) > 0) by (bit_vector)
+                requires
+                    lg < 64,
+            ;
+        }
+        let n = (size + pg - 1) / pg;
+        assert(size <= (if n == 0 { 1 } else { n }) * pg) by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(size + pg - 1, pg);
+            vstd::arithmetic::div_mod::lemma_mod_bound(size + pg - 1, pg);
+            if n == 0 {
+                assert(size + pg - 1 < pg) by (nonlinear_arith)
+                    requires
+                        size + pg - 1 == pg * n + (size + pg - 1) % pg,
+                        n == 0,
+                        (size + pg - 1) % pg < pg,
+                ;
+            } else {
+                assert(size <= n * pg) by (nonlinear_arith)
+                    requires
+                        size + pg - 1 == pg * n + (size + pg - 1) % pg,
+                        (size + pg - 1) % pg < pg,
+                ;
+            }
+        }
+    }
+}
+
 /// `write_bytes(p, 0, n)` through `raw`, the permission to the `n` bytes
 /// at `p`, taken `&mut` so that no other view of them (a `PointsTo` held
 /// from the same bytes, a [`ZeroRaw`] or a `UserMem` lending them) is
