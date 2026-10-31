@@ -28,3 +28,6 @@ axiom_shared_meta	raw pointer (internal)	none (assumption)
 axiom_shared_built	raw pointer (internal)	none (assumption)
 # The caller's storage (`init`'s safety contract), once per process.
 Shared::begin	raw pointer from C caller	none (assumption)
+# An FFI call that may re-enter the allocator: the nested entries leave
+# the token as they found it (the slot premise).
+pthread_setspecific	FFI/syscall	none (assumption)

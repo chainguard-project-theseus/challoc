@@ -391,7 +391,11 @@ impl<'a> LockOrder<'a> {
 ///   `Heap::pop`, which `alloc_in`, `alloc_other`, `alloc_slow_in` (after
 ///   `refill`, whose `final(ord) == old(ord)` shows it released its locks)
 ///   and `alloc_slow`'s declined scheduled pop call, none of them holding
-///   an allocator lock at the call.
+///   an allocator lock at the call;
+/// - `heap::thread::create_heap_for_thread`, reached from a thread's first
+///   allocation on its slow path, with no lock held;
+/// - `heap::thread::heap_destructor`, a TLS destructor that runs at thread
+///   exit, outside any allocator call.
 ///
 /// No allocator entry point is re-entered while a lock is held: allocator
 /// code calls nothing that may allocate with a lock held, and a signal
