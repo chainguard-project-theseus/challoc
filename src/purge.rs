@@ -2557,3 +2557,29 @@ impl Batch {
 
 /// The background thread (design 8.1).
 pub mod background;
+
+/// Kani harness for `Explicit::drop`, this file's seam that Kani can run
+/// (`verus/ledger/src/purge.rs.md`).
+#[cfg(kani)]
+mod kani_explicit {
+    use super::{EXPLICIT, Explicit};
+    use core::sync::atomic::Ordering::Relaxed;
+
+    /// `Explicit::drop`: no `requires`, no `ensures`, `no_unwind` and
+    /// `opens_invariants none` (which Kani does not check): it
+    /// returns without a panic for every count `EXPLICIT` holds (one less
+    /// afterwards, wrapping at zero as an atomic subtraction does), both
+    /// when a guard from `Explicit::enter` drops and when the count was
+    /// changed in between.
+    #[kani::proof]
+    fn explicit_drop_returns() {
+        let c: u32 = kani::any();
+        EXPLICIT.store(c, Relaxed);
+        let g = Explicit::enter();
+        assert_eq!(EXPLICIT.load(Relaxed), c.wrapping_add(1));
+        let d: u32 = kani::any();
+        EXPLICIT.store(d, Relaxed);
+        drop(g);
+        assert_eq!(EXPLICIT.load(Relaxed), d.wrapping_sub(1));
+    }
+}

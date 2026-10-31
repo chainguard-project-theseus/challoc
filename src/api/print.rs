@@ -2040,3 +2040,47 @@ mod tests {
         malloc_stats();
     }
 }
+
+/// Kani harnesses for this file's seams that Kani can run
+/// (`verus/ledger/src/api/print.rs.md`): `word` and `hist_line`.
+#[cfg(kani)]
+mod kani_print {
+    use super::{hist_line, word};
+
+    /// `word`, no `requires`, no `ensures`: it returns for every C string
+    /// up to 3 bytes before its NUL, UTF-8 or not (built at run time:
+    /// Kani 0.68 has no C string literals), and gives the string when it
+    /// is UTF-8, else `?`.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn word_returns() {
+        let a: [u8; 4] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n < 4 && a[n] == 0 && a[..n].iter().all(|&b| b != 0));
+        let s = core::ffi::CStr::from_bytes_with_nul(&a[..=n]).unwrap();
+        let w = word(s);
+        assert_eq!(
+            w.as_bytes() == &a[..n],
+            core::str::from_utf8(&a[..n]).is_ok()
+        );
+        assert!(w == "?" || w.as_bytes() == &a[..n]);
+    }
+
+    /// `hist_line`, no `requires`, no `ensures`: it returns for every
+    /// argument, whatever the writer returns (`Sink` may fail any write;
+    /// Kani fails the harness on any panic).
+    #[kani::proof]
+    #[kani::unwind(24)]
+    fn hist_line_returns() {
+        let hist: [usize; 9] = kani::any();
+        let _ = hist_line(
+            &mut crate::kani_proofs::fmt::Sink,
+            kani::any(),
+            kani::any(),
+            kani::any(),
+            hist,
+            kani::any(),
+            kani::any(),
+        );
+    }
+}

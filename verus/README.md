@@ -128,9 +128,11 @@ explains the kinds, categories, tools and statuses.
 test or Verus run sees them) for seams of the ledger, mostly those whose
 proposed tool is Kani: each checks a trusted item's body, or the `core`
 function an `assume_specification` describes, against the contract Verus
-assumes. Each harness's comment names its seam and its bounds. A harness
-is evidence; the ledger status stays "trusted" until an overrides line
-cites it. The `kani` check (`.chainguard/ci/kani.yaml`) runs them under
+assumes. The harnesses of items with private parts sit next to them, in a
+`kani_*` module of the item's own file (`config::kani_config`, for one).
+Each harness's comment names its seam and its bounds. A harness is
+evidence; the ledger status stays "trusted" until an overrides line cites
+it. The `kani` check (`.chainguard/ci/kani.yaml`) runs them under
 both quanta; locally, with Kani 0.68.0 and CBMC 6.11.0 (Wolfi's `kani` and
 `cbmc` packages):
 
@@ -138,6 +140,7 @@ both quanta; locally, with Kani 0.68.0 and CBMC 6.11.0 (Wolfi's `kani` and
 cargo kani -Z unstable-options -Z stubbing --ignore-global-asm \
     --no-default-features --features quantum16      # or quantum8
 cargo kani ... --harness kani_proofs::stats::fig_add_exact   # one harness
+cargo kani ... --harness config::kani_config::get_contract   # one in a file
 ```
 
 ## Conventions

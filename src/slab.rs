@@ -717,3 +717,27 @@ mod tests {
         let _ = State::from_u8(4);
     }
 }
+
+/// Kani harness for `desc_stride`, this file's seam that Kani can run
+/// (`verus/ledger/src/slab.rs.md`).
+#[cfg(kani)]
+mod kani_desc_stride {
+    use super::{DESC_STRIDE, desc_stride};
+    use crate::layout::NCLASSES;
+
+    /// `desc_stride`, `requires class < NCLASSES`, `ensures r <= u32::MAX,
+    /// r == stride_of(class as int)`. For every `class < NCLASSES` the call
+    /// returns without a panic, and it returns `DESC_STRIDE[class]` widened
+    /// (its body), so at most `u32::MAX`. Two calls agree; that every call
+    /// does, which `stride_of` names, rests on `DESC_STRIDE` being an
+    /// immutable static, which Kani does not show.
+    #[kani::proof]
+    fn desc_stride_reads_the_table() {
+        let class: usize = kani::any();
+        kani::assume(class < NCLASSES);
+        let r = desc_stride(class);
+        assert!(r <= u32::MAX as usize);
+        assert_eq!(r, DESC_STRIDE[class] as usize);
+        assert_eq!(desc_stride(class), r);
+    }
+}
