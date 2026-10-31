@@ -2,3 +2,6 @@
 # per slot or run token at a time, for committed bytes no other permission
 # covers.
 axiom_hand_out	allocator invariant	none (assumption)
+# The C contract of a free: C holds the token of each block it was given
+# and has not freed, and a free hands one over.
+axiom_c_claim	C-program contract	none (assumption)

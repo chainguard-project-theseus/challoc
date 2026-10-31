@@ -14,7 +14,7 @@ file.
 
 ## `TlsSlot::entry`
 
-src/sys/tls.rs:172. Kind: axiom. Category: allocator invariant.
+src/sys/tls.rs:177. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The calling thread's token at a top-level user of the slot, as the slot's last user left it: what [`heap::thread::slot_ok`] states of the value it holds (a heap value comes with the heap's permission, the heap well formed, and nothing else with one), and `tp` this thread's thread pointer.
@@ -29,7 +29,7 @@ pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
 
 ## `get`
 
-src/sys/tls.rs:243. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:248. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Read the calling thread's slot.
@@ -43,7 +43,7 @@ pub fn get(Tracked(slot): Tracked<&TlsSlot>) -> (r: *mut c_void)
 
 ## `get_tp`
 
-src/sys/tls.rs:298. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:303. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
@@ -58,7 +58,7 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
 
 ## `set`
 
-src/sys/tls.rs:325. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:330. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Write the calling thread's slot.

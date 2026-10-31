@@ -22,6 +22,8 @@ use crate::huge::GUARD_PAGES;
 use crate::huge::RunToken;
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
+#[cfg(verus_keep_ghost)]
+use crate::vspec::cbuf::CCall;
 use crate::vspec::user::UserMem;
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
@@ -171,6 +173,12 @@ impl Live {
         self.mem.tracked_borrow()
     }
 
+    /// The block's `n` usable bytes from offset `from` read as zero: a load
+    /// of each, through the block's pointer, reads 0.
+    pub open spec fn reads_zero(self, from: int, n: int) -> bool {
+        self.mem().reads_zero(self.addr() + from, n)
+    }
+
     /// A live block: a slot of class `class` at `addr` with its slot
     /// token, or a run at `addr` with its run token and its usable bytes in
     /// the huge region; with the permission to its usable bytes.
@@ -202,6 +210,16 @@ impl Live {
     pub open spec fn slot_block(self, p: *mut u8, c: int) -> bool {
         &&& self.block(p)
         &&& self.slot_of(c)
+    }
+
+    /// The token of the live block `p` with at least `size` usable
+    /// bytes, or nothing (`p` null): what an allocation of `size` bytes
+    /// returns with its result.
+    pub open spec fn gives(self, p: *mut u8, size: int) -> bool {
+        p@.addr != 0 ==> {
+            &&& self.block(p)
+            &&& size <= self.len()
+        }
     }
 
     /// A slot's token covers the class's size.
@@ -253,8 +271,9 @@ impl Live {
         }
     }
 
-    /// The token of nothing: no slot, run or permission (what a token
-    /// moved out of an out-parameter leaves behind).
+    /// The token of nothing: no slot, run or permission (the starting value
+    /// of an out-parameter that an allocation sets, and what a token moved
+    /// out of an out-parameter leaves behind).
     pub proof fn empty() -> (tracked r: Live) {
         Live { addr: 0, class: 0, slot: None, run: None, mem: None }
     }
@@ -871,6 +890,27 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
         assert forall|i: int| #![trigger m.contains_key(i)] #![trigger m1.contains_key(i)] !(0 <= i < n) implies m.contains_key(i) == m1.contains_key(i) && (m1.contains_key(i) ==> m[i] == m1[i]) by {}
     }
 }
+
+/// Trusted (the C contract of a free, `vspec::cbuf`): the token of the
+/// block the C caller hands over through a free ([`CCall::block`]): C
+/// holds the token of every block it was given and has not freed, and a
+/// free passes one of them, or null. The call's token is used up, so a
+/// call gives at most one. It needs no well-formed regions: some token
+/// claims any pointer ([`Live::claims`]). The axiom is only as sound as
+/// the contract: a pointer freed twice, or one never allocated that
+/// happens to be a slot or huge page start, has no token in C's hands,
+/// and two tokens of one slot or overlapping runs let a proof derive
+/// `false`. The run-time checks behind the frees (the bitmap bit test,
+/// the huge table lookup, the cache flush's release) stay in the code for
+/// such programs. Its callers are the Rust entry points of the frees
+/// (`api::libc::free`, `free_sized` and `free_sized_hint`), each with the
+/// call's token it is passed.
+pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
+    requires
+        c.block() is Some,
+    ensures
+        r.claims(c.block()->0),
+;
 
 } // verus!
 

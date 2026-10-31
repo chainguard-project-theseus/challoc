@@ -756,18 +756,22 @@ pub fn shared_if_ready() -> (r: Option<&'static Shared>)
     }
 }
 
-} // verus!
-
 /// The allocator state's address, with no readiness check and no
 /// reference formed: what the fast paths hand `heap::existing_heap`, which
 /// reads one byte through it only after the thread's TLS slot has proved
-/// init complete.
+/// init complete. Trusted: a raw-pointer projection of a static, the
+/// pointer [`Shared::storage`] names, as `shared_storage_ptr`'s: the same
+/// cell of the same static (`UnsafeCell` is `repr(transparent)`), so the
+/// same address and provenance.
+#[verifier::external_body]
 #[inline(always)]
-pub fn shared_ptr() -> *const Shared {
+pub fn shared_ptr() -> (r: *const Shared)
+    ensures
+        r == Shared::storage() as *const Shared,
+    opens_invariants none
+{
     (&raw const SHARED.0).cast::<Shared>()
 }
-
-verus! {
 
 /// [`shared_ptr`] for the free paths. On aarch64 the address goes through
 /// an empty `asm!`, so LLVM keeps it in one register and every field the
