@@ -7150,3 +7150,54 @@ impl Heap {
 }
 
 } // verus!
+
+/// Kani checks of the three `assert_eq!` aborts
+/// (`verus/ledger/src/heap/mod.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_aborts {
+    use super::{assert_flushed, assert_refill_empty, assert_rekey_flushed};
+    use crate::kani_proofs::must_not_return;
+
+    /// `assert_flushed`, `requires may_abort() || *len == 0`, `ensures
+    /// *len == 0`: on any other `len` the call never returns.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn assert_flushed_returns_only_on_zero() {
+        let len: u32 = kani::any();
+        assert_flushed(&len);
+        if len != 0 {
+            must_not_return();
+        }
+    }
+
+    /// `assert_refill_empty`, the same contract: as `assert_flushed`.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn assert_refill_empty_returns_only_on_zero() {
+        let len: u32 = kani::any();
+        assert_refill_empty(&len);
+        if len != 0 {
+            must_not_return();
+        }
+    }
+
+    /// `assert_rekey_flushed`, the same contract: as `assert_flushed`.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn assert_rekey_flushed_returns_only_on_zero() {
+        let len: u32 = kani::any();
+        assert_rekey_flushed(&len);
+        if len != 0 {
+            must_not_return();
+        }
+    }
+
+    /// All three return on 0, the `requires`'s case without `may_abort`.
+    #[kani::proof]
+    fn asserts_return_on_zero() {
+        assert_flushed(&0);
+        assert_refill_empty(&0);
+        assert_rekey_flushed(&0);
+    }
+}

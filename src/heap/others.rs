@@ -1114,3 +1114,21 @@ impl Heap {
         })
     }
 }
+
+/// Kani check of the `assert_ne!` abort
+/// (`verus/ledger/src/heap/others.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_aborts {
+    use super::assert_not_home;
+
+    /// `assert_not_home`, `requires *arena != *home`: under it the call
+    /// returns, for every pair.
+    #[kani::proof]
+    fn assert_not_home_returns() {
+        let arena: u16 = kani::any();
+        let home: u16 = kani::any();
+        kani::assume(arena != home);
+        assert_not_home(&arena, &home);
+    }
+}

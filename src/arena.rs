@@ -3776,3 +3776,73 @@ impl Arenas {
         })
     }
 }
+
+/// Kani check of `axiom_array_layout` at instances no `const` assertion
+/// covers (`verus/ledger/src/arena.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_array_layout {
+    use core::mem::{align_of, size_of};
+    use core::sync::atomic::AtomicU64;
+
+    /// `axiom_array_layout::<T, N>`'s two `ensures`, the product in `u128`.
+    fn array_layout<T, const N: usize>() {
+        assert_eq!(
+            size_of::<[T; N]>() as u128,
+            N as u128 * size_of::<T>() as u128
+        );
+        assert_eq!(align_of::<[T; N]>(), align_of::<T>());
+    }
+
+    /// `axiom_array_layout` is generic, and `split_array` relies on it for
+    /// any `T` and `N`. The build's `const` assertions check it at the five
+    /// instances the proofs split (after `axiom_arena_layout`,
+    /// `axiom_arenas_layout` and `heap/shared.rs`'s `axiom_shared_layout`);
+    /// this checks it at primitive, zero-sized and padded element types
+    /// and lengths 0, 1 and 7.
+    #[kani::proof]
+    fn array_layout_samples() {
+        array_layout::<u8, 0>();
+        array_layout::<u8, 7>();
+        array_layout::<u64, 1>();
+        array_layout::<u64, 7>();
+        array_layout::<(u64, u8), 7>();
+        array_layout::<(), 7>();
+        array_layout::<[u16; 3], 7>();
+        array_layout::<AtomicU64, 7>();
+    }
+}
+
+/// Kani check of `key_less` (`verus/ledger/src/arena.rs.md`; `cfg(kani)`
+/// only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_key_less {
+    use super::key_less;
+
+    /// A `(u32, bool)` key as the integer `2 * k.0 + k.1`: the integers
+    /// compare as `key_lt` orders the keys (lexicographic, and
+    /// `false < true`).
+    fn key(k: (u32, bool)) -> u64 {
+        ((k.0 as u64) << 1) | k.1 as u64
+    }
+
+    /// `key_less`, `ensures r == key_lt(a, b)`: for every pair of keys.
+    /// The counts are symbolic and the two `bool`s run over their four
+    /// values as literals; the expected value compares the keys as
+    /// integers. Kani 0.68 emits `bool < bool` as an ordering comparison
+    /// of two CBMC `bool`s, which CBMC 6.11 cannot encode: it warns
+    /// "ignoring" and gives the comparison a fresh value, so with symbolic
+    /// `bool`s even a correct body fails. Literal `bool`s are folded
+    /// before that.
+    #[kani::proof]
+    fn key_less_is_key_lt() {
+        let a0: u32 = kani::any();
+        let b0: u32 = kani::any();
+        kani::cover!(a0 == b0);
+        kani::cover!(a0 < b0);
+        kani::cover!(a0 > b0);
+        for (x, y) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(key_less((a0, x), (b0, y)), key((a0, x)) < key((b0, y)));
+        }
+    }
+}
