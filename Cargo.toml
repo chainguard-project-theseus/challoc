@@ -54,5 +54,6 @@ verify = true
 
 [lints.rust]
 # Verus sets `verus_keep_ghost` while verifying (`verus/README.md`), and
-# Kani sets `kani` for its harnesses (`src/kani/`).
+# Kani sets `kani` for its harnesses (`src/kani/` and the `kani_*`
+# modules of other files).
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)", "cfg(kani)"] }

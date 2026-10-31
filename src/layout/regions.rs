@@ -2627,6 +2627,28 @@ mod linux {
             }
         }
     }
+
+    /// Kani harness for `word`, this module's seam that Kani can run
+    /// (`verus/ledger/src/layout/regions.rs.md`).
+    #[cfg(kani)]
+    mod kani_word {
+        use super::{NCLASSES, word};
+
+        /// `word`, `requires i < NCLASSES + 3`, no `ensures`: under it the
+        /// call returns, for every byte string and every `i < NCLASSES + 3`
+        /// (and the word is bytes `8 * i..8 * i + 8` in native order, as its
+        /// body reads them).
+        #[kani::proof]
+        fn word_returns() {
+            let rnd: [u8; 8 * (NCLASSES + 3)] = kani::any();
+            let i: usize = kani::any();
+            kani::assume(i < NCLASSES + 3);
+            let w = word(&rnd, i);
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&rnd[8 * i..8 * i + 8]);
+            assert_eq!(w, u64::from_ne_bytes(b));
+        }
+    }
 }
 
 verus! {

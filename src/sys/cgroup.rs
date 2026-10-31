@@ -3031,3 +3031,62 @@ mod linux_tests {
         drop(v);
     }
 }
+
+/// Kani harness for the `Display` of `Cgroup`, which the
+/// `DisplaySpecImpl` seam in `vspec/print.rs` describes
+/// (`verus/ledger/src/vspec/print.rs.md`).
+#[cfg(kani)]
+mod kani_fmt {
+    use super::{Cgroup, State};
+    use crate::kani_proofs::fmt::formats;
+    use core::sync::atomic::Ordering::Relaxed;
+
+    /// The longest directory checked.
+    const DIR_MAX: u16 = 3;
+
+    /// `DisplaySpecImpl for sys::cgroup::Cgroup` (`fmt_req` true): every
+    /// state, every figure, and every directory of up to `DIR_MAX` bytes
+    /// (every byte value) with every mount prefix of it (`mount_len <=
+    /// dir_len`, the type invariant that `mount()` and `path()` slice by).
+    ///
+    /// The bound covers `core::fmt::write`, which loops once per entry of
+    /// the format template: 23 for the tracked line (11 pieces, 11
+    /// arguments and the end).
+    #[kani::proof]
+    #[kani::unwind(25)]
+    fn display_cgroup() {
+        let states = [
+            State::Disabled,
+            State::NoUnifiedPath,
+            State::NoMount,
+            State::PathTooLong,
+            State::Tracked,
+        ];
+        let s: usize = kani::any();
+        kani::assume(s < states.len());
+        let mut c = Cgroup::untracked(states[s]);
+        let (dir_len, mount_len): (u16, u16) = (kani::any(), kani::any());
+        kani::assume(dir_len <= DIR_MAX && mount_len <= dir_len);
+        for k in 0..DIR_MAX as usize {
+            c.dir[k] = kani::any();
+        }
+        c.dir_len = dir_len;
+        c.mount_len = mount_len;
+        for a in [
+            &c.limit,
+            &c.high,
+            &c.current,
+            &c.events_low,
+            &c.events_high,
+            &c.events_max,
+            &c.events_oom,
+            &c.events_oom_kill,
+            &c.high_rises,
+            &c.max_rises,
+        ] {
+            a.store(kani::any(), Relaxed);
+        }
+        c.current_stale.store(kani::any(), Relaxed);
+        formats(&c);
+    }
+}

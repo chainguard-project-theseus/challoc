@@ -104,7 +104,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ## `entry_barrier`
 
-src/layout/regions.rs:2682. Kind: external_body. Category: inline asm.
+src/layout/regions.rs:2704. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.

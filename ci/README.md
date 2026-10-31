@@ -40,7 +40,7 @@ require); each file is a workflow:
   on GCE VMs through `cb launch`; member pull requests and main only.
 - `verus.yaml`: `verus` and `verus-arm64`, the seam ledger, the proofs at quantum 16 and 8, and the coverage floor; `verus-main` the same on main.
 - `codegen.yaml`: the advisory `codegen` and `codegen-arm64`, the machine-code diff from the merge base (`ci/codegen.sh`).
-- `kani.yaml`: `kani` (`q16`, `q8`), `cargo kani` over the harnesses of `src/kani/` (`verus/README.md`, "Kani") at each quantum, on x86_64; only on pull requests that change `src/kani/**`, `src/vspec/**` or `kani.yaml` itself.
+- `kani.yaml`: `kani` (`q16`, `q8`), `cargo kani` over every harness (`src/kani/` and the `kani_*` modules of other files; `verus/README.md`, "Kani") at each quantum, on x86_64; on pull requests that change `src/kani/**`, `src/vspec/**`, a file in its `changed:` list or `kani.yaml` itself; and `kani-main` (`q16`, `q8`), the same run after every landing on main, which covers the `kani_*` modules in hot files (`heap/cache.rs`, `purge.rs`).
 
 On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
 --check <check>` for any pushed commit), until Checks has a schedule:

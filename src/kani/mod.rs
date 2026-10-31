@@ -5,26 +5,32 @@
 //! for every input of its instantiated types or within the bounds its
 //! comment states. Its comment names the item, as its ledger entry does.
 //! A harness is evidence for its seam; it changes no ledger status.
-//! `.chainguard/ci/kani.yaml` runs them all, under both quanta, on pull
-//! requests that change `src/kani/`, `src/vspec/` or that file. A change
-//! to an item a harness checks (`stats.rs`'s `fig_*`, `sys/abort.rs`, the
-//! class table, the enums `eq.rs` matches) does not run the check; the
-//! next pull request that touches `src/kani/` runs it and meets any
-//! harness that change broke.
+//! `.chainguard/ci/kani.yaml` runs them all, under both quanta, in two
+//! checks. `kani` runs on pull requests that change `src/kani/`,
+//! `src/vspec/`, a file in its `changed:` list (the files with a `kani_*`
+//! module that proof lanes rarely touch) or `kani.yaml`. `kani-main` runs
+//! after every landing on main and covers the rest: the `kani_*` modules in
+//! files most proof pull requests touch (`heap/cache.rs`, `purge.rs`), and
+//! the checked items outside any listed path (`stats.rs`'s `fig_*`,
+//! `sys/abort.rs`, the class table, the enums `eq.rs` matches). The list is
+//! kept by hand: a `kani_*` module added to a rarely changed file belongs in
+//! `changed:`; one added to a hot file, one most proof pull requests
+//! touch (today `heap/cache.rs` and `purge.rs`), is left to `kani-main`, so
+//! a change that breaks it is caught after it lands, not before.
 //!
-//! Not every seam the ledger gives to Kani has a harness here. Those of
-//! private items and of the layout constants (`arena.rs`'s `A_*` and
-//! `AR_*`, `heap/shared.rs`'s `S_*`, `config.rs`'s `Config::get` and
-//! others) need a harness inside their own module; and `hint::spin_loop`,
-//! the `panic` accessors of `vspec/panic.rs`, `axiom_class_table_wf`, the
-//! `ExWrite` trait specification and the two `div_ceil`s (`core_int`) have
-//! none.
+//! The harnesses of items with private parts sit next to them, in a
+//! `kani_*` module of the item's own file (`config.rs`'s `kani_config`,
+//! for one). Not every seam the ledger gives to Kani has a harness: some
+//! private items, the layout constants (`arena.rs`'s `A_*` and `AR_*`,
+//! `heap/shared.rs`'s `S_*` and others), `hint::spin_loop`, the `panic`
+//! accessors of `vspec/panic.rs`, `axiom_class_table_wf`, the `ExWrite`
+//! trait specification and the two `div_ceil`s (`core_int`) have none.
 
 mod abort;
 mod atomic;
 mod core_int;
 mod eq;
-mod fmt;
+pub(crate) mod fmt;
 mod misc;
 mod ptr;
 mod report;
