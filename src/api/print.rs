@@ -122,7 +122,7 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
             // chunk is NUL-terminated within the buffer.
             unsafe { cb(opaque, buf.as_ptr() as *const c_char) };
         }
-        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len]),
+        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len], Tracked(u)),
         Target::File(f) => {
             // SAFETY: `f` is the caller's open stream; `len` bytes are
             // readable. `fwrite` may itself call `malloc` (glibc allocates
@@ -1973,6 +1973,7 @@ mod tests {
 
     #[test]
     fn stats_print_without_callback_uses_the_message_hook() {
+        let _serial = crate::testutil::global_state();
         use crate::api::jemalloc::set_message_hook_for_tests;
         static HOOKED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
         unsafe extern "C" fn hook(opaque: *mut c_void, s: *const c_char) {

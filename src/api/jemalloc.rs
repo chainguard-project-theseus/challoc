@@ -51,6 +51,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
 use super::libc::{class_for, old_size_or_keep, usable_size};
+use super::print::Unlocked;
 use crate::heap::mallocx::{self, Flags, Tcache};
 use crate::heap::{Live, Shared};
 use crate::layout::{CLASSES, Kind};
@@ -81,38 +82,67 @@ pub static mut je_malloc_message: MallocMessage = None;
 #[unsafe(no_mangle)]
 pub static mut malloc_conf: *const c_char = ptr::null();
 
+/// An installed `malloc_message` hook. A newtype, which the verifier can
+/// name where it rejects function pointer types: [`malloc_write`] carries
+/// it and calls it through [`call_hook`].
+#[derive(Copy, Clone)]
+pub struct Hook(unsafe extern "C" fn(*mut c_void, *const c_char));
+
 /// The installed hook, if any: `malloc_message`, else `je_malloc_message`.
 /// Read volatile: C code stores them behind the compiler's back.
-pub fn message_hook() -> MallocMessage {
+pub fn message_hook() -> Option<Hook> {
     // SAFETY: both statics are plain 8-byte slots that only ever hold null
     // or a function pointer stored by the program.
     unsafe {
         ptr::read_volatile(&raw const malloc_message)
             .or_else(|| ptr::read_volatile(&raw const je_malloc_message))
+            .map(Hook)
     }
 }
 
 /// Test stand-in for a program assigning `malloc_message`.
 #[cfg(test)]
 pub fn set_message_hook_for_tests(hook: MallocMessage) {
-    // SAFETY: tests that set the hook serialise on their own mutex.
+    // SAFETY: tests that set the hook hold `testutil::global_state()`.
     unsafe { ptr::write_volatile(&raw mut malloc_message, hook) };
+}
+
+/// `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc
+/// calls it, on the C string in `buf`, which holds a NUL. The permit `u`
+/// says that the calling thread holds no allocator lock, as for the
+/// report's other calls out (`print::emit`), so a hook that allocates
+/// cannot deadlock on one.
+#[inline(always)]
+fn call_hook(cb: Hook, buf: &[u8; 512], _u: Tracked<&Unlocked>) {
+    // SAFETY: the program installed `cb` as a
+    // `void (*)(void *, const char *)`; `buf` is NUL-terminated.
+    unsafe { (cb.0)(ptr::null_mut(), buf.as_ptr() as *const c_char) };
 }
 
 /// jemalloc's `malloc_write`: hand `s` to the `malloc_message` hook in
 /// NUL-terminated chunks (with a null `cbopaque`, as jemalloc does) or, with
-/// no hook, write it to stderr with `write(2)`.
-pub fn malloc_write(s: &[u8]) {
+/// no hook, write it to stderr with `write(2)`. Under the report's permit
+/// (`print::Unlocked`): `print::emit` is the only caller.
+pub(super) fn malloc_write(s: &[u8], u: Tracked<&Unlocked>) {
     match message_hook() {
         None => crate::sys::write_all(crate::sys::STDERR_FILENO, s),
         Some(cb) => {
             let mut buf = [0u8; 512];
-            for chunk in s.chunks(buf.len() - 1) {
+            // `for chunk in s.chunks(buf.len() - 1)`, with an index:
+            // Verus does not specify `chunks`. Each chunk is the next
+            // `buf.len() - 1` bytes, or the rest when fewer remain.
+            let mut at = 0;
+            while at < s.len() {
+                let n = if s.len() - at < buf.len() - 1 {
+                    s.len() - at
+                } else {
+                    buf.len() - 1
+                };
+                let chunk = &s[at..at + n];
                 buf[..chunk.len()].copy_from_slice(chunk);
                 buf[chunk.len()] = 0;
-                // SAFETY: the program installed `cb` as a
-                // `void (*)(void *, const char *)`; `buf` is NUL-terminated.
-                unsafe { cb(ptr::null_mut(), buf.as_ptr() as *const c_char) };
+                call_hook(cb, &buf, u);
+                at += n;
             }
         }
     }
@@ -1072,16 +1102,24 @@ mod tests {
 
     #[test]
     fn malloc_write_goes_to_the_hook_when_set() {
+        let _serial = crate::testutil::global_state();
         use std::sync::Mutex;
         static GOT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        static LENS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
         unsafe extern "C" fn hook(opaque: *mut c_void, s: *const c_char) {
             assert!(opaque.is_null());
             let s = unsafe { core::ffi::CStr::from_ptr(s) };
             GOT.lock().unwrap().extend_from_slice(s.to_bytes());
+            LENS.lock().unwrap().push(s.to_bytes().len());
         }
         set_message_hook_for_tests(Some(hook));
         let text: Vec<u8> = (0..2000u32).map(|i| b'a' + (i % 26) as u8).collect();
-        malloc_write(&text);
+        malloc_write(&text, Tracked::assume_new());
+        // jemalloc's 511-byte chunks, the remainder last.
+        assert_eq!(*LENS.lock().unwrap(), [511, 511, 511, 467]);
+        // Empty input calls the hook zero times.
+        malloc_write(b"", Tracked::assume_new());
+        assert_eq!(LENS.lock().unwrap().len(), 4);
         set_message_hook_for_tests(None);
         assert_eq!(
             *GOT.lock().unwrap(),
@@ -1090,7 +1128,7 @@ mod tests {
         );
         assert!(message_hook().is_none());
         // Without a hook it goes to stderr and must not crash.
-        malloc_write(b"challoc: malloc_write test line\n");
+        malloc_write(b"challoc: malloc_write test line\n", Tracked::assume_new());
     }
     /// Design 13.5: `get_defrag_hint` answers from the utilization data
     /// with jemalloc's rule. A private arena keeps the bin figures this
