@@ -879,8 +879,9 @@ ctests! {
     c_cgroup_policy_high => [ CTest { prog: "cgroup_policy", args: &["high"], ..BASE } ];
     /// `tests/c/cgroup_churn.c`: the churn program
     /// builds and runs under the preload at a small size in `report` mode (no
-    /// criterion: the row proves the program runs). The criteria (RSS under
-    /// 100 MiB within 2 s of freeing 400 MiB with the policy on, not with
+    /// criterion: the row proves the program runs). The criteria (held
+    /// memory, RSS less `LazyFree`, under 100 MiB within 2 s of freeing
+    /// 400 MiB and an eager purge with the policy on; RSS kept with
     /// `cgroup:false`) need a container of their own per run with swap off
     /// (`--memory=L --memory-swap=L`) and are `make test-cgroup-churn`,
     /// chained into `make test`.
