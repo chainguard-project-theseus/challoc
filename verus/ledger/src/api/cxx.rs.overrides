@@ -5,3 +5,5 @@ call_handler_caught	function pointer	Kani
 # Termination rests on the program's `new_handler`: it frees memory, is
 # removed or throws (the C++ contract).
 oom	termination	none (assumption)
+# The C caller hands over the block it frees under the entry point's contract.
+axiom_c_call	C-program contract	none (assumption)

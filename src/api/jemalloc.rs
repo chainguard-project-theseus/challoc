@@ -225,7 +225,7 @@ pub open spec fn nalloc_usable(size: usize, lg_align: u32) -> int {
 /// (`nallocx` returns 0): the size cannot be represented, or the run and
 /// its guard page do not fit the huge region at that alignment
 /// (`Huge::placeable`).
-fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
+pub(super) fn usable_for(shared: &Shared, size: usize, f: &Flags) -> (r: Option<usize>)
     requires
         f.lg_align < 64,
         shared.wf(),
@@ -1142,14 +1142,33 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
 
 #[cfg(not(test))]
 mod exports {
+    #[cfg(verus_keep_ghost)]
+    use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::{c_int, c_void};
+    use vstd::prelude::{Tracked, verus};
 
-    export_pair! {
+    // `verified_export_pair!` expands inside its own `verus!`; this outer
+    // block holds it (Verus passes the invocation through).
+    verus! {
+
+    /// The token of a C call that hands over the block at `p` to
+    /// `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
+    /// Trusted: as `libc`'s `axiom_c_call`, which this module cannot name.
+    axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+        requires
+            e is Frees,
+        ensures
+            c.fresh(e),
+    ;
+
+    verified_export_pair! {
         fn mallocx / je_mallocx(size: usize, flags: c_int) -> *mut c_void {
-            super::mallocx(size, flags, vstd::prelude::Tracked::assume_new()) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::mallocx(size, flags, Tracked(&mut errno)) as *mut c_void
         }
         fn rallocx / je_rallocx(p: *mut c_void, size: usize, flags: c_int) -> *mut c_void {
-            super::rallocx(p as *mut u8, size, flags, vstd::prelude::Tracked::assume_new(), vstd::prelude::Tracked::assume_new()) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::rallocx(p as *mut u8, size, flags, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno)) as *mut c_void
         }
         fn xallocx / je_xallocx(p: *mut c_void, size: usize, extra: usize, flags: c_int) -> usize {
             super::xallocx(p as *mut u8, size, extra, flags)
@@ -1158,10 +1177,12 @@ mod exports {
             super::sallocx(p as *mut u8, flags)
         }
         fn dallocx / je_dallocx(p: *mut c_void, flags: c_int) {
-            super::dallocx(p as *mut u8, flags, vstd::prelude::Tracked::assume_new(), vstd::prelude::Tracked::assume_new())
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::dallocx(p as *mut u8, flags, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
         }
         fn sdallocx / je_sdallocx(p: *mut c_void, size: usize, flags: c_int) {
-            super::sdallocx(p as *mut u8, size, flags, vstd::prelude::Tracked::assume_new(), vstd::prelude::Tracked::assume_new())
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::sdallocx(p as *mut u8, size, flags, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
         }
         fn nallocx / je_nallocx(size: usize, flags: c_int) -> usize {
             super::nallocx(size, flags)
@@ -1170,6 +1191,8 @@ mod exports {
             super::get_defrag_hint(p as *const u8)
         }
     }
+
+    } // verus!
 }
 
 #[cfg(test)]

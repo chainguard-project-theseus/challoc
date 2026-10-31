@@ -197,7 +197,9 @@ pub ghost enum CEntry {
     StatsPrint { opts: *const u8 },
     /// A call that hands over the block at `ptr` (`free`, `free_sized`,
     /// `free_aligned_sized`, `realloc`, `reallocarray`, their `je_` twins,
-    /// and `challoc_realloc_usable` and `challoc_free_usable`): the pointer C passed,
+    /// `challoc_realloc_usable` and `challoc_free_usable`; jemalloc's
+    /// `rallocx`, `dallocx` and `sdallocx` and their `je_` twins; the C++
+    /// `operator delete` family): the pointer C passed,
     /// whose block C hands over ([`CCall::block`],
     /// `heap::live::axiom_c_claim`). It has no buffer
     /// argument.

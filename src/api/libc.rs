@@ -2788,7 +2788,24 @@ const FREE_OFF: usize = 28;
 #[cfg(not(test))]
 mod exports {
     use super::*;
+    #[cfg(verus_keep_ghost)]
+    use crate::vspec::cbuf::CEntry;
     use core::ffi::c_void;
+
+    verus! {
+
+    /// Trusted (the C contract of a free or a realloc, `vspec::cbuf`):
+    /// the token of this call from C, which hands over the block at `p`
+    /// ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to
+    /// use up. One call is one token. The axiom is private to this module;
+    /// by convention only its `extern "C"` bodies, the Rust side of a C
+    /// call, call it, each at most once and for its own `p`.
+    axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+        requires
+            e is Frees,
+        ensures
+            c.fresh(e),
+    ;
 
     // `malloc` and `free` each sit alone in a 64-byte-aligned section (the
     // `global_asm!` below); their `je_` twins stay in `.text`.
@@ -2796,25 +2813,73 @@ mod exports {
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.malloc")]
     pub extern "C" fn malloc(size: usize) -> *mut c_void {
-        super::malloc(size, Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::malloc(size, Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn je_malloc(size: usize) -> *mut c_void {
-        super::malloc(size, Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::malloc(size, Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.free")]
     pub extern "C" fn free(p: *mut c_void) {
-        super::free(p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::free(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn je_free(p: *mut c_void) {
-        super::free(p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::free(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
+    } // verus!
+
+    // The alignment of the sections `malloc` and `free` are placed in: a
+    // cache line, with `.space` padding (zeros, never executed) ahead of
+    // the entry to put it at `MALLOC_OFF` / `FREE_OFF` mod 64. Stable Rust
+    // has no per-function alignment (`#[align]` and
+    // `-C min-function-alignment` are unstable), but a section's alignment
+    // is the largest `.p2align` in it and a function alone in its section
+    // starts right after what the section already holds, so this pins
+    // each entry whatever the code before it, and the linker places both
+    // sections together, so the pair's placement does not move with
+    // unrelated code.
+    core::arch::global_asm!(
+        ".pushsection .text.challoc.malloc,\"ax\",@progbits",
+        ".p2align 6",
+        ".space {m}",
+        ".popsection",
+        ".pushsection .text.challoc.free,\"ax\",@progbits",
+        ".p2align 6",
+        ".space {f}",
+        ".popsection",
+        m = const MALLOC_OFF,
+        f = const FREE_OFF,
+    );
+
+    // `verified_export_pair!` expands inside its own `verus!`; this outer
+    // block holds it (Verus passes the invocation through), the single
+    // exports below and the mint of their out-pointer tokens.
     verus! {
 
     /// Trusted (the C contract of an out-pointer argument,
@@ -2848,53 +2913,35 @@ mod exports {
         Tracked(o)
     }
 
-    } // verus!
-
-    // The alignment of the sections `malloc` and `free` are placed in: a
-    // cache line, with `.space` padding (zeros, never executed) ahead of
-    // the entry to put it at `MALLOC_OFF` / `FREE_OFF` mod 64. Stable Rust
-    // has no per-function alignment (`#[align]` and
-    // `-C min-function-alignment` are unstable), but a section's alignment
-    // is the largest `.p2align` in it and a function alone in its section
-    // starts right after what the section already holds, so this pins
-    // each entry whatever the code before it, and the linker places both
-    // sections together, so the pair's placement no longer moves with
-    // unrelated code.
-    core::arch::global_asm!(
-        ".pushsection .text.challoc.malloc,\"ax\",@progbits",
-        ".p2align 6",
-        ".space {m}",
-        ".popsection",
-        ".pushsection .text.challoc.free,\"ax\",@progbits",
-        ".p2align 6",
-        ".space {f}",
-        ".popsection",
-        m = const MALLOC_OFF,
-        f = const FREE_OFF,
-    );
-
-    export_pair! {
+    verified_export_pair! {
         fn calloc / je_calloc(n: usize, m: usize) -> *mut c_void {
-            super::calloc(n, m, Tracked::assume_new()) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::calloc(n, m, Tracked(&mut errno)) as *mut c_void
         }
         fn realloc / je_realloc(p: *mut c_void, size: usize) -> *mut c_void {
-            super::realloc(p as *mut u8, size, Tracked::assume_new(), Tracked::assume_new()) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::realloc(p as *mut u8, size, Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void
         }
         fn aligned_alloc / je_aligned_alloc(align: usize, size: usize) -> *mut c_void {
-            super::aligned_alloc(align, size, Tracked::assume_new()) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void
         }
         fn memalign / je_memalign(align: usize, size: usize) -> *mut c_void {
-            super::aligned_alloc(align, size, Tracked::assume_new()) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void
         }
         fn posix_memalign / je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
+            let Tracked(mut errno) = crate::vspec::errno::lend();
             let oout = memptr_out(out as *mut *mut u8);
-            super::posix_memalign(out as *mut *mut u8, align, size, oout, Tracked::assume_new())
+            super::posix_memalign(out as *mut *mut u8, align, size, oout, Tracked(&mut errno))
         }
         fn valloc / je_valloc(size: usize) -> *mut c_void {
-            super::valloc(size, Tracked::assume_new()) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::valloc(size, Tracked(&mut errno)) as *mut c_void
         }
         fn pvalloc / je_pvalloc(size: usize) -> *mut c_void {
-            super::pvalloc(size, Tracked::assume_new()) as *mut c_void
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::pvalloc(size, Tracked(&mut errno)) as *mut c_void
         }
         fn malloc_usable_size / je_malloc_usable_size(p: *mut c_void) -> usize {
             super::malloc_usable_size(p as *mut u8)
@@ -2905,42 +2952,45 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn reallocarray(p: *mut c_void, n: usize, m: usize) -> *mut c_void {
-        super::reallocarray(
-            p as *mut u8,
-            n,
-            m,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        ) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::reallocarray(p as *mut u8, n, m, Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void
     }
 
     /// C23 `free_sized`: the size is checked against the class and stands
     /// in for the slot bit test (design 6.3).
     #[unsafe(no_mangle)]
     pub extern "C" fn free_sized(p: *mut c_void, size: usize) {
-        super::free_sized(
-            p as *mut u8,
-            size,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::free_sized(p as *mut u8, size, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// C23 `free_aligned_sized`: as `free_sized`, with the alignment.
     #[unsafe(no_mangle)]
     pub extern "C" fn free_aligned_sized(p: *mut c_void, align: usize, size: usize) {
-        super::free_aligned_sized(
-            p as *mut u8,
-            align,
-            size,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::free_aligned_sized(p as *mut u8, align, size, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_trim(pad: usize) -> c_int {
-        super::malloc_trim(pad, Tracked::assume_new())
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let tracked mut left = Ghost(crate::purge::Left::none());
+        super::malloc_trim(pad, Tracked(&mut left))
     }
 
     // challoc's size-returning entry points (design 13.7): challoc's own
@@ -2948,36 +2998,48 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn challoc_malloc_usable(size: usize, usable: *mut usize) -> *mut c_void {
-        super::malloc_usable(size, usable, Tracked::assume_new(), Tracked::assume_new())
-            as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        let tracked uout = axiom_c_out(usable, true);
+        super::malloc_usable(size, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn challoc_calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut c_void {
-        super::calloc_usable(n, m, usable, Tracked::assume_new(), Tracked::assume_new())
-            as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        let tracked uout = axiom_c_out(usable, true);
+        super::calloc_usable(n, m, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn challoc_realloc_usable(
-        p: *mut c_void,
-        size: usize,
-        usable: *mut usize,
-    ) -> *mut c_void {
-        super::realloc_usable(
-            p as *mut u8,
-            size,
-            usable,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        ) as *mut c_void
+    pub extern "C" fn challoc_realloc_usable(p: *mut c_void, size: usize, usable: *mut usize) -> *mut c_void {
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        let tracked uout = axiom_c_out(usable, true);
+        super::realloc_usable(p as *mut u8, size, usable, Tracked(uout), Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn challoc_free_usable(p: *mut c_void) -> usize {
-        super::free_usable(p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::free_usable(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
+
+    } // verus!
 }
 
 #[cfg(test)]
