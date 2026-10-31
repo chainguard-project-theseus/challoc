@@ -15,6 +15,7 @@ use crate::layout::{CLASSES, NCLASSES};
 use crate::sys::pac;
 use crate::sys::tls::TlsSlot;
 use crate::vspec::addr::addr_to_ptr;
+use crate::vspec::errno::ThreadErrno;
 use crate::vspec::zero::Zeroed;
 
 use super::thread::heap_from_slot;
@@ -38,7 +39,10 @@ impl Heap {
     pub fn alloc(&mut self, shared: &Shared, class: usize, _blk: Tracked<&mut Live>) -> *mut u8 {
         match self.alloc_fast(class, shared.push_flags(), Tracked::assume_new()) {
             Some(p) => p,
-            None => self.alloc_slow(shared, class, Tracked::assume_new()).0,
+            None => {
+                self.alloc_slow(shared, class, Tracked::assume_new(), Tracked::assume_new())
+                    .0
+            }
         }
     }
 }
@@ -181,7 +185,7 @@ impl Heap {
     ) -> (*mut u8, bool) {
         match self.pop_fast(class, shared.push_flags(), Tracked::assume_new()) {
             Some(r) => r,
-            None => self.alloc_slow(shared, class, Tracked::assume_new()),
+            None => self.alloc_slow(shared, class, Tracked::assume_new(), Tracked::assume_new()),
         }
     }
 
@@ -194,9 +198,16 @@ impl Heap {
         arena: u16,
         class: usize,
         _blk: Tracked<&mut Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) -> (*mut u8, bool) {
         if arena != self.arena {
-            return self.alloc_other(shared, arena, class);
+            return self.alloc_other(
+                shared,
+                arena,
+                class,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         let cache = self.cache_ptr(class);
         // As in `alloc`. SAFETY: `cache` is this heap's own header.
@@ -216,7 +227,13 @@ impl Heap {
         }
         // Not `alloc_slow`: an explicit arena is kept even for a shared
         // class (design 13.3).
-        self.alloc_slow_in(shared, arena, class, Tracked::assume_new())
+        self.alloc_slow_in(
+            shared,
+            arena,
+            class,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 
     /// Fast path of `free`. Aborts unless `p` is an allocated slab slot or
@@ -227,9 +244,21 @@ impl Heap {
         match shared.classify_free(p, Tracked::assume_new()) {
             Ok((class, arena)) => {
                 if arena == self.arena {
-                    self.push(shared, class, p, Tracked::assume_new())
+                    self.push(
+                        shared,
+                        class,
+                        p,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    )
                 } else {
-                    self.free_other(shared, class, p)
+                    self.free_other(
+                        shared,
+                        class,
+                        p,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    )
                 }
             }
             Err(page) => self.free_huge(shared, page, Tracked::assume_new()),
@@ -388,13 +417,20 @@ impl Heap {
         shared: &Shared,
         class: usize,
         _blk: Tracked<&mut Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) -> (*mut u8, bool) {
         // The default path's one routing decision: a shared class (above
         // `tcache_max`, uncached everywhere) comes from arena 0 whatever
         // the home arena (`Config::shared_class`); explicit `MALLOCX_ARENA`
         // allocations (`alloc_in`) keep theirs.
         if shared.config.shared_class(class) {
-            return self.alloc_slow_in(shared, 0, class, Tracked::assume_new());
+            return self.alloc_slow_in(
+                shared,
+                0,
+                class,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         // A non-empty home cache means `pop_fast` declined the scheduled
         // pop (design 6.4) rather than found the cache empty: count the
@@ -419,7 +455,13 @@ impl Heap {
                 )
             };
         }
-        self.alloc_slow_in(shared, self.arena, class, Tracked::assume_new())
+        self.alloc_slow_in(
+            shared,
+            self.arena,
+            class,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 
     /// The slow allocation path for any arena.
@@ -429,6 +471,7 @@ impl Heap {
         arena: u16,
         class: usize,
         _blk: Tracked<&mut Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) -> (*mut u8, bool) {
         self.tick::<true>(shared, Tracked::assume_new(), Tracked::assume_new());
         let Some((a, w)) = shared.arena(arena, Tracked::assume_new()) else {
@@ -477,9 +520,17 @@ impl Heap {
         class: usize,
         p: *mut u8,
         _blk: Tracked<Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) {
         let arena = self.arena;
-        self.free_slow_in(shared, arena, class, p, Tracked::assume_new())
+        self.free_slow_in(
+            shared,
+            arena,
+            class,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 }
 
@@ -549,8 +600,19 @@ impl Heap {
         class: usize,
         p: *mut u8,
         _blk: Tracked<Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) {
-        if arena == FOREIGN && self.rehome && self.rehome_on_free(shared, class, p) {
+        if arena == FOREIGN
+            && self.rehome
+            && self.rehome_on_free(
+                shared,
+                class,
+                p,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+        {
             return;
         }
         if shared.zero_on_free() {
@@ -828,7 +890,10 @@ pub fn alloc(shared: &Shared, class: usize, _blk: Tracked<&mut Live>) -> *mut u8
 #[inline(always)]
 pub fn alloc_declined(shared: &Shared, class: usize, _blk: Tracked<&mut Live>) -> *mut u8 {
     match heap_for_thread(shared) {
-        Some(h) => h.alloc_slow(shared, class, Tracked::assume_new()).0,
+        Some(h) => {
+            h.alloc_slow(shared, class, Tracked::assume_new(), Tracked::assume_new())
+                .0
+        }
         None => {
             shared
                 .alloc_direct(

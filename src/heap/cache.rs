@@ -555,9 +555,22 @@ impl Heap {
 impl Heap {
     /// Push a checked slot of `class` (home arena) onto its cache.
     #[inline(always)]
-    pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8, _blk: Tracked<Live>) {
+    pub(super) fn push(
+        &mut self,
+        shared: &Shared,
+        class: usize,
+        p: *mut u8,
+        _blk: Tracked<Live>,
+        _errno: Tracked<&mut ThreadErrno>,
+    ) {
         if !self.push_fast(class, p, shared.push_flags(), Tracked::assume_new()) {
-            self.free_slow(shared, class, p, Tracked::assume_new());
+            self.free_slow(
+                shared,
+                class,
+                p,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
     }
 }

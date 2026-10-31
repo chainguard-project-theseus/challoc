@@ -11,7 +11,7 @@ file.
 
 ## `assert_not_home`
 
-src/heap/others.rs:574. Kind: external_body. Category: panic/abort.
+src/heap/others.rs:575. Kind: external_body. Category: panic/abort.
 Tool: none (assumption). Status: trusted.
 
 > [`Heap::other_caches`]'s abort on a node for the home arena, which its callers rule out (the requires).

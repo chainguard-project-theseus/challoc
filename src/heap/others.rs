@@ -21,6 +21,7 @@ use super::{node_hdr, node_placed};
 #[cfg(verus_keep_ghost)]
 use crate::arena::field_ptr;
 use crate::meta::MetaClaim;
+use crate::vspec::errno::ThreadErrno;
 #[cfg(verus_keep_ghost)]
 use vstd::layout::{align_of, size_of};
 #[cfg(verus_keep_ghost)]
@@ -596,6 +597,8 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
+        _blk: Tracked<&mut super::Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) -> (*mut u8, bool) {
         let node = self.other_caches(shared, arena, false, Tracked::assume_new());
         if !node.is_null() {
@@ -617,7 +620,13 @@ impl Heap {
                 };
             }
         }
-        self.alloc_slow_in(shared, arena, class, Tracked::assume_new())
+        self.alloc_slow_in(
+            shared,
+            arena,
+            class,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 
     /// Free of a slot whose slab belongs to another arena than the home
@@ -630,7 +639,14 @@ impl Heap {
     /// its flush routes every slot to its slab's arena.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8) {
+    pub(super) fn free_other(
+        &mut self,
+        shared: &Shared,
+        class: usize,
+        p: *mut u8,
+        _blk: Tracked<super::Live>,
+        _errno: Tracked<&mut ThreadErrno>,
+    ) {
         let node = self.other_caches(shared, FOREIGN, false, Tracked::assume_new());
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
@@ -647,7 +663,14 @@ impl Heap {
                 return;
             }
         }
-        self.free_slow_in(shared, FOREIGN, class, p, Tracked::assume_new())
+        self.free_slow_in(
+            shared,
+            FOREIGN,
+            class,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 }
 
