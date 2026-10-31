@@ -2127,7 +2127,9 @@ mod tests {
         assert_eq!(a1, 1);
         let c32 = class_with(32);
         let p0 = t.alloc(c32);
-        let (p1, _) = t.heap().alloc_in(s, a1, c32, Tracked::assume_new());
+        let (p1, _) = t
+            .heap()
+            .alloc_in(s, a1, c32, Tracked::assume_new(), Tracked::assume_new());
         assert!(!p1.is_null());
         let size = 400 * 1024;
         let (h1, _, _) = t
