@@ -10,12 +10,13 @@
 //! `src/vspec/`, a file in its `changed:` list (the files with a `kani_*`
 //! module that proof lanes rarely touch) or `kani.yaml`. `kani-main` runs
 //! after every landing on main and covers the rest: the `kani_*` modules in
-//! files most proof pull requests touch (`heap/cache.rs`, `purge.rs`), and
-//! the checked items outside any listed path (`stats.rs`'s `fig_*`,
-//! `sys/abort.rs`, the class table, the enums `eq.rs` matches). The list is
+//! files most proof pull requests touch (`heap/cache.rs`, `heap/flush.rs`,
+//! `heap/mod.rs`, `heap/others.rs`, `heap/paths.rs`, `arena.rs`, `purge.rs` and
+//! `api/mallctl.rs`), and the checked items outside any listed path
+//! (`stats.rs`'s `fig_*`, `sys/abort.rs`, the class table, the enums `eq.rs` matches). The list is
 //! kept by hand: a `kani_*` module added to a rarely changed file belongs in
 //! `changed:`; one added to a hot file, one most proof pull requests
-//! touch (today `heap/cache.rs` and `purge.rs`), is left to `kani-main`, so
+//! touch (today the eight files above), is left to `kani-main`, so
 //! a change that breaks it is caught after it lands, not before.
 //!
 //! The harnesses of items with private parts sit next to them, in a

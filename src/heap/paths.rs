@@ -1234,3 +1234,35 @@ pub(super) unsafe fn shared_of<'a>(p: *const Shared) -> (r: &'a Shared)
 }
 
 } // verus!
+
+/// Kani checks of `debug_scheduled` (`verus/ledger/src/heap/paths.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_aborts {
+    use super::debug_scheduled;
+    use crate::kani_proofs::must_not_return;
+
+    /// `debug_scheduled`, `requires may_abort()`, no `ensures`: with debug
+    /// assertions on (Kani's build, and the tests'), when `allocs as u32`
+    /// has a bit of `mask` the call never returns.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn debug_scheduled_returns_only_if_clear() {
+        let allocs: u64 = kani::any();
+        let mask: u32 = kani::any();
+        debug_scheduled(allocs, mask);
+        if (allocs as u32) & mask != 0 {
+            must_not_return();
+        }
+    }
+
+    /// The other half: it returns whenever `allocs as u32` has no bit of
+    /// `mask`.
+    #[kani::proof]
+    fn debug_scheduled_returns_if_clear() {
+        let allocs: u64 = kani::any();
+        let mask: u32 = kani::any();
+        kani::assume((allocs as u32) & mask == 0);
+        debug_scheduled(allocs, mask);
+    }
+}

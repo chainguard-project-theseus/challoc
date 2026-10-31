@@ -1937,3 +1937,22 @@ fn addr_mix(h: &Heap) -> u64 {
 }
 
 } // verus!
+
+/// Kani check of `addr_mix` (`verus/ledger/src/heap/flush.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_flush {
+    use super::Heap;
+
+    /// `addr_mix` has no `ensures`, so Verus assumes only that it
+    /// returns. The harness checks more: for a `Heap` on the stack, at
+    /// the address Kani gives it, the call returns that address rotated
+    /// left by 17 bits. The fields (zeroed here) do not enter the result.
+    #[kani::proof]
+    fn addr_mix_returns() {
+        // SAFETY: every field of `Heap` is valid all-zero.
+        let h: Heap = unsafe { core::mem::zeroed() };
+        let a = &h as *const Heap as u64;
+        assert_eq!(super::addr_mix(&h), a.rotate_left(17));
+    }
+}

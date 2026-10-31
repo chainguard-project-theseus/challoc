@@ -4637,3 +4637,22 @@ mod tests {
         );
     }
 }
+
+/// Kani check of `root` (`verus/ledger/src/api/mallctl.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_root {
+    use super::{ROOT, root};
+
+    /// `root`, `ensures r@ == root_nodes()`, with `root_nodes`
+    /// uninterpreted: every call returns the same nodes. Each call returns
+    /// `ROOT` itself, an immutable static, so two calls return the same
+    /// slice.
+    #[kani::proof]
+    fn root_returns() {
+        let r = root();
+        assert!(core::ptr::eq(r, &ROOT[..]));
+        let r2 = root();
+        assert!(core::ptr::eq(r2, r));
+    }
+}
