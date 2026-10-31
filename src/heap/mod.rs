@@ -5786,8 +5786,10 @@ impl Heap {
         shared: &Shared,
         Tracked(ord): Tracked<&mut LockOrder>,
         Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>,
+        Tracked(cell): Tracked<Option<&mut crate::sys::tls::TlsCell>>,
     )
         requires
+            ALLOC ==> cell is Some,
             crate::sys::may_abort() || (crate::sys::valid_aborts() && !ALLOC),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
@@ -5808,7 +5810,7 @@ impl Heap {
                 self.last_gc = now;
                 self.gc(shared, Tracked(ord));
             }
-            crate::purge::on_tick(shared, now, ALLOC, Tracked(ord), Tracked(errno));
+            crate::purge::on_tick(shared, now, ALLOC, Tracked(ord), Tracked(errno), Tracked(cell));
         }
     }
 }

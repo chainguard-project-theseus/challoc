@@ -3,8 +3,8 @@
 //! points inline.
 //!
 //! Re-entrant registration: the slot is per-thread ghost state, a
-//! [`TlsSlot`] token. The public readers make the token at entry
-//! ([`TlsSlot::entry`]) and run the cores [`heap_for_thread_in`] and
+//! [`TlsSlot`] token. The top-level slot users make the token at entry
+//! ([`TlsSlot::entry`], which lists them) and the readers run the cores [`heap_for_thread_in`] and
 //! [`existing_heap_in`], which state what they do to it. While
 //! [`create_heap_for_thread`] is inside `ThreadKey::set`, which may
 //! re-enter the allocator, the slot holds [`TLS_CREATING`]
@@ -18,7 +18,7 @@ use core::ptr;
 #[cfg(verus_keep_ghost)]
 use crate::lock::axiom_entry;
 use crate::sys::pac;
-use crate::sys::tls::TlsSlot;
+use crate::sys::tls::{HeapLoan, TlsCell, TlsSlot};
 use crate::vspec::addr::addr_to_ptr;
 
 use super::PUSH_PAC;
@@ -46,13 +46,13 @@ pub open spec fn reentry_benign(v: usize) -> bool {
     v == TLS_CREATING || v == TLS_EXITED
 }
 
-/// Ghost: the permission to a thread heap, linear: the thread's TLS slot
-/// token holds it while the slot holds the heap
-/// ([`TlsSlot`](crate::sys::tls::TlsSlot), [`slot_ok`]), and
-/// [`slot_heap_ref`] lends the heap out of the token, for as long as the
-/// token is lent. [`addr`](HeapPerm::addr) is the heap's address and
+/// Ghost: the permission to a thread heap, linear: the heap loan of the
+/// thread's TLS slot token holds it while the slot holds the heap
+/// ([`HeapLoan`](crate::sys::tls::HeapLoan), [`slot_ok`]), and
+/// [`slot_heap_ref`] lends the heap out of the loan, for as long as the
+/// loan is lent. [`addr`](HeapPerm::addr) is the heap's address and
 /// [`value`](HeapPerm::value) the heap, its ghost fields with it: what the
-/// heap held when the token was last lent. Abstract rather than a
+/// heap held when the loan was last lent. Abstract rather than a
 /// `vstd` `PointsTo<Heap>`: a heap's ghost fields own the permissions to
 /// its own home headers ([`super::CachePerms`]), so a `PointsTo` to the
 /// whole `Heap` would own those bytes a second time, and `ptr_mut_read`
@@ -116,42 +116,40 @@ pub open spec fn slot_heap(v: usize, tp: usize) -> usize {
     }
 }
 
-/// What a thread's slot token holds: above the sentinels, the permission
-/// to the heap the value names ([`slot_heap`]), which is not null and
+/// What a thread's slot token holds, as its cell `cell` and heap loan
+/// `loan`: above the sentinels, the loan holds the permission to the heap
+/// the cell's value names ([`slot_heap`]), which is not null and
 /// is well formed (so the allocator is published, [`crate::api::ready`]);
 /// at or below them (null, [`TLS_CREATING`], [`TLS_EXITED`]), no heap
 /// permission; and the thread pointer is as `get_tp` returns it
 /// ([`tp_ok`](crate::sys::tls::tp_ok)). [`create_heap_for_thread`]
-/// publishes a heap with its permission in the token; `TlsSlot::entry`
+/// publishes a heap with its permission in the loan; `TlsSlot::entry`
 /// assumes this of the token it makes.
-pub open spec fn slot_ok(s: TlsSlot) -> bool {
-    &&& s.value() > TLS_EXITED ==> (s.heap() matches Some(hp) && hp.addr() == slot_heap(s.value(), s.tp())
+pub open spec fn slot_ok(cell: TlsCell, loan: HeapLoan) -> bool {
+    &&& cell.value() > TLS_EXITED ==> (loan.heap() matches Some(hp) && hp.addr() == slot_heap(cell.value(), cell.tp())
         && hp.addr() != 0 && hp.value().wf())
-    &&& s.value() <= TLS_EXITED ==> s.heap() is None
-    &&& crate::sys::tls::tp_ok(s.tp())
+    &&& cell.value() <= TLS_EXITED ==> loan.heap() is None
+    &&& crate::sys::tls::tp_ok(cell.tp())
 }
 
-/// The heap whose permission the slot token holds, at `h`, as a
-/// reference, for as long as the token is lent. Trusted: Verus has no
+/// The heap whose permission the heap loan holds, at `h`, as a
+/// reference, for as long as the loan is lent. Trusted: Verus has no
 /// raw-pointer dereference, and the permission is abstract
 /// ([`HeapPerm`]). The reference is the heap the permission describes,
 /// and the permission describes what it holds when the reference ends.
 ///
 /// # Safety
-/// `h` points to the heap whose permission `tls` holds (the
+/// `h` points to the heap whose permission the loan `loan` holds (the
 /// precondition).
 #[verifier::external_body]
 #[inline(always)]
 #[allow(clippy::needless_lifetimes)]
-pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: &'a mut Heap)
+pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: &'a mut Heap)
     requires
-        old(tls).heap() matches Some(hp) && hp.addr() == h@.addr,
+        old(loan).heap() matches Some(hp) && hp.addr() == h@.addr,
     ensures
-        *r == old(tls).heap()->Some_0.value(),
-        final(tls).value() == old(tls).value(),
-        final(tls).creates() == old(tls).creates(),
-        final(tls).tp() == old(tls).tp(),
-        final(tls).heap() matches Some(hp) && hp.addr() == h@.addr && hp.value() == *final(r),
+        *r == old(loan).heap()->Some_0.value(),
+        final(loan).heap() matches Some(hp) && hp.addr() == h@.addr && hp.value() == *final(r),
     opens_invariants none
 {
     // SAFETY: guaranteed by the caller.
@@ -185,9 +183,9 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
         // The heap is about to be freed: its permission leaves the token
         // (`Heap::destroy` gives the heap's block back from the heap's own
         // ghost state, `heap::axiom_heap_block`, not from it).
-        let tracked _heap = tls.take_heap();
+        let tracked _heap = tls.loan.take();
     }
-    crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void, Tracked(tls));
+    crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void, Tracked(&mut tls.cell));
     // SAFETY: the pointer was registered by `create_heap_for_thread` for
     // this thread.
     unsafe {
@@ -204,8 +202,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// the metadata region is exhausted, or the thread-exit key cannot take
 /// the heap.
 ///
-/// The `&mut Heap` is borrowed from the thread's slot token, which holds
-/// the heap's permission ([`HeapPerm`]) and is lent for as long as the
+/// The `&mut Heap` is borrowed from the heap loan of the thread's slot
+/// token, which holds the heap's permission ([`HeapPerm`]) and is lent for as long as the
 /// reference lives; that it is the only one rests on the slot premise
 /// (`TlsSlot::entry`): only the owning thread reaches its heap through
 /// TLS, and every entry point takes the reference once and passes it
@@ -225,32 +223,34 @@ pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
         r matches Some(h) ==> h.wf(),
 {
     let tracked tls = TlsSlot::entry();
-    heap_for_thread_in(shared, Tracked(tls))
+    heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan))
 }
 
-/// [`heap_for_thread`] on the thread's slot token `tls`. At a sentinel
+/// [`heap_for_thread`] on the thread's slot cell `cell` and heap loan
+/// `loan`. At a sentinel
 /// ([`reentry_benign`]: creation in progress, or the destructor has run)
-/// `None`, with the token unchanged: the slot is not written and no heap
-/// is created. Above the sentinels the published heap, borrowed from the
-/// token, which is unchanged but for what the heap holds
-/// ([`TlsSlot::lent`](crate::sys::tls::TlsSlot::lent)).
+/// `None`, with the cell and loan unchanged: the slot is not written and
+/// no heap is created. Above the sentinels the published heap, borrowed
+/// from the loan, which is unchanged but for what the heap holds
+/// ([`HeapLoan::lent`](crate::sys::tls::HeapLoan::lent)), and the cell
+/// unchanged.
 /// On an empty slot one `Heap::create` call, and the slot stays empty
 /// unless a heap is returned.
 #[inline(always)]
-pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: Option<&'a mut Heap>)
+pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(cell): Tracked<&mut TlsCell>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        slot_ok(*old(tls)),
+        slot_ok(*old(cell), *old(loan)),
     ensures
         r matches Some(h) ==> h.wf(),
-        reentry_benign(old(tls).value()) ==> r is None && *final(tls) == *old(tls),
-        old(tls).value() > TLS_EXITED ==> r is Some && final(tls).lent(*old(tls)),
-        old(tls).value() == 0 ==> final(tls).creates() == old(tls).creates() + 1,
-        old(tls).value() == 0 && r is None ==> final(tls).value() == 0,
+        reentry_benign(old(cell).value()) ==> r is None && *final(cell) == *old(cell) && *final(loan) == *old(loan),
+        old(cell).value() > TLS_EXITED ==> r is Some && *final(cell) == *old(cell) && final(loan).lent(*old(loan)),
+        old(cell).value() == 0 ==> final(cell).creates() == old(cell).creates() + 1,
+        old(cell).value() == 0 && r is None ==> final(cell).value() == 0,
 {
-    let (t, tp) = crate::sys::tls::get_tp(Tracked(&*tls));
+    let (t, tp) = crate::sys::tls::get_tp(Tracked(&*cell));
     let t = t as usize;
     if t > TLS_EXITED {
         // Anything above the sentinels is this thread's heap pointer,
@@ -258,19 +258,19 @@ pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(tls): Tracked<&'a mut 
         // sentinels are never signed, so the compare comes first; a signed
         // pointer keeps its low 48 bits and stays above them).
         // SAFETY: `t` is this thread's slot value above the sentinels.
-        return Some(unsafe { heap_from_slot(t, tp, shared.pac(), Tracked(tls)) });
+        return Some(unsafe { heap_from_slot(t, tp, shared.pac(), Tracked(&*cell), Tracked(loan)) });
     }
-    create_heap_for_thread(shared, t, Tracked(tls))
+    create_heap_for_thread(shared, t, Tracked(cell), Tracked(loan))
 }
 
 /// The slot value for heap `h` on the calling thread: `h` signed with the
 /// thread pointer when `shared.pac()`, else `h` itself.
-fn tls_value_for(shared: &Shared, h: *mut Heap, Tracked(tls): Tracked<&TlsSlot>) -> *mut c_void
+fn tls_value_for(shared: &Shared, h: *mut Heap, Tracked(cell): Tracked<&TlsCell>) -> *mut c_void
     requires
         shared.wf(),
 {
     if shared.pac() {
-        let (_, tp) = crate::sys::tls::get_tp(Tracked(tls));
+        let (_, tp) = crate::sys::tls::get_tp(Tracked(cell));
         addr_to_ptr(pac::sign(h as usize, tp)) as *mut c_void
     } else {
         h as *mut c_void
@@ -295,18 +295,18 @@ fn tls_value_for(shared: &Shared, h: *mut Heap, Tracked(tls): Tracked<&TlsSlot>)
 /// slot and create a second heap).
 #[cold]
 #[inline(never)]
-fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: Option<&'a mut Heap>)
+fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tracked<&mut TlsCell>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        slot == old(tls).value(),
-        slot_ok(*old(tls)),
+        slot == old(cell).value(),
+        slot_ok(*old(cell), *old(loan)),
     ensures
         r matches Some(h) ==> h.wf(),
-        slot != 0 ==> r is None && *final(tls) == *old(tls),
-        slot == 0 ==> final(tls).creates() == old(tls).creates() + 1,
-        slot == 0 && r is None ==> final(tls).value() == 0,
+        slot != 0 ==> r is None && *final(cell) == *old(cell) && *final(loan) == *old(loan),
+        slot == 0 ==> final(cell).creates() == old(cell).creates() + 1,
+        slot == 0 && r is None ==> final(cell).value() == 0,
 {
     if slot != 0 {
         return None;
@@ -316,13 +316,13 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
     let tracked mut ord = axiom_entry();
     let (h, Tracked(perms), Tracked(fresh)) = Heap::create(shared, Tracked(&mut ord));
     proof {
-        tls.note_create();
+        cell.note_create();
     }
     if h.is_null() {
         return None;
     }
-    crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(tls));
-    if !shared.key.set(h, Tracked(tls)) {
+    crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut *cell));
+    if !shared.key.set(h, Tracked(&mut *cell)) {
         // Thread exit could not free the heap, so it goes now and this
         // call is served without one; the next call tries again, as
         // after a failed `Heap::create`.
@@ -334,13 +334,13 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(tls): Tra
         }
         // SAFETY: created above and never published.
         unsafe { Heap::destroy(h, shared, Tracked(&mut ord)) };
-        crate::sys::tls::set(ptr::null_mut(), Tracked(tls));
+        crate::sys::tls::set(ptr::null_mut(), Tracked(&mut *cell));
         return None;
     }
-    crate::sys::tls::set(tls_value_for(shared, h, Tracked(&*tls)), Tracked(tls));
+    crate::sys::tls::set(tls_value_for(shared, h, Tracked(&*cell)), Tracked(&mut *cell));
     let tracked (homed, stored) = fresh.tracked_unwrap();
     // SAFETY: freshly created and owned by this thread.
-    let heap = unsafe { heap_new(h, Tracked(stored), Tracked(&perms), Tracked(tls)) };
+    let heap = unsafe { heap_new(h, Tracked(stored), Tracked(&perms), Tracked(loan)) };
     proof {
         shared.lemma_wf();
         shared.lemma_wf_ready();
@@ -396,7 +396,7 @@ pub fn existing_heap(shared: *const Shared) -> (r: Option<&'static mut Heap>)
 pub fn existing_heap_in<'a>(shared: *const Shared, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: Option<&'a mut Heap>)
     requires
         crate::sys::may_abort_corrupt(),
-        slot_ok(*old(tls)),
+        slot_ok(old(tls).cell, old(tls).loan),
         shared == Shared::storage() as *const Shared,
     ensures
         r matches Some(h) ==> h.wf(),
@@ -411,7 +411,7 @@ pub fn existing_heap_in<'a>(shared: *const Shared, Tracked(tls): Tracked<&'a mut
     // `push_flags` was written before.
     let flags = unsafe { fast_flags(shared) };
     // SAFETY: `t` is this thread's slot value above the sentinels.
-    Some(unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked(tls)) })
+    Some(unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked(&tls.cell), Tracked(&mut tls.loan)) })
 }
 
 /// The calling thread's TLS slot value and thread pointer when the slot
@@ -427,15 +427,15 @@ pub fn existing_heap_in<'a>(shared: *const Shared, Tracked(tls): Tracked<&'a mut
 pub fn tls_heap_slot(Tracked(tls): Tracked<&TlsSlot>) -> (r: Option<(usize, usize)>)
     ensures
         r is None <==> tls.value() <= TLS_EXITED,
-        r matches Some((t, tp)) ==> t == tls.value() && t > TLS_EXITED && (slot_ok(*tls) ==> tp == tls.tp()),
-        r is Some && slot_ok(*tls) ==> crate::api::ready(),
+        r matches Some((t, tp)) ==> t == tls.value() && t > TLS_EXITED && (slot_ok(tls.cell, tls.loan) ==> tp == tls.tp()),
+        r is Some && slot_ok(tls.cell, tls.loan) ==> crate::api::ready(),
     opens_invariants none
 {
-    let (t, tp) = crate::sys::tls::get_tp(Tracked(tls));
+    let (t, tp) = crate::sys::tls::get_tp(Tracked(&tls.cell));
     let t = t as usize;
     proof {
-        if t > TLS_EXITED && slot_ok(*tls) {
-            tls.heap()->Some_0.value().lemma_wf_regions();
+        if t > TLS_EXITED && slot_ok(tls.cell, tls.loan) {
+            tls.loan.heap()->Some_0.value().lemma_wf_regions();
         }
     }
     if t > TLS_EXITED { Some((t, tp)) } else { None }
@@ -466,8 +466,8 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 
 /// The heap a TLS slot value names: authenticated against the thread
 /// pointer when `pac` ([`PUSH_PAC`]), the value itself otherwise
-/// ([`slot_heap`]), borrowed from the slot token `tls`, which holds its
-/// permission ([`slot_ok`]) and is lent for as long as the reference
+/// ([`slot_heap`]), borrowed from the heap loan `loan`, which holds its
+/// permission ([`slot_ok`] of it with the slot cell `cell`) and is lent for as long as the reference
 /// lives. With `pac`, a corrupt slot value faults in `pac::auth`
 /// (FEAT_FPAC), an integrity abort, so the caller holds
 /// `sys::may_abort_corrupt`, as [`existing_heap`] and
@@ -478,18 +478,18 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 /// process's `PUSH_PAC` (the preconditions).
 #[inline(always)]
 #[allow(clippy::needless_lifetimes)]
-pub unsafe fn heap_from_slot<'a>(t: usize, tp: usize, pac: bool, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: &'a mut Heap)
+pub unsafe fn heap_from_slot<'a>(t: usize, tp: usize, pac: bool, Tracked(cell): Tracked<&TlsCell>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: &'a mut Heap)
     requires
         crate::sys::may_abort_corrupt(),
         pac == super::pac_mode(),
         pac ==> crate::sys::pac::pac_available(),
-        slot_ok(*old(tls)),
-        t == old(tls).value(),
+        slot_ok(*cell, *old(loan)),
+        t == cell.value(),
         t > TLS_EXITED,
-        tp == old(tls).tp(),
+        tp == cell.tp(),
     ensures
         r.wf(),
-        final(tls).lent(*old(tls)),
+        final(loan).lent(*old(loan)),
     opens_invariants none
 {
     let h = if pac { pac::auth(t, tp) } else { t };
@@ -498,7 +498,7 @@ pub unsafe fn heap_from_slot<'a>(t: usize, tp: usize, pac: bool, Tracked(tls): T
     // the sentinels and `autda` never producing zero from it.
     unsafe {
         core::hint::assert_unchecked(h != 0);
-        slot_heap_ref(addr_to_ptr(h) as *mut Heap, Tracked(tls))
+        slot_heap_ref(addr_to_ptr(h) as *mut Heap, Tracked(loan))
     }
 }
 

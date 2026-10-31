@@ -201,7 +201,7 @@ const PINS: &[(&str, &[&str])] = &[
         &[
             "let Some((class, slab)) = shared.set_slot(p) else {",
             "let flags = shared.free_flags();",
-            "0 => unsafe { heap_from_slot(t, tp, false, Tracked(tls)) }.push_fast(",
+            "0 => unsafe { heap_from_slot(t, tp, false, Tracked(&tls.cell), Tracked(&mut tls.loan)) }.push_fast(",
             "FREE_ROUTE => {",
             "shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))",
             "(flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))",
@@ -378,7 +378,7 @@ const PINS: &[(&str, &[&str])] = &[
             "if g.creating {",
             "g.creating = true;",
             "g.exited = false;",
-            "let (stack, thread) = create(shared, stack, previous, Tracked(ord));",
+            "let (stack, thread) = create(shared, stack, previous, Tracked(ord), Tracked(cell));",
             "let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
             "g.creating = false;",
             "g.present = thread.is_some() && !g.exited;",

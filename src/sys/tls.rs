@@ -62,33 +62,28 @@ global_asm!(
 
 verus! {
 
-/// Ghost: the calling thread's slot, as per-thread ghost state. `value`
-/// is what the slot holds; `creates` counts the `Heap::create` calls made
-/// by the token's holder: a counter `heap::thread::create_heap_for_thread`
-/// bumps right after each of its `Heap::create` calls, the only caller of
-/// [`note_create`](TlsSlot::note_create); `Heap::create` itself does not
-/// take the token, so the count is a convention of that caller. The
-/// accessors below take it, so a function handed only `&TlsSlot`, or
-/// `&mut TlsSlot` with an `ensures` that keeps the value (`TlsSlot::lent`:
-/// the fast paths, which borrow its heap), neither writes the slot nor
-/// creates a thread heap through it; that it does not do so at all also
-/// needs that nothing it calls makes a token of its own (only the
-/// top-level slot users below do). `tp` is the thread pointer, the
-/// modifier a signed slot value is signed with ([`get_tp`]), and `heap`
-/// the permission to the thread's heap ([`HeapPerm`]) while the slot
-/// holds it: `heap::thread::create_heap_for_thread` puts it there when it
-/// publishes the heap, and the slot readers borrow it
-/// (`heap::thread::heap_from_slot`), so the token is the thread heap's
-/// linear permission.
+/// Ghost: the calling thread's slot, as per-thread ghost state, in two
+/// parts: the slot cell [`cell`](TlsSlot::cell) (what the slot holds, the
+/// `Heap::create` count and the thread pointer), which the accessors
+/// below take, and the heap loan [`loan`](TlsSlot::loan), the permission
+/// to the thread's heap ([`HeapPerm`]) while the slot holds it. The slot
+/// readers lend the heap out of the loan alone
+/// (`heap::thread::heap_from_slot`), so a holder that has lent the heap
+/// out still has the cell to read and park the slot through: the
+/// allocation slow path passes it down to the background thread's
+/// `create`. `heap::thread::create_heap_for_thread` puts the permission
+/// in the loan when it publishes the heap, so the loan is the thread
+/// heap's linear permission.
 ///
 /// Premise of the model (re-entrant heap registration): a token is not
 /// read after the slot has changed other than through it.
 /// [`entry`](TlsSlot::entry) makes one at each verified top-level user of
 /// the slot: `heap_for_thread`, `existing_heap`, `heap_destructor`,
-/// `api::libc::free_block` and `api::libc::free_usable_block`. The other
-/// user (the background thread's `create`) is unverified and passes a
-/// placeholder token. The two frees use their token only on their fast
-/// path; the slow path they take after a declined fast path reaches
+/// `api::libc::free_block`, `api::libc::free_usable_block`, the heap
+/// entry points `heap::paths::alloc`, `alloc_declined` and `alloc_zeroed`,
+/// `heap::mallocx::alloc`, and `mallctl`'s `background_thread` write
+/// (`api::mallctl::ctl`). The two frees use their token only on their
+/// fast path; the slow path they take after a declined fast path reaches
 /// `heap_for_thread`, which makes its own after they are done with the
 /// first.
 /// An entry nested in another (the allocator re-entered from `pthread_setspecific`
@@ -97,19 +92,46 @@ verus! {
 /// (`heap::thread`).
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct TlsSlot {
+    /// The slot cell.
+    pub tracked cell: TlsCell,
+    /// The heap loan.
+    pub tracked loan: HeapLoan,
+}
+
+/// Ghost: the slot cell of a [`TlsSlot`]. `value` is what the slot
+/// holds; `creates` counts the `Heap::create` calls made by the cell's
+/// holder: a counter `heap::thread::create_heap_for_thread` bumps right
+/// after each of its `Heap::create` calls, the only caller of
+/// [`note_create`](TlsCell::note_create); `Heap::create` itself does not
+/// take the cell, so the count is a convention of that caller. The
+/// accessors below take the cell, so a function handed only `&TlsCell`,
+/// or `&mut TlsCell` with an `ensures` that keeps it, neither writes the
+/// slot nor creates a thread heap through it; that it does not do so at
+/// all also needs that nothing it calls makes a token of its own (only
+/// the top-level slot users do). `tp` is the thread pointer, the modifier
+/// a signed slot value is signed with ([`get_tp`]).
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct TlsCell {
     ghost value: usize,
     ghost creates: vstd::prelude::nat,
     ghost tp: usize,
+}
+
+/// Ghost: the heap loan of a [`TlsSlot`]: the permission to the thread's
+/// heap the slot holds, if any, which the slot readers lend out as the
+/// `&mut Heap`.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct HeapLoan {
     tracked heap: Option<HeapPerm>,
 }
 
-impl TlsSlot {
+impl TlsCell {
     /// The slot's value.
     pub closed spec fn value(self) -> usize {
         self.value
     }
 
-    /// The `Heap::create` calls made with this token.
+    /// The `Heap::create` calls made with this cell.
     pub closed spec fn creates(self) -> nat {
         self.creates
     }
@@ -120,29 +142,94 @@ impl TlsSlot {
         self.tp
     }
 
-    /// The permission to the thread's heap the token holds, if any.
+    /// `self` is `old` with the value `v`: the same thread and
+    /// `Heap::create` count.
+    pub open spec fn set_to(self, old: TlsCell, v: usize) -> bool {
+        &&& self.value() == v
+        &&& self.creates() == old.creates()
+        &&& self.tp() == old.tp()
+    }
+
+    /// Count a `Heap::create` call (`create_heap_for_thread`, right after
+    /// the call).
+    pub(crate) proof fn note_create(tracked &mut self)
+        ensures
+            final(self).value() == old(self).value(),
+            final(self).creates() == old(self).creates() + 1,
+            final(self).tp() == old(self).tp(),
+    {
+        self.creates = self.creates + 1;
+    }
+
+    /// The cell an allocation tick holds in `c`, reborrowed for one call
+    /// (`purge::on_tick`'s start); `c` holds it again after.
+    pub proof fn lend<'a, 'b>(tracked c: &'a mut Option<&'b mut TlsCell>) -> (tracked r: &'a mut TlsCell)
+        requires
+            *old(c) is Some,
+        ensures
+            *final(c) is Some,
+    {
+        match c {
+            Some(x) => &mut **x,
+            None => vstd::pervasive::proof_from_false(),
+        }
+    }
+}
+
+impl HeapLoan {
+    /// The permission to the thread's heap the loan holds, if any.
     pub closed spec fn heap(self) -> Option<HeapPerm> {
         self.heap
     }
 
-    /// `self` is `old` with the value `v`: the same thread, `Heap::create`
-    /// count and heap permission.
-    pub open spec fn set_to(self, old: TlsSlot, v: usize) -> bool {
-        &&& self.value() == v
-        &&& self.creates() == old.creates()
-        &&& self.tp() == old.tp()
-        &&& self.heap() == old.heap()
-    }
-
-    /// `self` is `old` after its heap was lent out: the same value, thread,
-    /// `Heap::create` count and heap address, the heap holding whatever
-    /// the borrower left in it.
-    pub open spec fn lent(self, old: TlsSlot) -> bool {
-        &&& self.value() == old.value()
-        &&& self.creates() == old.creates()
-        &&& self.tp() == old.tp()
+    /// `self` is `old` after its heap was lent out: the same heap address,
+    /// the heap holding whatever the borrower left in it.
+    pub open spec fn lent(self, old: HeapLoan) -> bool {
         &&& old.heap() matches Some(o) ==> (self.heap() matches Some(n) && n.addr() == o.addr())
         &&& old.heap() is None ==> self.heap() is None
+    }
+
+    /// Put the thread heap's permission in the loan, which holds none.
+    pub(crate) proof fn put(tracked &mut self, tracked h: HeapPerm)
+        requires
+            old(self).heap() is None,
+        ensures
+            final(self).heap() == Some(h),
+    {
+        self.heap = Some(h);
+    }
+
+    /// Take the heap permission out of the loan, which then holds none:
+    /// before the slot is set to a sentinel, so that the token stays as
+    /// [`heap::thread::slot_ok`](crate::heap::slot_ok) has a token at a
+    /// sentinel (`heap_destructor`).
+    pub(crate) proof fn take(tracked &mut self) -> (tracked r: Option<HeapPerm>)
+        ensures
+            r == old(self).heap(),
+            final(self).heap() is None,
+    {
+        let tracked mut r = None;
+        vstd::modes::tracked_swap(&mut r, &mut self.heap);
+        r
+    }
+}
+
+impl TlsSlot {
+    /// The slot's value ([`TlsCell::value`]).
+    pub open spec fn value(self) -> usize {
+        self.cell.value()
+    }
+
+    /// The thread pointer ([`TlsCell::tp`]).
+    pub open spec fn tp(self) -> usize {
+        self.cell.tp()
+    }
+
+    /// `self` is `old` after its heap was lent out: the same cell, and
+    /// the loan lent ([`HeapLoan::lent`]).
+    pub open spec fn lent(self, old: TlsSlot) -> bool {
+        &&& self.cell == old.cell
+        &&& self.loan.lent(old.loan)
     }
 
     /// The calling thread's token at a top-level user of the slot, as the
@@ -159,16 +246,16 @@ impl TlsSlot {
     /// Heap`, as `existing_heap` hands out) is the only reference to it.
     /// Not checked by verified code, the premise in full: that a slot value
     /// above the sentinels names, through `tp`, the heap whose permission
-    /// `create_heap_for_thread` put in the token (it publishes
+    /// `create_heap_for_thread` put in the loan (it publishes
     /// `tls_value_for`'s value, `pac::sign` of the heap under PAC, whose
     /// authentication `pac::axiom_auth_sign` gives back for an address below
     /// the user limit, which is not shown of the metadata region here).
     /// The users that set a sentinel take the permission out first
-    /// ([`take_heap`](TlsSlot::take_heap)). Also not checked: that
+    /// ([`HeapLoan::take`]). Also not checked: that
     /// `heap_destructor` stores `TLS_EXITED` before `Heap::destroy` frees
     /// the heap, so a nested user that allocates during the destroy (a
     /// signal handler) finds a sentinel, not the heap being freed. Called
-    /// only at the five top-level users above, once each: a verified
+    /// only at the top-level users above, once each: a verified
     /// function that used two tokens would hold two copies of the heap's
     /// ghost state (the two frees are done with their token before their
     /// slow path makes the next one).
@@ -176,51 +263,9 @@ impl TlsSlot {
     /// [`heap::thread::slot_ok`]: crate::heap::slot_ok
     pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
         ensures
-            crate::heap::slot_ok(*r),
-            r.creates() == 0,
+            crate::heap::slot_ok(r.cell, r.loan),
+            r.cell.creates() == 0,
     ;
-
-    /// Count a `Heap::create` call (`create_heap_for_thread`, right after
-    /// the call).
-    pub(crate) proof fn note_create(tracked &mut self)
-        ensures
-            final(self).value() == old(self).value(),
-            final(self).creates() == old(self).creates() + 1,
-            final(self).tp() == old(self).tp(),
-            final(self).heap() == old(self).heap(),
-    {
-        self.creates = self.creates + 1;
-    }
-
-    /// Put the thread heap's permission in the token, which holds none.
-    pub(crate) proof fn put_heap(tracked &mut self, tracked h: HeapPerm)
-        requires
-            old(self).heap() is None,
-        ensures
-            final(self).value() == old(self).value(),
-            final(self).creates() == old(self).creates(),
-            final(self).tp() == old(self).tp(),
-            final(self).heap() == Some(h),
-    {
-        self.heap = Some(h);
-    }
-
-    /// Take the heap permission out of the token, which then holds none:
-    /// before the slot is set to a sentinel, so that the token stays as
-    /// [`heap::thread::slot_ok`](crate::heap::slot_ok) has a token at a
-    /// sentinel (`heap_destructor`).
-    pub(crate) proof fn take_heap(tracked &mut self) -> (tracked r: Option<HeapPerm>)
-        ensures
-            r == old(self).heap(),
-            final(self).value() == old(self).value(),
-            final(self).creates() == old(self).creates(),
-            final(self).tp() == old(self).tp(),
-            final(self).heap() is None,
-    {
-        let tracked mut r = None;
-        vstd::modes::tracked_swap(&mut r, &mut self.heap);
-        r
-    }
 }
 
 /// The thread pointer [`get_tp`] returns: any on aarch64, 0 on x86_64.
@@ -235,9 +280,9 @@ pub open spec fn tp_ok(tp: usize) -> bool {
     true
 }
 
-// The accessors are inline assembly, trusted: a read returns the token's
+// The accessors are inline assembly, trusted: a read returns the cell's
 // value (and the aarch64 `get_tp` its thread pointer), and `set` makes the
-// written value the token's and leaves its ghost fields alone (the
+// written value the cell's and leaves its other ghost fields alone (the
 // premise above); nothing else is claimed. The x86_64 `get_tp` is
 // verified: it only pairs `get` with 0.
 
@@ -245,7 +290,7 @@ pub open spec fn tp_ok(tp: usize) -> bool {
 /// this thread.
 #[inline(always)]
 #[verifier::external_body]
-pub fn get(Tracked(slot): Tracked<&TlsSlot>) -> (r: *mut c_void)
+pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
     ensures
         r as usize == slot.value(),
     opens_invariants none
@@ -281,7 +326,7 @@ pub fn get(Tracked(slot): Tracked<&TlsSlot>) -> (r: *mut c_void)
 /// on x86_64, where it is unused.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
+pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
     ensures
         r.0 as usize == slot.value(),
         tp_ok(slot.tp()) ==> r.1 == slot.tp(),
@@ -295,12 +340,12 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
 /// authentication is on (`sys::pac`, design 6.1): one asm sequence that
 /// keeps the thread pointer it loads to reach the slot, so the caller's
 /// `autda` costs no extra register move. Trusted: the slot value is the
-/// token's, and the thread pointer, `tpidr_el0`, is the calling thread's,
-/// which the token records ([`TlsSlot::tp`]).
+/// cell's, and the thread pointer, `tpidr_el0`, is the calling thread's,
+/// which the cell records ([`TlsCell::tp`]).
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[verifier::external_body]
-pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
+pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
     ensures
         r.0 as usize == slot.value(),
         r.1 == slot.tp(),
@@ -327,7 +372,7 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsSlot>) -> (r: (*mut c_void, usize))
 /// Write the calling thread's slot.
 #[inline(always)]
 #[verifier::external_body]
-pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsSlot>)
+pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
     ensures
         final(slot).set_to(*old(slot), value as usize),
 {
