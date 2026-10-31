@@ -8,14 +8,57 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `HeapPerm` | external_body type | allocator invariant | none (assumption) | trusted |
+| `HeapPer...semble` | axiom | allocator invariant | none (assumption) | trusted |
+| `slot_heap_ref` | external_body | raw pointer (internal) | none (assumption) | trusted |
 
 ## `HeapPerm`
 
-src/heap/thread.rs:63. Kind: external_body type. Category: allocator invariant.
+src/heap/thread.rs:68. Kind: external_body type. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Ghost: the permission to a thread heap, linear: the thread's TLS slot token ([`TlsSlot`]) holds it while the slot holds the heap, and [`slot_heap_ref`] lends the heap out of the token, for as long as the token is lent.
+> Ghost: the permission to a thread heap, linear: the thread's TLS slot token holds it while the slot holds the heap ([`TlsSlot`](crate::sys::tls::TlsSlot), [`slot_ok`]), and [`slot_heap_ref`] lends the heap out of the token, for as long as the token is lent.
 
 ```rust
 pub tracked struct HeapPerm
+```
+
+## `HeapPerm::assemble`
+
+src/heap/thread.rs:95. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the field writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, verified, and the trusted `mark_bound` and `mark_rehome`), used up here, and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)), which the caller installs as the heap's ghost state.
+
+```rust
+pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
+    requires
+        super::heap_head(s.heap(), s.head()),
+        perms.fresh(s.heap()),
+    ensures
+        r.addr() == s.heap()@.addr,
+        r.value().others@.addr == 0,
+        r.value().arena as int == s.arena(),
+        r.value().bound == s.bound(),
+        r.value().shared == s.shared(),
+;
+```
+
+## `slot_heap_ref`
+
+src/heap/thread.rs:146. Kind: external_body. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The heap whose permission the slot token holds, at `h`, as a reference, for as long as the token is lent.
+
+```rust
+pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: &'a mut Heap)
+    requires
+        old(tls).heap() matches Some(hp) && hp.addr() == h@.addr,
+    ensures
+        *r == old(tls).heap()->Some_0.value(),
+        final(tls).value() == old(tls).value(),
+        final(tls).creates() == old(tls).creates(),
+        final(tls).tp() == old(tls).tp(),
+        final(tls).heap() matches Some(hp) && hp.addr() == h@.addr && hp.value() == *final(r),
+    opens_invariants none
 ```

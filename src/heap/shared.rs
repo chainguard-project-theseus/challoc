@@ -49,6 +49,8 @@ use vstd::prelude::{Ghost, int};
 use super::heap_destructor;
 use super::live::Live;
 use super::tcaches::Tcaches;
+#[cfg(verus_keep_ghost)]
+use super::thread::reentry_benign;
 use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 use crate::arena::Published;
 use crate::sys::tls::TlsSlot;
@@ -956,13 +958,25 @@ impl ThreadKey {
     pub fn key(&self) -> Option<libc::pthread_key_t> {
         if self.valid { Some(self.key) } else { None }
     }
+}
 
+verus! {
+
+impl ThreadKey {
     /// Register `heap` for destruction when the calling thread exits.
     /// `false` if `pthread_setspecific` fails, which for a live key
     /// happens only past glibc's first 32 keys, when it cannot allocate
     /// the second-level block; `true` without registering when the key
-    /// does not exist.
-    pub fn set(&self, heap: *mut Heap, _tls: Tracked<&mut TlsSlot>) -> bool {
+    /// does not exist. `pthread_setspecific` may re-enter the allocator
+    /// on this thread, so the slot (`tls`) must hold a sentinel
+    /// ([`reentry_benign`]); the call leaves it as it was.
+    pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: bool)
+        requires
+            crate::sys::may_syscall(),
+            reentry_benign(old(tls).value()),
+        ensures
+            *final(tls) == *old(tls),
+    {
         if !self.valid {
             return true;
         }
@@ -975,24 +989,41 @@ impl ThreadKey {
         }
         // SAFETY: the key was created by `create`; glibc stores the
         // pointer without dereferencing it.
-        unsafe { pthread_setspecific(self.key, heap as *const c_void, Tracked::assume_new()) == 0 }
+        unsafe { pthread_setspecific(self.key, heap as *const c_void, Tracked(tls)) == 0 }
     }
 }
 
-/// `pthread_setspecific(3)` for the slot token's holder: it may re-enter
-/// the allocator on this thread.
+/// `pthread_setspecific(3)`: stores `value` for the calling thread under
+/// `key` without dereferencing it; 0 on success, an error number
+/// otherwise (nothing is claimed about it). It may allocate (glibc
+/// `calloc`s a second-level block of 32 keys the first time a thread
+/// sets a non-null value for a key in it), re-entering the allocator on
+/// this thread, so it may reach the kernel (`may_syscall`).
+/// Each nested entry stands for a `heap::thread` core
+/// holding `tls`, lent to it ([`TlsSlot`]): at a [`reentry_benign`]
+/// value the cores return `None` and leave the token as they found it
+/// ([`heap_for_thread_in`](super::thread::heap_for_thread_in),
+/// [`existing_heap_in`](super::thread::existing_heap_in)), and the
+/// background thread's `create` writes nothing, so the call leaves `tls`
+/// unchanged. Trusted: an FFI call, and the premise that every nested
+/// entry reaches the slot through those.
 ///
 /// # Safety
 /// `key` was created by `pthread_key_create`.
+#[verifier::external_body]
 #[inline(always)]
-unsafe fn pthread_setspecific(
-    key: libc::pthread_key_t,
-    value: *const c_void,
-    _tls: Tracked<&mut TlsSlot>,
-) -> i32 {
+unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: i32)
+    requires
+        crate::sys::may_syscall(),
+        reentry_benign(old(tls).value()),
+    ensures
+        *final(tls) == *old(tls),
+{
     // SAFETY: guaranteed by the caller.
     unsafe { libc::pthread_setspecific(key, value) }
 }
+
+} // verus!
 
 verus! {
 
@@ -3400,6 +3431,19 @@ impl Shared {
     /// The flag byte [`Shared::push_flags`] returns.
     pub closed spec fn flags(&self) -> u8 {
         self.push_flags
+    }
+
+    /// [`Shared::flags`]' [`PUSH_PAC`] bit in a well-formed `Shared`:
+    /// [`pac_mode`](super::pac_mode), which is on only where pointer
+    /// authentication is available.
+    pub proof fn lemma_flags_pac(&self)
+        requires
+            self.wf(),
+        ensures
+            (self.flags() & PUSH_PAC != 0) == super::pac_mode(),
+            (self.flags() & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
+    {
+        self.lemma_wf_slow();
     }
 
     /// The bits of [`Shared::free_flags`]' byte other than [`FREE_ROUTE`],

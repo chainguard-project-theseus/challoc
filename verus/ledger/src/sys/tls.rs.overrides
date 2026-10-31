@@ -1,0 +1,3 @@
+# The slot premise: each top-level user of the slot gets a token as the
+# slot's last user left it.
+TlsSlot::entry	allocator invariant	none (assumption)
