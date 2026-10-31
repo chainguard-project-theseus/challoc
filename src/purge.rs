@@ -213,8 +213,9 @@ pub fn set_check_zero(on: bool) {
 /// lock, so the release fast paths never see it.
 ///
 /// Its `true` grants those reads the capability to read user memory
-/// (`vspec::user::may_read_user`): the opt-in debug reads are the only
-/// verified code that reads a user block.
+/// (`vspec::user::may_read_user`). The only other verified code that reads
+/// a user block is `vspec::user::copy_user`, realloc's copy of a moved
+/// block.
 #[inline]
 pub fn check_zero() -> (r: bool)
     ensures

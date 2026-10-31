@@ -9,10 +9,11 @@ file.
 |---|---|---|---|---|
 | `axiom_z..._bytes` | external_body proof | allocator invariant | none (assumption) | trusted |
 | `axiom_cast` | external_body proof | platform/kernel fact | none (assumption) | trusted |
+| `copy_raw` | external_body | raw pointer (internal) | none (assumption) | trusted |
 
 ## `axiom_zeroed_bytes`
 
-src/vspec/user.rs:158. Kind: external_body proof. Category: allocator invariant.
+src/vspec/user.rs:164. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The bytes a [`Zeroed`] token covers read as zero, so a permission's byte state for them is zero.
@@ -28,7 +29,7 @@ proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
 
 ## `axiom_cast`
 
-src/vspec/user.rs:183. Kind: external_body proof. Category: platform/kernel fact.
+src/vspec/user.rs:189. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The permission to bytes of challoc's memory, of any provenance, as the permission to them through an integer-to-pointer cast ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr), of [`cast_provenance`](crate::vspec::addr::cast_provenance)), the bytes and their values unchanged.
@@ -40,4 +41,25 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
         final(m).wf() == old(m).wf(),
         final(m).bytes() == old(m).bytes(),
         final(m).provenance() == crate::vspec::addr::cast_provenance(),
+```
+
+## `copy_raw`
+
+src/vspec/user.rs:242. Kind: external_body. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> `copy_nonoverlapping(src, dst, n)` for `u8` with the permissions to both ranges, and its effect on `d`'s byte state: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.
+
+```rust
+unsafe fn copy_raw(src: *const u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&UserMem>, Tracked(d): Tracked<&mut UserMem>)
+    requires
+        crate::vspec::ptr::valid_reads(src, n as int),
+        old(d).raw.contains_range(dst@.addr as int, n as int),
+        old(d).raw.provenance() == dst@.provenance,
+        n == 0 || src@.addr + n <= dst@.addr || dst@.addr + n <= src@.addr,
+        forall|i: int| src@.addr <= i < src@.addr + n ==> #[trigger] s.dom().contains(i),
+        s.dom().disjoint(old(d).dom()),
+    ensures
+        final(d).frame(*old(d), dst@.addr as int, n as int),
+        final(d).reads_as(dst@.addr as int, *s, src@.addr as int, n as int),
 ```
