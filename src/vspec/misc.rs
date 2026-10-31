@@ -61,6 +61,10 @@ pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic:
     no_unwind
 ;
 
+/// `str::as_ptr`: the address of the first byte; nothing is claimed
+/// about it.
+pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
+
 /// `core::hint::assert_unchecked`: undefined behaviour unless `cond`
 /// holds (`core`'s safety contract), which this makes a precondition; it
 /// has no effect Verus models. Its one verified caller is

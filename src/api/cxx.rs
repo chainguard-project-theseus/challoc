@@ -45,7 +45,9 @@ use super::libc;
 use crate::heap::Live;
 use crate::vspec::cbuf::CCall;
 use crate::vspec::errno::ThreadErrno;
-use vstd::prelude::Tracked;
+#[cfg(verus_keep_ghost)]
+use vstd::prelude::*;
+use vstd::prelude::{Tracked, verus};
 
 /// `std::new_handler`: `void (*)()`, null when none is installed.
 type NewHandler = Option<unsafe extern "C" fn()>;
@@ -82,9 +84,20 @@ fn get_new_handler_addr() -> *const c_void {
     out
 }
 
+verus! {
+
+/// `t` is what [`throw_bad_alloc_addr`] read: the address of libstdc++'s
+/// `std::__throw_bad_alloc()`, or null.
+uninterp spec fn is_throw_bad_alloc(t: *const c_void) -> bool;
+
 /// Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
+/// Trusted: inline assembly.
+#[verifier::external_body]
 #[inline(never)]
-fn throw_bad_alloc_addr() -> *const c_void {
+fn throw_bad_alloc_addr() -> (r: *const c_void)
+    ensures
+        is_throw_bad_alloc(r),
+{
     let out: *const c_void;
     // SAFETY: as in `get_new_handler_addr`.
     unsafe {
@@ -107,6 +120,8 @@ fn throw_bad_alloc_addr() -> *const c_void {
     out
 }
 
+} // verus!
+
 /// The installed `new_handler`, if libstdc++ is present and one is set.
 fn new_handler() -> NewHandler {
     let get = get_new_handler_addr();
@@ -119,12 +134,23 @@ fn new_handler() -> NewHandler {
     unsafe { get() }
 }
 
-/// Call `std::__throw_bad_alloc` at `t`, its non-null address.
+verus! {
+
+/// Call `std::__throw_bad_alloc` at `t`, its non-null address
+/// ([`is_throw_bad_alloc`]).
+/// Trusted: calls a function pointer (Verus has no function pointer
+/// types).
+#[verifier::external_body]
 #[inline(always)]
-fn call_throw_bad_alloc(t: *const c_void) -> ! {
-    // SAFETY: the only caller, `throw_bad_alloc`, passes the non-null result
-    // of `throw_bad_alloc_addr()`, the address of `std::__throw_bad_alloc`,
-    // which takes no arguments and never returns.
+fn call_throw_bad_alloc(t: *const c_void) -> !
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        is_throw_bad_alloc(t),
+        t@.addr != 0,
+{
+    // SAFETY: `is_throw_bad_alloc(t)` makes `t` the address of
+    // `std::__throw_bad_alloc`, which takes no arguments and never returns.
     let t: unsafe extern "C" fn() -> ! = unsafe { core::mem::transmute(t) };
     unsafe { t() }
 }
@@ -132,7 +158,11 @@ fn call_throw_bad_alloc(t: *const c_void) -> ! {
 /// Throw `std::bad_alloc` from libstdc++, or abort when it is not loaded.
 #[cold]
 #[inline(never)]
-fn throw_bad_alloc() -> ! {
+fn throw_bad_alloc() -> !
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
     let t = throw_bad_alloc_addr();
     if t.is_null() {
         crate::sys::abort_fmt(format_args!(
@@ -141,6 +171,8 @@ fn throw_bad_alloc() -> ! {
     }
     call_throw_bad_alloc(t)
 }
+
+} // verus!
 
 /// The `operator new` failure protocol: call the `new_handler` and retry
 /// until an attempt succeeds or no handler is installed, then throw
