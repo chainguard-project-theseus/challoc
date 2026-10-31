@@ -119,6 +119,16 @@ fn new_handler() -> NewHandler {
     unsafe { get() }
 }
 
+/// Call `std::__throw_bad_alloc` at `t`, its non-null address.
+#[inline(always)]
+fn call_throw_bad_alloc(t: *const c_void) -> ! {
+    // SAFETY: the only caller, `throw_bad_alloc`, passes the non-null result
+    // of `throw_bad_alloc_addr()`, the address of `std::__throw_bad_alloc`,
+    // which takes no arguments and never returns.
+    let t: unsafe extern "C" fn() -> ! = unsafe { core::mem::transmute(t) };
+    unsafe { t() }
+}
+
 /// Throw `std::bad_alloc` from libstdc++, or abort when it is not loaded.
 #[cold]
 #[inline(never)]
@@ -129,9 +139,7 @@ fn throw_bad_alloc() -> ! {
             "operator new failed and std::__throw_bad_alloc is not available"
         ));
     }
-    // SAFETY: `std::__throw_bad_alloc` takes no arguments and never returns.
-    let t: unsafe extern "C" fn() -> ! = unsafe { core::mem::transmute(t) };
-    unsafe { t() }
+    call_throw_bad_alloc(t)
 }
 
 /// The `operator new` failure protocol: call the `new_handler` and retry
