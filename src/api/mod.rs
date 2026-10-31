@@ -775,15 +775,23 @@ pub fn shared_ptr() -> *const Shared {
 /// offset`: LLVM folds the offset into the relocation, so the page
 /// addresses of two fields never CSE, and `free` paid five of them.
 /// x86_64 addresses statics `rip`-relative at no cost, so there the
-/// address stays a constant. Like [`shared_ptr`], no reference is formed.
+/// address stays a constant: `shared_storage_ptr`'s. Only the static's
+/// cell is borrowed (`UnsafeCell::get`): no reference to the allocator
+/// state is formed, as in [`shared_ptr`].
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
-// The empty `asm!` on aarch64 is an optimization barrier on the pointer; it
-// reads no memory, so `nomem` is right.
+pub fn shared_base() -> *const Shared {
+    shared_storage_ptr() as *const Shared
+}
+
+/// [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+// The empty `asm!` is an optimization barrier on the pointer; it reads no
+// memory, so `nomem` is right.
 #[allow(clippy::pointers_in_nomem_asm_block)]
 pub fn shared_base() -> *const Shared {
-    #[allow(unused_mut)]
     let mut p = shared_ptr();
-    #[cfg(target_arch = "aarch64")]
     // SAFETY: an empty template; the pointer is unchanged.
     unsafe {
         core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags));
