@@ -394,8 +394,8 @@ pub fn calloc_zeroed(
     }
     if !zeroed {
         // SAFETY: a fresh block with at least `size` usable bytes.
-        unsafe { ptr::write_bytes(p, 0, size) };
-        return (p, Tracked::assume_new());
+        let z = unsafe { crate::vspec::user::zero_user(p, size, Tracked::assume_new()) };
+        return (p, z);
     }
     (p, z)
 }
@@ -420,7 +420,7 @@ pub fn free_block(p: *mut u8, _blk: Tracked<Live>) {
     if let Some((t, tp)) = heap::tls_heap_slot(Tracked::assume_new()) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
-        let shared = unsafe { &*super::shared_base() };
+        let shared = unsafe { super::shared_deref(super::shared_base()) };
         // SAFETY: the slot value of this thread.
         if unsafe {
             heap::free_fast_slot(
@@ -472,7 +472,7 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, _blk: Trac
     let sp = super::shared_base();
     if let Some(h) = heap::existing_heap(sp) {
         // SAFETY: as in `free`.
-        let shared = unsafe { &*sp };
+        let shared = unsafe { super::shared_deref(sp) };
         if heap::free_sized_fast(
             shared,
             h,
@@ -766,9 +766,8 @@ pub(super) unsafe fn copy_moved(
 ) {
     // SAFETY: the caller's contract: `p` has `n` readable bytes, `q` at
     // least `n` writable ones, and they are distinct allocations. The
-    // tokens are not yet the ones that show it (the callers pass
-    // `Tracked::assume_new()` until the proofs).
-    unsafe { ptr::copy_nonoverlapping(p, q, n) };
+    // permissions are assumed (`Tracked::assume_new()`).
+    unsafe { crate::vspec::user::copy_user(p, q, n, Tracked::assume_new(), Tracked::assume_new()) };
 }
 
 /// [`realloc`] with the tokens: `blk` is the caller's for `p`, and `out`
@@ -1064,8 +1063,7 @@ pub fn calloc_usable_zeroed(
     }
     let z = if !zeroed {
         // SAFETY: a fresh block with `u` usable bytes.
-        unsafe { ptr::write_bytes(p, 0, u) };
-        Tracked::assume_new()
+        unsafe { crate::vspec::user::zero_user(p, u, Tracked::assume_new()) }
     } else {
         z
     };
@@ -1214,7 +1212,7 @@ pub fn free_usable_block(p: *mut u8, _blk: Tracked<Live>) -> usize {
     }
     if let Some((t, tp)) = heap::tls_heap_slot(Tracked::assume_new()) {
         // SAFETY: as in `free`.
-        let shared = unsafe { &*super::shared_base() };
+        let shared = unsafe { super::shared_deref(super::shared_base()) };
         // SAFETY: as in `free`.
         if let Some(class) = unsafe {
             heap::free_fast_slot(
