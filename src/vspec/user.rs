@@ -10,7 +10,8 @@
 //!
 //! Reading a user block's bytes takes a capability too,
 //! [`may_read_user`], which `purge::check_zero` grants to the opt-in debug
-//! reads.
+//! reads. [`copy_user`], realloc's copy of a moved block, reads one too,
+//! so it requires the capability.
 
 use crate::vspec::zero::Zeroed;
 use vstd::prelude::*;
@@ -22,11 +23,11 @@ verus! {
 
 /// The caller may read the bytes of a user block. The read primitive
 /// over a [`UserMem`] ([`UserMem::lemma_valid_reads`], and through it
-/// the class `read_word` and `Huge::read_run_word`) requires it, and a
-/// `UserMem` is the only permission verified code can hold to a block's
-/// bytes. So a verified function can read a user block only if its own
-/// `requires` (or its loop's invariant) carries the fact, or it calls
-/// [`grant_user_reads`], directly or through a `true` from
+/// the class `read_word`, `Huge::read_run_word` and [`copy_user`])
+/// requires it, and a `UserMem` is the only permission verified code can
+/// hold to a block's bytes. So a verified function can read a user block
+/// only if its own `requires` (or its loop's invariant) carries the fact,
+/// or it calls [`grant_user_reads`], directly or through a `true` from
 /// `purge::check_zero()`.
 ///
 /// Opaque, with no meaning: a capability, not a claim about the world. It
@@ -90,6 +91,11 @@ impl UserMem {
         forall|i: int| a <= i < a + n ==> #[trigger] self.bytes()[i] == 0
     }
 
+    /// The `n` bytes from `a` read as the `n` bytes of `src` from `b`.
+    pub open spec fn reads_as(self, a: int, src: UserMem, b: int, n: int) -> bool {
+        forall|x: int| a <= x < a + n ==> #[trigger] self.bytes()[x] == src.bytes()[b + (x - a)]
+    }
+
     /// `self` is `old` with at most the `n` bytes from `a` changed: the
     /// same bytes, provenance and well-formedness, the other bytes' values
     /// kept.
@@ -102,8 +108,8 @@ impl UserMem {
 
     /// The `len` bytes from `p` (of its provenance) are in the raw
     /// permission, what [`zero_raw`](crate::vspec::zero::zero_raw) takes
-    /// `&mut` to fill them. Private: its caller is this module's
-    /// [`zero_user`].
+    /// `&mut` to fill them, or [`copy_raw`] to copy into them. Private: its
+    /// callers are this module's [`zero_user`] and [`copy_user`].
     proof fn lemma_raw_range(tracked &self, p: *mut u8, len: int)
         requires
             0 <= len,
@@ -217,4 +223,174 @@ pub unsafe fn zero_user(p: *mut u8, n: usize, Tracked(m): Tracked<&mut UserMem>)
     z
 }
 
+/// `copy_nonoverlapping(src, dst, n)` for `u8` with the permissions to
+/// both ranges, and its effect on `d`'s byte state: `d` reads the `n`
+/// bytes from `dst` as `s` reads the `n` bytes from `src`, and its other
+/// bytes, its domain, its provenance and its well-formedness are kept.
+/// The copy writes `dst`'s bytes through `d`, taken `&mut` so that no
+/// other view of them is held across it (as for
+/// [`zero_raw`](crate::vspec::zero::zero_raw)). Trusted: the `core`
+/// contract of `copy_nonoverlapping` (`src` valid for reads of `n` bytes,
+/// `dst` valid for writes of them, which `d`'s raw permission stands for,
+/// as for `vspec::ptr::axiom_raw_valid`, and the two ranges apart), and
+/// its effect, which nothing in vstd states. The apartness premise
+/// follows from the others and is kept as `core` states it. `s` and `d`
+/// share no byte, so the copy leaves `s`'s bytes as they were. Private:
+/// its caller is [`copy_user`].
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn copy_raw(src: *const u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&UserMem>, Tracked(d): Tracked<&mut UserMem>)
+    requires
+        crate::vspec::ptr::valid_reads(src, n as int),
+        old(d).raw.contains_range(dst@.addr as int, n as int),
+        old(d).raw.provenance() == dst@.provenance,
+        n == 0 || src@.addr + n <= dst@.addr || dst@.addr + n <= src@.addr,
+        forall|i: int| src@.addr <= i < src@.addr + n ==> #[trigger] s.dom().contains(i),
+        s.dom().disjoint(old(d).dom()),
+    ensures
+        final(d).frame(*old(d), dst@.addr as int, n as int),
+        final(d).reads_as(dst@.addr as int, *s, src@.addr as int, n as int),
+{
+    // SAFETY: the caller's contract: `src` readable and `dst` writable
+    // for `n` bytes, the two apart.
+    unsafe { core::ptr::copy_nonoverlapping(src, dst, n) };
+}
+
+/// `copy_nonoverlapping(src, dst, n)` with the permissions to both ranges:
+/// `s` to the `n` bytes at `src`, `d` to the `n` bytes at `dst`, which
+/// share no byte with them. Afterwards `d`'s byte state reads the `n`
+/// bytes at `dst` as `s`'s at `src` (through [`copy_raw`], with `d` taken
+/// `&mut`). It reads user memory, so it needs [`may_read_user`].
+#[inline(always)]
+pub unsafe fn copy_user(src: *mut u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&UserMem>, Tracked(d): Tracked<&mut UserMem>)
+    requires
+        may_read_user(),
+        s.provenance() == src@.provenance,
+        old(d).provenance() == dst@.provenance,
+        forall|i: int| src@.addr <= i < src@.addr + n ==> #[trigger] s.dom().contains(i),
+        forall|i: int| dst@.addr <= i < dst@.addr + n ==> #[trigger] old(d).dom().contains(i),
+        s.dom().disjoint(old(d).dom()),
+    ensures
+        final(d).frame(*old(d), dst@.addr as int, n as int),
+        final(d).reads_as(dst@.addr as int, *s, src@.addr as int, n as int),
+{
+    proof {
+        s.lemma_valid_reads(src, n as int);
+        d.lemma_raw_range(dst, n as int);
+        if n > 0 && !(src@.addr + n <= dst@.addr || dst@.addr + n <= src@.addr) {
+            // The later of the two first bytes lies in both ranges, so in
+            // both permissions, which share no byte.
+            let x = if src@.addr <= dst@.addr { dst@.addr as int } else { src@.addr as int };
+            assert(s.dom().contains(x) && d.dom().contains(x));
+        }
+    }
+    // SAFETY: the permissions make `src` readable and `dst` writable for
+    // `n` bytes, and two permissions share no byte.
+    unsafe { copy_raw(src as *const u8, dst, n, Tracked(s), Tracked(d)) };
+}
+
 } // verus!
+
+/// Kani check of `copy_raw` (`verus/ledger/src/vspec/user.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_copy {
+    use super::copy_raw;
+    use vstd::prelude::Tracked;
+
+    /// `copy_raw` between two 8-byte buffers (`requires`: here, the `n`
+    /// bytes from offset `i` of one and the `n` bytes from offset `j` of
+    /// the other, every `n` that fits and, for each, any `i` and `j` that
+    /// fit, any contents; the permissions are ghost, so the harness
+    /// passes the erased ones): it returns, and afterwards each of the `n`
+    /// bytes from `j` reads as the source byte at the same distance from
+    /// `i` (`reads_as`), every other destination byte as before (`frame`'s
+    /// byte clause; its `dom`, `provenance` and `wf` clauses are ghost),
+    /// and the source buffer is unchanged. The offsets are symbolic; the
+    /// lengths are constants (a loop over every value), as in
+    /// `kani_proofs::ptr`. With `n == 0` it also returns on any two
+    /// pointers, null or dangling, equal or not.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn copy_raw_copies() {
+        for n in 0..=8 {
+            let i: usize = kani::any();
+            let j: usize = kani::any();
+            kani::assume(i <= 8 - n && j <= 8 - n);
+            let mut src: [u8; 8] = kani::any();
+            let s0 = src;
+            let mut dst: [u8; 8] = kani::any();
+            let old = dst;
+            // SAFETY: the contract's precondition: both ranges lie in their
+            // buffers, and two buffers never overlap.
+            unsafe {
+                copy_raw(
+                    src.as_mut_ptr().add(i) as *const u8,
+                    dst.as_mut_ptr().add(j),
+                    n,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+            };
+            for k in 0..8 {
+                let want = if k >= j && k < j + n {
+                    s0[i + k - j]
+                } else {
+                    old[k]
+                };
+                assert_eq!(dst[k], want);
+                assert_eq!(src[k], s0[k]);
+            }
+        }
+        let s = core::ptr::without_provenance::<u8>(kani::any());
+        let d = if kani::any() {
+            s as *mut u8
+        } else {
+            core::ptr::without_provenance_mut::<u8>(kani::any())
+        };
+        // SAFETY: an empty copy.
+        unsafe { copy_raw(s, d, 0, Tracked::assume_new(), Tracked::assume_new()) };
+    }
+
+    /// `copy_raw` within one 8-byte buffer, which its `requires` allows
+    /// for two permissions to disjoint bytes of one allocation: from
+    /// every offset `i` to every offset `j`, every `n` with both ranges in
+    /// the buffer and apart, any contents. Afterwards each of the `n`
+    /// bytes from `j` reads as the byte at the same distance from `i`
+    /// before the copy (`reads_as`), and every other byte, the source
+    /// range's included, as before (`frame`'s byte clause).
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn copy_raw_copies_within() {
+        for i in 0..=8 {
+            for j in 0..=8 {
+                for n in 0..=8 - if i > j { i } else { j } {
+                    if i + n <= j || j + n <= i {
+                        let mut a: [u8; 8] = kani::any();
+                        let before = a;
+                        let base = a.as_mut_ptr();
+                        // SAFETY: the contract's precondition: both ranges
+                        // lie in `a`, and they are apart.
+                        unsafe {
+                            copy_raw(
+                                base.add(i) as *const u8,
+                                base.add(j),
+                                n,
+                                Tracked::assume_new(),
+                                Tracked::assume_new(),
+                            )
+                        };
+                        for k in 0..8 {
+                            let want = if k >= j && k < j + n {
+                                before[i + k - j]
+                            } else {
+                                before[k]
+                            };
+                            assert_eq!(a[k], want);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

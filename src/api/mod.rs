@@ -817,7 +817,7 @@ pub fn shared_base() -> (r: *const Shared)
 }
 
 /// The allocator state at `p` (outside the tests, a [`shared_base`]
-/// result), without the readiness check: `&*p`, as the free paths write it,
+/// result), without the readiness check: `&*p` for the free paths,
 /// through the permission frozen at `READY` ([`axiom_published`]).
 ///
 /// # Safety

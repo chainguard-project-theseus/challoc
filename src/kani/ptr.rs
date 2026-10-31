@@ -3,7 +3,10 @@
 //! proof `vspec::ptr::axiom_ptr_add_addr` and the trusted wrappers
 //! `vspec::addr::addr_to_ptr`, `vspec::ptr::ref_ptr`,
 //! `vspec::zero::zero_raw` and `vspec::slice::array_get_unchecked`
-//! (`verus/ledger/src/vspec/`), checked against their contracts.
+//! (`verus/ledger/src/vspec/`), checked against their contracts. The
+//! private wrapper `vspec::user::copy_raw` has its harness in its own
+//! file, `vspec::user::kani_copy` (`copy_raw_copies` between two buffers,
+//! `copy_raw_copies_within` inside one), checked as `zero_raw` is here.
 //!
 //! The memory functions (`add`, `write_bytes`, `copy_nonoverlapping`,
 //! `zero_raw`) are checked on arrays: the contracts' `in_alloc`,
