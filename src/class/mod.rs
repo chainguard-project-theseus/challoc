@@ -350,6 +350,35 @@ proof fn lemma_swap_permutes(s: Seq<*mut u8>, i: int, j: int)
     assert(m.insert(s[j]).remove(s[i]).insert(s[i]).remove(s[j]) =~= m);
 }
 
+/// Shuffle is a permutation: a batch related by [`permutes`] (what
+/// [`shuffle_zero`] ensures, whatever `rng` holds, and [`shuffle`] runs) has
+/// the batch's length, holds every pointer as many times as the batch
+/// did, and so has no duplicates exactly when the batch had none: the
+/// shuffle loses no slot and duplicates none.
+pub(crate) proof fn theorem_shuffle_permutation(s: Seq<*mut u8>, o: Seq<*mut u8>, p: *mut u8)
+    requires
+        permutes(s, o),
+    ensures
+        s.len() == o.len(),
+        s.to_multiset().count(p) == o.to_multiset().count(p),
+        s.contains(p) == o.contains(p),
+        s.no_duplicates() == o.no_duplicates(),
+{
+    broadcast use vstd::seq_lib::to_multiset_len, vstd::seq_lib::to_multiset_contains;
+    assert(s.len() == s.to_multiset().len());
+    assert(o.len() == o.to_multiset().len());
+    vstd::seq_lib::to_multiset_contains(s, p);
+    vstd::seq_lib::to_multiset_contains(o, p);
+    if o.no_duplicates() {
+        o.lemma_multiset_has_no_duplicates();
+        s.lemma_multiset_has_no_duplicates_conv();
+    }
+    if s.no_duplicates() {
+        s.lemma_multiset_has_no_duplicates();
+        o.lemma_multiset_has_no_duplicates_conv();
+    }
+}
+
 /// Every entry of `s` is an entry of `s`.
 proof fn lemma_from_seq_refl(s: Seq<*mut u8>)
     ensures

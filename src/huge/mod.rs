@@ -1013,6 +1013,36 @@ impl RunToken {
             assert(self.pages@.contains(lo) && other.pages@.contains(lo));
         }
     }
+
+    /// Purge never discards live data, for huge runs: a byte
+    /// [`free_page_byte`] admits for the set of the page authority `auth`
+    /// is in no page, guard included, of the run whose token this is,
+    /// whoever holds it. Every huge purge's [`Batch`] (`Huge::purge_empty`,
+    /// `purge_curve`, `free_run`) may discard only such bytes, for the set
+    /// of the authority the huge lock's value holds from the batch's making
+    /// to its flush (`Inner::wf`).
+    pub proof fn theorem_purge_apart(
+        tracked &self,
+        tracked auth: &GhostSetAuth<int>,
+        base: int,
+        pg: int,
+        np: int,
+        b: int,
+    )
+        requires
+            self.wf(),
+            auth.id() == page_loc(),
+            pg > 0,
+            free_page_byte(base, pg, np, auth@, b),
+        ensures
+            !(base + self.start() * pg <= b < base + (self.start() + self.npages()) * pg),
+    {
+        self.pages.agree(auth);
+        if base + self.start() * pg <= b < base + (self.start() + self.npages()) * pg {
+            crate::purge::lemma_unit_of(base, pg, self.start(), self.npages(), b);
+            assert(self.pages@.contains((b - base) / pg));
+        }
+    }
 }
 
 /// `tok` is the token of a live run starting at page `page`.
@@ -1025,8 +1055,8 @@ pub open spec fn holds_run(tok: Option<RunToken>, page: int) -> bool {
 /// Byte `b` lies in one of the `np` pages of `pg` bytes of the region at
 /// `base`, and that page is not in `held`, the pages the run authority
 /// holds ([`page_loc`]): a page of no live run. What a huge purge's
-/// [`Batch`] may discard.
-spec fn free_page_byte(base: int, pg: int, np: int, held: vstd::set::Set<int>, b: int) -> bool {
+/// [`Batch`] may discard ([`RunToken::theorem_purge_apart`]).
+pub open spec fn free_page_byte(base: int, pg: int, np: int, held: vstd::set::Set<int>, b: int) -> bool {
     &&& base <= b
     &&& (b - base) / pg < np
     &&& !held.contains((b - base) / pg)
@@ -1534,6 +1564,190 @@ proof fn lemma_run_auths(g0: Inner)
         g0.runs@@ == active_runs(g0.descs@),
         g0.pgs@@ == active_pages(g0.descs@),
 {
+}
+
+/// The extents of the `Active` descriptors among `l`.
+spec fn runs_in(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> vstd::set::Set<(int, int)>
+    decreases l.len(),
+{
+    if l.len() == 0 {
+        vstd::set::Set::empty()
+    } else {
+        let v = descs[l[0]].value();
+        let s = runs_in(l.drop_first(), descs);
+        if v.state == RunState::Active as u8 {
+            s.insert((v.start as int, v.pages as int))
+        } else {
+            s
+        }
+    }
+}
+
+/// The pages of the `Active` descriptors among `l`.
+spec fn pages_in(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> vstd::set::Set<int>
+    decreases l.len(),
+{
+    if l.len() == 0 {
+        vstd::set::Set::empty()
+    } else {
+        let v = descs[l[0]].value();
+        let s = pages_in(l.drop_first(), descs);
+        if v.state == RunState::Active as u8 {
+            s.union(vstd::set_lib::set_int_range(v.start as int, v.start + v.pages))
+        } else {
+            s
+        }
+    }
+}
+
+/// The `Active` descriptors among `l`, pairwise apart, are as many
+/// extents as `tally` counts runs, and as many pages as it counts run
+/// pages; `runs_in` and `pages_in` hold their extents and pages.
+proof fn lemma_counts(l: Seq<*mut HugeDesc>, descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>, np: usize)
+    requires
+        l.no_duplicates(),
+        forall|i: int| 0 <= i < l.len() ==> #[trigger] descs.contains_key(l[i]),
+        forall|d: *mut HugeDesc| #[trigger] descs.contains_key(d) ==> desc_ok(descs[d].value(), np),
+        forall|d1: *mut HugeDesc, d2: *mut HugeDesc|
+            #[trigger] descs.contains_key(d1) && #[trigger] descs.contains_key(d2) && d1 != d2 ==> apart(
+                descs[d1].value(),
+                descs[d2].value(),
+            ),
+    ensures
+        runs_in(l, descs).len() == tally(l, descs, 0),
+        pages_in(l, descs).len() == tally(l, descs, 3),
+        forall|e: (int, int)|
+            #[trigger] runs_in(l, descs).contains(e) <==> exists|i: int|
+                0 <= i < l.len() && #[trigger] run_at(descs[l[i]].value(), e),
+        forall|k: int|
+            #[trigger] pages_in(l, descs).contains(k) <==> exists|i: int|
+                0 <= i < l.len() && #[trigger] run_page(descs[l[i]].value(), k),
+    decreases l.len(),
+{
+    if l.len() > 0 {
+        let rest = l.drop_first();
+        assert forall|i: int| 0 <= i < rest.len() implies #[trigger] rest[i] == l[i + 1] by {}
+        assert(rest.no_duplicates()) by {
+            assert forall|i: int, j: int| 0 <= i < rest.len() && 0 <= j < rest.len() && i != j implies rest[i] != rest[j] by {
+                assert(l[i + 1] != l[j + 1]);
+            }
+        }
+        assert forall|i: int| 0 <= i < rest.len() implies #[trigger] descs.contains_key(rest[i]) by {
+            assert(descs.contains_key(l[i + 1]));
+        }
+        lemma_counts(rest, descs, np);
+        let d0 = l[0];
+        let v = descs[d0].value();
+        assert(descs.contains_key(d0));
+        assert(desc_ok(v, np));
+        let e = (v.start as int, v.pages as int);
+        let r = vstd::set_lib::set_int_range(v.start as int, v.start + v.pages);
+        vstd::set_lib::lemma_int_range(v.start as int, v.start + v.pages);
+        // `l[0]` is apart from every later descriptor.
+        assert forall|i: int| 0 <= i < rest.len() implies apart(v, #[trigger] descs[rest[i]].value()) by {
+            assert(l[0] != l[i + 1]);
+            assert(descs.contains_key(rest[i]));
+        }
+        assert forall|e2: (int, int)| #[trigger] runs_in(l, descs).contains(e2) <==> exists|i: int|
+            0 <= i < l.len() && #[trigger] run_at(descs[l[i]].value(), e2) by {
+            if runs_in(l, descs).contains(e2) {
+                if runs_in(rest, descs).contains(e2) {
+                    let i = choose|i: int| 0 <= i < rest.len() && #[trigger] run_at(descs[rest[i]].value(), e2);
+                    assert(run_at(descs[l[i + 1]].value(), e2));
+                } else {
+                    assert(run_at(descs[l[0]].value(), e2));
+                }
+            }
+            if exists|i: int| 0 <= i < l.len() && #[trigger] run_at(descs[l[i]].value(), e2) {
+                let i = choose|i: int| 0 <= i < l.len() && #[trigger] run_at(descs[l[i]].value(), e2);
+                if i > 0 {
+                    assert(run_at(descs[rest[i - 1]].value(), e2));
+                }
+            }
+        }
+        assert forall|k: int| #[trigger] pages_in(l, descs).contains(k) <==> exists|i: int|
+            0 <= i < l.len() && #[trigger] run_page(descs[l[i]].value(), k) by {
+            if pages_in(l, descs).contains(k) {
+                if pages_in(rest, descs).contains(k) {
+                    let i = choose|i: int| 0 <= i < rest.len() && #[trigger] run_page(descs[rest[i]].value(), k);
+                    assert(run_page(descs[l[i + 1]].value(), k));
+                } else {
+                    assert(run_page(descs[l[0]].value(), k));
+                }
+            }
+            if exists|i: int| 0 <= i < l.len() && #[trigger] run_page(descs[l[i]].value(), k) {
+                let i = choose|i: int| 0 <= i < l.len() && #[trigger] run_page(descs[l[i]].value(), k);
+                if i > 0 {
+                    assert(run_page(descs[rest[i - 1]].value(), k));
+                }
+            }
+        }
+        if v.state == RunState::Active as u8 {
+            assert(!runs_in(rest, descs).contains(e)) by {
+                if runs_in(rest, descs).contains(e) {
+                    let i = choose|i: int| 0 <= i < rest.len() && #[trigger] run_at(descs[rest[i]].value(), e);
+                    assert(apart(v, descs[rest[i]].value()));
+                }
+            }
+            assert(pages_in(rest, descs).disjoint(r)) by {
+                assert forall|k: int| #[trigger] pages_in(rest, descs).contains(k) implies !r.contains(k) by {
+                    let i = choose|i: int| 0 <= i < rest.len() && #[trigger] run_page(descs[rest[i]].value(), k);
+                    assert(apart(v, descs[rest[i]].value()));
+                }
+            }
+            vstd::set_lib::lemma_set_disjoint_lens(pages_in(rest, descs), r);
+        }
+    }
+}
+
+/// Exact huge stats: in every value the huge lock admits, `stats.runs`
+/// is the number of live runs (the extents the run authority holds) and
+/// `stats.run_pages` the number of their pages, guards included (the
+/// pages the page authority holds). `malloc_stats_print` reports these
+/// counters, and a run token's extent and pages are among the
+/// authorities' ([`theorem_run_counted`]).
+proof fn theorem_huge_stats(g: Inner)
+    requires
+        g.wf(),
+    ensures
+        g.stats.runs == g.runs@@.len(),
+        g.stats.run_pages == g.pgs@@.len(),
+{
+    lemma_active(g.descs@);
+    assert forall|i: int| 0 <= i < g.all@.len() implies #[trigger] g.descs@.contains_key(g.all@[i]) by {
+        assert(g.all@.contains(g.all@[i]));
+    }
+    lemma_counts(g.all@, g.descs@, g.next_page);
+    assert(g.runs@@ =~= runs_in(g.all@, g.descs@)) by {
+        assert forall|e: (int, int)| g.runs@@.contains(e) <==> runs_in(g.all@, g.descs@).contains(e) by {
+            if g.runs@@.contains(e) {
+                let d = choose|d: *mut HugeDesc| #[trigger] g.descs@.contains_key(d) && run_at(g.descs@[d].value(), e);
+                assert(g.all@.contains(d));
+                let i = choose|i: int| 0 <= i < g.all@.len() && g.all@[i] == d;
+                assert(run_at(g.descs@[g.all@[i]].value(), e));
+            }
+            if runs_in(g.all@, g.descs@).contains(e) {
+                let i = choose|i: int| 0 <= i < g.all@.len() && #[trigger] run_at(g.descs@[g.all@[i]].value(), e);
+                assert(g.descs@.contains_key(g.all@[i]));
+            }
+        }
+    }
+    assert(g.pgs@@ =~= pages_in(g.all@, g.descs@)) by {
+        assert forall|k: int| g.pgs@@.contains(k) <==> pages_in(g.all@, g.descs@).contains(k) by {
+            if g.pgs@@.contains(k) {
+                let d = choose|d: *mut HugeDesc| #[trigger] g.descs@.contains_key(d) && run_page(g.descs@[d].value(), k);
+                assert(g.all@.contains(d));
+                let i = choose|i: int| 0 <= i < g.all@.len() && g.all@[i] == d;
+                assert(run_page(g.descs@[g.all@[i]].value(), k));
+            }
+            if pages_in(g.all@, g.descs@).contains(k) {
+                let i = choose|i: int| 0 <= i < g.all@.len() && #[trigger] run_page(g.descs@[g.all@[i]].value(), k);
+                assert(g.descs@.contains_key(g.all@[i]));
+            }
+        }
+    }
+    assert(stat(g.stats, 0) == tally(g.all@, g.descs@, 0));
+    assert(stat(g.stats, 3) == tally(g.all@, g.descs@, 3));
 }
 
 /// A live run is counted: the run authorities hold its token's extent
@@ -4185,6 +4399,25 @@ impl Huge {
             },
             None => false,
         }
+    }
+
+    /// The huge half of `nallocx`'s zero: a placeable request
+    /// ([`Huge::spec_placeable`]) has a fit ([`Huge::fits`]) under a lock
+    /// value with nothing placed yet (the mark at page 0), so
+    /// [`Huge::find`], whose `None` means no page fits, places it;
+    /// and [`Huge::alloc_run`] ensures every run it places was placeable,
+    /// so an unplaceable request fails in every state.
+    proof fn theorem_placeable_fits_empty(&self, g: &Inner, size: usize, align: usize)
+        requires
+            g.next_page == 0,
+            self.spec_placeable(size, align),
+        ensures
+            exists|q: int| self.fits(g, q, run_need(self.spec_page(), size as int), align),
+    {
+        let need = run_need(self.spec_page(), size as int);
+        let q = choose|q: int| 0 <= q && q + need <= self.npages && #[trigger] page_aligned(self.base as int, self.spec_page(), q, align as int);
+        assert(self.aligned_at(q, align));
+        assert(self.fits(g, q, need, align));
     }
 
     /// First page at or after `page` whose address is a multiple of
