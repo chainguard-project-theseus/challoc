@@ -228,6 +228,32 @@ fn creating_and_exited_sentinels_are_served_directly() {
     .unwrap();
 }
 
+/// A null value reaching the destructor (POSIX never passes one) returns
+/// without touching the TLS slot, both before and after the thread has a
+/// heap, and the heap keeps serving.
+#[test]
+fn heap_destructor_ignores_null() {
+    let s = shared();
+    std::thread::spawn(move || {
+        unsafe { heap_destructor(core::ptr::null_mut()) };
+        assert!(tls::get(Tracked::assume_new()).is_null());
+        let c = class_of(32).unwrap();
+        let p = alloc(s, c, Tracked::assume_new());
+        assert!(!p.is_null());
+        let raw = tls::get(Tracked::assume_new());
+        assert!(raw as usize > TLS_EXITED);
+        unsafe { heap_destructor(core::ptr::null_mut()) };
+        assert_eq!(tls::get(Tracked::assume_new()), raw);
+        assert!(existing_heap(s).is_some());
+        free(s, p, Tracked::assume_new());
+        let q = alloc(s, c, Tracked::assume_new());
+        assert!(!q.is_null());
+        free(s, q, Tracked::assume_new());
+    })
+    .join()
+    .unwrap();
+}
+
 /// A thread whose heap the thread-exit key cannot take
 /// (`pthread_setspecific` fails: past its first 32 keys glibc allocates
 /// a second-level block, and that allocation can fail) is served
