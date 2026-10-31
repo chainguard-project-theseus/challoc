@@ -384,8 +384,10 @@ impl<'a> LockOrder<'a> {
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes
 ///   before it returns;
-/// - `Heap::rebuild_run`, reached only from the scheduled pops
-///   (`Heap::pop_compact`, through `Heap::pop_compact_run`). They run from
+/// - the scheduled pops: `Heap::pop_compact`'s probe (one token for its
+///   `tick`, `Shared::arena`, `refill` and `probe_verdict` calls),
+///   `Heap::pop_compact_run`'s `Shared::arena` and `refill` calls, and
+///   `Heap::rebuild_run`, which `pop_compact_run` calls. They run from
 ///   `Heap::pop`, which `alloc_in`, `alloc_other`, `alloc_slow_in` (after
 ///   `refill`, whose `final(ord) == old(ord)` shows it released its locks)
 ///   and `alloc_slow`'s declined scheduled pop call, none of them holding
