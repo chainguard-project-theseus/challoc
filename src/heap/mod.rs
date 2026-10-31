@@ -74,6 +74,8 @@ pub use shared::Shared;
 pub use shared::shared_storage;
 #[cfg(test)]
 use shared::{FAIL_SETSPECIFIC, guard_interval_for};
+#[cfg(verus_keep_ghost)]
+pub use thread::slot_ok;
 pub use thread::{HeapPerm, TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 
