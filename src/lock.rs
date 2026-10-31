@@ -380,6 +380,10 @@ impl<'a> LockOrder<'a> {
 ///   point holds no allocator lock, `ctl` and the readers take none
 ///   themselves, and each call the token is passed to releases every lock
 ///   it takes before it returns;
+/// - `api::libc`'s `alloc_huge` without a thread heap, reached only from the
+///   C entry points, and the entry point `malloc_trim`: their callers hold
+///   no allocator lock, and `malloc_trim`'s
+///   `Heap::flush_all` and `purge::purge_all` leave the token unchanged;
 /// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes

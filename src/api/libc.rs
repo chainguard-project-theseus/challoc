@@ -41,6 +41,8 @@ use crate::heap::{self, Live, Shared};
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, SMALL_MAX, class_of, class_of_small};
+#[cfg(verus_keep_ghost)]
+use crate::lock::axiom_entry;
 use crate::sys::Errno;
 use crate::vspec::cbuf::{CCall, COut};
 use crate::vspec::errno::{ThreadErrno, set_errno};
@@ -57,7 +59,7 @@ verus! {
 
 // The codes as `c_int`, for `errno` and `posix_memalign`'s return; the
 // numbers live in `sys::errno`.
-const ENOMEM: c_int = Errno::ENOMEM.0;
+pub const ENOMEM: c_int = Errno::ENOMEM.0;
 const EINVAL: c_int = Errno::EINVAL.0;
 
 /// Null with `errno = ENOMEM`.
@@ -214,38 +216,110 @@ proof fn lemma_class_for_none(size: usize, align: usize)
     }
 }
 
-} // verus!
-
-/// Huge allocation on the calling thread, counted in its heap when it has
-/// one. `align` is a power of two; `1` means none.
-#[cold]
-#[inline(never)]
-fn alloc_huge(
-    shared: &Shared,
-    size: usize,
-    align: usize,
-    _blk: Tracked<&mut Live>,
-) -> (*mut u8, bool, Tracked<Zeroed>) {
-    match heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge(shared, size, align, Tracked::assume_new()),
-        None => shared.alloc_huge(size, align, 0, Tracked::assume_new(), Tracked::assume_new()),
+/// A slot result of the class `class_index(size)` (or any later one)
+/// returned serves `malloc(size)` ([`heap::fits`] at the quantum).
+proof fn lemma_class_fits(p: *mut u8, c: int, size: usize)
+    requires
+        heap::regions_ok(),
+        0 <= c < NCLASSES,
+        size <= class_table()[c].size,
+        p@.addr != 0 ==> crate::layout::process_regions().is_slot(c, p@.addr),
+    ensures
+        heap::fits(p, size as int, QUANTUM as int),
+{
+    if p@.addr != 0 {
+        heap::lemma_slot_fits_quantum(p, c, size as int);
     }
 }
 
-/// `malloc`.
+/// A huge result for `size` bytes at `align` serves them at `align`, and
+/// at the quantum.
+proof fn lemma_huge_result(p: *mut u8, size: usize, align: usize)
+    requires
+        heap::regions_ok(),
+        crate::meta::is_pow2(align),
+        p@.addr != 0 ==> crate::layout::huge_block(p@.addr, size, align),
+    ensures
+        heap::fits(p, size as int, align as int),
+        heap::fits(p, size as int, QUANTUM as int),
+{
+    if p@.addr != 0 {
+        heap::lemma_quantum_pow2();
+        heap::lemma_huge_fits(p, size, align, align);
+        heap::lemma_huge_fits(p, size, align, QUANTUM);
+    }
+}
+
+/// A slot of class `c` handed out for `size` bytes, with its token, gives
+/// them ([`Live::gives`]).
+proof fn lemma_class_gives(blk: Live, p: *mut u8, c: int, size: usize)
+    requires
+        0 <= c < NCLASSES,
+        size <= class_table()[c].size,
+        p@.addr != 0 ==> blk.slot_block(p, c),
+    ensures
+        blk.gives(p, size as int),
+{
+    if p@.addr != 0 {
+        blk.lemma_slot_len(p, c);
+    }
+}
+
+/// Huge allocation on the calling thread, counted in its heap when it has
+/// one. `align` is a power of two; `1` means none. `blk` gets the run's
+/// token.
+#[cold]
+#[inline(never)]
+fn alloc_huge(shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        crate::meta::is_pow2(align),
+    ensures
+        r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
+        r.0@.addr != 0 ==> size <= shared.huge_usable(size),
+        r.0@.addr != 0 ==> shared.huge_ok(size),
+        r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+        r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
+{
+    match heap::heap_for_thread(shared) {
+        Some(h) => h.alloc_huge(shared, size, align, Tracked(blk)),
+        // Premise (lock order, `lock::axiom_entry`): the C caller holds no
+        // allocator lock.
+        None => shared.alloc_huge(size, align, 0, Tracked(blk), Tracked(&mut axiom_entry())),
+    }
+}
+
+/// `malloc`. A non-null result is a block of at least `size` bytes in a
+/// class or huge region, aligned to the quantum ([`heap::fits`]); a null
+/// one comes with `errno = ENOMEM`. Its token ([`malloc_block`]) goes to
+/// C with the block.
 #[inline(always)]
-pub fn malloc(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
-    malloc_block(size, Tracked::assume_new(), Tracked::assume_new())
+pub fn malloc(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
+    let tracked mut blk = Live::empty();
+    malloc_block(size, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`malloc`] with the block's token: `blk` gets the token of the block
-/// returned, which has at least `size` usable bytes.
+/// returned, which has at least `size` usable bytes ([`Live::gives`]).
 #[inline(always)]
-pub fn malloc_block(
-    size: usize,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
+pub fn malloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
     // the exported `malloc` needs no stack frame. A size above the small
@@ -253,53 +327,70 @@ pub fn malloc_block(
     // only from the table here, its stride-scaled entry addresses the
     // cache header as it is (`class_of_small`).
     if size > SMALL_MAX {
-        return malloc_medium(size, Tracked::assume_new(), Tracked::assume_new());
+        return malloc_medium(size, Tracked(blk), Tracked(errno));
     }
-    malloc_class(
-        size,
-        class_index_small(size),
-        Tracked::assume_new(),
-        Tracked::assume_new(),
-    )
+    malloc_class(size, class_index_small(size), Tracked(blk), Tracked(errno))
 }
 
 /// `malloc` of a size above the small table: the same pop, behind the
 /// computed class.
 #[inline(never)]
-fn malloc_medium(
-    size: usize,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
-    let Some(c) = class_index(size) else {
-        return malloc_slow(size, Tracked::assume_new(), Tracked::assume_new());
-    };
-    malloc_class(size, c, Tracked::assume_new(), Tracked::assume_new())
+fn malloc_medium(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
+    let Some(c) = class_index(size) else { return malloc_slow(size, Tracked(blk), Tracked(errno)) };
+    malloc_class(size, c, Tracked(blk), Tracked(errno))
 }
 
-/// `malloc`'s pop for a known class `c` of `size`.
+/// `malloc`'s pop for a known class `c` of `size` (`class_index`'s).
 #[inline(always)]
-fn malloc_class(
-    size: usize,
-    c: usize,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
+fn malloc_class(size: usize, c: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        c < NCLASSES,
+        forall|j: int| c <= j < NCLASSES ==> size <= #[trigger] class_table()[j].size,
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else {
-        return malloc_slow(size, Tracked::assume_new(), Tracked::assume_new());
-    };
+    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size, Tracked(blk), Tracked(errno)) };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
-    match h.alloc_fast(c, flags, Tracked::assume_new()) {
-        Some(p) => p,
+    proof {
+        h.lemma_wf_regions();
+    }
+    match h.alloc_fast(c, flags, Tracked(blk)) {
+        Some(p) => {
+            proof {
+                lemma_class_fits(p, c as int, size);
+                lemma_class_gives(*blk, p, c as int, size);
+                heap::theorem_no_block_at_zero(p, c as int, 0);
+            }
+            p
+        },
         // The class, not the size: the declined pop (an empty cache or
         // the scheduled pop) goes straight to the slow path of its class,
         // `heap::alloc_declined`, not through a second classification and
         // a second fast pop.
-        None => malloc_slow_class(c, Tracked::assume_new(), Tracked::assume_new()),
+        None => {
+            let p = malloc_slow_class(c, Tracked(blk), Tracked(errno));
+            proof {
+                lemma_class_fits(p, c as int, size);
+                lemma_class_gives(*blk, p, c as int, size);
+            }
+            p
+        },
     }
 }
 
@@ -308,17 +399,18 @@ fn malloc_class(
 /// `heap::alloc_declined`, null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_slow_class(
-    class: usize,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
-    let p = heap::alloc_declined(super::shared(), class, Tracked::assume_new());
-    if p.is_null() {
-        enomem(Tracked::assume_new())
-    } else {
-        p
-    }
+fn malloc_slow_class(class: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        class < NCLASSES,
+    ensures
+        r@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r@.addr),
+        r@.addr != 0 ==> final(blk).slot_block(r, class as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
+    let p = heap::alloc_declined(super::shared(), class, Tracked(blk));
+    if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
 /// The cache pop alone: `None` whenever anything is off the fast path (no
@@ -327,89 +419,197 @@ fn malloc_slow_class(
 #[inline(always)]
 // The `let ... else`s stand for `?`, which the proofs spell out.
 #[allow(clippy::question_mark)]
-pub(super) fn malloc_fast(size: usize, _blk: Tracked<&mut Live>) -> Option<*mut u8> {
-    let Some(c) = class_index(size) else {
-        return None;
-    };
+pub(super) fn malloc_fast(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: Option<*mut u8>)
+    requires
+        crate::sys::may_abort_corrupt(),
+    ensures
+        r matches Some(p) ==> heap::fits(p, size as int, QUANTUM as int),
+        r matches Some(p) ==> final(blk).gives(p, size as int),
+        r matches Some(p) ==> p@.addr != 0,
+    opens_invariants none
+{
+    let Some(c) = class_index(size) else { return None };
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else {
-        return None;
-    };
+    let Some(h) = heap::existing_heap(shared) else { return None };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
-    h.alloc_fast(c, flags, Tracked::assume_new())
+    proof {
+        h.lemma_wf_regions();
+    }
+    let r = h.alloc_fast(c, flags, Tracked(blk));
+    proof {
+        if let Some(p) = r {
+            lemma_class_fits(p, c as int, size);
+            lemma_class_gives(*blk, p, c as int, size);
+            heap::theorem_no_block_at_zero(p, c as int, 0);
+        }
+    }
+    r
 }
 
 /// Everything `malloc` does off its fast path. Null with `errno = ENOMEM`
 /// on failure.
 #[cold]
 #[inline(never)]
-pub(super) fn malloc_slow(
-    size: usize,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
+pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
     let shared = super::shared();
-    let p = match class_index(size) {
-        Some(c) => heap::alloc(shared, c, Tracked::assume_new()),
-        None => alloc_huge(shared, size, 1, Tracked::assume_new()).0,
-    };
-    if p.is_null() {
-        enomem(Tracked::assume_new())
-    } else {
-        p
+    proof {
+        crate::meta::lemma_is_pow2_one();
+        shared.lemma_regions_ok();
     }
+    let p = match class_index(size) {
+        Some(c) => {
+            let p = heap::alloc(shared, c, Tracked(blk));
+            proof {
+                lemma_class_fits(p, c as int, size);
+                lemma_class_gives(*blk, p, c as int, size);
+            }
+            p
+        },
+        None => {
+            let p = alloc_huge(shared, size, 1, Tracked(blk)).0;
+            proof {
+                lemma_huge_result(p, size, 1);
+            }
+            p
+        },
+    };
+    if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
 /// `calloc`. Skips the `memset` when the slot or run is known to read as
-/// zero (fresh or purged memory).
+/// zero (fresh or purged memory). The block's token goes to C with it.
 #[inline(always)]
-pub fn calloc(n: usize, m: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
-    calloc_zeroed(n, m, Tracked::assume_new(), Tracked::assume_new()).0
+pub fn calloc(n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        n * m > usize::MAX ==> r@.addr == 0,
+        heap::fits(r, n * m, QUANTUM as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
+    let tracked mut blk = Live::empty();
+    calloc_zeroed(n, m, Tracked(&mut blk), Tracked(errno)).0
 }
 
-/// [`calloc`] with the token that its memory reads as zero: a non-null
+/// [`calloc`] with the proof that its memory reads as zero: a non-null
 /// result comes with a [`Zeroed`] token for its `n * m` bytes, from the
-/// `memset` or from the allocator's report that the slot or run is known
-/// zero; and `blk` gets the block's token.
+/// `memset` or from
+/// the allocator's report that the slot or run is known zero; and `blk`
+/// gets the block's token, whose permission's byte state reads those
+/// bytes as zero ([`Live::reads_zero`]): the `memset` wrote them through
+/// the permission (`vspec::user::zero_user`), or the allocator's token
+/// for them was turned into the byte state
+/// (`vspec::user::axiom_zeroed_bytes`).
 #[inline(always)]
-pub fn calloc_zeroed(
-    n: usize,
-    m: usize,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> (*mut u8, Tracked<Zeroed>) {
-    let Some(size) = n.checked_mul(m) else {
-        return (enomem(Tracked::assume_new()), Tracked::assume_new());
-    };
+pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (*mut u8, Tracked<Zeroed>))
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        n * m > usize::MAX ==> r.0@.addr == 0,
+        heap::fits(r.0, n * m, QUANTUM as int),
+        r.0@.addr != 0 ==> r.1@.covers(r.0, n * m),
+        final(blk).gives(r.0, n * m),
+        r.0@.addr != 0 ==> final(blk).reads_zero(0, n * m),
+        r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
+{
+    let Some(size) = n.checked_mul(m) else { return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0))) };
     let shared = super::shared();
+    proof {
+        crate::meta::lemma_is_pow2_one();
+        shared.lemma_regions_ok();
+    }
     let (p, zeroed, z) = match class_index(size) {
-        Some(c) => heap::alloc_zeroed(shared, c, Tracked::assume_new()),
-        None => alloc_huge(shared, size, 1, Tracked::assume_new()),
+        Some(c) => {
+            let r = heap::alloc_zeroed(shared, c, Tracked(blk));
+            proof {
+                lemma_class_fits(r.0, c as int, size);
+                lemma_class_gives(*blk, r.0, c as int, size);
+            }
+            r
+        },
+        None => {
+            let r = alloc_huge(shared, size, 1, Tracked(blk));
+            proof {
+                lemma_huge_result(r.0, size, 1);
+            }
+            r
+        },
     };
     if p.is_null() {
-        return (enomem(Tracked::assume_new()), Tracked::assume_new());
+        return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0)));
     }
     if !zeroed {
-        // SAFETY: a fresh block with at least `size` usable bytes.
-        let z = unsafe { crate::vspec::user::zero_user(p, size, Tracked::assume_new()) };
+        let ghost orig = *blk;
+        proof {
+            blk.lemma_mem();
+        }
+        let tracked mut mem = blk.take_mem();
+        // SAFETY: `mem` is the permission to the fresh block's usable bytes,
+        // at least `size` of them.
+        let z = unsafe { crate::vspec::user::zero_user(p, size, Tracked(&mut mem)) };
+        proof {
+            blk.put_mem(mem, orig);
+        }
         return (p, z);
     }
-    (p, z)
+    // Known zero: the allocator's token for the first `size` bytes, which
+    // the block's permission then reads as zero.
+    let Tracked(za) = z;
+    let tracked z0;
+    proof {
+        let tracked (zs, _) = za.split(size as int);
+        blk.lemma_mem();
+        let ghost orig = *blk;
+        let tracked mut mem = blk.take_mem();
+        crate::vspec::user::axiom_zeroed_bytes(&zs, &mut mem);
+        blk.put_mem(mem, orig);
+        z0 = zs;
+    }
+    (p, Tracked(z0))
 }
 
 /// `free`. Null is a no-op; anything that is not a live allocation aborts.
+/// C holds the token of the block it frees ([`heap::live::axiom_c_claim`],
+/// the one trusted step of the C contract).
 #[inline(always)]
-pub fn free(p: *mut u8, _c: Tracked<CCall>) {
-    free_block(p, Tracked::assume_new())
+pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>)
+    requires
+        c.block() == Some(p),
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+{
+    let tracked blk = heap::live::axiom_c_claim(c);
+    free_block(p, Tracked(blk))
 }
 
-/// [`free`] with the caller's token for `p`, which the
+/// [`free`] with the caller's token for `p` ([`Live::claims`]), which the
 /// free takes back.
 #[inline(always)]
-pub fn free_block(p: *mut u8, _blk: Tracked<Live>) {
+pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        blk.claims(p),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> blk.block(p),
+{
+    let tracked mut blk = blk;
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
     // Null is one of those outcomes: it is in no class region (the
@@ -417,27 +617,17 @@ pub fn free_block(p: *mut u8, _blk: Tracked<Live>) {
     // class index of null is out of range) and `free_slow` returns for it, so
     // the common case pays no test of its own (jemalloc's `free` fast
     // path leaves null to its slow path the same way).
-    if let Some((t, tp)) = heap::tls_heap_slot(Tracked::assume_new()) {
+    let tracked tls = crate::sys::tls::TlsSlot::entry();
+    if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
         let shared = unsafe { super::shared_deref(super::shared_base()) };
         // SAFETY: the slot value of this thread.
-        if unsafe {
-            heap::free_fast_slot(
-                shared,
-                t,
-                tp,
-                p,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            )
-        }
-        .is_some()
-        {
+        if unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) }.is_some() {
             return;
         }
     }
-    free_slow(p, Tracked::assume_new())
+    free_slow(p, Tracked(blk))
 }
 
 /// Sized free on the calling thread's heap: `hint` is the class the size
@@ -445,20 +635,44 @@ pub fn free_block(p: *mut u8, _blk: Tracked<Live>) {
 /// size. On the fast path the hint replaces the slab descriptor's bit test
 /// (design 6.3): a slot whose class matches is pushed at once, so an
 /// invalid or double free through this path is caught when the cache
-/// flushes it, not at the call; a hint that does not match aborts.
+/// flushes it, not at the call; a hint that does not match aborts
+/// ([`heap::hint_ok`] of every non-null `p` it returns for). C holds the
+/// token of the block it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, _c: Tracked<CCall>) {
-    free_sized_block(p, size, hint, Tracked::assume_new())
+pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c): Tracked<CCall>)
+    requires
+        c.block() == Some(p),
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        hint matches Some(c) ==> c < NCLASSES,
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, hint),
+{
+    let tracked blk = heap::live::axiom_c_claim(c);
+    free_sized_block(p, size, hint, Tracked(blk))
 }
 
-/// [`free_sized_hint`] with the caller's token for `p`,
+/// [`free_sized_hint`] with the caller's token for `p` ([`Live::claims`]),
 /// which the free takes back: the token of the live block `p`.
 #[inline(always)]
-pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, _blk: Tracked<Live>) {
+pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        hint matches Some(c) ==> c < NCLASSES,
+        blk.claims(p),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, hint),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
+        p@.addr != 0 ==> blk.block(p),
+{
+    let tracked mut blk = blk;
     // A huge size (no hint) has no fast path: straight to the slow one,
     // so the fast path carries a plain class and no test of the hint.
     let Some(c) = hint else {
-        return free_sized_unhinted(p, size, Tracked::assume_new());
+        return free_sized_unhinted(p, size, Tracked(blk));
     };
     // On x86_64 there is no null test here: null is below every class
     // region, so its offset from the hint's region base wraps to a value
@@ -471,29 +685,35 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, _blk: Trac
     }
     let sp = super::shared_base();
     if let Some(h) = heap::existing_heap(sp) {
+        proof {
+            h.lemma_wf_regions();
+        }
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_deref(sp) };
-        if heap::free_sized_fast(
-            shared,
-            h,
-            p,
-            Some(c),
-            shared.push_flags(),
-            Tracked::assume_new(),
-        ) {
+        if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags(), Tracked(&mut blk)) {
             return;
         }
     }
-    free_sized_slow(p, size, hint, Tracked::assume_new())
+    free_sized_slow(p, size, hint, Tracked(blk))
 }
 
 /// The sized free of a size no class holds (a huge run, or nothing): the
 /// exact `free` behind the null test.
 #[cold]
 #[inline(never)]
-fn free_sized_unhinted(p: *mut u8, size: usize, _blk: Tracked<Live>) {
+fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        blk.claims(p),
+        crate::sys::may_syscall(),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, None),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
+        p@.addr != 0 ==> blk.block(p),
+{
     if !p.is_null() {
-        free_sized_slow(p, size, None, Tracked::assume_new())
+        free_sized_slow(p, size, None, Tracked(blk))
     }
 }
 
@@ -504,15 +724,25 @@ fn free_sized_unhinted(p: *mut u8, size: usize, _blk: Tracked<Live>) {
 /// message).
 #[cold]
 #[inline(never)]
-fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, _blk: Tracked<Live>) {
+fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        blk.claims(p),
+        crate::sys::may_syscall(),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, hint),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
+        p@.addr != 0 ==> blk.block(p),
+{
     #[cfg(target_arch = "x86_64")]
     if p.is_null() {
         return;
     }
     match super::shared_if_ready() {
         Some(shared) => {
-            shared.check_size_hint(p, size, hint, Tracked::assume_new());
-            heap::free(shared, p, Tracked::assume_new())
+            shared.check_size_hint(p, size, hint, Tracked(&blk));
+            heap::free(shared, p, Tracked(blk))
         }
         None => free_before_init(p),
     }
@@ -520,38 +750,66 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, _blk: Tracked<L
 
 /// C23 `free_sized(p, size)`: `size` must be the size requested from
 /// `malloc`/`calloc`/`realloc` (or any size in the same class, or for a
-/// huge run any size whose page count is the run's).
+/// huge run any size whose page count is the run's). A slot freed with
+/// the size of another class, or with a huge size, aborts; so does a huge
+/// run freed with a size of another page count.
 #[inline(always)]
-pub fn free_sized(p: *mut u8, size: usize, _c: Tracked<CCall>) {
-    free_sized_with(p, size, Tracked::assume_new())
+pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>)
+    requires
+        c.block() == Some(p),
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
+{
+    let tracked blk = heap::live::axiom_c_claim(c);
+    free_sized_with(p, size, Tracked(blk))
 }
 
-/// [`free_sized`] with the caller's token for `p`,
+/// [`free_sized`] with the caller's token for `p` ([`Live::claims`]),
 /// which the free takes back (`free_sized_block`'s); also `sdallocx`'s
 /// with no flags.
 #[inline(always)]
-pub fn free_sized_with(p: *mut u8, size: usize, _blk: Tracked<Live>) {
+pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        blk.claims(p),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
+        p@.addr != 0 ==> blk.block(p),
+{
     // As in `malloc`: a size above the small table is a tail call, so the
     // class comes only from the table here and the stride-scaled entry
     // addresses the class line and the cache header as it is. That keeps
     // the sized path within its registers, with no spill (on Genoa a
     // `push` and a `pop` here cost `valkey1` 8%, #46).
     if size > SMALL_MAX {
-        return free_sized_medium(p, size, Tracked::assume_new());
+        return free_sized_medium(p, size, Tracked(blk));
     }
-    free_sized_block(
-        p,
-        size,
-        Some(class_index_small(size)),
-        Tracked::assume_new(),
-    )
+    free_sized_block(p, size, Some(class_index_small(size)), Tracked(blk))
 }
 
 /// `free_sized` of a size above the small table.
 #[inline(never)]
-fn free_sized_medium(p: *mut u8, size: usize, _blk: Tracked<Live>) {
-    free_sized_block(p, size, class_index(size), Tracked::assume_new())
+fn free_sized_medium(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        blk.claims(p),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
+        p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
+        p@.addr != 0 ==> blk.block(p),
+{
+    free_sized_block(p, size, class_index(size), Tracked(blk))
 }
+
+} // verus!
 
 /// C23 `free_aligned_sized(p, align, size)`: the arguments given to
 /// `aligned_alloc`. An alignment that is not a power of two matches no
@@ -565,32 +823,44 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, _c: Tracked<CCa
     free_sized_hint(p, size, hint, Tracked::assume_new())
 }
 
+verus! {
+
 /// Everything `free` does off its fast path: heap creation, a full cache,
 /// huge runs, and the aborts for invalid pointers (the checks are repeated
 /// from scratch here, so a fast-path `false` for a bad pointer ends in the
 /// same message it always did).
 #[cold]
 #[inline(never)]
-fn free_slow(p: *mut u8, _blk: Tracked<Live>) {
+fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_abort(),
+        blk.claims(p),
+        crate::sys::may_syscall(),
+    ensures
+        p@.addr != 0 ==> heap::free_target(p),
+        p@.addr != 0 ==> blk.block(p),
+{
     if p.is_null() {
         return;
     }
     match super::shared_if_ready() {
-        Some(shared) => heap::free(shared, p, Tracked::assume_new()),
+        Some(shared) => heap::free(shared, p, Tracked(blk)),
         None => free_before_init(p),
     }
 }
 
+/// The abort for a pointer freed (or queried) before any allocation.
 #[cold]
 #[inline(never)]
-fn free_before_init(p: *mut u8) -> ! {
+fn free_before_init(p: *mut u8) -> !
+    requires
+        crate::sys::may_abort(),
+{
     crate::sys::abort_fmt(format_args!(
         "{:#x} passed before any allocation: not an allocation",
         p as usize
     ))
 }
-
-verus! {
 
 /// Usable bytes of the live allocation `p`. Aborts unless `p` is a live
 /// slab slot or huge run start. A slab pointer takes the `free` fast
@@ -1462,19 +1732,40 @@ pub fn pvalloc_block(
     )
 }
 
+verus! {
+
 /// `malloc_trim`: return the calling thread's cached slots to their slabs,
 /// then purge every `Empty` slab and huge extent whatever its age (design
 /// section 8). Returns 1 if anything was purged, 0 otherwise or before
 /// init. `pad` is glibc's top-of-heap allowance and has no meaning here.
-pub fn malloc_trim(_pad: usize, _left: Tracked<&mut Ghost<crate::purge::Left>>) -> c_int {
-    let Some(shared) = super::shared_if_ready() else {
-        return 0;
-    };
-    if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
-        h.flush_all(shared, Tracked::assume_new());
+///
+/// `left` is [`purge_all`](crate::purge::purge_all)'s record after init
+/// (nothing purged before): every arena it visited is covered and clean,
+/// and the result is 1 iff it discarded a byte.
+pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<crate::purge::Left>>) -> (r: c_int)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        r == 0 || r == 1,
+        (r == 1) == (final(left)@.bytes > 0),
+        final(left)@.covers(),
+        final(left)@.clean(),
+{
+    proof {
+        *left = Ghost(crate::purge::Left::none());
+        crate::purge::Left::lemma_none();
     }
-    (crate::purge::purge_all(shared, Tracked::assume_new(), Tracked::assume_new()) > 0) as c_int
+    let Some(shared) = super::shared_if_ready() else { return 0 };
+    // Premise (lock order): `malloc_trim`'s caller holds no allocator lock.
+    let tracked mut ord = axiom_entry();
+    if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
+        h.flush_all(shared, Tracked(&mut ord));
+    }
+    (crate::purge::purge_all(shared, Tracked(&mut *left), Tracked(&mut ord)) > 0) as c_int
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see the module docs).

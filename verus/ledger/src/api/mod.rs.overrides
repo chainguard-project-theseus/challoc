@@ -15,3 +15,5 @@ axiom_fork_resumed_sig	platform/kernel fact	none (assumption)
 axiom_fork_resumed	platform/kernel fact	none (assumption)
 # The fork child's orphaned feature line: only the forking thread runs there.
 axiom_line_orphaned	allocator invariant	none (assumption)
+# A raw-pointer projection of a static: the pointer `Shared::storage` names.
+shared_ptr	UnsafeCell/volatile/transmute	RefinedRust

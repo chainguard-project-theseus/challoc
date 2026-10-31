@@ -195,6 +195,12 @@ pub ghost enum CEntry {
     ByMib { mib: *const usize, miblen: usize, oldp: *mut u8, oldlenp: *const usize, newp: *mut u8, newlen: usize },
     /// `malloc_stats_print(write_cb, cbopaque, opts)`.
     StatsPrint { opts: *const u8 },
+    /// A free of the block at `ptr` (`free`, `free_sized`,
+    /// `free_aligned_sized`, and their `je_` twins): the pointer C passed,
+    /// whose block C hands over ([`CCall::block`],
+    /// `heap::live::axiom_c_claim`). It has no buffer
+    /// argument.
+    Frees { ptr: *mut u8 },
 }
 
 impl CEntry {
@@ -218,6 +224,7 @@ impl CEntry {
                 ||| newp@.addr != 0 && a == CArg::Buffer(newp, newlen)
             },
             CEntry::StatsPrint { opts } => opts@.addr != 0 && a == CArg::Str(opts),
+            CEntry::Frees { .. } => false,
         }
     }
 
@@ -228,6 +235,7 @@ impl CEntry {
             CEntry::NameToMib { name, .. } => Some(name),
             CEntry::ByMib { .. } => None,
             CEntry::StatsPrint { opts } => Some(opts),
+            CEntry::Frees { .. } => None,
         }
     }
 
@@ -245,6 +253,7 @@ impl CEntry {
                 &&& (newp@.addr != 0 ==> CArg::Buffer(newp, newlen).facts())
             },
             CEntry::StatsPrint { .. } => true,
+            CEntry::Frees { .. } => true,
         }
     }
 }
@@ -385,6 +394,15 @@ impl CCall {
     /// `a` is one of the call's pointer arguments ([`CEntry::passed`]).
     pub open spec fn has(self, a: CArg) -> bool {
         self.entry().passed(a)
+    }
+
+    /// The block C hands over through a free ([`CEntry::Frees`]): the
+    /// pointer C passed; `None` for every other entry point.
+    pub open spec fn block(self) -> Option<*mut u8> {
+        match self.entry() {
+            CEntry::Frees { ptr } => Some(ptr),
+            _ => None,
+        }
     }
 
     /// The token reads the call's string argument `p`: no write has
