@@ -1833,6 +1833,8 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
     ensures
         r == key_lt(a, b),
 {
+    // kani-boolcmp: allow (kani_key_less passes literal bools, which fold).
+    // With symbolic bools, CBMC 6.11 would ignore this comparison.
     a < b
 }
 
