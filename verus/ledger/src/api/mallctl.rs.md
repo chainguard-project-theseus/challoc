@@ -8,16 +8,12 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `VERSION` | external_body const | core library | none (assumption) | trusted |
-| `thread_allocated` | external_body | allocator invariant | Verus | trusted |
-| `thread_allocatedp` | external_body | allocator invariant | Verus | trusted |
-| `thread_...located` | external_body | allocator invariant | Verus | trusted |
-| `thread_...ocatedp` | external_body | allocator invariant | Verus | trusted |
 | `root` | external_body | allocator invariant | Verus | trusted |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
 ## `VERSION`
 
-src/api/mallctl.rs:109. Kind: external_body const. Category: core library.
+src/api/mallctl.rs:110. Kind: external_body const. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`VERSION_STR`] for verified code, its value opaque to the verifier.
@@ -26,57 +22,9 @@ Tool: none (assumption). Status: trusted.
 pub(crate) const VERSION: &'static str = VERSION_STR;
 ```
 
-## `thread_allocated`
-
-src/api/mallctl.rs:791. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-```
-
-## `thread_allocatedp`
-
-src/api/mallctl.rs:800. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-```
-
-## `thread_deallocated`
-
-src/api/mallctl.rs:809. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-```
-
-## `thread_deallocatedp`
-
-src/api/mallctl.rs:818. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-```rust
-fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-```
-
 ## `root`
 
-src/api/mallctl.rs:1143. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1140. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > [`ROOT`].
@@ -89,7 +37,7 @@ fn root() -> (r: &'static [Node])
 
 ## `axiom_c_call`
 
-src/api/mallctl.rs:3262. Kind: axiom. Category: C-program contract.
+src/api/mallctl.rs:3307. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).

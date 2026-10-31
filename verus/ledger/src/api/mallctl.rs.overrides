@@ -4,11 +4,5 @@ root	allocator invariant	Verus
 # `VERSION_STR`, whose definition lies outside verus!; it claims only that
 # the value is a `&'static str`.
 VERSION	core library	none (assumption)
-# Temporary seams, discharged by lane 45b, which verifies `thread_heap`
-# (after 50b verifies `heap::heap_for_thread`): the `thread.*` readers.
-thread_allocated	allocator invariant	Verus
-thread_allocatedp	allocator invariant	Verus
-thread_deallocated	allocator invariant	Verus
-thread_deallocatedp	allocator invariant	Verus
 # The C caller passed the arguments under the entry point's contract.
 axiom_c_call	C-program contract	none (assumption)
