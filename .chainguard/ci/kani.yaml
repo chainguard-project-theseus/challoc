@@ -1,20 +1,29 @@
-# Kani: the bounded model-checking harnesses of src/kani/ (cfg(kani) only;
-# verus/README.md, "Kani"), each checking a seam of verus/ledger/ against
-# the contract Verus assumes. They run under both quanta, since
+# Kani: the bounded model-checking harnesses (cfg(kani) only;
+# verus/README.md, "Kani") of src/kani/ and of the kani_* modules in
+# other files, each checking a seam of verus/ledger/ against the contract
+# Verus assumes. They run under both quanta, since
 # `report::base_slab_sizes_returns` reads `BASE_CLASSES`, whose length
 # is NCLASSES.
 #
 # The kani package is pinned to the release the harnesses were checked
 # with. It brings the rust stream its kani-compiler is built against
 # (rust-1.99, so this file installs no rust-1.98) and kissat, the solver
-# `fig_mul_exact` selects; cbmc is pinned to the release Kani 0.68.0 was
-# tested with. build-base is build.rs's C++ compiler. cargo kani takes no
-# --locked, so `cargo fetch --locked` holds the run to Cargo.lock first.
+# `fig_mul_exact` and `set_listed_contract` select; cbmc is pinned to the
+# release Kani 0.68.0 was tested with. build-base is build.rs's C++
+# compiler. cargo kani takes no --locked, so `cargo fetch --locked` holds
+# the run to Cargo.lock first.
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` (symbol aliases and the TLS slot) that no harness reaches;
 # `-Z stubbing` for the abort harnesses, which stub
 # `sys::abort::abort_fmt` (its body ends in raw syscalls, inline assembly
-# Kani does not run). `-j 4` runs four harnesses at once.
+# Kani does not run), and for `get_contract`, which stubs the C-string
+# `name` methods of `config.rs`. `-j 4` runs four harnesses at once, on
+# xlarge-amd64 for its 64 GiB: CBMC peaks at 11.6 GiB on
+# `config::kani_config::display_bytes`, 10.8 GiB on
+# `kani_proofs::misc::formatter_write_fmt`, 10.1 GiB on
+# `api::print::kani_print::word_returns` and 8.8 GiB on
+# `kani_proofs::slice::slice_is_sorted` (quantum 16), and the first three
+# alone sum to 32.5 GiB, past large-amd64's 32 GiB.
 version: 1
 
 environment:
@@ -23,29 +32,39 @@ environment:
 checks:
   kani:
     description: >-
-      cargo kani over every harness in src/kani/, at quantum 16 and at
-      quantum 8: each must verify. Runs on pull requests that change
-      src/kani/, src/vspec/ or this file.
+      cargo kani over every harness (src/kani/ and the kani_* modules of
+      other files), at quantum 16 and at quantum 8: each must verify. Runs
+      on pull requests that change src/kani/, src/vspec/, a file in its
+      changed: list, or this file.
     trigger: [presubmit]
-    # Only on pull requests that change a harness, a specification it
-    # checks or this file; other pull requests do not plan the check. The
-    # items the harnesses check live outside these paths (src/stats.rs,
-    # src/sys/abort.rs, src/layout/, the enums src/kani/eq.rs matches), so
-    # a change to one of them is checked only when a later pull request
-    # touches src/kani/ (src/kani/mod.rs).
+    # On pull requests that change src/kani/, a specification its harnesses
+    # check, a file with an in-source kani_* module that hot proof lanes
+    # rarely touch, or this file; other pull requests do not plan the check.
+    # The files most proof pull requests touch (src/heap/cache.rs,
+    # src/purge.rs, and any later kani_* module in a hot file) are covered by
+    # kani-main below instead, after each landing, so presubmit doesn't pay
+    # for Kani on every proof round. Items outside both (src/stats.rs,
+    # src/sys/abort.rs, the class table in src/layout/, the enums
+    # src/kani/eq.rs matches) are checked by kani-main too.
     when:
       changed:
         - "src/kani/**"
         - "src/vspec/**"
+        - "src/api/print.rs"
+        - "src/config.rs"
+        - "src/huge/table.rs"
+        - "src/layout/regions.rs"
+        - "src/slab.rs"
+        - "src/sys/cgroup.rs"
         - ".chainguard/ci/kani.yaml"
-    foreach:
+    foreach: &kani-quanta
       - {name: q16, vars: {QUANTUM: "16"}}
       - {name: q8, vars: {QUANTUM: "8"}}
-    resources: large-amd64
+    resources: xlarge-amd64
     timeout: 40m
-    network:
+    network: &kani-net
       egress: [index.crates.io, static.crates.io]
-    steps:
+    steps: &kani-steps
       - name: fetch the locked dependencies
         cmd: [cargo, fetch, --locked]
       - name: harnesses
@@ -56,3 +75,18 @@ checks:
             cargo kani -Z unstable-options -Z stubbing --ignore-global-asm
             --output-format terse -j 4
             --no-default-features --features "quantum${QUANTUM:?}"
+
+  # Every harness, after each landing on main: covers the kani_* modules in
+  # files the presubmit trigger leaves out, and the checked items outside
+  # any listed path. It gates nothing; a failure here points at the commit
+  # that broke a harness.
+  kani-main:
+    description: >-
+      cargo kani over every harness on main, at quantum 16 and at quantum 8,
+      after each landing.
+    trigger: [postsubmit]
+    foreach: *kani-quanta
+    resources: xlarge-amd64
+    timeout: 40m
+    network: *kani-net
+    steps: *kani-steps

@@ -1689,3 +1689,28 @@ mod tests {
         t.remove(7);
     }
 }
+
+/// Kani harness for the part of `Table::storage`'s trust that Kani can
+/// run (`verus/ledger/src/huge/table.rs.md`).
+#[cfg(kani)]
+mod kani_table {
+    use super::Entry;
+
+    /// `Table::storage`'s last trusted step: an all-zero `Entry` is empty.
+    /// 16 zero bytes, aligned as an `Entry`, read as an `Entry` (a
+    /// defined read: a `usize` and a raw pointer accept every bit
+    /// pattern), give an entry whose `desc` has address 0 (`!occupied`)
+    /// and whose key is 0. The entry is 16 bytes, the size the `global
+    /// layout` line states.
+    #[kani::proof]
+    fn zero_entry_is_empty() {
+        assert_eq!(core::mem::size_of::<Entry>(), 16);
+        let z = [0u64; 2];
+        assert!(core::mem::align_of::<Entry>() <= core::mem::align_of::<[u64; 2]>());
+        // SAFETY: 16 initialised bytes, aligned for `Entry`, whose fields
+        // accept every bit pattern.
+        let e: Entry = unsafe { core::ptr::read(z.as_ptr().cast::<Entry>()) };
+        assert_eq!(e.desc as usize, 0);
+        assert_eq!(e.key, 0);
+    }
+}
