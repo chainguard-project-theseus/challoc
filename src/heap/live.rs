@@ -33,7 +33,8 @@ verus! {
 /// Ghost token of a live block: the block at `addr`, a slot of class
 /// `class` holding its slot token (`slot`), or a huge run holding its
 /// [`RunToken`] (`run`), with the permission to its usable bytes (`mem`,
-/// [`UserMem`]). Made by [`Live::from_slot`] and [`Live::from_run`];
+/// [`UserMem`]). Made by [`Live::from_slot`] and [`Live::from_run`]
+/// ([`Live::empty`] holds nothing);
 /// taken apart by [`Live::take_slot`] and [`Live::into_run`], which drop
 /// the permission as they give the slot or run token out;
 /// [`Live::take_mem`] and [`Live::put_mem`] lend the permission to a fill.
@@ -250,6 +251,12 @@ impl Live {
             &&& self.mem_ok()
             &&& self.prov() == p@.provenance
         }
+    }
+
+    /// The token of nothing: no slot, run or permission (what a token
+    /// moved out of an out-parameter leaves behind).
+    pub proof fn empty() -> (tracked r: Live) {
+        Live { addr: 0, class: 0, slot: None, run: None, mem: None }
     }
 
     /// Replace the token with `v` (an out-parameter's result).

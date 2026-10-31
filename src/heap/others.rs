@@ -17,9 +17,11 @@ use crate::arena::field_at;
 
 use super::{CacheHeader, CachePerms, FOREIGN, Heap, Shared};
 #[cfg(verus_keep_ghost)]
-use super::{node_hdr, node_placed};
+use super::{lemma_handed_ok, node_hdr, node_placed};
 #[cfg(verus_keep_ghost)]
 use crate::arena::field_ptr;
+#[cfg(verus_keep_ghost)]
+use crate::layout::process_regions;
 use crate::meta::MetaClaim;
 use crate::vspec::errno::ThreadErrno;
 #[cfg(verus_keep_ghost)]
@@ -31,6 +33,8 @@ use vstd::prelude::verus;
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, int};
 use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_write, ptr_ref};
+#[cfg(verus_keep_ghost)]
+use vstd::resource::set::GhostSingleton;
 
 verus! {
 
@@ -584,12 +588,16 @@ fn assert_not_home(arena: &u16, home: &u16)
 
 } // verus!
 
+verus! {
+
 impl Heap {
     /// Allocation of `class` from another arena than the home one: through
     /// this heap's cache for that arena if the `others` list has one with
     /// entries, else the slow path, whose `ensure_cache` creates the node
     /// and the cache only for a class this heap caches there
     /// (`Config::cap_for`) and serves the rest from the bitmaps.
+    /// `arena` is not [`FOREIGN`], so the node popped is the one keyed
+    /// `arena` ([`Heap::other_caches`]), never the flush-only one.
     #[cold]
     #[inline(never)]
     pub(super) fn alloc_other(
@@ -597,36 +605,43 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
-        _blk: Tracked<&mut super::Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) -> (*mut u8, bool) {
-        let node = self.other_caches(shared, arena, false, Tracked::assume_new());
+        Tracked(blk): Tracked<&mut super::Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            class < NCLASSES,
+            arena != FOREIGN,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        proof {
+            shared.lemma_wf();
+        }
+        let node = self.other_caches(shared, arena, false, Tracked(&mut LockOrder::spare()));
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap.
             let cache = unsafe { Self::node_cache_ptr(node, class) };
+            proof {
+                assert(self.owns(node_hdr(node, class as int)));
+                assert(self.hdr_class(node_hdr(node, class as int)) == class);
+                self.lemma_poppable(arena, class as int, cache);
+            }
             // SAFETY: unused (`len == 0`) or this heap's cache.
             let len = unsafe { self.hdr_ref(cache) }.len;
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
-                return unsafe {
-                    self.pop(
-                        cache,
-                        class,
-                        len,
-                        shared.pac(),
-                        Tracked::assume_new(),
-                        Tracked::assume_new(),
-                    )
-                };
+                return unsafe { self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno)) };
             }
         }
-        self.alloc_slow_in(
-            shared,
-            arena,
-            class,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
+        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno))
     }
 
     /// Free of a slot whose slab belongs to another arena than the home
@@ -644,11 +659,36 @@ impl Heap {
         shared: &Shared,
         class: usize,
         p: *mut u8,
-        _blk: Tracked<super::Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) {
-        let node = self.other_caches(shared, FOREIGN, false, Tracked::assume_new());
+        Tracked(blk): Tracked<super::Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    )
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && !old(self).rehome),
+            crate::sys::may_syscall(),
+            process_regions().is_slot(class as int, p@.addr),
+            blk.slot_block(p, class as int),
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+    {
+        // As in `Heap::push`.
+        let tracked mut blk = blk;
+        let ghost orig = blk;
+        let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+        proof {
+            shared.lemma_wf();
+            shared.lemma_regions_ok();
+            blk.lemma_mem();
+            let tracked tok = blk.take_slot(class as int);
+            tk.tracked_insert(0, tok);
+        }
+        let node = self.other_caches(shared, FOREIGN, false, Tracked(&mut LockOrder::spare()));
         if !node.is_null() {
+            proof {
+                assert(self.owns(node_hdr(node, class as int)));
+            }
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
             if unsafe {
@@ -656,27 +696,19 @@ impl Heap {
                     Self::node_cache_ptr(node, class),
                     p,
                     shared.push_flags(),
-                    Tracked::assume_new(),
-                    Tracked::assume_new(),
+                    Tracked(self.perms.borrow_mut()),
+                    Tracked(&mut tk),
                 )
             } {
                 return;
             }
         }
-        self.free_slow_in(
-            shared,
-            FOREIGN,
-            class,
-            p,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
+        proof {
+            blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
+        }
+        self.free_slow_in(shared, FOREIGN, class, p, Tracked(blk), Tracked(errno))
     }
-}
 
-verus! {
-
-impl Heap {
     /// The header for `(arena, class)`, creating the `others` node if
     /// needed. Null if no node could be allocated.
     pub(super) fn cache_slot(

@@ -548,11 +548,7 @@ impl Heap {
             (p, zero)
         }
     }
-}
 
-} // verus!
-
-impl Heap {
     /// Push a checked slot of `class` (home arena) onto its cache.
     #[inline(always)]
     pub(super) fn push(
@@ -560,24 +556,43 @@ impl Heap {
         shared: &Shared,
         class: usize,
         p: *mut u8,
-        _blk: Tracked<Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) {
-        if !self.push_fast(class, p, shared.push_flags(), Tracked::assume_new()) {
-            self.free_slow(
-                shared,
-                class,
-                p,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            );
+        Tracked(blk): Tracked<Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    )
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            process_regions().is_slot(class as int, p@.addr),
+            blk.slot_block(p, class as int),
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+        // With `free_slow`, `free_slow_in` and `Heap::rehome_on_free`, whose
+        // push follows a move of the home, which clears `rehome`.
+        decreases (if old(self).spec_rehome() { 1int } else { 0int }), 3int,
+    {
+        // The slot's token goes onto the cache; the permission to its bytes
+        // is dropped with it (`Live::take_slot`), and a fresh one comes
+        // back with the token when the push declines.
+        let tracked mut blk = blk;
+        let ghost orig = blk;
+        let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+        proof {
+            shared.lemma_regions_ok();
+            blk.lemma_mem();
+            let tracked tok = blk.take_slot(class as int);
+            tk.tracked_insert(0, tok);
+        }
+        if !self.push_fast(class, p, shared.push_flags(), Tracked(&mut tk)) {
+            proof {
+                blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
+            }
+            self.free_slow(shared, class, p, Tracked(blk), Tracked(errno));
         }
     }
-}
 
-verus! {
-
-impl Heap {
     /// The cache push alone: `false` when the cache is full (or still the
     /// sentinel) and the caller must take a slow path. No counter moves:
     /// the push count is implied by `len`, `allocs` and `moved`, and
@@ -753,6 +768,43 @@ impl Heap {
     /// ([`plain`](super::plain)).
     pub(super) open spec fn cached_addr(&self, cache: *mut CacheHeader, i: int) -> int {
         plain(self.perms@.slots[self.perms@.ent(cache, i)].value(), self.hdr(cache).slots) as int
+    }
+
+    /// No cached entry of `cache` (its first `n`) stands for the live slot
+    /// whose token `blk` holds: each holds its own slot's token
+    /// ([`CachePerms::tokened`]), of the same authority, so of another slot
+    /// (`Live::lemma_slot_apart`). This is the second disjunct of
+    /// [`Heap::scan_or_abort`]'s precondition, under which its
+    /// `double_free_scan` abort is unreachable, for a free that holds the
+    /// slot's token and only `valid_aborts` (`free_slow_in`'s scan).
+    /// It restates [`Heap::theorem_uniqueness_live`]'s per-entry step rather
+    /// than calling it: that theorem states the fact over the closed
+    /// `Heap::cached`, while `scan_or_abort`'s precondition names the open
+    /// [`cached_addr`](Heap::cached_addr), and this lemma also frames
+    /// `blk`'s `mem()` and `claims`.
+    pub(super) proof fn lemma_not_cached(tracked &self, tracked blk: &mut Live, cache: *mut CacheHeader, c: int, n: int)
+        requires
+            self.wf(),
+            self.owns(cache),
+            self.hdr_class(cache) == c,
+            old(blk).slot_of(c),
+            0 <= n <= self.hdr(cache).len,
+        ensures
+            final(blk).slot_of(c),
+            final(blk).addr() == old(blk).addr(),
+            final(blk).len() == old(blk).len(),
+            final(blk).mem() == old(blk).mem(),
+            final(blk).wf() == old(blk).wf(),
+            forall|p: *mut u8| #[trigger] old(blk).claims(p) ==> final(blk).claims(p),
+            forall|i: int| 0 <= i < n ==> #[trigger] self.cached_addr(cache, i) != old(blk).addr() as int,
+        decreases n,
+    {
+        if n > 0 {
+            self.lemma_not_cached(blk, cache, c, n - 1);
+            self.perms@.lemma_tok_get(cache, n - 1);
+            let q = self.perms@.ent(cache, n - 1);
+            blk.lemma_slot_apart(self.perms.borrow().toks.tracked_borrow(q), c);
+        }
     }
 
     /// Push onto `cache` unless it is full. With `scan`, compare `p`

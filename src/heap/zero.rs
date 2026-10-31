@@ -14,7 +14,8 @@
 //! Also the zero-on-free theorems ([`theorem_zero_on_free`],
 //! [`theorem_zero_on_free_huge`]): a slot or a huge run released with a
 //! token that its bytes read as zero is zero over its usable bytes, which
-//! is what the free paths under `zero_on_free` need once they are verified.
+//! is what the free paths state under `zero_on_free` (`Heap::free_slow_in`
+//! and `Heap::free_huge` call them).
 
 use super::CachePerms;
 #[cfg(verus_keep_ghost)]
@@ -446,10 +447,9 @@ pub(super) proof fn lemma_rebuild_entries(
 /// slot `p` of class `c` read as zero covers the slot's whole usable size
 /// ([`block_usable`]: one class per slot address, so its size is `c`'s).
 /// A free path that releases the slot under `Shared::zero_on_free` holds
-/// such a token once it has cleared the slot. The callers
-/// (`Heap::free_slow_in` and `heap::free_direct`, after `zero_slot`) are
-/// unverified and do not call it: they drop the token `zero_slot`
-/// returns.
+/// such a token once it has cleared the slot. `Heap::free_slow_in` calls
+/// it with the token `zero_slot` returns; `heap::free_direct`, the other
+/// caller of `zero_slot`, is unverified and drops the token.
 pub proof fn theorem_zero_on_free(tracked z: &Zeroed, p: *mut u8, c: int)
     requires
         super::regions_ok(),
@@ -484,32 +484,49 @@ pub(crate) proof fn theorem_zero_on_free_huge(tracked z: &Zeroed, blk: Live, pag
     blk.lemma_huge_block();
 }
 
-} // verus!
-
 impl super::Heap {
     /// Hand out token `t` of slot `p` of class `c` when `put`, as a pop
     /// does. No code: ghost only.
     #[inline(always)]
-    #[allow(dead_code)]
-    pub(super) fn put_handed(
-        &mut self,
-        _t: Tracked<Zeroed>,
-        _put: Ghost<bool>,
-        _p: Ghost<*mut u8>,
-        _c: Ghost<int>,
-    ) {
+    pub(super) fn put_handed(&mut self, t: Tracked<Zeroed>, Ghost(put): Ghost<bool>, Ghost(p): Ghost<*mut u8>, Ghost(c): Ghost<int>)
+        requires
+            old(self).wf(),
+            put ==> t@.covers(p, class_table()[c].size as int),
+        ensures
+            final(self).keeps(*old(self)),
+            put ==> final(self).handed_ok(p, c),
+    {
+        let Tracked(t) = t;
+        proof {
+            if put {
+                self.perms.borrow_mut().handed = Some(t);
+            }
+            super::Heap::lemma_keeps_handed(*old(self), *self);
+            super::lemma_handed_ok(*self, p, c);
+        }
     }
 
     /// Take the token the last pop handed out when `take` (an empty one
     /// otherwise). No code: ghost only.
     #[inline(always)]
-    #[allow(dead_code)]
-    pub fn take_handed(
-        &mut self,
-        _take: Ghost<bool>,
-        _p: Ghost<*mut u8>,
-        _c: Ghost<int>,
-    ) -> Tracked<Zeroed> {
-        Tracked::assume_new()
+    pub fn take_handed(&mut self, Ghost(take): Ghost<bool>, Ghost(p): Ghost<*mut u8>, Ghost(c): Ghost<int>) -> (z: Tracked<Zeroed>)
+        requires
+            old(self).wf(),
+            take ==> old(self).handed_ok(p, c),
+        ensures
+            final(self).keeps(*old(self)),
+            take ==> z@.covers(p, class_table()[c].size as int),
+    {
+        let tracked mut z = Zeroed::empty(0);
+        proof {
+            super::lemma_handed_ok(*old(self), p, c);
+            if take {
+                z = self.perms.borrow_mut().handed.tracked_take();
+            }
+            super::Heap::lemma_keeps_handed(*old(self), *self);
+        }
+        Tracked(z)
     }
 }
+
+} // verus!

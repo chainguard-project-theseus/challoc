@@ -3433,19 +3433,6 @@ impl Shared {
         self.push_flags
     }
 
-    /// [`Shared::flags`]' [`PUSH_PAC`] bit in a well-formed `Shared`:
-    /// [`pac_mode`](super::pac_mode), which is on only where pointer
-    /// authentication is available.
-    pub proof fn lemma_flags_pac(&self)
-        requires
-            self.wf(),
-        ensures
-            (self.flags() & PUSH_PAC != 0) == super::pac_mode(),
-            (self.flags() & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
-    {
-        self.lemma_wf_slow();
-    }
-
     /// The bits of [`Shared::free_flags`]' byte other than [`FREE_ROUTE`],
     /// fixed when `init` made it (`put_flags`;
     /// [`fixed`](crate::vspec::flags::fixed)).
@@ -3473,6 +3460,8 @@ impl Shared {
     pub fn push_flags(&self) -> (r: u8)
         ensures
             r == self.flags(),
+            self.wf() ==> ((r & PUSH_PAC != 0) == super::pac_mode()),
+            self.wf() && (r & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
         opens_invariants none
     {
         self.push_flags
