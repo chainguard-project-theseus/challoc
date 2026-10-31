@@ -415,7 +415,7 @@ fn malloc_slow_class(class: usize, Tracked(blk): Tracked<&mut Live>, Tracked(err
         r@.addr != 0 ==> final(blk).slot_block(r, class as int),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let p = heap::alloc_declined(super::shared(), class, Tracked(blk));
+    let p = heap::alloc_declined(super::shared(), class, Tracked(blk), Tracked(&mut *errno));
     if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
@@ -475,7 +475,7 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked
     }
     let p = match class_index(size) {
         Some(c) => {
-            let p = heap::alloc(shared, c, Tracked(blk));
+            let p = heap::alloc(shared, c, Tracked(blk), Tracked(&mut *errno));
             proof {
                 lemma_class_fits(p, c as int, size);
                 lemma_class_gives(*blk, p, c as int, size);
@@ -539,7 +539,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
     }
     let (p, zeroed, z) = match class_index(size) {
         Some(c) => {
-            let r = heap::alloc_zeroed(shared, c, Tracked(blk));
+            let r = heap::alloc_zeroed(shared, c, Tracked(blk), Tracked(&mut *errno));
             proof {
                 lemma_class_fits(r.0, c as int, size);
                 lemma_class_gives(*blk, r.0, c as int, size);
@@ -591,7 +591,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
 /// C holds the token of the block it frees ([`heap::live::axiom_c_claim`],
 /// the one trusted step of the C contract).
 #[inline(always)]
-pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>)
+pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
@@ -600,13 +600,13 @@ pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>)
         p@.addr != 0 ==> heap::free_target(p),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    free_block(p, Tracked(blk))
+    free_block(p, Tracked(blk), errno)
 }
 
 /// [`free`] with the caller's token for `p` ([`Live::claims`]), which the
 /// free takes back.
 #[inline(always)]
-pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
+pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -633,7 +633,7 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
             return;
         }
     }
-    free_slow(p, Tracked(blk))
+    free_slow(p, Tracked(blk), errno)
 }
 
 /// Sized free on the calling thread's heap: `hint` is the class the size
@@ -645,7 +645,7 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>)
 /// ([`heap::hint_ok`] of every non-null `p` it returns for). C holds the
 /// token of the block it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c): Tracked<CCall>)
+pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
@@ -656,13 +656,13 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c):
         p@.addr != 0 ==> heap::hint_ok(p, hint),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    free_sized_block(p, size, hint, Tracked(blk))
+    free_sized_block(p, size, hint, Tracked(blk), errno)
 }
 
 /// [`free_sized_hint`] with the caller's token for `p` ([`Live::claims`]),
 /// which the free takes back: the token of the live block `p`.
 #[inline(always)]
-pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -678,7 +678,7 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
     // A huge size (no hint) has no fast path: straight to the slow one,
     // so the fast path carries a plain class and no test of the hint.
     let Some(c) = hint else {
-        return free_sized_unhinted(p, size, Tracked(blk));
+        return free_sized_unhinted(p, size, Tracked(blk), errno);
     };
     // On x86_64 there is no null test here: null is below every class
     // region, so its offset from the hint's region base wraps to a value
@@ -700,14 +700,14 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
             return;
         }
     }
-    free_sized_slow(p, size, hint, Tracked(blk))
+    free_sized_slow(p, size, hint, Tracked(blk), errno)
 }
 
 /// The sized free of a size no class holds (a huge run, or nothing): the
 /// exact `free` behind the null test.
 #[cold]
 #[inline(never)]
-fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
@@ -719,7 +719,7 @@ fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
         p@.addr != 0 ==> blk.block(p),
 {
     if !p.is_null() {
-        free_sized_slow(p, size, None, Tracked(blk))
+        free_sized_slow(p, size, None, Tracked(blk), errno)
     }
 }
 
@@ -730,7 +730,7 @@ fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
 /// message).
 #[cold]
 #[inline(never)]
-fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
@@ -748,7 +748,7 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint, Tracked(&blk));
-            heap::free(shared, p, Tracked(blk))
+            heap::free(shared, p, Tracked(blk), errno)
         }
         None => free_before_init(p),
     }
@@ -760,7 +760,7 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
 /// the size of another class, or with a huge size, aborts; so does a huge
 /// run freed with a size of another page count.
 #[inline(always)]
-pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>)
+pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
@@ -770,14 +770,14 @@ pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>)
         p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    free_sized_with(p, size, Tracked(blk))
+    free_sized_with(p, size, Tracked(blk), errno)
 }
 
 /// [`free_sized`] with the caller's token for `p` ([`Live::claims`]),
 /// which the free takes back (`free_sized_block`'s); also `sdallocx`'s
 /// with no flags.
 #[inline(always)]
-pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -794,14 +794,14 @@ pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
     // the sized path within its registers, with no spill (on Genoa a
     // `push` and a `pop` here cost `valkey1` 8%, #46).
     if size > SMALL_MAX {
-        return free_sized_medium(p, size, Tracked(blk));
+        return free_sized_medium(p, size, Tracked(blk), errno);
     }
-    free_sized_block(p, size, Some(class_index_small(size)), Tracked(blk))
+    free_sized_block(p, size, Some(class_index_small(size)), Tracked(blk), errno)
 }
 
 /// `free_sized` of a size above the small table.
 #[inline(never)]
-fn free_sized_medium(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
+fn free_sized_medium(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -812,13 +812,13 @@ fn free_sized_medium(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>)
         p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
         p@.addr != 0 ==> blk.block(p),
 {
-    free_sized_block(p, size, class_index(size), Tracked(blk))
+    free_sized_block(p, size, class_index(size), Tracked(blk), errno)
 }
 
 /// C23 `free_aligned_sized(p, align, size)`: the arguments given to
 /// `aligned_alloc`. An alignment that is not a power of two matches no
 /// class and aborts on a slab pointer.
-pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tracked<CCall>)
+pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
@@ -828,7 +828,7 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tra
         p@.addr != 0 ==> heap::hint_ok(p, if is_pow2(align) { spec_class_for(size, align) } else { None }),
 {
     let hint = if align.is_power_of_two() { class_for(size, align) } else { None };
-    free_sized_hint(p, size, hint, Tracked(c))
+    free_sized_hint(p, size, hint, Tracked(c), errno)
 }
 
 /// Everything `free` does off its fast path: heap creation, a full cache,
@@ -837,7 +837,7 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tra
 /// same message it always did).
 #[cold]
 #[inline(never)]
-fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>)
+fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
@@ -850,7 +850,7 @@ fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>)
         return;
     }
     match super::shared_if_ready() {
-        Some(shared) => heap::free(shared, p, Tracked(blk)),
+        Some(shared) => heap::free(shared, p, Tracked(blk), errno),
         None => free_before_init(p),
     }
 }
@@ -1375,9 +1375,12 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
 /// same class or, for a size no class serves, the same number of huge
 /// pages (`old_size_or_keep`; exactly then: [`keeps`] in [`realloc_block`]);
 /// otherwise allocate, copy `min(old usable, new size)`, free. On failure
-/// the old block is intact and `errno = ENOMEM`; `realloc(p, 0)`'s null
-/// leaves `errno` alone. C holds the token of the block it passes
-/// ([`heap::live::axiom_c_claim`]), and gets the result's.
+/// the old block is intact and `errno = ENOMEM`; `realloc(p, 0)` frees `p`
+/// and returns null without setting `errno` (the ensures do not state it:
+/// `heap::free` takes the `errno` token and its contract says nothing
+/// about the value it leaves). C holds the token
+/// of the block it passes ([`heap::live::axiom_c_claim`]), and gets the
+/// result's.
 pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>) -> (r: *mut u8)
     requires
         c.block() == Some(p),
@@ -1388,7 +1391,6 @@ pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno
         heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
-        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
     let tracked mut out = Live::empty();
@@ -1457,13 +1459,12 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         p@.addr != 0 && size != 0 && r@.addr != 0 && r@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
         p@.addr != 0 && size != 0 ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
-        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     if p.is_null() {
         return malloc_block(size, Tracked(out), Tracked(errno));
     }
     if size == 0 {
-        free_block(p, Tracked(blk));
+        free_block(p, Tracked(blk), Tracked(&mut *errno));
         return ptr::null_mut();
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
@@ -1498,7 +1499,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
     // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
     // `out` to `q`'s `size` or more; the two share no byte.
     unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
-    heap::free(shared, p, Tracked(blk));
+    heap::free(shared, p, Tracked(blk), Tracked(&mut *errno));
     q
 }
 
@@ -1573,7 +1574,6 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize, Tracked(errno): Tracked<&mut
         heap::fits(r, n * m, QUANTUM as int),
         p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && n * m == 0) ==> final(errno).val() == ENOMEM,
-        p@.addr != 0 && n * m == 0 ==> final(errno).val() == old(errno).val(),
 {
     match n.checked_mul(m) {
         Some(size) => realloc(p, size, Tracked(errno), Tracked(c)),
@@ -1750,7 +1750,7 @@ fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(uout): Tracked<
     proof {
         shared.lemma_regions_ok();
     }
-    let p = heap::alloc_declined(shared, class, Tracked(blk));
+    let p = heap::alloc_declined(shared, class, Tracked(blk), Tracked(&mut *errno));
     if p.is_null() {
         let s = store_usable(usable, 0, Tracked(uout));
         return (enomem(Tracked(errno)), s);
@@ -1888,7 +1888,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
     let ghost mut cls: int = -1;
     let (p, zeroed, u, z) = match class_index(size) {
         Some(c) => {
-            let (p, zeroed, z) = heap::alloc_zeroed(shared, c, Tracked(blk));
+            let (p, zeroed, z) = heap::alloc_zeroed(shared, c, Tracked(blk), Tracked(&mut *errno));
             proof {
                 cls = c as int;
                 lemma_class_fits(p, c as int, size);
@@ -1997,7 +1997,6 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout)
         heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
-        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
     let tracked mut uout = uout;
@@ -2031,13 +2030,12 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         p@.addr != 0 && size != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
-        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     if p.is_null() {
         return malloc_usable_stored(size, usable, Tracked(uout), Tracked(out), Tracked(errno));
     }
     if size == 0 {
-        free_block(p, Tracked(blk));
+        free_block(p, Tracked(blk), Tracked(&mut *errno));
         let s = store_usable(usable, 0, Tracked(uout));
         return (ptr::null_mut(), s);
     }
@@ -2072,7 +2070,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
     // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
     // `out` to `q`'s `size` or more; the two share no byte.
     unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
-    heap::free(shared, p, Tracked(blk));
+    heap::free(shared, p, Tracked(blk), Tracked(&mut *errno));
     (q, s)
 }
 
@@ -2195,7 +2193,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
 /// bad pointer dies with `free`'s message. C holds the token of the block
 /// it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>) -> (r: usize)
+pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>) -> (r: usize)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
@@ -2207,14 +2205,14 @@ pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>) -> (r: usize)
         p@.addr != 0 ==> 0 < r,
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    free_usable_block(p, Tracked(blk))
+    free_usable_block(p, Tracked(blk), errno)
 }
 
 /// [`free_usable`] with the caller's token for `p` ([`Live::claims`]),
 /// which the free takes back: the token of the live block `p`, whose
 /// usable size is the result.
 #[inline(always)]
-pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
+pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -2246,7 +2244,7 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
             return class_size(class);
         }
     }
-    free_usable_slow(p, Tracked(blk))
+    free_usable_slow(p, Tracked(blk), errno)
 }
 
 /// Everything `free_usable` does off its fast path: the size first, from
@@ -2256,7 +2254,7 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
 /// release). The size is the usable size of the caller's token for `p`.
 #[cold]
 #[inline(never)]
-fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
+fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
@@ -2298,7 +2296,7 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>) -> (r: usize)
     proof {
         blk.lemma_nonnull();
     }
-    heap::free(shared, p, Tracked(blk));
+    heap::free(shared, p, Tracked(blk), errno);
     usable
 }
 
@@ -2418,7 +2416,7 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
     }
     let p = match class_for(size, align) {
         Some(c) => {
-            let p = heap::alloc(shared, c, Tracked(blk));
+            let p = heap::alloc(shared, c, Tracked(blk), Tracked(&mut *errno));
             proof {
                 if p@.addr != 0 {
                     crate::vspec::class::axiom_class_table_wf(c as int);
@@ -2802,12 +2800,12 @@ mod exports {
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.free")]
     pub extern "C" fn free(p: *mut c_void) {
-        super::free(p as *mut u8, Tracked::assume_new())
+        super::free(p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn je_free(p: *mut c_void) {
-        super::free(p as *mut u8, Tracked::assume_new())
+        super::free(p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
     }
 
     verus! {
@@ -2913,13 +2911,24 @@ mod exports {
     /// in for the slot bit test (design 6.3).
     #[unsafe(no_mangle)]
     pub extern "C" fn free_sized(p: *mut c_void, size: usize) {
-        super::free_sized(p as *mut u8, size, Tracked::assume_new())
+        super::free_sized(
+            p as *mut u8,
+            size,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 
     /// C23 `free_aligned_sized`: as `free_sized`, with the alignment.
     #[unsafe(no_mangle)]
     pub extern "C" fn free_aligned_sized(p: *mut c_void, align: usize, size: usize) {
-        super::free_aligned_sized(p as *mut u8, align, size, Tracked::assume_new())
+        super::free_aligned_sized(
+            p as *mut u8,
+            align,
+            size,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 
     #[unsafe(no_mangle)]
@@ -2960,7 +2969,7 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn challoc_free_usable(p: *mut c_void) -> usize {
-        super::free_usable(p as *mut u8, Tracked::assume_new())
+        super::free_usable(p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
     }
 }
 
@@ -3017,10 +3026,18 @@ mod tests {
             }
             fill(p, usable, 3);
             check(p, usable, 3);
-            free(p, vstd::prelude::Tracked::assume_new());
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
         assert_eq!(malloc_usable_size(ptr::null_mut()), 0);
-        free(ptr::null_mut(), vstd::prelude::Tracked::assume_new());
+        free(
+            ptr::null_mut(),
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 
     #[test]
@@ -3028,8 +3045,16 @@ mod tests {
         let a = malloc(0, vstd::prelude::Tracked::assume_new());
         let b = malloc(0, vstd::prelude::Tracked::assume_new());
         assert!(!a.is_null() && !b.is_null() && a != b);
-        free(a, vstd::prelude::Tracked::assume_new());
-        free(b, vstd::prelude::Tracked::assume_new());
+        free(
+            a,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
+        free(
+            b,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 
     #[test]
@@ -3039,13 +3064,21 @@ mod tests {
             // memory must read as zero.
             let p = malloc(n, vstd::prelude::Tracked::assume_new());
             fill(p, n, 0xAB);
-            free(p, vstd::prelude::Tracked::assume_new());
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             let q = calloc(1, n, vstd::prelude::Tracked::assume_new());
             assert!(!q.is_null());
             for i in 0..n {
                 assert_eq!(unsafe { *q.add(i) }, 0, "calloc({n}) byte {i} not zero");
             }
-            free(q, vstd::prelude::Tracked::assume_new());
+            free(
+                q,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
         set_errno(0, vstd::prelude::Tracked::assume_new());
         assert!(calloc(usize::MAX, 2, vstd::prelude::Tracked::assume_new()).is_null());
@@ -3132,7 +3165,11 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_ne!(h2, h);
-        free(h2, vstd::prelude::Tracked::assume_new());
+        free(
+            h2,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
 
         assert!(
             reallocarray(
@@ -3153,7 +3190,11 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(malloc_usable_size(r) >= 64);
-        free(r, vstd::prelude::Tracked::assume_new());
+        free(
+            r,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 
     #[test]
@@ -3178,7 +3219,11 @@ mod tests {
                 assert!(malloc_usable_size(p) >= size);
                 fill(p, size, 9);
                 check(p, size, 9);
-                free(p, vstd::prelude::Tracked::assume_new());
+                free(
+                    p,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
 
                 let mut out = ptr::null_mut();
                 assert_eq!(
@@ -3192,7 +3237,11 @@ mod tests {
                     0
                 );
                 assert_eq!(out as usize % align, 0);
-                free(out, vstd::prelude::Tracked::assume_new());
+                free(
+                    out,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
             }
             align <<= 1;
         }
@@ -3204,16 +3253,28 @@ mod tests {
         // 16-aligned, so class 64 is used.
         let p = aligned_alloc(32, 48, vstd::prelude::Tracked::assume_new());
         assert_eq!(malloc_usable_size(p), 64);
-        free(p, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         // Alignment already implied by the quantum: plain class.
         let p = aligned_alloc(QUANTUM, 48, vstd::prelude::Tracked::assume_new());
         assert_eq!(malloc_usable_size(p), class_size_of(48).unwrap());
-        free(p, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         // 4 KiB alignment for 5 KiB: the 6 KiB class (5120 + 1024) is not a
         // multiple of 4 KiB; 8 KiB is.
         let p = aligned_alloc(4096, 5 * 1024, vstd::prelude::Tracked::assume_new());
         assert_eq!(malloc_usable_size(p), 8192);
-        free(p, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 
     #[test]
@@ -3287,14 +3348,26 @@ mod tests {
         let p = valloc(10, vstd::prelude::Tracked::assume_new());
         assert_eq!(p as usize % page, 0);
         assert!(malloc_usable_size(p) >= 10);
-        free(p, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         let p = pvalloc(page + 1, vstd::prelude::Tracked::assume_new());
         assert_eq!(p as usize % page, 0);
         assert!(malloc_usable_size(p) >= 2 * page);
-        free(p, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         let p = pvalloc(0, vstd::prelude::Tracked::assume_new());
         assert!(malloc_usable_size(p) >= page);
-        free(p, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 
     /// Design 13.7: the size-returning entry points answer exactly what
@@ -3335,7 +3408,11 @@ mod tests {
             fill(p, u, 3);
             check(p, u, 3);
             assert_eq!(
-                free_usable(p, vstd::prelude::Tracked::assume_new()),
+                free_usable(
+                    p,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                ),
                 u,
                 "free_usable({n})"
             );
@@ -3344,7 +3421,11 @@ mod tests {
             // slot or run that was dirtied and freed a moment ago.
             let d = malloc(n.max(1), vstd::prelude::Tracked::assume_new());
             fill(d, malloc_usable_size(d), 0xAB);
-            free(d, vstd::prelude::Tracked::assume_new());
+            free(
+                d,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             let mut u = usize::MAX;
             let q = calloc_usable(
                 1,
@@ -3395,7 +3476,14 @@ mod tests {
             assert_eq!(u3, malloc_usable_size(g));
             assert!(u3 >= grown);
             check(g, u.min(grown), 4);
-            assert_eq!(free_usable(g, vstd::prelude::Tracked::assume_new()), u3);
+            assert_eq!(
+                free_usable(
+                    g,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                ),
+                u3
+            );
         }
     }
 
@@ -3408,7 +3496,11 @@ mod tests {
     #[test]
     fn usable_entry_points_null_and_failure_cases() {
         assert_eq!(
-            free_usable(ptr::null_mut(), vstd::prelude::Tracked::assume_new()),
+            free_usable(
+                ptr::null_mut(),
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
             0
         );
         let p = malloc_usable(
@@ -3435,8 +3527,16 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(!r.is_null());
-        free(p, vstd::prelude::Tracked::assume_new());
-        free(r, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
+        free(
+            r,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
 
         let mut u = usize::MAX;
         let p = realloc_usable(
@@ -3524,17 +3624,35 @@ mod tests {
 
         // Aligned blocks report their class, not the request.
         let a = aligned_alloc(4096, 5 * 1024, vstd::prelude::Tracked::assume_new());
-        assert_eq!(free_usable(a, vstd::prelude::Tracked::assume_new()), 8192);
+        assert_eq!(
+            free_usable(
+                a,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
+            8192
+        );
         // Off the fast path: a full cache and a huge run.
         let many: Vec<*mut u8> = (0..3000)
             .map(|_| malloc(64, vstd::prelude::Tracked::assume_new()))
             .collect();
         for p in many {
-            assert_eq!(free_usable(p, vstd::prelude::Tracked::assume_new()), 64);
+            assert_eq!(
+                free_usable(
+                    p,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                ),
+                64
+            );
         }
         let h = malloc(3 << 20, vstd::prelude::Tracked::assume_new());
         assert_eq!(
-            free_usable(h, vstd::prelude::Tracked::assume_new()),
+            free_usable(
+                h,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
             malloc_usable_size_of_huge(3 << 20)
         );
     }
@@ -3552,15 +3670,27 @@ mod tests {
         let p = malloc(100, vstd::prelude::Tracked::assume_new());
         let h = malloc(1 << 20, vstd::prelude::Tracked::assume_new());
         set_errno(1234, vstd::prelude::Tracked::assume_new());
-        free(p, vstd::prelude::Tracked::assume_new());
-        free(h, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
+        free(
+            h,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         // Overflow a cache so the flush path runs too.
         let many: Vec<*mut u8> = (0..1000)
             .map(|_| malloc(64, vstd::prelude::Tracked::assume_new()))
             .collect();
         set_errno(1234, vstd::prelude::Tracked::assume_new());
         for p in many {
-            free(p, vstd::prelude::Tracked::assume_new());
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
         assert_eq!(errno(), 1234);
     }
@@ -3579,7 +3709,11 @@ mod tests {
             let h = malloc(4 << 20, vstd::prelude::Tracked::assume_new());
             assert!(!h.is_null());
             unsafe { ptr::write_bytes(h, 1, 4 << 20) };
-            free(h, vstd::prelude::Tracked::assume_new());
+            free(
+                h,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             malloc_trim(0, vstd::prelude::Tracked::assume_new()) == 1
         });
         assert!(purged, "malloc_trim never reported the freed run purged");
@@ -3598,14 +3732,22 @@ mod tests {
                 let chunk: Vec<usize> = chunk.to_vec();
                 std::thread::spawn(move || {
                     for &p in &chunk {
-                        free(p as *mut u8, vstd::prelude::Tracked::assume_new());
+                        free(
+                            p as *mut u8,
+                            vstd::prelude::Tracked::assume_new(),
+                            vstd::prelude::Tracked::assume_new(),
+                        );
                     }
                     // Leave with plenty in this thread's caches.
                     let mine: Vec<*mut u8> = (0..300)
                         .map(|_| malloc(48, vstd::prelude::Tracked::assume_new()))
                         .collect();
                     for p in mine {
-                        free(p, vstd::prelude::Tracked::assume_new());
+                        free(
+                            p,
+                            vstd::prelude::Tracked::assume_new(),
+                            vstd::prelude::Tracked::assume_new(),
+                        );
                     }
                 })
             })

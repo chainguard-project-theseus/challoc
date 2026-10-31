@@ -3463,7 +3463,11 @@ mod tests {
             newlen,
         );
         assert_eq!(rc, EINVAL);
-        free(p, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 
     fn get_mib<T: Copy + Default>(mib: &[usize]) -> T {
@@ -4107,7 +4111,11 @@ mod tests {
             }
             assert!(attempt < 19, "allocated {a0} -> {a1} on every attempt");
             for p in live.drain(..) {
-                free(p, vstd::prelude::Tracked::assume_new());
+                free(
+                    p,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
             }
         }
         let active: usize = get("stats.active");
@@ -4161,7 +4169,11 @@ mod tests {
             ENOENT
         );
         for p in live {
-            free(p, vstd::prelude::Tracked::assume_new());
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
     }
 
@@ -4401,7 +4413,11 @@ mod tests {
         assert_eq!(unsafe { *ap }, a0);
         assert_eq!(get::<u64>("thread.allocated"), a0 + size);
         assert_eq!(unsafe { *ap }, a0 + size, "materialised by the read");
-        free(p, vstd::prelude::Tracked::assume_new());
+        free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(get::<u64>("thread.deallocated"), d0 + size);
         assert_eq!(unsafe { *dp }, d0 + size);
         // thread.tcache.flush empties this thread's caches.
@@ -4409,7 +4425,11 @@ mod tests {
             .map(|_| malloc(48, vstd::prelude::Tracked::assume_new()))
             .collect();
         for q in many {
-            free(q, vstd::prelude::Tracked::assume_new());
+            free(
+                q,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
         let c = crate::layout::class_of(48).unwrap();
         let h = heap::heap_for_thread(s).unwrap();
@@ -4428,12 +4448,20 @@ mod tests {
         let q = malloc(48, vstd::prelude::Tracked::assume_new());
         assert!(h.cache(c).is_none(), "no cache is created while disabled");
         assert_eq!(get::<u64>("thread.allocated"), a_before + 48);
-        free(q, vstd::prelude::Tracked::assume_new());
+        free(
+            q,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(h.cache(c).is_none());
         assert_eq!(set("thread.tcache.enabled", true), 0);
         let q = malloc(48, vstd::prelude::Tracked::assume_new());
         assert!(h.cache(c).is_some(), "caches come back");
-        free(q, vstd::prelude::Tracked::assume_new());
+        free(
+            q,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         // thread.arena moves the home arena.
         let home: c_uint = get("thread.arena");
         assert_eq!(home as u16, h.arena());
@@ -4447,7 +4475,11 @@ mod tests {
                 .map(|x| x.1),
             Ok(a as u16)
         );
-        free(q, vstd::prelude::Tracked::assume_new());
+        free(
+            q,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(set("thread.arena", 4000 as c_uint), EFAULT);
         assert_eq!(set("thread.arena", 5000 as c_uint), EFAULT);
         assert_eq!(set("thread.arena", home), 0);
