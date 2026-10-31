@@ -11,6 +11,7 @@ use crate::layout::process_regions;
 use crate::lock::LockOrder;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
+use crate::vspec::errno::ThreadErrno;
 
 #[cfg(verus_keep_ghost)]
 use super::{
@@ -378,13 +379,22 @@ impl Heap {
         len: u32,
         pac: bool,
         _blk: Tracked<&mut Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) -> (*mut u8, bool) {
         let h = ptr_mut_ref(cache, Tracked::assume_new());
         let allocs = h.allocs.wrapping_add(1);
         h.allocs = allocs;
         if ((allocs as u32) & h.compact_mask) == 0 {
             // SAFETY: guaranteed by the caller.
-            return unsafe { self.pop_compact(cache, class, len) };
+            return unsafe {
+                self.pop_compact(
+                    cache,
+                    class,
+                    len,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+            };
         }
         // SAFETY: guaranteed by the caller.
         unsafe {

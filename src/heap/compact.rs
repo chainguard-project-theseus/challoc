@@ -31,9 +31,10 @@ use crate::lock::LockOrder;
 use crate::lock::rank_class;
 use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
+use crate::vspec::errno::ThreadErrno;
 
 use super::paths::shared_of;
-use super::{CacheHeader, CachePerms, Heap, Shared, stack_mut};
+use super::{CacheHeader, CachePerms, Heap, Live, Shared, stack_mut};
 #[cfg(verus_keep_ghost)]
 use super::{
     cell_ok, lemma_rebuild_moves, lemma_rebuild_tracks, lemma_stack_fill, pac_mode, plain,
@@ -53,7 +54,7 @@ use vstd::map::Map;
 use vstd::modes::tracked_swap;
 #[cfg(verus_keep_ghost)]
 use vstd::raw_ptr::PointsTo;
-use vstd::raw_ptr::ptr_mut_ref;
+use vstd::raw_ptr::{ptr_mut_ref, ptr_mut_write, ptr_ref};
 
 verus! {
 
@@ -201,14 +202,16 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         len: u32,
+        _blk: Tracked<&mut Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
-            let pac = (*self.shared).pac();
+            let pac = shared_of(self.shared).pac();
             match self.hdr_ref(cache).mode {
                 MODE_COMPACT => {}
                 MODE_PROBE => {
-                    let shared: &Shared = &*self.shared;
+                    let shared: &Shared = shared_of(self.shared);
                     // The probe is also a heartbeat for the periodic work: a
                     // balanced churn on a dense class takes no other slow
                     // path, and without it no GC or decay would ever run on
@@ -217,19 +220,12 @@ impl Heap {
                     let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some((a, _)) =
+                        let Some((a, w)) =
                             shared.arena(self.hdr_ref(cache).arena, Tracked::assume_new())
                         else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(
-                            shared,
-                            a,
-                            Tracked::assume_new(),
-                            cache,
-                            class,
-                            Tracked::assume_new(),
-                        );
+                        len = self.refill(shared, a, w, cache, class, Tracked::assume_new());
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
@@ -257,7 +253,13 @@ impl Heap {
                     }
                     let h = self.hdr_mut(cache);
                     h.set_mode(MODE_COMPACT);
-                    return self.pop_compact_run(cache, class, len);
+                    return self.pop_compact_run(
+                        cache,
+                        class,
+                        len,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
                 }
                 _ => {
                     return Self::pop_top(
@@ -269,7 +271,13 @@ impl Heap {
                     );
                 }
             }
-            self.pop_compact_run(cache, class, len)
+            self.pop_compact_run(
+                cache,
+                class,
+                len,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
         }
     }
 
@@ -283,10 +291,12 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         len: u32,
+        _blk: Tracked<&mut Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
-            let pac = (*self.shared).pac();
+            let pac = shared_of(self.shared).pac();
             match self.hdr_ref(cache).mode {
                 MODE_COMPACT => {}
                 _ => {
@@ -311,20 +321,13 @@ impl Heap {
                         // nothing (the class is no longer fragmented, or
                         // the claim came back empty). Refill as the probe
                         // branch does; popping here would wrap `len - 1`.
-                        let shared: &Shared = &*self.shared;
-                        let Some((a, _)) =
+                        let shared: &Shared = shared_of(self.shared);
+                        let Some((a, w)) =
                             shared.arena(self.hdr_ref(cache).arena, Tracked::assume_new())
                         else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(
-                            shared,
-                            a,
-                            Tracked::assume_new(),
-                            cache,
-                            class,
-                            Tracked::assume_new(),
-                        );
+                        len = self.refill(shared, a, w, cache, class, Tracked::assume_new());
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
@@ -338,7 +341,7 @@ impl Heap {
                     );
                 }
             }
-            let h = self.hdr_mut(cache);
+            let h = ptr_mut_ref(cache, Tracked::assume_new());
             // The run invariant `run_end <= low_water <= len` is what keeps
             // this pop from serving a stale pointer out of `slots[run_end -
             // 1]`, and `zeroed <= low_water` what keeps the zero prefix
@@ -351,7 +354,7 @@ impl Heap {
             let top = len - 1;
             let at = h.run_end - 1;
             let slots = h.slots();
-            let p = *slots.add(at as usize);
+            let p = *ptr_ref(slots.add(at as usize), Tracked::assume_new());
             // Entries move within the stack signed (the modifier is the
             // stack's base, not the entry's position); only the one leaving
             // is authenticated.
@@ -360,8 +363,8 @@ impl Heap {
             } else {
                 p
             };
-            let t = *slots.add(top as usize);
-            *slots.add(at as usize) = t;
+            let t = *ptr_ref(slots.add(top as usize), Tracked::assume_new());
+            ptr_mut_write(slots.add(at as usize), Tracked::assume_new(), t);
             h.len = top;
             h.run_end = at;
             if top < h.low_water {
