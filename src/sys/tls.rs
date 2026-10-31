@@ -107,37 +107,38 @@ pub fn get(_slot: Tracked<&TlsSlot>) -> *mut c_void {
     out
 }
 
-/// Read the calling thread's slot together with the thread pointer
-/// (`tpidr_el0` on aarch64; `0` on x86_64, where it is unused). The thread
-/// pointer is the modifier the heap pointer is signed with when pointer
-/// authentication is on (`sys::pac`, design 6.1): the accessor already
-/// loads it to reach the slot, so the caller's `autda` costs no extra
-/// register move.
+/// Read the calling thread's slot together with the thread pointer: `0`
+/// on x86_64, where it is unused.
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn get_tp(_slot: Tracked<&TlsSlot>) -> (*mut c_void, usize) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        (get(Tracked::assume_new()), 0)
+    (get(Tracked::assume_new()), 0)
+}
+
+/// Read the calling thread's slot together with the thread pointer
+/// (`tpidr_el0`), the modifier the heap pointer is signed with when pointer
+/// authentication is on (`sys::pac`, design 6.1): one asm sequence that
+/// keeps the thread pointer it loads to reach the slot, so the caller's
+/// `autda` costs no extra register move.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn get_tp(_slot: Tracked<&TlsSlot>) -> (*mut c_void, usize) {
+    let out: *mut c_void;
+    let tp: usize;
+    // SAFETY: as in `get`.
+    unsafe {
+        asm!(
+            "adrp {off}, :gottprel:challoc_tls",
+            "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]",
+            "mrs {tp}, tpidr_el0",
+            "ldr {out}, [{tp}, {off}]",
+            off = out(reg) _,
+            tp = out(reg) tp,
+            out = out(reg) out,
+            options(nostack, readonly, preserves_flags),
+        );
     }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let out: *mut c_void;
-        let tp: usize;
-        // SAFETY: as in `get`.
-        unsafe {
-            asm!(
-                "adrp {off}, :gottprel:challoc_tls",
-                "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]",
-                "mrs {tp}, tpidr_el0",
-                "ldr {out}, [{tp}, {off}]",
-                off = out(reg) _,
-                tp = out(reg) tp,
-                out = out(reg) out,
-                options(nostack, readonly, preserves_flags),
-            );
-        }
-        (out, tp)
-    }
+    (out, tp)
 }
 
 /// Write the calling thread's slot.

@@ -11,7 +11,7 @@ file.
 
 ## `HeapPerm`
 
-src/heap/thread.rs:53. Kind: external_body type. Category: allocator invariant.
+src/heap/thread.rs:63. Kind: external_body type. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Ghost: the permission to a thread heap, linear: the thread's TLS slot token ([`TlsSlot`]) holds it while the slot holds the heap, and [`slot_heap_ref`] lends the heap out of the token, for as long as the token is lent.
