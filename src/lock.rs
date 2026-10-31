@@ -388,14 +388,22 @@ impl<'a> LockOrder<'a> {
 ///   `tick`, `Shared::arena`, `refill` and `probe_verdict` calls),
 ///   `Heap::pop_compact_run`'s `Shared::arena` and `refill` calls, and
 ///   `Heap::rebuild_run`, which `pop_compact_run` calls. They run from
-///   `Heap::pop`, which `alloc_in`, `alloc_other`, `alloc_slow_in` (after
-///   `refill`, whose `final(ord) == old(ord)` shows it released its locks)
-///   and `alloc_slow`'s declined scheduled pop call, none of them holding
-///   an allocator lock at the call;
+///   `Heap::pop`, which `alloc_in`, `alloc_other` and `alloc_slow_in`
+///   (after `refill`, whose `final(ord) == old(ord)` shows it released its
+///   locks) call, and from `alloc_slow`, which calls `Heap::pop_compact`
+///   directly for the scheduled pop `pop_fast` declined, none of them
+///   holding an allocator lock at the call;
 /// - `heap::thread::create_heap_for_thread`, reached from a thread's first
 ///   allocation on its slow path, with no lock held;
 /// - `heap::thread::heap_destructor`, a TLS destructor that runs at thread
-///   exit, outside any allocator call.
+///   exit, outside any allocator call;
+/// - the slow paths `Heap::alloc_slow_in` and `Heap::free_slow_in`, each
+///   with one token for all its calls that take one (`tick`, `Shared::arena`,
+///   `ensure_cache`, the refill or flush, the direct claim or release, and
+///   `Heap::rehome_on_free`'s move), entered from a fast path or an
+///   entry point, which hold no allocator lock, or (`free_slow_in`)
+///   from the push after `Heap::rehome_on_free`'s move, whose
+///   `Heap::try_rehome` releases every lock it takes before it returns.
 ///
 /// No allocator entry point is re-entered while a lock is held: allocator
 /// code calls nothing that may allocate with a lock held, and a signal

@@ -461,9 +461,6 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 {
     // SAFETY: guaranteed by the caller.
     let s = unsafe { crate::api::shared_deref(shared) };
-    proof {
-        s.lemma_flags_pac();
-    }
     s.push_flags()
 }
 

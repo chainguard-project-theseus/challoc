@@ -4294,14 +4294,23 @@ fn assert_flushed(len: &u32)
     assert_eq!(*len, 0, "heap: freeing a cache that was not flushed");
 }
 
-} // verus!
-
 /// [`Heap::rehome_on_free`]'s check, in debug builds, that the bit test
 /// after the move names `p`'s class and the arena `arena_of_slot` read.
+///
+/// Trusted: `SlabTable::check_located` leaves the arena it returns
+/// unspecified (it reads the owner word without the group's witness), so
+/// the check is not stated as a precondition; nothing is claimed. A failed
+/// check panics (in debug builds), so it requires `may_abort`.
 #[inline(always)]
-fn debug_rehomed(ok: bool) {
+#[verifier::external_body]
+fn debug_rehomed(ok: bool)
+    requires
+        crate::sys::may_abort(),
+{
     debug_assert!(ok);
 }
+
+} // verus!
 
 verus! {
 
@@ -5586,31 +5595,6 @@ impl Heap {
 } // verus!
 
 impl Heap {
-    /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]
-    /// and free its stack, through a plain reference to the array (the
-    /// tests' teardown of a bare cache array). The heap's own arrays go
-    /// through [`Heap::free_caches_in`].
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn free_caches(
-        shared: &Shared,
-        caches: &mut [CacheHeader; NCLASSES],
-        _stacks: Tracked<
-            Map<vstd::prelude::int, (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>,
-        >,
-    ) {
-        for cache in caches.iter_mut() {
-            if cache.cap != 0 {
-                assert_flushed(&cache.len);
-                shared.meta.free(
-                    cache.slots as *mut u8,
-                    CacheHeader::slots_layout(cache.cap),
-                    vstd::prelude::Tracked::assume_new(),
-                );
-            }
-            *cache = CacheHeader::EMPTY;
-        }
-    }
-
     /// The `Shared` this heap was created on.
     #[cfg(test)]
     pub fn shared(&self) -> &Shared {
@@ -5622,65 +5606,6 @@ impl Heap {
     #[cfg(test)]
     pub fn tid(&self) -> u32 {
         self.tid
-    }
-
-    /// The `FOREIGN` slow path of a young heap's cross-arena `free`
-    /// ([`Heap::rehome`] set): the first free of each class, while the
-    /// class has no `FOREIGN` cache yet, and the flush of a full one. The
-    /// heap moves onto the slot's arena when [`Heap::try_rehome`] allows
-    /// it, and the slot then takes the home push; otherwise (false) the
-    /// caller goes on to the ordinary `FOREIGN` path. Here rather than in
-    /// [`Heap::free_other`] so that the cross-arena fast push (every free
-    /// of xmalloc-test's consumers) carries no test for it.
-    ///
-    /// The move flushes the `FOREIGN` caches, and with them a first copy
-    /// of `p` if this free is a double free: before the move the
-    /// `double_free_scan` compare runs against the `FOREIGN` cache (the
-    /// one `free_slow_in` would have run), and after it the exact bit test
-    /// runs again on `p`, so a slot the flush just released aborts as
-    /// `invalid or double free` instead of being pushed into a cache that
-    /// `malloc` pops (which would hand it out twice).
-    #[cold]
-    #[inline(never)]
-    fn rehome_on_free(
-        &mut self,
-        shared: &Shared,
-        class: usize,
-        p: *mut u8,
-        _blk: Tracked<&mut Live>,
-        _ord: Tracked<&mut LockOrder>,
-        _errno: Tracked<&mut crate::vspec::errno::ThreadErrno>,
-    ) -> bool {
-        let to = shared.arena_of_slot(class, p);
-        if shared.double_free_scan() {
-            let foreign = self.other_caches(shared, FOREIGN, false, Tracked::assume_new());
-            if !foreign.is_null() {
-                // SAFETY: `foreign` is this heap's live `FOREIGN` node; a
-                // header with `cap != 0` is a real cache.
-                unsafe {
-                    let cache = Self::node_cache_ptr(foreign, class);
-                    if self.hdr_ref(cache).cap != 0 {
-                        self.scan_or_abort(shared, cache, p);
-                    }
-                }
-            }
-        }
-        if !self.try_rehome(shared, to, Tracked::assume_new()) {
-            return false;
-        }
-        // The flush released every cached slot: test `p`'s bit again.
-        match shared.classify_free(p, Tracked::assume_new()) {
-            Ok((c, a)) => debug_rehomed(c == class && a == to),
-            Err(_) => invalid_free(p as usize),
-        }
-        self.push(
-            shared,
-            class,
-            p,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        );
-        true
     }
 
     /// Slow-path entries so far (the periodic tick's counter).
@@ -5716,6 +5641,134 @@ impl Heap {
 verus! {
 
 impl Heap {
+    /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]
+    /// and free its stack, through a plain reference to the array (the
+    /// tests' teardown of a bare cache array). It writes the headers
+    /// through the reference, so a heap's permissions to them would be
+    /// stale afterwards ([`Heap::wf`]): the heap's own arrays go through
+    /// [`Heap::free_caches_in`], the form that keeps them. `stacks` holds,
+    /// by class, the permission to each stack's bytes and its claim
+    /// ([`stack_given`]).
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn free_caches(
+        shared: &Shared,
+        caches: &mut [CacheHeader; NCLASSES],
+        Tracked(stacks): Tracked<Map<vstd::prelude::int, (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>>,
+    )
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            forall|c: int|
+                0 <= c < NCLASSES && (#[trigger] old(caches)@[c]).cap != 0 ==> stack_given(stacks, c, old(caches)@[c], shared.meta.live_id()),
+    {
+        let tracked mut stacks = stacks;
+        for cache in it: caches.iter_mut()
+            invariant
+                crate::sys::may_abort(),
+                crate::sys::may_syscall(),
+                it.seq().len() == NCLASSES,
+                forall|i: int| 0 <= i < NCLASSES ==> *(#[trigger] it.seq()[i]) == old(caches)@[i],
+                forall|c: int|
+                    it.index() <= c < NCLASSES && (#[trigger] old(caches)@[c]).cap != 0 ==> stack_given(stacks, c, old(caches)@[c], shared.meta.live_id()),
+        {
+            if cache.cap != 0 {
+                assert_flushed(&cache.len);
+                let tracked blk = stacks.tracked_remove(it.index());
+                proof {
+                    assert(*cache == old(caches)@[it.index()]);
+                }
+                shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap), Tracked(blk));
+            }
+            *cache = CacheHeader::EMPTY;
+        }
+    }
+
+    /// The `FOREIGN` slow path of a young heap's cross-arena `free`
+    /// ([`Heap::rehome`] set): the first free of each class, while the
+    /// class has no `FOREIGN` cache yet, and the flush of a full one. The
+    /// heap moves onto the slot's arena when [`Heap::try_rehome`] allows
+    /// it, and the slot then takes the home push; otherwise (false) the
+    /// caller goes on to the ordinary `FOREIGN` path. Here rather than in
+    /// [`Heap::free_other`] so that the cross-arena fast push (every free
+    /// of xmalloc-test's consumers) carries no test for it.
+    ///
+    /// The move flushes the `FOREIGN` caches, and with them a first copy
+    /// of `p` if this free is a double free: before the move the
+    /// `double_free_scan` compare runs against the `FOREIGN` cache (the
+    /// one `free_slow_in` would have run), and after it the exact bit test
+    /// runs again on `p`, so a slot the flush just released aborts as
+    /// `invalid or double free` instead of being pushed into a cache that
+    /// `malloc` pops (which would hand it out twice).
+    ///
+    /// `blk` is the caller's token for `p`: the push takes it when the
+    /// heap moved, and a false leaves it `p`'s token and the heap as `keeps`
+    /// allows (`rehome`, `rehome_from` may change). The debug check of the
+    /// bit test's result is trusted ([`debug_rehomed`]). It requires
+    /// `may_abort`, not `valid_aborts`: that check's arena is not stated
+    /// ([`debug_rehomed`]), so a free that may take only valid aborts
+    /// does not move the home (the requires of [`Heap::free_slow_in`] and
+    /// [`Heap::free_other`]).
+    #[cold]
+    #[inline(never)]
+    fn rehome_on_free(
+        &mut self,
+        shared: &Shared,
+        class: usize,
+        p: *mut u8,
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+        Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>,
+    ) -> (r: bool)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            process_regions().is_slot(class as int, p@.addr),
+            old(blk).slot_block(p, class as int),
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+            old(self).rehome,
+        ensures
+            *final(ord) == *old(ord),
+            final(self).wf(),
+            !r ==> final(self).keeps(*old(self)),
+            !r ==> final(blk).slot_block(p, class as int),
+        decreases 1int, 0int,
+    {
+        let to = shared.arena_of_slot(class, p);
+        if shared.double_free_scan() {
+            let foreign = self.other_caches(shared, FOREIGN, false, Tracked(&mut LockOrder::spare()));
+            if !foreign.is_null() {
+                proof {
+                    assert(self.owns(node_hdr(foreign, class as int)));
+                }
+                // SAFETY: `foreign` is this heap's live `FOREIGN` node; a
+                // header with `cap != 0` is a real cache.
+                unsafe {
+                    let cache = Self::node_cache_ptr(foreign, class);
+                    if self.hdr_ref(cache).cap != 0 {
+                        self.scan_or_abort(shared, cache, p);
+                    }
+                }
+            }
+        }
+        if !self.try_rehome(shared, to, Tracked(ord)) {
+            return false;
+        }
+        // The flush released every cached slot: test `p`'s bit again.
+        match shared.classify_free(p, Tracked(&*blk)) {
+            Ok((c, a)) => debug_rehomed(c == class && a == to),
+            Err(_) => invalid_free(p as usize),
+        }
+        let tracked mut own = Live::empty();
+        proof {
+            vstd::modes::tracked_swap(blk, &mut own);
+        }
+        self.push(shared, class, p, Tracked(own), Tracked(errno));
+        true
+    }
+
     /// Count a slow-path entry and run periodic work every
     /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
     /// then decay (or starting the background thread that will do it,
@@ -6930,8 +6983,7 @@ impl Heap {
     /// `&*cache` for an owned header (a `(*cache).field` load), through
     /// its permission.
     ///
-    /// Unsafe for its callers' sake: the requires carry its precondition,
-    /// and most of its callers are unverified.
+    /// Unsafe for its callers' sake: the requires carry its precondition.
     ///
     /// # Safety
     /// `cache` is a header this heap owns (a home header or one of a live
@@ -6955,8 +7007,7 @@ impl Heap {
     /// through its permission ([`Heap::updates`]: the header holds the
     /// stored value, the rest of the heap is as it was).
     ///
-    /// Unsafe for its callers' sake: the requires carry its precondition,
-    /// and most of its callers are unverified.
+    /// Unsafe for its callers' sake: the requires carry its precondition.
     ///
     /// # Safety
     /// `cache` is a header this heap owns (a home header or one of a live

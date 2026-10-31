@@ -526,9 +526,10 @@ impl Heap {
         // `self` be borrowed mutably below.
         let shared: &Shared = unsafe { shared_of(self.shared) };
         // Premise (lock order): the scheduled pops run from `Heap::pop`, whose
-        // callers (`alloc_in`, `alloc_other`, `alloc_slow_in` after `refill`,
-        // and `alloc_slow`'s declined scheduled pop) hold no allocator lock at
-        // the call, so this rebuild holds none either.
+        // callers (`alloc_in`, `alloc_other` and `alloc_slow_in` after
+        // `refill`) hold no allocator lock at the call, and from `alloc_slow`,
+        // which calls `Heap::pop_compact` directly with no allocator lock
+        // held, so this rebuild holds none either.
         let tracked mut ord = axiom_entry();
         self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno));
         let ghost h0 = *self;
