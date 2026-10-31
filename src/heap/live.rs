@@ -9,8 +9,9 @@
 //! `Shared::zero_huge` borrows its permission for the clear
 //! ([`Live::take_mem`], [`Live::put_mem`]); `Shared::classify_free` and
 //! `Shared::check_size_hint` take the token of the live block at the
-//! pointer they are given ([`Live::block`]). Their callers are not
-//! verified yet and pass `Tracked::assume_new()`. The `check_zero` reads
+//! pointer they are given ([`Live::block`]); their unverified callers
+//! (`Heap::free` and `free_direct` in `heap::paths`, and those in
+//! `api::jemalloc` and `api::mallctl`) pass `Tracked::assume_new()`. The `check_zero` reads
 //! make the token of each block they read and take the slot or run token
 //! back out ([`Live::take_slot`], [`Live::into_run`]), dropping the
 //! permission.
@@ -21,7 +22,7 @@ use crate::class::slot_loc;
 use crate::huge::GUARD_PAGES;
 use crate::huge::RunToken;
 #[cfg(verus_keep_ghost)]
-use crate::layout::{NCLASSES, class_table, process_regions};
+use crate::layout::{NCLASSES, class_table, disjoint, process_regions};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::cbuf::CCall;
 use crate::vspec::user::UserMem;
@@ -891,11 +892,12 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
     }
 }
 
-/// Trusted (the C contract of a free, `vspec::cbuf`): the token of the
-/// block the C caller hands over through a free ([`CCall::block`]): C
-/// holds the token of every block it was given and has not freed, and a
-/// free passes one of them, or null. The call's token is used up, so a
-/// call gives at most one. It needs no well-formed regions: some token
+/// Trusted (the C contract of a call that hands a block over, `vspec::cbuf`):
+/// the token of the block the C caller hands over through a free or a
+/// reallocation ([`CCall::block`]): C holds the token of every block it was
+/// given and has not freed, and such a call passes one of them, or null.
+/// The call's token is used up, so a call gives at most one. It needs no
+/// well-formed regions: some token
 /// claims any pointer ([`Live::claims`]). The axiom is only as sound as
 /// the contract: a pointer freed twice, or one never allocated that
 /// happens to be a slot or huge page start, has no token in C's hands,
@@ -903,7 +905,8 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
 /// `false`. The run-time checks behind the frees (the bitmap bit test,
 /// the huge table lookup, the cache flush's release) stay in the code for
 /// such programs. Its callers are the Rust entry points of the frees
-/// (`api::libc::free`, `free_sized` and `free_sized_hint`), each with the
+/// and of the reallocations (`api::libc::free`, `free_sized`,
+/// `free_sized_hint`, `free_usable`, `realloc` and `realloc_usable`), each with the
 /// call's token it is passed.
 pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
     requires
@@ -942,6 +945,322 @@ impl Live {
                 assert(o.slot_of(o.class));
             }
         }
+    }
+}
+
+// Disjoint blocks: the usable bytes of two live blocks share no byte, and
+// neither do their permissions.
+
+impl Live {
+    /// The block's first `n` usable bytes read as `src`'s first `n`
+    /// (`realloc`'s copy into a new block).
+    pub open spec fn copied_from(self, src: Live, n: int) -> bool {
+        self.mem().reads_as(self.addr() as int, src.mem(), src.addr() as int, n)
+    }
+
+    /// Live blocks are disjoint: the usable bytes of two live blocks (two tokens, wherever they are held)
+    /// share no byte. Two slots of one class are two slot tokens of one
+    /// authority, so different slots, a class size or more apart; slots of
+    /// two classes lie in two class regions; a slot and a run lie in the
+    /// class superblock and the huge region; two runs hold disjoint pages
+    /// ([`RunToken::lemma_apart`]).
+    pub proof fn theorem_apart(tracked &mut self, tracked other: &Live)
+        requires
+            crate::heap::regions_ok(),
+            old(self).wf(),
+            other.wf(),
+        ensures
+            final(self).wf(),
+            final(self).addr() == old(self).addr(),
+            final(self).len() == old(self).len(),
+            final(self).mem() == old(self).mem(),
+            forall|p: *mut u8| #[trigger] old(self).claims(p) ==> final(self).claims(p),
+            disjoint(final(self).addr() as int, final(self).len(), other.addr() as int, other.len()),
+    {
+        let r = process_regions();
+        let ghost o = *self;
+        if self.run is None && other.run is None {
+            let c1 = self.class;
+            let c2 = other.class;
+            if c1 == c2 {
+                let tracked mut t = self.slot.tracked_take();
+                t.disjoint(other.slot.tracked_borrow());
+                self.slot = Some(t);
+                lemma_slots_apart(c1, self.addr, other.addr);
+            } else {
+                lemma_classes_apart(c1, self.addr, c2, other.addr);
+            }
+        } else if self.run is Some && other.run is Some {
+            let tracked mut t = self.run.tracked_take();
+            t.lemma_apart(other.run.tracked_borrow());
+            t.lemma_wf();
+            other.run.unwrap().lemma_wf();
+            self.run = Some(t);
+            lemma_runs_apart(t.start(), t.npages(), other.run.unwrap().start(), other.run.unwrap().npages());
+        } else if self.run is None {
+            lemma_slot_run_apart(self.class, self.addr, other.addr, other.len());
+        } else {
+            lemma_slot_run_apart(other.class, other.addr, self.addr, self.len());
+        }
+        assert forall|p: *mut u8| #[trigger] o.claims(p) implies self.claims(p) by {
+            if crate::heap::slot_start(p) {
+                assert(o.slot_of(o.class));
+            }
+        }
+    }
+
+    /// No live block at address 0: a live token's block is a slot start or a huge page
+    /// start ([`Regions::lemma_block_nonzero`]), with at least one usable
+    /// byte (a class's size, or a run's pages before its guard).
+    ///
+    /// [`Regions::lemma_block_nonzero`]: crate::layout::Regions::lemma_block_nonzero
+    pub proof fn lemma_nonnull(&self)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+        ensures
+            self.addr() != 0,
+            0 < self.len(),
+    {
+        process_regions().lemma_block_nonzero(self.class, self.addr, self.len(), 0);
+        if self.run is None {
+            crate::vspec::class::axiom_class_table_wf(self.class);
+        }
+    }
+}
+
+/// A slot lies inside the address space, above 0.
+proof fn lemma_slot_end(c: int, a: usize)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_slot(c, a),
+    ensures
+        0 < a,
+        0 < class_table()[c].size,
+        a + class_table()[c].size <= usize::MAX,
+{
+    let r = process_regions();
+    r.lemma_block_nonzero(c, a, 0, 0);
+    r.lemma_slot_in_region(c, a);
+    crate::vspec::class::axiom_class_table_wf(c);
+    assert(r.class_base[c] + (1usize << r.lg_region) <= usize::MAX);
+}
+
+/// `len` bytes of the huge region from a page start lie inside the address
+/// space, above 0.
+proof fn lemma_huge_end(a: usize, len: int)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_huge_block(a, len),
+    ensures
+        0 < a,
+        a + len <= usize::MAX,
+{
+    process_regions().lemma_block_nonzero(0, a, len, 0);
+}
+
+impl Live {
+    /// A live block's usable bytes lie inside the address space, above 0,
+    /// and so does every byte of its permission.
+    pub proof fn lemma_end(&self)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+        ensures
+            0 < self.addr(),
+            0 < self.len(),
+            self.addr() + self.len() <= usize::MAX,
+            forall|x: int| #[trigger] self.mem().dom().contains(x) ==> 0 <= x <= usize::MAX,
+    {
+        if self.run is None {
+            lemma_slot_end(self.class, self.addr);
+        } else {
+            lemma_huge_end(self.addr, self.len());
+        }
+    }
+
+    /// The permissions of two live blocks share no byte (they are two
+    /// `PointsToRaw`s held at once: [`UserMem::lemma_apart`]); both tokens
+    /// are unchanged.
+    pub proof fn lemma_mem_apart(tracked &mut self, tracked other: &mut Live)
+        requires
+            crate::heap::regions_ok(),
+            old(self).wf(),
+            old(other).mem_ok(),
+        ensures
+            *final(self) == *old(self),
+            *final(other) == *old(other),
+            final(self).mem().dom().disjoint(final(other).mem().dom()),
+    {
+        self.lemma_end();
+        let tracked mut ma = self.mem.tracked_take();
+        let tracked mut mb = other.mem.tracked_take();
+        ma.lemma_apart(&mut mb);
+        self.mem = Some(ma);
+        other.mem = Some(mb);
+    }
+}
+
+/// Two different slot starts of one class are a class size or more apart.
+proof fn lemma_slots_apart(c: int, a: usize, b: usize)
+    requires
+        process_regions().wf(),
+        process_regions().is_slot(c, a),
+        process_regions().is_slot(c, b),
+        a != b,
+    ensures
+        disjoint(a as int, class_table()[c].size as int, b as int, class_table()[c].size as int),
+{
+    let r = process_regions();
+    crate::vspec::class::axiom_class_table_wf(c);
+    let cls = class_table()[c];
+    let (sa, ia) = choose|slab: int, slot: int|
+        0 <= slab < r.spec_nslabs(c) && 0 <= slot < cls.nslots && a as int == #[trigger] r.slot_at(c, slab, slot);
+    let (sb, ib) = choose|slab: int, slot: int|
+        0 <= slab < r.spec_nslabs(c) && 0 <= slot < cls.nslots && b as int == #[trigger] r.slot_at(c, slab, slot);
+    let s = (1usize << cls.lg_slab) as int;
+    let z = cls.size as int;
+    assert(ia * z + z <= s) by (nonlinear_arith)
+        requires
+            0 <= ia < cls.nslots,
+            (cls.nslots as int) * z <= s,
+            z >= 0,
+    ;
+    assert(ib * z + z <= s) by (nonlinear_arith)
+        requires
+            0 <= ib < cls.nslots,
+            (cls.nslots as int) * z <= s,
+            z >= 0,
+    ;
+    if sa == sb {
+        assert(ia != ib);
+        if ia < ib {
+            assert(ia * z + z <= ib * z) by (nonlinear_arith)
+                requires
+                    ia < ib,
+                    z >= 0,
+            ;
+        } else {
+            assert(ib * z + z <= ia * z) by (nonlinear_arith)
+                requires
+                    ib < ia,
+                    z >= 0,
+            ;
+        }
+    } else if sa < sb {
+        assert(sa * s + s <= sb * s) by (nonlinear_arith)
+            requires
+                sa < sb,
+                s >= 0,
+        ;
+        assert(0 <= ib * z) by (nonlinear_arith)
+            requires
+                0 <= ib,
+                z >= 0,
+        ;
+    } else {
+        assert(sb * s + s <= sa * s) by (nonlinear_arith)
+            requires
+                sb < sa,
+                s >= 0,
+        ;
+        assert(0 <= ia * z) by (nonlinear_arith)
+            requires
+                0 <= ia,
+                z >= 0,
+        ;
+    }
+}
+
+/// Slots of two different classes lie in two class regions, inside two
+/// strides of the superblock.
+proof fn lemma_classes_apart(c1: int, a: usize, c2: int, b: usize)
+    requires
+        process_regions().wf(),
+        process_regions().separated(),
+        process_regions().is_slot(c1, a),
+        process_regions().is_slot(c2, b),
+        c1 != c2,
+    ensures
+        disjoint(a as int, class_table()[c1].size as int, b as int, class_table()[c2].size as int),
+{
+    let r = process_regions();
+    let stride = (1usize << r.lg_stride) as int;
+    r.lemma_slot_in_region(c1, a);
+    r.lemma_slot_in_region(c2, b);
+    assert(r.superblock + c1 * stride <= r.class_base[c1]);
+    assert(r.class_base[c1] + (1usize << r.lg_region) <= r.superblock + (c1 + 1) * stride);
+    assert(r.superblock + c2 * stride <= r.class_base[c2]);
+    assert(r.class_base[c2] + (1usize << r.lg_region) <= r.superblock + (c2 + 1) * stride);
+    if c1 < c2 {
+        assert((c1 + 1) * stride <= c2 * stride) by (nonlinear_arith)
+            requires
+                c1 + 1 <= c2,
+                stride >= 0,
+        ;
+    } else {
+        assert((c2 + 1) * stride <= c1 * stride) by (nonlinear_arith)
+            requires
+                c2 + 1 <= c1,
+                stride >= 0,
+        ;
+    }
+}
+
+/// A slot lies in the class superblock and `len` bytes of the huge region
+/// at `b` in the huge region, which `separated` keeps apart.
+proof fn lemma_slot_run_apart(c: int, a: usize, b: usize, len: int)
+    requires
+        process_regions().wf(),
+        process_regions().separated(),
+        process_regions().is_slot(c, a),
+        process_regions().is_huge_block(b, len),
+    ensures
+        disjoint(a as int, class_table()[c].size as int, b as int, len),
+{
+    let r = process_regions();
+    let stride = (1usize << r.lg_stride) as int;
+    r.lemma_slot_in_region(c, a);
+    crate::vspec::class::axiom_class_table_wf(c);
+    assert(r.superblock + c * stride <= r.class_base[c]);
+    assert(r.class_base[c] + (1usize << r.lg_region) <= r.superblock + (c + 1) * stride);
+    assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+        requires
+            c < NCLASSES,
+            stride >= 0,
+    ;
+    assert(0 <= c * stride) by (nonlinear_arith)
+        requires
+            c >= 0,
+            stride >= 0,
+    ;
+}
+
+/// Runs on disjoint page ranges have disjoint usable bytes.
+proof fn lemma_runs_apart(s1: int, n1: int, s2: int, n2: int)
+    requires
+        s1 + n1 <= s2 || s2 + n2 <= s1,
+        GUARD_PAGES < n1,
+        GUARD_PAGES < n2,
+    ensures
+        disjoint(page_addr(s1), run_usable(n1), page_addr(s2), run_usable(n2)),
+{
+    let pg = page_size();
+    assert(pg >= 0);
+    if s1 + n1 <= s2 {
+        assert(s1 * pg + (n1 - GUARD_PAGES) * pg <= s2 * pg) by (nonlinear_arith)
+            requires
+                s1 + n1 <= s2,
+                pg >= 0,
+                GUARD_PAGES == 1,
+        ;
+    } else {
+        assert(s2 * pg + (n2 - GUARD_PAGES) * pg <= s1 * pg) by (nonlinear_arith)
+            requires
+                s2 + n2 <= s1,
+                pg >= 0,
+                GUARD_PAGES == 1,
+        ;
     }
 }
 

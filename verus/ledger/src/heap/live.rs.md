@@ -12,7 +12,7 @@ file.
 
 ## `axiom_hand_out`
 
-src/heap/live.rs:663. Kind: axiom. Category: allocator invariant.
+src/heap/live.rs:664. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the `len` usable bytes of the block at `p`, a slot of a class (`len` its size) or a huge run, valid through `p`.
@@ -31,10 +31,10 @@ axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
 
 ## `axiom_c_claim`
 
-src/heap/live.rs:908. Kind: axiom. Category: C-program contract.
+src/heap/live.rs:911. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
-> Trusted (the C contract of a free, `vspec::cbuf`): the token of the block the C caller hands over through a free ([`CCall::block`]): C holds the token of every block it was given and has not freed, and a free passes one of them, or null.
+> Trusted (the C contract of a call that hands a block over, `vspec::cbuf`): the token of the block the C caller hands over through a free or a reallocation ([`CCall::block`]): C holds the token of every block it was given and has not freed, and such a call passes one of them, or null.
 
 ```rust
 pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)

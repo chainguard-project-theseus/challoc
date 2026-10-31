@@ -195,8 +195,9 @@ pub ghost enum CEntry {
     ByMib { mib: *const usize, miblen: usize, oldp: *mut u8, oldlenp: *const usize, newp: *mut u8, newlen: usize },
     /// `malloc_stats_print(write_cb, cbopaque, opts)`.
     StatsPrint { opts: *const u8 },
-    /// A free of the block at `ptr` (`free`, `free_sized`,
-    /// `free_aligned_sized`, and their `je_` twins): the pointer C passed,
+    /// A call that hands over the block at `ptr` (`free`, `free_sized`,
+    /// `free_aligned_sized`, `realloc`, `reallocarray`, their `je_` twins,
+    /// and `challoc_realloc_usable` and `challoc_free_usable`): the pointer C passed,
     /// whose block C hands over ([`CCall::block`],
     /// `heap::live::axiom_c_claim`). It has no buffer
     /// argument.

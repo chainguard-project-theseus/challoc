@@ -415,3 +415,42 @@ pub assume_specification<T>[ <*mut T>::write_unaligned ](dst: *mut T, val: T)
 
 
 } // verus!
+
+verus! {
+
+/// Two permissions own no byte in common: a byte in both would give two
+/// `PointsTo<u8>` for one address, which `PointsTo::is_disjoint` rules
+/// out. Takes and returns both, unchanged.
+pub proof fn lemma_raw_disjoint(
+    tracked a: vstd::raw_ptr::PointsToRaw,
+    tracked b: vstd::raw_ptr::PointsToRaw,
+) -> (tracked r: (vstd::raw_ptr::PointsToRaw, vstd::raw_ptr::PointsToRaw))
+    requires
+        forall|x: int| #[trigger] a.dom().contains(x) ==> 0 <= x <= usize::MAX,
+    ensures
+        a.dom().disjoint(b.dom()),
+        r == (a, b),
+        r.0.dom() == a.dom(),
+        r.0.provenance() == a.provenance(),
+        r.1.dom() == b.dom(),
+        r.1.provenance() == b.provenance(),
+{
+    if exists|x: int| #[trigger] a.dom().contains(x) && b.dom().contains(x) {
+        let x = choose|x: int| #[trigger] a.dom().contains(x) && b.dom().contains(x);
+        let tracked (ax, _arest) = a.split(set![x]);
+        let tracked (bx, _brest) = b.split(set![x]);
+        broadcast use {vstd::layout::align_of_u8, vstd::raw_ptr::axiom_ptr_mut_from_data};
+        assert(ax.dom() =~= Set::range(x, x + 1));
+        assert(bx.dom() =~= Set::range(x, x + 1));
+        let tracked mut pa = ax.into_typed::<u8>(x as usize);
+        let tracked pb = bx.into_typed::<u8>(x as usize);
+        pa.is_disjoint(&pb);
+        assert(false);
+        (pa.into_raw(), pb.into_raw())
+    } else {
+        assert(a.dom().disjoint(b.dom()));
+        (a, b)
+    }
+}
+
+} // verus!

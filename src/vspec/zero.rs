@@ -261,6 +261,18 @@ pub open spec fn huge_placeable(size: usize, align: usize) -> bool {
     run_placeable(r.huge_base as int, (1usize << r.lg_page) as int, (r.huge_len >> r.lg_page) as int, size as int, align as int)
 }
 
+/// `z` reads block `p`'s usable bytes from offset `from` to the block's
+/// end as zero, for a block an allocation of `size` bytes returned: the
+/// end is the class's size for a slot of a class
+/// ([`Regions::is_slot`](crate::layout::Regions::is_slot), one class per
+/// slot: [`lemma_slot_unique`]) and [`huge_usable`]`(size)` for a page
+/// start of the huge region.
+pub open spec fn covers_usable(z: Zeroed, p: *mut u8, from: int, size: int) -> bool {
+    &&& z.addr() == p@.addr + from
+    &&& forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) ==> from + z.len() >= crate::layout::class_table()[c].size
+    &&& crate::layout::process_regions().is_huge_block(p@.addr, 1) ==> from + z.len() >= huge_usable(size)
+}
+
 /// A slot address (a guard slab's too) belongs to one class: class `c`'s
 /// region lies inside stride `c` of the superblock (`Regions::separated`).
 pub proof fn lemma_slot_unique(c1: int, c2: int, p: usize)
@@ -316,6 +328,41 @@ pub proof fn lemma_slot_not_huge(c: int, p: usize)
             c < crate::layout::NCLASSES,
             stride >= 0,
     ;
+}
+
+/// [`covers_usable`] for a slot of class `c` whose token covers the
+/// class's size from offset `from`.
+pub proof fn lemma_covers_slot(z: Zeroed, p: *mut u8, c: int, from: int, size: int)
+    requires
+        crate::layout::process_regions().wf(),
+        crate::layout::process_regions().separated(),
+        crate::layout::process_regions().is_slot(c, p@.addr),
+        z.addr() == p@.addr + from,
+        from + z.len() >= crate::layout::class_table()[c].size,
+    ensures
+        covers_usable(z, p, from, size),
+{
+    assert forall|c2: int| #[trigger] crate::layout::process_regions().is_slot(c2, p@.addr) implies from + z.len() >= crate::layout::class_table()[c2].size by {
+        lemma_slot_unique(c, c2, p@.addr);
+    }
+    lemma_slot_not_huge(c, p@.addr);
+}
+
+/// [`covers_usable`] for a page start of the huge region whose token
+/// covers [`huge_usable`]`(size)` from offset `from`.
+pub proof fn lemma_covers_huge(z: Zeroed, p: *mut u8, from: int, size: int)
+    requires
+        crate::layout::process_regions().wf(),
+        crate::layout::process_regions().separated(),
+        crate::layout::process_regions().is_huge_block(p@.addr, 1),
+        z.addr() == p@.addr + from,
+        from + z.len() >= huge_usable(size),
+    ensures
+        covers_usable(z, p, from, size),
+{
+    assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) implies from + z.len() >= crate::layout::class_table()[c].size by {
+        lemma_slot_not_huge(c, p@.addr);
+    }
 }
 
 /// `write_bytes(p, 0, n)` through `raw`, the permission to the `n` bytes
