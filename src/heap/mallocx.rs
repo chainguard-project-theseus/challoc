@@ -316,7 +316,13 @@ pub fn alloc(
         Tcache::Default => match crate::heap::heap_for_thread(shared) {
             Some(h) => match arena {
                 Some(a) => {
-                    let (p, zero) = h.alloc_in(shared, a, class, Tracked::assume_new());
+                    let (p, zero) = h.alloc_in(
+                        shared,
+                        a,
+                        class,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
                     let z = h.take_handed(
                         Ghost::assume_new(),
                         Ghost::assume_new(),
@@ -344,7 +350,13 @@ pub fn alloc(
             // shared class to it (`Heap::alloc_in`).
             match arena {
                 Some(a) => {
-                    let (p, zero) = h.alloc_in(shared, a, class, Tracked::assume_new());
+                    let (p, zero) = h.alloc_in(
+                        shared,
+                        a,
+                        class,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
                     let z = h.take_handed(
                         Ghost::assume_new(),
                         Ghost::assume_new(),

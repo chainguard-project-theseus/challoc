@@ -4296,6 +4296,13 @@ fn assert_flushed(len: &u32)
 
 } // verus!
 
+/// [`Heap::rehome_on_free`]'s check, in debug builds, that the bit test
+/// after the move names `p`'s class and the arena `arena_of_slot` read.
+#[inline(always)]
+fn debug_rehomed(ok: bool) {
+    debug_assert!(ok);
+}
+
 verus! {
 
 /// `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap
@@ -5583,7 +5590,7 @@ impl Heap {
     /// and free its stack, through a plain reference to the array (the
     /// tests' teardown of a bare cache array). The heap's own arrays go
     /// through [`Heap::free_caches_in`].
-    #[cfg(test)]
+    #[cfg_attr(not(test), allow(dead_code))]
     fn free_caches(
         shared: &Shared,
         caches: &mut [CacheHeader; NCLASSES],
@@ -5635,7 +5642,15 @@ impl Heap {
     /// `malloc` pops (which would hand it out twice).
     #[cold]
     #[inline(never)]
-    fn rehome_on_free(&mut self, shared: &Shared, class: usize, p: *mut u8) -> bool {
+    fn rehome_on_free(
+        &mut self,
+        shared: &Shared,
+        class: usize,
+        p: *mut u8,
+        _blk: Tracked<&mut Live>,
+        _ord: Tracked<&mut LockOrder>,
+        _errno: Tracked<&mut crate::vspec::errno::ThreadErrno>,
+    ) -> bool {
         let to = shared.arena_of_slot(class, p);
         if shared.double_free_scan() {
             let foreign = self.other_caches(shared, FOREIGN, false, Tracked::assume_new());
@@ -5655,10 +5670,16 @@ impl Heap {
         }
         // The flush released every cached slot: test `p`'s bit again.
         match shared.classify_free(p, Tracked::assume_new()) {
-            Ok((c, a)) => debug_assert!(c == class && a == to),
+            Ok((c, a)) => debug_rehomed(c == class && a == to),
             Err(_) => invalid_free(p as usize),
         }
-        self.push(shared, class, p, Tracked::assume_new());
+        self.push(
+            shared,
+            class,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         true
     }
 
