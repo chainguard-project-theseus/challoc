@@ -37,13 +37,14 @@ use super::paths::shared_of;
 use super::{CacheHeader, CachePerms, Heap, Live, Shared, stack_mut};
 #[cfg(verus_keep_ghost)]
 use super::{
-    cell_ok, lemma_rebuild_moves, lemma_rebuild_tracks, lemma_stack_fill, pac_mode, plain,
-    regions_ok, slot_ptr, slots_grow, stored, zero,
+    cell_ok, hand_out, lemma_handed_ok, lemma_rebuild_moves, lemma_rebuild_tracks,
+    lemma_stack_fill, lemma_stack_grow, lemma_stack_shrink, pac_mode, plain, regions_ok, slot_in,
+    slot_ptr, slots_grow, stored, zero,
 };
 #[cfg(verus_keep_ghost)]
 use crate::class::{ptr_addrs, slot_loc};
 #[cfg(verus_keep_ghost)]
-use crate::layout::{class_table, slots_in};
+use crate::layout::{class_table, process_regions, slots_in};
 #[cfg(verus_keep_ghost)]
 use crate::lock::axiom_entry;
 #[cfg(verus_keep_ghost)]
@@ -55,6 +56,8 @@ use vstd::modes::tracked_swap;
 #[cfg(verus_keep_ghost)]
 use vstd::raw_ptr::PointsTo;
 use vstd::raw_ptr::{ptr_mut_ref, ptr_mut_write, ptr_ref};
+#[cfg(verus_keep_ghost)]
+use vstd::resource::set::GhostSingleton;
 
 verus! {
 
@@ -128,19 +131,13 @@ pub(super) enum Verdict {
     Fragmented,
 }
 
-} // verus!
-
 impl CacheHeader {
     /// Whether the cache is currently compacting its class.
     #[cfg(test)]
     pub fn compacting(&self) -> bool {
         self.mode == MODE_COMPACT
     }
-}
 
-verus! {
-
-impl CacheHeader {
     /// This header with `mode` and `compact_mask` replaced: what
     /// [`CacheHeader::set_mode`] leaves.
     pub(super) open spec fn with_mode(self, mode: u16, compact_mask: u32) -> CacheHeader {
@@ -178,8 +175,6 @@ impl CacheHeader {
     }
 }
 
-} // verus!
-
 impl Heap {
     /// The scheduled pop (design 6.4). Probing: run the periodic work, ask
     /// the class whether it is fragmented and being left alone by ordinary
@@ -202,9 +197,27 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         len: u32,
-        _blk: Tracked<&mut Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) -> (*mut u8, bool) {
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+            old(self).poppable(class as int, cache),
+            len == old(self).hdr(cache).len,
+            len > 0,
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        let tracked mut spare = Map::<int, GhostSingleton<int>>::tracked_empty();
         // SAFETY: guaranteed by the caller.
         unsafe {
             let pac = shared_of(self.shared).pac();
@@ -216,68 +229,65 @@ impl Heap {
                     // balanced churn on a dense class takes no other slow
                     // path, and without it no GC or decay would ever run on
                     // a thread without a background thread.
-                    self.tick::<true>(shared, Tracked::assume_new(), Tracked::assume_new());
+                    // Premise (lock order): as in `Heap::rebuild_run`, the scheduled
+                    // pops' callers hold no allocator lock at the call.
+                    let tracked mut ord = axiom_entry();
+                    self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno));
+                    proof {
+                        Heap::lemma_keeps_poppable(*old(self), *self, class as int, cache);
+                    }
                     let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some((a, w)) =
-                            shared.arena(self.hdr_ref(cache).arena, Tracked::assume_new())
-                        else {
+                        let Some((a, w)) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(shared, a, w, cache, class, Tracked::assume_new());
+                        let ghost s = *self;
+                        len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
+                        proof {
+                            Heap::lemma_keeps_poppable(s, *self, class as int, cache);
+                        }
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    let (refilled, verdict) = Self::probe_verdict(
-                        shared,
-                        self.hdr_ref(cache).arena,
-                        class,
-                        self.hdr_ref(cache).probe_refilled,
-                        Tracked::assume_new(),
-                    );
+                    let (refilled, verdict) =
+                        Self::probe_verdict(shared, self.hdr_ref(cache).arena, class, self.hdr_ref(cache).probe_refilled, Tracked(&mut ord));
+                    let ghost h0 = *self;
                     let h = self.hdr_mut(cache);
                     h.probe_refilled = refilled;
+                    proof {
+                        Heap::lemma_set(h0, *self, cache, *h);
+                        Heap::lemma_poppable_same(h0, *self, class as int, cache);
+                    }
                     match verdict {
                         Verdict::Refilling | Verdict::Dense => {
-                            return Self::pop_top(
-                                cache,
-                                len,
-                                pac,
-                                Tracked::assume_new(),
-                                Tracked::assume_new(),
-                            );
+                            let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                            proof {
+                                hand_out(&mut spare, blk, class as int, r.0);
+                            }
+                            return r;
                         }
                         Verdict::Fragmented => {}
                     }
+                    let ghost h1 = *self;
                     let h = self.hdr_mut(cache);
                     h.set_mode(MODE_COMPACT);
-                    return self.pop_compact_run(
-                        cache,
-                        class,
-                        len,
-                        Tracked::assume_new(),
-                        Tracked::assume_new(),
-                    );
+                    proof {
+                        Heap::lemma_set(h1, *self, cache, *h);
+                        Heap::lemma_poppable_same(h1, *self, class as int, cache);
+                    }
+                    return self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno));
                 }
                 _ => {
-                    return Self::pop_top(
-                        cache,
-                        len,
-                        pac,
-                        Tracked::assume_new(),
-                        Tracked::assume_new(),
-                    );
-                }
+                    let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                    proof {
+                        hand_out(&mut spare, blk, class as int, r.0);
+                    }
+                    return r;
+                },
             }
-            self.pop_compact_run(
-                cache,
-                class,
-                len,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            )
+            self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno))
         }
     }
 
@@ -286,32 +296,51 @@ impl Heap {
     ///
     /// # Safety
     /// As for [`Heap::pop`].
+    #[verifier::spinoff_prover]
+    #[verifier::rlimit(30)]
     pub(super) unsafe fn pop_compact_run(
         &mut self,
         cache: *mut CacheHeader,
         class: usize,
         len: u32,
-        _blk: Tracked<&mut Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) -> (*mut u8, bool) {
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+            old(self).poppable(class as int, cache),
+            len == old(self).hdr(cache).len,
+            len > 0,
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        broadcast use vstd::layout::layout_of_references_and_pointers_for_sized_types;
+        let tracked mut spare = Map::<int, GhostSingleton<int>>::tracked_empty();
         // SAFETY: guaranteed by the caller.
         unsafe {
             let pac = shared_of(self.shared).pac();
             match self.hdr_ref(cache).mode {
                 MODE_COMPACT => {}
                 _ => {
-                    return Self::pop_top(
-                        cache,
-                        len,
-                        pac,
-                        Tracked::assume_new(),
-                        Tracked::assume_new(),
-                    );
-                }
+                    let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                    proof {
+                        hand_out(&mut spare, blk, class as int, r.0);
+                    }
+                    return r;
+                },
             }
             let mut len = len;
             if self.hdr_ref(cache).run_end == 0 {
-                self.rebuild_run(cache, class, Tracked::assume_new());
+                self.rebuild_run(cache, class, Tracked(errno));
                 len = self.hdr_ref(cache).len;
                 if self.hdr_ref(cache).run_end == 0 {
                     if len == 0 {
@@ -322,39 +351,60 @@ impl Heap {
                         // the claim came back empty). Refill as the probe
                         // branch does; popping here would wrap `len - 1`.
                         let shared: &Shared = shared_of(self.shared);
-                        let Some((a, w)) =
-                            shared.arena(self.hdr_ref(cache).arena, Tracked::assume_new())
-                        else {
+                        // Premise (lock order): as in `pop_compact`.
+                        let tracked mut ord = axiom_entry();
+                        let Some((a, w)) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(shared, a, w, cache, class, Tracked::assume_new());
+                        len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    return Self::pop_top(
-                        cache,
-                        len,
-                        pac,
-                        Tracked::assume_new(),
-                        Tracked::assume_new(),
-                    );
+                    let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
+                    proof {
+                        hand_out(&mut spare, blk, class as int, r.0);
+                    }
+                    return r;
                 }
             }
-            let h = ptr_mut_ref(cache, Tracked::assume_new());
+            let ghost old_perms = self.perms@;
+            proof {
+                assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
+            }
+            let tracked perms = self.perms.borrow_mut();
+            let h = ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache)));
             // The run invariant `run_end <= low_water <= len` is what keeps
             // this pop from serving a stale pointer out of `slots[run_end -
             // 1]`, and `zeroed <= low_water` what keeps the zero prefix
             // inside the stack; a violation is a heap inconsistency and
             // aborts in release.
             assert!(
-                h.run_end <= h.low_water && h.low_water <= len && h.zeroed <= h.low_water,
+                h.run_end <= h.low_water
+                    && h.low_water <= len
+                    && h.zeroed <= h.low_water,
                 "heap: cache run invariant violated (run_end or zeroed > low_water, or low_water > len)"
             );
             let top = len - 1;
             let at = h.run_end - 1;
             let slots = h.slots();
-            let p = *ptr_ref(slots.add(at as usize), Tracked::assume_new());
+            proof {
+                assert(slot_ptr(slots, at as int) == crate::vspec::ptr::ptr_add(slots, at as usize));
+                assert(slot_ptr(slots, top as int) == crate::vspec::ptr::ptr_add(slots, top as usize));
+                assert(slot_in(slots, at as int) && slot_in(slots, top as int));
+                assert(vstd::layout::size_of::<*mut u8>() == 8);
+                let sz = vstd::layout::size_of::<*mut u8>() as int;
+                assert((at as usize) as int * sz <= isize::MAX) by (nonlinear_arith)
+                    requires
+                        sz == 8,
+                        at <= u32::MAX;
+                assert((top as usize) as int * sz <= isize::MAX) by (nonlinear_arith)
+                    requires
+                        sz == 8,
+                        top <= u32::MAX;
+                assert(crate::vspec::ptr::in_alloc(slots, (at as usize) as int * vstd::layout::size_of::<*mut u8>()));
+            }
+            let p = *ptr_ref(slots.add(at as usize), Tracked(perms.slots.tracked_borrow(slot_ptr(slots, at as int))));
             // Entries move within the stack signed (the modifier is the
             // stack's base, not the entry's position); only the one leaving
             // is authenticated.
@@ -363,8 +413,14 @@ impl Heap {
             } else {
                 p
             };
-            let t = *ptr_ref(slots.add(top as usize), Tracked::assume_new());
-            ptr_mut_write(slots.add(at as usize), Tracked::assume_new(), t);
+            let ghost s0 = perms.slots;
+            let ghost q = slot_ptr(slots, at as int);
+            let t = *ptr_ref(slots.add(top as usize), Tracked(perms.slots.tracked_borrow(slot_ptr(slots, top as int))));
+            ptr_mut_write(slots.add(at as usize), Tracked(perms.slots.tracked_borrow_mut(q)), t);
+            proof {
+                CachePerms::lemma_write_grows(s0, perms.slots, q);
+                lemma_stack_grow(old_perms.hdr(cache), s0, perms.slots);
+            }
             h.len = top;
             h.run_end = at;
             if top < h.low_water {
@@ -377,14 +433,54 @@ impl Heap {
             if zero {
                 h.zeroed = if top < zeroed { top } else { at };
             }
+            proof {
+                lemma_stack_shrink(old_perms.hdr(cache), *h, perms.slots);
+                CachePerms::lemma_update(old_perms, *perms, cache);
+                assert(old_perms.ent(cache, at as int) == q);
+                assert(old_perms.ent(cache, top as int) == slot_ptr(slots, top as int));
+                assert(perms.slots == s0.insert(q, perms.slots[q]));
+                CachePerms::lemma_tracks_put(old_perms, *perms, cache, at as int);
+                // The served entry's zero token is handed out; the top
+                // entry's moves with it to `at` when both are in the prefix.
+                let ghost mid = *perms;
+                let ghost z0 = old_perms.hdr(cache).zeroed;
+                let qt = slot_ptr(slots, top as int);
+                assert(old_perms.owner[q] == (cache, at as int));
+                assert(old_perms.owner[qt] == (cache, top as int));
+                if zero {
+                    old_perms.lemma_zero_get(cache, at as int);
+                    let tracked t = perms.zero.tracked_remove(q);
+                    perms.handed = Some(t);
+                    if top < z0 && top != at {
+                        old_perms.lemma_zero_get(cache, top as int);
+                        let tracked u = perms.zero.tracked_remove(qt);
+                        perms.zero.tracked_insert(q, u);
+                    }
+                }
+                assert forall|i: int| #[trigger] CachePerms::in_prefix(perms.hdr(cache), i) implies perms.zero_at(cache, i) by {
+                    assert(perms.ent(cache, i) == slot_ptr(slots, i));
+                    if i != at {
+                        old_perms.lemma_zero_get(cache, i);
+                        assert(old_perms.owner[old_perms.ent(cache, i)] == (cache, i));
+                    }
+                }
+                CachePerms::lemma_zero_update(old_perms, *perms, cache);
+                // The served slot's slot token leaves with it, as the
+                // block's token; the top entry's moves with its slot to
+                // `at`.
+                let ghost before_t = *perms;
+                let tracked served = CachePerms::lemma_tokened_compact(&mut perms.toks, old_perms, before_t, cache, at as int, top as int);
+                assert(*perms == (CachePerms { toks: perms.toks, ..before_t }));
+                CachePerms::lemma_claimed_hdr(old_perms, *perms, cache);
+                CachePerms::lemma_zero_same(before_t, *perms);
+                CachePerms::lemma_same_but_tokens(mid, *perms, old_perms);
+                assert(served@ == p@.addr as int);
+                blk.set(Live::from_slot(served, class as int, p));
+            }
             (p, zero)
         }
     }
-}
 
-verus! {
-
-impl Heap {
     /// Rebuild the run for a scheduled pop that found it exhausted: run the
     /// periodic work (under a balanced churn this is the only slow path a
     /// class ever takes), drop back to probing if the class is no longer
