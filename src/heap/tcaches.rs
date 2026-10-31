@@ -17,7 +17,9 @@ use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
 use vstd::raw_ptr::{PointsTo, ptr_mut_write};
 
-use super::{Heap, Shared};
+use super::thread::slot_heap_ref;
+use super::{FreshHeap, Heap, Shared};
+use crate::sys::tls::TlsSlot;
 
 verus! {
 
@@ -265,6 +267,25 @@ impl Tcaches {
 }
 
 } // verus!
+
+/// The heap [`Heap::create`] has just returned, as a reference, before
+/// its ghost state is installed, borrowed from the thread's slot token
+/// `tls`, which takes its permission and is lent for as long as the
+/// reference lives.
+///
+/// # Safety
+/// `p` is a heap `Heap::create` has just returned, and nothing else uses
+/// it while the reference lives.
+#[inline(always)]
+pub(super) unsafe fn heap_new<'a>(
+    p: *mut Heap,
+    _s: Tracked<FreshHeap>,
+    _perms: Tracked<&super::CachePerms>,
+    tls: Tracked<&'a mut TlsSlot>,
+) -> &'a mut Heap {
+    // SAFETY: guaranteed by the caller.
+    unsafe { slot_heap_ref(p, tls) }
+}
 
 impl Tcaches {
     #[cfg(test)]

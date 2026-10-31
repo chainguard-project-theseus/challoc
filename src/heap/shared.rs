@@ -51,6 +51,7 @@ use super::live::Live;
 use super::tcaches::Tcaches;
 use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 use crate::arena::Published;
+use crate::sys::tls::TlsSlot;
 use crate::vspec::flags::RouteByte;
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_keep_ghost)]
@@ -961,7 +962,7 @@ impl ThreadKey {
     /// happens only past glibc's first 32 keys, when it cannot allocate
     /// the second-level block; `true` without registering when the key
     /// does not exist.
-    pub fn set(&self, heap: *mut Heap) -> bool {
+    pub fn set(&self, heap: *mut Heap, _tls: Tracked<&mut TlsSlot>) -> bool {
         if !self.valid {
             return true;
         }
@@ -974,8 +975,23 @@ impl ThreadKey {
         }
         // SAFETY: the key was created by `create`; glibc stores the
         // pointer without dereferencing it.
-        unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) == 0 }
+        unsafe { pthread_setspecific(self.key, heap as *const c_void, Tracked::assume_new()) == 0 }
     }
+}
+
+/// `pthread_setspecific(3)` for the slot token's holder: it may re-enter
+/// the allocator on this thread.
+///
+/// # Safety
+/// `key` was created by `pthread_key_create`.
+#[inline(always)]
+unsafe fn pthread_setspecific(
+    key: libc::pthread_key_t,
+    value: *const c_void,
+    _tls: Tracked<&mut TlsSlot>,
+) -> i32 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { libc::pthread_setspecific(key, value) }
 }
 
 verus! {

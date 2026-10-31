@@ -13,7 +13,7 @@ file.
 
 ## `axiom_tcaches_lock_inv`
 
-src/heap/tcaches.rs:49. Kind: axiom. Category: allocator invariant.
+src/heap/tcaches.rs:51. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the explicit-cache table lock guards no value (`()`), so its invariant is trivially true.
@@ -27,7 +27,7 @@ pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
 
 ## `EMPTY_TABLE`
 
-src/heap/tcaches.rs:59. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:61. Kind: external_body const. Category: core library.
 Tool: Kani. Status: trusted.
 
 > The empty table [`Tcaches::init`] writes, every entry null.
@@ -38,7 +38,7 @@ const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] = [const { AtomicPtr::new(ptr::n
 
 ## `heap_at`
 
-src/heap/tcaches.rs:149. Kind: external_body. Category: allocator invariant.
+src/heap/tcaches.rs:151. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the heap `Heap::destroy` is handed.

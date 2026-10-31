@@ -8,8 +8,11 @@ use vstd::prelude::{Tracked, verus};
 
 use crate::sys::pac;
 use crate::sys::tls::TlsSlot;
+use crate::vspec::addr::addr_to_ptr;
 
 use super::PUSH_PAC;
+use super::paths::shared_of;
+use super::tcaches::{heap_at, heap_new};
 use super::{Heap, Shared};
 
 /// TLS slot value while this thread's heap is being created and
@@ -32,10 +35,17 @@ pub const TLS_EXITED: usize = 2;
 /// `existing_heap` from handing it out).
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let h = p as *mut Heap;
-    crate::sys::tls::set(TLS_EXITED as *mut c_void, Tracked::assume_new());
+    if h.is_null() {
+        // POSIX runs a key's destructor only for a non-null value.
+        return;
+    }
+    crate::sys::tls::set(
+        addr_to_ptr(TLS_EXITED) as *mut c_void,
+        Tracked::assume_new(),
+    );
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
-        let shared = &*(*h).shared;
+        let shared = shared_of(heap_at(h).shared);
         Heap::destroy(h, shared, Tracked::assume_new());
     }
 }
@@ -116,7 +126,7 @@ pub fn heap_for_thread_in<'a>(
 fn tls_value_for(shared: &Shared, h: *mut Heap, _tls: Tracked<&TlsSlot>) -> *mut c_void {
     if shared.pac() {
         let (_, tp) = crate::sys::tls::get_tp(Tracked::assume_new());
-        pac::sign(h as usize, tp) as *mut c_void
+        addr_to_ptr(pac::sign(h as usize, tp)) as *mut c_void
     } else {
         h as *mut c_void
     }
@@ -136,8 +146,11 @@ fn create_heap_for_thread<'a>(
     if h.is_null() {
         return None;
     }
-    crate::sys::tls::set(TLS_CREATING as *mut c_void, Tracked::assume_new());
-    if !shared.key.set(h) {
+    crate::sys::tls::set(
+        addr_to_ptr(TLS_CREATING) as *mut c_void,
+        Tracked::assume_new(),
+    );
+    if !shared.key.set(h, Tracked::assume_new()) {
         // Thread exit could not free the heap, so it goes now and this
         // call is served without one; the next call tries again, as
         // after a failed `Heap::create`.
@@ -151,7 +164,14 @@ fn create_heap_for_thread<'a>(
         Tracked::assume_new(),
     );
     // SAFETY: freshly created and owned by this thread.
-    Some(unsafe { slot_heap_ref(h, Tracked::assume_new()) })
+    Some(unsafe {
+        heap_new(
+            h,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+    })
 }
 
 /// The calling thread's heap if it already exists, with no attempt to
@@ -177,11 +197,15 @@ pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
 /// borrowed from.
 #[inline(always)]
 #[allow(clippy::needless_lifetimes)]
+// Verus does not take `?` here: the `let`-`else` is the same branch.
+#[allow(clippy::question_mark)]
 pub fn existing_heap_in<'a>(
     shared: *const Shared,
     _tls: Tracked<&'a mut TlsSlot>,
 ) -> Option<&'a mut Heap> {
-    let (t, tp) = tls_heap_slot(Tracked::assume_new())?;
+    let Some((t, tp)) = tls_heap_slot(Tracked::assume_new()) else {
+        return None;
+    };
     // SAFETY: a real slot value proves this thread observed `READY`, so
     // `push_flags` was written before.
     let flags = unsafe { fast_flags(shared) };
@@ -211,7 +235,8 @@ pub fn tls_heap_slot(_tls: Tracked<&TlsSlot>) -> Option<(usize, usize)> {
 #[inline(always)]
 pub unsafe fn fast_flags(shared: *const Shared) -> u8 {
     // SAFETY: guaranteed by the caller.
-    unsafe { ptr::read(&raw const (*shared).push_flags) }
+    let s = unsafe { crate::api::shared_deref(shared) };
+    s.push_flags()
 }
 
 /// The heap a TLS slot value names: authenticated against the thread
@@ -234,6 +259,6 @@ pub unsafe fn heap_from_slot<'a>(
     // the sentinels and `autda` never producing zero from it.
     unsafe {
         core::hint::assert_unchecked(h != 0);
-        slot_heap_ref(h as *mut Heap, Tracked::assume_new())
+        slot_heap_ref(addr_to_ptr(h) as *mut Heap, Tracked::assume_new())
     }
 }
