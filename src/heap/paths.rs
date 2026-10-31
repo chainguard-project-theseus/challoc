@@ -189,53 +189,6 @@ impl Heap {
         }
     }
 
-    /// Allocation of `class` from `arena` through this heap's cache for
-    /// that arena (`MALLOCX_ARENA`, or the home arena of an explicit
-    /// cache). Null when `arena` does not exist or is exhausted.
-    pub fn alloc_in(
-        &mut self,
-        shared: &Shared,
-        arena: u16,
-        class: usize,
-        _blk: Tracked<&mut Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) -> (*mut u8, bool) {
-        if arena != self.arena {
-            return self.alloc_other(
-                shared,
-                arena,
-                class,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            );
-        }
-        let cache = self.cache_ptr(class);
-        // As in `alloc`. SAFETY: `cache` is this heap's own header.
-        let len = unsafe { self.hdr_ref(cache) }.len;
-        if len != 0 {
-            // SAFETY: a real cache with `len` entries.
-            return unsafe {
-                self.pop(
-                    cache,
-                    class,
-                    len,
-                    shared.pac(),
-                    Tracked::assume_new(),
-                    Tracked::assume_new(),
-                )
-            };
-        }
-        // Not `alloc_slow`: an explicit arena is kept even for a shared
-        // class (design 13.3).
-        self.alloc_slow_in(
-            shared,
-            arena,
-            class,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
-    }
-
     /// Fast path of `free`. Aborts unless `p` is an allocated slab slot or
     /// a live huge run. A slot of another arena goes onto this heap's
     /// [`FOREIGN`] cache for the class (design 6.3 step 4).
@@ -284,6 +237,55 @@ impl Heap {
 verus! {
 
 impl Heap {
+    /// Allocation of `class` from `arena` through this heap's cache for
+    /// that arena (`MALLOCX_ARENA`, or the home arena of an explicit
+    /// cache). Null when `arena` does not exist or is exhausted. `blk`
+    /// gets the block's token. `arena` is never [`FOREIGN`] (cache
+    /// routing: `MALLOCX_ARENA` names arenas below 4095), so the pop is
+    /// from the home cache or the `others` node keyed `arena`.
+    pub fn alloc_in(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        class: usize,
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+            arena != FOREIGN,
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        proof {
+            shared.lemma_wf();
+        }
+        if arena != self.arena {
+            return self.alloc_other(shared, arena, class, Tracked(blk), Tracked(errno));
+        }
+        let cache = self.cache_ptr(class);
+        proof {
+            self.lemma_routes_home(class as int);
+        }
+        // As in `alloc`. SAFETY: `cache` is this heap's own header.
+        let len = unsafe { self.hdr_ref(cache) }.len;
+        if len != 0 {
+            // SAFETY: a real cache with `len` entries.
+            return unsafe { self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno)) };
+        }
+        // Not `alloc_slow`: an explicit arena is kept even for a shared
+        // class (design 13.3).
+        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno))
+    }
+
     /// Huge allocation on this thread in `arena` (which must exist).
     pub fn alloc_huge_in(
         &mut self,
@@ -402,11 +404,7 @@ impl Heap {
     {
         self.count_uncached_free(class_size(class));
     }
-}
 
-} // verus!
-
-impl Heap {
     /// Refill the home cache and pop, allocating the cache first if this
     /// is the class's first use. Serves directly from the slab when there
     /// is no cache to be had.
@@ -416,96 +414,125 @@ impl Heap {
         &mut self,
         shared: &Shared,
         class: usize,
-        _blk: Tracked<&mut Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) -> (*mut u8, bool) {
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
         // The default path's one routing decision: a shared class (above
         // `tcache_max`, uncached everywhere) comes from arena 0 whatever
         // the home arena (`Config::shared_class`); explicit `MALLOCX_ARENA`
         // allocations (`alloc_in`) keep theirs.
         if shared.config.shared_class(class) {
-            return self.alloc_slow_in(
-                shared,
-                0,
-                class,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            );
+            return self.alloc_slow_in(shared, 0, class, Tracked(blk), Tracked(errno));
         }
         // A non-empty home cache means `pop_fast` declined the scheduled
         // pop (design 6.4) rather than found the cache empty: count the
         // pop it declined and serve it here, out of the fast path's body.
         let cache = self.cache_ptr(class);
+        proof {
+            self.lemma_routes_home(class as int);
+        }
+        let ghost old_perms = self.perms@;
+        proof {
+            assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
+        }
         // This thread's own header, unused or with `len` entries.
-        let h = ptr_mut_ref(cache, Tracked::assume_new());
+        let h = ptr_mut_ref(cache, Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)));
         let len = h.len;
         if len != 0 {
             let allocs = h.allocs.wrapping_add(1);
             debug_scheduled(allocs, h.compact_mask);
             h.allocs = allocs;
+            proof {
+                CachePerms::lemma_update(old_perms, self.perms@, cache);
+                CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+                Heap::lemma_poppable_same(*old(self), *self, class as int, cache);
+            }
             // SAFETY: `cache` is this heap's home cache for `class`, with
             // `len` entries.
-            return unsafe {
-                self.pop_compact(
-                    cache,
-                    class,
-                    len,
-                    Tracked::assume_new(),
-                    Tracked::assume_new(),
-                )
-            };
+            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno)) };
         }
-        self.alloc_slow_in(
-            shared,
-            self.arena,
-            class,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
+        proof {
+            CachePerms::lemma_update(old_perms, self.perms@, cache);
+            CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+        }
+        self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno))
     }
 
-    /// The slow allocation path for any arena.
+    /// The slow allocation path for any arena: the home arena or an arena
+    /// that is not [`FOREIGN`] (cache routing; the cache it pops is the one
+    /// [`Heap::ensure_cache`] routes `arena` to).
     pub(super) fn alloc_slow_in(
         &mut self,
         shared: &Shared,
         arena: u16,
         class: usize,
-        _blk: Tracked<&mut Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) -> (*mut u8, bool) {
-        self.tick::<true>(shared, Tracked::assume_new(), Tracked::assume_new());
-        let Some((a, w)) = shared.arena(arena, Tracked::assume_new()) else {
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+            arena != FOREIGN || arena == old(self).home(),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        proof {
+            shared.lemma_wf();
+        }
+        // Premise (lock order): the slow allocation path is entered from a
+        // fast path or an entry point, none of which holds a lock.
+        let tracked mut ord = axiom_entry();
+        self.tick::<true>(shared, Tracked(&mut ord), Tracked(&mut *errno));
+        let Some((a, w)) = shared.arena(arena, Tracked(&mut ord)) else {
             return (ptr::null_mut(), false);
         };
-        let cache = self.ensure_cache(shared, arena, class, Tracked::assume_new());
+        let cache = self.ensure_cache(shared, arena, class, Tracked(&mut ord));
+        let ghost s1 = *self;
         if cache.is_null() {
-            let (p, zero, t) =
-                shared.alloc_direct(a, w, class, Tracked::assume_new(), Tracked::assume_new());
+            let (p, zero, t) = shared.alloc_direct(a, w, class, Tracked(blk), Tracked(&mut ord));
             if !p.is_null() {
                 self.count_direct_alloc(class);
             }
-            self.put_handed(
-                t,
-                Ghost::assume_new(),
-                Ghost::assume_new(),
-                Ghost::assume_new(),
-            );
+            let ghost put = p@.addr != 0 && zero;
+            self.put_handed(t, Ghost(put), Ghost(p), Ghost(class as int));
             return (p, zero);
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
-            let len = self.refill(shared, a, w, cache, class, Tracked::assume_new());
+            let len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
+            proof {
+                Heap::lemma_keeps_routes(s1, *self, arena, class as int, cache);
+                self.lemma_poppable(arena, class as int, cache);
+            }
             if len == 0 {
                 return (ptr::null_mut(), false);
             }
-            self.pop(
-                cache,
-                class,
-                len,
-                shared.pac(),
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            )
+            self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno))
         }
     }
 
@@ -519,28 +546,39 @@ impl Heap {
         shared: &Shared,
         class: usize,
         p: *mut u8,
-        _blk: Tracked<Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) {
+        Tracked(blk): Tracked<Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    )
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            process_regions().is_slot(class as int, p@.addr),
+            blk.slot_block(p, class as int),
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+        decreases (if old(self).spec_rehome() { 1int } else { 0int }), 2int,
+    {
+        proof {
+            // A heap that may move is counted, so homed on an arena below
+            // `MAX_ARENAS`, never `FOREIGN` (`homed_ok`): the home push's
+            // slow path keeps the home.
+            if self.rehome {
+                assert(self.homed@ is Some);
+                assert(self.arena != FOREIGN);
+            }
+        }
         let arena = self.arena;
-        self.free_slow_in(
-            shared,
-            arena,
-            class,
-            p,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
+        self.free_slow_in(shared, arena, class, p, Tracked(blk), Tracked(errno))
     }
-}
 
-verus! {
-
-impl Heap {
     /// `double_free_scan`'s slow-path compare: abort by name when `p` is
     /// among the top four entries of `cache` (signed as the push signs it).
     /// When no entry stands for `p` (the second disjunct of the
-    /// precondition) the abort is unreachable.
+    /// precondition, which [`Heap::lemma_not_cached`] gives a free that
+    /// holds `p`'s slot token) the abort is unreachable.
     ///
     /// # Safety
     /// `cache` is one of this heap's real caches.
@@ -581,11 +619,7 @@ impl Heap {
             cached_twice(p);
         }
     }
-}
 
-} // verus!
-
-impl Heap {
     /// The slow free path for any arena. With `zero_on_free` every cached
     /// free arrives here (the fast push declines, see
     /// [`Heap::push_cache_flags`]) and the slot is cleared first: the
@@ -599,48 +633,72 @@ impl Heap {
         arena: u16,
         class: usize,
         p: *mut u8,
-        _blk: Tracked<Live>,
-        _errno: Tracked<&mut ThreadErrno>,
-    ) {
+        Tracked(blk): Tracked<Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+    )
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && (arena != FOREIGN || !old(self).rehome)),
+            crate::sys::may_syscall(),
+            process_regions().is_slot(class as int, p@.addr),
+            blk.slot_block(p, class as int),
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            // Only a young heap's cross-arena free can move the home
+            // (`rehome_on_free`).
+            arena != FOREIGN || !old(self).spec_rehome() ==> final(self).keeps(*old(self)),
+        decreases (if old(self).spec_rehome() { 1int } else { 0int }), 1int,
+    {
+        let tracked mut blk = blk;
+        // Premise (lock order): the slow free path is entered from a fast
+        // path or an entry point, none of which holds a lock.
+        let tracked mut ord = axiom_entry();
         if arena == FOREIGN
             && self.rehome
-            && self.rehome_on_free(
-                shared,
-                class,
-                p,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            )
+            && self.rehome_on_free(shared, class, p, Tracked(&mut blk), Tracked(&mut ord), Tracked(&mut *errno))
         {
             return;
         }
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check),
             // and `blk` holds the permission to its bytes.
-            let _ = unsafe { zero_slot(class, p, Tracked::assume_new()) };
+            let Tracked(z) = unsafe { zero_slot(class, p, Tracked(&mut blk)) };
+            proof {
+                // `z` covers the slot's whole usable size; the slot is
+                // given up below, with its token.
+                super::zero::theorem_zero_on_free(&z, p, class as int);
+            }
+        }
+        proof {
+            old(self).lemma_wf_regions();
         }
         // `arena` is the home arena, or `FOREIGN` for another arena's
         // slot (`free_other`); a real arena is materialised first, since
         // `ensure_cache` reads its class state for the header (a heap
         // whose first allocation is huge, or whose home moved, may not
         // have built it).
-        let cache = if arena == FOREIGN || shared.arena(arena, Tracked::assume_new()).is_some() {
-            self.ensure_cache(shared, arena, class, Tracked::assume_new())
+        let cache = if arena == FOREIGN || shared.arena(arena, Tracked(&mut ord)).is_some() {
+            self.ensure_cache(shared, arena, class, Tracked(&mut ord))
         } else {
             ptr::null_mut()
         };
+        // The slot's token, for the cache or the bitmap; the permission
+        // to its bytes is dropped with it. No entry of the cache stands
+        // for `p` while `blk` holds it (the scan below).
+        proof {
+            if cache@.addr != 0 {
+                self.lemma_not_cached(&mut blk, cache, class as int, self.hdr(cache).len as int);
+            }
+            blk.lemma_mem();
+        }
+        let tracked tok = blk.take_slot(class as int);
         if cache.is_null() {
-            self.tick::<false>(shared, Tracked::assume_new(), Tracked::assume_new());
+            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno));
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
-            shared.free_direct(
-                shared.arena_of_slot(class, p),
-                class,
-                p,
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            );
+            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut ord));
             self.count_direct_free(class);
             return;
         }
@@ -655,7 +713,7 @@ impl Heap {
             if shared.double_free_scan() {
                 self.scan_or_abort(shared, cache, p);
             }
-            self.tick::<false>(shared, Tracked::assume_new(), Tracked::assume_new());
+            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno));
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.
@@ -664,29 +722,27 @@ impl Heap {
                 } else {
                     (self.hdr_ref(cache).cap / 2).max(1)
                 };
-                self.flush(
-                    shared,
-                    arena,
-                    cache,
-                    class,
-                    n as usize,
-                    Tracked::assume_new(),
-                );
+                self.flush(shared, arena, cache, class, n as usize, Tracked(&mut ord));
+                proof {
+                    // Cache routing: a full `FOREIGN` cache is released whole.
+                    if arena == FOREIGN {
+                        assert(self.cached_len(cache) == 0);
+                    }
+                }
             }
             // The scan ran above; a flush only removes entries.
-            if !Self::push_cache(
-                cache,
-                p,
-                false,
-                shared.pac(),
-                Tracked::assume_new(),
-                Tracked::assume_new(),
-            ) {
+            let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+            proof {
+                tk.tracked_insert(0, tok);
+            }
+            if !Self::push_cache(cache, p, false, shared.pac(), Tracked(self.perms.borrow_mut()), Tracked(&mut tk)) {
                 unreachable!("heap: cache still full after a flush");
             }
         }
     }
 }
+
+} // verus!
 
 /// The entry points' form of [`free_fast_class`]: the heap comes as the
 /// thread's TLS slot value (`tls_heap_slot`, which proved the heap exists
