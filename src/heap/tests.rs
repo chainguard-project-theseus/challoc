@@ -3725,7 +3725,7 @@ fn a_scheduled_pop_aborts_when_the_run_reaches_past_the_length() {
     unsafe {
         (*k).mode = MODE_COMPACT;
         (*k).run_end = len + 1;
-        h.pop_compact_run(k, c, len);
+        h.pop_compact_run(k, c, len, Tracked::assume_new(), Tracked::assume_new());
     }
 }
 

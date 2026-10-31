@@ -605,7 +605,16 @@ impl Heap {
             let len = unsafe { self.hdr_ref(cache) }.len;
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
-                return unsafe { self.pop(cache, class, len, shared.pac(), Tracked::assume_new()) };
+                return unsafe {
+                    self.pop(
+                        cache,
+                        class,
+                        len,
+                        shared.pac(),
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    )
+                };
             }
         }
         self.alloc_slow_in(shared, arena, class, Tracked::assume_new())

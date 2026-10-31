@@ -203,7 +203,16 @@ impl Heap {
         let len = unsafe { self.hdr_ref(cache) }.len;
         if len != 0 {
             // SAFETY: a real cache with `len` entries.
-            return unsafe { self.pop(cache, class, len, shared.pac(), Tracked::assume_new()) };
+            return unsafe {
+                self.pop(
+                    cache,
+                    class,
+                    len,
+                    shared.pac(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+            };
         }
         // Not `alloc_slow`: an explicit arena is kept even for a shared
         // class (design 13.3).
@@ -400,7 +409,15 @@ impl Heap {
             h.allocs = allocs;
             // SAFETY: `cache` is this heap's home cache for `class`, with
             // `len` entries.
-            return unsafe { self.pop_compact(cache, class, len) };
+            return unsafe {
+                self.pop_compact(
+                    cache,
+                    class,
+                    len,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+            };
         }
         self.alloc_slow_in(shared, self.arena, class, Tracked::assume_new())
     }
@@ -438,7 +455,14 @@ impl Heap {
             if len == 0 {
                 return (ptr::null_mut(), false);
             }
-            self.pop(cache, class, len, shared.pac(), Tracked::assume_new())
+            self.pop(
+                cache,
+                class,
+                len,
+                shared.pac(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
         }
     }
 
