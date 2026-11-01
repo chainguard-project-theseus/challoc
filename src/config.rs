@@ -10,7 +10,9 @@
 //! `malloc_conf` global and the weak `je_malloc_conf` reference (Redis and
 //! Valkey define the latter), the first line of `/etc/challoc.conf`, then the
 //! `MALLOC_CONF` and `CHALLOC_CONF` environment variables. A later source
-//! overrides an earlier one key by key.
+//! overrides an earlier one key by key. A secure-execution process
+//! (`AT_SECURE` set: setuid, setgid, file capabilities or an LSM
+//! transition) reads neither variable (`linux::theorem_secure_conf`).
 //!
 //! Format is jemalloc's `key:value,key:value`. A value may be wrapped in
 //! double quotes. Unknown keys and malformed values are reported to the
@@ -1633,6 +1635,36 @@ mod linux {
         cfg
     }
 
+    /// Secure execution ignores the environment, closing the shape of
+    /// CVE-2023-4911 (glibc's `GLIBC_TUNABLES`, malloc tunables among them,
+    /// parsed by a setuid program's loader): in a process started with
+    /// `AT_SECURE` set (`sys::auxv::secure_exec`: setuid, setgid, file
+    /// capabilities or an LSM transition), no call of [`env_var`] returns,
+    /// whatever its name and result: Verus rejects every verified caller
+    /// that has not established `!secure_exec()`. So [`load`], whose two
+    /// calls meet `env_var`'s precondition only through its
+    /// `getauxval(AT_SECURE) == 0` test, reads neither `MALLOC_CONF` nor
+    /// `CHALLOC_CONF`, and its other sources (the defaults, the
+    /// `malloc_conf` and `je_malloc_conf` symbols, the first line of
+    /// `/etc/challoc.conf`) do not read the environment: the configuration
+    /// is the one the same process would get with neither variable set.
+    /// That last step is not a Verus fact: `Config::parse_source` is
+    /// verified to keep `Config::wf`, not as a function of its text.
+    ///
+    /// Trusted: `getauxval(AT_SECURE)` returns the process's one
+    /// `AT_SECURE` word (`sys::auxv::at_secure`, in the `getauxval` seam),
+    /// and `env_var`'s contract (its body is not verified). Checked by a
+    /// test, not by Verus: `env_var` is the only reader of `environ`, and
+    /// outside the tests `load` is its only caller
+    /// (`config::linux_tests::environment_has_one_reader`).
+    pub proof fn theorem_secure_conf(name: &[u8], r: Option<(&'static [u8], bool)>)
+        requires
+            crate::sys::auxv::secure_exec(),
+        ensures
+            !call_ensures(env_var, (name,), r),
+    {
+    }
+
     /// The string the `malloc_conf` (`which == 0`, defined by the library,
     /// interposed by a program's definition) or weak `je_malloc_conf`
     /// (`which == 1`) global points at, and whether it was cut, as
@@ -1789,11 +1821,21 @@ mod linux {
     /// Trusted: walks `environ` through raw pointers; each entry is read
     /// through `cstr`, and when it sets `name` (`env_sets`) its value is
     /// read through `cstr` again, which stops at [`MAX_TEXT`] bytes.
+    ///
+    /// Requires a process that is not a secure-execution one
+    /// (`sys::auxv::secure_exec`), whose environment is untrusted, so Verus
+    /// checks that every verified caller has tested `AT_SECURE` first. The
+    /// ensures restates it, so that [`theorem_secure_conf`] can state it of
+    /// `env_var` itself: Verus gives a function's `call_ensures` its
+    /// postcondition, but not its `call_requires` its precondition.
     // Verus has no let-chains, so the `env_sets` test stays nested.
     #[allow(clippy::collapsible_if)]
     #[verifier::external_body]
     pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
+        requires
+            !crate::sys::auxv::secure_exec(),
         ensures
+            !crate::sys::auxv::secure_exec(),
             r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
     {
         // SAFETY: `environ` is glibc's NULL-terminated array of NUL-terminated
@@ -3044,6 +3086,58 @@ mod linux_tests {
             let got = load();
             assert_eq!(got, Config::DEFAULT);
         }
+    }
+
+    /// The environment has one reader, which `theorem_secure_conf`'s
+    /// premise names: `environ` is read only in `env_var`'s body, and
+    /// `env_var` is called only by `load` (twice, after its `AT_SECURE`
+    /// test, which Verus checks against `env_var`'s precondition) and by
+    /// the tests above. No code calls `getenv` or `secure_getenv`.
+    #[test]
+    fn environment_has_one_reader() {
+        use crate::sys::tests::grant_sites;
+        // Spelled in parts, so that this test's own lines match nothing.
+        let var = std::format!("{}{}", "envi", "ron");
+        let call = std::format!("{}{}(", "env_", "var");
+        let def = std::format!("pub fn {call}");
+        let word = |at: &str| {
+            at.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|w| w == var)
+        };
+        let reads: Vec<_> = grant_sites(&var)
+            .into_iter()
+            .filter(|(_, at)| word(at))
+            .collect();
+        for (sig, at) in &reads {
+            assert!(
+                at.starts_with("config.rs:")
+                    && (sig.starts_with(&def) || at.contains("static envi")),
+                "{at}: the environment read in `{sig}`"
+            );
+        }
+        assert_eq!(reads.len(), 2, "{reads:?}");
+        let libc_lookups = grant_sites(&std::format!("{}{}", "get", "env"));
+        assert!(libc_lookups.is_empty(), "{libc_lookups:?}");
+        let calls = grant_sites(&call);
+        let tests = [
+            "env_var_is_read_from_environ",
+            "load_with_a_clean_environment_gives_the_defaults",
+        ]
+        .map(|t| std::format!("fn {t}() {{"));
+        for (sig, at) in &calls {
+            assert!(
+                at.starts_with("config.rs:")
+                    && (sig.starts_with("pub fn load(")
+                        || sig.starts_with(&def)
+                        || tests.contains(sig)),
+                "{at}: `env_var` called in `{sig}`"
+            );
+        }
+        let in_load = calls
+            .iter()
+            .filter(|(sig, _)| sig.starts_with("pub fn load("))
+            .count();
+        assert_eq!(in_load, 2, "{calls:?}");
     }
 }
 
