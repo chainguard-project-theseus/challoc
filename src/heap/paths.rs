@@ -234,7 +234,7 @@ impl Heap {
     #[inline(always)]
     pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
@@ -384,7 +384,7 @@ impl Heap {
     #[inline(never)]
     pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(blk): Tracked<Live>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
@@ -699,7 +699,7 @@ impl Heap {
         Tracked(errno): Tracked<&mut ThreadErrno>,
     )
         requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && (arena != FOREIGN || !old(self).rehome)),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             blk.slot_block(p, class as int),
@@ -1157,7 +1157,8 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(er
 /// as for [`free`].
 pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort_corrupt(),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
@@ -1221,6 +1222,179 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
             }
         }
     }
+}
+
+/// A free of a live block, slot or huge run, through no cache
+/// ([`free_direct`]: a thread with no heap, `MALLOCX_TCACHE_NONE`), with
+/// the block's token, reaches none of its not-an-allocation,
+/// invalid-free or double-free checks. It verifies without
+/// [`crate::sys::may_abort`], with only [`crate::sys::valid_aborts`]' two
+/// capabilities (a resource failure, and the pending checks) and
+/// [`crate::sys::integrity_aborts`]. The premise is there because
+/// [`free_direct`] counts the free in the thread's heap, found through
+/// its TLS slot by [`existing_heap`], which requires `may_abort_corrupt`:
+/// under PAC a corrupt slot value faults in `pac::auth`, an integrity
+/// abort, as a corrupt cache entry does ([`Heap::alloc_fast`]).
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+        blk.block(p),
+{
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    free_direct(shared, p, Tracked(blk));
+}
+
+/// The free of a live huge run on a thread with a heap, as
+/// [`Heap::free`] makes it (`classify_free`, then [`Heap::free_huge`]),
+/// with only [`crate::sys::valid_aborts`]' two capabilities, reaches
+/// none of its not-an-allocation, invalid-free or double-free checks.
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        old(h).wf(),
+        blk.block(p),
+        process_regions().is_huge_block(p@.addr, 1),
+{
+    proof {
+        shared.lemma_wf();
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    match shared.classify_free(p, Tracked(&blk)) {
+        Ok((class, _)) => {
+            proof {
+                // A page start of the huge region is no slot.
+                crate::vspec::zero::lemma_slot_not_huge(class as int, p@.addr);
+            }
+        },
+        Err(page) => {
+            proof {
+                blk.lemma_run_block(p, page);
+            }
+            h.free_huge(shared, page, Tracked(blk))
+        },
+    }
+}
+
+/// A thread's free of a live block through its caches ([`Heap::free`]:
+/// the push onto the home cache or the `FOREIGN` one, the slow path with
+/// its tick (cache GC, decay and purges), the arena it may build, the
+/// cache it may create, the flush and the release), with only
+/// [`crate::sys::valid_aborts`]' two capabilities, reaches none of
+/// its not-an-allocation, invalid-free or double-free checks. The heap is
+/// any: a young heap's cross-arena free may also move its home
+/// ([`Heap::rehome_on_free`]).
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        old(h).wf(),
+        blk.block(p),
+{
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    h.free(shared, p, Tracked(blk), Tracked(errno));
+}
+
+/// A sized free (`free_sized`, `sdallocx`, `free_aligned_sized`) of a
+/// live block whose size names it (`hint` is the size's class,
+/// `class_for(size, align)`: [`hint_ok`], and for a run `size` rounds to
+/// its pages: [`huge_hint_ok`]; the C contract of a sized free), as for
+/// [`theorem_valid_cache_free_never_aborts`]: the hinted fast push
+/// ([`free_sized_fast`]), then `free_sized_slow`'s check of the hint
+/// ([`Shared::check_size_hint`]) and the exact free ([`Heap::free`]),
+/// with only [`crate::sys::valid_aborts`]' two capabilities, reaches
+/// none of its not-an-allocation, invalid-free or double-free checks.
+/// The heap is any: the thread's, or an explicit cache's
+/// (`sdallocx_routed`). The theorem composes the steps on a given heap;
+/// the real slow paths reach that heap through `heap::free` (which may
+/// create the thread's heap, so it requires `may_abort`) or
+/// `mallocx::free`.
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        shared.wf(),
+        old(h).wf(),
+        blk.block(p),
+        hint matches Some(c) ==> c < NCLASSES,
+        hint_ok(p, hint),
+        super::huge_hint_ok(blk, p, size),
+{
+    let tracked mut blk = blk;
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_block_target(p);
+        blk.lemma_claims(p);
+    }
+    if hint.is_some() {
+        if free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk)) {
+            return;
+        }
+    }
+    proof {
+        // A declined push leaves a token that claims `p` with the same
+        // usable size: `p`'s block.
+        blk.lemma_claimed_block(p);
+    }
+    shared.check_size_hint(p, size, hint, Tracked(&blk));
+    h.free(shared, p, Tracked(blk), Tracked(errno));
+}
+
+/// The sized free of [`theorem_valid_sized_free_never_aborts`] through no
+/// cache (a thread with no heap, `MALLOCX_TCACHE_NONE`), as for
+/// [`theorem_valid_free_never_aborts`]: the check of the hint, then
+/// [`free_direct`], reaches none of its not-an-allocation, invalid-free
+/// or double-free checks. It assumes [`crate::sys::integrity_aborts`]
+/// for the same reason: [`free_direct`] counts the free through
+/// [`existing_heap`], which requires `may_abort_corrupt`.
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::kernel_aborts(),
+        crate::sys::pending_aborts(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+        blk.block(p),
+        hint_ok(p, hint),
+        super::huge_hint_ok(blk, p, size),
+{
+    proof {
+        shared.lemma_regions_ok();
+        blk.lemma_claims(p);
+    }
+    shared.check_size_hint(p, size, hint, Tracked(&blk));
+    free_direct(shared, p, Tracked(blk));
 }
 
 /// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`

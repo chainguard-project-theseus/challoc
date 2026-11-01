@@ -4294,22 +4294,6 @@ fn assert_flushed(len: &u32)
     assert_eq!(*len, 0, "heap: freeing a cache that was not flushed");
 }
 
-/// [`Heap::rehome_on_free`]'s check, in debug builds, that the bit test
-/// after the move names `p`'s class and the arena `arena_of_slot` read.
-///
-/// Trusted: `SlabTable::check_located` leaves the arena it returns
-/// unspecified (it reads the owner word without the group's witness), so
-/// the check is not stated as a precondition; nothing is claimed. A failed
-/// check panics (in debug builds), so it requires `may_abort`.
-#[inline(always)]
-#[verifier::external_body]
-fn debug_rehomed(ok: bool)
-    requires
-        crate::sys::may_abort(),
-{
-    debug_assert!(ok);
-}
-
 } // verus!
 
 verus! {
@@ -5702,12 +5686,10 @@ impl Heap {
     ///
     /// `blk` is the caller's token for `p`: the push takes it when the
     /// heap moved, and a false leaves it `p`'s token and the heap as `keeps`
-    /// allows (`rehome`, `rehome_from` may change). The debug check of the
-    /// bit test's result is trusted ([`debug_rehomed`]). It requires
-    /// `may_abort`, not `valid_aborts`: that check's arena is not stated
-    /// ([`debug_rehomed`]), so a free that may take only valid aborts
-    /// does not move the home (the requires of [`Heap::free_slow_in`] and
-    /// [`Heap::free_other`]).
+    /// allows (`rehome`, `rehome_from` may change). The `debug_assert!` is
+    /// proved: the bit test names `p`'s class, which is `class` (a slot
+    /// start has one class), and, with `blk`, its slab's owner, which
+    /// `arena_of_slot` read.
     #[cold]
     #[inline(never)]
     fn rehome_on_free(
@@ -5720,7 +5702,7 @@ impl Heap {
         Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>,
     ) -> (r: bool)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
             process_regions().is_slot(class as int, p@.addr),
@@ -5749,6 +5731,11 @@ impl Heap {
                 unsafe {
                     let cache = Self::node_cache_ptr(foreign, class);
                     if self.hdr_ref(cache).cap != 0 {
+                        proof {
+                            // No entry stands for `p` while `blk` holds it.
+                            assert(self.hdr_class(node_hdr(foreign, class as int)) == class);
+                            self.lemma_not_cached(blk, cache, class as int, self.hdr(cache).len as int);
+                        }
                         self.scan_or_abort(shared, cache, p);
                     }
                 }
@@ -5759,8 +5746,21 @@ impl Heap {
         }
         // The flush released every cached slot: test `p`'s bit again.
         match shared.classify_free(p, Tracked(&*blk)) {
-            Ok((c, a)) => debug_rehomed(c == class && a == to),
-            Err(_) => invalid_free(p as usize),
+            Ok((c, a)) => {
+                proof {
+                    shared.lemma_regions_ok();
+                    crate::vspec::zero::lemma_slot_unique(c as int, class as int, p as usize);
+                }
+                debug_assert!(c == class && a == to)
+            },
+            Err(_) => {
+                proof {
+                    // A slot start is no page start of the huge region.
+                    shared.lemma_regions_ok();
+                    crate::vspec::zero::lemma_slot_not_huge(class as int, p as usize);
+                }
+                invalid_free(p as usize)
+            },
         }
         let tracked mut own = Live::empty();
         proof {
