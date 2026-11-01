@@ -7,21 +7,21 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `axiom_plain_u64` | axiom | core library | none (assumption) | trusted |
-| `axiom_plain_u8` | axiom | core library | none (assumption) | trusted |
-| `axiom_plain_usize` | axiom | core library | none (assumption) | trusted |
-| `axiom_plain_isize` | axiom | core library | none (assumption) | trusted |
-| `axiom_plain_u32` | axiom | core library | none (assumption) | trusted |
-| `axiom_plain_ptr` | axiom | core library | none (assumption) | trusted |
-| `ptr::re...e::<T>` | assume_spec | UnsafeCell/volatile/transmute | RefinedRust | trusted |
+| `axiom_plain_u64` | axiom | core library | Kani | discharged |
+| `axiom_plain_u8` | axiom | core library | Kani | discharged |
+| `axiom_plain_usize` | axiom | core library | Kani | discharged |
+| `axiom_plain_isize` | axiom | core library | Kani | discharged |
+| `axiom_plain_u32` | axiom | core library | Kani | discharged |
+| `axiom_plain_ptr` | axiom | core library | Kani | discharged |
+| `ptr::read_volatile::<T>` | assume_spec | core library | Kani | trusted |
 | `ptr::write_bytes::<T>` | assume_spec | core library | Kani | trusted |
 | `axiom_raw_valid` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_ptr_add_addr` | external_body proof | core library | Kani | trusted |
 | `<*mut T>::sub` | assume_spec | core library | Kani | trusted |
 | `<*mut T>::add` | assume_spec | core library | Kani | trusted |
 | `<*const T>::add` | assume_spec | core library | Kani | trusted |
-| `axiom_array_elem` | axiom | core library | none (assumption) | trusted |
-| `axiom_array_view` | axiom | core library | none (assumption) | trusted |
+| `axiom_array_elem` | axiom | core library | Kani | trusted |
+| `axiom_array_view` | axiom | core library | Kani | trusted |
 | `ref_ptr` | external_body | raw pointer (internal) | Kani | discharged |
 | `ptr::read_unaligned::<T>` | assume_spec | core library | Kani | trusted |
 | `<*const T>::read_unaligned` | assume_spec | core library | Kani | trusted |
@@ -31,7 +31,7 @@ file.
 ## `axiom_plain_u64`
 
 src/vspec/ptr.rs:102. Kind: axiom. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `u64`: every initialised eight bytes are a `u64`, which holds no ghost state.
 
@@ -45,7 +45,7 @@ pub axiom fn axiom_plain_u64()
 ## `axiom_plain_u8`
 
 src/vspec/ptr.rs:109. Kind: axiom. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `u8`: every initialised byte is a `u8`.
 
@@ -59,7 +59,7 @@ pub axiom fn axiom_plain_u8()
 ## `axiom_plain_usize`
 
 src/vspec/ptr.rs:117. Kind: axiom. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `usize`: every initialised `size_of::<usize>()` bytes are a `usize`.
 
@@ -73,7 +73,7 @@ pub axiom fn axiom_plain_usize()
 ## `axiom_plain_isize`
 
 src/vspec/ptr.rs:125. Kind: axiom. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `isize`: every initialised `size_of::<isize>()` bytes are an `isize`.
 
@@ -87,7 +87,7 @@ pub axiom fn axiom_plain_isize()
 ## `axiom_plain_u32`
 
 src/vspec/ptr.rs:133. Kind: axiom. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `u32` (C's `unsigned`): every initialised four bytes are a `u32`.
 
@@ -101,7 +101,7 @@ pub axiom fn axiom_plain_u32()
 ## `axiom_plain_ptr`
 
 src/vspec/ptr.rs:143. Kind: axiom. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `*const T` (sized `T`): every initialised pointer-sized bytes are a `*const T`.
 
@@ -114,8 +114,8 @@ pub axiom fn axiom_plain_ptr<T>()
 
 ## `core::ptr::read_volatile::<T>`
 
-src/vspec/ptr.rs:154. Kind: assume_spec. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:154. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_volatile; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes)).
 
 > `core::ptr::read_volatile`, with the safety contract of the `core` documentation: `src` is valid for reads of `size_of::<T>()` bytes and aligned for `T`, and the bytes are a valid `T`, which [`plain`] asserts for `T` (only `u64`).
 
@@ -188,7 +188,7 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 ## `<*mut T>::sub`
 
 src/vspec/ptr.rs:239. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani observes only through a dereference, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`)).
 
 > `<*mut T>::sub`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize` and is at most `p`'s address, and, when it is not zero, the whole range from the result to `p` is inside the allocation `p` points into ([`in_alloc`] of the result).
 
@@ -243,7 +243,7 @@ pub assume_specification<T>[ <*const T>::add ](p: *const T, count: usize) -> (r:
 ## `axiom_array_elem`
 
 src/vspec/ptr.rs:284. Kind: axiom. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: the provenance clause of the element pointers, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table, which is this axiom's instance in `layout::regions`)).
 
 > Element `i` of a frozen array: a `'static` shared permission to a `[T; N]` gives one to each of its elements, holding that element, at [`ptr_add`] of the array's address as a `*mut T`; and the array's first `i` elements lie inside the allocation it is in, in fewer than `isize::MAX` bytes, so `<*mut T>::add(i)` is defined on that pointer.
 
@@ -264,7 +264,7 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
 ## `axiom_array_view`
 
 src/vspec/ptr.rs:321. Kind: axiom. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: its one verified instance, `heap::others`' `[CacheHeader; NCLASSES]`, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table)).
 
 > A shared view of the `[T; N]` at `a` lent by its elements' permissions: `perms` holds an initialised permission to each element ([`array_elem_ptr`]), so it holds the array, whose value is theirs, for as long as they stay borrowed.
 
@@ -301,7 +301,7 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
 ## `core::ptr::read_unaligned::<T>`
 
 src/vspec/ptr.rs:383. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes)).
 
 > `core::ptr::read_unaligned`.
 
@@ -317,7 +317,7 @@ pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> 
 ## `<*const T>::read_unaligned`
 
 src/vspec/ptr.rs:391. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes)).
 
 > `<*const T>::read_unaligned`.
 
@@ -333,7 +333,7 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
 ## `core::ptr::write_unaligned::<T>`
 
 src/vspec/ptr.rs:399. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_unaligned; not checked: `mallctl`'s 48-byte `Utilization`, the one type it writes that is wider than a word).
 
 > `core::ptr::write_unaligned`.
 
@@ -350,7 +350,7 @@ pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src:
 ## `<*mut T>::write_unaligned`
 
 src/vspec/ptr.rs:408. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_unaligned; not checked: `mallctl`'s 48-byte `Utilization`, the one type it writes that is wider than a word).
 
 > `<*mut T>::write_unaligned`.
 

@@ -12,7 +12,7 @@ file.
 | `PartialEqSpe...e::RunState` | spec_impl | core library | Kani | discharged |
 | `PartialEqSpe...slab::State` | spec_impl | core library | Kani | discharged |
 | `fence` | assume_spec | core library | Kani | discharged |
-| `str::as_ptr` | assume_spec | core library | Kani | trusted |
+| `str::as_ptr` | assume_spec | core library | Kani | discharged |
 | `hint::assert_unchecked` | assume_spec | core library | Kani | discharged |
 | `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | discharged |
 | `Option::<T>..._deref_mut` | assume_spec | core library | Kani | discharged |
@@ -105,7 +105,7 @@ pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic:
 ## `str::as_ptr`
 
 src/vspec/misc.rs:66. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::str_as_ptr).
 
 > `str::as_ptr`: the address of the first byte; nothing is claimed about it.
 

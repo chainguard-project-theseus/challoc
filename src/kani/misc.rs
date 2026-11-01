@@ -259,3 +259,19 @@ fn hint_assert_unchecked() {
     // SAFETY: `cond` holds.
     unsafe { core::hint::assert_unchecked(cond) };
 }
+
+/// `str::as_ptr`: no `ensures`; it returns, and (beyond the contract)
+/// gives the address of the first byte, for every string up to 4 bytes
+/// and a literal.
+#[kani::proof]
+#[kani::unwind(6)]
+fn str_as_ptr() {
+    let a: [u8; 4] = kani::any();
+    let n: usize = kani::any();
+    kani::assume(n <= 4);
+    if let Ok(s) = core::str::from_utf8(&a[..n]) {
+        assert_eq!(s.as_ptr(), a.as_ptr());
+    }
+    let t = "challoc";
+    assert_eq!(t.as_ptr(), t.as_bytes().as_ptr());
+}

@@ -8,3 +8,4 @@ PartialEqSpecImpl for slab::State	core library	Kani	discharged (Kani: kani_proof
 core::sync::atomic::fence	core library	Kani	discharged (Kani: kani_proofs::atomic::fence)
 core::hint::assert_unchecked	core library	Kani	discharged (Kani: kani_proofs::misc::hint_assert_unchecked)
 Option::<T>::as_deref_mut	core library	Kani	discharged (Kani: kani_proofs::misc::option_as_deref_mut)
+str::as_ptr	core library	Kani	discharged (Kani: kani_proofs::misc::str_as_ptr)

@@ -10,6 +10,8 @@
 //! below the length (every order pattern; see [`sort_ranks_on`]), which
 //! reaches only the insertion sort of `core`'s `sort_unstable` (to 20
 //! elements; a small sort and a quicksort run past that).
+//! `from_raw_parts` is also checked at bytes, and `rotate_left` on two
+//! longer slices, the shortest that reach its second algorithm.
 //! `select_nth_unstable` and `select_nth_unstable_by_key` have no
 //! harness: they switch algorithm with the length, the proofs use them
 //! on slices of thousands, and Kani reaches only the short branches.
@@ -32,7 +34,7 @@ fn any_words() -> ([u64; MAX], usize) {
 
 /// `a == b`, element by element (slice `==` on words is a `memcmp` of
 /// their bytes, whose loop would need eight times the unwinding).
-fn same(a: &[u64], b: &[u64]) -> bool {
+fn same<T: PartialEq>(a: &[T], b: &[T]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -358,4 +360,139 @@ fn sort_ptrs_by_key_11() {
 #[kani::unwind(14)]
 fn sort_ptrs_by_key_12() {
     sort_ranks_on::<12>(true);
+}
+
+/// `from_raw_parts` at `T` on an array of `N` `T`s: from element `i`
+/// (`i <= N`), every `len` with `i + len <= N` (the contract's `r_len`
+/// bound, read as "the `len` elements lie inside the array"; an array
+/// element is non-null and aligned, and the array is under `isize::MAX`
+/// bytes): the pointer and length are what `core` requires
+/// (`can_dereference` of the slice: non-null, aligned, in bounds, valid
+/// `T`s), the slice has length `len`, and (beyond the contract) its
+/// elements are the array's from `i`, at their addresses.
+fn from_raw_parts_on<T: Copy + PartialEq + kani::Arbitrary, const N: usize>() {
+    let a: [T; N] = kani::any();
+    let i: usize = kani::any();
+    let len: usize = kani::any();
+    kani::assume(i <= N && len <= N - i);
+    // SAFETY: `i <= N`: inside the array or one past it.
+    let data = unsafe { a.as_ptr().add(i) };
+    assert!(kani::mem::can_dereference(core::ptr::slice_from_raw_parts(
+        data, len
+    )));
+    // SAFETY: the contract's precondition, checked above.
+    let r = unsafe { core::slice::from_raw_parts(data, len) };
+    assert_eq!(r.len(), len);
+    for k in 0..len {
+        assert!(r[k] == a[i + k]);
+        assert!(core::ptr::eq(&r[k], &a[i + k]));
+    }
+}
+
+/// `core::slice::from_raw_parts::<'a, T>`: `r@.len() == len`, under the
+/// `requires`, at a byte (`mallctl`'s `name_bytes`, the one verified caller)
+/// and a word, for every in-array start and length up to `MAX`.
+#[kani::proof]
+#[kani::unwind(8)]
+fn slice_from_raw_parts() {
+    from_raw_parts_on::<u8, MAX>();
+    from_raw_parts_on::<u64, MAX>();
+}
+
+/// `swap_with_slice` on two arrays of `MAX` `T`s, at every length `n`.
+fn swap_with_slice_on<T: Copy + PartialEq>(any: fn() -> T) {
+    for n in 0..=MAX {
+        let mut a: [T; MAX] = [any(); MAX];
+        let mut b: [T; MAX] = [any(); MAX];
+        for k in 0..MAX {
+            a[k] = any();
+            b[k] = any();
+        }
+        let (old_a, old_b) = (a, b);
+        a[..n].swap_with_slice(&mut b[..n]);
+        assert!(same(&a[..n], &old_b[..n]));
+        assert!(same(&b[..n], &old_a[..n]));
+        assert!(same(&a[n..], &old_a[n..]));
+        assert!(same(&b[n..], &old_b[n..]));
+    }
+}
+
+/// `<[T]>::swap_with_slice`: under equal lengths, `final(a)@ == old(b)@`
+/// and `final(b)@ == old(a)@`, for every pair of slices up to `MAX`
+/// elements (here of two arrays, past whose slices nothing changes), of
+/// words and of `*mut u8` (a cache stack's entries, verified code's one
+/// instance). The length is a constant at each step, not symbolic (as in
+/// `ptr.rs`: Kani 0.68 can model a copy of a symbolic count short by an
+/// element).
+#[kani::proof]
+#[kani::unwind(8)]
+fn slice_swap_with_slice() {
+    swap_with_slice_on::<u64>(kani::any);
+    swap_with_slice_on::<*mut u8>(|| core::ptr::without_provenance_mut(kani::any()));
+}
+
+/// `s.rotate_left(mid)` on a slice of `L` arbitrary words, for every
+/// `mid <= L` (each a constant, as in `slice_swap_with_slice`):
+/// `final(s)@ == old(s)@[mid..] + old(s)@[..mid]`.
+fn rotate_left_on<const L: usize>() {
+    for mid in 0..=L {
+        let mut s: [u64; L] = kani::any();
+        let old = s;
+        s.rotate_left(mid);
+        for k in 0..L {
+            assert_eq!(
+                s[k],
+                if k < L - mid {
+                    old[mid + k]
+                } else {
+                    old[k - (L - mid)]
+                }
+            );
+        }
+    }
+}
+
+/// `s.rotate_left(mid)` on `L` words holding `0..L` (distinct values,
+/// which identify every element), at one `mid`: the same equation.
+fn rotate_left_distinct<const L: usize>(mid: usize) {
+    let mut s = [0u64; L];
+    for k in 0..L {
+        s[k] = k as u64;
+    }
+    s.rotate_left(mid);
+    for k in 0..L {
+        assert_eq!(s[k], ((mid + k) % L) as u64);
+    }
+}
+
+/// `<[T]>::rotate_left`: under `mid <= len`, `final(s)@ ==
+/// old(s)@.subrange(mid, len) + old(s)@.subrange(0, mid)`. On words,
+/// `core` picks one of two algorithms: a copy through a 256-byte stack
+/// buffer when `min(mid, len - mid)` is at most 32 elements, and block
+/// swaps past that. This harness checks the buffer path, for every slice
+/// up to `MAX` arbitrary words and every `mid`; `slice_rotate_left_swap`
+/// checks the other.
+#[kani::proof]
+#[kani::unwind(8)]
+fn slice_rotate_left() {
+    rotate_left_on::<0>();
+    rotate_left_on::<1>();
+    rotate_left_on::<2>();
+    rotate_left_on::<3>();
+    rotate_left_on::<4>();
+    rotate_left_on::<5>();
+    rotate_left_on::<MAX>();
+}
+
+/// `<[T]>::rotate_left`'s block-swap path (`slice_rotate_left`), on 66
+/// and 67 words (the shortest slices that reach it) at the `mid`s that
+/// reach it (33; 33 and 34), with distinct values: the method moves
+/// elements without reading them, so where each element goes is the
+/// whole of its effect.
+#[kani::proof]
+#[kani::unwind(69)]
+fn slice_rotate_left_swap() {
+    rotate_left_distinct::<66>(33);
+    rotate_left_distinct::<67>(33);
+    rotate_left_distinct::<67>(34);
 }

@@ -47,6 +47,7 @@ weights='
   config::kani_config::display_issue_rounded 125
   kani_proofs::ptr::ptr_copy_nonoverlapping 104
   kani_proofs::slice::sort_ptrs_11 98
+  kani_proofs::ptr::ptr_write_unaligned 71
   kani_proofs::slice::sort_ptrs_by_key_11 70
   kani_proofs::slice::sort_ptrs_10 57
   config::kani_config::display_issue_bad_value 57
@@ -57,11 +58,11 @@ weights='
   config::kani_config::get_contract 25
 '
 
-set -- -Z unstable-options -Z stubbing --ignore-global-asm \
+set -- -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm \
   --no-default-features --features "quantum${QUANTUM:?}"
 out=target/kani-regular
 mkdir -p "$out"
-cargo kani "$@" list -Z stubbing --format json >/dev/null
+cargo kani "$@" list -Z stubbing -Z mem-predicates --format json >/dev/null
 # Every harness name in kani-list.json, then this shard's share.
 # A harness is a bare string in an array (keys end in `: [` or `: {`, file
 # paths hold `/`); the count must match the file's totals.

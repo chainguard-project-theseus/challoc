@@ -17,9 +17,11 @@
 # `-Z stubbing` for the abort harnesses, which stub
 # `sys::abort::abort_fmt` (its body ends in raw syscalls, inline assembly
 # Kani does not run), and for `get_contract`, which stubs the C-string
-# `name` methods of `config.rs`. `-j 4` runs four harnesses at once, on
-# xlarge-amd64 for its 64 GiB: CBMC peaks at 11.6 GiB on
-# `config::kani_config::display_bytes`, 10.8 GiB on
+# `name` methods of `config.rs`; `-Z mem-predicates` for `kani::mem`'s
+# `can_dereference` and its kin, with which harnesses check what Kani 0.68
+# does not check on a typed access: the alignment and the validity of the
+# value. `-j 4` runs four harnesses at once, on xlarge-amd64 for its
+# 64 GiB: CBMC peaks at 11.6 GiB on `config::kani_config::display_bytes`, 10.8 GiB on
 # `kani_proofs::misc::formatter_write_fmt`, 10.1 GiB on
 # `api::print::kani_print::word_returns` and 8.8 GiB on
 # `kani_proofs::slice::slice_is_sorted` (quantum 16), and the first three
@@ -72,7 +74,7 @@ checks:
           - sh
           - -c
           - >-
-            cargo kani -Z unstable-options -Z stubbing --ignore-global-asm
+            cargo kani -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm
             --output-format terse -j 4
             --no-default-features --features "quantum${QUANTUM:?}"
 
