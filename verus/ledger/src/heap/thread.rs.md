@@ -27,7 +27,7 @@ pub tracked struct HeapPerm
 src/heap/thread.rs:97. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the field writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, verified, and the trusted `mark_bound` and `mark_rehome`), used up here, and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)), which the caller installs as the heap's ghost state.
+> The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the field writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound` and `mark_rehome`, verified), used up here, and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)), which the caller installs as the heap's ghost state.
 
 ```rust
 pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)

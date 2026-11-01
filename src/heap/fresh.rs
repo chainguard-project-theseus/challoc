@@ -23,15 +23,16 @@ verus! {
 /// `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here,
 /// and what the field writers stored in them: the `Shared` and the home
 /// arena ([`init_fields`]), and `bound`, which `init_fields` stores as
-/// `false` and [`mark_bound`](super::mark_bound) sets. Linear and not
+/// `false` and [`mark_bound`] sets. Linear and not
 /// `Copy` (it holds the permission): the one holder of the heap-head
 /// permission, made by [`init_fields`] once per heap. That `shared`,
 /// `arena` and `bound` are what the heap's fields hold is not a fact
 /// Verus checks (the permission forgets the values): `init_fields` sets
-/// them to what it stores, and nothing else builds, takes apart or
-/// changes one (its fields are private to this module) but `mark_bound`,
-/// which records its store of `bound` in it. `mark_rehome` stores
-/// `rehome`, a field the token does not record, and leaves it as it was.
+/// them to what it stores, and nothing else builds or takes one apart (its
+/// fields are private to this module) or changes what it records but
+/// `mark_bound`, which records its store of `bound` in it. [`mark_rehome`]
+/// stores `rehome`, a field the token does not record, through the
+/// permission it holds, and keeps what it records.
 /// It is valid while its heap is live, and must be dropped before
 /// `destroy`, which gets the whole heap block back, head included.
 /// `Tcaches::create` drops it.
@@ -61,7 +62,7 @@ impl FreshHeap {
     }
 
     /// `bound`: `false` as [`init_fields`] stored it, `true` once
-    /// [`mark_bound`](super::mark_bound) has recorded its store.
+    /// [`mark_bound`] has recorded its store.
     pub(super) closed spec fn bound(&self) -> bool {
         self.bound
     }
@@ -81,6 +82,10 @@ const H_ARENA: usize = 12;
 const H_SLOW_TICKS: usize = 16;
 const H_LAST_GC: usize = 24;
 const H_REST: usize = 32;
+// `bound` and `rehome`, inside `HeadRest`, which [`mark_bound`] and
+// [`mark_rehome`] store alone.
+const H_BOUND: usize = 73;
+const H_REHOME: usize = 88;
 
 /// The fields of a [`Heap`] from `uncached` up to `caches`, laid out as
 /// in `Heap` from [`H_REST`] on (the `const` assertion after this
@@ -107,7 +112,8 @@ global layout ThreadStats is size == 16, align == 8;
 global layout HeadRest is size == 64, align == 32;
 
 /// `*field_at::<Heap, T>(h, off) = v` for the field (or fields) of type
-/// `T` at byte offset `off` of the fresh heap at `h` ([`init_fields`]):
+/// `T` at byte offset `off` of the fresh heap at `h` ([`init_fields`], [`mark_bound`],
+/// [`mark_rehome`]):
 /// the store goes through a permission carved from `raw`, the
 /// permission to the heap's plain fields ([`heap_head`]), which is put
 /// back, its value forgotten, so `raw` holds the same bytes after.
@@ -119,7 +125,6 @@ unsafe fn put_head<T>(h: *mut Heap, off: usize, Tracked(raw): Tracked<&mut vstd:
     requires
         heap_head(h, *old(raw)),
         crate::vspec::ptr::in_alloc(h as *mut u8, 128),
-        h@.addr + 128 <= usize::MAX,
         off + vstd::layout::size_of::<T>() <= 128,
         (h@.addr + off) % (vstd::layout::align_of::<T>() as int) == 0,
     ensures
@@ -179,7 +184,6 @@ pub(super) unsafe fn init_fields(
         crate::sys::may_syscall(),
         heap_head(h, head.0),
         shared.wf(),
-        h@.addr + 128 <= usize::MAX,
     ensures
         r@.heap() == h,
         heap_head(h, r@.head()),
@@ -228,10 +232,75 @@ pub(super) unsafe fn init_fields(
     Tracked(FreshHeap { heap: h, head: raw, arena: arena as int, bound: false, shared: sp })
 }
 
+/// `(*h).bound = true` for a heap [`Heap::create`] has just made: a
+/// store of `true` to `bound` ([`H_BOUND`]) through a permission carved
+/// from the token's ([`put_head`]), recorded in the token.
+///
+/// # Safety
+/// `h` is a fresh heap, exclusively owned.
+#[inline(always)]
+pub(super) unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
+    requires
+        old(s).heap() == h,
+        heap_head(h, old(s).head()),
+    ensures
+        final(s).heap() == h,
+        heap_head(h, final(s).head()),
+        final(s).arena() == old(s).arena(),
+        final(s).bound(),
+        final(s).shared() == old(s).shared(),
+{
+    broadcast use vstd::layout::layout_of_primitives;
+
+    proof {
+        crate::vspec::ptr::axiom_raw_valid(&mut s.head, h as *mut u8, 128);
+        super::others::lemma_field_aligned::<bool>(h@.addr as int, H_BOUND as int);
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { put_head::<bool>(h, H_BOUND, Tracked(&mut s.head), true) };
+    proof {
+        s.bound = true;
+    }
+}
+
+/// `(*h).rehome = true` for a thread heap [`Heap::create`] has just made
+/// and marked bound ([`mark_bound`]): it may still move its home
+/// ([`Heap::try_rehome`]). A store of `true` to `rehome` ([`H_REHOME`])
+/// through a permission carved from the token's ([`put_head`]); the
+/// token does not record `rehome`, and what it records stays as it was.
+/// A heap with `rehome` set is bound (a conjunct of
+/// [`Heap::homed_ok`]): the token must record [`mark_bound`]'s store
+/// first.
+///
+/// # Safety
+/// `h` is a fresh heap, exclusively owned.
+#[inline(always)]
+pub(super) unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
+    requires
+        old(s).heap() == h,
+        heap_head(h, old(s).head()),
+        old(s).bound(),
+    ensures
+        final(s).heap() == h,
+        heap_head(h, final(s).head()),
+        final(s).arena() == old(s).arena(),
+        final(s).bound(),
+        final(s).shared() == old(s).shared(),
+{
+    broadcast use vstd::layout::layout_of_primitives;
+
+    proof {
+        crate::vspec::ptr::axiom_raw_valid(&mut s.head, h as *mut u8, 128);
+        super::others::lemma_field_aligned::<bool>(h@.addr as int, H_REHOME as int);
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { put_head::<bool>(h, H_REHOME, Tracked(&mut s.head), true) };
+}
+
 } // verus!
 
-// The offsets `init_fields` stores at (`H_*`, `HeadRest`); `FIELD_TYPES`
-// below checks the types.
+// The offsets `init_fields`, `mark_bound` and `mark_rehome` store at
+// (`H_*`, `HeadRest`); `FIELD_TYPES` below checks the types.
 const _: () = assert!(
     core::mem::offset_of!(Heap, shared) == H_SHARED
         && core::mem::offset_of!(Heap, tid) == H_TID
@@ -250,11 +319,14 @@ const _: () = assert!(
         && core::mem::offset_of!(Heap, rehome) == H_REST + core::mem::offset_of!(HeadRest, rehome)
         && core::mem::offset_of!(Heap, rehome_from)
             == H_REST + core::mem::offset_of!(HeadRest, rehome_from)
+        && core::mem::offset_of!(Heap, bound) == H_BOUND
+        && core::mem::offset_of!(Heap, rehome) == H_REHOME
         && H_REST + core::mem::size_of::<HeadRest>() <= core::mem::offset_of!(Heap, caches)
 );
 
-// The types `init_fields` stores at those offsets are `Heap`'s fields'
-// (`put_head::<T>` with these `T`, and `HeadRest`'s fields).
+// The types `init_fields`, `mark_bound` and `mark_rehome` store at those
+// offsets are `Heap`'s fields' (`put_head::<T>` with these `T`, and
+// `HeadRest`'s fields).
 #[allow(
     dead_code,
     clippy::type_complexity,

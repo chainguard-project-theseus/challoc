@@ -2,4 +2,6 @@
 core::ptr::copy_nonoverlapping::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_copy_nonoverlapping)
 <*mut T>::is_null	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_is_null)
 <*const T>::is_null	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_is_null)
-addr_to_ptr	raw pointer (internal)	RefinedRust	trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr_is_the_cast; not checked: the harness checks the address and the cast, not the `p@.provenance == cast_provenance()` clause, which Kani cannot observe)
+# An integer-to-pointer cast, which Verus cannot state: Kani checks the
+# address; the provenance clause stays an assumption, as for `usize_ptr`.
+addr_to_ptr	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr_is_the_cast; not checked: the harness checks the address and the cast, not the `p@.provenance == cast_provenance()` clause, which Kani cannot observe)
