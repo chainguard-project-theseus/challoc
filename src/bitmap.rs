@@ -517,6 +517,15 @@ impl<'a> AtomicBitmap<'a> {
         &&& fresh_marks(self.spec_first(), self.spec_first() + self.spec_nbits()).subset_of(p@)
     }
 
+    /// `w` holds the owner-word witness marker of the slab of every bit of
+    /// the view ([`owner_seen`]): the slab's group was handed out, its
+    /// owner word stored.
+    pub open spec fn seen_by(&self, w: GhostPersistentSubset<int>) -> bool {
+        &&& w.id() == self.spec_slots().sloc
+        &&& forall|b: int| self.spec_first() <= b < self.spec_first() + self.spec_nbits()
+            ==> #[trigger] owner_seen(self.spec_slots(), w@, b)
+    }
+
     /// Number of words in the view.
     pub closed spec fn spec_words(&self) -> nat {
         self.words@.len()
@@ -767,7 +776,7 @@ impl<'a> AtomicBitmap<'a> {
                 }
                 let tracked inv = self.invs.borrow().tracked_borrow(j);
                 vstd::open_atomic_invariant!(inv => pair => {
-                    let tracked (mut perm, g, mut u, mut d) = pair;
+                    let tracked (mut perm, g, mut u, mut d, sn) = pair;
                     let tracked mut fw = f.split(init_marks(64 * j, 64 * j + 64));
                     let ghost x0 = perm.value();
                     proof {
@@ -786,7 +795,8 @@ impl<'a> AtomicBitmap<'a> {
                         let tracked uw = u.split(fresh_marks(64 * j, 64 * j + 64));
                         p.combine(uw.persist());
                         d.combine(fw);
-                        pair = (perm, g, u, d);
+                        assert(owners_ok(sl, j, perm.value(), sn@));
+                        pair = (perm, g, u, d, sn);
                     }
                 });
                 proof {
@@ -822,7 +832,7 @@ impl<'a> AtomicBitmap<'a> {
             // Clear the slab's bits (all clear already) and initialise its
             // slots.
             vstd::open_atomic_invariant!(inv => pair => {
-                let tracked (mut perm, g, mut u, mut d) = pair;
+                let tracked (mut perm, g, mut u, mut d, sn) = pair;
                 let ghost x0 = perm.value();
                 proof {
                     f.disjoint(&d);
@@ -852,7 +862,8 @@ impl<'a> AtomicBitmap<'a> {
                     let tracked ur = u.split(fresh_marks(first, mid));
                     p.combine(ur.persist());
                     d.combine(fr);
-                    pair = (perm, g, u, d);
+                    assert(owners_ok(sl, j, perm.value(), sn@));
+                    pair = (perm, g, u, d, sn);
                 }
             });
             proof {
@@ -862,7 +873,7 @@ impl<'a> AtomicBitmap<'a> {
             if pad != 0 {
                 // Set its padding bits.
                 vstd::open_atomic_invariant!(inv => pair => {
-                    let tracked (mut perm, g, mut u, mut d) = pair;
+                    let tracked (mut perm, g, mut u, mut d, sn) = pair;
                     let ghost x0 = perm.value();
                     proof {
                         f.disjoint(&d);
@@ -883,7 +894,8 @@ impl<'a> AtomicBitmap<'a> {
                         p.combine(up.persist());
                         let tracked fp = f.take();
                         d.combine(fp);
-                        pair = (perm, g, u, d);
+                        assert(owners_ok(sl, j, perm.value(), sn@));
+                        pair = (perm, g, u, d, sn);
                     }
                 });
                 proof {
@@ -977,9 +989,12 @@ impl<'a> AtomicBitmap<'a> {
     /// the word was full or a concurrent claimer won every bit we wanted.
     /// The tokens of the slots it claimed join `toks`: no other claim can
     /// have them. `inited` holds the slab's fresh markers ([`inited_by`]),
-    /// so its padding bits are set and every bit it wins is a slot.
+    /// so its padding bits are set and every bit it wins is a slot. `seen`
+    /// holds the slab's owner-word witness marker ([`seen_by`]), which the
+    /// word's invariant keeps for the bits it sets.
     ///
     /// [`inited_by`]: AtomicBitmap::inited_by
+    /// [`seen_by`]: AtomicBitmap::seen_by
     #[inline]
     pub fn claim_word(
         &self,
@@ -987,11 +1002,13 @@ impl<'a> AtomicBitmap<'a> {
         n: usize,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
         Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
+        Tracked(seen): Tracked<&GhostPersistentSubset<int>>,
     ) -> (r: u64)
         requires
             i < self.spec_words(),
             old(toks).id() == self.spec_slots().loc,
             self.inited_by(*inited),
+            self.seen_by(*seen),
         ensures
             subset(r, self.slab_mask()),
             self.all_real(i as int, r),
@@ -1046,7 +1063,7 @@ impl<'a> AtomicBitmap<'a> {
         // Acquire pairs with the Release in `release`: the new owner's
         // accesses to the slot happen after the previous owner's.
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (mut perm, mut g, mut u, d) = pair;
+            let tracked (mut perm, mut g, mut u, d, mut sn) = pair;
             let ghost x0 = perm.value();
             prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));
             proof {
@@ -1100,7 +1117,27 @@ impl<'a> AtomicBitmap<'a> {
                 }
                 let tracked got = g.split(addrs(slots, won_bits));
                 toks.combine(got);
-                pair = (perm, g, u, d);
+                // The bits it sets are the view's, whose slab's witness
+                // marker `seen` has.
+                let w0 = sn@;
+                sn.combine(seen.duplicate());
+                assert(owners_ok(slots, j, prev | want, sn@)) by {
+                    assert forall|b: int| #![trigger owner_seen(slots, sn@, b)]
+                        64 * j <= b < 64 * j + 64 && slots.real(b) && has_bit(prev | want, (b - 64 * j) as u64)
+                        implies owner_seen(slots, sn@, b) by {
+                        let k = (b - 64 * j) as u64;
+                        lemma_bit_ops(prev, want, k);
+                        assert(b == 64 * j + k);
+                        if has_bit(prev, k) {
+                            assert(owner_seen(slots, w0, b));
+                        } else {
+                            lemma_subset_bits(want, self.mask);
+                            self.lemma_view_bit(i as int, k);
+                            assert(owner_seen(slots, seen@, b));
+                        }
+                    }
+                }
+                pair = (perm, g, u, d, sn);
             }
         });
         proof {
@@ -1140,19 +1177,21 @@ impl<'a> AtomicBitmap<'a> {
     /// index and the claimed mask, or `None` if every word was full at the
     /// time it was inspected. A single call never spans words; callers loop
     /// until they have enough or get `None`. The claimed slots' tokens join
-    /// `toks`; as for [`claim_word`](AtomicBitmap::claim_word), the bits
-    /// are slots.
+    /// `toks`; as for [`claim_word`](AtomicBitmap::claim_word), given
+    /// `inited` and `seen`, the bits are slots.
     pub fn claim_from(
         &self,
         start: usize,
         n: usize,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
         Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
+        Tracked(seen): Tracked<&GhostPersistentSubset<int>>,
     ) -> (r: Option<(usize, u64)>)
         requires
             start < self.spec_words(),
             old(toks).id() == self.spec_slots().loc,
             self.inited_by(*inited),
+            self.seen_by(*seen),
         ensures
             r matches Some((i, m)) ==> i < self.spec_words() && m != 0 && subset(m, self.slab_mask())
                 && self.all_real(i as int, m) && popcount(m) <= n,
@@ -1172,8 +1211,9 @@ impl<'a> AtomicBitmap<'a> {
                 toks@ == old(toks)@,
                 old(toks).id() == self.spec_slots().loc,
                 self.inited_by(*inited),
+                self.seen_by(*seen),
         {
-            let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited));
+            let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
             if got != 0 {
                 return Some((i, got));
             }
@@ -1232,7 +1272,7 @@ impl<'a> AtomicBitmap<'a> {
         let prev;
         let tracked mut toks = toks.take();
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (mut perm, mut g, u, d) = pair;
+            let tracked (mut perm, mut g, u, d, sn) = pair;
             prev = crate::vspec::word::fetch_and(w, !m, Ordering::Release, Tracked(&mut perm));
             proof {
                 broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
@@ -1284,7 +1324,15 @@ impl<'a> AtomicBitmap<'a> {
                     }
                 }
                 g.combine(toks);
-                pair = (perm, g, u, d);
+                // It only clears bits: the set ones keep their markers.
+                assert(owners_ok(slots, j, prev & !m, sn@)) by {
+                    assert forall|b: int| #![trigger owner_seen(slots, sn@, b)]
+                        64 * j <= b < 64 * j + 64 && slots.real(b) && has_bit(prev & !m, (b - 64 * j) as u64)
+                        implies owner_seen(slots, sn@, b) by {
+                        lemma_bit_ops(prev, m, (b - 64 * j) as u64);
+                    }
+                }
+                pair = (perm, g, u, d, sn);
             }
         });
         proof {
@@ -3169,15 +3217,18 @@ impl TwoLevelBitmap {
 // ([`lemma_addr_inj`]).
 
 /// One class bitmap's geometry: `loc` and `mloc`, two ghost resource
-/// locations that name the class's slots in ghost state; the bits per slab (`sb`), the slots per slab, the bits of the whole region
-/// (`nslabs * sb`); the slot geometry (the class region's base, the slab
-/// size and the slot size); and the guard geometry (the slab table's
-/// `lg_slabs_per_page` and `guard_mask`).
+/// locations that name the class's slots in ghost state, and `sloc`, the
+/// location of its table's owner-word witness markers
+/// (`class::owner_mark`); the bits per slab (`sb`), the slots per slab,
+/// the bits of the whole region (`nslabs * sb`); the slot geometry (the
+/// class region's base, the slab size and the slot size); and the guard
+/// geometry (the slab table's `lg_slabs_per_page` and `guard_mask`).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub ghost struct Slots {
     pub loc: Loc,
     pub mloc: Loc,
+    pub sloc: Loc,
     pub sb: int,
     pub nslots: int,
     pub nbits: int,
@@ -3336,6 +3387,16 @@ pub proof fn lemma_slab_bit(s: Slots, slab: int, t: int)
 // persistent, and a claim holds them for its slab, which rules the fresh
 // state out (a persistent marker is in no exclusive token), so the
 // padding bits it can see are set.
+//
+// A set slot bit was set by a claim, and a claim runs only on a slab its
+// class lock owns, whose group's owner word `SlabTable::take_group` stored
+// before it handed the group out. The word invariant records that in a
+// persistent set of the table's owner-word witness markers
+// (`class::owner_mark`, at `Slots::sloc`): it has the marker of the slab
+// of every set slot bit ([`owners_ok`]). A claim adds its slab's marker,
+// which its class lock holds, so a reader that holds a slot's token, and
+// so knows the bit is set, gets the witness that the slot's owner word is
+// stored.
 
 /// Namespace of the bitmap word invariants.
 pub open spec fn word_ns() -> int {
@@ -3442,14 +3503,29 @@ pub open spec fn guards_ok(s: Slots, j: int, u: Set<int>) -> bool {
         64 * j <= b < 64 * j + 64 && s.guard(b / s.sb) ==> u.contains(fresh_mark(b))
 }
 
+/// `w` has the owner-word witness marker (`class::owner_mark`) of the
+/// slab of bit `b` of class bitmap `s`.
+pub open spec fn owner_seen(s: Slots, w: Set<int>, b: int) -> bool {
+    w.contains(crate::class::owner_mark(b / s.sb))
+}
+
+/// The set slot bits of word `j` of class bitmap `s`, whose value is `x`,
+/// have their slabs' owner-word witness markers in `w`, the persistent
+/// ones its invariant holds ([`owner_seen`]).
+pub open spec fn owners_ok(s: Slots, j: int, x: u64, w: Set<int>) -> bool {
+    forall|b: int| #![trigger owner_seen(s, w, b)]
+        64 * j <= b < 64 * j + 64 && s.real(b) && has_bit(x, (b - 64 * j) as u64) ==> owner_seen(s, w, b)
+}
+
 /// A bitmap word's invariant: the word's permission, the tokens of
 /// exactly the slots whose bits are clear, the markers of its bits'
-/// initialisation ([`marks_ok`]), and a guard slab's bits never
-/// initialised ([`guards_ok`]).
+/// initialisation ([`marks_ok`]), a guard slab's bits never initialised
+/// ([`guards_ok`]), and the owner-word witness markers of its set slot
+/// bits' slabs ([`owners_ok`]).
 pub struct WordPred;
 
-impl InvariantPredicate<WordKey, (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>)> for WordPred {
-    open spec fn inv(k: WordKey, v: (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>)) -> bool {
+impl InvariantPredicate<WordKey, WordVal> for WordPred {
+    open spec fn inv(k: WordKey, v: WordVal) -> bool {
         &&& v.0.addr() == k.addr
         &&& v.1.id() == k.slots.loc
         &&& v.1@ == addrs(k.slots, free_bits(k.slots, k.j, v.0.value()))
@@ -3457,6 +3533,8 @@ impl InvariantPredicate<WordKey, (WordPerm, GhostSubset<int>, GhostSubset<int>, 
         &&& v.3.id() == k.slots.mloc
         &&& marks_ok(k.slots, k.j, v.0.value(), v.2@, v.3@)
         &&& guards_ok(k.slots, k.j, v.2@)
+        &&& v.4.id() == k.slots.sloc
+        &&& owners_ok(k.slots, k.j, v.0.value(), v.4@)
     }
 }
 
@@ -3474,7 +3552,7 @@ pub proof fn lemma_guard_clear(k: WordKey, v: WordVal, b: int)
 }
 
 /// What a bitmap word's invariant holds.
-pub type WordVal = (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>);
+pub type WordVal = (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>, GhostPersistentSubset<int>);
 
 /// The invariant of one bitmap word.
 pub type WordInv = AtomicInvariant<WordKey, WordVal, WordPred>;
@@ -3497,11 +3575,13 @@ pub open spec fn slot_set(s: Slots) -> Set<int> {
 /// The word invariants of a fresh class bitmap of `n` words at `base`:
 /// every word zero, so each holds the tokens of all its slots, split off
 /// `toks`, which holds at least those, and the fresh markers of all its
-/// bits, split off `marks`, which holds at least those.
+/// bits, split off `marks`, which holds at least those; and no owner-word
+/// witness markers, at the location of `seen`'s.
 pub proof fn fresh_word_invs(
     tracked perms: Map<int, WordPerm>,
     tracked toks: GhostSubset<int>,
     tracked marks: GhostSubset<int>,
+    tracked seen: &GhostPersistentSubset<int>,
     s: Slots,
     base: usize,
     n: nat,
@@ -3513,6 +3593,7 @@ pub proof fn fresh_word_invs(
         forall|b: int| 0 <= b < 64 * n && s.real(b) ==> toks@.contains(#[trigger] s.addr(b)),
         marks.id() == s.mloc,
         fresh_marks(0, 64 * n as int).subset_of(marks@),
+        seen.id() == s.sloc,
     ensures
         words_wf(r, s, base, n as int),
     decreases n,
@@ -3556,8 +3637,11 @@ pub proof fn fresh_word_invs(
         assert(t@ == addrs(s, free_bits(s, j, p.value())));
         assert(marks_ok(s, j, p.value(), u@, d@));
         assert(guards_ok(s, j, u@));
-        let tracked inv = AtomicInvariant::<WordKey, WordVal, WordPred>::new(k, (p, t, u, d), word_ns());
-        let tracked mut r = fresh_word_invs(perms, toks, marks, s, base, (n - 1) as nat);
+        // A zero word has no set bit, so no witness marker is needed.
+        let tracked w = seen.empty();
+        assert(owners_ok(s, j, p.value(), w@));
+        let tracked inv = AtomicInvariant::<WordKey, WordVal, WordPred>::new(k, (p, t, u, d, w), word_ns());
+        let tracked mut r = fresh_word_invs(perms, toks, marks, seen, s, base, (n - 1) as nat);
         r.tracked_insert(j, inv);
         r
     }
@@ -3767,7 +3851,13 @@ impl<'a> AtomicBitmap<'a> {
     }
 
     pub fn claim_from_t(&self, start: usize, n: usize) -> Option<(usize, u64)> {
-        self.claim_from(start, n, Tracked::assume_new(), Tracked::assume_new())
+        self.claim_from(
+            start,
+            n,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 
     pub fn init_t(&self, nbits: usize) {

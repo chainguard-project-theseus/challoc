@@ -6633,7 +6633,7 @@ impl Huge {
     #[allow(clippy::while_let_loop)]
     pub fn free_run(&self, meta: &Meta, page: usize, Tracked(tok): Tracked<RunToken>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: RunInfo)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.is_process(),
             meta.is_process(),

@@ -1183,6 +1183,7 @@ impl SlabTable {
         Slots {
             loc: self.slot_auth@.id(),
             mloc: self.mark_auth@.id(),
+            sloc: self.spec_sloc(),
             sb: self.slab_bits as int,
             nslots: class_table()[self.class as int].nslots as int,
             nbits: self.nslabs * self.slab_bits,
@@ -1616,6 +1617,7 @@ impl SlabTable {
         let ghost geo = Slots {
             loc: vstd::pervasive::arbitrary(),
             mloc: vstd::pervasive::arbitrary(),
+            sloc: vstd::pervasive::arbitrary(),
             sb: cls.slab_bits as int,
             nslots: cls.nslots as int,
             nbits: nslabs * cls.slab_bits,
@@ -1636,9 +1638,18 @@ impl SlabTable {
         proof {
             axiom_slot_loc(class as int, slot_auth.id(), mark_auth.id(), geo.glg, geo.gmask, slot_once);
         }
+        // The owner words' witness markers: exclusive in each word's
+        // invariant until its store (`OwnerPred`), with the word's
+        // permission; and the empty persistent sets of them the commit lock,
+        // the watermark and the bitmap words start from.
+        let tracked (_sauth, smarks) = GhostSetAuth::<int>::new(owner_marks(0, nslabs as int));
+        let ghost sloc = smarks.id();
+        let tracked seen0 = smarks.empty().persist();
+        let tracked seen1 = seen0.duplicate();
         let ghost slots = Slots {
             loc: slot_auth.id(),
             mloc: mark_auth.id(),
+            sloc,
             sb: geo.sb,
             nslots: geo.nslots,
             nbits: geo.nbits,
@@ -1681,7 +1692,7 @@ impl SlabTable {
             assert(Set::<int>::range(bits_base as int, bits_base + 8 * nwords).subset_of(braw.dom()));
         }
         let tracked (perms, wperms) = fresh_words(braw, bits_base, bits.spec_base(), align, nwords as nat, class as int, words_once);
-        let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, slots, bits_base, nwords as nat);
+        let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, &seen0, slots, bits_base, nwords as nat);
         // The permissions to every descriptor and owner word, made from
         // the two reservations (`SlabTable::perms_ok`).
         proof {
@@ -1690,14 +1701,6 @@ impl SlabTable {
         let tracked (dmap, omap, dps) = table_perms(
             draw, oraw, descs.spec_base() as int, owners.spec_base() as int,
             align, stagger as int, stride as int, nslabs as int, group as int, class as int);
-        // The owner words' witness markers: exclusive in each word's
-        // invariant until its store (`OwnerPred`), with the word's
-        // permission; and the empty persistent sets of them the commit lock
-        // and the watermark start from.
-        let tracked (_sauth, smarks) = GhostSetAuth::<int>::new(owner_marks(0, nslabs as int));
-        let ghost sloc = smarks.id();
-        let tracked seen0 = smarks.empty().persist();
-        let tracked seen1 = seen0.duplicate();
         // The ghost variable that ties the watermark to `next_slab`: both
         // start at 0, one half for the commit lock, one for the watermark.
         let tracked (wauth, wvar) = GhostVarAuth::<usize>::new(0);
@@ -3067,7 +3070,7 @@ impl SlabTable {
         let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
         let x;
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (perm, mut g, u, d) = pair;
+            let tracked (perm, mut g, u, d, sn) = pair;
             x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));
             proof {
                 self.lemma_guard_slab(slab as int);
@@ -3077,7 +3080,7 @@ impl SlabTable {
                 assert((v >> k) & 1u64 != 1u64 ==> (v >> k) & 1u64 == 0u64) by (bit_vector);
                 if crate::layout::guard_slab(self.spec_class() as int, slab as int) {
                     crate::bitmap::lemma_slab_bit(s, slab as int, slot as int);
-                    crate::bitmap::lemma_guard_clear(inv.constant(), (perm, g, u, d), bit as int);
+                    crate::bitmap::lemma_guard_clear(inv.constant(), (perm, g, u, d, sn), bit as int);
                 }
                 if holds_slot(*held, self.spec_class() as int, slab as int, slot as int) {
                     // The slot's token is not in the word, which holds the
@@ -3091,10 +3094,85 @@ impl SlabTable {
                         assert(g@.contains(s.addr(bit as int)));
                     }
                 }
-                pair = (perm, g, u, d);
+                pair = (perm, g, u, d, sn);
             }
         });
         x
+    }
+
+    /// The owner-word witness marker of `slab` covers the view of the
+    /// slab's bits ([`SlabTable::bits`]): each of its bits is the slab's
+    /// (`bitmap::owner_seen`).
+    pub(super) proof fn lemma_seen_view<'a>(&self, bm: AtomicBitmap<'a>, slab: usize, w: GhostPersistentSubset<int>)
+        requires
+            self.inv(),
+            slab < self.spec_nslabs(),
+            bits_shape(bm, class_table()[self.spec_class() as int].slab_bits as usize),
+            bits_ghost(bm, *self, slab),
+            w.id() == self.spec_sloc(),
+            w@.contains(owner_mark(slab as int)),
+        ensures
+            bm.seen_by(w),
+    {
+        self.lemma_slots_wf();
+        let sb = self.spec_slots().sb;
+        assert forall|b: int| bm.spec_first() <= b < bm.spec_first() + bm.spec_nbits()
+            implies #[trigger] crate::bitmap::owner_seen(bm.spec_slots(), w@, b) by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(b, sb, slab as int, b - slab * sb);
+        }
+    }
+
+    /// The witness that slot `slot` of `slab` was handed out, for a reader
+    /// that holds the slot's token (`held`, [`holds_slot`]): the persistent
+    /// owner-word witness markers of the bit's word's invariant, which has
+    /// the marker of the slab of every set slot bit
+    /// (`bitmap::owners_ok`), frozen. The token is not in the word, which
+    /// holds the tokens of its clear bits, so the bit is set. No code: the
+    /// invariant is opened for the proof alone.
+    proof fn lemma_held_seen(
+        tracked &self,
+        tracked held: &Option<GhostSingleton<int>>,
+        tracked credit: vstd::invariant::OpenInvariantCredit,
+        slab: usize,
+        slot: usize,
+    ) -> (tracked r: Option<&'static GhostPersistentSubset<int>>)
+        requires
+            self.inv(),
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            holds_slot(*held, self.spec_class() as int, slab as int, slot as int) ==> seen_owner(*self, slab, r),
+        opens_invariants [crate::bitmap::word_ns()]
+    {
+        self.lemma_bits_fit(slab);
+        self.lemma_slots_wf();
+        let s = self.spec_slots();
+        let bit = slab * s.sb + slot;
+        let j = bit / 64;
+        assert(0 <= bit < self.nslabs * (self.slab_bits as int));
+        assert(j < self.spec_nwords());
+        assert(self.word_invs@.contains_key(j));
+        let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
+        let tracked mut r = None;
+        vstd::open_atomic_invariant_in_proof!(credit => inv => pair => {
+            let tracked (perm, mut g, u, d, sn) = pair;
+            if holds_slot(*held, self.spec_class() as int, slab as int, slot as int) {
+                let tracked t = held.tracked_borrow();
+                g.disjoint_singleton(t);
+                self.lemma_slot_bit(slab as int, slot as int);
+                crate::bitmap::lemma_slab_bit(s, slab as int, slot as int);
+                broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+                let (v, k) = (perm.value(), (bit - 64 * j) as u64);
+                if !crate::bitmap::has_bit(v, k) {
+                    assert(crate::bitmap::free_bits(s, j, v).contains(bit));
+                    assert(g@.contains(s.addr(bit)));
+                }
+                assert(crate::bitmap::owner_seen(s, sn@, bit));
+                r = Some(vstd::modes::tracked_static_ref(sn.duplicate()));
+            }
+            pair = (perm, g, u, d, sn);
+        });
+        r
     }
 
     /// The arena that owns `slab`'s group, without a watermark check:
@@ -3408,11 +3486,17 @@ impl SlabTable {
     /// aborts unless `slab` has been handed out and `slot`'s bit is set,
     /// with the pointer and its location; returns the owning arena. `held`
     /// is the caller's slot token, if any: with the slot's (a live slot's,
-    /// [`holds_slot`]) the bit test cannot fail. The owner word is read without a witness that the
-    /// group was handed out (the watermark load is `Relaxed`, and only an
-    /// `Acquire` load hands one out, `vspec::atom::load_usize_seen`), so
-    /// the value returned is not specified: the release it routes to reads
-    /// the owner again, with the witness ([`owner`](SlabTable::owner)).
+    /// [`holds_slot`]) the bit test cannot fail, and the arena is the
+    /// slab's owner. The owner word is read after a `Relaxed` watermark
+    /// load, which hands out no witness that the group was handed out
+    /// (only an `Acquire` load does, `vspec::atom::load_usize_seen`); the
+    /// witness comes from the slot's bitmap word instead, whose invariant
+    /// has it for every set slot bit ([`SlabTable::lemma_held_seen`]).
+    /// Without the token the value returned is not specified: the release
+    /// it routes to reads the owner again, with the witness
+    /// ([`owner`](SlabTable::owner)).
+    // `credit` is read only by the proof (ghost).
+    #[allow(unused_variables)]
     #[inline]
     pub fn check_located(&self, slab: usize, slot: usize, p: usize, held: Tracked<&Option<GhostSingleton<int>>>) -> (r: u16)
         requires
@@ -3421,11 +3505,17 @@ impl SlabTable {
         ensures
             slab < self.spec_nslabs(),
             !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+            holds_slot(*held@, self.spec_class() as int, slab as int, slot as int)
+                ==> r == slab_owner(self.spec_class() as int, slab as int),
     {
         self.check_live(slab, slot, p, held);
-        let tracked none = None;
+        let credit = vstd::invariant::create_open_invariant_credit();
+        proof {
+            use_type_invariant(self);
+        }
+        let tracked seen = self.lemma_held_seen(held.get(), credit.get(), slab, slot);
         // SAFETY: `check_live` returned, so `slab` is below the watermark.
-        unsafe { self.owner_at(slab, Tracked(none)) }
+        unsafe { self.owner_at(slab, Tracked(seen)) }
     }
 
     /// The bit test of [`check_located`], without the owner: the exact
@@ -3557,6 +3647,10 @@ impl SlabTable {
             final(sets).oauth@.id() == old(sets).oauth@.id(),
             r is None ==> final(sets).same_sets(*old(sets)),
             r matches Some((s, e)) ==> final(sets).oauth@@ == old(sets).oauth@@.union(Set::<int>::range(s as int, e as int)),
+            // The group's owner-word witness markers join the value's.
+            r matches Some((s, e)) ==> final(sets).seen@.id() == self.spec_sloc()
+                && owner_marks(s as int, e as int).subset_of(final(sets).seen@@)
+                && (old(sets).seen@.id() == self.spec_sloc() ==> old(sets).seen@@.subset_of(final(sets).seen@@)),
             *final(ord) == *old(ord),
             final(inited).id() == old(inited).id(),
             old(inited)@.subset_of(final(inited)@),
@@ -3905,6 +3999,13 @@ impl SlabTable {
         });
         proof {
             broadcast use vstd::set_lib::range_set_properties;
+            // The class lock value's witness markers take the group's too:
+            // its slabs join the value's ghost (`Inner::base`).
+            if sets.seen@.id() == stored.id() {
+                sets.seen.borrow_mut().combine(stored.duplicate());
+            } else {
+                sets.seen = Tracked(stored.duplicate());
+            }
             gi.seen.borrow_mut().combine(stored);
             assert(owner_marks(0, end as int) =~= owner_marks(0, s as int).union(owner_marks(s as int, end as int)));
         }
@@ -4050,7 +4151,7 @@ impl SlabTable {
             let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
             assert(inv.constant().slots == sl);
             vstd::open_atomic_invariant_in_proof!(credit => inv => pair => {
-                let tracked (perm, toks, mut u, mut d) = pair;
+                let tracked (perm, toks, mut u, mut d, sn) = pair;
                 assert(64 * j <= b < 64 * j + 64);
                 assert(u.id() == sl.mloc && d.id() == sl.mloc);
                 assert(crate::bitmap::marks_ok(sl, j, perm.value(), u@, d@));
@@ -4061,7 +4162,7 @@ impl SlabTable {
                     assert(d@.contains(init_mark(b)));
                     d.disjoint(fresh);
                 }
-                pair = (perm, toks, u, d);
+                pair = (perm, toks, u, d, sn);
             });
         }
     }

@@ -115,7 +115,7 @@ const PINS: &[(&str, &[&str])] = &[
             "return 0;",
             "prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));",
             "(want & !prev) >> self.shift",
-            "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited));",
+            "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
             "if got != 0 {",
             "return Some((i, got));",
             "i += 1;",
@@ -130,7 +130,7 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/class/mod.rs",
         &[
-            "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm)) else {",
+            "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
             "empty_passes += 1;",
             "if empty_passes == MAX_EMPTY_PASSES {",
             "fn take(",
@@ -167,7 +167,7 @@ const PINS: &[(&str, &[&str])] = &[
             "x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));",
             "unsafe { load_owner(self, word, Ghost(slab), seen) }",
             "self.check_live(slab, slot, p, held);",
-            "unsafe { self.owner_at(slab, Tracked(none)) }",
+            "unsafe { self.owner_at(slab, Tracked(seen)) }",
             "if !self.is_handed_out(slab) {",
             "never_committed(self.class as usize, slab);",
             "if !unsafe { self.is_set_unchecked(slab, slot, Tracked(held)) } {",
