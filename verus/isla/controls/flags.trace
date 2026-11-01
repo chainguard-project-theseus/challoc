@@ -1,0 +1,7 @@
+; Negative control (run.sh): writes PSTATE.N.
+(trace
+  (declare-const v1 (_ BitVec 64))
+  (read-reg |_PC| nil v1)
+  (write-reg |PSTATE| ((_ field |N|)) (_ struct (|N| #b1) (|Z| #b0)))
+  (define-const v3 (bvadd v1 #x0000000000000004))
+  (write-reg |_PC| nil v3))

@@ -1,0 +1,8 @@
+; Negative control (run.sh): writes a register through a field accessor.
+(trace
+  (declare-const v1 (_ BitVec 64))
+  (read-reg |_PC| nil v1)
+  (declare-const v2 (_ BitVec 64))
+  (write-reg |R5| ((_ field |x|)) v2)
+  (define-const v3 (bvadd v1 #x0000000000000004))
+  (write-reg |_PC| nil v3))

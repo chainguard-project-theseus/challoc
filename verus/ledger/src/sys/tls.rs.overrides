@@ -1,3 +1,8 @@
 # The slot premise: each top-level user of the slot gets a token as the
 # slot's last user left it.
 TlsSlot::entry	allocator invariant	none (assumption)
+# Inline assembly checked with Isla (verus/ISLA.md): run.sh checks the
+# memory it reads and the registers it writes against the contract
+# verus/isla/seams.md quotes; what the slot holds rests on the loader and
+# the slot premise above.
+get_tp	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: that the GOT entry holds the slot's TLS offset, the slot the cell's value, and TPIDR_EL0 the cell's tp)

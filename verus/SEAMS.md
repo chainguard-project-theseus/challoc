@@ -89,9 +89,26 @@ struct layout axiom the assertion states every `ensures` clause, its
 `field_fits` ones through `arena::fits`, which Verus verifies against
 `field_fits`; for an `offset_of!` constant, whose value Verus does
 not see, it checks every clause of the layout axiom that names the
-constant. A check that covers only part of the contract leaves the
+constant.
+`discharged (Isla: verus/isla/seams.md)` names the Isla runs of
+`verus/ISLA.md`, which trace the compiled code of the item's `asm!`
+blocks on a Sail model and check each against the contract
+that file quotes; `verus/isla/run.sh` fails when that file's seams,
+contracts or architectures differ from the ledger's. `seams.sh
+--check` fails unless the file has a heading for the seam, or when an
+`asm!` call in the seam's item is not a line of the `templates.txt`
+next to that file (or a line there matches no call, or a string literal
+in the item names a trapping or system-register instruction), so a
+changed template fails without the Isla tools. A trace that ends at an
+exception the kernel handles (a system call) checks nothing the kernel
+does after it, so such a seam is at most partly checked. The bounds of an
+Isla check are the build, link and platform residuals `verus/isla/seams.md`
+states for its runs (the static library's code and register assignments,
+the Linux user state the runs start from, the CPU configurations
+checked), as a Kani harness's are the ones its comment states.
+A check that covers only part of the contract leaves the
 status "trusted", with a note that names the check and what it does
 not cover: `trusted (partly checked, <check>; not checked: <what>)`,
 where `<check>` is `Kani: <harness path>`, `const assert: <label> in
-<file>`, or both joined by `, and`. A list separates its items with
-`, ` or ` and `, and ends at `;`, `)` or the next tag.
+<file>`, `Isla: <file>`, or several joined by `, and`. A list separates
+its items with `, ` or ` and `, and ends at `;`, `)` or the next tag.

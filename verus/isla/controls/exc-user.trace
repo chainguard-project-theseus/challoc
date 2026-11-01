@@ -1,0 +1,10 @@
+; Negative control (run.sh): writes R0 and takes an exception (pc-step form:
+; the PC written with __BranchTaken).
+(trace
+  (declare-const v1 (_ BitVec 64))
+  (read-reg |_PC| nil v1)
+  (declare-const v2 (_ BitVec 64))
+  (write-reg |R0| nil v2)
+  (write-reg |ESR_EL1| nil (_ struct (|bits| #x0000000072000002)))
+  (write-reg |_PC| nil v2)
+  (write-reg |__BranchTaken| nil true))

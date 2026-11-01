@@ -1,0 +1,17 @@
+# `svc #0` at Non-secure EL0 in AArch64 state, HCR_EL2 clear: a kernel at
+# EL1 (sys::raw's aarch64 syscall0..6; verus/isla/seams.md).
+# Every trace takes the SVC exception to EL1: the syndrome is EC 0x15 (SVC
+# from AArch64) with IL set and imm16 0, the return address is the next
+# instruction, the PC is the vector for a synchronous exception from a
+# lower EL using AArch64, and PSTATE ends at EL1 on SP_EL1. No user
+# register (X0-X30, SP_EL0, the SIMD/FP registers, FPCR, FPSR, TPIDR_EL0;
+# the model has no SVE) and no memory is written. svc0-vhe.job is the
+# EL2 case.
+insn svc0.trace svc
+no-mem-write
+mem-reads 0
+assert (= final.ESR_EL1 #x56000000)
+assert (= final.ELR_EL1 (bvadd init._PC #x0000000000000004))
+assert (= final._PC (concat ((_ extract 63 11) init.VBAR_EL1) #b10000000000))
+assert (= final.PSTATE.EL #b01)
+assert (= final.PSTATE.SP #b1)
