@@ -43,8 +43,10 @@ covered paths.
 These results rest on stated trust assumptions. See [Verus
 results](verus/RESULTS.md).
 
-Three tools do the checking; each covers less than the whole allocator,
-and CI runs all three on every pull request.
+Three tools do the checking; each covers less than the whole allocator.
+CI runs the Verus proofs and the loom models on every pull request, and
+the Kani harnesses on pull requests that touch what they check and again
+after each merge.
 
 - **Verus proofs.** Functions inside `verus! { ... }` blocks in `src/`
   are checked by [Verus](https://github.com/verus-lang/verus) against
