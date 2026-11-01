@@ -90,3 +90,41 @@ checks:
     timeout: 40m
     network: *kani-net
     steps: *kani-steps
+
+  # Every harness again, one at a time in regular format, after each
+  # landing on main: Kani 0.68.0 with CBMC 6.11.0 leaves `<`, `<=`, `>` and
+  # `>=` on two non-constant bools unconstrained (CBMC prints
+  # `warning: ignoring >=` and the harness can pass vacuously), and the
+  # terse output `-j` requires hides that warning. ci/kani-regular.sh fails
+  # on it; scripts/kani-boolcmp.sh (the lint check) is the presubmit half.
+  # In regular format the harnesses take about 75 min per quantum one at a
+  # time, past one job's timeout, so each quantum runs as 4 shards that
+  # split them by the script's table of seconds:
+  # `formatter_write_fmt` alone (about 21 min) and three of about 18 min.
+  # large-amd64's 32 GiB holds CBMC's 11.6 GiB peak with one harness at
+  # a time. It gates nothing.
+  kani-ignoring:
+    description: >-
+      Every harness on main in regular format with CBMC's verbose output,
+      at quantum 16 and at quantum 8, in 4 shards each, after each landing:
+      each must verify, and CBMC must print no `warning: ignoring` line (an
+      ordering comparison on bools it could not encode).
+    trigger: [postsubmit]
+    foreach:
+      - {name: q16-1, vars: {QUANTUM: "16", SHARD: "1"}}
+      - {name: q16-2, vars: {QUANTUM: "16", SHARD: "2"}}
+      - {name: q16-3, vars: {QUANTUM: "16", SHARD: "3"}}
+      - {name: q16-4, vars: {QUANTUM: "16", SHARD: "4"}}
+      - {name: q8-1, vars: {QUANTUM: "8", SHARD: "1"}}
+      - {name: q8-2, vars: {QUANTUM: "8", SHARD: "2"}}
+      - {name: q8-3, vars: {QUANTUM: "8", SHARD: "3"}}
+      - {name: q8-4, vars: {QUANTUM: "8", SHARD: "4"}}
+    vars: {SHARDS: "4"}
+    resources: large-amd64
+    timeout: 40m
+    network: *kani-net
+    steps:
+      - name: fetch the locked dependencies
+        cmd: [cargo, fetch, --locked]
+      - name: harnesses, regular format
+        cmd: [sh, -c, 'sh ci/kani-regular.sh "${SHARD:?}" "${SHARDS:?}"']
