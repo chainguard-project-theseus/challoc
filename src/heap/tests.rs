@@ -339,7 +339,7 @@ impl TestHeap {
     }
 
     pub(crate) fn destroy(self) {
-        unsafe { Heap::destroy(self.h, self.s, Tracked::assume_new()) }
+        unsafe { Heap::destroy(self.h, self.s, Tracked::assume_new(), Tracked::assume_new()) }
     }
 }
 
@@ -3196,7 +3196,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert_eq!(a.classes[c].stats().empty, per_refill);
     // Destroying the heap frees the nodes too.
     let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
-    unsafe { Heap::destroy(t.h, s, Tracked::assume_new()) };
+    unsafe { Heap::destroy(t.h, s, Tracked::assume_new(), Tracked::assume_new()) };
     assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < before);
     core::mem::forget(t);
 }
@@ -3435,10 +3435,10 @@ fn explicit_caches_create_flush_destroy() {
     let t1 = s.tcaches.create(s, 0, Tracked::assume_new()).unwrap();
     assert_eq!((t0, t1), (0, 1));
     assert_eq!(s.tcaches.len(), 2);
-    assert!(s.tcaches.get(2).is_none());
-    assert!(s.tcaches.get(u16::MAX).is_none());
+    assert!(s.tcaches.get(2, Tracked::assume_new()).is_none());
+    assert!(s.tcaches.get(u16::MAX, Tracked::assume_new()).is_none());
     let c = class_with(64);
-    let h = s.tcaches.get(t0).unwrap();
+    let h = s.tcaches.get(t0, Tracked::assume_new()).unwrap();
     let (p, _) = h.alloc_in(
         s,
         0,
@@ -3452,11 +3452,19 @@ fn explicit_caches_create_flush_destroy() {
     h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert!(s.tcaches.flush(s, t0, Tracked::assume_new()));
-    assert_eq!(s.tcaches.get(t0).unwrap().cache(c).unwrap().len(), 0);
+    assert_eq!(
+        s.tcaches
+            .get(t0, Tracked::assume_new())
+            .unwrap()
+            .cache(c)
+            .unwrap()
+            .len(),
+        0
+    );
     assert!(!s.tcaches.flush(s, 9, Tracked::assume_new()));
     assert!(s.tcaches.destroy(s, t0, Tracked::assume_new()));
     assert!(!s.tcaches.destroy(s, t0, Tracked::assume_new()));
-    assert!(s.tcaches.get(t0).is_none());
+    assert!(s.tcaches.get(t0, Tracked::assume_new()).is_none());
     assert_eq!(s.tcaches.len(), 1);
     // The slot is reused.
     assert_eq!(s.tcaches.create(s, 0, Tracked::assume_new()), Some(t0));
@@ -3960,7 +3968,7 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     );
     // `destroy` frees each node as the walk hands it over.
     let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
-    unsafe { Heap::destroy(t.h, s, Tracked::assume_new()) };
+    unsafe { Heap::destroy(t.h, s, Tracked::assume_new(), Tracked::assume_new()) };
     assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < before);
     core::mem::forget(t);
 }
@@ -4185,7 +4193,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     );
     h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(a2.large(), (0, 0));
-    unsafe { Heap::destroy(hp, s, Tracked::assume_new()) };
+    unsafe { Heap::destroy(hp, s, Tracked::assume_new(), Tracked::assume_new()) };
 }
 
 #[test]

@@ -778,7 +778,11 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
     };
     let hint = class_for(size, f.align());
     if let Tcache::Explicit(t) = f.tcache {
-        if let Some(h) = shared.tcaches.get(t) {
+        // Premise (`axiom_heap_use`): the caller uses cache `t` on no other
+        // thread (the `MALLOCX_TCACHE` contract); the reference ends before
+        // `mallocx::free` takes its own.
+        let tracked mut u = crate::heap::axiom_heap_use();
+        if let Some(h) = shared.tcaches.get(t, Tracked(&mut u)) {
             if crate::heap::free_sized_fast(
                 shared,
                 h,
@@ -1539,7 +1543,7 @@ mod tests {
             .expect("tcache.create");
         let flags = mallocx_tcache(t) as c_int;
         let e = mallocx(300, flags, vstd::prelude::Tracked::assume_new());
-        let th = s.tcaches.get(t).unwrap();
+        let th = s.tcaches.get(t, Tracked::assume_new()).unwrap();
         let before = th.cache_in(0, c).map_or(0, |cc| cc.len());
         dallocx(
             e,
@@ -1809,7 +1813,7 @@ mod tests {
             s.classify_free(e, vstd::prelude::Tracked::assume_new()),
             Ok((c, lua))
         );
-        let th = s.tcaches.get(t).unwrap();
+        let th = s.tcaches.get(t, Tracked::assume_new()).unwrap();
         let before = th.cache_in(lua, c).unwrap().len();
         let before_foreign = th.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
         // The free through the explicit cache (homed on arena 0) lands on

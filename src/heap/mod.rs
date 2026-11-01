@@ -74,6 +74,8 @@ pub use shared::Shared;
 pub use shared::shared_storage;
 #[cfg(test)]
 use shared::{FAIL_SETSPECIFIC, guard_interval_for};
+#[cfg(verus_keep_ghost)]
+pub(crate) use tcaches::axiom_heap_use;
 pub use thread::{HeapPerm, TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 #[cfg(verus_keep_ghost)]
@@ -5416,11 +5418,12 @@ proof fn take_hdr_run(
 /// own home headers qualify (`heap` is the heap `perms` are the ghost state
 /// of, and its home headers are at `h`, [`Heap::home_at`]; a premise, not
 /// checked: the caller passes the heap's own value, `*heap` of the
-/// reference `tcaches::heap_at(h)` returned, never one it built), and they are
+/// reference `tcaches::heap_at` returned, never one it built), and they are
 /// used up, so the block comes back once per heap: the heap owns one
-/// permission to each of its home headers, and the one-reference contract
-/// of the trusted source of an existing heap (`tcaches::heap_at`) is what
-/// keeps two ghost copies of a heap from being destroyed. Its one caller
+/// permission to each of its home headers, and the trusted source of an
+/// existing heap (`tcaches::heap_at`) lends one reference per
+/// `tcaches::HeapUse` token, whose premise (`tcaches::axiom_heap_use`) is
+/// what keeps two ghost copies of a heap from being destroyed. Its one caller
 /// is `Heap::destroy`, on the heap's last reference; any other proof code
 /// holding a well-formed `&mut Heap` meets these requires too, so calling
 /// it anywhere else would hand out a live heap's block. Trusted: creation
@@ -5560,12 +5563,14 @@ impl Heap {
     ///
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
-    /// use by any thread.
+    /// use by any thread. `u` is the caller's token for it
+    /// ([`tcaches::HeapUse`]), which `destroy` consumes: the heap is gone
+    /// afterwards, so the caller has no token left to reach it with.
     ///
     /// Lock order: the flush takes class locks, the frees the metadata
     /// lock, and the exit purge class locks and the huge lock, one at a
     /// time.
-    pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
+    pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(u): Tracked<tcaches::HeapUse>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -5581,8 +5586,9 @@ impl Heap {
             shared.lemma_wf();
             shared.lemma_wf_slow();
         }
+        let tracked mut u = u;
         // SAFETY: the caller gives us exclusive ownership of the heap.
-        let heap = unsafe { tcaches::heap_at(h) };
+        let heap = unsafe { tcaches::heap_at(h, Tracked(&mut u)) };
         // Unbound before the flush: the arena is idle from here on, so a
         // thread this one just started (larson's successor, which frees
         // what this one allocated) can be homed on it, or move there

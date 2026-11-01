@@ -23,6 +23,8 @@ use crate::vspec::addr::addr_to_ptr;
 
 use super::PUSH_PAC;
 use super::paths::shared_of;
+#[cfg(verus_keep_ghost)]
+use super::tcaches::axiom_heap_use;
 use super::tcaches::{heap_at, heap_new};
 use super::{Heap, Shared};
 use vstd::prelude::Tracked;
@@ -186,13 +188,16 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
         let tracked _heap = tls.loan.take();
     }
     crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void, Tracked(&mut tls.cell));
+    // Premise (`axiom_heap_use`): a thread's heap reaches its key
+    // destructor once, at thread exit, and nothing else uses it then.
+    let tracked mut u = axiom_heap_use();
     // SAFETY: the pointer was registered by `create_heap_for_thread` for
     // this thread.
     unsafe {
-        let shared = shared_of(heap_at(h).shared);
+        let shared = shared_of(heap_at(h, Tracked(&mut u)).shared);
         // Premise (lock order): a TLS destructor runs at thread exit, outside
         // any allocator call, so this thread holds no lock.
-        Heap::destroy(h, shared, Tracked(&mut axiom_entry()));
+        Heap::destroy(h, shared, Tracked(u), Tracked(&mut axiom_entry()));
     }
 }
 
@@ -332,8 +337,11 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
         proof {
             let tracked _created = (perms, fresh);
         }
+        // Premise (`axiom_heap_use`): created above and never published,
+        // so nothing else holds a reference to it.
+        let tracked u = axiom_heap_use();
         // SAFETY: created above and never published.
-        unsafe { Heap::destroy(h, shared, Tracked(&mut ord)) };
+        unsafe { Heap::destroy(h, shared, Tracked(u), Tracked(&mut ord)) };
         crate::sys::tls::set(ptr::null_mut(), Tracked(&mut *cell));
         return None;
     }
