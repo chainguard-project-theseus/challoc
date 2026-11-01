@@ -1,0 +1,76 @@
+# Isla over the inline-assembly seams verus/isla/seams.md lists (make
+# isla, verus/ISLA.md), natively on arm64, at quantum 16 and at quantum 8,
+# since the quantum changes what the compiler inlines around each site.
+#
+# make isla: section 1 checks the asm templates against templates.txt and
+# that seams.md matches the ledger (verus/ledger/, seams.sh --check); then
+# the aarch64 half builds the release static library for the host (so no
+# cross standard library), traces `svc #0` and every TLS slot load
+# (tls::get_tp) on the Sail Armv8.5-A model, checks each job with
+# isla-check, and must see each negative control rejected.
+#
+# isla and isla-snapshots are pinned to the builds the jobs were checked
+# with (verus/ISLA.md, "Setup"). rust-1.98 is Dockerfile.dev's stream;
+# build-base is build.rs's C++ compiler and isla-check's linker; llvm-21
+# gives llvm-objdump and llvm-ar.
+version: 1
+
+environment:
+  packages:
+    - isla~0.1.0_git20260923
+    - isla-snapshots~0_git20260602
+    - z3~4.16
+    - rust-1.98
+    - build-base
+    - llvm-21
+    - make
+    - busybox
+
+checks:
+  isla:
+    description: >-
+      make isla on arm64, natively, at quantum 16 and at quantum 8: the asm
+      templates and the Isla seams against the ledger, then every Isla job
+      and negative control of the aarch64 half. Runs on pull requests that
+      change the system-call or TLS code, the Isla harness, its ledger
+      overrides or the build.
+    trigger: [presubmit]
+    # The files holding the checked asm! blocks (src/sys/raw.rs,
+    # src/sys/tls.rs), the build inputs, the harness, the ledger it reads
+    # and this file. A change elsewhere can still move a site's registers
+    # (a TLS load inlined into new code); isla-main below catches that
+    # after the landing.
+    when:
+      changed:
+        - "src/sys/**"
+        - "Cargo.toml"
+        - "Cargo.lock"
+        - "build.rs"
+        - "Makefile"
+        - "verus/ISLA.md"
+        - "verus/seams.sh"
+        - "verus/isla/**"
+        - "verus/ledger/src/**/*.overrides"
+        - ".chainguard/ci/isla.yaml"
+    foreach: &isla-legs
+      - {name: arm64-q16, vars: {ISLA_TARGETS: aarch64}}
+      - {name: arm64-q8, vars: {ISLA_TARGETS: aarch64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}}
+    resources: &isla-resources medium-arm64
+    timeout: &isla-timeout 15m
+    network: &crates
+      egress: [index.crates.io, static.crates.io]
+    cmd: &isla-cmd [make, isla]
+
+  # Both legs after each landing on main: a change outside the presubmit
+  # list can still change the compiled sites. It gates nothing; a failure
+  # points at the commit that moved a site out of the jobs' shapes.
+  isla-main:
+    description: >-
+      make isla on main, on arm64 natively, at quantum 16 and at quantum 8,
+      after each landing.
+    trigger: [postsubmit]
+    foreach: *isla-legs
+    resources: *isla-resources
+    timeout: *isla-timeout
+    network: *crates
+    cmd: *isla-cmd
