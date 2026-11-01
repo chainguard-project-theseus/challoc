@@ -8,7 +8,6 @@
 //! library itself never does.
 
 #![no_std]
-#![deny(warnings)]
 #![deny(unsafe_op_in_unsafe_fn)]
 // Kani checks the exported `malloc` family against the libc signatures
 // `std` links to; challoc defines them, as it must.

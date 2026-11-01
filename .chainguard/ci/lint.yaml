@@ -1,9 +1,9 @@
-# Lint (the CI design's section 1): rustfmt, the loom models, shellcheck,
-# the codegen-fncmp fixtures and the Kani bool-comparison lint block;
-# clippy reports without blocking until there is a clippy baseline
-# (delete its `advisory: true` then). msrv-build builds the shipped cdylib
-# with the rust-version toolchain. The toolchains run in the guest
-# directly, no container.
+# Lint, on every pull request: rustfmt, clippy with -D warnings (which
+# also fails the build on any rustc warning), the loom models, shellcheck,
+# the codegen-fncmp fixtures, the Kani bool-comparison lint and the bench
+# harness's unit tests all block. msrv-build builds the shipped cdylib with
+# the rust-version toolchain. The toolchains run in the guest directly, no
+# container.
 version: 1
 
 environment:
@@ -24,10 +24,10 @@ checks:
     cmd: [cargo, fmt, --check]
 
   clippy:
-    advisory: true
     description: >-
       cargo clippy -D warnings over the shipped no_std library (release) and
-      over every target, tests included. Advisory until a clippy baseline.
+      over every target, tests included. Any clippy or rustc warning fails
+      it.
     resources: medium
     timeout: 20m
     network: &crates
@@ -56,8 +56,9 @@ checks:
 
   shellcheck:
     description: >-
-      shellcheck (pinned upstream release) over ci/*.sh, verus/*.sh,
-      tests/loom/*.sh and scripts/kani-boolcmp.sh.
+      shellcheck (pinned upstream release) over every shell script in the
+      tree: ci/, verus/, scripts/, tests/, bench/ and the CI services
+      (ci/shellcheck.sh).
     timeout: 5m
     network:
       egress:
@@ -90,6 +91,16 @@ checks:
       packages: [busybox]
     timeout: 5m
     cmd: [sh, ci/kani-boolcmp-test.sh]
+
+  bench-unit:
+    description: >-
+      The bench harness's unit tests (bench/cb/tests: stats, planner,
+      parsers, report), `make bench-unit`. Standard library only, no VMs
+      or network.
+    environment:
+      packages: [python-3.13, busybox]
+    timeout: 5m
+    cmd: [sh, -c, "cd bench && python3 -m unittest discover -s cb/tests -t ."]
 
   msrv-build:
     description: >-

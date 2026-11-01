@@ -1,8 +1,10 @@
-# The kernel floor (owner decisions of 2026-09-30: floor 5.14, with a 5.10
-# tripwire below it). Each check launches GCE VMs on public distribution
-# images through `cb launch exp-floor` (ci/floor.sh, bench/README.md) and
-# runs the floor-test row on this commit: `make test` (the cgroup steps in
-# child cgroups under the privileged container profile) and `make fuzz`.
+# The kernel floor: challoc supports host kernels 5.14 and newer
+# (CONTRIBUTING.md, "Support scope"), and a 5.10 tripwire below the floor
+# is run for information. Each check launches GCE VMs on public
+# distribution images through `cb launch exp-floor` (ci/floor.sh,
+# bench/README.md) and runs the floor-test row on this commit: `make test`
+# (the cgroup steps in child cgroups under the privileged container
+# profile) and `make fuzz`.
 #
 #   floor      AlmaLinux 9 (5.14), x86_64 and aarch64, default and
 #              privileged containers

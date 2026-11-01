@@ -19,6 +19,7 @@ bin=$1; shift
 dyn=$(readelf -d "$bin" 2>/dev/null) || { echo "check-needed: $bin: readelf -d failed (not an ELF file?)" >&2; exit 2; }
 needed=$(echo "$dyn" | sed -n 's/.*(NEEDED)[^[]*\[\(.*\)\].*/\1/p')
 runpath=$(echo "$dyn" | sed -n 's/.*(\(RUNPATH\|RPATH\))[^[]*\[\(.*\)\].*/\1=\2/p' | tr '\n' ' ')
+# shellcheck disable=SC2086 # joins the sonames onto one line
 echo "$bin: NEEDED $(echo $needed | tr '\n' ' ')${runpath:+ ($runpath)}"
 rc=0
 for want in "$@"; do

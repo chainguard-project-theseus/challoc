@@ -206,7 +206,7 @@ grep -E 'Failed to configure' "$LOGS/build-$ALLOC-$ARCH.log" || echo "every exte
 LD_LIBRARY_PATH=$BUILD ./ruby --disable-gems -v
 
 step "check ($ALLOC)"
-libruby=$(ls libruby.so.3.4* | head -1)
+libruby=; for l in libruby.so.3.4*; do [ -e "$l" ] && { libruby=$l; break; }; done
 if [ "$ALLOC" = challoc ]; then
     # DT_NEEDED through scripts/check-needed.sh, the check a package test
     # runs (--as-needed drops the entry from a binary that references no
@@ -234,6 +234,7 @@ fi
 
 # 5. test-all.
 LOG=$LOGS/test-all-$ALLOC-$ARCH.log
+# shellcheck disable=SC2016 # the single quotes are literal inside the double quotes; $TESTS expands
 step "make test-all TESTOPTS='$TESTOPTS' ${TESTS:+TESTS='$TESTS'} ($ALLOC; log: $LOG)"
 start=$(date +%s)
 rm -f "$BUILD/.test-rc"

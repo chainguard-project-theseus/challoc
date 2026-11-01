@@ -92,7 +92,7 @@ echo "kernel $(uname -r) $(uname -m); cgroup ${cg:-(none)}: memory.max $(mib "$(
 ev0=$(events); echo "memory.events before: $ev0"
 
 WATCHDOG=${WATCHDOG:-360}
-if [ -n "$preload" ]; then export LD_PRELOAD=$preload; fi
+if [ -n "$preload" ]; then export LD_PRELOAD="$preload"; fi
 if [ -n "$conf" ]; then export MALLOC_CONF=$conf; fi
 timeout -s KILL "$WATCHDOG" "$bin" "$@" $extra
 status=$?

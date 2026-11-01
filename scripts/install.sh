@@ -66,6 +66,7 @@ case "$PREFIX" in /*) ;; *) die "PREFIX must be absolute, got '$PREFIX'" ;; esac
 [ -f "$LIB" ] || die "$LIB missing: build it first (make install builds it)"
 
 soname=$(readelf -d "$LIB" | sed -n 's/.*Library soname: \[\(.*\)\]/\1/p')
+# shellcheck disable=SC2254 # want is a glob for the challoc flavour's versioned soname
 case "$soname" in
     $want) ;;
     *) die "$LIB has soname '$soname', not $want: wrong build for flavour $FLAVOR" ;;

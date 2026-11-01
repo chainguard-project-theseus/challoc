@@ -12,7 +12,7 @@ case $(uname -m) in
   aarch64) arch=arm64 ;;
   *) echo "unsupported machine $(uname -m)" >&2; exit 1 ;;
 esac
-grep -Eiq "^FROM .* AS $stage\$" Dockerfile.dev || { echo "::error::Dockerfile.dev has no '$stage' stage" >&2; exit 1; }
+grep -Eiq "^FROM .* AS $stage\$" Dockerfile.dev || { echo "error: Dockerfile.dev has no '$stage' stage" >&2; exit 1; }
 image=challoc-ci-$stage:$arch
 docker build -f Dockerfile.dev --target "$stage" -t "$image" . >&2
 echo "arch=$arch"

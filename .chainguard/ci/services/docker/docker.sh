@@ -1,7 +1,7 @@
 #!/bin/sh
 # The Docker daemon a check's steps drive (`make test` and the extended
-# tasks run the Makefile's container targets unchanged). Copied from
-# chainguard-dev/mono's .chainguard/ci/services/docker.
+# tasks run the Makefile's container targets unchanged): started as root
+# in the check's guest, with its store on the guest's scratch disk.
 set -eu
 if [ "$(id -u)" != 0 ]; then
   echo "docker service requires a root job" >&2

@@ -152,6 +152,7 @@ finish() { # status exit-code reason
     tar -C "$OUT/res" -czf "$OUT/logs.tgz" logs 2>/dev/null && put "$OUT/logs.tgz" "$RES/logs.tgz"
   fi
   put /var/log/cb-boot.log "$RES/boot.log"
+  # shellcheck disable=SC1010 # `done` is stamp's argument (the stage name)
   stamp done
   reason=$(printf '%s' "$reason" | tr '"\\\n' "'/ ")
   printf '{"schema":"challoc.bench.done/v1","vm":"%s","status":"%s","exit":%d,"reason":"%s","zone":"%s","machine":"%s","provisioning":"%s","kernel":"%s","times":%s}}\n' \
@@ -174,6 +175,7 @@ sysctl -qw 'kernel.core_pattern=|/bin/false' 2>/dev/null
 
 (
   if [ "$RT" = docker ] && ! command -v docker >/dev/null; then
+    # shellcheck disable=SC2030 # for this subshell's apt-get only
     export DEBIAN_FRONTEND=noninteractive
     apt_docker() { apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends docker.io; }
     apt_docker >/dev/null 2>&1 \
@@ -182,7 +184,9 @@ sysctl -qw 'kernel.core_pattern=|/bin/false' 2>/dev/null
         # A Debian release past its end of life (Debian 11, the 5.10
         # tripwire) leaves deb.debian.org for archive.debian.org, and the
         # mirror drops pool files its index still lists while it moves.
+        # shellcheck source=/dev/null # the host's file, sourced in this subshell only
         . /etc/os-release
+        # shellcheck disable=SC2046 # one word per file: apt list names hold no spaces
         [ "$ID" = debian ] \
           && sed -i -E 's#https?://(deb|security)\.debian\.org/#http://archive.debian.org/#' \
                /etc/apt/sources.list $(ls /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null) \
@@ -200,7 +204,7 @@ sysctl -qw 'kernel.core_pattern=|/bin/false' 2>/dev/null
 RUNTIME_PID=$!
 
 getv "$LAUNCH" "$OUT/launch.json" "$LAUNCH_SHA" || finish infra 3 "cannot fetch $LAUNCH"
-getv "$HARNESS" "$W/harness.tar.gz" "$HARNESS_SHA" && tar -xzf "$W/harness.tar.gz" -C "$W/src" || finish infra 3 "cannot fetch the harness $HARNESS"
+{ getv "$HARNESS" "$W/harness.tar.gz" "$HARNESS_SHA" && tar -xzf "$W/harness.tar.gz" -C "$W/src"; } || finish infra 3 "cannot fetch the harness $HARNESS"
 for os in $SOURCES; do
   o=${os%%=*}
   # cb run finds a source by its tree: src/<tree>.<sha16>.tar.gz -> <tree>.tar.gz
@@ -234,10 +238,12 @@ PREP_KERNEL=
 for step in $PREP; do case $step in kernel:*) PREP_KERNEL=${step#kernel:} ;; esac; done
 if [ -n "$PREP_KERNEL" ] && [ ! -e /var/lib/cb-prep.done ]; then
   echo "cb-boot: prep: installing $PREP_KERNEL (running $(uname -r))"
+  # shellcheck disable=SC2031 # the runtime subshell above exports its own copy
   export DEBIAN_FRONTEND=noninteractive
-  apt-get -o DPkg::Lock::Timeout=120 update -qq && apt-get -o DPkg::Lock::Timeout=120 install -y -qq "$PREP_KERNEL" \
+  { apt-get -o DPkg::Lock::Timeout=120 update -qq && apt-get -o DPkg::Lock::Timeout=120 install -y -qq "$PREP_KERNEL"; } \
     || finish infra 3 "prep: apt-get install $PREP_KERNEL failed"
   FLAVOUR=${PREP_KERNEL#linux-}
+  # shellcheck disable=SC2012 # kernel file names are plain; sort -V orders the versions
   KV=$(ls /boot/vmlinuz-*-"$FLAVOUR" 2>/dev/null | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
   [ -n "$KV" ] || finish infra 3 "prep: no /boot/vmlinuz-*-$FLAVOUR after installing $PREP_KERNEL"
   # Ubuntu cloud images boot initramfs-less first (GRUB_FORCE_PARTUUID);

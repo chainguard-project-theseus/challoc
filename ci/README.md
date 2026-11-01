@@ -15,7 +15,7 @@ Each script also runs by hand on a Linux host with Docker.
 | `skip-summary.sh LOG MANIFEST` | the `SKIP` lines of a run against `expected-skips/<cell>.txt`: a new skip fails, a vanished one is a notice |
 | `features-assert.sh LOG KEY=V...` | the `features:` line of a run must carry each KEY=V (the privileged cells: `mseal=yes`) |
 | `glibc-max.sh SO MAX` | SO needs no `GLIBC_` version above MAX (2.44) |
-| `shellcheck.sh` | shellcheck (the pinned upstream release, SHA-256 checked) over `ci/*.sh`, `verus/*.sh`, `tests/loom/*.sh` and `scripts/kani-boolcmp.sh` |
+| `shellcheck.sh` | shellcheck (the pinned upstream release, SHA-256 checked) over every shell script: `ci/`, `verus/`, `scripts/`, `tests/` (with `tests/loom/` and `tests/consumers/`), `bench/` and `.chainguard/ci/services/` |
 | `extended.sh [TASK]` | one task of the on-request extended checks |
 | `floor.sh CELLS` | `cb launch exp-floor` on GCE cells with the check's `challoc-gce` identity |
 | `codegen.sh` | `scripts/codegen-diff.sh` from the change's merge base (`CHAINGUARD_BASE_REVISION`) to this tree, both quantum builds; exits 2 when a function changed |
@@ -32,10 +32,10 @@ the diff: a key that appears is coverage lost.
 Every pull request (`Chainguard Checks (presubmit)` is the aggregate to
 require); each file is a workflow:
 
-- `lint.yaml`: rustfmt, the loom models, shellcheck, the codegen-fncmp
-  fixtures, the Kani bool-comparison lint (`ci/kani-boolcmp-test.sh`),
-  msrv-build (1.94);
-  clippy is advisory until a clippy baseline.
+- `lint.yaml`: rustfmt, clippy (`-D warnings`, the release library and
+  every target), the loom models, shellcheck, the codegen-fncmp fixtures,
+  the Kani bool-comparison lint (`ci/kani-boolcmp-test.sh`), the bench
+  harness's unit tests (`make bench-unit`), msrv-build (1.94).
 - `test.yaml`: `linux` {x86_64, aarch64} x quantum {16, 8}, `privileged`
   per arch (`hosted-<arch>-*` cells in `expected-skips/`).
 - `floor.yaml`: `floor` (AlmaLinux 9's 5.14, both arches, default and
@@ -70,5 +70,5 @@ it when the repository is public.
 - **Benchmarks on a label** (`bench:quick` / `bench:full`). The same
   identity and `cb launch quick`, as a requested check.
 - **Release**, SBOM, cosign, Pages: nothing is published.
-- **Miri, checked-release `.so`, valgrind** in the extended checks: phase
-  (e).
+- **Miri, checked-release `.so`, valgrind** in the extended checks: not
+  written yet.

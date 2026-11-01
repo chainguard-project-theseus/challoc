@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # bench/drivers/lib.sh: what the long drivers (valkey-soak.sh,
 # ruby-soak.sh, jvm-bench.sh) share. POSIX sh; source it after `ROOT` is set
 # and the caller has `cd`ed to the repository root inside the bench or dev
@@ -270,6 +271,7 @@ rev_label() { case $1 in tree) tree_label;; dir:*) echo "source directory ${1#di
 # default_lib_of ALLOC: the LD_PRELOAD path of a harness allocator: challoc
 # is $CHALLOC_LIB (the harness's own build, set before the rounds), the
 # rest stock_lib. A harness with more variants wraps it (jvm-bench.sh).
+# shellcheck disable=SC2153 # CHALLOC_LIB is set by the sourcing harness
 default_lib_of() { case $1 in challoc) echo "$CHALLOC_LIB";; *) stock_lib "$1";; esac; }
 # describe_stock ALLOC: the results-header line of a stock allocator.
 describe_stock() {
@@ -329,4 +331,5 @@ maps_expect() {
 }
 
 # The Valkey driver's cached jemalloc soak (BASELINES=cached).
+# shellcheck disable=SC2034 # read by valkey-soak.sh
 BASELINE_DIR=$ROOT/target/baselines
