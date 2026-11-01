@@ -19,7 +19,7 @@ file.
 
 ## `get_new_handler_addr`
 
-src/api/cxx.rs:70. Kind: external_body. Category: inline asm.
+src/api/cxx.rs:83. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of libstdc++'s `std::get_new_handler()`, or null when no libstdc++ is loaded in the process.
@@ -30,7 +30,7 @@ fn get_new_handler_addr() -> *const c_void
 
 ## `throw_bad_alloc_addr`
 
-src/api/cxx.rs:101. Kind: external_body. Category: inline asm.
+src/api/cxx.rs:114. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
@@ -43,7 +43,7 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
 
 ## `Handler`
 
-src/api/cxx.rs:130. Kind: external_body type. Category: function pointer.
+src/api/cxx.rs:143. Kind: external_body type. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > The installed `new_handler`, opaque to Verus (which has no function pointer types).
@@ -54,7 +54,7 @@ struct Handler(unsafe extern "C" fn());
 
 ## `call_get_new_handler`
 
-src/api/cxx.rs:139. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:152. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call `std::get_new_handler` at `get`, its non-null address: the installed `new_handler`, if one is set.
@@ -68,7 +68,7 @@ fn call_get_new_handler(get: *const c_void) -> Option<Handler>
 
 ## `call_throw_bad_alloc`
 
-src/api/cxx.rs:168. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:181. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call `std::__throw_bad_alloc` at `t`, its non-null address ([`is_throw_bad_alloc`]).
@@ -84,7 +84,7 @@ fn call_throw_bad_alloc(t: *const c_void) -> !
 
 ## `call_handler`
 
-src/api/cxx.rs:205. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:220. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call the program's `new_handler`, which may write `errno`: `errno` is the calling thread's, taken `&mut` with no ensures, so nothing is known of its value afterwards.
@@ -97,7 +97,7 @@ fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>)
 
 ## `call_handler_caught`
 
-src/api/cxx.rs:222. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:238. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call the program's `new_handler` through `challoc_call_new_handler` (`cxx_handler.cpp`), which catches anything it throws: `false` when it threw.
@@ -110,7 +110,7 @@ fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> b
 
 ## `oom`
 
-src/api/cxx.rs:240. Kind: no_decreases. Category: termination.
+src/api/cxx.rs:256. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > The `operator new` failure protocol: call the `new_handler` and retry until an attempt succeeds or no handler is installed, then throw `std::bad_alloc` (or return null for the `nothrow_t` forms, also when the handler throws).
@@ -138,7 +138,7 @@ fn oom(
 
 ## `axiom_c_call`
 
-src/api/cxx.rs:491. Kind: axiom. Category: C-program contract.
+src/api/cxx.rs:507. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C++ call that hands over the block at `p` to an `operator delete` ([`CCall`], [`CEntry::Frees`]).
