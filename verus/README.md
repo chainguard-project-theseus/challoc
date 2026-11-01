@@ -169,7 +169,7 @@ cargo kani ... --harness config::kani_config::get_contract   # one in a file
 
 ## Restated bodies
 
-Two verification-only theorems restate executable code instead of
+Four verification-only theorems restate executable code instead of
 calling it, because they check its callees in a context the code's own
 contract does not give:
 
@@ -178,7 +178,10 @@ contract does not give:
   (path 3) and `free_usable_block` (the last path);
 - `api::theorem_read_only_never_aborts` restates the calls of
   `jemalloc::nallocx`, `challoc_features` (with `feature_line_ready`'s)
-  and `glibc::mallinfo2`.
+  and `glibc::mallinfo2`;
+- `api::mallctl::theorem_mallctl_reads_never_abort` and
+  `theorem_mallctlbymib_reads_never_abort` restate the bodies of
+  `mallctl` and `mallctlbymib` after their `shared_published`.
 
 Verus checks only the callees a restatement calls, not that it still
 matches its body. The tests in `src/api/restated.rs` do:
