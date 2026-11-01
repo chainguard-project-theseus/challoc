@@ -13,10 +13,23 @@
 //! `std::get_new_handler()`. Both are reached through *weak* undefined
 //! symbols loaded from the GOT in `asm!`, so a C process that never maps
 //! libstdc++ still loads `libchalloc.so` under `BIND_NOW` (the slots
-//! resolve to null and the throw degrades to an abort with a message). The
-//! exception unwinds through the frames of this module, which carry
-//! `.eh_frame` entries and no landing pads, exactly like C code compiled
-//! with unwind tables; `tests/c/cxx_new.cpp` catches it under the preload.
+//! resolve to null and the throw degrades to an abort with a message).
+//!
+//! That exception, and one thrown by the `new_handler`, unwinds through
+//! Rust frames, which the language does not define: the reference makes a
+//! foreign exception crossing an `extern "C"` frame undefined behaviour,
+//! and under `panic = "abort"` a `"C-unwind"` frame aborts it, so neither
+//! ABI makes it defined. It works because of what rustc emits. `_Znwm` and
+//! `_Znam` reach `new_slow` by a tail `jmp`, which reaches `oom` the same
+//! way, and the frames left on the stack (`oom`, `throw_bad_alloc` and the
+//! throwing aligned forms) each have an `.eh_frame` FDE whose CIE names no
+//! personality routine. They have no landing pads, so the C++ unwinder
+//! steps through them as it does C frames with unwind tables. The
+//! `cxx_new` test (`cargo test --lib cxx_new`, `tests/c/cxx_new.cpp`)
+//! catches both exceptions under the preload. The defined alternative,
+//! throwing operators owned by `cxx_handler.cpp`, costs a call on every
+//! `new` and breaks two hard rules in CONTRIBUTING.md (exports are Rust
+//! `extern "C"` functions; no C++ in the library beyond the catch).
 //!
 //! The `nothrow_t` forms must return null even when the handler throws,
 //! and Rust cannot catch a C++ exception, so they call the handler through
@@ -174,6 +187,8 @@ fn call_throw_bad_alloc(t: *const c_void) -> !
 {
     // SAFETY: `is_throw_bad_alloc(t)` makes `t` the address of
     // `std::__throw_bad_alloc`, which takes no arguments and never returns.
+    // It leaves by unwinding through this frame, which the language does
+    // not define (module doc).
     let t: unsafe extern "C" fn() -> ! = unsafe { core::mem::transmute(t) };
     unsafe { t() }
 }
@@ -199,7 +214,7 @@ fn throw_bad_alloc() -> !
 /// the calling thread's, taken `&mut` with no ensures, so nothing is
 /// known of its value afterwards.
 /// Trusted: calls a function pointer; it may throw, which unwinds through
-/// here.
+/// here (not defined by the language; module doc).
 #[verifier::external_body]
 #[inline(always)]
 fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>)
@@ -207,8 +222,9 @@ fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>)
         crate::sys::may_syscall(),
 {
     // SAFETY: a `void (*)()` installed by the program through
-    // `std::set_new_handler`; an exception it throws unwinds through here
-    // to the caller of `operator new`.
+    // `std::set_new_handler`. An exception it throws unwinds through here
+    // to the caller of `operator new`, which rests on codegen rather than
+    // the language (module doc).
     unsafe { (handler.0)() }
 }
 
