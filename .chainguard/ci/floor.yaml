@@ -10,10 +10,9 @@
 #
 # Both hold the challoc-gce identity (identities.yaml), which can create
 # VMs in the bench project, so they run only where the identity is
-# released: pull requests from a branch of this repository opened by a
-# chainguard-dev member (ring 1.member), and pushes to main. A fork's pull
-# request (an outside contributor, once the repository is public) skips
-# them instead of failing on a withheld credential.
+# released: pushes to main (postsubmit). Pull requests never run them, so
+# no pull request needs the credential and no check reads the pull
+# request's context.
 version: 1
 
 environment:
@@ -31,12 +30,8 @@ checks:
     description: >-
       make test and make fuzz on AlmaLinux 9's 5.14 kernel (the supported
       floor), x86_64 and aarch64, in default and privileged containers, on
-      GCE VMs launched by cb. Runs on member pull requests and on main.
-    trigger: [presubmit, postsubmit]
-    when: &member-branch
-      expr: >-
-        !has(context.github.pull_request) ||
-        context.github.pull_request.head_repository == "wolfi-dev/challoc"
+      GCE VMs launched by cb. Runs on pushes to main.
+    trigger: [postsubmit]
     identity: challoc-gce
     # The service account ci/floor.sh impersonates; the identity's
     # principal may impersonate it and nothing else.
@@ -56,8 +51,7 @@ checks:
       make test and make fuzz on Debian 11's 5.10 kernel, below the
       supported floor, on a GCE VM launched by cb. Informational: a break
       here is noticed, not a promise.
-    trigger: [presubmit, postsubmit]
-    when: *member-branch
+    trigger: [postsubmit]
     identity: challoc-gce
     vars: *floor-vars
     timeout: 50m

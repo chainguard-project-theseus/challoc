@@ -15,8 +15,7 @@
 # pull request without review moves from `ring: 1.member` to `ring: 2`
 # (once the platform's two-person approval lands, approval releases ring 2
 # to a pull request). Anything an outsider must not trigger at all keeps
-# its identity off ring 0 and its check gated on the head repository (see
-# floor.yaml).
+# its identity off ring 0 and its check postsubmit-only (see floor.yaml).
 version: 1
 
 trust:
@@ -54,7 +53,5 @@ identities:
       provider: projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/providers/workflow
       audience: https://iam.googleapis.com/projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/providers/workflow
     allow:
-      - run: presubmit
-        target_ref: refs/heads/main
       - run: postsubmit
         ref: refs/heads/main
