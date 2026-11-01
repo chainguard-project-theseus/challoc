@@ -42,6 +42,17 @@ d["service_account_impersonation_url"] = (
 json.dump(d, open(out, "w"))
 PY
 export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=$adc
+# The pinned bench image: the tree carries no image lock, so the bucket
+# holds the current one (bench/README.md, "Operating on GCE"). Without it
+# every VM builds the image itself, which may not fit the check's timeout.
+if [ -z "${CB_IMAGE_LOCK:-}" ]; then
+  mkdir -p .ci
+  if gcloud storage cp -q "gs://$CB_BUCKET/internal-image.lock" .ci/image.lock 2>/dev/null; then
+    export CB_IMAGE_LOCK=.ci/image.lock
+  else
+    echo "floor: no gs://$CB_BUCKET/internal-image.lock; every VM builds the bench image" >&2
+  fi
+fi
 # The workspace's .git is a view the platform assembled, owned by another
 # account; cb runs git archive over it.
 git config --global --add safe.directory '*'

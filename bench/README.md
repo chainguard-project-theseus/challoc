@@ -443,7 +443,12 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
   also untracked (`CB_IMAGE_LOCK` points elsewhere): `make bench-image`
   writes it (set `CB_IMAGE_REPO=<region>-docker.pkg.dev/<project>/<repo>/cb`
   the first time) and `perf-upload.sh` adds to it; without it every VM
-  builds the image itself and runs without perf. Cells list their zones;
+  builds the image itself and runs without perf. The floor checks
+  (ci/floor.sh) read it from `gs://<bucket>/internal-image.lock`, so
+  after either step copy it there (`gcloud storage cp
+  bench/internal-image.lock gs://<bucket>/`), and copy it again if the
+  bucket's 30-day expiry removes it; without it their VMs build the image
+  too, which may not fit the check's 50-minute timeout. Cells list their zones;
   the reference shapes are `c4a-standard-16` (Axion) and `c4-standard-16`
   (Xeon 8581C) in `us-east4-a`. A spot C4/C4A VM costs about $0.30 an
   hour; `cb launch` prints its estimate and refuses a launch over the
