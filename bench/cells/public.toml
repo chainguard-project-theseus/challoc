@@ -25,7 +25,7 @@
 [defaults]
 provider = "gce"
 # Where `cb launch` runs (project, bucket, service_account) is not here:
-# an internal overlay (bench/cells/internal-project.toml), the CB_PROJECT,
+# a local, untracked overlay (bench/cells/internal-project.toml), the CB_PROJECT,
 # CB_BUCKET and CB_SERVICE_ACCOUNT environment variables, or --project,
 # --bucket and --service-account.
 zones = ["us-east4-a", "us-east4-b", "us-central1-a"]

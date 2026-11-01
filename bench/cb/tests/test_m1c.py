@@ -1,5 +1,5 @@
 """M1c: knob and container syntax, driver rows and their metric rows,
-the unpaired (one-variant-per-vm) comparison, the internal cells."""
+the unpaired (one-variant-per-vm) comparison."""
 
 import json
 import os
@@ -68,9 +68,8 @@ class TestContainer(unittest.TestCase):
 
     def test_suite_container(self):
         rows = spec.load_rows()
-        s = spec.load_suite("exp-slice", rows)
-        self.assertEqual(s.container["profile"], "default")
-        self.assertIn("cpuset", s.container)
+        s = spec.load_suite("sidecar", rows)
+        self.assertEqual(s.container, {"profile": "perfmon", "memory": "512m"})
 
 
 class TestDriverRows(unittest.TestCase):
@@ -141,23 +140,6 @@ class TestUnpaired(unittest.TestCase):
             self.assertEqual(by["valkey-soak"]["n_vm"], 6)
             order = [r["row"] for r in s["results"] if r["kind"] == "gate"]
             self.assertEqual(order[0], "valkey-soak")
-
-
-class TestInternalCells(unittest.TestCase):
-    def test_cells_and_lint(self):
-        # The internal overlay's cells, by where they come from (this
-        # public file names none of them).
-        cells = spec.load_cells()
-        internal = {n: c for n, c in cells.items() if os.path.basename(c.source).startswith("internal") and c.provider == "gce"}
-        if not internal:
-            self.skipTest("internal overlay not present (public tree)")
-        sliced = spec.select_cells("tag:exp-slice", cells)
-        self.assertTrue(sliced)
-        for n in sliced:
-            self.assertIn(n, internal)
-            self.assertEqual(cells[n].get("runtime"), "sudo-podman")
-            self.assertTrue(cells[n].get("expect", {}).get("kernel"))
-        self.assertEqual(spec.lint_public(), [])
 
 
 if __name__ == "__main__":

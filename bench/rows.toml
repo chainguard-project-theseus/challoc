@@ -78,7 +78,12 @@ pg_secs = "30"
 sidecar_idle = "60"
 startup_n = "500"
 
-# Practical thresholds delta (owner decision O9), in percent.
+# Each row class's practical margin, in percent: a change whose CI
+# stays inside it is `same` or `sub-threshold`, never `worse`. Wider
+# where run-to-run noise is larger: single-thread rows are the steadiest,
+# multithreaded ones vary with scheduling, and server and soak rows add a
+# client, a network stack and minutes of runtime. A/A runs check them
+# (bench/README.md, "cb launch").
 [class]
 st = { delta_pct = 1.0 }
 mt = { delta_pct = 2.0 }

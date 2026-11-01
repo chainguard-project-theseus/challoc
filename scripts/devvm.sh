@@ -46,8 +46,9 @@
 # ssh drops or you press ^C the job keeps running: `attach ARCH NAME`
 # streams it again from the start and returns the status once it ends.
 #
-# Environment: DEVVM_PROJECT (default my-gcp-project), DEVVM_ZONE (us-east4-a),
-# DEVVM_PREFIX (challoc-dev), DEVVM_SSH_KEY (~/.ssh/google_compute_engine).
+# Environment: DEVVM_PROJECT (required: the GCP project the VMs live in),
+# DEVVM_ZONE (us-east4-a), DEVVM_PREFIX (challoc-dev), DEVVM_SSH_KEY
+# (~/.ssh/google_compute_engine).
 # ssh and rsync go directly to the VM's external IP with gcloud's key (not
 # through `gcloud compute ssh`, which hangs on detached jobs); host keys
 # are pinned per VM name in ~/.cache/challoc-devvm, so recycled IPs never
@@ -55,7 +56,7 @@
 # credentials have expired.
 set -euo pipefail
 
-PROJECT="${DEVVM_PROJECT:-my-gcp-project}"
+PROJECT="${DEVVM_PROJECT:-}"
 ZONE="${DEVVM_ZONE:-us-east4-a}"
 PREFIX="${DEVVM_PREFIX:-challoc-dev}"
 SSH_KEY="${DEVVM_SSH_KEY:-$HOME/.ssh/google_compute_engine}"
@@ -398,7 +399,9 @@ cmd_status() {
 }
 
 case "${1:-}" in
-  up|run|attach|kill|fetch|ssh|down|status) c="$1"; shift; "cmd_$c" "$@" ;;
+  up|run|attach|kill|fetch|ssh|down|status)
+    [ -n "$PROJECT" ] || die "set DEVVM_PROJECT to the GCP project the dev VMs live in"
+    c="$1"; shift; "cmd_$c" "$@" ;;
   -h|--help|help|"") usage ;;
   *) usage >&2; exit 2 ;;
 esac
