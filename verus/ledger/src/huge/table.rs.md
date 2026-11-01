@@ -11,12 +11,12 @@ file.
 
 ## `Table::storage`
 
-src/huge/table.rs:395. Kind: external_body. Category: allocator invariant.
+src/huge/table.rs:403. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > Zeroed storage for `1 << lg_cap` entries, all empty, with what the table holds of it ([`Own`]): the permission for each entry; the block's claim when it is binned; and `meta`'s identity.
 
-Body mints Tracked at line 418; mints Tracked at line 422.
+Body mints Tracked at line 427; mints Tracked at line 431.
 
 ```rust
 fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
@@ -33,6 +33,7 @@ fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, boo
             16 * cap_of(lg_cap),
             16,
         ))),
+        r matches Some((p, _, _)) ==> meta.holds(p@.addr as int, cap_of(lg_cap) * 16),
         r matches Some((_, _, own)) ==> own@.mid@ == meta.live_id(),
         r matches Some((p, _, _)) ==> p@.addr + 16 * cap_of(lg_cap) <= usize::MAX,
 ```

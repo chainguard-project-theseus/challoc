@@ -124,7 +124,8 @@ impl Lazy {
         self.committed
     }
 
-    /// Reserve a table of `len` bytes aligned to `align` (and, with
+    /// Reserve a table of `len` bytes in `meta`'s region
+    /// ([`Meta::holds`]), aligned to `align` (and, with
     /// metadata THP on, to the folio), with the permission to its bytes,
     /// its length rounded up to a whole word, which read as zero and which
     /// [`Meta::reserve_table`] hands out once. The table keeps the claim
@@ -146,6 +147,7 @@ impl Lazy {
             r matches Some(l) ==> l.spec_base() > 0 && l.spec_base() % align == 0,
             r matches Some(l) ==> l.spec_base() + (len + 7) / 8 * 8 <= usize::MAX,
             r matches Some(l) ==> l.spec_len() == len && l.spec_committed() == 0 && l.spec_base() + len <= crate::meta::va_limit(),
+            r matches Some(l) ==> meta.holds(l.spec_base() as int, len as int),
             r matches Some(l) ==> final(raw).is_range(l.spec_base() as int, (len + 7) / 8 * 8) && final(raw).provenance() == cast_provenance(),
             r matches Some(l) ==> l.claimed(),
             *final(ord) == *old(ord),
@@ -801,6 +803,7 @@ impl Set {
         ensures
             r matches Some(s) ==> s.map.wf() && s.map.spec_nbits() == nslabs && s.map@ == vstd::set::Set::<nat>::empty(),
             r matches Some(s) ==> s.store is Own && s.l1_words <= 0x1_0000_0000,
+            r matches Some(s) ==> (meta.is_process() ==> s.map.in_meta()),
             r matches Some(s) ==> (s.store matches Store::Own(l) && l.claimed()),
             *final(ord) == *old(ord),
     {

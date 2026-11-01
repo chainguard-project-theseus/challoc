@@ -88,7 +88,7 @@ use crate::class::slot_loc;
 use crate::class::{aset, distinct};
 use crate::layout::{CLASSES, NCLASSES};
 #[cfg(verus_keep_ghost)]
-use crate::layout::{class_table, process_regions, slots_in};
+use crate::layout::{class_table, disjoint, process_regions, slots_in};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::set::GhostSubset;
 
@@ -271,6 +271,205 @@ pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
     }
     assert(r.user_block(p@.addr, 0));
     r.lemma_user_block_not_guard(p@.addr, 0, c, slab);
+}
+
+/// Metadata integrity: a non-null block an allocation returned
+/// ([`fits`]) shares no byte with the metadata the allocator keeps in
+/// the metadata region
+/// ([`Regions::in_meta`](crate::layout::Regions::in_meta)), nor with the
+/// process's `Shared` static. Each conjunct names one kind of it and who
+/// writes it:
+///
+/// - Every range in the process's `Meta`'s region, the metadata region
+///   ([`Meta::holds`](crate::meta::Meta::holds), which `Meta::alloc`,
+///   `alloc_zeroed`, `reserve`, `reserve_committed` and `reserve_table`
+///   ensure of their results; the other metadata conjuncts name parts of
+///   it by kind): heaps, `others` nodes, cache stacks, huge descriptors
+///   and tables, arenas, set tables, the background thread's stack, and
+///   the reused object `Meta::alloc_zeroed` clears.
+/// - The free-list link word of every free object in every value the
+///   metadata lock admits ([`Meta::is_link`](crate::meta::Meta::is_link)),
+///   the one word `Meta` writes outside what it hands out
+///   (`Meta::lemma_link_held`, from `meta::Inner::lemma_links_in_region`).
+/// - The process's `Shared` static (the lock values of `Meta`, the huge
+///   allocator and the class tables, arena 0, the statistics), which lies
+///   outside all three reservations ([`Regions::outside`](crate::layout::Regions::outside),
+///   a conjunct of `Regions::separated`).
+/// - Each class table's descriptors, owner words and bitmap words, at the
+///   addresses `SlabTable::desc_addr`, `owner_addr` and `bit_word_addr`
+///   give (`SlabTable::meta_ok`); bitmap words
+///   when the table's bit count is a multiple of 64.
+/// - Every well-formed heap's cache headers and stack entries, the memory
+///   its pushes, pops, refills and flushes write through permissions
+///   ([`Heap::lemma_caches_in_meta`]).
+/// - Every live huge descriptor, descriptor table slot and free-page
+///   bitmap word of a value the huge lock protects
+///   (`huge::Inner::lemma_in_meta`, `TwoLevelBitmap::lemma_words_placed`).
+///
+/// Trusted premises: `Shared::wf` of the published value
+/// (`api::shared_ref` and `api::shared_deref` prove it from `STATE`'s
+/// invariant and `api::axiom_published`); the kernel's `mmap` contract for the three
+/// reservations (`layout::regions::linux::try_reserve`,
+/// `Reserved::is_disjoint` and `Reserved::is_apart_from_static`);
+/// `Meta`'s lock axioms (`vspec::meta::axiom_meta_lock_inv`,
+/// `axiom_meta_lock_frame`) and the `Unbacked` token for the metadata
+/// region (`Reserved::into_unbacked`, handed to `Meta::owning`);
+/// `vspec::ptr::axiom_ptr_add_addr`; the descriptor table's trusted
+/// storage (`huge::table::Table::storage`); the trusted constructors
+/// `TwoLevelBitmap::from_raw` and `from_raw_chunked` (`place`).
+///
+/// Not covered: descriptors and owner words are written
+/// through `&` references to atomics, located by the accessors but not
+/// tied to permissions; bitmap words are written through `WordPerm`s held
+/// in the table's word invariants, whose addresses the theorem does not
+/// tie to `bit_word_addr` (that needs a `class::table` lemma); the
+/// last word of a bitmap whose bit count is not a multiple of 64; the
+/// arenas' slab-set bitmaps. Thread-local storage is not apart from every
+/// block: a thread whose stack the program allocated (`pthread_attr_setstack`
+/// over a `malloc`ed buffer) has its static TLS block, and so challoc's
+/// heap pointer slot, inside that buffer.
+pub(crate) proof fn theorem_metadata_integrity(shared: &Shared, p: *mut u8, size: int, align: int)
+    requires
+        shared.wf(),
+        fits(p, size, align),
+        p@.addr != 0,
+        size >= 0,
+    ensures
+        ({
+            let n = if size < 1 { 1 } else { size };
+            let b = p@.addr as int;
+            &&& forall|a: int, len: int| len >= 0 && #[trigger] shared.meta.holds(a, len) ==> disjoint(b, n, a, len)
+            &&& forall|x: int| #[trigger] shared.meta.is_link(x) ==> disjoint(b, n, x, 8)
+            &&& disjoint(b, n, crate::layout::shared_static_addr(), crate::layout::shared_static_len())
+            &&& forall|c: int, slab: int|
+                0 <= c < NCLASSES && 0 <= slab < shared.tables[c].spec_nslabs() ==> disjoint(
+                    b,
+                    n,
+                    #[trigger] shared.tables[c].desc_addr(slab),
+                    shared.tables[c].spec_desc_stride(),
+                )
+            &&& forall|c: int, g: int|
+                0 <= c < NCLASSES && 0 <= g && g * shared.tables[c].spec_group() < shared.tables[c].spec_nslabs()
+                    ==> disjoint(b, n, #[trigger] shared.tables[c].owner_addr(g), 2)
+            &&& forall|c: int, bit: int|
+                0 <= c < NCLASSES && 0 <= bit < shared.tables[c].spec_nbits() && shared.tables[c].spec_nbits() % 64 == 0
+                    ==> disjoint(b, n, #[trigger] shared.tables[c].bit_word_addr(bit), 8)
+            &&& forall|h: Heap, q: *mut CacheHeader| h.wf() && #[trigger] h.owns(q) ==> disjoint(b, n, q@.addr as int, 64)
+            &&& forall|h: Heap, q: *mut CacheHeader, i: int|
+                h.wf() && h.owns(q) && 0 <= i < h.hdr_cap(q) ==> disjoint(b, n, #[trigger] h.entry_addr(q, i), 8)
+            &&& forall|v: crate::huge::Inner, d: *mut crate::huge::HugeDesc|
+                v.wf() && #[trigger] v.has_desc(d) ==> disjoint(b, n, d@.addr as int, 48)
+            &&& forall|v: crate::huge::Inner, i: int|
+                v.wf() && 0 <= i < v.table_cap() ==> disjoint(b, n, #[trigger] v.table_slot_addr(i), 16)
+            &&& forall|v: crate::huge::Inner, j: int|
+                v.wf() && 0 <= j < v.free_map().spec_l1_words() ==> disjoint(b, n, #[trigger] v.free_map().l1_addr(j), 8)
+            &&& forall|v: crate::huge::Inner, w: int|
+                v.wf() && 0 <= w < v.free_map().spec_l0_words() ==> disjoint(b, n, #[trigger] v.free_map().l0_addr(w), 8)
+        }),
+{
+    let r = process_regions();
+    let a = p@.addr;
+    shared.lemma_meta();
+    assert forall|x: int, len: int| len >= 0 && #[trigger] shared.meta.holds(x, len) implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        x,
+        len,
+    ) by {
+        r.lemma_user_block_apart(a, size, x, len);
+    }
+    assert forall|x: int| #[trigger] shared.meta.is_link(x) implies disjoint(a as int, if size < 1 { 1 } else { size }, x, 8) by {
+        shared.meta.lemma_link_held(x);
+        r.lemma_user_block_apart(a, size, x, 8);
+    }
+    r.lemma_user_block_outside(a, size, crate::layout::shared_static_addr(), crate::layout::shared_static_len());
+    assert forall|c: int, slab: int| 0 <= c < NCLASSES && 0 <= slab < shared.tables[c].spec_nslabs() implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        #[trigger] shared.tables[c].desc_addr(slab),
+        shared.tables[c].spec_desc_stride(),
+    ) by {
+        shared.tables[c].lemma_desc_in_meta(slab);
+        r.lemma_user_block_apart(a, size, shared.tables[c].desc_addr(slab), shared.tables[c].spec_desc_stride());
+    }
+    assert forall|c: int, g: int|
+        0 <= c < NCLASSES && 0 <= g && g * shared.tables[c].spec_group() < shared.tables[c].spec_nslabs() implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        #[trigger] shared.tables[c].owner_addr(g),
+        2,
+    ) by {
+        shared.tables[c].lemma_owner_in_meta(g);
+        r.lemma_user_block_apart(a, size, shared.tables[c].owner_addr(g), 2);
+    }
+    assert forall|c: int, bit: int|
+        0 <= c < NCLASSES && 0 <= bit < shared.tables[c].spec_nbits() && shared.tables[c].spec_nbits() % 64 == 0 implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        #[trigger] shared.tables[c].bit_word_addr(bit),
+        8,
+    ) by {
+        shared.tables[c].lemma_bit_word_in_meta(bit);
+        r.lemma_user_block_apart(a, size, shared.tables[c].bit_word_addr(bit), 8);
+    }
+    assert forall|h: Heap, q: *mut CacheHeader| h.wf() && #[trigger] h.owns(q) implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        q@.addr as int,
+        64,
+    ) by {
+        h.lemma_caches_in_meta(q, 0);
+        r.lemma_user_block_apart(a, size, q@.addr as int, 64);
+    }
+    assert forall|h: Heap, q: *mut CacheHeader, i: int| h.wf() && h.owns(q) && 0 <= i < h.hdr_cap(q) implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        #[trigger] h.entry_addr(q, i),
+        8,
+    ) by {
+        h.lemma_caches_in_meta(q, i);
+        r.lemma_user_block_apart(a, size, h.entry_addr(q, i), 8);
+    }
+    assert forall|v: crate::huge::Inner, d: *mut crate::huge::HugeDesc| v.wf() && #[trigger] v.has_desc(d) implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        d@.addr as int,
+        48,
+    ) by {
+        v.lemma_in_meta(d, 0);
+        r.lemma_user_block_apart(a, size, d@.addr as int, 48);
+    }
+    assert forall|v: crate::huge::Inner, i: int| v.wf() && 0 <= i < v.table_cap() implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        #[trigger] v.table_slot_addr(i),
+        16,
+    ) by {
+        v.lemma_in_meta(ptr::null_mut(), i);
+        r.lemma_user_block_apart(a, size, v.table_slot_addr(i), 16);
+    }
+    assert forall|v: crate::huge::Inner, j: int| v.wf() && 0 <= j < v.free_map().spec_l1_words() implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        #[trigger] v.free_map().l1_addr(j),
+        8,
+    ) by {
+        v.lemma_in_meta(ptr::null_mut(), 0);
+        assert(r.wf());
+        v.free_map().lemma_words_placed(j, 0);
+        r.lemma_user_block_apart(a, size, v.free_map().l1_addr(j), 8);
+    }
+    assert forall|v: crate::huge::Inner, w: int| v.wf() && 0 <= w < v.free_map().spec_l0_words() implies disjoint(
+        a as int,
+        if size < 1 { 1 } else { size },
+        #[trigger] v.free_map().l0_addr(w),
+        8,
+    ) by {
+        v.lemma_in_meta(ptr::null_mut(), 0);
+        assert(r.wf());
+        v.free_map().lemma_words_placed(0, w);
+        r.lemma_user_block_apart(a, size, v.free_map().l0_addr(w), 8);
+    }
 }
 
 /// `p` is a slot start of some class in the process's regions: what every

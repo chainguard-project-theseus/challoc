@@ -1088,6 +1088,36 @@ impl Meta {
         &&& a + len <= self.spec_base() + self.spec_len()
     }
 
+    /// `v` is a value the metadata lock may hold: its invariant
+    /// ([`Inner::wf`], `vspec::meta::axiom_meta_lock_inv`) over this
+    /// allocator's region (`axiom_meta_lock_frame`). Every guard of the lock
+    /// reads and writes one.
+    pub(crate) closed spec fn admits(&self, v: Inner) -> bool {
+        &&& crate::lock::lock_inv(v)
+        &&& crate::lock::lock_frame(lock_init(self.inner), v)
+    }
+
+    /// `a` is the link word of a free object in some value the lock admits
+    /// ([`Meta::admits`], [`Inner::is_link`]): the one word `Meta` writes
+    /// outside the objects it hands out.
+    pub closed spec fn is_link(&self, a: int) -> bool {
+        exists|v: Inner| self.admits(v) && #[trigger] v.is_link(a)
+    }
+
+    /// A free object's link word lies in what this allocator
+    /// [`holds`](Meta::holds).
+    pub proof fn lemma_link_held(&self, a: int)
+        requires
+            self.is_link(a),
+        ensures
+            self.holds(a, 8),
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        let v = choose|v: Inner| self.admits(v) && #[trigger] v.is_link(a);
+        v.lemma_link_in_region(a);
+    }
+
     /// This allocator is the process's: its region is the process's
     /// metadata region, its claims to reserved pages are the process's
     /// ([`process_pages_id`]), and so is its page ([`process_page`]), in
@@ -2277,6 +2307,42 @@ impl Inner {
     /// The region's length.
     pub(crate) closed spec fn spec_len(&self) -> usize {
         self.len
+    }
+
+    /// The link word of every free block, the only memory [`Inner`] writes
+    /// through a permission ([`Inner::free`]), lies in the region
+    /// (`lists_wf`).
+    proof fn lemma_links_in_region(&self)
+        requires
+            self.wf(),
+        ensures
+            forall|k: *mut FreeNode| #[trigger] self.perms@.contains_key(k) ==> {
+                &&& self.perms@[k].ptr() == k
+                &&& self.base <= k as usize
+                &&& k as usize + 8 <= self.base + self.len
+            },
+    {
+    }
+
+    /// `a` is the address of a free object's link word: a block on one of
+    /// the free lists, whose permission [`Inner::free`] keeps and
+    /// [`Inner::alloc`] writes through.
+    pub(crate) closed spec fn is_link(&self, a: int) -> bool {
+        exists|k: *mut FreeNode| #[trigger] self.perms@.contains_key(k) && k@.addr == a
+    }
+
+    /// A free object's link word lies in the region
+    /// ([`Inner::lemma_links_in_region`]).
+    pub(crate) proof fn lemma_link_in_region(&self, a: int)
+        requires
+            self.wf(),
+            self.is_link(a),
+        ensures
+            self.spec_base() <= a,
+            a + 8 <= self.spec_base() + self.spec_len(),
+    {
+        self.lemma_links_in_region();
+        let k = choose|k: *mut FreeNode| #[trigger] self.perms@.contains_key(k) && k@.addr == a;
     }
 
     /// The allocator's invariant, which every method keeps.
