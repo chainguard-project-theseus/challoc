@@ -65,6 +65,7 @@ fi
 
 trap cleanup EXIT
 rm -f "$CB_OUT/stop"
+# shellcheck disable=SC2046 # alloc_env prints VAR=value words for start
 start $(alloc_env)
 PM=$(head -1 "$PGDATA/postmaster.pid")
 i=0; until psql_ -c 'select 1' >/dev/null 2>&1; do i=$((i + 1)); [ $i -gt 100 ] && die "server not answering on $SOCK"; sleep 0.1; done

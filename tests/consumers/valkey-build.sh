@@ -133,6 +133,7 @@ run_tests() { # name, flags...
     name=$1; shift
     step "./runtest $* (log: $LOGS/$name-$ARCH.log)"
     start=$(date +%s)
+    # shellcheck disable=SC2086 # TEST_FLAGS is a list of runtest flags
     if ./runtest --dump-logs ${TEST_FLAGS:-} "$@" 2>&1 | tee "$LOGS/$name-$ARCH.log" \
         | grep -E '^\[(ok|err|exception|skip|ignore)\]|All tests passed|tests failed|\[[0-9]+/[0-9]+ done\]|Killed by signal|Timed out' ; then :; fi
     end=$(date +%s)

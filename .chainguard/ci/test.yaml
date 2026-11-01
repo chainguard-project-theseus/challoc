@@ -1,5 +1,5 @@
-# The test cells (the CI design's section 1, with the owner decisions of
-# 2026-09-30: kernel floor 5.14 with a 5.10 tripwire, in floor.yaml).
+# The test cells, on every pull request. The kernel floor (5.14, with a
+# 5.10 tripwire below it) has its own checks in floor.yaml.
 #
 #   linux        `make test` in the Wolfi dev container, {x86_64, aarch64} x
 #                quantum {16, 8}, plus the GLIBC <= 2.44 readelf assertion

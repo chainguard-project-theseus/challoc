@@ -1,0 +1,4 @@
+# shellcheck configuration for ci/shellcheck.sh: follow `. "$(dirname "$0")/x.sh"`
+# includes relative to the sourcing script.
+source-path=SCRIPTDIR
+external-sources=true

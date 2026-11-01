@@ -39,7 +39,7 @@ for alloc in $ALLOCS; do
   # $cli is a command line (docker exec CID CLI -p PORT): word-split on purpose where it is used.
   cli="docker exec $cid $CLI -p 6399"
   echo "== $alloc pid=$pid t0=$t0 cid=$cid $($cli info memory | grep mem_allocator)"
-  ls "/proc/$pid/task" | wc -l
+  find "/proc/$pid/task" -mindepth 1 -maxdepth 1 | wc -l
   for t in "/proc/$pid/task/"*; do echo "  tid $(basename "$t") $(cat "$t/comm")"; done
   perf stat -I 1000 -x, -e "$EV" -p "$pid" -o "$L/stat-$alloc.csv" &
   STATPID=$!
@@ -49,7 +49,7 @@ for alloc in $ALLOCS; do
       for t in "/proc/$pid/task/"*; do echo "$(cat "$t/comm") $(awk '{print $14, $15}' "$t/stat")"; done
       echo "-- generators"
       for g in $(pgrep -f "valkey-benchmark|memtier_benchmark"); do
-        echo "$(cat "/proc/$g/comm") pid=$g threads=$(ls "/proc/$g/task" | wc -l) $(awk '{print $14, $15}' "/proc/$g/stat")"
+        echo "$(cat "/proc/$g/comm") pid=$g threads=$(find "/proc/$g/task" -mindepth 1 -maxdepth 1 | wc -l) $(awk '{print $14, $15}' "/proc/$g/stat")"
       done
       echo "-- info stats"
       $cli info stats | tr -d '\r' | grep -E '^(total_commands_processed|instantaneous_ops_per_sec|total_net_input_bytes|total_net_output_bytes|total_connections_received|rejected_connections|evicted_keys|expired_keys):'

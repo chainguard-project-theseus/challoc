@@ -51,19 +51,21 @@ strip "$B/bin/perf"
 # Every library ld.so resolves for perf except glibc's own, which the
 # host provides (2.44 in the bench image and on Chainguard OS). Wolfi has
 # no ldd; the loader lists them itself.
-LDSO=$(ls /lib/ld-linux-* /lib64/ld-linux-* /usr/lib/ld-linux-* 2>/dev/null | head -1)
+for LDSO in /lib/ld-linux-* /lib64/ld-linux-* /usr/lib/ld-linux-*; do [ -e "$LDSO" ] && break; done
 "$LDSO" --list "$B/bin/perf" | awk '$3 ~ /^\// { print $3 }' | while read -r lib; do
   case ${lib##*/} in
     libc.so*|libm.so*|libpthread.so*|libdl.so*|librt.so*|ld-linux*|libresolv.so*) ;;
     *) cp -L "$lib" "$B/lib/" ;;
   esac
 done
+# shellcheck disable=SC2016 # $ORIGIN is the loader's, not the shell's
 patchelf --force-rpath --set-rpath '$ORIGIN/../lib' "$B/bin/perf"
+# shellcheck disable=SC2016 # $ORIGIN is the loader's, not the shell's
 for l in "$B"/lib/*; do [ -f "$l" ] || continue; patchelf --force-rpath --set-rpath '$ORIGIN' "$l"; done
 "$B/bin/perf" version >"$B/VERSION"
 { echo "linux-$KVER sha256 $KSHA"; "$B/bin/perf" version --build-options; ls "$B/lib"; } >"$B/BUILD"
 mkdir -p "$OUT"
 NAME=perf-$KVER-$ARCH.tar.gz
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 -C "$B" -czf "$OUT/$NAME" bin lib VERSION BUILD
-echo "perf-build: $OUT/$NAME $(sha256sum "$OUT/$NAME" | cut -d' ' -f1) ($(cat "$B/VERSION"); $(ls "$B/lib" | wc -l) libraries)"
+echo "perf-build: $OUT/$NAME $(sha256sum "$OUT/$NAME" | cut -d' ' -f1) ($(cat "$B/VERSION"); $(find "$B/lib" -mindepth 1 -maxdepth 1 | wc -l) libraries)"
 rm -rf "$W"

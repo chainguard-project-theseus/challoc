@@ -8,7 +8,10 @@
 //! library itself never does.
 
 #![no_std]
-#![deny(warnings)]
+// Warnings fail the Kani and Verus runs, which compile code no clippy run
+// sees; ordinary builds (and downstream packagers) only see them as
+// warnings, and the clippy check fails CI on them.
+#![cfg_attr(any(kani, verus_keep_ghost), deny(warnings))]
 #![deny(unsafe_op_in_unsafe_fn)]
 // Kani checks the exported `malloc` family against the libc signatures
 // `std` links to; challoc defines them, as it must.

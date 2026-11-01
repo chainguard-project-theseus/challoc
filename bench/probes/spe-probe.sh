@@ -19,17 +19,19 @@ PRE=${LD_PRELOAD:-} CONF=${MALLOC_CONF:-}
 unset LD_PRELOAD MALLOC_CONF
 D=/sys/bus/event_source/devices
 echo "spe-probe: $(uname -r) $(uname -m) paranoid $(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null) caps $(grep CapEff /proc/self/status | cut -f2)"
+# shellcheck disable=SC2012 # a listing for the log
 echo "spe-probe: event sources: $(ls "$D" 2>/dev/null | tr '\n' ' ')"
 for c in "$D"/*/caps; do [ -d "$c" ] && echo "spe-probe: ${c%/caps}: caps $(cd "$c" && for f in *; do printf '%s=%s ' "$f" "$(cat "$f")"; done)"; done 2>/dev/null
 command -v perf >/dev/null || { echo "spe-probe: no perf on PATH"; exit 1; }
 echo "spe-probe: $(perf version)"
 perf list 2>/dev/null | grep -i arm_spe | head -5
-SPE=$(ls -d "$D"/arm_spe_* 2>/dev/null | head -1)
+SPE=; for s in "$D"/arm_spe_*; do [ -e "$s" ] && { SPE=$s; break; }; done
 if [ -z "$SPE" ]; then
   echo "spe-probe: result no-spe (no arm_spe_* event source)"
   exit 0
 fi
 SPE=${SPE##*/}
+# shellcheck disable=SC2012 # a listing for the log
 echo "spe-probe: $SPE format: $(ls "$D/$SPE/format" | tr '\n' ' ')"
 O=$(mktemp -d)
 # Loads and stores, user space only, a sample every 1024 operations.

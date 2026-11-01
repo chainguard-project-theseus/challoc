@@ -144,6 +144,7 @@ fi
 if [ ! -x "$INST/bin/ruby" ] || [ "$WORK/build-challoc/ruby" -nt "$INST/bin/ruby" ]; then
   printf '== installing the challoc build into %s ... ' "${INST#"$ROOT"/}"
   make -C "$WORK/build-challoc" install > "$OUT/install.log" 2>&1 || { tail -20 "$OUT/install.log" >&2; die "make install failed"; }
+  # shellcheck disable=SC1010 # `done` is the word printed
   echo done
 fi
 
@@ -162,9 +163,13 @@ ruby_env() {
     *)           echo "MALLOC_CONF=$(conf_of "$1") LD_LIBRARY_PATH=$INST/lib";;
   esac
 }
-run_ruby() { a=$1; shift; env SOAK_TRIM=$TRIM $(ruby_env "$a") "$INST/bin/ruby" "$@"; }
+# shellcheck disable=SC2046 # ruby_env prints VAR=value words for env
+run_ruby() { a=$1; shift; env "SOAK_TRIM=$TRIM" $(ruby_env "$a") "$INST/bin/ruby" "$@"; }
+# alloc0: the first allocator of ALLOCS, whatever whitespace separates them.
+# shellcheck disable=SC2086 # split ALLOCS into words on purpose
+alloc0() { set -- $ALLOCS; echo "${1:-}"; }
 
-echo "== ruby: $(run_ruby "$(echo $ALLOCS | cut -d' ' -f1)" -v)"
+echo "== ruby: $(run_ruby "$(alloc0)" -v)"
 for a in $ALLOCS; do
   mapped=$(run_ruby "$a" -e 'puts File.readlines("/proc/self/maps").grep(%r{/lib(jemalloc|challoc)[^/ ]*\.so}).map { |l| l.split[5] }.uniq.sort.join(" ")')
   case $a in jemalloc*) want=$JEMALLOC_LIB;; *) want=$STAGE_LIB/libjemalloc.so.2;; esac
@@ -172,7 +177,7 @@ for a in $ALLOCS; do
   [ "$mapped" = "$want" ] || die "$a: ruby maps '$mapped', expected '$want'"
   echo "   $a: maps $mapped"
 done
-fiddle=$(run_ruby "$(echo $ALLOCS | cut -d' ' -f1)" -e 'begin; require "fiddle"; puts "yes"; rescue LoadError; puts "no"; end')
+fiddle=$(run_ruby "$(alloc0)" -e 'begin; require "fiddle"; puts "yes"; rescue LoadError; puts "no"; end')
 echo "   fiddle: $fiddle (allocator stats through mallctl$([ "$fiddle" = yes ] || echo ' skipped'))"
 
 # ---- the runs --------------------------------------------------------------------------
@@ -193,7 +198,7 @@ for a in $ALLOCS; do
 done
 
 # ---- report ------------------------------------------------------------------------------
-RUBY_V=$(run_ruby "$(echo $ALLOCS | cut -d' ' -f1)" -v)
+RUBY_V=$(run_ruby "$(alloc0)" -v)
 kv() { awk -v k="$2" '{for (i = 1; i <= NF; i++) {split($i, p, "="); if (p[1] == k) print p[2]}}' "$OUT/$1.out" | tail -1; }
 kb_mib() { awk -v k="$1" 'BEGIN {if (k=="-"||k=="") print "-"; else printf "%.1f", k/1024}'; }
 mib() { awk -v b="$1" 'BEGIN {if (b=="-"||b=="") print "-"; else printf "%.1f", b/1048576}'; }
@@ -253,7 +258,7 @@ M5=$COMPACT_AT; M10=$DURATION
   [ -n "${CHALLOC_CONF:-}" ] && echo "- CHALLOC_CONF=$CHALLOC_CONF (read by challoc alone; jemalloc runs unchanged)"
   [ "$TRIM" = 1 ] && echo "- TRIM=1: soak.rb calls malloc_trim(0) right before every sample (where the allocator exports it), so VmRSS and resident read Active plus metadata at the sample instant"
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
-  first_alloc=$(echo $ALLOCS | cut -d' ' -f1)
+  first_alloc=$(alloc0)
   case $(kv "$first_alloc" cgroup_peak) in
     yes) echo "- cgroup memory.peak reset per phase by soak.rb (kernel $(uname -r)): the two cgroup rows below are the cgroup's peak for start..compact and compact..end; the cgroup counts the whole container";;
     *)   echo "- cgroup memory.peak not reset per phase, VmHWM only: $(kv "$first_alloc" cgroup_peak | sed 's/^no(//;s/)$//' | tr '_' ' ')";;
@@ -292,7 +297,7 @@ M5=$COMPACT_AT; M10=$DURATION
   rowc "at minute 1 (t=60)" at_60
   rowc "at minute 5, before GC.compact (t=$((M5 - INTERVAL)))" at_$((M5 - INTERVAL))
   rowc "at minute 5, after GC.compact (t=$M5)" compact
-  rowc "at minute 10 (t=$M10)" at_$M10
+  rowc "at minute 10 (t=$M10)" "at_$M10"
   rowc "after the last full GC (final)" final
   rowc "lowest right after a periodic full GC" min_after_gc
   echo
@@ -305,7 +310,7 @@ M5=$COMPACT_AT; M10=$DURATION
   for a in $ALLOCS; do
     res=$(col "$a" alloc_resident_final); fin=$(col "$a" final)
     ratio=$(awk -v r="$res" -v f="$fin" 'BEGIN {if (r=="-"||f==0) print "-"; else printf "%.2f", r/f}')
-    echo "| $a | $(col "$a" alloc_allocated_final) | $(col "$a" alloc_active_final) | $res | $(col "$a" alloc_retained_final) | $(col "$a" alloc_mapped_final) | $(col "$a" alloc_resident_at_$M5) | $(col "$a" alloc_resident_at_$M10) | $ratio |"
+    echo "| $a | $(col "$a" alloc_allocated_final) | $(col "$a" alloc_active_final) | $res | $(col "$a" alloc_retained_final) | $(col "$a" alloc_mapped_final) | $(col "$a" "alloc_resident_at_$M5") | $(col "$a" "alloc_resident_at_$M10") | $ratio |"
   done
   echo
   echo "## Work done and GC"
@@ -324,7 +329,7 @@ M5=$COMPACT_AT; M10=$DURATION
   hdr="| t s | event |"; sep="|---:|---|"
   for a in $ALLOCS; do hdr="$hdr $a VmRSS | $a resident | $a retained |"; sep="$sep---:|---:|---:|"; done
   echo "$hdr"; echo "$sep"
-  first=$(echo $ALLOCS | cut -d' ' -f1)
+  first=$(alloc0)
   awk -F, 'NR>1 && ($1 % 30 == 0 || $2=="compact" || $2=="final-fullgc") {print $1 "," $2}' "$STEM-$first.csv" | while IFS=, read -r t ev; do
     r="| $t | $ev |"
     for a in $ALLOCS; do

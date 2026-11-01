@@ -8,15 +8,13 @@
 set -euo pipefail
 log=$1; shift
 line=$({ grep -aoE 'features: page_size=[^[:cntrl:]]*' "$log" || true; } | head -n 1)
-[ -n "$line" ] || { echo "::error::no 'features: page_size=...' line in $log"; exit 1; }
+[ -n "$line" ] || { echo "error: no 'features: page_size=...' line in $log"; exit 1; }
 echo "$line"
-# shellcheck disable=SC2016 # the backticks are markdown
-[ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '### Features\n\n```\n%s\n```\n' "$line" >>"$GITHUB_STEP_SUMMARY"
 rc=0
 for kv in "$@"; do
   case " ${line#features: } " in
     *" $kv "*) echo "ok $kv" ;;
-    *) echo "::error::the features line lacks $kv"; rc=1 ;;
+    *) echo "error: the features line lacks $kv"; rc=1 ;;
   esac
 done
 exit $rc

@@ -184,6 +184,7 @@ rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 # put java on PATH; take the newest one unless JAVA_HOME says otherwise.
 if [ -n "${JAVA_HOME:-}" ]; then JAVA=$JAVA_HOME/bin/java; JAVAC=$JAVA_HOME/bin/javac
 else
+  # shellcheck disable=SC2012 # JDK directory names are plain; sort -V picks the newest
   JAVA=$(ls -d /usr/lib/jvm/java-*-openjdk/bin/java 2>/dev/null | sort -V | tail -1); JAVAC=${JAVA%/java}/javac
 fi
 [ -x "${JAVA:-}" ] || die "no JDK under /usr/lib/jvm (rebuild the image from Dockerfile.dev: openjdk-21)"
@@ -206,6 +207,7 @@ fi
 # not, the variant is refused rather than silently measuring plain glibc.
 TRIM_OPTS="-XX:+UnlockExperimentalVMOptions -XX:TrimNativeHeapInterval=$TRIM_MS"
 case " $ALLOCS " in *" glibc-trim "*|*" challoc-trim "*)
+  # shellcheck disable=SC2086 # TRIM_OPTS is a list of JVM flags
   "$JAVA" $TRIM_OPTS -version >/dev/null 2>&1 || die "this JDK rejects '$TRIM_OPTS'; drop glibc-trim from ALLOCS (a jcmd System.trim_native_heap sidecar would be the fallback)";;
 esac
 
@@ -252,6 +254,7 @@ STATSDUMP=$BIN/statsdump.so
 # ---- binding check ----------------------------------------------------------------
 echo "== java: $(echo "$JAVA_VERSION" | head -1) ($JAVA, Wolfi ${JDK_PKG:-openjdk}); generator: $AB_VERSION; NMT: $NMT"
 for a in $ALLOCS; do
+  # shellcheck disable=SC2046 # env_of and opts_of print word lists
   mapped=$(env $(env_of "$a") "$JAVA" $(opts_of "$a") -cp "$CLASSES" HttpBench maps | tr '\n' ' ' | sed 's/ $//')
   maps_expect "$a" java "$(lib_of "$a")" "$mapped" "$(note_of "$a")"
 done
@@ -263,12 +266,13 @@ run_startup() {
   [ -f "$OUT/$tag.scores" ] || : > "$OUT/$tag.scores"
   n=$(wc -l < "$OUT/$tag.scores")
   log=$OUT/$tag.$n.out; rt=$OUT/$tag.$n.rt
+  # shellcheck disable=SC2046 # env_of and opts_of print word lists
   RT_OUT=$rt "$BIN/rt" env $(env_of "$a") "$JAVA" $(opts_of "$a") -version > "$log" 2>&1 || true
   record_rt "$tag" "$rt" "$log"
 }
 has_row() { case " $ROWS " in *" $1 "*) return 0;; *) return 1;; esac; }
 if has_row startup; then
-  echo "== startup: $ROUNDS rounds + warm-up x $(echo $ALLOCS | wc -w) allocators ($ALLOCS); load $LOAD0"
+  echo "== startup: $ROUNDS rounds + warm-up x $(echo "$ALLOCS" | wc -w) allocators ($ALLOCS); load $LOAD0"
   r=0
   while [ $r -le "$ROUNDS" ]; do
     for a in $ALLOCS; do run_startup "$a"; done
@@ -356,6 +360,7 @@ fetch() { python3 -c 'import sys,urllib.request; sys.stdout.write(urllib.request
 # in DIR/pid, 1 when it did not come up (recorded in $OUT/<row>.failed).
 start_jvm() {
   a=$1; d=$2; mode=$3; shift 3
+  # shellcheck disable=SC2046,SC2086 # env_of, opts_of, nmt_opts and JAVA_OPTS are word lists
   env $(env_of "$a" server) "$JAVA" $JAVA_OPTS $(opts_of "$a") $(nmt_opts) "-Xlog:gc:file=$d/gc.log" -cp "$CLASSES" HttpBench "$mode" "$PORT" "$@" > "$d/stdout" 2> "$d/stderr" 9>&- &
   pid=$!; echo "$pid" > "$d/pid"
   BENCH_PIDS=$pid   # the bench lock's trap kills it if the harness dies here
@@ -414,6 +419,7 @@ run_server() {
   echo final > "$d/phase"
   sleep 2
   finish_jvm "$a" "$d" "$pid" "$spid" "$t0"
+  # shellcheck disable=SC1010 # `done` is an argument (the ab field name)
   echo "     json $(ab_kv "$d/json.ab" rps) req/s p99 $(ab_kv "$d/json.ab" p99) ms, blob $(ab_kv "$d/blob.ab" rps) req/s p99 $(ab_kv "$d/blob.ab" p99) ms (keep-alive $(ab_kv "$d/json.ab" ka) + $(ab_kv "$d/blob.ab" ka) of $(ab_kv "$d/json.ab" done) + $(ab_kv "$d/blob.ab" done)); VmHWM $(awk '$1=="VmHWM:" {print $2}' "$d/vm.txt") KiB, NMT committed $(nmt_kb "$d/nmt-peak.txt" total) KiB at peak, exit $(cat "$d/exit")"
 }
 # nmt_kb FILE WHAT: a figure from a jcmd VM.native_memory summary (KB
@@ -467,7 +473,8 @@ run_soak() {
     c1=$(cpu_ticks "$pid"); w1=$(now)
     st=$(fetch stats 2>/dev/null || echo "pool=- largest=-")
     l=$(sample_line "$pid" "$d" "$t0") && echo "$l" >> "$d/samples.csv" || l=",,-,,,,,-"
-    awk -v i=$i -v lv=$level -v c=$conns -v s0=$((w0 - t0)) -v s1=$((w1 - t0)) \
+    # shellcheck disable=SC1010 # `done` is an argument (the ab field name)
+    awk -v i="$i" -v lv="$level" -v c="$conns" -v s0=$((w0 - t0)) -v s1=$((w1 - t0)) \
         -v jr="$(ab_kv "$d/w$i-json.ab" rps)" -v jp="$(ab_kv "$d/w$i-json.ab" p99)" -v br="$(ab_kv "$d/w$i-blob.ab" rps)" -v bp="$(ab_kv "$d/w$i-blob.ab" p99)" -v bm="$(ab_kv "$d/w$i-blob.ab" mbps)" \
         -v jd="$(ab_kv "$d/w$i-json.ab" done)" -v bd="$(ab_kv "$d/w$i-blob.ab" done)" -v c0="$c0" -v c1="$c1" -v tck="$CLK_TCK" \
         -v rss="$(echo "$l" | cut -d, -f3)" -v th="$(echo "$l" | cut -d, -f8)" -v pool="$(echo "$st" | sed -n 's/.*pool=\([^ ]*\).*/\1/p')" -v largest="$(echo "$st" | sed -n 's/.*largest=\([^ ]*\).*/\1/p')" \
@@ -529,6 +536,7 @@ sv_ab() { [ -f "$OUT/server.$1/$2.ab" ] && ab_kv "$OUT/server.$1/$2.ab" "$3" | g
 sv_cpu_s() { awk '{print $1}' "$OUT/server.$1/cpu.txt" 2>/dev/null | grep . || echo -; }
 # sv_cpu_us ALLOC: server CPU microseconds per request over the measured window.
 sv_cpu_us() {
+  # shellcheck disable=SC1010 # `done` is an argument (the ab field name)
   awk -v c="$(sv_cpu_s "$1")" -v j="$(sv_ab "$1" json done)" -v b="$(sv_ab "$1" blob done)" 'BEGIN {if (c=="-"||j=="-"||b=="-"||j+b==0) print "-"; else printf "%.1f", c*1e6/(j+b)}'
 }
 # sv_gen_cpu ALLOC: the two generators' user+sys over their wall time, in
@@ -610,6 +618,7 @@ nmt_note() {
     echo "| allocator | idle Rss MiB | peak Rss MiB | final Rss MiB | VmHWM MiB | NMT committed MiB (peak) | allocator overhead MiB (peak) | allocator overhead MiB (final) | json req/s | json p99 ms | blob req/s | blob p99 ms | server CPU s | CPU us/req | requests (json + blob) | keep-alive | failed | non-2xx | GCs | ab CPU % | exit |"
     echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     for a in $ALLOCS; do
+      # shellcheck disable=SC1010 # `done` is an argument (the ab field name)
       echo "| $a | $(kib_to_mib "$(srv_idle_kb server "$a")") | $(kib_to_mib "$(srv_peak_kb server "$a")") | $(kib_to_mib "$(srv_final_kb server "$a")") | $(kib_to_mib "$(srv_hwm_kb server "$a")") | $(kib_to_mib "$(srv_nmt server "$a" peak total)") | $(kib_to_mib "$(srv_gap server "$a" peak)") | $(kib_to_mib "$(srv_gap server "$a" final)") | $(sv_ab "$a" json rps) | $(sv_ab "$a" json p99) | $(sv_ab "$a" blob rps) | $(sv_ab "$a" blob p99) | $(sv_cpu_s "$a") | $(sv_cpu_us "$a") | $(sv_ab "$a" json done) + $(sv_ab "$a" blob done) | $(sv_ab "$a" json ka) + $(sv_ab "$a" blob ka) | $(sv_ab "$a" json fail) + $(sv_ab "$a" blob fail) | $(sv_ab "$a" json non2xx 0) + $(sv_ab "$a" blob non2xx 0) | $(srv_gcs server "$a") | $(sv_gen_cpu "$a") | $(srv_exit server "$a") |"
     done
     if has challoc; then
@@ -621,9 +630,10 @@ nmt_note() {
       echo "$hdr"; echo "$sep"
       for m in "idle Rss:srv_idle_kb server:lower" "peak Rss:srv_peak_kb server:lower" "final Rss:srv_final_kb server:lower" "VmHWM:srv_hwm_kb server:lower" "allocator overhead (peak):srv_gap server @ peak:lower" "allocator overhead (final):srv_gap server @ final:lower" "json req/s:json rps:higher" "json p99:json p99:lower" "blob req/s:blob rps:higher" "blob p99:blob p99:lower" "server CPU us/req:sv_cpu_us:lower"; do
         name=${m%%:*}; rest=${m#*:}; fn=${rest%%:*}; dir=${rest#*:}
+        # shellcheck disable=SC2086 # fn holds a function and its arguments, split on purpose
         val() { case $fn in srv_gap*) srv_gap server "$1" "${fn##* }";; srv_*) ${fn%% *} "${fn#* }" "$1";; sv_*) $fn "$1";; *) sv_ab "$1" ${fn%% *} ${fn#* };; esac; }
         cv=$(val challoc); line="| $name |"
-        for a in $ALLOCS; do [ "$a" = challoc ] || line="$line $(pct_$dir "$cv" "$(val "$a")") |"; done
+        for a in $ALLOCS; do [ "$a" = challoc ] || line="$line $("pct_$dir" "$cv" "$(val "$a")") |"; done
         echo "$line"
       done
     fi
@@ -671,9 +681,10 @@ nmt_note() {
       echo "$hdr"; echo "$sep"
       for m in "peak Rss:srv_peak_kb soak:lower" "final Rss:srv_final_kb soak:lower" "tail mean Rss:soak_tail_mean:lower" "VmHWM:srv_hwm_kb soak:lower" "allocator overhead (end):srv_gap soak @ final:lower" "json req/s high:soak_win @ high json_rps mean:higher" "json p99 high (max):soak_win @ high json_p99_ms max:lower" "blob req/s high:soak_win @ high blob_rps mean:higher" "blob p99 high (max):soak_win @ high blob_p99_ms max:lower" "json req/s low:soak_win @ low json_rps mean:higher" "blob req/s low:soak_win @ low blob_rps mean:higher" "CPU us/req high:soak_win1 @ high cpu_us_req:lower" "CPU us/req low:soak_win1 @ low cpu_us_req:lower"; do
         name=${m%%:*}; rest=${m#*:}; fn=${rest%%:*}; dir=${rest#*:}
+        # shellcheck disable=SC2086 # $args is the window function's argument list
         val() { case $fn in srv_gap*) srv_gap soak "$1" final;; soak_win*) f=${fn%% *}; args=${fn#*@ }; $f "$1" $args;; soak_tail_mean) soak_tail_mean "$1";; *) ${fn%% *} "${fn#* }" "$1";; esac; }
         cv=$(val challoc); line="| $name |"
-        for a in $ALLOCS; do [ "$a" = challoc ] || line="$line $(pct_$dir "$cv" "$(val "$a")") |"; done
+        for a in $ALLOCS; do [ "$a" = challoc ] || line="$line $("pct_$dir" "$cv" "$(val "$a")") |"; done
         echo "$line"
       done
       cs=$(soak_slope challoc); line="| slope MiB/min (difference) |"

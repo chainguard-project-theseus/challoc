@@ -16,13 +16,12 @@
 #     gained, drop the line from the manifest;
 #   - a missing manifest fails and prints the one to commit.
 #
-# The table goes to $GITHUB_STEP_SUMMARY when set, else stdout. Manifest
-# lines are keys; `#` starts a comment. CI_SKIP_UPDATE=1 writes the
-# observed keys to MANIFEST and passes (bootstrapping a new cell).
+# The table goes to stdout. Manifest lines are keys; `#` starts a
+# comment. CI_SKIP_UPDATE=1 writes the observed keys to MANIFEST and
+# passes (bootstrapping a new cell).
 set -euo pipefail
 log=$1; manifest=$2
-out=${GITHUB_STEP_SUMMARY:-/dev/stdout}
-[ -f "$log" ] || { echo "::error::$log missing: the test step did not run"; exit 1; }
+[ -f "$log" ] || { echo "error: $log missing: the test step did not run"; exit 1; }
 
 seen=$(mktemp); want=$(mktemp)
 trap 'rm -f "$seen" "$want"' EXIT
@@ -49,7 +48,7 @@ gone=$(comm -13 "$seen" "$want")
       while read -r k; do echo "| \`$k\` | no longer skipped |"; done <<<"$gone"
     fi
   fi
-} >>"$out"
+}
 
 if [ "${CI_SKIP_UPDATE:-}" = 1 ]; then
   mkdir -p "$(dirname "$manifest")"
@@ -58,15 +57,15 @@ if [ "${CI_SKIP_UPDATE:-}" = 1 ]; then
   exit 0
 fi
 if [ ! -f "$manifest" ]; then
-  echo "::error::no skip manifest $manifest; commit this one:"
+  echo "error: no skip manifest $manifest; commit this one:"
   cat "$seen"
   exit 1
 fi
 if [ -n "$gone" ]; then
-  while read -r k; do echo "::notice::no longer skipped, drop it from $manifest: $k"; done <<<"$gone"
+  while read -r k; do echo "notice: no longer skipped, drop it from $manifest: $k"; done <<<"$gone"
 fi
 if [ -n "$new" ]; then
-  while read -r k; do echo "::error::new skip (lost coverage) not in $manifest: $k"; done <<<"$new"
+  while read -r k; do echo "error: new skip (lost coverage) not in $manifest: $k"; done <<<"$new"
   echo "observed skip keys (the manifest if all are expected):"
   cat "$seen"
   exit 1

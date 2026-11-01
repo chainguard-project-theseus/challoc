@@ -1,7 +1,7 @@
-# The checks too long for every pull request (the CI design's section 4):
-# the long fuzz runs, the 600 s cgroup oscillation, the DT_NEEDED check and
-# the consumer builds (Valkey and Ruby with their suites). Each task is
-# ci/extended.sh TASK in the dev container, on both architectures.
+# The checks too long for every pull request: the long fuzz runs, the
+# 600 s cgroup oscillation, the DT_NEEDED check and the consumer builds
+# (Valkey and Ruby with their suites). Each task is ci/extended.sh TASK in
+# the dev container, on both architectures.
 #
 # Checks has no scheduled trigger yet, so these run only on request: the
 # label ci/run:<check> on a pull request, or `chainctl checks run . --check
@@ -10,8 +10,8 @@
 #
 # A Checks run is limited to 50 minutes, so no check here may take longer.
 #
-# Not here yet (CI-M2): the checked-release .so, Miri on the pure-logic
-# modules, valgrind.
+# Not covered by any check yet: a checked-release .so, Miri on the
+# pure-logic modules, valgrind.
 version: 1
 
 environment:
