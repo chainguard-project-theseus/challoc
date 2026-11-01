@@ -461,16 +461,21 @@ verus! {
 /// `cell` is the calling thread's slot cell: the join frees the exited
 /// thread's key data, which may re-enter the allocator on this thread, so
 /// the slot must be empty or hold a sentinel ([`crate::heap::reentry_benign`]),
-/// as for `pthread_setspecific`; at a sentinel a nested entry leaves it alone.
+/// as for `pthread_setspecific`. At a sentinel a nested entry leaves the
+/// cell alone; at an empty slot a nested free's slow path (`heap::free`,
+/// `heap_for_thread`) may create this thread's heap and fill the slot
+/// ([`TlsCell::kept`]).
 ///
 /// # Safety
 /// `t` is a joinable thread this module created and never joined.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&TlsCell>) -> i32
+unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell>) -> i32
     requires
         crate::sys::may_syscall(),
-        cell.value() == 0 || crate::heap::reentry_benign(cell.value()),
+        old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()),
+    ensures
+        final(cell).kept(*old(cell)),
 {
     // SAFETY: guaranteed by the caller.
     unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) }
@@ -481,9 +486,12 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&TlsCell>) -
 /// when creation fails, for the next attempt) and the new thread.
 /// A slot holding a heap is parked on [`TLS_CREATING`] through the
 /// caller's slot cell `cell` across the pthread calls, which require an
-/// empty slot or a sentinel, and put back after: the cell is as it was
-/// ([`TlsCell::kept`]), unless the slot was empty, when a nested
-/// allocation in `pthread_create` may create the thread's heap.
+/// empty slot or a sentinel (or, for `spawn`, a heap no caller holds),
+/// and put back after: the cell is as it was
+/// ([`TlsCell::kept`]), unless the slot was empty, when a nested free in
+/// `pthread_join` or a nested allocation in `pthread_create` may create
+/// the thread's heap. A heap the join created stays in the slot for
+/// `pthread_create`: no caller holds it.
 // The `match` stands for `Option::filter`, which vstd does not specify.
 #[allow(clippy::manual_filter)]
 fn create(
@@ -538,7 +546,7 @@ fn create(
     // has a `previous`: its copy of the stack carries no thread.
     if let Some(t) = previous {
         // SAFETY: a joinable thread this module created and never joined.
-        let rc = unsafe { pthread_join(t, Tracked(&*cell)) };
+        let rc = unsafe { pthread_join(t, Tracked(&mut *cell)) };
         if rc != 0 {
             sys::abort_fmt(format_args!(
                 "pthread_join of the background thread failed: {}",
@@ -598,7 +606,7 @@ fn create(
         }
     };
     let thread = match stack {
-        Some(stack) => spawn(shared, stack + page, STACK_SIZE - page, Tracked(&*cell)),
+        Some(stack) => spawn(shared, stack + page, STACK_SIZE - page, Tracked(&mut *cell), Ghost(cell0.value() == 0)),
         None => None,
     };
     if park {
@@ -622,14 +630,23 @@ fn create(
 /// it of the pointer passed here.
 /// `cell` is the calling thread's slot cell: `pthread_create` allocates
 /// the new thread's DTV, which may re-enter the allocator on this thread,
-/// so the slot must be empty or hold a sentinel, as for [`pthread_join`].
+/// so the slot must be empty, hold a sentinel, as for [`pthread_join`], or
+/// hold a heap no caller holds: `fresh` says the slot was empty when the
+/// caller (`create`) began, so a heap in it now is one a nested free in
+/// `pthread_join` created, which that free gave back. Trusted too: the
+/// caller's `fresh`, which the ghost state cannot check (no loan records
+/// that the heap is not held). A nested entry leaves
+/// a sentinel or a heap in the slot as it found it and may fill an empty
+/// slot ([`TlsCell::kept`]).
 #[verifier::external_body]
-fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&TlsCell>) -> Option<::libc::pthread_t>
+fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>, Ghost(fresh): Ghost<bool>) -> Option<::libc::pthread_t>
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        cell.value() == 0 || crate::heap::reentry_benign(cell.value()),
+        old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()) || fresh,
+    ensures
+        final(cell).kept(*old(cell)),
 {
     // SAFETY: plain pthread attribute calls on a local; the stack is
     // ours and committed.
