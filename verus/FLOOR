@@ -1,7 +1,12 @@
-# The verified share of challoc's executable functions and of their lines
-# that the verus check holds main to (verus/count --floor; verus/README.md,
+# The shares of challoc's executable functions and of their lines that
+# the verus check holds main to (verus/count --floor; verus/README.md,
 # "Coverage"): every function under src/ but test code, rounded down to a
-# tenth of a percent.
+# tenth of a percent. `functions` and `lines` are the shares Verus
+# verifies; `combined-functions` and `combined-lines` also count the
+# trusted functions whose seams the ledger marks discharged
+# (verus/SEAMS.md, "Status"). Leaving out a combined figure sets it to 0.0.
+combined-functions 84.8
+combined-lines 93.6
 #
 # A change keeps the share at or above these figures. They rise in their
 # own pull requests between merges, to the figures the check names, so
