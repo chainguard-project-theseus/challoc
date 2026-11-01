@@ -1,4 +1,4 @@
-//! Initial-exec TLS accessor (design.md section 6.1).
+//! Initial-exec TLS accessor (design 6.1).
 //!
 //! The allocator keeps exactly one pointer-sized thread-local slot: the
 //! current thread's `Heap` pointer (null until the heap exists, a sentinel

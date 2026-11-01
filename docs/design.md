@@ -118,7 +118,7 @@ crowd the same few sets of a set-associative second-level TLB (256 sets
 of 4 KiB pages span 1 MiB on Neoverse N1/N3/V2): on `larson1` at 1000
 rounds per thread on Neoverse N3 that was up to 20 live pages in one set,
 and page walks per operation fell from 0.105 to 0.064 with the colour
-(jemalloc 0.039; #94). The colours of any 16 consecutive classes are
+(jemalloc 0.039). The colours of any 16 consecutive classes are
 distinct modulo 1 MiB, 320 KiB apart. The reservation
 prefers a stride of 4 x the region, shrinks the region towards 2^32
 before giving that up, and only then drops to a stride of 2 x
@@ -413,7 +413,7 @@ and written by two small `asm!` sequences (`sys/tls.rs`):
 This is the initial-exec model. glibc reserves static TLS for objects
 present at program start, which covers both linking against
 `libchalloc.so` and `LD_PRELOAD`. It does not cover `dlopen` of challoc
-after start; that is not a supported configuration (#66).
+after start; that is not a supported configuration.
 
 Signed heap pointer (`sys/pac.rs`). With `pac_pointers:true` on an arm64
 host that exposes pointer authentication (`HWCAP_PACA` and `HWCAP_PACG`;
@@ -596,8 +596,7 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
    is not touched. The sized path's cost on Zen 4 is its count of loads
    that wait on the size or the pointer, not its instruction count: a
    Valkey `SET` frees a value whose pointer and size come from a cache
-   miss, and `valkey1` on Genoa moved 8% between 16 and 13 such loads
-   (#46).
+   miss, and `valkey1` on Genoa moved 8% between 16 and 13 such loads.
 2. `heap = tls()`; `cache = heap.caches[c]`; if `len == cap`, slow path.
    `slots[len++] = p`. Neither the bitmap word nor the owner word is
    loaded.
@@ -633,7 +632,7 @@ with `len` by a pop that takes a zero entry and dropped by a flush.
 `low_water` can take a zero entry: the zero test and the shrink sit in
 that pop's cold branch, and the push, which stores at `len >= zeroed`,
 never touches `zeroed`. `calloc` zeroes the
-requested bytes, not the whole usable size (#54).
+requested bytes, not the whole usable size.
 
 `malloc_usable_size(p)` (and `sallocx`, and the size read of `realloc`
 and `rallocx`) classifies and tests the bit as `free` does, aborting on a
@@ -737,7 +736,7 @@ another arena, since the arena is still held when the successor creates
 its heap: every `free` of the inherited data took the `FOREIGN` cache
 while the successor's allocations came from fresh refills of its own
 arena, and successive threads alternated between two arenas. Two rules
-keep a successor on the data's arena (#94):
+keep a successor on the data's arena:
 
 - The exiting heap is unbound before its exit flush, not after, so a
   successor that creates its heap while the flush runs is homed on the
@@ -850,7 +849,7 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
 - Purges are batched (`purge::Batch`): a walk collects up to `MAX_BATCH`
   (64) ranges, merging adjacent ones, and issues a loop of `madvise`.
   Batched `process_madvise` was prototyped and removed: it measured no
-  effect (#18, tag `archive/prototype-2026-09-30`).
+  effect (tag `archive/prototype-2026-09-30`).
 - A discard can fail: `madvise` refuses `MADV_DONTNEED` and `MADV_FREE`
   with `EINVAL` on a range holding `mlock`ed pages (every range under
   `mlockall(MCL_FUTURE)`). The memory changes state only after its range
@@ -1026,7 +1025,7 @@ never needs waits for first use: the cgroup files, the per-size THP files,
 and the commit of the small tables carved from the metadata object side
 (section 2, one `mprotect` for all of them). `startup-true` (`/bin/true`,
 its `exec` included) makes 234 system calls under challoc on ref-amd64,
-against 357 before these deferrals and 157 under jemalloc 5.4.0 (#29).
+against 357 before these deferrals and 157 under jemalloc 5.4.0.
 Slabs are still committed one at a time as the arena reaches them
 (section 5): committing a group ahead would leave the slab after an
 arena's newest one read-write, where an overflow now faults.
@@ -1074,7 +1073,7 @@ one over.
   (`LIMIT_INTERVAL_NS`), so a `docker update --memory` is seen.
 - CPU limits (`cpu.max`, `cpuset.cpus.effective`) are not read. Sizing
   the arena count from the CPU quota was prototyped and removed: neither
-  `narenas` = quota nor 4 x quota held throughput (#21, #26, tag
+  `narenas` = quota nor 4 x quota held throughput (tag
   `archive/prototype-2026-09-30`).
 
 All reads use raw `open`/`read`/`close` through `src/sys`, never libc
@@ -1093,7 +1092,7 @@ never see it. A caller's `now` older than the last sample is not due, so
 the window only moves forward. A `memory.current` read that fails keeps
 the last figure, which the `cgroup:` line marks `(stale)` until a read
 succeeds. A PSI trigger on `memory.pressure` was prototyped and removed:
-it measured no effect over the tick (#19, tag
+it measured no effect over the tick (tag
 `archive/prototype-2026-09-30`).
 
 Policy. It is evaluated where a sample was taken, so at most once per
@@ -1226,7 +1225,7 @@ Two more lists (`config::INERT_KEYS`, `config::IGNORED_KEYS`):
 `stats_print` is *inert*, parsed as a bool and reported every time it is
 set (so `abort_conf` refuses a configuration that relies on it and
 `malloc_stats_print` marks it "accepted, no effect"; nothing prints at
-exit, #62); `junk`, `zero`, `retain`, `oversize_threshold`,
+exit); `junk`, `zero`, `retain`, `oversize_threshold`,
 `metadata_thp` and `confirm_conf` are jemalloc keys accepted with any
 value and ignored (`metadata_thp` because the metadata follows `thp`).
 Unknown keys, bad values, out-of-range numbers (clamped), inert keys and
@@ -1313,7 +1312,7 @@ statistics stay exact whichever cache a slot passes through, and Redis's
 Lua arena keeps its accounting through `MALLOCX_ARENA`. An `Empty` slab is
 reusable only by its own class and arena, where jemalloc's one dirty pool
 per arena serves every size; that is the price of per-class regions,
-visible as a higher peak RSS on many-arena microbenchmarks (#59, #30).
+visible as a higher peak RSS on many-arena microbenchmarks.
 
 `narenas` shards automatic allocations across arenas by thread, jemalloc
 style. The default is `min(4 * ncpus, 64)` (`Config::effective_narenas`;
@@ -1442,7 +1441,7 @@ freed or foreign pointer, null) and never aborts: a wrong answer only
 costs the defragmenter a move. It is a cold statistics read with no
 effect on any allocation path. Free slots still in the freeing thread's
 cache pin their slabs until the cache GC returns them, which KeyDB's stop
-rule (`stats.active - stats.allocated`) sees (#63). The `*_with_usize`
+rule (`stats.active - stats.allocated`) sees. The `*_with_usize`
 family stays out of scope: no Wolfi package calls it.
 
 ### 13.6 Library name, soname and packaging
@@ -1453,14 +1452,14 @@ version is 0.x); a package installs the file under that name with a
 `libchalloc.so` link for the linker (`scripts/install.sh`). With the
 `jemalloc-soname` feature the soname is `libjemalloc.so.2` instead,
 staged by `scripts/jemalloc-compat.sh`. The static library is built but
-not yet tested or shipped (#58).
+not yet tested or shipped.
 
 One quantum per build (section 3): a run-time quantum would put a table
 select on every class lookup. Wolfi's `jemalloc` has quantum 16, so the
 system `libchalloc.so.0` and the `challoc-jemalloc-compat`
 `libjemalloc.so.2` are `quantum16` builds (Ruby runs on the latter).
 Valkey is the one `quantum8` consumer (its defragmenter asserts
-`arenas.quantum == 8`, #56) and gets a private `quantum8` build in its own
+`arenas.quantum == 8`) and gets a private `quantum8` build in its own
 package, under `/usr/lib/valkey/`, named in the binary's rpath
 (`contrib/wolfi/valkey/valkey-9.1.yaml`); `DT_RPATH` is searched before
 `LD_LIBRARY_PATH`, so only `LD_PRELOAD` can displace it. Two libraries
@@ -1512,9 +1511,10 @@ allocation returns null with `*usable = 0`; `challoc_free_usable(NULL)` is
 0; `challoc_realloc_usable(p, 0)` frees and reports 0.
 `challoc_calloc_usable` zeroes the whole usable size, where plain `calloc`
 clears the requested bytes; `challoc_free_usable` is the exact `free` of
-6.3 (bit test, owner word), not the sized path (#61). In `api/libc.rs`
-they are `malloc`'s pop and `free`'s check and push
-(`heap::free_fast_class`) plus `CLASSES[c].size()`; the other entry
+6.3 (bit test, owner word), not the sized path. In `api/libc.rs`
+they are `malloc`'s pop and `free`'s check and push plus the class size:
+`challoc_free_usable` calls `free_usable`, whose fast path is `free`'s
+`heap::free_fast_slot` followed by `class_size(class)`; the other entry
 points' machine code is unchanged by them (`scripts/codegen-diff.sh`).
 Valkey uses them under `USE_CHALLOC`
 (`contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch`).
@@ -1555,11 +1555,11 @@ must meet; the prices are in 6.3 and [tuning.md](tuning.md)):
   metadata region cannot make `malloc` return a chosen address. It costs
   about 11% of `xmalloc-test`'s cross-thread frees and 1..2% of `larson`.
 
-Planned, not implemented: tagged pointers (section 18, #50). Not
+Planned, not implemented: tagged pointers (section 18). Not
 attempted: quarantine (defeats defragmentation and costs throughput) and
 canaries (need bytes inside the block). Sampled guarded allocations in the
-style of GWP-ASan (#53) and type-isolated heaps for Clang's
-`-fsanitize=alloc-token` (#52) are roadmap items.
+style of GWP-ASan and type-isolated heaps for Clang's
+`-fsanitize=alloc-token` are roadmap items.
 
 ## 15. Per-CPU mode
 
@@ -1568,9 +1568,8 @@ pop and push as rseq critical sections, were prototyped and removed: the
 critical sections cost 33..47 instructions per operation, which made
 every reference row slower than thread caches (`larson10` 9..17%,
 `xmalloc-test` 16..19%), and the mode won RSS only when threads far
-outnumber CPUs. The idea and the measurements are in #48 (the
-thread/CPU-ratio variant is #34); the code is in the tag
-`archive/prototype-2026-09-30`. `percpu_arena` is
+outnumber CPUs. The code is in the tag `archive/prototype-2026-09-30`.
+`percpu_arena` is
 accepted for jemalloc compatibility and has no effect (section 12): caches
 are per thread whatever its value.
 
@@ -1599,8 +1598,7 @@ are per thread whatever its value.
   (`PR_SET_VMA_ANON_NAME`, when the kernel has it), so `Rss` per name in
   `/proc/<pid>/smaps` places memory by region.
 - Abort messages include the faulting pointer, its classification and the
-  reason, prefixed `challoc: `. `stats_print:true` prints nothing at exit
-  (#62).
+  reason, prefixed `challoc: `. `stats_print:true` prints nothing at exit.
 - `challoc_version()` (`const char *`, the crate version) is the `dlsym`
   probe for "is challoc the loaded allocator"; it touches no allocator
   state and does not initialise the allocator. `mallctl("version")` stays
@@ -1682,7 +1680,7 @@ The `thp` key (`thp.rs`) against the host's sysfs table
   folio size is enabled. Forced to `never` under a cgroup limit below
   1 GiB (section 11). It buys the Valkey model's hot `SET` loop 5..18% for
   about 10% more peak RSS on that heap and 30..66% more on allocation
-  microbenchmarks (#20), hence an opt-in.
+  microbenchmarks, hence an opt-in.
 
 `auto` and `always` issue no `MADV_NOHUGEPAGE`, so on an `always` host
 their unadvised regions stay eligible for the host's PMD pages. The
@@ -1694,12 +1692,12 @@ why, and how many ranges each path advised.
 Not implemented. The rseq time slice extension (kernel 7.0,
 `CONFIG_RSEQ_SLICE_EXTENSION`) was prototyped for lock holders and
 measured on the one reference kernel that had it: no row moved beyond
-the noise margin, so it was removed (#17, tag
+the noise margin, so it was removed (tag
 `archive/prototype-2026-09-30`).
 
 ## 18. Tagged pointers
 
-Designed, not implemented; tracked in #50 (MTE on AmpereOne: #51). No
+Designed, not implemented. No
 code path exists, no `tag_pointers` key is parsed, and nothing here
 changes a default. The full design is section 18 of `docs/design.md` at
 the tag `archive/prototype-2026-09-30`; this is its summary, corrected
@@ -1780,6 +1778,7 @@ src/class/mod.rs      ClassState: claim, release, reopen, holes, stats; the test
 src/class/table.rs    SlabTable: descriptors, slot bitmap, owner array, guard slabs, take_group, commit_run, commit_slab
 src/class/sets.rs     Lazy (a lazily committed metadata table), Set, SetTable
 src/class/fresh.rs    the fresh-slab path: next slab of the arena's group, next group
+src/class/complete.rs ghost model of one class's slab state per arena: a refill's claim never misses free capacity
 src/class/decay.rs    purge_empty and the decay walk (section 8)
 src/class/verify.rs   the check_zero debug mode and the test-only pointer checks
 src/class/abort.rs    the #[cold] heap-inconsistency aborts of the class protocol
@@ -1787,6 +1786,9 @@ src/class/tests.rs    class tests over a synthetic region (Env)
 src/heap/mod.rs       Heap and its constants (MAX_CAP, MIN_CAP, FOREIGN, PUSH_*); the crate-facing entry functions
 src/heap/cache.rs     CacheHeader: pop and push primitives, first-use setup (ensure_cache)
 src/heap/paths.rs     the inlined fast paths, the cold slow paths, free_other
+src/heap/fresh.rs     a fresh heap's plain fields and the FreshHeap token that hands on their permission
+src/heap/live.rs      the live-block ghost model: a Live token per handed-out slot or huge run
+src/heap/zero.rs      the zero prefix of the thread caches as ghost tokens (calloc's skipped memset)
 src/heap/flush.rs     refill and flush; group_by_slab and the straddling double-free abort
 src/heap/compact.rs   the compacting cache: probe/compact modes, scheduled pop, rebuild (6.4)
 src/heap/others.rs    caches for other arenas (ArenaCaches) and the FOREIGN flush-only cache
@@ -1808,6 +1810,7 @@ src/policy.rs         the cgroup policy (section 11): bands, retention cap, full
 src/arena.rs          arenas and the arena registry
 src/config.rs         malloc_conf parsing: one key table (TABLE) behind set, get and KEYS
 src/stats.rs          counters and the epoch merge
+src/stats/ledger.rs   ghost model of what the exact-stats counters count and where those blocks are
 src/thp.rs            the thp key against the sysfs table: reservation advice, folios, chunks, huge runs, force_never
 src/api/mod.rs        lazy init, the Shared/Features statics, challoc_version/challoc_features, fork handlers
 src/api/libc.rs       standard entry points, malloc_trim, the challoc_*_usable entry points
@@ -1817,14 +1820,20 @@ src/api/cxx.rs        operator new / delete
 src/api/mallctl.rs    the control namespace
 src/api/print.rs      malloc_stats_print, malloc_stats, malloc_info
 src/api/c_programs.rs test-only: the C-test table and its driver (tests/c, fuzz/, tests/glibc, tests/mimalloc)
+src/api/restated.rs   test-only: checks the restating theorems still make their bodies' calls (verus/README.md)
+src/vspec/            Verus seams: contracts for core functions vstd does not specify, trusted wrappers
+src/kani/             Kani harnesses for seams of the ledger (cfg(kani) only)
 include/              the installed headers
 tests/c/              C programs run under LD_PRELOAD against the cdylib (common.h is the shared harness; scripts/ctest-cc.sh the one compiler line)
 tests/glibc/, tests/mimalloc/  vendored suites
+tests/loom/           loom models of the atomics protocols (its own crate; tests/pins.rs keeps them tied to the source)
 tests/consumers/      Valkey and Ruby builds on challoc
 fuzz/                 randomized alloc/free driver with seeds
 bench/                benchmark drivers and probes (bench/README.md)
 contrib/              the Valkey patches and the Wolfi package definitions
 scripts/              dev scripts; codegen-diff.sh proves a refactor left the machine code unchanged
+ci/                   the scripts the Chainguard Checks (.chainguard/ci/) call (ci/README.md)
+verus/                Verus tooling: coverage counter and FLOOR, seam ledger (verus/README.md, verus/SEAMS.md)
 docs/                 design, tuning, hardening, testing, benchmarking, research
 ```
 

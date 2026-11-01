@@ -1,4 +1,4 @@
-//! cgroup v2 discovery and sampling (design.md section 11).
+//! cgroup v2 discovery and sampling (design 11).
 //!
 //! This is the measurement layer only: where the process's cgroup is, what
 //! its effective memory limits are, how much it is charged right now, and

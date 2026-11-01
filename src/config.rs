@@ -1,4 +1,4 @@
-//! `malloc_conf` parsing (design.md section 12).
+//! `malloc_conf` parsing (design 12).
 //!
 //! The parser is pure logic over byte slices so it can be unit tested
 //! against fixtures; the source readers (weak `malloc_conf` symbol,
@@ -139,7 +139,7 @@ impl PercpuArena {
     }
 }
 
-/// Every tunable of design section 12; [`Config::DEFAULT`] holds the
+/// Every tunable of design 12; [`Config::DEFAULT`] holds the
 /// compiled defaults. `docs/tuning.md` section 2 documents each key: its
 /// values, what it does, when to change it and what that costs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,7 +220,7 @@ impl Config {
         assert(MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
     }
 
-    /// The compiled defaults (design section 12).
+    /// The compiled defaults (design 12).
     pub const DEFAULT: Config = Config {
         background_thread: None,
         dirty_decay_ms: 10_000,
@@ -520,7 +520,7 @@ impl Config {
     }
 }
 
-/// Cap of the automatic `narenas` default (design section 13.3).
+/// Cap of the automatic `narenas` default (design 13.3).
 pub const MAX_AUTO_ARENAS: u32 = 64;
 
 } // verus!
@@ -550,7 +550,7 @@ struct ExParse(Parse);
 #[allow(dead_code)]
 struct ExRead(Read);
 
-/// One tunable of design section 12: its name (`opt.<name>`), the parser
+/// One tunable of design 12: its name (`opt.<name>`), the parser
 /// [`Config::set`] runs on its value and the reader [`Config::get`]
 /// answers with. The entries are [`TABLE`]; [`KEYS`] is their names.
 pub struct Key {

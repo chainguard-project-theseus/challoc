@@ -1,5 +1,5 @@
 //! Thread heaps: the per-thread caches in front of the slab bitmaps
-//! (design.md section 6).
+//! (design 6).
 //!
 //! Every thread that allocates gets a [`Heap`] in the metadata region,
 //! reached through the one TLS slot in `sys/tls.rs`. A heap holds one

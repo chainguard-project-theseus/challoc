@@ -1,4 +1,4 @@
-//! The reports (design.md sections 13.1 and 16): jemalloc's
+//! The reports (design 13.1 and 16): jemalloc's
 //! `malloc_stats_print`, glibc's `malloc_info` (XML) and `malloc_stats`.
 //!
 //! Everything is formatted with `core::fmt` into a small stack buffer and

@@ -1,6 +1,6 @@
 # valkey-9.1 on challoc: the Wolfi package definition with the allocator
-# switched from the bundled jemalloc to challoc (docs/plan.md Phase 3 task
-# 2, docs/design.md section 13.6). Based on wolfi-dev/os valkey-9.1.yaml at
+# switched from the bundled jemalloc to challoc (docs/design.md section
+# 13.6). Based on wolfi-dev/os valkey-9.1.yaml at
 # a944f08 (2026-09-19; the file itself last changed in 195f812, the 9.1.2
 # update); contrib/wolfi/README.md ("Valkey") lists every change from it.
 #

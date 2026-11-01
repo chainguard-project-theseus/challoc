@@ -9,7 +9,8 @@
  *     #include <challoc/challoc.h>
  *     #endif
  *
- * Copyright (c) Chainguard, Inc. Licensed under the same terms as challoc.
+ * Copyright (c) Chainguard, Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef CHALLOC_CHALLOC_H
 #define CHALLOC_CHALLOC_H

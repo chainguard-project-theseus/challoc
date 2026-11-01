@@ -17,7 +17,7 @@
 //! keys and handlers, which is all we need.
 //!
 //! The fork prepare handler takes every allocator lock in nesting order
-//! (design section 9; the list is [`fork_prepare`]'s body): the explicit-cache
+//! (design 9; the list is [`fork_prepare`]'s body): the explicit-cache
 //! table lock, the arena creation lock, the process statistics lock, every
 //! arena's class locks, the slab table locks, every arena's slab-set lock,
 //! the huge lock, the metadata lock, the per-arena statistics locks, then
@@ -1089,7 +1089,7 @@ pub fn feature_line() -> &'static str
 }
 
 /// `challoc_features()`: the feature report as one NUL-terminated line of
-/// `key=value` pairs (design.md sections 16 and 17): the kernel probes
+/// `key=value` pairs (design 16 and 17): the kernel probes
 /// (`page_size`, `guard_install`, `mseal`, `anon_name`, ...) then `pac`.
 /// The string is static, built once at its first request without
 /// allocating, and identical to the `Kernel and CPU features:` line of
@@ -1552,7 +1552,7 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
 verus! {
 
 /// A lock the fork handlers take, named by its place in the allocator:
-/// the list in [`fork_prepare`]'s body (design section 9). The test
+/// the list in [`fork_prepare`]'s body (design 9). The test
 /// `fork_lock_list_matches_the_source_tree` checks the test list
 /// `FORK_LOCKS` against every `Lock` in the source tree; that
 /// `FORK_LOCKS` and this enum name the same locks is by inspection.
@@ -1907,7 +1907,7 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
 /// consistent heap and no signal handler on this thread can re-enter the
 /// allocator (or fork again) while the locks are held.
 ///
-/// The order is the nesting order (design section 9): the explicit-cache
+/// The order is the nesting order (design 9): the explicit-cache
 /// table lock is held across heap creation and destruction, which take the
 /// arena creation lock, class locks and the metadata lock; the process
 /// statistics lock is held across `epoch`'s scan, which takes the class,

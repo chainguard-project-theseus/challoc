@@ -66,7 +66,8 @@ the same `make` targets there; a native x86_64 host replaces the emulated
 `PLATFORM=linux/amd64`. Give every tree on a shared host its own
 `TARGET_VOLUME`.
 
-`scripts/devvm.sh` is one way to do this on GCE: `devvm.sh up` creates
+`scripts/devvm.sh` is one way to do this on GCE, in the project named by
+`DEVVM_PROJECT` (required; there is no default): `devvm.sh up` creates
 (or starts) an aarch64 and an x86_64 VM, installs Docker and builds the
 dev image; `devvm.sh run ARCH NAME -- make test` pushes the current
 commit to a mirror on the VM, syncs uncommitted changes on top into
@@ -108,8 +109,14 @@ for baselines, `fetch` copies results back, `down` stops the VMs.
   fails on any difference.
 - Comments describe the code as it is. History belongs in commit
   messages, not in comments.
-- `unsafe` stays confined to the syscall layer, the thread-local accessor
-  and the slab allocator's pointer arithmetic.
+- `unsafe` is used where the work needs it: at the C ABI boundary
+  (`src/api/`), in the syscall layer and thread-local accessor
+  (`src/sys/`), and in the allocator core (heaps, slabs, size classes,
+  arenas, huge runs, the metadata region). `unsafe_op_in_unsafe_fn` is
+  denied, so every unsafe operation sits in an explicit `unsafe` block.
+  Give each `unsafe` block and `unsafe impl` a `// SAFETY:` comment naming
+  the invariant it relies on; where the code is verified, the invariant is
+  also a Verus contract or tracked permission (`verus/README.md`).
 
 ## Performance rules
 

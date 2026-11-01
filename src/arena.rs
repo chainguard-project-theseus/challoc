@@ -1,4 +1,4 @@
-//! Arenas (design.md section 13.3). Explicit caches are
+//! Arenas (design 13.3). Explicit caches are
 //! `heap/tcaches.rs`; the decoding of `MALLOCX_*` flags and their routing
 //! onto heaps, caches and the direct paths (13.2) is `heap/mallocx.rs`.
 //!

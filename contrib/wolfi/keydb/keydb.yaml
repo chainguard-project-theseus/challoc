@@ -1,6 +1,7 @@
 # keydb on challoc: the Wolfi package definition with the allocator switched
 # from the bundled jemalloc to challoc through challoc-jemalloc-compat
-# (docs/plan.md Phase 3 task 3, docs/design.md sections 13.5 and 13.6).
+# (docs/design.md sections 13.5 and 13.6; contrib/wolfi/README.md,
+# "Swapping a jemalloc consumer").
 # Based on wolfi-dev/os keydb.yaml at 8c473de (2026-09-20; the file itself
 # last changed in 276d78c, a resources bump); contrib/wolfi/README.md
 # ("KeyDB") lists every change from it.
@@ -33,7 +34,7 @@
 package:
   name: keydb
   version: 6.3.4
-  epoch: 9 # allocator: bundled jemalloc -> challoc (challoc-jemalloc-compat); 8 was go/wolfi-rsc/keydb
+  epoch: 9 # allocator: bundled jemalloc -> challoc (challoc-jemalloc-compat); 8 is Wolfi's, on the bundled jemalloc
   description: A Multithreaded Fork of Redis
   copyright:
     - license: BSD-3-Clause

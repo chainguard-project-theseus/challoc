@@ -1,4 +1,4 @@
-//! Kernel feature probing (design.md section 10, step 1) and the feature
+//! Kernel feature probing (design 10, step 1) and the feature
 //! line that reports it.
 //!
 //! Every kernel feature the allocator can use is tried once, at init, on a
@@ -154,7 +154,7 @@ pub struct Features {
     /// `log2(page_size)`.
     pub page_shift: u32,
     /// `madvise(MADV_GUARD_INSTALL)` works (kernel 6.13+). Guard slabs use
-    /// it; otherwise `PROT_NONE` for huge runs only (design.md section 14).
+    /// it; otherwise `PROT_NONE` for huge runs only (design 14).
     pub guard_install: bool,
     /// `mseal(2)` works (kernel 6.10+, not filtered by seccomp).
     pub mseal: bool,
@@ -218,7 +218,7 @@ impl fmt::Display for Features {
 }
 
 /// The feature line as a NUL-terminated string, built once at init for
-/// `challoc_features()` (design.md section 16) and reused by
+/// `challoc_features()` (design 16) and reused by
 /// `malloc_stats_print`, so the two report the same bytes.
 pub struct FeatureLine {
     buf: [u8; FeatureLine::CAP],
@@ -407,7 +407,7 @@ pub fn probe_anon_name(page: usize) -> bool
 
 impl Features {
     /// Probe everything; the per-size THP files only with `thp_sizes`.
-    /// Called once from init (design.md section 10); calling it again is
+    /// Called once from init (design 10); calling it again is
     /// harmless but leaks a sealed page, so init stores the result. Pure
     /// apart from that page.
     pub fn probe(thp_sizes: bool) -> (r: Features)

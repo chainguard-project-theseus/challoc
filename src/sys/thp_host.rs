@@ -1,6 +1,6 @@
 //! The kernel's transparent-huge-page configuration, read once at init
 //! from `/sys/kernel/mm/transparent_hugepage` with raw syscalls
-//! (design.md section 10, step 1), and its two feature-line keys, `thp`
+//! (design 10, step 1), and its two feature-line keys, `thp`
 //! and `mthp`. The policy that acts on it is `crate::thp`.
 
 use core::fmt;

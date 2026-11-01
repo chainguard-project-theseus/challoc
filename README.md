@@ -23,7 +23,7 @@ instead of jemalloc. Three things set it apart:
 
 `docs/overview.md` has the goals, the case against staying on jemalloc and
 a few pages on how it works; `docs/design.md` is the full design. Where
-the project stands is under "Status and contributing" below.
+the project stands is under "Status" below.
 
 ## Formal verification
 
@@ -54,6 +54,10 @@ cost, memory or detection, never allocation results. Other distributions,
 libcs and operating systems are not supported.
 
 ## Building
+
+Prerequisites: Docker is the only host prerequisite for building and
+testing; the toolchain and every build and test dependency live in the
+dev container. (The proof tools are separate; see "Verification".)
 
 Everything builds and runs inside a Wolfi dev container (`Dockerfile.dev`),
 whatever the machine running Docker:
@@ -181,17 +185,10 @@ seccomp profile hides `mseal`.
 - `docs/research.md`: the survey behind the design decisions
 - `CONTRIBUTING.md`, `SECURITY.md`
 
-## Status and contributing
+## Status
 
 We're building challoc in the open at Chainguard. We don't publish it to
 any package registry; it ships only from Chainguard's own repositories.
-
-We don't accept pull requests from external contributors. If you and your
-organization would seriously like to get involved, email
-dlorenc@chainguard.dev.
-
-Use of the challoc and Chainguard names is governed by Chainguard's
-trademark policy.
 
 challoc 0.1.0 is not released. On the reference machines (Google Axion
 and Intel Xeon VMs) it is at parity with jemalloc 5.3 on throughput and
@@ -202,10 +199,11 @@ limit is back to 13 MiB of RSS within 50 ms (jemalloc 5.3.1 still holds 190 MiB
 set swinging between 200 and 480 MiB runs for 5 minutes where jemalloc and
 mimalloc are OOM-killed within 12 s (`docs/tuning.md` section 4).
 
-Known limitations are listed in `docs/tuning.md` section 8, each with
-its issue. The largest: on a 16-thread Ruby soak on x86_64, challoc's
-peak RSS is about 13% above jemalloc's (on aarch64 it is 6% below), and
-`narenas:1` brings the x86_64 peak close to jemalloc's (#43).
+Known limitations are listed in `docs/tuning.md` section 8. The largest:
+on a 16-thread Ruby soak on x86_64, challoc's peak RSS is about 13% above
+jemalloc's (on aarch64 it is 6% below), and `narenas:1` brings the x86_64
+peak close to jemalloc's. The extra RSS comes from partly used 64 KiB
+slabs and empty slabs spread across many arenas; a fix is still open.
 
 The test suite (unit tests, C programs under `LD_PRELOAD`, the vendored
 glibc and mimalloc suites, cgroup container tests, a fuzz driver) runs in
@@ -213,8 +211,47 @@ the dev container (`docs/testing.md`), and Wolfi's Valkey 9.1 and Ruby 3.4
 are built and tested on challoc on both architectures (`make valkey`,
 `make ruby`, `contrib/wolfi/`).
 
-Tagged pointers (MTE, or a software tag in the ignored top bits) are
-designed but not implemented (design section 18, #50).
+Tagged pointers (a software tag in the ignored top bits, Arm MTE or
+Intel LAM) are designed but not implemented (design section 18).
+
+## Verification
+
+Alongside the tests, three tools check parts of the code; each covers
+less than the whole allocator, and CI runs all three on every pull
+request.
+
+- **Verus proofs.** Functions inside `verus! { ... }` blocks in `src/`
+  are checked by [Verus](https://github.com/verus-lang/verus) against
+  their stated contracts and for overflow, out-of-bounds indexing,
+  reachable panics and termination. The badge above is the share of
+  functions and lines Verus verifies, and `verus/FLOOR` keeps it from
+  falling. Code outside `verus!` is not verified, and what a verified
+  function relies on without proof (contracts for `core` functions in
+  `src/vspec/`, `external_body` functions such as the syscall wrappers)
+  is a *seam*, listed in a generated ledger. See
+  [verus/README.md](verus/README.md) for what counts as verified and
+  how to run it (`make verus`, which runs on the host with Verus
+  installed rather than in the dev container), and
+  [verus/SEAMS.md](verus/SEAMS.md) for the seams and their status.
+- **Kani harnesses.** `src/kani/` (and `kani_*` modules next to the code
+  they check) holds bounded model-checking harnesses that check some
+  seams' bodies against the contract Verus assumes for them; each states
+  its bounds.
+- **loom models.** `tests/loom/` checks copies of the atomics protocols
+  (the background thread's wake-up and exit, `RawLock`, the slab bitmap,
+  the free path's reads and others) under every interleaving and C11
+  weak-memory outcome loom explores. They model the protocols, not the
+  shipped code itself; `tests/loom/tests/pins.rs` fails when the source
+  lines a model copies change.
+
+## Contributing
+
+We don't accept pull requests from external contributors. If you and your
+organization would seriously like to get involved, email
+dlorenc@chainguard.dev.
+
+Use of the challoc and Chainguard names is governed by Chainguard's
+trademark policy.
 
 ## License
 

@@ -16,7 +16,7 @@ that build and test them here.
 |---|---|---|
 | `challoc` | `/usr/lib/libchalloc.so.0` | the runtime: `quantum16`, `DT_SONAME libchalloc.so.0`; `provides so:libchalloc.so.0` (auto). Nothing else: the link name is the -dev package's, as Wolfi's `split/dev` does for every library. |
 | `challoc-dev` | `/usr/lib/libchalloc.so -> libchalloc.so.0`, `/usr/include/challoc/jemalloc.h`, `/usr/include/challoc/challoc.h`, `/usr/lib/pkgconfig/challoc.pc` | `runtime: challoc=<version>`. The headers are `include/challoc/jemalloc.h` (the `je_` API under `<challoc/...>`, never `<jemalloc/...>`; it defines `JEMALLOC_CHALLOC_USABLE`) and `include/challoc/challoc.h` (challoc's own `challoc_*_usable` entry points, design 13.7; the compat header below declares the same four itself, so the two -dev packages ship no common file). `challoc.pc` is written by the pipeline: `Version` is the crate version, `Libs: -L${libdir} -Wl,--push-state,--no-as-needed -lchalloc -Wl,--pop-state` (see "as-needed" below). |
-| `challoc-jemalloc-compat` | `/usr/lib/libjemalloc.so.2` | `quantum16` built with the `jemalloc-soname` feature and staged by `scripts/jemalloc-compat.sh` (`QUANTUM=16 PREFIX=/usr`). The file set of Wolfi's `libjemalloc2`, which it `provides` (plus the automatic `so:libjemalloc.so.2=2`). Task 1 had the link name and the pc file here too; task 3 moved them to the -dev package, where `jemalloc-dev` keeps its own. |
+| `challoc-jemalloc-compat` | `/usr/lib/libjemalloc.so.2` | `quantum16` built with the `jemalloc-soname` feature and staged by `scripts/jemalloc-compat.sh` (`QUANTUM=16 PREFIX=/usr`). The file set of Wolfi's `libjemalloc2`, which it `provides` (plus the automatic `so:libjemalloc.so.2=2`). The link name and the pc file are in the -dev package, as `jemalloc-dev` keeps its own. |
 | `challoc-jemalloc-compat-dev` | `/usr/lib/libjemalloc.so -> libjemalloc.so.2`, `/usr/lib/pkgconfig/jemalloc.pc`, `/usr/include/jemalloc/jemalloc.h` | `runtime: challoc-jemalloc-compat=<version>`; `provides: jemalloc-dev=<version>` (the file set of Wolfi's `jemalloc-dev`, so the two conflict and apk refuses to co-install them). The pc file is the stage's (`Version: 5.3.0`, upstream's `jemalloc.pc.in` fields, `Cflags: -I${includedir}/jemalloc`, `Libs: -L${libdir} -ljemalloc`); the header is `include/jemalloc-compat/jemalloc/jemalloc.h`: jemalloc 5.3's unprefixed API as challoc exports it (`malloc_conf`, `malloc_message`, the `mallocx` family, `mallctl*`, `malloc_stats_print`, the `MALLOCX_*`/`MALLCTL_ARENAS_*` and `JEMALLOC_VERSION*` macros, the `je_` spellings as prototypes) with the standard entry points left to `<stdlib.h>`/`<malloc.h>` so C++ sees one declaration of `malloc`. `scripts/jemalloc-compat.sh` stages the same header under `include/jemalloc/`, so the stage and the packages have one file set. See "Ruby" below. |
 
 Valkey's private `quantum8` build is not one of these packages: it is
@@ -24,8 +24,8 @@ built inside `valkey/valkey-9.1.yaml` (`/usr/lib/valkey/`, design 13.6:
 two libraries with one soname cannot share `/usr/lib`, so the system
 library is never `quantum8`); see "Valkey" below.
 
-Nothing is shipped from `libchalloc.a`: the Phase 1 task 6 decision (no
-`libjemalloc.a`) holds for the system package too until a static link is
+Nothing is shipped from `libchalloc.a`: the decision not to ship
+`libjemalloc.a` holds for the system package too until a static link is
 tested; a `challoc-static` subpackage (`split/static`) is a one-line
 addition when it is.
 
@@ -137,7 +137,7 @@ outputs are in the results file.
 | challoc-jemalloc-compat | link-only consumer | `gcc compat.c $(pkg-config --libs jemalloc) -ldl` (strong `mallocx`, `dallocx`, `mallctl`): `DT_NEEDED libjemalloc.so.2`, `dladdr` puts `mallocx` and `malloc` in `.../libjemalloc.so.2`, `mallctl("version")` = `5.3.0-0-gchalloc` |
 | challoc-jemalloc-compat | LD_PRELOAD run | `LD_PRELOAD=/usr/lib/libjemalloc.so.2 ls /` |
 | by hand | `scripts/check-needed.sh` | on the compat consumer (`ok libjemalloc.so.2`) and on the challoc-dev consumers (`ok`/`MISSING` as above) |
-| by hand | `tests/c/jemalloc_link.c` | the Phase 1 task 6 consumer, `-DQUANTUM=16`, linked with the installed pc file, `./jl /usr/lib`: `ok jemalloc_link` |
+| by hand | `tests/c/jemalloc_link.c` | the link-only `-ljemalloc` consumer, `-DQUANTUM=16`, linked with the installed pc file, `./jl /usr/lib`: `ok jemalloc_link` |
 
 ## Swapping a jemalloc consumer (what `provides` does)
 
@@ -157,14 +157,15 @@ one configured (results file, "co-installation"):
   `apk add challoc-jemalloc-compat ruby-3.4` in one go does the same, so a
   consumer package swaps by naming `challoc-jemalloc-compat` in its
   runtime dependencies (and in `environment.contents.packages` in place
-  of `jemalloc-dev`), which is Phase 3 task 3.
+  of `jemalloc-dev`), as `ruby/ruby-3.4.yaml`, `keydb/keydb.yaml` and
+  `rethinkdb/rethinkdb.yaml` here do.
 - `apk add libjemalloc2` while the compat package is installed is a no-op
   (the name is provided); `apk add jemalloc-dev` is refused
   (`conflicts: challoc-jemalloc-compat[pc:jemalloc]`): the two are
   alternatives, by design.
 - A consumer that includes `<jemalloc/jemalloc.h>` (Ruby's
   `--with-jemalloc`) lists `challoc-jemalloc-compat-dev` in place of
-  `jemalloc-dev` in its build environment (task 3; the task 1 open point).
+  `jemalloc-dev` in its build environment.
   The -dev package carries the header, the link name and the pc file, the
   file set of `jemalloc-dev`, so the consumer's configure sees nothing
   different; `apk add jemalloc-dev` is refused while it is installed and
@@ -173,7 +174,7 @@ one configured (results file, "co-installation"):
   consumer's runtime dependency must still name `challoc-jemalloc-compat`
   explicitly: melange derives `so:libjemalloc.so.2` from the binaries and
   apk would resolve that to `libjemalloc2` by name preference (the results
-  file of task 3, "Package metadata").
+  file, "Package metadata").
 
 ## Valkey
 
@@ -332,7 +333,7 @@ valkey-9.1` alone installs no challoc package (`apk add valkey-9.1-cli`
 brings the system `challoc` for its `so:` dependency); with both
 libraries installed `valkey-server` maps only
 `/usr/lib/valkey/libchalloc.so.0`. Valkey's
-own `unit/memefficiency` (the Phase 1 gate) runs against the packaged
+own `unit/memefficiency` (the RSS-efficiency gate) runs against the packaged
 binary from a 9.1.2 checkout with the contrib patch applied (for its
 `memefficiency.tcl` hunk) and `src/valkey-server` symlinked to
 `/usr/bin/valkey-server`; the results file has the summary. The full
@@ -551,8 +552,8 @@ server calls jemalloc's API, it is the process's `malloc`. The twist:
 `default_static="tcmalloc jemalloc"`, so configure looks for
 `libjemalloc.a` (`check_static_lib`) and links it in, which is how Wolfi's
 `rethinkdb` carries jemalloc 5.3.1 today, with no `DT_NEEDED` for it.
-The compat package ships no static library (the Phase 1 task 6 decision
-holds for the system packages), so `--dynamic jemalloc` turns the probe
+The compat package ships no static library (no static link is tested;
+see "Packages" above), so `--dynamic jemalloc` turns the probe
 into `check_dyn_lib` (`-ljemalloc` against the compat header) and the
 binary records `libjemalloc.so.2`, which is what the swap needs anyway:
 a static link would have frozen one allocator build into the package.

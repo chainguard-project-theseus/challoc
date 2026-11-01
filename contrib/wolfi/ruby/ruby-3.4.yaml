@@ -1,7 +1,8 @@
 # ruby-3.4 on challoc: Wolfi's ruby-3.4.yaml (wolfi-dev/os main a944f08,
 # 2026-09-19; the file last changed in 1c5cd09, the resolv cherry-pick) with
 # the allocator switched from jemalloc to challoc through
-# challoc-jemalloc-compat (docs/plan.md Phase 3 task 3, design 13.2, 13.6).
+# challoc-jemalloc-compat (design 13.2, 13.6; contrib/wolfi/README.md,
+# "Swapping a jemalloc consumer").
 #
 # What changes (contrib/wolfi/README.md, "Ruby", has the reasoning and the
 # results of the first real build):

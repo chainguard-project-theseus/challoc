@@ -1,5 +1,5 @@
 //! Per-class state, slab selection, commit, and the claim/release protocol
-//! (design.md sections 4 and 5).
+//! (design 4 and 5).
 //!
 //! One [`SlabTable`] exists per class: the class region's descriptor array
 //! and the commit watermark, shared by every arena, behind a commit lock.
@@ -2676,7 +2676,7 @@ impl ClassState {
         .0
     }
 
-    /// [`claim`] for `slot_randomize` (design section 4): the same slabs
+    /// [`claim`] for `slot_randomize` (design 4): the same slabs
     /// and the same reservations (`plan` is untouched,
     /// so the slabs are still the lowest partial ones and a `Fresh` or
     /// `Purged` slab's prefix is still claimed under the lock), but the

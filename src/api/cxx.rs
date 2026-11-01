@@ -1,4 +1,4 @@
-//! The C++ allocation operators (design.md section 13.1): the eight
+//! The C++ allocation operators (design 13.1): the eight
 //! `operator new` and twelve `operator delete` signatures that libstdc++
 //! defines and jemalloc replaces. A C++ program that is only preloaded with
 //! `malloc`/`free` still routes `new` through libstdc++'s `operator new`,

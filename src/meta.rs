@@ -1,4 +1,4 @@
-//! Metadata region allocator (design.md sections 2, 6.2 and 17).
+//! Metadata region allocator (design 2, 6.2 and 17).
 //!
 //! Everything the allocator has to remember lives in the metadata region
 //! reserved by `layout::Regions`: slab descriptor arrays and slot bitmaps,

@@ -1,4 +1,4 @@
-//! Explicit caches (design.md section 13.3).
+//! Explicit caches (design 13.3).
 //!
 //! An explicit cache (`tcache.create`) is a [`Heap`] owned by no thread:
 //! same caches, same refill and flush, no TLS. It is not thread safe, as in
