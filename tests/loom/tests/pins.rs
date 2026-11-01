@@ -1,7 +1,11 @@
 //! The lines of challoc's source that the models copy must still be
 //! there, whitespace-trimmed and in this order in each file. A change to
-//! a copied step or ordering fails here until the model is revisited.
+//! a copied step or ordering fails here until the model is revisited, and
+//! so does a new line with an `Ordering::`, a `fence(` or a `futex_` call
+//! inside a function a pin falls in (`loom_pins_cover_every_atomic_in_pinned_fns`) until it is
+//! pinned, or waived in `WAIVED` with the reason the model leaves it out.
 
+use std::ops::Range;
 use std::path::Path;
 
 /// `(file under the repository root, lines in order)`. A verified
@@ -398,19 +402,299 @@ const PINS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Lines inside a pinned function that hold an atomic access, a fence or a
+/// futex call and are deliberately not pinned:
+/// `(file, enclosing fn, line, reason)`.
+const WAIVED: &[(&str, &str, &str, &str)] = &[
+    (
+        "src/arena.rs",
+        "get_existing_published",
+        "p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));",
+        "get_existing_published's entry load, the same operation as get_existing's pinned one (narenas.rs: Arenas::entry)",
+    ),
+    (
+        "src/bitmap.rs",
+        "init",
+        "crate::vspec::word::fetch_and(w, !self.mask, Ordering::Relaxed, Tracked(&mut perm));",
+        "init of a sub-word bitmap (mask != !0): bitmap.rs leaves sub-word bitmaps out",
+    ),
+    (
+        "src/bitmap.rs",
+        "init",
+        "crate::vspec::word::fetch_or(w, pad, Ordering::Relaxed, Tracked(&mut perm));",
+        "init of a sub-word bitmap (mask != !0): bitmap.rs leaves sub-word bitmaps out",
+    ),
+    (
+        "src/class/mod.rs",
+        "take",
+        "self.claimed.store(self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64), Ordering::Relaxed);",
+        "take's `claimed` statistic, under the class lock; no model reads it",
+    ),
+    (
+        "src/class/table.rs",
+        "take_group",
+        "crate::sys::abort_fmt(format_args!(\"check_zero: class {class}: take_group at next_slab {s} but the watermark is {}\", self.committed_slabs.load(Ordering::Relaxed)));",
+        "the check_zero abort message's second read of the watermark; the pinned comparison above decides",
+    ),
+    (
+        "src/class/table.rs",
+        "take_group",
+        "previous = unsafe { load_u16_at(owner_word, Ordering::Relaxed, Tracked(&v.0)) };",
+        "take_group's read of the previous owner word, under the class and commit locks; watermark.rs leaves it out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        "let mut changed = self.limited.swap(limited, Ordering::Relaxed) != limited;",
+        "apply's other fields, each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        "changed = (self.immediate.swap(immediate, Ordering::Relaxed) != immediate) || changed;",
+        "apply's other fields, each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        "self.cap.store(cap, Ordering::Relaxed);",
+        "apply's other fields, each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        ".store(if limited { retention } else { 0 }, Ordering::Relaxed);",
+        "apply's other fields (empty_bytes), each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        "Ordering::Relaxed,",
+        "apply's other fields (keep16's store, split over lines), each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        "self.eager_excess.store(false, Ordering::Relaxed);",
+        "apply's other fields, each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        "self.eager_excess.store(true, Ordering::Relaxed);",
+        "apply's other fields, each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        "let seen = self.high_rises_seen.swap(high_rises, Ordering::Relaxed);",
+        "apply's other fields, each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/policy.rs",
+        "apply",
+        "self.full_purge_pending.store(true, Ordering::Relaxed);",
+        "apply's other fields, each its own Relaxed atomic: position.rs leaves them out",
+    ),
+    (
+        "src/purge.rs",
+        "decay",
+        "let retry = self.retry_at.load(Ordering::Relaxed);",
+        "decay's deadline hints (retry_at, next_walk): with oldest_empty nonzero every branch returns Some, and the models rest only on the oldest_empty == 0 -> None path and take no timeout (exit.rs)",
+    ),
+    (
+        "src/purge.rs",
+        "decay",
+        "let next = self.next_walk.load(Ordering::Relaxed);",
+        "decay's deadline hints (retry_at, next_walk): with oldest_empty nonzero every branch returns Some, and the models rest only on the oldest_empty == 0 -> None path and take no timeout (exit.rs)",
+    ),
+    (
+        "src/purge.rs",
+        "decay",
+        "self.next_walk.store(next, Ordering::Relaxed);",
+        "decay's deadline hints (retry_at, next_walk): with oldest_empty nonzero every branch returns Some, and the models rest only on the oldest_empty == 0 -> None path and take no timeout (exit.rs)",
+    ),
+    (
+        "src/purge.rs",
+        "decay",
+        "let retry2 = self.retry_at.load(Ordering::Relaxed);",
+        "decay's deadline hints (retry_at, next_walk): with oldest_empty nonzero every branch returns Some, and the models rest only on the oldest_empty == 0 -> None path and take no timeout (exit.rs)",
+    ),
+    (
+        "src/purge/background.rs",
+        "request",
+        "AUTO.store(false, Ordering::Relaxed);",
+        "request's AUTO store, which nothing in publish.rs or exit.rs reads (publish.rs says so)",
+    ),
+    (
+        "src/purge/background.rs",
+        "main",
+        "EXITS.fetch_add(1, Ordering::SeqCst);",
+        "cfg(test) counter, not in the shipped library",
+    ),
+    (
+        "src/purge/background.rs",
+        "main",
+        "UNTIMED_WAITS.fetch_add(1, Ordering::SeqCst);",
+        "cfg(test) counter, not in the shipped library",
+    ),
+];
+
+/// The indexes of the lines of `src` that `pins` match, trimmed and in
+/// order (each the first match after the previous one), or the first pin
+/// with no match.
+fn pinned_at<'a>(src: &[&str], pins: &[&'a str]) -> Result<Vec<usize>, &'a str> {
+    let mut want = pins.iter().peekable();
+    let mut at = Vec::with_capacity(pins.len());
+    for (i, line) in src.iter().map(|l| l.trim()).enumerate() {
+        if want.peek() == Some(&&line) {
+            want.next();
+            at.push(i);
+        }
+    }
+    match want.next() {
+        Some(missing) => Err(missing),
+        None => Ok(at),
+    }
+}
+
 #[test]
 fn copied_lines_in_place() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (file, lines) in PINS {
         let src = std::fs::read_to_string(root.join(file)).unwrap();
-        let mut want = lines.iter().peekable();
-        for line in src.lines().map(str::trim) {
-            if want.peek() == Some(&&line) {
-                want.next();
-            }
-        }
-        if let Some(missing) = want.next() {
+        let src: Vec<&str> = src.lines().collect();
+        if let Err(missing) = pinned_at(&src, lines) {
             panic!("{file}: got = no line {missing:?} in order, want = every pinned line");
         }
     }
+}
+
+/// Whether `t` starts a `fn` item: qualifiers, then `fn `.
+fn fn_item(t: &str) -> bool {
+    let mut t = t;
+    loop {
+        let rest = [
+            "pub ",
+            "const ",
+            "unsafe ",
+            "extern \"C\" ",
+            "proof ",
+            "spec ",
+            "exec ",
+            "open ",
+            "closed ",
+        ]
+        .iter()
+        .find_map(|q| t.strip_prefix(q))
+        .or_else(|| {
+            t.strip_prefix("pub(")
+                .and_then(|r| r.split_once(") ").map(|(_, r)| r))
+        });
+        match rest {
+            Some(r) => t = r,
+            None => return t.starts_with("fn "),
+        }
+    }
+}
+
+/// The indentation of `line`, in bytes.
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// The lines of the innermost `fn` item of `src` around line `at`: from
+/// its `fn` line to the first `}` below it at the same indentation. `None`
+/// when `at` is outside every `fn` (a module-level `const`).
+fn fn_span(src: &[&str], at: usize) -> Option<Range<usize>> {
+    (0..=at).rev().find_map(|start| {
+        if !fn_item(src[start].trim()) {
+            return None;
+        }
+        let n = indent(src[start]);
+        let end = (start + 1..src.len()).find(|&k| {
+            let t = src[k].trim();
+            !t.is_empty() && (indent(src[k]) < n || (indent(src[k]) == n && t.starts_with('}')))
+        })?;
+        (end >= at).then_some(start..end + 1)
+    })
+}
+
+/// Whether the code of `line`, before any `//` comment, touches an atomic:
+/// an `Ordering::`, a `fence(` or a `futex_` call.
+fn touches_atomic(line: &str) -> bool {
+    let code = line.split("//").next().unwrap();
+    ["Ordering::", "fence(", "futex_"]
+        .iter()
+        .any(|m| code.contains(m))
+}
+
+/// The name of the `fn` item whose line is `line`.
+fn fn_name(line: &str) -> &str {
+    let rest = &line[line.find("fn ").unwrap() + 3..];
+    &rest[..rest.find(['(', '<']).unwrap_or(rest.len())]
+}
+
+/// Every line with an `Ordering::`, a `fence(` or a `futex_` call inside
+/// a function a pin falls in must be pinned itself, or waived in `WAIVED`
+/// with its reason. Pins only check that the copied lines are still there,
+/// in order; this catches such a line inserted between them (a store, a
+/// fence, a direct futex call) that the model has not copied. It does not
+/// see an atomic whose ordering is a variable, or one reached through a
+/// helper (a second `kick()`). Each waiver must match exactly one line, in
+/// the function it names.
+#[test]
+fn loom_pins_cover_every_atomic_in_pinned_fns() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files: Vec<&str> = PINS.iter().map(|(f, _)| *f).collect();
+    files.sort();
+    files.dedup();
+    let mut unpinned = Vec::new();
+    let mut waived_uses = vec![0; WAIVED.len()];
+    for file in files {
+        let text = std::fs::read_to_string(root.join(file)).unwrap();
+        let src: Vec<&str> = text.lines().collect();
+        let mut pinned = vec![false; src.len()];
+        let mut in_fn = vec![false; src.len()];
+        for (_, lines) in PINS.iter().filter(|(f, _)| *f == file) {
+            for i in pinned_at(&src, lines).unwrap_or_default() {
+                pinned[i] = true;
+                if let Some(span) = fn_span(&src, i) {
+                    in_fn[span].fill(true);
+                }
+            }
+        }
+        for (i, line) in src.iter().enumerate() {
+            let t = line.trim();
+            if !in_fn[i] || pinned[i] || t.starts_with("//") || !touches_atomic(t) {
+                continue;
+            }
+            let name = fn_name(src[fn_span(&src, i).unwrap().start]);
+            match WAIVED
+                .iter()
+                .position(|(f, n, l, _)| *f == file && *n == name && *l == t)
+            {
+                Some(w) => waived_uses[w] += 1,
+                None => unpinned.push(format!("{file}:{}: in {name}: {t:?}", i + 1)),
+            }
+        }
+    }
+    assert!(
+        unpinned.is_empty(),
+        "got = atomic lines in pinned functions that are neither pinned nor waived:\n  {}\n\
+         want = each copied into its loom model and pinned in PINS, or listed in WAIVED with a reason",
+        unpinned.join("\n  ")
+    );
+    let wrong: Vec<String> = WAIVED
+        .iter()
+        .zip(&waived_uses)
+        .filter(|(_, uses)| **uses != 1)
+        .map(|((f, n, l, _), uses)| format!("{f}: in {n}: {l:?}: {uses} lines"))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "got = waivers that do not match exactly one atomic line in their pinned function:\n  {}\n\
+         want = each waiver matching one line (drop a stale one; pin or waive each extra copy)",
+        wrong.join("\n  ")
+    );
 }
