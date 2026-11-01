@@ -60,6 +60,7 @@ use core::mem::size_of;
 use core::ptr;
 
 use crate::QUANTUM;
+use crate::api::ReadyMark;
 use crate::arena::{ARENAS_ALL, MAX_ARENAS};
 use crate::config::{KEYS, Value};
 use crate::heap::{self, Heap, Shared};
@@ -263,42 +264,57 @@ enum Reader {
     OptValue,
 }
 
+impl Reader {
+    /// The reader needs `may_abort`: the `thread.*` readers, which may
+    /// create the thread's heap. The others never abort: those that load
+    /// the allocator state take the [`ReadyMark`], with which their
+    /// `shared()` takes the path that does not abort
+    /// ([`crate::api::shared_marked`]).
+    spec fn aborts(self) -> bool {
+        match self {
+            Reader::ThreadAllocated | Reader::ThreadAllocatedp | Reader::ThreadDeallocated | Reader::ThreadDeallocatedp => true,
+            _ => false,
+        }
+    }
+}
 
-/// `read(mib)`: the reader's function, called directly.
+/// `read(mib)`: the reader's function, called directly, with `mark`
+/// for the readers that load the allocator state.
 #[inline(always)]
-fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
+fn call(read: Reader, mib: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || !read.aborts(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     match read {
         Reader::BinSize => bin_size(mib),
         Reader::BinNregs => bin_nregs(mib),
         Reader::BinSlabSize => bin_slab_size(mib),
-        Reader::ArenasNarenas => arenas_narenas(mib),
+        Reader::ArenasNarenas => arenas_narenas(mib, Tracked(mark)),
         Reader::ArenasNbins => arenas_nbins(mib),
         Reader::ArenasNlextents => arenas_nlextents(mib),
-        Reader::ArenasPage => arenas_page(mib),
+        Reader::ArenasPage => arenas_page(mib, Tracked(mark)),
         Reader::ArenasQuantum => arenas_quantum(mib),
-        Reader::BinCurregs => bin_curregs(mib),
-        Reader::BinCurslabs => bin_curslabs(mib),
-        Reader::BinNonfullSlabs => bin_nonfull_slabs(mib),
-        Reader::SmallAllocated => small_allocated(mib),
-        Reader::SmallResident => small_resident(mib),
-        Reader::LargeAllocated => large_allocated(mib),
-        Reader::ArenaPactive => arena_pactive(mib),
-        Reader::ArenaPdirty => arena_pdirty(mib),
-        Reader::ArenaPmuzzy => arena_pmuzzy(mib),
-        Reader::ArenaResident => arena_resident(mib),
-        Reader::ArenaMapped => arena_mapped(mib),
-        Reader::ArenaRetained => arena_retained(mib),
-        Reader::CgroupLimit => cgroup_limit(mib),
-        Reader::CgroupHigh => cgroup_high(mib),
-        Reader::CgroupCurrent => cgroup_current(mib),
-        Reader::CgroupDecayMs => cgroup_decay_ms(mib),
-        Reader::CgroupRetentionCap => cgroup_retention_cap(mib),
-        Reader::CgroupEmptyBytes => cgroup_empty_bytes(mib),
-        Reader::CgroupFullPurges => cgroup_full_purges(mib),
+        Reader::BinCurregs => bin_curregs(mib, Tracked(mark)),
+        Reader::BinCurslabs => bin_curslabs(mib, Tracked(mark)),
+        Reader::BinNonfullSlabs => bin_nonfull_slabs(mib, Tracked(mark)),
+        Reader::SmallAllocated => small_allocated(mib, Tracked(mark)),
+        Reader::SmallResident => small_resident(mib, Tracked(mark)),
+        Reader::LargeAllocated => large_allocated(mib, Tracked(mark)),
+        Reader::ArenaPactive => arena_pactive(mib, Tracked(mark)),
+        Reader::ArenaPdirty => arena_pdirty(mib, Tracked(mark)),
+        Reader::ArenaPmuzzy => arena_pmuzzy(mib, Tracked(mark)),
+        Reader::ArenaResident => arena_resident(mib, Tracked(mark)),
+        Reader::ArenaMapped => arena_mapped(mib, Tracked(mark)),
+        Reader::ArenaRetained => arena_retained(mib, Tracked(mark)),
+        Reader::CgroupLimit => cgroup_limit(mib, Tracked(mark)),
+        Reader::CgroupHigh => cgroup_high(mib, Tracked(mark)),
+        Reader::CgroupCurrent => cgroup_current(mib, Tracked(mark)),
+        Reader::CgroupDecayMs => cgroup_decay_ms(mib, Tracked(mark)),
+        Reader::CgroupRetentionCap => cgroup_retention_cap(mib, Tracked(mark)),
+        Reader::CgroupEmptyBytes => cgroup_empty_bytes(mib, Tracked(mark)),
+        Reader::CgroupFullPurges => cgroup_full_purges(mib, Tracked(mark)),
         Reader::CgroupPurgeAdvice => cgroup_purge_advice(mib),
         Reader::CgroupLazyPurges => cgroup_lazy_purges(mib),
         Reader::CgroupEagerPurges => cgroup_eager_purges(mib),
@@ -309,34 +325,46 @@ fn call(read: Reader, mib: &[usize]) -> Result<Reading, c_int>
         Reader::ThpMetaRanges => thp_meta_ranges(mib),
         Reader::ThpFailures => thp_failures(mib),
         Reader::ThpNohugeRanges => thp_nohuge_ranges(mib),
-        Reader::StatsAllocated => stats_allocated(mib),
-        Reader::StatsActive => stats_active(mib),
-        Reader::StatsMetadata => stats_metadata(mib),
-        Reader::StatsResident => stats_resident(mib),
-        Reader::StatsMapped => stats_mapped(mib),
-        Reader::StatsRetained => stats_retained(mib),
-        Reader::ThreadAllocated => thread_allocated(mib),
-        Reader::ThreadAllocatedp => thread_allocatedp(mib),
-        Reader::ThreadDeallocated => thread_deallocated(mib),
-        Reader::ThreadDeallocatedp => thread_deallocatedp(mib),
+        Reader::StatsAllocated => stats_allocated(mib, Tracked(mark)),
+        Reader::StatsActive => stats_active(mib, Tracked(mark)),
+        Reader::StatsMetadata => stats_metadata(mib, Tracked(mark)),
+        Reader::StatsResident => stats_resident(mib, Tracked(mark)),
+        Reader::StatsMapped => stats_mapped(mib, Tracked(mark)),
+        Reader::StatsRetained => stats_retained(mib, Tracked(mark)),
+        Reader::ThreadAllocated => thread_allocated(mib, Tracked(mark)),
+        Reader::ThreadAllocatedp => thread_allocatedp(mib, Tracked(mark)),
+        Reader::ThreadDeallocated => thread_deallocated(mib, Tracked(mark)),
+        Reader::ThreadDeallocatedp => thread_deallocatedp(mib, Tracked(mark)),
         Reader::ConfigMallocConf => config_malloc_conf(mib),
         Reader::ConfigDebug => config_debug(mib),
         Reader::ConfigStats => config_stats(mib),
         Reader::Version => version(mib),
-        Reader::OptValue => opt_value(mib),
+        Reader::OptValue => opt_value(mib, Tracked(mark)),
+    }
+}
+
+/// What [`ctl`] does at `n` never aborts: an interior node, a read whose
+/// reader does not abort (every key but `thread.*`'s four, so every key
+/// under `opt`, `arenas` and `stats`), or a utilization query.
+spec fn ctl_never_aborts(n: Node, mib: Seq<usize>) -> bool {
+    match n.entry {
+        Entry::Dir(_) => true,
+        Entry::Read(r) => !r.aborts(),
+        Entry::Op(op) => op == Op::UtilQuery || op == Op::UtilBatchQuery,
     }
 }
 
 /// The allocator state, initialised (the readers run inside `mallctl`,
-/// after its own [`super::shared`]).
-fn shared() -> (r: &'static Shared)
+/// after its own [`super::shared_published`], whose [`ReadyMark`] is
+/// `mark`, so this takes the path that does not abort).
+fn shared(Tracked(mark): Tracked<&'static ReadyMark>) -> (r: &'static Shared)
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
     ensures
         r.wf(),
 {
-    super::shared()
+    super::shared_marked(Tracked(mark))
 }
 
 
@@ -456,12 +484,12 @@ fn bin_slab_size(m: &[usize]) -> Result<Reading, c_int>
     Ok(Size(bin_class(m)?.slab_size()))
 }
 
-fn arenas_narenas(_m: &[usize]) -> Result<Reading, c_int>
+fn arenas_narenas(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Unsigned(shared().arenas.count() as c_uint))
+    Ok(Unsigned(shared(Tracked(mark)).arenas.count() as c_uint))
 }
 
 fn arenas_nbins(_m: &[usize]) -> Result<Reading, c_int>
@@ -478,12 +506,12 @@ fn arenas_nlextents(_m: &[usize]) -> Result<Reading, c_int>
     Ok(Unsigned(0))
 }
 
-fn arenas_page(_m: &[usize]) -> Result<Reading, c_int>
+fn arenas_page(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    let s = shared();
+    let s = shared(Tracked(mark));
     proof {
         s.lemma_wf();
     }
@@ -497,172 +525,172 @@ fn arenas_quantum(_m: &[usize]) -> Result<Reading, c_int>
     Ok(Size(QUANTUM))
 }
 
-fn bin_curregs(m: &[usize]) -> Result<Reading, c_int>
+fn bin_curregs(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(bin_stats(m)?.curregs))
+    Ok(Size(bin_stats(m, Tracked(mark))?.curregs))
 }
 
-fn bin_curslabs(m: &[usize]) -> Result<Reading, c_int>
+fn bin_curslabs(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(bin_stats(m)?.curslabs))
+    Ok(Size(bin_stats(m, Tracked(mark))?.curslabs))
 }
 
-fn bin_nonfull_slabs(m: &[usize]) -> Result<Reading, c_int>
+fn bin_nonfull_slabs(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(bin_stats(m)?.nonfull_slabs))
+    Ok(Size(bin_stats(m, Tracked(mark))?.nonfull_slabs))
 }
 
-fn small_allocated(m: &[usize]) -> Result<Reading, c_int>
+fn small_allocated(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))
+    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.small_allocated))
 }
 
-fn small_resident(m: &[usize]) -> Result<Reading, c_int>
+fn small_resident(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    let a = arena_stats(shared(), at(m, 2))?;
+    let a = arena_stats(shared(Tracked(mark)), at(m, 2))?;
     // `+` as the build computes it ([`stats::fig_add`]).
     Ok(Size(stats::fig_add(a.small_active, a.small_dirty)))
 }
 
-fn large_allocated(m: &[usize]) -> Result<Reading, c_int>
+fn large_allocated(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated))
+    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.large_allocated))
 }
 
-fn arena_pactive(m: &[usize]) -> Result<Reading, c_int>
+fn arena_pactive(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))
+    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.pactive))
 }
 
-fn arena_pdirty(m: &[usize]) -> Result<Reading, c_int>
+fn arena_pdirty(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))
+    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.pdirty))
 }
 
-fn arena_pmuzzy(m: &[usize]) -> Result<Reading, c_int>
+fn arena_pmuzzy(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))
+    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.pmuzzy))
 }
 
-fn arena_resident(m: &[usize]) -> Result<Reading, c_int>
+fn arena_resident(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.resident))
+    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.resident))
 }
 
-fn arena_mapped(m: &[usize]) -> Result<Reading, c_int>
+fn arena_mapped(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))
+    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.mapped))
 }
 
-fn arena_retained(m: &[usize]) -> Result<Reading, c_int>
+fn arena_retained(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(), at(m, 2))?.retained))
+    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.retained))
 }
 
-fn cgroup_limit(_m: &[usize]) -> Result<Reading, c_int>
+fn cgroup_limit(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(tracked()?.limit() as usize))
+    Ok(Size(tracked(Tracked(mark))?.limit() as usize))
 }
 
-fn cgroup_high(_m: &[usize]) -> Result<Reading, c_int>
+fn cgroup_high(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(tracked()?.high() as usize))
+    Ok(Size(tracked(Tracked(mark))?.high() as usize))
 }
 
-fn cgroup_current(_m: &[usize]) -> Result<Reading, c_int>
+fn cgroup_current(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     // Rate limited to once per 10 ms, so a polling reader costs at
     // most that many file reads.
-    let cg = tracked()?;
+    let cg = tracked(Tracked(mark))?;
     cg.sample(sys::now_coarse_ns());
     Ok(Size(cg.current() as usize))
 }
 
-fn cgroup_decay_ms(_m: &[usize]) -> Result<Reading, c_int>
+fn cgroup_decay_ms(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    tracked()?;
+    tracked(Tracked(mark))?;
     Ok(Size(
-        match shared().policy.effective_decay_ns(shared().decay_ns()) {
+        match shared(Tracked(mark)).policy.effective_decay_ns(shared(Tracked(mark)).decay_ns()) {
             purge::NEVER => usize::MAX,
             ns => (ns / 1_000_000) as usize,
         },
     ))
 }
 
-fn cgroup_retention_cap(_m: &[usize]) -> Result<Reading, c_int>
+fn cgroup_retention_cap(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    tracked()?;
-    Ok(Size(shared().policy.cap() as usize))
+    tracked(Tracked(mark))?;
+    Ok(Size(shared(Tracked(mark)).policy.cap() as usize))
 }
 
-fn cgroup_empty_bytes(_m: &[usize]) -> Result<Reading, c_int>
+fn cgroup_empty_bytes(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    tracked()?;
+    tracked(Tracked(mark))?;
     // Premise (lock order): called from `mallctl`, which holds no lock.
-    Ok(Size(crate::policy::empty_bytes(shared(), Tracked(&mut axiom_entry())) as usize))
+    Ok(Size(crate::policy::empty_bytes(shared(Tracked(mark)), Tracked(&mut axiom_entry())) as usize))
 }
 
-fn cgroup_full_purges(_m: &[usize]) -> Result<Reading, c_int>
+fn cgroup_full_purges(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    tracked()?;
-    Ok(Size(shared().policy.full_purges() as usize))
+    tracked(Tracked(mark))?;
+    Ok(Size(shared(Tracked(mark)).policy.full_purges() as usize))
 }
 
 fn cgroup_purge_advice(_m: &[usize]) -> Result<Reading, c_int>
@@ -735,90 +763,94 @@ fn thp_nohuge_ranges(_m: &[usize]) -> Result<Reading, c_int>
     Ok(Size(crate::thp::stats().nohuge_ranges as usize))
 }
 
-fn stats_allocated(_m: &[usize]) -> Result<Reading, c_int>
+fn stats_allocated(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
-    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.allocated))
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut axiom_entry())).totals.allocated))
 }
 
-fn stats_active(_m: &[usize]) -> Result<Reading, c_int>
+fn stats_active(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
-    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.active))
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut axiom_entry())).totals.active))
 }
 
-fn stats_metadata(_m: &[usize]) -> Result<Reading, c_int>
+fn stats_metadata(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
-    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.metadata))
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut axiom_entry())).totals.metadata))
 }
 
-fn stats_resident(_m: &[usize]) -> Result<Reading, c_int>
+fn stats_resident(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
-    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.resident))
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut axiom_entry())).totals.resident))
 }
 
-fn stats_mapped(_m: &[usize]) -> Result<Reading, c_int>
+fn stats_mapped(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
-    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.mapped))
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut axiom_entry())).totals.mapped))
 }
 
-fn stats_retained(_m: &[usize]) -> Result<Reading, c_int>
+fn stats_retained(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     // Premise (lock order): called from `mallctl`, which holds no lock.
-    Ok(Size(stats::snapshot(shared(), Tracked(&mut axiom_entry())).totals.retained))
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut axiom_entry())).totals.retained))
 }
 
-fn thread_allocated(_m: &[usize]) -> Result<Reading, c_int>
+fn thread_allocated(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
         crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(U64(thread_heap(shared())?.materialise_stats().allocated))
+    Ok(U64(thread_heap(shared(Tracked(mark)))?.materialise_stats().allocated))
 }
 
-fn thread_allocatedp(_m: &[usize]) -> Result<Reading, c_int>
+fn thread_allocatedp(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
         crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(U64Ptr(ptr::from_ref(&thread_heap(shared())?.materialise_stats().allocated)))
+    Ok(U64Ptr(ptr::from_ref(&thread_heap(shared(Tracked(mark)))?.materialise_stats().allocated)))
 }
 
-fn thread_deallocated(_m: &[usize]) -> Result<Reading, c_int>
+fn thread_deallocated(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
         crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(U64(thread_heap(shared())?.materialise_stats().deallocated))
+    Ok(U64(thread_heap(shared(Tracked(mark)))?.materialise_stats().deallocated))
 }
 
-fn thread_deallocatedp(_m: &[usize]) -> Result<Reading, c_int>
+fn thread_deallocatedp(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
         crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(U64Ptr(ptr::from_ref(&thread_heap(shared())?.materialise_stats().deallocated)))
+    Ok(U64Ptr(ptr::from_ref(&thread_heap(shared(Tracked(mark)))?.materialise_stats().deallocated)))
 }
 
 fn config_malloc_conf(_m: &[usize]) -> Result<Reading, c_int> {
@@ -2555,13 +2587,13 @@ fn at(mib: &[usize], i: usize) -> (r: usize)
 
 /// `opt.<key>`: the key's value with its jemalloc type, the
 /// `config::Value` variant's.
-fn opt_value(mib: &[usize]) -> Result<Reading, c_int>
+fn opt_value(mib: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
     let key = KEYS.get(at(mib, 1)).ok_or(ENOENT)?;
-    Ok(match shared().config.get(key.as_bytes()).ok_or(ENOENT)? {
+    Ok(match shared(Tracked(mark)).config.get(key.as_bytes()).ok_or(ENOENT)? {
         Value::Bool(b) => Bool(b),
         Value::Int(i) => Ssize(i as isize),
         Value::Uint(u) => Unsigned(u as c_uint),
@@ -2592,12 +2624,12 @@ fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
 /// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures. (`bins[..NBINS]
 /// .get(j)`, spelled out as in `bin_class`.)
 #[allow(clippy::redundant_comparisons)]
-fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
+fn bin_stats(mib: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<BinStats, c_int>
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    let a = arena_stats(shared(), at(mib, 2))?;
+    let a = arena_stats(shared(Tracked(mark)), at(mib, 2))?;
     let j = at(mib, 4);
     if j < NBINS && j < NCLASSES {
         Ok(a.bins[j])
@@ -2608,14 +2640,14 @@ fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int>
 
 /// The tracked cgroup, or `ENOENT`: like jemalloc's keys behind a disabled
 /// build option, the name resolves and the read says the facility is off.
-fn tracked() -> (r: Result<&'static crate::sys::cgroup::Cgroup, c_int>)
+fn tracked(Tracked(mark): Tracked<&'static ReadyMark>) -> (r: Result<&'static crate::sys::cgroup::Cgroup, c_int>)
     requires
-        crate::sys::may_abort(),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
     ensures
         r matches Err(e) ==> e == ENOENT,
 {
-    let s = shared();
+    let s = shared(Tracked(mark));
     // Premise (lock order): called from `mallctl`, which holds no lock.
     let cg = s.cgroup_now(Tracked(&mut axiom_entry()));
     if cg.tracked() { Ok(cg) } else { Err(ENOENT) }
@@ -2731,9 +2763,13 @@ spec fn error_after_change(node: Node, r: Result<(), c_int>, c: Change) -> bool 
 /// then): nothing when it fails, but for [`error_after_change`]; and a
 /// setting with the old value read first when the caller asked for it.
 /// `errno` is the calling thread's
-/// `errno` token, for `background_thread`'s start.
+/// `errno` token, for `background_thread`'s start. `mark` is the
+/// [`ReadyMark`] of the `READY` the caller saw, for the readers.
+// The tokens are parameters of their own, one per contract.
+#[allow(clippy::too_many_arguments)]
 fn ctl(
     shared: &Shared,
+    Tracked(mark): Tracked<&'static ReadyMark>,
     node: &Node,
     mib: &[usize],
     io: &Io,
@@ -2742,7 +2778,8 @@ fn ctl(
     Tracked(errno): Tracked<&mut ThreadErrno>,
 ) -> (r: Result<(), c_int>)
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || ctl_never_aborts(*node, mib@),
+        crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
         shared.wf(),
         io.handed(*old(cc)),
@@ -2765,7 +2802,7 @@ fn ctl(
         Entry::Dir(_) => return Err(ENOENT),
         Entry::Read(read) => {
             io.read_only()?;
-            return read_out(io, call(read, mib)?, Tracked(cc));
+            return read_out(io, call(read, mib, Tracked(mark))?, Tracked(cc));
         },
         Entry::Op(op) => op,
     };
@@ -2985,9 +3022,10 @@ pub fn mallctl(
         Ok(x) => x,
         Err(e) => return e,
     };
-    let shared = super::shared();
+    let (shared, mark) = super::shared_published();
     result(ctl(
         shared,
+        mark,
         node,
         &mib[..len],
         &Io {
@@ -3173,9 +3211,10 @@ pub fn mallctlbymib(
         Ok(n) => n,
         Err(e) => return e,
     };
-    let shared = super::shared();
+    let (shared, mark) = super::shared_published();
     result(ctl(
         shared,
+        mark,
         node,
         &local[..miblen],
         &Io {
@@ -3188,6 +3227,176 @@ pub fn mallctlbymib(
         Tracked(&mut fx),
         Tracked(errno),
     ))
+}
+
+/// [`ctl_never_aborts`], computed: for the witnesses below.
+#[cfg(verus_keep_ghost)]
+fn never_aborts(node: &Node, _mib: &[usize]) -> (r: bool)
+    ensures
+        r == ctl_never_aborts(*node, _mib@),
+{
+    match node.entry {
+        Entry::Dir(_) => true,
+        Entry::Read(r) => match r {
+            Reader::ThreadAllocated | Reader::ThreadAllocatedp | Reader::ThreadDeallocated | Reader::ThreadDeallocatedp => false,
+            _ => true,
+        },
+        Entry::Op(op) => match op {
+            UtilQuery | UtilBatchQuery => true,
+            _ => false,
+        },
+    }
+}
+
+/// Read-only APIs never abort, for `mallctl`: a copy of [`mallctl`]'s body
+/// but for its `super::shared_published()`, whose results are `shared`
+/// and `mark`, the [`ReadyMark`] of a `READY` the caller saw, for a
+/// read-only key other than `thread.*`'s four (every read key under
+/// `opt`, `arenas` and `stats`, the
+/// seven `stats.cgroup.*` keys that discover the cgroup first included,
+/// `version` and `config.*`) or a utilization query, and every reader of
+/// those keys, made where [`crate::sys::may_abort`] does not hold; the
+/// readers' own `shared()` takes the path that does not abort, since a
+/// holder of the mark loads `READY` (`api::shared_marked`). `mallctlbymib`'s are
+/// [`theorem_mallctlbymib_reads_never_abort`]'s. Each call verifies, so
+/// none of them aborts. `api::restated::mallctl_restatements_match_their_bodies`
+/// checks that the copy and the body make the same calls. The pointers are taken to keep the C contract, as
+/// the entry point takes them: `cc` is the call's token
+/// ([`CEntry::Mallctl`]), as its export wrapper mints it (one per
+/// witness, as one per call: no verified function holds two), and
+/// `errno` the thread's `errno` token; the theorem says nothing of a
+/// name or buffer that breaks the contract (longer than `isize::MAX`
+/// bytes, wrapping the address space, or in challoc's memory).
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such
+/// function.
+#[cfg(verus_keep_ghost)]
+fn theorem_mallctl_reads_never_abort(
+    shared: &Shared,
+    name: *const c_char,
+    io: &Io,
+    m: &[usize],
+    Tracked(mark): Tracked<&'static ReadyMark>,
+    Tracked(cc): Tracked<CCall>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+        crate::api::marks_ready(*mark),
+        cc.fresh(CEntry::Mallctl {
+            name: name as *const u8,
+            oldp: io.oldp as *mut u8,
+            oldlenp: io.oldlenp as *const usize,
+            newp: io.newp as *mut u8,
+            newlen: io.newlen,
+        }),
+{
+    let tracked mut cc = cc;
+    let tracked mut fx = Ghost(Change::Unchanged);
+    // `mallctl`'s body, for a covered key.
+    if let Some(name) = cstr(name, Tracked(&cc)) {
+        let mut mib = [0usize; MAX_MIB];
+        if let Ok((len, node)) = name_to_mib(name, &mut mib) {
+            if never_aborts(node, &mib[..len]) {
+                let _ = result(ctl(shared, Tracked(mark), node, &mib[..len], io, Tracked(&mut cc), Tracked(&mut fx), Tracked(errno)));
+            }
+        }
+    }
+    // `call`'s readers for those keys.
+    let _ = opt_value(m, Tracked(mark));
+    let _ = bin_size(m);
+    let _ = bin_nregs(m);
+    let _ = bin_slab_size(m);
+    let _ = arenas_narenas(m, Tracked(mark));
+    let _ = arenas_nbins(m);
+    let _ = arenas_nlextents(m);
+    let _ = arenas_page(m, Tracked(mark));
+    let _ = arenas_quantum(m);
+    let _ = bin_curregs(m, Tracked(mark));
+    let _ = bin_curslabs(m, Tracked(mark));
+    let _ = bin_nonfull_slabs(m, Tracked(mark));
+    let _ = small_allocated(m, Tracked(mark));
+    let _ = small_resident(m, Tracked(mark));
+    let _ = large_allocated(m, Tracked(mark));
+    let _ = arena_pactive(m, Tracked(mark));
+    let _ = arena_pdirty(m, Tracked(mark));
+    let _ = arena_pmuzzy(m, Tracked(mark));
+    let _ = arena_resident(m, Tracked(mark));
+    let _ = arena_mapped(m, Tracked(mark));
+    let _ = arena_retained(m, Tracked(mark));
+    let _ = cgroup_limit(m, Tracked(mark));
+    let _ = cgroup_high(m, Tracked(mark));
+    let _ = cgroup_current(m, Tracked(mark));
+    let _ = cgroup_decay_ms(m, Tracked(mark));
+    let _ = cgroup_retention_cap(m, Tracked(mark));
+    let _ = cgroup_empty_bytes(m, Tracked(mark));
+    let _ = cgroup_full_purges(m, Tracked(mark));
+    let _ = cgroup_purge_advice(m);
+    let _ = cgroup_lazy_purges(m);
+    let _ = cgroup_eager_purges(m);
+    let _ = thp_mode(m);
+    let _ = thp_class_ranges(m);
+    let _ = thp_class_bytes(m);
+    let _ = thp_huge_ranges(m);
+    let _ = thp_meta_ranges(m);
+    let _ = thp_failures(m);
+    let _ = thp_nohuge_ranges(m);
+    let _ = stats_allocated(m, Tracked(mark));
+    let _ = stats_active(m, Tracked(mark));
+    let _ = stats_metadata(m, Tracked(mark));
+    let _ = stats_resident(m, Tracked(mark));
+    let _ = stats_mapped(m, Tracked(mark));
+    let _ = stats_retained(m, Tracked(mark));
+    let _ = config_malloc_conf(m);
+    let _ = config_debug(m);
+    let _ = config_stats(m);
+    let _ = version(m);
+}
+
+/// Read-only APIs never abort, for `mallctlbymib`: a copy of its body but
+/// for its `super::shared_published()`, whose results are `shared` and `mark`, for a MIB of a key or query
+/// [`theorem_mallctl_reads_never_abort`] covers, as there, with `cb` the
+/// call's token ([`CEntry::ByMib`]).
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such
+/// function.
+#[cfg(verus_keep_ghost)]
+fn theorem_mallctlbymib_reads_never_abort(
+    shared: &Shared,
+    mibp: *const usize,
+    miblen: usize,
+    io: &Io,
+    Tracked(mark): Tracked<&'static ReadyMark>,
+    Tracked(cb): Tracked<CCall>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+        crate::api::marks_ready(*mark),
+        cb.fresh(CEntry::ByMib {
+            mib: mibp,
+            miblen,
+            oldp: io.oldp as *mut u8,
+            oldlenp: io.oldlenp as *const usize,
+            newp: io.newp as *mut u8,
+            newlen: io.newlen,
+        }),
+{
+    let tracked mut cb = cb;
+    let tracked mut fx = Ghost(Change::Unchanged);
+    // `mallctlbymib`'s body.
+    if !mibp.is_null() && miblen != 0 && miblen <= MAX_MIB {
+        let mut local = [0usize; MAX_MIB];
+        // SAFETY: as in `mallctlbymib`.
+        unsafe { mib_in(mibp, &mut local, miblen) };
+        if let Ok(node) = mib_to_node(&local[..miblen]) {
+            if never_aborts(node, &local[..miblen]) {
+                let _ = result(ctl(shared, Tracked(mark), node, &local[..miblen], io, Tracked(&mut cb), Tracked(&mut fx), Tracked(errno)));
+            }
+        }
+    }
 }
 
 } // verus!
@@ -3301,6 +3510,7 @@ mod tests {
     use super::*;
     use crate::api::jemalloc::{dallocx, mallocx};
     use crate::api::libc::{free, malloc};
+    use crate::api::shared;
     use crate::config::Config;
     use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
     use std::ffi::CString;
@@ -3475,6 +3685,7 @@ mod tests {
             // other writers waiting at the barrier.
             ctl(
                 s,
+                Tracked::assume_new(),
                 node,
                 &mib[..len],
                 &io,
@@ -3531,6 +3742,7 @@ mod tests {
             assert_eq!(
                 ctl(
                     s,
+                    Tracked::assume_new(),
                     node,
                     &mib[..len],
                     &io,

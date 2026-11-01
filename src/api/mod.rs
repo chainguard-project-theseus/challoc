@@ -144,6 +144,9 @@ use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Map, Tracked, int, verus};
 use vstd::raw_ptr::PointsTo;
+#[cfg(verus_keep_ghost)]
+use vstd::resource::Loc;
+use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
 
 verus! {
 
@@ -223,7 +226,10 @@ impl Published {
 /// out only from `READY` on). Whoever has it gets the frozen permissions
 /// back from [`axiom_published`]. Uninterpreted. Verified code learns it
 /// from [`axiom_ready`], of a thread that holds a `Published` (the
-/// publication itself, or a load of `READY`, [`load_state`]).
+/// publication itself, or a load of `READY`, [`load_state`]). Being one
+/// timeless fact, it says nothing of `STATE`'s value at a given point:
+/// that `STATE` is `READY` and stays so takes the token
+/// [`ReadyMark`], which no fact produces.
 pub uninterp spec fn ready() -> bool;
 
 /// Trusted: a thread that holds the frozen permissions ([`Published`],
@@ -254,7 +260,10 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 /// it in the invariant it publishes, so every reference this returns is
 /// to that one invariant. That the fact reaches a thread only after it,
 /// or a thread it happens after, saw `READY` is what [`ready`]'s producers
-/// ensure (see there), carried along in contracts.
+/// ensure (see there), carried along in contracts. It hands back the
+/// statics' permissions only, not the [`ReadyMark`], so a proof that
+/// assumes `ready` where it may not hold yet learns nothing from it
+/// about `STATE`.
 pub axiom fn axiom_published() -> (tracked r: &'static Published)
     requires
         ready(),
@@ -262,12 +271,14 @@ pub axiom fn axiom_published() -> (tracked r: &'static Published)
         r.ok(),
 ;
 
-/// The published permissions a thread has seen, if any: what the
-/// functions that load or write `STATE` hand back.
+/// The published permissions a thread has seen, if any, and the
+/// [`ReadyMark`] with them: what the functions that load or write
+/// `STATE` hand back.
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Seen {
     pub tracked published: Option<&'static Published>,
+    pub tracked mark: Option<&'static ReadyMark>,
 }
 
 impl Seen {
@@ -275,7 +286,29 @@ impl Seen {
     pub open spec fn ok(&self) -> bool {
         self.published matches Some(p) && p.ok()
     }
+
+    /// The thread holds the [`ReadyMark`].
+    pub open spec fn marked(&self) -> bool {
+        self.mark matches Some(m) && marks_ready(*m)
+    }
 }
+
+/// The token that `STATE` is `READY` and stays so: the half of the ghost
+/// variable at [`ready_mark`] that [`publish_ready`] sets to `true` and
+/// freezes at the `READY` store ([`StatePred`]). Only a thread that saw
+/// `READY` gets it ([`load_state`], [`claim_init`], [`publish_ready`]),
+/// and a holder finds `STATE` at `READY` ([`load_state_marked`]).
+pub type ReadyMark = GhostVar<bool>;
+
+/// `m` is the [`ReadyMark`]: the half at [`ready_mark`], at `true`.
+pub open spec fn marks_ready(m: ReadyMark) -> bool {
+    m.id() == ready_mark() && m@
+}
+
+/// The location of the ghost variable that `STATE`'s invariant ties to
+/// `READY` ([`StatePred`]). Uninterpreted: one location, fixed for the
+/// process.
+pub uninterp spec fn ready_mark() -> Loc;
 
 /// Ghost permission to `LINE_STATE`: its current
 /// [`value`](LinePerm::value). It is not `Copy`.
@@ -381,24 +414,33 @@ impl StatePerm {
 }
 
 /// What `STATE`'s invariant holds: its permission, the process's
-/// one-shot tokens until the winning exchange takes them, and the
-/// published permissions from `READY` on.
+/// one-shot tokens until the winning exchange takes them, the published
+/// permissions from `READY` on, and the ghost variable at [`ready_mark`]:
+/// its authority, its second half until the winning exchange takes it
+/// too, and that half frozen ([`ReadyMark`]) from `READY` on.
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct StateVal {
     pub tracked perm: StatePerm,
     pub tracked steps: Option<Map<once::Step, once::Once>>,
     pub tracked published: Option<&'static Published>,
+    pub tracked auth: GhostVarAuth<bool>,
+    pub tracked half: Option<GhostVar<bool>>,
+    pub tracked mark: Option<&'static ReadyMark>,
 }
 
 /// `STATE`'s invariant: the state is `UNINIT`, `INITIALISING` or
 /// `READY`; while it is `UNINIT` the invariant holds the tokens of every
-/// step ([`once::all_steps`]), and from `READY` on the published
-/// permissions ([`Published::ok`]). `STATE` moves from `UNINIT` to
-/// `INITIALISING` only at [`claim_init`]'s exchange, which takes the
-/// tokens, and to `READY` only at [`init_slow`]'s store, after `init`
-/// built and froze what it publishes; nothing writes it otherwise, so it
-/// never goes back.
+/// step ([`once::all_steps`]) and the ghost variable's second half, and
+/// from `READY` on the published permissions ([`Published::ok`]) and the
+/// [`ReadyMark`]. The ghost variable at [`ready_mark`] is `true` exactly
+/// at `READY`, so `READY` is final: a holder of the mark, which is
+/// frozen at `true`, finds `STATE` at `READY` ([`load_state_marked`]).
+/// `STATE` moves from `UNINIT` to `INITIALISING` only at [`claim_init`]'s
+/// exchange, which takes the tokens and the half, and to `READY` only at
+/// [`publish_ready`]'s store, after `init` built and froze what it
+/// publishes, which sets the variable and freezes the half; nothing
+/// writes it otherwise, so it never goes back.
 // Ghost: named only by proof code.
 #[allow(dead_code)]
 struct StatePred;
@@ -408,6 +450,10 @@ impl InvariantPredicate<(), StateVal> for StatePred {
         &&& v.perm.value() == UNINIT || v.perm.value() == INITIALISING || v.perm.value() == READY
         &&& v.perm.value() == UNINIT ==> (v.steps matches Some(m) && once::all_steps(m))
         &&& v.perm.value() == READY ==> (v.published matches Some(p) && p.ok())
+        &&& v.auth.id() == ready_mark()
+        &&& v.auth@ <==> v.perm.value() == READY
+        &&& v.perm.value() == UNINIT ==> (v.half matches Some(h) && h.id() == ready_mark())
+        &&& v.perm.value() == READY ==> (v.mark matches Some(m) && marks_ready(*m))
     }
 }
 
@@ -417,10 +463,11 @@ spec fn state_ns() -> int {
 }
 
 /// `STATE`'s invariant. Trusted: the process starts with `STATE` at
-/// `UNINIT` (the static's initialiser) and with the tokens of every step
-/// of building the allocator, none taken ([`once`]); every write of
-/// `STATE` is [`state_claim`]'s or [`state_publish`]'s, inside this
-/// invariant, and verified code learns its value only from them and
+/// `UNINIT` (the static's initialiser), with the tokens of every step
+/// of building the allocator, none taken ([`once`]), and with both
+/// halves of the ghost variable at [`ready_mark`], at `false`; every
+/// write of `STATE` is [`state_claim`]'s or [`state_publish`]'s, inside
+/// this invariant, and verified code learns its value only from them and
 /// [`state_load`] (a test-only load elsewhere carries no ghost state).
 /// The axiom stands for one invariant, the same object at every call.
 /// Verus does not know that two calls return the same object, which
@@ -552,12 +599,12 @@ fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
     STATE.store(READY, Ordering::Release);
 }
 
-/// An acquire load of `STATE`, with the published permissions when it
-/// reads `READY`.
+/// An acquire load of `STATE`, with the published permissions and the
+/// [`ReadyMark`] when it reads `READY`.
 #[inline(always)]
 fn load_state(Tracked(seen): Tracked<&mut Seen>) -> (s: u32)
     ensures
-        s == READY ==> final(seen).ok(),
+        s == READY ==> final(seen).ok() && final(seen).marked(),
     opens_invariants [ state_ns() ]
 {
     let s;
@@ -566,7 +613,30 @@ fn load_state(Tracked(seen): Tracked<&mut Seen>) -> (s: u32)
         proof {
             if s == READY {
                 seen.published = v.published;
+                seen.mark = v.mark;
             }
+        }
+    });
+    s
+}
+
+/// [`load_state`] for a holder of the [`ReadyMark`], which reads `READY`:
+/// the invariant's authority agrees with the mark, which is `true`.
+#[inline(always)]
+fn load_state_marked(Tracked(seen): Tracked<&mut Seen>, Tracked(mark): Tracked<&'static ReadyMark>) -> (s: u32)
+    requires
+        marks_ready(*mark),
+    ensures
+        s == READY,
+        final(seen).ok(),
+    opens_invariants [ state_ns() ]
+{
+    let s;
+    vstd::open_atomic_invariant!(axiom_state() => v => {
+        s = state_load(Tracked(&v.perm));
+        proof {
+            v.auth.agree(mark);
+            seen.published = v.published;
         }
     });
     s
@@ -739,12 +809,12 @@ pub fn shared() -> (r: &'static Shared)
     ensures
         r.wf(),
 {
-    let tracked mut seen = Seen { published: None };
+    let tracked mut seen = Seen { published: None, mark: None };
     if load_state(Tracked(&mut seen)) == READY {
         // SAFETY: `READY` was published after init with a release store.
         return unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) };
     }
-    init_slow()
+    init_slow().0
 }
 
 /// The allocator state if it is ready, `None` before init has completed.
@@ -755,13 +825,50 @@ pub fn shared_if_ready() -> (r: Option<&'static Shared>)
     ensures
         r matches Some(s) ==> s.wf(),
 {
-    let tracked mut seen = Seen { published: None };
+    let tracked mut seen = Seen { published: None, mark: None };
     if load_state(Tracked(&mut seen)) == READY {
         // SAFETY: as in `shared`.
         Some(unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) })
     } else {
         None
     }
+}
+
+/// [`shared`], with the [`ReadyMark`] of the `READY` it loaded or
+/// published, for `mallctl` and `mallctlbymib`, whose readers then take
+/// [`shared_marked`]'s path, which does not abort.
+#[inline(always)]
+pub fn shared_published() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        r.0.wf(),
+        marks_ready(*r.1@),
+{
+    let tracked mut seen = Seen { published: None, mark: None };
+    if load_state(Tracked(&mut seen)) == READY {
+        // SAFETY: as in `shared`.
+        return (unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) }, Tracked(seen.mark.tracked_unwrap()));
+    }
+    init_slow()
+}
+
+/// [`shared`] for a holder of the [`ReadyMark`]: its load reads `READY`
+/// ([`load_state_marked`]), so it never reaches init and does not abort.
+#[inline(always)]
+pub fn shared_marked(Tracked(mark): Tracked<&'static ReadyMark>) -> (r: &'static Shared)
+    requires
+        marks_ready(*mark),
+    ensures
+        r.wf(),
+{
+    let tracked mut seen = Seen { published: None, mark: None };
+    if load_state_marked(Tracked(&mut seen), Tracked(mark)) == READY {
+        // SAFETY: as in `shared`.
+        return unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) };
+    }
+    init_slow().0
 }
 
 /// The allocator state's address, with no readiness check and no
@@ -1015,8 +1122,10 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
 /// (`stats::fig_add`, `stats::fig_mul`) wraps in the shipped library and
 /// panics on overflow only where overflow checks are on (the tests).
 /// [`mallctl::utilization`], the reading behind
-/// `experimental.utilization`, is called whole; `mallctl` and
-/// `mallctlbymib` themselves are not covered here. The calls listed for
+/// `experimental.utilization`, is called whole; the read-only keys of
+/// `mallctl` and `mallctlbymib` other than `thread.*`'s are covered by
+/// `mallctl::theorem_mallctl_reads_never_abort` and
+/// `mallctl::theorem_mallctlbymib_reads_never_abort`. The calls listed for
 /// `nallocx`, `challoc_features` and `mallinfo2` restate those bodies,
 /// and Verus checks only the callees called here; the test
 /// `api::restated::read_only_restatements_match_their_bodies` fails when
@@ -1074,70 +1183,98 @@ pub fn is_ready() -> bool {
 
 verus! {
 
+/// What the winner of [`claim_init`]'s exchange takes from `STATE`'s
+/// invariant: the one-shot tokens and the ghost variable's second half.
+type ClaimTokens = (Map<once::Step, once::Once>, Option<GhostVar<bool>>);
+
 /// `STATE`'s compare-exchange from `UNINIT` to `INITIALISING`, which
 /// [`init_slow`] runs: the winner gets the process's one-shot tokens
-/// ([`once::all_steps`]), which `STATE`'s invariant holds while it is
-/// `UNINIT` ([`StatePred`]); nothing stores `UNINIT` or `INITIALISING`
+/// ([`once::all_steps`]) and the second half of the ghost variable at
+/// [`ready_mark`], which `STATE`'s invariant holds while it is `UNINIT`
+/// ([`StatePred`]); nothing stores `UNINIT` or `INITIALISING`
 /// elsewhere, so the exchange succeeds once per process and one caller
-/// gets the tokens. A caller that finds `READY` gets the published
-/// permissions.
+/// gets them. A caller that finds `READY` gets the published
+/// permissions and the [`ReadyMark`].
 #[inline(always)]
-fn claim_init(Tracked(seen): Tracked<&mut Seen>) -> (r: (Result<u32, u32>, Tracked<Map<once::Step, once::Once>>))
+fn claim_init(Tracked(seen): Tracked<&mut Seen>) -> (r: (Result<u32, u32>, Tracked<ClaimTokens>))
     ensures
-        r.0 is Ok ==> once::all_steps(r.1@),
-        r.0 == Err::<u32, u32>(READY) ==> final(seen).ok(),
+        r.0 is Ok ==> once::all_steps(r.1@.0),
+        r.0 is Ok ==> (r.1@.1 matches Some(h) && h.id() == ready_mark()),
+        r.0 == Err::<u32, u32>(READY) ==> final(seen).ok() && final(seen).marked(),
 {
     let tracked mut steps = Map::tracked_empty();
+    let tracked mut half = None;
     let won;
     vstd::open_atomic_invariant!(axiom_state() => v => {
         won = state_claim(Tracked(&mut v.perm));
         proof {
             if won is Ok {
                 steps = v.steps.tracked_take();
+                half = Some(v.half.tracked_take());
             }
             if won == Err::<u32, u32>(READY) {
                 seen.published = v.published;
+                seen.mark = v.mark;
             }
         }
     });
-    (won, Tracked(steps))
+    (won, Tracked((steps, half)))
 }
 
-/// Publish `READY` with the permissions `init` froze ([`StatePred`]).
+/// Publish `READY` with the permissions `init` froze ([`StatePred`]):
+/// at the store, set the ghost variable at [`ready_mark`] to `true` with
+/// `half`, its second half that [`claim_init`] handed over, and freeze
+/// that half into the [`ReadyMark`], which comes back.
 #[inline(always)]
-fn publish_ready(Tracked(published): Tracked<&'static Published>)
+fn publish_ready(Tracked(published): Tracked<&'static Published>, Tracked(half): Tracked<GhostVar<bool>>) -> (r: Tracked<&'static ReadyMark>)
     requires
         published.ok(),
+        half.id() == ready_mark(),
+    ensures
+        marks_ready(*r@),
     opens_invariants [ state_ns() ]
 {
+    let tracked mut half = half;
+    let tracked mut out = None;
     vstd::open_atomic_invariant!(axiom_state() => v => {
         state_publish(Tracked(&mut v.perm));
         proof {
+            v.auth.update(&mut half, true);
+            let tracked m = vstd::modes::tracked_static_ref(half);
             v.published = Some(published);
+            v.mark = Some(m);
+            out = Some(m);
         }
     });
+    Tracked(out.tracked_unwrap())
 }
 
 /// The first caller runs `init` and publishes `READY`; a concurrent one
 /// waits for it (termination is not claimed: the wait ends when the other
-/// thread's `init` does); the initialising thread re-entering aborts.
+/// thread's `init` does); the initialising thread re-entering aborts. With
+/// the [`ReadyMark`] of the `READY` it published or loaded.
 #[cold]
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause]
-fn init_slow() -> (r: &'static Shared)
+fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
-        r.wf(),
+        r.0.wf(),
+        marks_ready(*r.1@),
 {
-    let tracked mut seen = Seen { published: None };
-    let (won, Tracked(steps)) = claim_init(Tracked(&mut seen));
+    let tracked mut seen = Seen { published: None, mark: None };
+    let (won, Tracked(parts)) = claim_init(Tracked(&mut seen));
+    let tracked (steps, half) = parts;
     match won {
         Ok(_) => {
             INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
             init(Tracked(steps), Tracked(&mut seen));
-            publish_ready(Tracked(seen.published.tracked_unwrap()));
+            let Tracked(m) = publish_ready(Tracked(seen.published.tracked_unwrap()), Tracked(half.tracked_unwrap()));
+            proof {
+                seen.mark = Some(m);
+            }
         }
         Err(READY) => {}
         Err(_) => {
@@ -1152,7 +1289,7 @@ fn init_slow() -> (r: &'static Shared)
         }
     }
     // SAFETY: `READY` observed (or published by this thread).
-    unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) }
+    (unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) }, Tracked(seen.mark.tracked_unwrap()))
 }
 
 /// Never-committed ranges of the reservations sealed at init (design 10
