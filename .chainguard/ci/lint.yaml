@@ -96,9 +96,9 @@ checks:
     description: >-
       The bench harness's unit tests (bench/cb/tests: stats, planner,
       parsers, report), `make bench-unit`. Standard library only, no VMs
-      or network.
+      or network; the launch planner's tests resolve HEAD with git.
     environment:
-      packages: [python-3.13, busybox]
+      packages: [python-3.13, git, busybox]
     timeout: 5m
     cmd: [sh, -c, "cd bench && python3 -m unittest discover -s cb/tests -t ."]
 
