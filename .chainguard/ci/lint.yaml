@@ -1,5 +1,6 @@
-# Lint (the CI design's section 1): rustfmt, the loom models, shellcheck
-# and the codegen-fncmp fixtures block; clippy reports without blocking until there is a clippy baseline
+# Lint (the CI design's section 1): rustfmt, the loom models, shellcheck,
+# the codegen-fncmp fixtures and the Kani bool-comparison lint block;
+# clippy reports without blocking until there is a clippy baseline
 # (delete its `advisory: true` then). msrv-build builds the shipped cdylib
 # with the rust-version toolchain. The toolchains run in the guest
 # directly, no container.
@@ -54,7 +55,9 @@ checks:
         cmd: [sh, tests/loom/run.sh]
 
   shellcheck:
-    description: shellcheck (pinned upstream release) over ci/*.sh, verus/*.sh and tests/loom/*.sh.
+    description: >-
+      shellcheck (pinned upstream release) over ci/*.sh, verus/*.sh,
+      tests/loom/*.sh and scripts/kani-boolcmp.sh.
     timeout: 5m
     network:
       egress:
@@ -74,6 +77,19 @@ checks:
       packages: [python-3.13, busybox]
     timeout: 5m
     cmd: [sh, ci/codegen-fncmp-test.sh]
+
+  kani-boolcmp:
+    description: >-
+      ci/kani-boolcmp-test.sh: scripts/kani-boolcmp.sh over src/ and its
+      fixtures. No ordering comparison (<, <=, >, >=) on bools, or on
+      tuples and structs holding one, in Kani code: CBMC 6.11 ignores
+      them (`warning: ignoring >=`) and the harness can pass vacuously.
+      The positive control scripts/testdata/kani-boolcmp/probe.rs, on
+      which CBMC prints that warning, must be flagged.
+    environment:
+      packages: [busybox]
+    timeout: 5m
+    cmd: [sh, ci/kani-boolcmp-test.sh]
 
   msrv-build:
     description: >-
