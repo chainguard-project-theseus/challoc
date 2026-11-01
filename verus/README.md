@@ -82,9 +82,32 @@ It reads source and does not run Verus, so "verified" means "under
 `verus!` and not trusted"; `cargo verus verify` is what checks it. Shares
 are to a tenth of a percent, rounded down.
 
+The counter prints two rows. The first is the verified share: functions
+and lines Verus checks. The second is the combined share: verified
+functions plus the trusted functions whose seam another tool has
+discharged. It reads the seam ledger (Seams, below) and matches each
+trusted function to its entry by the `src/FILE:LINE` of its `fn` keyword.
+A function counts as discharged when its entry's status is "discharged",
+meaning a check outside Verus (a Kani harness or a const assertion) covers
+its whole contract, as [SEAMS.md](SEAMS.md) ("Status") defines it. A
+function whose status is "trusted (partly checked, ...)" is shown in its
+own column and not counted in the combined share, since part of its
+contract is still assumed. Discharged seams that are not functions
+(constants, types, `assume_specification`s) do not enter either share.
+Only an `external_body`, `external_body proof` or `axiom` seam classes a
+function. A trusted function with no such entry is a warning; a function
+under `#[verifier::external]`, which the ledger does not list, always
+gets one. The run fails when a discharged seam of those kinds matches no
+trusted function, so moving its function cannot silently drop its
+coverage, when two of them share a line, or when the ledger names a kind
+the counter does not know.
+
 `--floor FILE` holds the crate to [FLOOR](FLOOR): the verified share of
-functions and of lines. The run fails below either figure, and above one
-it names the figure to record. `--base-rev REV` (`make verus
+functions and of lines (`functions`, `lines`), and the combined share of
+each (`combined-functions`, `combined-lines`). The run fails below any
+figure, and above one it names the figure to record. A FLOOR without the
+combined figures reads them as 0.0, so a base revision from before they
+existed still compares. `--base-rev REV` (`make verus
 VERUS_BASE=REV`; the check passes the pull request's base) also reads
 `REV:verus/FLOOR` and fails a figure set below it, unless FLOOR has a
 `lowered FIGURE P REASON` line for that figure and value that REV's copy
