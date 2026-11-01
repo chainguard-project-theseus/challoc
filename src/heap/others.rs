@@ -617,6 +617,7 @@ impl Heap {
             arena != FOREIGN,
             old(self).wf(),
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),

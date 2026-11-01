@@ -17,6 +17,10 @@ use crate::vspec::errno::{ThreadErrno, get_errno, set_errno};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
+#[cfg(verus_keep_ghost)]
+use vstd::resource::map::GhostSubmap;
+#[cfg(verus_keep_ghost)]
+use vstd::set_lib::set_int_range;
 
 verus! {
 
@@ -244,6 +248,7 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
         shared.wf(),
         old(ord).allows(rank_meta()),
     ensures
+        final(cell).kept(*old(cell)),
         final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
@@ -311,6 +316,7 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, T
         shared.wf(),
         old(ord).allows(rank_meta()),
     ensures
+        final(cell).kept(*old(cell)),
         final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
@@ -355,6 +361,7 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
     ensures
+        cell matches Some(c) ==> final(c).kept(*c),
         final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
@@ -452,7 +459,9 @@ verus! {
 /// `pthread_join(t, NULL)`: 0 or an error number. Trusted: a raw libc
 /// call; nothing is claimed about the result.
 /// `cell` is the calling thread's slot cell: the join frees the exited
-/// thread's key data, which may re-enter the allocator on this thread.
+/// thread's key data, which may re-enter the allocator on this thread, so
+/// the slot must be empty or hold a sentinel ([`crate::heap::reentry_benign`]),
+/// as for `pthread_setspecific`; at a sentinel a nested entry leaves it alone.
 ///
 /// # Safety
 /// `t` is a joinable thread this module created and never joined.
@@ -461,6 +470,7 @@ verus! {
 unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&TlsCell>) -> i32
     requires
         crate::sys::may_syscall(),
+        cell.value() == 0 || crate::heap::reentry_benign(cell.value()),
 {
     // SAFETY: guaranteed by the caller.
     unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) }
@@ -469,11 +479,12 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&TlsCell>) -
 /// Create the thread on `stack` (reserving the stack first if there is
 /// none yet), after joining `previous`. Returns the stack (kept even
 /// when creation fails, for the next attempt) and the new thread.
-/// Trusted: the body parks the TLS slot through `sys::tls::get` and
-/// `set` on the caller's slot cell `cell`, and passes placeholder
-/// tokens for `Meta::reserve`'s claim and `Meta::commit`.
+/// A slot holding a heap is parked on [`TLS_CREATING`] through the
+/// caller's slot cell `cell` across the pthread calls, which require an
+/// empty slot or a sentinel, and put back after: the cell is as it was
+/// ([`TlsCell::kept`]), unless the slot was empty, when a nested
+/// allocation in `pthread_create` may create the thread's heap.
 // The `match` stands for `Option::filter`, which vstd does not specify.
-#[verifier::external_body]
 #[allow(clippy::manual_filter)]
 fn create(
     shared: &Shared,
@@ -489,14 +500,32 @@ fn create(
         stack + STACK_SIZE <= usize::MAX,
         old(ord).allows(rank_meta()),
     ensures
+        final(cell).kept(*old(cell)),
         r.0 + STACK_SIZE <= usize::MAX,
         *final(ord) == *old(ord),
 {
+    broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
+    proof {
+        shared.lemma_wf();
+    }
     let page = shared.regions.page_size();
+    proof {
+        // The stack arithmetic below relies on a page no larger than the
+        // stack, as the code does: Linux pages are 4 to 64 KiB.
+        crate::layout::axiom_process_page_at_most_64k();
+        let lg = shared.regions.lg_page;
+        assert((1usize << lg) <= 0x4_0000usize) by (bit_vector)
+            requires
+                lg <= 16,
+        ;
+        assert(STACK_SIZE == 0x4_0000usize);
+    }
     // The TLS slot is parked on `TLS_CREATING` for the pthread calls:
     // `pthread_create` allocates the new thread's DTV with `calloc`
     // and `pthread_join` frees an exited thread's key data, neither of
     // which may re-enter this thread's heap mid-operation.
+    let ghost cell0 = *cell;
     let saved = crate::sys::tls::get(Tracked(&*cell));
     let park = saved as usize > TLS_EXITED;
     if park {
@@ -524,19 +553,39 @@ fn create(
     let stack = if stack != 0 {
         Some(stack)
     } else {
+        proof {
+            crate::meta::lemma_is_pow2_shl(shared.regions.lg_page as usize);
+        }
         // `.filter(|&s| shared.meta.commit(..).is_ok())`, spelled out:
         // vstd does not specify `Option::filter`. The commit takes the
-        // reservation's claim to the pages above the guard, taken on trust
-        // here.
-        match shared.meta.reserve(STACK_SIZE, page, Tracked::assume_new()) {
+        // reservation's claim to the pages above the guard.
+        let tracked mut claim = GhostSubmap::<int, bool>::dummy();
+        match shared.meta.reserve(STACK_SIZE, page, Tracked(&mut claim)) {
             Some(s) => {
+                proof {
+                    let lg = shared.regions.lg_page;
+                    assert(sub(0x4_0000usize, 1usize << lg) % (1usize << lg) == 0 && 0 < (1usize << lg) < 0x4_0000usize)
+                        by (bit_vector)
+                        requires
+                            lg <= 16,
+                    ;
+                    vstd::arithmetic::div_mod::lemma_add_mod_noop(s as int, page as int, page as int);
+                    vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
+                    vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+                    assert(set_int_range(s + page, (s + page) + (STACK_SIZE - page)) <= claim@.dom()) by {
+                        assert forall|a: int| set_int_range(s + page, (s + page) + (STACK_SIZE - page)).contains(a)
+                            implies claim@.dom().contains(a) by {
+                            assert(set_int_range(s as int, s + STACK_SIZE).contains(a));
+                        }
+                    }
+                }
                 if shared
                     .meta
                     .commit(
                         s + page,
                         STACK_SIZE - page,
-                        Ghost::assume_new(),
-                        Tracked::assume_new(),
+                        Ghost(true),
+                        Tracked(&mut claim),
                     )
                     .is_ok()
                 {
@@ -555,6 +604,11 @@ fn create(
     if park {
         crate::sys::tls::set(saved, Tracked(&mut *cell));
     }
+    proof {
+        if cell0.value() != 0 {
+            TlsCell::lemma_same(*cell, cell0);
+        }
+    }
     (stack.unwrap_or(0), thread)
 }
 
@@ -567,13 +621,15 @@ fn create(
 /// pointer. `shared` is well formed: the thread's [`shared_arg`] ensures
 /// it of the pointer passed here.
 /// `cell` is the calling thread's slot cell: `pthread_create` allocates
-/// the new thread's DTV, which may re-enter the allocator on this thread.
+/// the new thread's DTV, which may re-enter the allocator on this thread,
+/// so the slot must be empty or hold a sentinel, as for [`pthread_join`].
 #[verifier::external_body]
 fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&TlsCell>) -> Option<::libc::pthread_t>
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
+        cell.value() == 0 || crate::heap::reentry_benign(cell.value()),
 {
     // SAFETY: plain pthread attribute calls on a local; the stack is
     // ours and committed.

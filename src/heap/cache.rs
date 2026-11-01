@@ -395,6 +395,7 @@ impl Heap {
             len > 0,
             pac ==> pac::pac_available(),
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 && pac == pac_mode() ==> final(self).handed_ok(r.0, class as int),
