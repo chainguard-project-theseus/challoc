@@ -1,0 +1,61 @@
+# A function returning a symbol's GOT entry, x86_64 (get_new_handler_addr,
+# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr;
+# verus/isla/seams.md), on the x86 model in its
+# application view with the processor in 64-bit mode (run-x86_64.sh, section 13):
+#   mov rax, qword ptr [rip + SYM@GOTPCREL]   (48 8b 05, R_X86_64_GOTPCREL)
+#   ret                                        (c3)
+arch x86_64
+fun n64_bit_modep true
+insn x86-got-rax.trace fallthrough 7
+insn x86-ret.trace jump
+writes rax rsp
+no-mem-write
+flags-preserved
+mem-reads 16
+# `got` is the GOT entry the linker allocates for SYM; the relocation as
+# the x86-64 psABI defines it, G + GOT + A - P with A = -4 and P the
+# displacement's own address (rip + 3): the displacement is got minus the
+# next instruction's address, within 32 signed bits.
+decl got 64
+assume (= seg.1.disp ((_ extract 31 0) (bvsub got (bvadd init.rip #x0000000000000007))))
+assume (= ((_ sign_extend 32) seg.1.disp) (bvsub got (bvadd init.rip #x0000000000000007)))
+# Residual (ELF, Linux and the psABI): GOT entries are 8-byte aligned; the
+# code, the GOT and the stack are user addresses (below 2^47); the stack
+# pointer is 8-byte aligned and its top holds the caller's return address,
+# a user address (the model faults on a non-canonical one).
+assume (= ((_ extract 2 0) got) #b000)
+assume (bvult init.rip #x00007ffffffff000)
+assume (bvult got #x00007ffffffff000)
+decl init.rsp 64
+assume (= ((_ extract 2 0) init.rsp) #b000)
+assume (bvult init.rsp #x00007ffffffff000)
+decl mem.9.val 8
+decl mem.10.val 8
+decl mem.11.val 8
+decl mem.12.val 8
+decl mem.13.val 8
+decl mem.14.val 8
+decl mem.15.val 8
+decl mem.16.val 8
+assume (bvult (concat mem.16.val mem.15.val mem.14.val mem.13.val mem.12.val mem.11.val mem.10.val mem.9.val) #x00007ffffffff000)
+# It reads exactly the GOT entry's 8 bytes, returns them in rax, pops the
+# return address (8 bytes at rsp) into rip and writes nothing else.
+assert (= mem.1.addr (bvadd got #x0000000000000000))
+assert (= mem.2.addr (bvadd got #x0000000000000001))
+assert (= mem.3.addr (bvadd got #x0000000000000002))
+assert (= mem.4.addr (bvadd got #x0000000000000003))
+assert (= mem.5.addr (bvadd got #x0000000000000004))
+assert (= mem.6.addr (bvadd got #x0000000000000005))
+assert (= mem.7.addr (bvadd got #x0000000000000006))
+assert (= mem.8.addr (bvadd got #x0000000000000007))
+assert (= final.rax (concat mem.8.val mem.7.val mem.6.val mem.5.val mem.4.val mem.3.val mem.2.val mem.1.val))
+assert (= mem.9.addr (bvadd init.rsp #x0000000000000000))
+assert (= mem.10.addr (bvadd init.rsp #x0000000000000001))
+assert (= mem.11.addr (bvadd init.rsp #x0000000000000002))
+assert (= mem.12.addr (bvadd init.rsp #x0000000000000003))
+assert (= mem.13.addr (bvadd init.rsp #x0000000000000004))
+assert (= mem.14.addr (bvadd init.rsp #x0000000000000005))
+assert (= mem.15.addr (bvadd init.rsp #x0000000000000006))
+assert (= mem.16.addr (bvadd init.rsp #x0000000000000007))
+assert (= final.rip (concat mem.16.val mem.15.val mem.14.val mem.13.val mem.12.val mem.11.val mem.10.val mem.9.val))
+assert (= final.rsp (bvadd init.rsp #x0000000000000008))

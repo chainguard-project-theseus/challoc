@@ -7,3 +7,8 @@ call_handler_caught	function pointer	Kani
 oom	termination	none (assumption)
 # The C caller hands over the block it frees under the entry point's contract.
 axiom_c_call	C-program contract	none (assumption)
+# Inline assembly checked with Isla (verus/ISLA.md): run.sh checks each
+# against the contract verus/isla/seams.md quotes. `is_throw_bad_alloc`
+# says the address is `std::__throw_bad_alloc`'s, which rests on the loader.
+get_new_handler_addr	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address)
+throw_bad_alloc_addr	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address and fills it with std::__throw_bad_alloc's address or 0)

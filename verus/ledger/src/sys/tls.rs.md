@@ -30,7 +30,7 @@ pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
 ## `get`
 
 src/sys/tls.rs:328. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code is at a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address and fills it with the slot's TLS offset, that the slot (the thread pointer plus that offset) is an 8-byte aligned user address, and that the slot holds the cell's value).
 
 > Read the calling thread's slot.
 
@@ -44,7 +44,7 @@ pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
 ## `get_tp`
 
 src/sys/tls.rs:383. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: that the GOT entry holds the slot's TLS offset, the slot the cell's value, and TPIDR_EL0 the cell's tp).
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; and that the loader maps the GOT entry, 8-byte aligned, at a user address and fills it with the slot's TLS offset, that the slot (the thread pointer plus that offset) is an 8-byte aligned user address, that the slot holds the cell's value, and that TPIDR_EL0 holds the cell's tp).
 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
 
@@ -59,7 +59,7 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
 ## `set`
 
 src/sys/tls.rs:410. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code is at a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address and fills it with the slot's TLS offset, that the slot (the thread pointer plus that offset) is an 8-byte aligned user address, and that only these sequences touch the slot).
 
 > Write the calling thread's slot.
 
