@@ -6,8 +6,8 @@
 //! `Shared::zero_huge`'s clear, and while `ClassState::check_zero` or
 //! `Huge::check_zero` reads the block. Or to a `Fresh` slab's slots, lent
 //! under the class lock for `ClassState::check_fresh_slab_is_zero`
-//! (`class::axiom_fresh_slab_mem`). `realloc` holds two at once, the old
-//! block's and the new one's, for its copy ([`copy_user`]).
+//! (`class::axiom_fresh_slab_mem`). `realloc` and `rallocx` hold two at
+//! once, the old block's and the new one's, for the copy ([`copy_user`]).
 //!
 //! Reading a user block's bytes takes a capability too,
 //! [`may_read_user`], which `purge::check_zero` grants to the opt-in debug
@@ -34,8 +34,8 @@ verus! {
 /// Opaque, with no meaning: a capability, not a claim about the world. It
 /// marks the reads for audit; Verus does not restrict who calls
 /// [`grant_user_reads`] (its callers are `purge::check_zero` and the
-/// realloc cores, `api::libc::realloc_block` and
-/// `api::libc::realloc_usable_stored`).
+/// realloc cores, `api::libc::realloc_block`,
+/// `api::libc::realloc_usable_stored` and `api::jemalloc::rallocx_zeroed`).
 /// `sys::tests::user_read_grants_only_in_listed_callers` checks the source
 /// for that.
 #[verifier::opaque]
@@ -46,9 +46,10 @@ pub closed spec fn may_read_user() -> bool {
 /// Grant [`may_read_user`]. Called by `purge::check_zero`, whose `true`
 /// (the opt-in debug mode is on) grants it to the `check_zero` reads, and
 /// by the realloc cores (`api::libc::realloc_block`,
-/// `api::libc::realloc_usable_stored`) for the copy of a moved block, and
-/// by nothing else: `sys::tests::user_read_grants_only_in_listed_callers`
-/// checks the source for that.
+/// `api::libc::realloc_usable_stored`, `api::jemalloc::rallocx_zeroed`)
+/// for the copy of a moved block, and by nothing else:
+/// `sys::tests::user_read_grants_only_in_listed_callers` checks the source
+/// for that.
 pub proof fn grant_user_reads()
     ensures
         may_read_user(),
@@ -193,7 +194,10 @@ impl UserMem {
 /// the fill it just made returned: the known-zero hand-out of
 /// `libc::calloc_zeroed` and `libc::calloc_usable_zeroed` (`heap::alloc_zeroed`'s token, or the huge path's
 /// from `Heap::alloc_huge` or `Shared::alloc_huge`, each made by the
-/// allocation before any write to the block), and [`zero_user`].
+/// allocation before any write to the block), the known-zero hand-out of
+/// `api::jemalloc::alloc_with` (`heap::mallocx::alloc`'s or
+/// `alloc_huge`'s token, made by the allocation before any write), and
+/// [`zero_user`].
 #[verifier::external_body]
 pub proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
     requires
