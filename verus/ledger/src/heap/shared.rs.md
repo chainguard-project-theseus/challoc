@@ -11,24 +11,24 @@ file.
 | `ClassLin...ard_word` | external_body | inline asm | Islaris/Isla | trusted |
 | `ThreadK...create` | external_body | function pointer | none (assumption) | trusted |
 | `pthread...ecific` | external_body | FFI/syscall | none (assumption) | trusted |
-| `S_LINES` | external_body const | core library | Kani | trusted |
-| `S_FREE_FLAGS` | external_body const | core library | Kani | trusted |
-| `S_PUSH_FLAGS` | external_body const | core library | Kani | trusted |
-| `S_REGION_HI` | external_body const | core library | Kani | trusted |
-| `S_REGIONS` | external_body const | core library | Kani | trusted |
-| `S_TABLES` | external_body const | core library | Kani | trusted |
-| `S_ARENA0` | external_body const | core library | Kani | trusted |
-| `S_META` | external_body const | core library | Kani | trusted |
-| `S_HUGE` | external_body const | core library | Kani | trusted |
-| `S_GC_INTERVAL_NS` | external_body const | core library | Kani | trusted |
-| `S_POLICY` | external_body const | core library | Kani | trusted |
-| `S_CONFIG` | external_body const | core library | Kani | trusted |
-| `S_KEY` | external_body const | core library | Kani | trusted |
-| `S_ARENAS` | external_body const | core library | Kani | trusted |
-| `S_TCACHES` | external_body const | core library | Kani | trusted |
-| `S_STATS` | external_body const | core library | Kani | trusted |
-| `S_CGROUP` | external_body const | core library | Kani | trusted |
-| `axiom_shared_layout` | axiom | core library | Kani | trusted |
+| `S_LINES` | external_body const | core library | Kani | discharged |
+| `S_FREE_FLAGS` | external_body const | core library | Kani | discharged |
+| `S_PUSH_FLAGS` | external_body const | core library | Kani | discharged |
+| `S_REGION_HI` | external_body const | core library | Kani | discharged |
+| `S_REGIONS` | external_body const | core library | Kani | discharged |
+| `S_TABLES` | external_body const | core library | Kani | discharged |
+| `S_ARENA0` | external_body const | core library | Kani | discharged |
+| `S_META` | external_body const | core library | Kani | discharged |
+| `S_HUGE` | external_body const | core library | Kani | discharged |
+| `S_GC_INTERVAL_NS` | external_body const | core library | Kani | discharged |
+| `S_POLICY` | external_body const | core library | Kani | discharged |
+| `S_CONFIG` | external_body const | core library | Kani | discharged |
+| `S_KEY` | external_body const | core library | Kani | discharged |
+| `S_ARENAS` | external_body const | core library | Kani | discharged |
+| `S_TCACHES` | external_body const | core library | Kani | discharged |
+| `S_STATS` | external_body const | core library | Kani | discharged |
+| `S_CGROUP` | external_body const | core library | Kani | discharged |
+| `axiom_shared_layout` | axiom | core library | Kani | discharged |
 | `axiom_s..._built` | axiom | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_s...egions` | axiom | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_s...d_meta` | axiom | raw pointer (internal) | none (assumption) | trusted |
@@ -97,7 +97,7 @@ unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tr
 ## `S_LINES`
 
 src/heap/shared.rs:1212. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_LINES: usize = core::mem::offset_of!(Shared, lines);
@@ -106,7 +106,7 @@ const S_LINES: usize = core::mem::offset_of!(Shared, lines);
 ## `S_FREE_FLAGS`
 
 src/heap/shared.rs:1214. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
@@ -115,7 +115,7 @@ const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
 ## `S_PUSH_FLAGS`
 
 src/heap/shared.rs:1216. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
@@ -124,7 +124,7 @@ const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
 ## `S_REGION_HI`
 
 src/heap/shared.rs:1218. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
@@ -133,7 +133,7 @@ const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
 ## `S_REGIONS`
 
 src/heap/shared.rs:1220. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
@@ -142,7 +142,7 @@ const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
 ## `S_TABLES`
 
 src/heap/shared.rs:1222. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
@@ -151,7 +151,7 @@ const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
 ## `S_ARENA0`
 
 src/heap/shared.rs:1224. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
@@ -160,7 +160,7 @@ const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
 ## `S_META`
 
 src/heap/shared.rs:1226. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_META: usize = core::mem::offset_of!(Shared, meta);
@@ -169,7 +169,7 @@ const S_META: usize = core::mem::offset_of!(Shared, meta);
 ## `S_HUGE`
 
 src/heap/shared.rs:1228. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
@@ -178,7 +178,7 @@ const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
 ## `S_GC_INTERVAL_NS`
 
 src/heap/shared.rs:1230. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
@@ -187,7 +187,7 @@ const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
 ## `S_POLICY`
 
 src/heap/shared.rs:1232. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
@@ -196,7 +196,7 @@ const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
 ## `S_CONFIG`
 
 src/heap/shared.rs:1234. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
@@ -205,7 +205,7 @@ const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
 ## `S_KEY`
 
 src/heap/shared.rs:1236. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_KEY: usize = core::mem::offset_of!(Shared, key);
@@ -214,7 +214,7 @@ const S_KEY: usize = core::mem::offset_of!(Shared, key);
 ## `S_ARENAS`
 
 src/heap/shared.rs:1238. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
@@ -223,7 +223,7 @@ const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
 ## `S_TCACHES`
 
 src/heap/shared.rs:1240. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
@@ -232,7 +232,7 @@ const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
 ## `S_STATS`
 
 src/heap/shared.rs:1242. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_STATS: usize = core::mem::offset_of!(Shared, stats);
@@ -241,7 +241,7 @@ const S_STATS: usize = core::mem::offset_of!(Shared, stats);
 ## `S_CGROUP`
 
 src/heap/shared.rs:1244. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
 const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
@@ -250,7 +250,7 @@ const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 ## `axiom_shared_layout`
 
 src/heap/shared.rs:1250. Kind: axiom. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 > `Shared`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size.
 

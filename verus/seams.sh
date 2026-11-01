@@ -39,7 +39,9 @@
 # name as printed in that file's ledger, or `name#N` for the Nth seam of
 # that name in the file, in source order), which overrides them and
 # carries every status other than "trusted". --check also fails when a
-# status cites `Kani: <harness>` and no `#[kani::proof]` fn has that path.
+# status cites `Kani: <harness>` and no `#[kani::proof]` fn has that path,
+# or `const assert: <label> in <file>` and not exactly one assertion there
+# carries that label.
 # The output depends only on the tree: files are read in byte order.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -533,21 +535,26 @@ $render"
 }
 
 # The checks the overrides statuses cite: one line `<overrides file> <tag>
-# <item>` per item of each `Kani: a, b and c` list (up to `;`, `)` or the
-# next tag), tag `Kani`; `none` for a "discharged" or "partly checked"
-# status, or a list, that cites nothing.
+# <item>` per item of each `Kani: a, b and c` or `const assert: a, b and
+# c` list (up to `;`, `)` or the next tag), tag `Kani` or `assert`; `none`
+# for a "discharged" or "partly checked" status, or a list, that cites
+# nothing.
 cites() {
   for o in $ovfiles; do
-    awk -F '\t' -v o="$o" '!/^#/ && NF >= 4 {
-      s = $4; k = 0
-      while ((i = index(s, "Kani: ")) > 0) {
-        s = substr(s, i + 6); l = s; sub(/[;)].*$/, "", l)
-        n = split(l, h, /,? and |, */); m = 0
-        for (j = 1; j <= n; j++) {
-          if (index(h[j], ": ")) break
-          if (h[j] != "") { print o, "Kani", h[j]; m++ }
+    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert" }
+    !/^#/ && NF >= 4 {
+      k = 0
+      for (t in tag) {
+        s = $4
+        while ((i = index(s, t)) > 0) {
+          s = substr(s, i + length(t)); l = s; sub(/[;)].*$/, "", l)
+          n = split(l, h, /,? and |, */); m = 0
+          for (j = 1; j <= n; j++) {
+            if (index(h[j], ": ")) break
+            if (h[j] != "") { print o, tag[t], h[j]; m++ }
+          }
+          k++; if (m == 0) print o, "none", $1
         }
-        k++; if (m == 0) print o, "none", $1
       }
       if (k == 0 && $4 ~ /^(discharged|trusted \(partly checked)/) print o, "none", $1
     }' "$o"
@@ -583,6 +590,23 @@ harness() {
   ' "$file"
 }
 
+# assertion '<label> in FILE': exit 0 if exactly one top-level
+# `const _: () = assert!(` in FILE sits under a `//` comment block whose
+# first line starts with `// <label>`. An attribute right above the
+# comment block (a line starting `#[` or ending `]`, as a multi-line
+# `cfg` does), even across blank lines, fails it: a gated assertion is
+# not evaluated in every build.
+assertion() {
+  label=${1% in *}; file=${1##* in }
+  [ -f "$file" ] || return 1
+  awk -v l="// $label" '
+    /^\/\// { if (!c) g = (prev ~ /^#\[/ || prev ~ /\]$/); if (!c && index($0, l) == 1) h = 1; c = 1; prev = $0; next }
+    h && /^const _: \(\) = assert!\($/ { n += g ? 2 : 1 }
+    { c = 0; h = 0; if (NF) prev = $0 }
+    END { exit n != 1 }
+  ' "$file"
+}
+
 case $mode in
   print) gen summary '' ;;
   write)
@@ -612,6 +636,7 @@ case $mode in
     cites | while read -r o t c; do
       case $t in
         Kani) harness "$c" || echo "seams: $o: Kani: $c names no #[kani::proof] fn" ;;
+        assert) assertion "$c" || echo "seams: $o: const assert: $c names no one labeled assertion" ;;
         *) echo "seams: $o: $c: the status cites no check" ;;
       esac
     done > "$tmp/cites"
@@ -620,6 +645,26 @@ case $mode in
     for c in kani_proofs::ptr::no_such_harness kani::ptr::ptr_add \
         heap::no_such_mod::no_such_harness; do
       if harness "$c"; then echo "seams: self-test: $c resolved, want rejected"; fi
+    done >> "$tmp/cites"
+    # The same for assertion labels: one no file carries, one two blocks
+    # carry, and a real label cited in the wrong file. The backticks are
+    # part of the labels.
+    # shellcheck disable=SC2016
+    for c in '`no_such_label` in src/arena.rs' '`axiom_array_layout` in src/arena.rs' \
+        '`axiom_arena_layout` in src/lib.rs'; do
+      if assertion "$c"; then echo "seams: self-test: $c resolved, want rejected"; fi
+    done >> "$tmp/cites"
+    # A gated assertion (a one-line and a multi-line `cfg`, and one with a
+    # blank line before the comment) must be
+    # rejected too: a gated assertion is not evaluated in every build.
+    # shellcheck disable=SC2016
+    printf '#[cfg(target_arch = "riscv64")]\n// `gated`, checked.\nconst _: () = assert!(\n    true\n);\n' > "$tmp/g1.rs"
+    # shellcheck disable=SC2016
+    printf '#[cfg(any(\n    target_arch = "riscv64",\n))]\n// `gated`, checked.\nconst _: () = assert!(\n    true\n);\n' > "$tmp/g2.rs"
+    # shellcheck disable=SC2016
+    printf '#[cfg(target_arch = "riscv64")]\n\n// `gated`, checked.\nconst _: () = assert!(\n    true\n);\n' > "$tmp/g3.rs"
+    for c in "\`gated\` in $tmp/g1.rs" "\`gated\` in $tmp/g2.rs" "\`gated\` in $tmp/g3.rs"; do
+      if assertion "$c"; then echo "seams: self-test: $c resolved, want rejected"; fi
     done >> "$tmp/cites"
     bad=0
     if [ -s "$tmp/cites" ]; then cat "$tmp/cites" >&2; bad=1; fi
