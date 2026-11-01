@@ -1045,14 +1045,13 @@ impl Regions {
     }
 
     /// The sized free's classification (design 6.3): the size hint names
-    /// `class`, so the region is known and the
-    /// pointer is only checked against it, `Some((slab, slot))` when `p` is
-    /// exactly a slot start inside class `class`'s region, `None` otherwise
-    /// (outside the region, which covers every other class's region, the
-    /// gaps, the huge and metadata regions; or a mid-slot address). One
-    /// subtraction and a compare replace [`slab_slot`]'s superblock
-    /// subtraction, stride shift, bound check and class compare. `class`
-    /// must be below `NCLASSES` (what `class_of`/`class_for` return).
+    /// `class`, so the region is known and the pointer is only checked
+    /// against it, `Some((slab, slot))` when `p` is exactly a slot start
+    /// inside class `class`'s region, `None` otherwise (outside the region,
+    /// which covers every other class's region, the gaps, the huge and
+    /// metadata regions; or a mid-slot address). One subtraction and a
+    /// compare replace [`slab_slot`]'s superblock subtraction, stride
+    /// shift, bound check and class compare. Panics unless `class < NCLASSES`.
     ///
     /// The fast path (`heap::Shared::sized_slot`) makes the same test from
     /// its class line; this form is the reference the tests hold it to.
@@ -1060,10 +1059,11 @@ impl Regions {
     /// [`slab_slot`]: Regions::slab_slot
     #[cfg(test)]
     pub fn slot_in_class(&self, class: usize, p: usize) -> Option<(usize, usize)> {
-        debug_assert!(class < NCLASSES);
-        // SAFETY: the caller's `class` is an index `class_of` produced.
+        assert!(class < NCLASSES);
+        // SAFETY: `class < NCLASSES` (asserted), so the entry is in the
+        // `CLASSES` static; `ready()` is a verifier permission, not runtime.
         let cls = unsafe { class_entry(class) };
-        let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(class) });
+        let rel = p.wrapping_sub(self.class_base[class]);
         if rel >= self.region_len() {
             return None;
         }

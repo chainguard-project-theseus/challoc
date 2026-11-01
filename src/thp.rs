@@ -968,7 +968,7 @@ mod tests {
         crate::testutil::in_fork_child("thp decision statics", 30_000, || {
             // Process-wide statics, written in a fork child: a decision
             // stored here would change the paths of the class, huge and
-            // metadata tests running beside it (#69).
+            // metadata tests running beside it.
             let t = table(Some(ThpSetting::Madvise), 0, K64);
             let d = decide(Key::Auto, &t);
             store(&d);
@@ -1047,10 +1047,15 @@ mod tests {
     /// (the `madvise` is real).
     fn region(len: usize) -> usize {
         use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_NONE};
+        // SAFETY: a fresh anonymous mapping at an address the kernel picks
+        // replaces nothing.
         unsafe { sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap()
     }
 
+    /// Unmap a range [`region`] returned, with its length.
     fn release(addr: usize, len: usize) {
+        // SAFETY: the caller's range is a whole `region` mapping, which
+        // nothing else references.
         unsafe { crate::sys::munmap(addr, len) }.unwrap();
     }
 
@@ -1137,6 +1142,7 @@ mod tests {
             } else {
                 b"thp test: MADV_NOHUGEPAGE on a fresh mapping refused (no THP on this kernel)\n"
             };
+            // SAFETY: `line` is valid for `line.len()` bytes.
             unsafe { libc::write(1, line.as_ptr().cast(), line.len()) };
             // Leave the statics as found and unmap the two regions.
             store(&Decision::OFF);

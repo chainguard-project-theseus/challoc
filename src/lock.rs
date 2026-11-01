@@ -29,8 +29,8 @@ const CONTENDED: u32 = 2;
 
 /// Spins before the first sleep. Slow-path critical sections are short
 /// (a few dozen instructions), so a holder is usually gone within this.
-/// One round is one poll of the word and one `pause` (or `isb`); the
-/// phase is 5..15 us.
+/// One round is one poll of the word and one `pause` (or `isb`), so the
+/// phase's length follows that instruction's latency on the host CPU.
 const SPINS: u32 = 100;
 
 /// The bare mutex word. Use [`Lock`] when there is data to protect; use this

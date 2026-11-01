@@ -955,8 +955,8 @@ pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, err
     // As in `malloc`: a size above the small table is a tail call, so the
     // class comes only from the table here and the stride-scaled entry
     // addresses the class line and the cache header as it is. That keeps
-    // the sized path within its registers, with no spill (on Genoa a
-    // `push` and a `pop` here cost `valkey1` 8%, #46).
+    // the sized path within its registers, with no spill (a `push` and a
+    // `pop` here cost `valkey1` 8% on Genoa).
     if size > SMALL_MAX {
         return free_sized_medium(p, size, Tracked(blk), errno);
     }
@@ -2913,32 +2913,32 @@ pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<crate::purge::
 /// Where `malloc` and `free` start, mod 64, in the shipped library (the
 /// pin in `exports`).
 ///
-/// x86_64: both at 0. Without the pin LLVM's 16-byte default let #68's
-/// push change (same instructions, fewer of them) move `free` from 32 to
-/// 16 mod 64 and `malloc` from 48 to 32, which cost glibc-simple 36% on
-/// Zen 5 (c4d). Pinning either entry alone removed it there, so it is
-/// the pair's layout, not one offset; both are pinned. The cost is 768
-/// bytes of `.text`.
+/// Their placement mod 64 changes hot-loop throughput even when their
+/// code does not change, so both are pinned rather than left wherever
+/// the rest of `.text` puts them. Each entry sits in its own section,
+/// opened 64-aligned and padded to its offset by the `global_asm!` in
+/// `exports`.
+///
+/// x86_64: both at 0. LLVM's default 16-byte function alignment lets an
+/// unrelated code change move either entry: a move of `free` from 32 to
+/// 16 mod 64 and `malloc` from 48 to 32 cost glibc-simple 36% on Zen 5.
+/// Pinning either entry alone removed the loss, so it lies in the pair's
+/// layout, not in one offset; both are pinned. The pin costs 768 bytes
+/// of `.text`.
 ///
 /// aarch64: `malloc` at 16, `free` at 28, in both quanta. LLVM aligns
-/// functions to 4 here, so before the pin any `.text` growth ahead of the
-/// pair moved both: #111 and #114 moved them from 16/28 to 8/20 without
-/// touching either function, and that alone cost ref-arm64 (Neoverse V2)
-/// xmalloc about 2% (#115; 8/20 was worse, Holm, in r3b-rss-xm4 and
-/// xm5). 16/28 is where the quantum16 build had them on ff2c450; in a
-/// sweep of seven offsets (r3b-pin-sweep1) no other offset measured
-/// better. The quantum8 build (the one Wolfi's Valkey links) had them at
-/// 52/52; at 16/28 its xmalloc measured 5.7% better and its Valkey-model
-/// rows the same (r3b-pin-rv1).
+/// functions to 4 here, so without the pin any `.text` growth ahead of
+/// the pair moves both; a move to 8/20 cost xmalloc about 2% on Neoverse
+/// V2. In a sweep of seven offsets none measured better than 16/28, and
+/// for the quantum8 build (the one Wolfi's Valkey links) 16/28 measured
+/// 5.7% better on xmalloc than its unpinned 52/52.
 ///
-/// Only these two entries are pinned. On aarch64 moving them out of
-/// `.text` shifts the rest: `sdallocx`, the `challoc_*_usable` entries,
-/// `calloc`, `realloc` and the C++ operators moved by up to 24 bytes mod
-/// 64, and none of their rows moved (r3b-pin-rv1: valkey1,
-/// valkey1-usable, valkey1-write-pair and larson1 for `new[]`/`delete[]`,
-/// in both quanta). `je_malloc` and `je_free` are their own copies in
-/// `.text`, not aliases of the pinned bodies, as on x86_64: a program
-/// that calls the `je_` names gets the unpinned copies.
+/// Only these two entries are pinned. On aarch64 that shifts the other
+/// entries (`sdallocx`, the `challoc_*_usable` entries, `calloc`,
+/// `realloc`, the C++ operators) by up to 24 bytes mod 64, with no
+/// measured change in their benchmark rows. `je_malloc` and `je_free` are
+/// their own copies in `.text`, not aliases of the pinned bodies, as on
+/// x86_64: a program that calls the `je_` names gets the unpinned copies.
 ///
 /// The test `malloc_and_free_entries_are_pinned` checks both against
 /// `nm -D` of the shipped library.
@@ -4098,12 +4098,10 @@ mod tests {
 
     /// The pin of `malloc` and `free` (the `global_asm!`s of `exports`)
     /// holds in the shipped library: in `nm -D` each entry sits at
-    /// `MALLOC_OFF` / `FREE_OFF` mod 64, 0/0 on x86_64 (#70) and 16/28 on
-    /// aarch64 (#115). The pin depends on the release profile (fat LTO,
-    /// one codegen unit) keeping each in its own section; without it
-    /// `free` moved to 16 mod 64 and cost glibc-simple 36% on Zen 5
-    /// (c4d), and on Neoverse V2 a move from 16/28 to 8/20 cost xmalloc
-    /// about 2%.
+    /// `MALLOC_OFF` / `FREE_OFF` mod 64, 0/0 on x86_64 and 16/28 on
+    /// aarch64. The pin depends on the release profile (fat LTO, one
+    /// codegen unit) keeping each entry in its own section, so a profile
+    /// change can silently undo it; this test catches that.
     #[test]
     fn malloc_and_free_entries_are_pinned() {
         let so = crate::api::c_programs::release_so();

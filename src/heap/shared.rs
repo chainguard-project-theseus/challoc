@@ -350,9 +350,8 @@ impl Shared {
 /// copy of its hand-out watermark. `[ClassLine; NCLASSES]` has a
 /// power-of-two stride equal to the heap's cache headers', so the class
 /// index scaled once addresses both, and every field is one load at an
-/// immediate offset from it; before, `free` indexed three arrays of
-/// different strides (`class_base`, the 32-byte `CLASSES`, the 384-byte
-/// tables, one `lea`/`shl` or `madd` each) and read three lines. The 52
+/// immediate offset from it, where separate arrays of different strides
+/// would cost `free` an index computation and a cache line each. The 52
 /// lines are consecutive, so they fill distinct L1 sets.
 ///
 /// The copy of the watermark is stored after the table's own, under its
@@ -586,7 +585,7 @@ impl ClassLine {
     /// the scheduler until the miss returns. On Zen 4 (Genoa) that
     /// capacity, more than the instruction count, sets how far the core
     /// runs ahead to the next miss: `valkey1` is 8% faster with 13 such
-    /// loads in `sdallocx` than with 16 (#46). So the bound has no load of
+    /// loads in `sdallocx` than with 16. So the bound has no load of
     /// its own, and the guard mask and both shift counts are one load.
     ///
     /// [`Class::slot_of_offset`]: crate::layout::Class::slot_of_offset
@@ -706,9 +705,10 @@ impl ClassLine {
     ///
     /// Trusted: the load reads four fields through one `u64` (the layout
     /// below, little-endian on x86_64 and aarch64), which Verus has no
-    /// permission for, and on x86_64 it goes through an empty `asm!`
-    /// (the template of `api::shared_base`'s and `class::table::word_index`'s,
-    /// there on aarch64) that leaves the value unchanged.
+    /// permission for. On x86_64 an empty `asm!` that leaves the value
+    /// unchanged keeps LLVM from splitting the load into one per field
+    /// (the same device as `api::shared_base` and
+    /// `class::table::word_index` use on aarch64).
     #[inline(always)]
     #[verifier::external_body]
     fn guard_word(&self) -> (r: u64)
