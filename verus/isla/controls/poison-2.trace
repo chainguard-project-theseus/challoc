@@ -1,0 +1,9 @@
+; Negative control (run.sh): copies R0 to R1, after poison-1.trace.
+(trace
+  (declare-const v1 (_ BitVec 64))
+  (read-reg |_PC| nil v1)
+  (declare-const v2 (_ BitVec 64))
+  (read-reg |R0| nil v2)
+  (write-reg |R1| nil v2)
+  (define-const v3 (bvadd v1 #x0000000000000004))
+  (write-reg |_PC| nil v3))

@@ -41,12 +41,14 @@
 # carries every status other than "trusted". --check also fails when a
 # status cites `Kani: <harness>` and no `#[kani::proof]` fn has that path,
 # or `const assert: <label> in <file>` and not exactly one assertion there
-# carries that label.
+# carries that label, or `Isla: <file>` and that file lists no such seam
+# or the seam's asm! calls differ from the templates.txt next to it.
 # The output depends only on the tree: files are read in byte order.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
 export LC_ALL=C
+tab=$(printf '\t')
 
 mode=print
 case ${1:-} in
@@ -535,13 +537,13 @@ $render"
 }
 
 # The checks the overrides statuses cite: one line `<overrides file> <tag>
-# <item>` per item of each `Kani: a, b and c` or `const assert: a, b and
-# c` list (up to `;`, `)` or the next tag), tag `Kani` or `assert`; `none`
-# for a "discharged" or "partly checked" status, or a list, that cites
-# nothing.
+# <item>` per item of each `Kani: a, b and c`, `const assert: a, b and
+# c` or `Isla: FILE` list (up to `;`, `)` or the next tag), tag `Kani`,
+# `assert` or `Isla` (its item `<seam> in FILE`); `none` for a
+# "discharged" or "partly checked" status, or a list, that cites nothing.
 cites() {
   for o in $ovfiles; do
-    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert" }
+    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla" }
     !/^#/ && NF >= 4 {
       k = 0
       for (t in tag) {
@@ -551,7 +553,7 @@ cites() {
           n = split(l, h, /,? and |, */); m = 0
           for (j = 1; j <= n; j++) {
             if (index(h[j], ": ")) break
-            if (h[j] != "") { print o, tag[t], h[j]; m++ }
+            if (h[j] != "") { print o, tag[t], (tag[t] == "Isla" ? $1 " in " h[j] : h[j]); m++ }
           }
           k++; if (m == 0) print o, "none", $1
         }
@@ -588,6 +590,106 @@ harness() {
     $0 !~ ("^" ind "(#\\[|//)") { p = 0 }
     END { exit done ? rc : 1 }
   ' "$file"
+}
+
+# isla OVERRIDES '<seam> in FILE': exit 0 if FILE (verus/isla/seams.md) lists
+# the seam of OVERRIDES' source file (a "## `SRC` `<seam>` (ARCH)" heading).
+# islatemplates checks the seam's asm! templates; verus/isla/run.sh checks
+# the rest: contract, architecture and jobs.
+isla() {
+  name=${2% in *}; file=${2##* in }; src=${1#verus/ledger/}; src=${src%.overrides}
+  [ -f "$file" ] || return 1
+  awk -v h="## \`$src\` \`$name\` (" 'index($0, h) == 1 { f = 1 } END { exit !f }' "$file"
+}
+
+# islaasm SRC LINE: the asm! calls of the item that starts at SRC:LINE
+# (up to the `}` that closes its body, or its `;`), one per line as
+# `asm<TAB><call>`, verbatim up to whitespace: each source line trimmed,
+# the lines joined by one space, from `asm!(` to its matching `)` and the
+# `;` right after it if any. Then `trap<TAB><literal>` for each string
+# literal outside them that names an instruction that traps or reads or
+# writes a system register (svc, hvc, smc, brk, udf, hlt, mrs, msr,
+# eret, tlbi, syscall, sysenter, sysret, int, int3, ud2, wrmsr, rdmsr,
+# or raw .inst/.word bytes, in any case), which an asm! call could take
+# as a constant, and for each `asm!` written with `{`, `[` or a space
+# before its `(`, which this scan does not read.
+islaasm() {
+  awk -v n="$2" '
+    # The column of the first `asm!(` in s not part of a longer name, or 0.
+    function at(s) { if (!match(s, /(^|[^A-Za-z0-9_])asm!\(/)) return 0; return substr(s, RSTART, 1) == "a" ? RSTART : RSTART + 1 }
+    NR < n { next }
+    {
+      line = $0; sub(/^[ \t]+/, "", line); out = ""; esc = 0
+      # Only `asm!(` is read; a call with other delimiters fails the check.
+      if (!inasm && line ~ /(^|[^A-Za-z0-9_])asm!([ \t]*[{[]|[ \t]+\()/) print "trap\tasm! with another delimiter: " line
+      if (!inasm && (k = at(line)) > 0) { lead = substr(line, 1, k - 1); line = substr(line, k); inasm = 1; buf = ""; d = 0 }
+      else lead = ""
+      # The code before a call on its own line counts for braces too.
+      for (i = 1; i <= length(lead); i++) { c = substr(lead, i, 1); if (c == "{") { body++; opened = 1 } else if (c == "}") body-- }
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (instr) {
+          if (inasm) out = out c; else lit = lit c
+          if (esc) { esc = 0; continue }
+          if (c == "\\") { esc = 1; continue }
+          if (c != "\"") continue
+          instr = 0
+          if (!inasm && tolower(lit) ~ /(^|[^a-z0-9_])(svc|hvc|smc|brk|udf|hlt|eret|mrs|msr|tlbi|syscall|sysenter|sysret|int3|int [0-9]|ud2|wrmsr|rdmsr|\.inst|\.word)([^a-z0-9_]|$)/) print "trap\t\"" lit
+          continue
+        }
+        if (!inasm && c == "/" && substr(line, i + 1, 1) == "/") break
+        if (inasm) out = out c
+        if (c == "\"") { instr = 1; lit = ""; continue }
+        if (inasm) {
+          if (c == "(") d++
+          else if (c == ")" && --d == 0) {
+            if (substr(line, i + 1, 1) == ";") { out = out ";"; i++ }
+            print "asm\t" buf (buf == "" ? "" : " ") out
+            inasm = 0; out = ""
+            # Another call may start later on the line.
+            rest = substr(line, i + 1)
+            if ((k = at(rest)) > 0) {
+              for (j = 1; j < k; j++) { c = substr(rest, j, 1); if (c == "{") { body++; opened = 1 } else if (c == "}") body-- }
+              line = substr(rest, k); i = 0; inasm = 1; buf = ""; d = 0
+            }
+          }
+          continue
+        }
+        if (c == "{") { body++; opened = 1 }
+        else if (c == "}") body--
+        else if (c == ";" && !opened && body == 0) exit
+      }
+      if (inasm) buf = buf (buf == "" ? "" : " ") out
+      if (opened && body == 0) exit
+    }' "$1"
+}
+
+# islatemplates TEMPLATES ITEMS: TEMPLATES (verus/isla/templates.txt,
+# `SRC<TAB>FN<TAB>ASM` lines and `#` comments) against the items of the
+# seams whose status cites `Isla:`, one `SRC<TAB>LINE<TAB>NAME<TAB>KIND`
+# line each in ITEMS; FN is NAME without its `Type::` and `#N`. Prints a
+# line for each asm! call of an item that TEMPLATES does not list under
+# its SRC and FN (a changed or added template, such as a new `hvc`), each
+# TEMPLATES line no such call reads (a template that changed or is gone,
+# or a function that is no such seam), each exec item (kind
+# `external_body`) with no asm! call, and each string literal in an item
+# that names a trapping or system-register instruction (islaasm). Prints
+# nothing when they agree.
+islatemplates() {
+  : > "$tmp/isla-have"
+  while IFS="$tab" read -r s l name kind; do
+    fn=${name%%#*}; fn=${fn##*::}
+    islaasm "$s" "$l" | awk -F "$tab" -v s="$s" -v fn="$fn" -v name="$name" -v kind="$kind" -v have="$tmp/isla-have" '
+      $1 == "asm" { print s "\t" fn "\t" substr($0, 5) >> have; n++ }
+      $1 == "trap" { print "seams: Isla: " s " " name ": unchecked assembly (a string literal naming a trap or system-register instruction, or asm! without `(`): " substr($0, 6) }
+      END { if (kind == "external_body" && !n) print "seams: Isla: " s " " name ": no asm! call to check" }'
+  done < "$2"
+  sort -u "$tmp/isla-have" > "$tmp/isla-have.sorted"
+  grep -v -e '^#' -e '^$' "$1" | sort -u > "$tmp/isla-want"
+  comm -23 "$tmp/isla-have.sorted" "$tmp/isla-want" | awk -F "$tab" -v t="$1" '{
+    print "seams: Isla: " $1 " " $2 ": an asm! call that " t " does not list: " substr($0, length($1 $2) + 3) }'
+  comm -13 "$tmp/isla-have.sorted" "$tmp/isla-want" | awk -F "$tab" -v t="$1" '{
+    print "seams: Isla: " t ": no asm! call of a seam in " $1 " " $2 " reads: " substr($0, length($1 $2) + 3) }'
 }
 
 # assertion '<label> in FILE': exit 0 if exactly one top-level
@@ -637,6 +739,7 @@ case $mode in
       case $t in
         Kani) harness "$c" || echo "seams: $o: Kani: $c names no #[kani::proof] fn" ;;
         assert) assertion "$c" || echo "seams: $o: const assert: $c names no one labeled assertion" ;;
+        Isla) isla "$o" "$c" || echo "seams: $o: Isla: $c: no such seam heading" ;;
         *) echo "seams: $o: $c: the status cites no check" ;;
       esac
     done > "$tmp/cites"
@@ -654,6 +757,57 @@ case $mode in
         '`axiom_arena_layout` in src/lib.rs'; do
       if assertion "$c"; then echo "seams: self-test: $c resolved, want rejected"; fi
     done >> "$tmp/cites"
+    # And for Isla: a seam the file does not list, a file that is gone,
+    # and a seam it lists under another source file.
+    for c in "no_such_seam in verus/isla/seams.md" "get_tp in verus/isla/no_such_file.md" \
+        "syscall0#2 in verus/isla/seams.md"; do
+      if isla verus/ledger/src/sys/tls.rs.overrides "$c"; then echo "seams: self-test: Isla: $c resolved, want rejected"; fi
+    done >> "$tmp/cites"
+    # The asm! templates of the seams a status cites `Isla: FILE` for must
+    # be the lines of the templates.txt next to FILE (islatemplates), so a
+    # status stays true when no Isla tool runs.
+    cites | while read -r o t c; do
+      [ "$t" = Isla ] || continue
+      name=${c% in *}; file=${c##* in }; src=${o#verus/ledger/}; src=${src%.overrides}
+      r=$(awk -v h="## \`$name\`" -v nm="$name" -v f="$file" -v s="$src" '
+        $0 == h { on = 1; next }
+        on && index($0, s ":") == 1 {
+          l = $0; sub(/^[^:]*:/, "", l); sub(/\..*$/, "", l)
+          k = $0; sub(/^.*Kind: /, "", k); sub(/\. Category:.*$/, "", k)
+          print f "\t" s "\t" l "\t" nm "\t" k; exit
+        }' "$tmp/ledger/$src.md" 2>/dev/null || true)
+      if [ -n "$r" ]; then echo "$r"; else echo "seams: $o: Isla: $name has no ledger entry" >> "$tmp/cites"; fi
+    done > "$tmp/isla-items"
+    cut -f1 "$tmp/isla-items" | sort -u | while read -r f; do
+      if [ -f "$(dirname "$f")/templates.txt" ]; then
+        grep "^$f$tab" "$tmp/isla-items" | cut -f2- > "$tmp/isla-items-f"
+        islatemplates "$(dirname "$f")/templates.txt" "$tmp/isla-items-f"
+      else
+        echo "seams: Isla: $f: no templates.txt next to it"
+      fi
+    done >> "$tmp/cites"
+    # Self-test: a seam's item whose asm! calls drift from the templates
+    # file must be rejected for each way they can: a call the file does not
+    # list (an added `hvc`), a line no call reads (a changed template), a
+    # trap instruction in a string literal (in either case), an `asm!` with
+    # braces, and an exec item with no call.
+    # shellcheck disable=SC2016
+    printf '%s\n' 'fn probe() {' '    unsafe {' '        asm!("svc #0", options(nostack));' \
+      '        asm!(' '            "hvc #0",' '            options(nostack),' '        );' '    }' \
+      '    let s = ".inst 0xd4000002";' '    let t = "SVC #1";' '    asm!{options(nomem)};' '}' 'fn empty() {' '    let x = 1;' '}' > "$tmp/st.rs"
+    printf '%s\t%s\t%s\n' "$tmp/st.rs" probe 'asm!("svc #0", options(nostack));' \
+      "$tmp/st.rs" probe 'asm!("svc #1", options(nostack));' > "$tmp/st-templates.txt"
+    printf '%s\t%s\t%s\t%s\n' "$tmp/st.rs" 1 'probe#2' external_body "$tmp/st.rs" 13 empty external_body \
+      > "$tmp/st-items"
+    islatemplates "$tmp/st-templates.txt" "$tmp/st-items" > "$tmp/st-out"
+    for w in 'probe#2: unchecked assembly' ': ".inst 0xd4000002"' ': "SVC #1"' ': asm! with another delimiter: asm!{options(nomem)};' \
+        'empty: no asm! call to check' \
+        'probe: an asm! call that '"$tmp"'/st-templates.txt does not list: asm!( "hvc #0", options(nostack), );' \
+        'no asm! call of a seam in '"$tmp"'/st.rs probe reads: asm!("svc #1", options(nostack));'; do
+      grep -qF -- "$w" "$tmp/st-out" || echo "seams: self-test: Isla templates: want a line with: $w"
+    done >> "$tmp/cites"
+    [ "$(wc -l < "$tmp/st-out")" -eq 6 ] ||
+      { echo "seams: self-test: Isla templates: want 6 lines, got:"; cat "$tmp/st-out"; } >> "$tmp/cites"
     # A gated assertion (a one-line and a multi-line `cfg`, and one with a
     # blank line before the comment) must be
     # rejected too: a gated assertion is not evaluated in every build.

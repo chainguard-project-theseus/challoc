@@ -1,0 +1,14 @@
+# `svc #0` at Non-secure EL0 in AArch64 state with HCR_EL2 as Linux sets it
+# for a VHE host kernel at EL2 (HCR_HOST_VHE_FLAGS: E2H, TGE, RW;
+# verus/isla/seams.md). As svc0.job with the exception taken
+# to EL2: the same syndrome in ESR_EL2, the return address in ELR_EL2, the
+# PC at EL2's vector for a lower EL using AArch64, PSTATE at EL2 on
+# SP_EL2, and no user register or memory written.
+insn svc0-vhe.trace svc
+no-mem-write
+mem-reads 0
+assert (= final.ESR_EL2 #x56000000)
+assert (= final.ELR_EL2 (bvadd init._PC #x0000000000000004))
+assert (= final._PC (concat ((_ extract 63 11) init.VBAR_EL2) #b10000000000))
+assert (= final.PSTATE.EL #b10)
+assert (= final.PSTATE.SP #b1)

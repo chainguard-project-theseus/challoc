@@ -119,7 +119,7 @@ pub unsafe fn syscall6(
 ## `syscall0#2`
 
 src/sys/raw.rs:172. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call).
 
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
@@ -130,7 +130,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
 ## `syscall1#2`
 
 src/sys/raw.rs:186. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call).
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
@@ -141,7 +141,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 ## `syscall2#2`
 
 src/sys/raw.rs:200. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call).
 
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
@@ -152,7 +152,7 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 ## `syscall3#2`
 
 src/sys/raw.rs:215. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call).
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
@@ -165,7 +165,7 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
 ## `syscall4#2`
 
 src/sys/raw.rs:232. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call).
 
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
@@ -176,7 +176,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 ## `syscall5#2`
 
 src/sys/raw.rs:247. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call).
 
 ```rust
 pub unsafe fn syscall5(
@@ -194,7 +194,7 @@ pub unsafe fn syscall5(
 ## `syscall6#2`
 
 src/sys/raw.rs:269. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call).
 
 ```rust
 pub unsafe fn syscall6(

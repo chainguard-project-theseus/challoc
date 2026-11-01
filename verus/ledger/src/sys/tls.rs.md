@@ -44,7 +44,7 @@ pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
 ## `get_tp`
 
 src/sys/tls.rs:379. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: that the GOT entry holds the slot's TLS offset, the slot the cell's value, and TPIDR_EL0 the cell's tp).
 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
 

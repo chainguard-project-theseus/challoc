@@ -1,0 +1,7 @@
+; Negative control (run.sh): writes R0 a value isla-check cannot express.
+(trace
+  (declare-const v1 (_ BitVec 64))
+  (read-reg |_PC| nil v1)
+  (write-reg |R0| nil (_ bv-1 64))
+  (define-const v3 (bvadd v1 #x0000000000000004))
+  (write-reg |_PC| nil v3))
