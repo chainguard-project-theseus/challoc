@@ -393,6 +393,8 @@ impl<'a> LockOrder<'a> {
 ///   `ClassState::lowest_partial` and `ClassState::bin_stats` calls: a C
 ///   entry point, which holds no allocator lock, and each call releases the
 ///   class lock before it returns;
+/// - the verification-only `api::theorem_read_only_never_aborts`, for its
+///   `stats::collect_all` call, which stands for `mallinfo2`'s;
 /// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes

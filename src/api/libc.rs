@@ -637,6 +637,156 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Track
     free_slow(p, Tracked(blk), Tracked(errno))
 }
 
+/// The fast paths of `malloc` (and `operator new`, through
+/// [`malloc_fast`]), `free`, `free_sized` (so `sdallocx` with no flags)
+/// and `challoc_free_usable`, called as those entry points call them, in a
+/// context where [`crate::sys::may_syscall`] does not hold, only
+/// [`crate::sys::integrity_aborts`] (a fast path may abort at a corrupt
+/// PAC-signed cache entry or slot value). Each call verifies here, so none
+/// of these functions requires `may_syscall`, and every function that can
+/// make a system call does: they make none, except the write and the
+/// `SIGABRT` of an integrity abort (`abort_fmt`, which grants itself the
+/// capability). `which` picks the path, so each one starts from a fresh
+/// heap borrow. Paths 0, 2, 3 and the last restate the fast-path code of
+/// [`malloc_class`], [`free_block`], [`free_sized_block`] and
+/// [`free_usable_block`]; path 1 calls [`malloc_fast`]. A restated path
+/// checks only the callees it calls: nothing ties it to the body it
+/// restates, which is kept in step by hand, so a call added to one of
+/// those bodies is not covered until its restatement here changes too.
+/// The block tokens are taken as
+/// the entry points take them: an empty `Live` for a pop,
+/// [`heap::live::axiom_c_claim`] for a free, of the call's token for `p`
+/// (`claim`, [`CCall`], as an export mints it).
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(claim): Tracked<CCall>)
+    requires
+        crate::sys::integrity_aborts(),
+        claim.block() == Some(p),
+{
+    let tracked mut blk = Live::empty();
+    match which {
+        0 => {
+            // As `malloc_block` and `malloc_medium` take the class.
+            let hint = if size <= SMALL_MAX { Some(class_index_small(size)) } else { class_index(size) };
+            if let Some(c) = hint {
+                let shared = super::shared_ptr();
+                if let Some(h) = heap::existing_heap(shared) {
+                    // SAFETY: as in `malloc_class`.
+                    let flags = unsafe { heap::fast_flags(shared) };
+                    proof {
+                        h.lemma_wf_regions();
+                    }
+                    let _ = h.alloc_fast(c, flags, Tracked(&mut blk));
+                }
+            }
+        },
+        1 => {
+            let _ = malloc_fast(size, Tracked(&mut blk));
+        },
+        2 => {
+            let tracked tls = crate::sys::tls::TlsSlot::entry();
+            if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
+                // SAFETY: as in `free_block`.
+                let s = unsafe { super::shared_deref(super::shared_base()) };
+                let tracked mut b = heap::live::axiom_c_claim(claim);
+                // SAFETY: as in `free_block`.
+                let _ = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) };
+            }
+        },
+        3 => {
+            // As `free_sized_with` and `free_sized_medium` take the class.
+            let hint = if size <= SMALL_MAX { Some(class_index_small(size)) } else { class_index(size) };
+            if let Some(c) = hint {
+                let sp = super::shared_base();
+                if let Some(h) = heap::existing_heap(sp) {
+                    proof {
+                        h.lemma_wf_regions();
+                    }
+                    // SAFETY: as in `free_block`.
+                    let s = unsafe { super::shared_deref(sp) };
+                    let tracked mut b = heap::live::axiom_c_claim(claim);
+                    let _ = heap::free_sized_fast(s, h, p, Some(c), s.push_flags(), Tracked(&mut b));
+                }
+            }
+        },
+        _ => {
+            let tracked tls = crate::sys::tls::TlsSlot::entry();
+            if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
+                // SAFETY: as in `free_block`.
+                let s = unsafe { super::shared_deref(super::shared_base()) };
+                let tracked mut b = heap::live::axiom_c_claim(claim);
+                // SAFETY: as in `free_block`.
+                if let Some(c) = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) } {
+                    let _ = class_size(c);
+                }
+            }
+        },
+    }
+}
+
+/// The allocation and free cores of these C and jemalloc entry points:
+/// `malloc`, `calloc`, `aligned_alloc`, `mallocx`, `free`, `free_sized`,
+/// `challoc_free_usable`, `dallocx`, `sdallocx` and `malloc_usable_size`,
+/// slow paths included, called where the C entry points' capabilities hold
+/// (a system call, an abort) but [`crate::vspec::user::may_read_user`]
+/// does not. Each call verifies here, so none of these functions requires
+/// it, and every read of a user block's bytes does. Below them a callee
+/// could still grant it itself
+/// ([`crate::vspec::user::grant_user_reads`]); that function's doc lists
+/// its callers, of which only `purge::check_zero` (its `true`, the opt-in
+/// debug reads) is below these. `which` picks the call; a free takes the block's token as
+/// the export does, from the call's token for `p` (`claim`).
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8, Tracked(claim): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        claim.block() == Some(p),
+{
+    let tracked mut out = Live::empty();
+    match which {
+        0 => {
+            let _ = malloc_block(n, Tracked(&mut out), Tracked(errno));
+        },
+        1 => {
+            let _ = calloc_zeroed(n, m, Tracked(&mut out), Tracked(errno));
+        },
+        2 => {
+            let _ = aligned_alloc_block(n, m, Tracked(&mut out), Tracked(errno));
+        },
+        3 => {
+            let _ = super::jemalloc::mallocx_zeroed(n, flags, Tracked(&mut out), Tracked(errno));
+        },
+        4 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            free_block(p, Tracked(b), Tracked(errno));
+        },
+        5 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            free_sized_with(p, n, Tracked(b), Tracked(errno));
+        },
+        6 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            let _ = free_usable_block(p, Tracked(b), Tracked(errno));
+        },
+        7 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            super::jemalloc::dallocx_block(p, flags, Tracked(b), Tracked(errno));
+        },
+        8 => {
+            let tracked b = heap::live::axiom_c_claim(claim);
+            super::jemalloc::sdallocx_block(p, n, flags, Tracked(b), Tracked(errno));
+        },
+        _ => {
+            let _ = malloc_usable_size(p);
+        },
+    }
+}
+
 /// Sized free on the calling thread's heap: `hint` is the class the size
 /// (and alignment) name, `class_for(size, align)`, or `None` for a huge
 /// size. On the fast path the hint replaces the slab descriptor's bit test
