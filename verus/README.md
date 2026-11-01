@@ -137,7 +137,8 @@ both quanta; locally, with Kani 0.68.0 and CBMC 6.11.0 (Wolfi's `kani` and
 `cbmc` packages):
 
 ```sh
-cargo kani -Z unstable-options -Z stubbing --ignore-global-asm \
+cargo kani -Z unstable-options -Z stubbing -Z mem-predicates \
+    --ignore-global-asm \
     --no-default-features --features quantum16      # or quantum8
 cargo kani ... --harness kani_proofs::stats::fig_add_exact   # one harness
 cargo kani ... --harness config::kani_config::get_contract   # one in a file
