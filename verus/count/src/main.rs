@@ -13,15 +13,27 @@
 //! `verus_keep_ghost` builds meet (`UNSHIPPED`). Lines run from a
 //! function's `fn` keyword to its closing brace.
 //!
+//! A trusted function is also classed by the status of its seam in the
+//! ledger (verus/ledger, verus/SEAMS.md, "Status"), matched by the
+//! `src/FILE:LINE` of its `fn` keyword: *discharged* when the status is
+//! "discharged" (a check outside Verus covers its whole contract),
+//! *partly checked* when it is "trusted (partly checked, ...)", and
+//! unchecked otherwise. The *combined* share counts verified and
+//! discharged functions; partly checked ones are shown apart and not
+//! counted. A trusted function with no ledger entry is a warning; a
+//! discharged function seam (`external_body`, `external_body proof`,
+//! `axiom`) that matches no trusted function, or a seam of a kind this
+//! counter does not know, fails the run.
+//!
 //! Usage: `cargo run --release -- [--list] [--floor FILE [--base-rev REV]]
 //! ROOT` from verus/count, with ROOT the repository root (default `../..`).
 //! `--list` prints one line per executable function: crate, class, lines,
 //! file:line and name. `--floor FILE` fails the run when the crate's
-//! verified share of functions or of lines is below the figure FILE
-//! records (verus/FLOOR), and names the figure to record when the share has
-//! risen past it. `--base-rev REV` also fails a figure FILE sets below
-//! `REV:verus/FLOOR`'s without a new `lowered` line for it, and fails when
-//! REV does not resolve.
+//! verified or combined share of functions or of lines is below the
+//! figure FILE records (verus/FLOOR), and names the figure to record when
+//! the share has risen past it. `--base-rev REV` also fails a figure FILE
+//! sets below `REV:verus/FLOOR`'s without a new `lowered` line for it, and
+//! fails when REV does not resolve.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -51,6 +63,9 @@ struct Counter {
     file: PathBuf,
     list: bool,
     tallies: BTreeMap<String, Tally>,
+    /// The `src/FILE:LINE` of each trusted function and its lines, to match
+    /// against the seam ledger.
+    trusted: Vec<(String, usize)>,
     /// Files and `verus!` blocks that could not be read or parsed. Their
     /// functions are missing from every count, so any of them fails the run.
     errors: usize,
@@ -262,6 +277,10 @@ impl Counter {
         let lines = end.saturating_sub(start) + 1;
         t.fns[class as usize] += 1;
         t.lines[class as usize] += lines;
+        if class == Class::Trusted {
+            self.trusted
+                .push((format!("{}:{}", self.file.display(), start), lines));
+        }
         if self.list {
             println!(
                 "{}\t{:?}\t{}\t{}:{}\t{}",
@@ -351,14 +370,19 @@ impl Counter {
     }
 }
 
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// The files under `dir` whose names end in `suffix`, in path order.
+fn walk(dir: &Path, suffix: &str, out: &mut Vec<PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
     entries.sort();
     for p in entries {
         if p.is_dir() {
-            rust_files(&p, out);
-        } else if p.extension().is_some_and(|e| e == "rs") {
+            walk(&p, suffix, out);
+        } else if p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(suffix))
+        {
             out.push(p);
         }
     }
@@ -405,6 +429,7 @@ fn main() {
         file: PathBuf::new(),
         list,
         tallies: BTreeMap::new(),
+        trusted: Vec::new(),
         errors: 0,
     };
     let src = root.join("src");
@@ -413,7 +438,7 @@ fn main() {
         std::process::exit(2);
     }
     let mut files = Vec::new();
-    rust_files(&src, &mut files);
+    walk(&src, ".rs", &mut files);
     // `tracked` is a Verus keyword; challoc's tests bind a variable of that
     // name (api/mallctl.rs). A same-length stand-in keeps the line numbers,
     // and Verus code never writes `let tracked =`.
@@ -455,6 +480,24 @@ fn main() {
     let t = c.tallies.remove(&c.krate).unwrap_or_default();
     print_row(&c.krate, &t);
     fail_on_errors(c.errors);
+    let seams = read_ledger(&root.join("verus/ledger")).unwrap_or_else(|e| {
+        eprintln!("verus/ledger: {e}");
+        std::process::exit(2);
+    });
+    let (checked, warnings, errors) = match_ledger(&c.trusted, &seams);
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    println!(
+        "crate\tverified+discharged\tdischarged\tpartly checked\tverified+discharged%\tlines verified+discharged\tlines discharged\tlines partly checked\tlines verified+discharged%"
+    );
+    print_combined_row(&c.krate, &t, &checked);
+    if !errors.is_empty() {
+        for e in &errors {
+            eprintln!("FAIL ledger: {e}");
+        }
+        std::process::exit(1);
+    }
     if let Some(f) = floor {
         let head = read_floor(
             &fs::read_to_string(&f).unwrap_or_else(|e| {
@@ -463,10 +506,7 @@ fn main() {
             }),
             &f.display().to_string(),
         );
-        let got = Floor {
-            functions: tenths(t.fns[0], t.fns.iter().sum()),
-            lines: tenths(t.lines[0], t.lines.iter().sum()),
-        };
+        let got = shares(&t, &checked);
         let (mut ok, report) = check_floor(&got, &head.floor);
         print!("{report}");
         if let Some(rev) = base_rev {
@@ -505,6 +545,197 @@ fn print_row(name: &str, t: &Tally) {
         pct(t.lines[0], lines),
         t.ghost
     );
+}
+
+/// The four [`FIGURES`] of a tally and its discharged functions.
+fn shares(t: &Tally, c: &Checked) -> Floor {
+    let fns: usize = t.fns.iter().sum();
+    let lines: usize = t.lines.iter().sum();
+    Floor([
+        tenths(t.fns[0], fns),
+        tenths(t.lines[0], lines),
+        tenths(t.fns[0] + c.discharged.0, fns),
+        tenths(t.lines[0] + c.discharged.1, lines),
+    ])
+}
+
+fn print_combined_row(name: &str, t: &Tally, c: &Checked) {
+    let fns: usize = t.fns.iter().sum();
+    let lines: usize = t.lines.iter().sum();
+    let (vf, vl) = (t.fns[0] + c.discharged.0, t.lines[0] + c.discharged.1);
+    println!(
+        "{name}\t{vf}\t{}\t{}\t{}\t{vl}\t{}\t{}\t{}",
+        c.discharged.0,
+        c.partly.0,
+        pct(vf, fns),
+        c.discharged.1,
+        c.partly.1,
+        pct(vl, lines),
+    );
+}
+
+/// How far a seam's ledger status says a check outside Verus covers it
+/// (verus/SEAMS.md, "Status").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Status {
+    /// `discharged (...)`: the check covers the whole contract.
+    Discharged,
+    /// `trusted (partly checked, ...)`.
+    Partly,
+    /// `trusted`, or any other status.
+    Unchecked,
+}
+
+/// One ledger entry: its `src/FILE:LINE`, its kind and its status.
+#[derive(Debug, PartialEq, Eq)]
+struct Seam {
+    loc: String,
+    kind: String,
+    status: Status,
+}
+
+/// The seam kinds `seams.sh` places at a function's `fn` line, and that
+/// the counter classes as trusted.
+const FN_KINDS: &[&str] = &["external_body", "external_body proof", "axiom"];
+
+/// The other kinds `seams.sh` writes: items that are not functions, or
+/// that sit elsewhere than a trusted function's `fn` line (a
+/// `no_decreases` function counts as verified; an `assume_new` seam is the
+/// line of the call, inside a function that counts as trusted).
+const OTHER_KINDS: &[&str] = &[
+    "external_body type",
+    "external_body const",
+    "assume_spec",
+    "ext_type_spec",
+    "ext_trait_spec",
+    "spec_impl",
+    "no_decreases",
+    "assume_new",
+    "ghost_assume_new",
+];
+
+/// The seams of one ledger file: each entry's `src/FILE:LINE. Kind: K.
+/// Category: ...` line and the `Status: S` that follows it in the same
+/// paragraph (`S` may run on over the paragraph's next lines). An entry
+/// without a status is an error.
+fn parse_ledger(text: &str) -> Result<Vec<Seam>, String> {
+    let mut seams = Vec::new();
+    let mut lines = text.lines().enumerate().peekable();
+    while let Some((i, line)) = lines.next() {
+        let Some((loc, rest)) = line.split_once(". Kind: ") else {
+            continue;
+        };
+        if !loc.starts_with("src/")
+            || !loc
+                .rsplit_once(':')
+                .is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        {
+            continue;
+        }
+        let kind = rest
+            .split_once(". Category:")
+            .map_or(rest.trim_end_matches('.'), |(k, _)| k)
+            .to_owned();
+        // The status is in the rest of the entry's paragraph.
+        let mut para = rest.to_owned();
+        while let Some((_, next)) = lines.peek()
+            && !next.trim().is_empty()
+        {
+            para.push(' ');
+            para.push_str(next.trim());
+            lines.next();
+        }
+        let Some((_, status)) = para.split_once("Status: ") else {
+            return Err(format!("line {}: {loc} has no status", i + 1));
+        };
+        let status = if status.starts_with("discharged") {
+            Status::Discharged
+        } else if status.starts_with("trusted (partly checked") {
+            Status::Partly
+        } else {
+            Status::Unchecked
+        };
+        seams.push(Seam {
+            loc: loc.to_owned(),
+            kind,
+            status,
+        });
+    }
+    Ok(seams)
+}
+
+/// Every seam in the `*.rs.md` files under `dir` (verus/ledger).
+fn read_ledger(dir: &Path) -> Result<Vec<Seam>, String> {
+    let mut files = Vec::new();
+    walk(dir, ".rs.md", &mut files);
+    if files.is_empty() {
+        return Err(format!("no *.rs.md files under {}", dir.display()));
+    }
+    let mut seams = Vec::new();
+    for f in files {
+        let text = fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+        seams.extend(parse_ledger(&text).map_err(|e| format!("{}: {e}", f.display()))?);
+    }
+    Ok(seams)
+}
+
+/// Functions and lines of the trusted functions whose seams are
+/// discharged, and of those partly checked.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Checked {
+    discharged: (usize, usize),
+    partly: (usize, usize),
+}
+
+/// Classes each trusted function (`src/FILE:LINE`, lines) by the status of
+/// the function seam (`FN_KINDS`) at its location. Returns the tally,
+/// warnings (a trusted function with no seam) and errors (a seam of an
+/// unknown kind, two function seams on one line, or a discharged function
+/// seam that matches no trusted function, whose
+/// coverage would otherwise drop out of the combined share unnoticed).
+fn match_ledger(
+    trusted: &[(String, usize)],
+    seams: &[Seam],
+) -> (Checked, Vec<String>, Vec<String>) {
+    let mut checked = Checked::default();
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    // Only a function seam classes a function: a seam of another kind on
+    // the same line (an `assume_new` in a one-line function) does not.
+    let mut by_loc: BTreeMap<&str, &Seam> = BTreeMap::new();
+    for s in seams.iter().filter(|s| FN_KINDS.contains(&s.kind.as_str())) {
+        if by_loc.insert(s.loc.as_str(), s).is_some() {
+            errors.push(format!("{}: two function seams on one line", s.loc));
+        }
+    }
+    for (loc, lines) in trusted {
+        let slot = match by_loc.get(loc.as_str()).map(|s| s.status) {
+            Some(Status::Discharged) => &mut checked.discharged,
+            Some(Status::Partly) => &mut checked.partly,
+            Some(Status::Unchecked) => continue,
+            None => {
+                warnings.push(format!("trusted function at {loc} has no ledger entry"));
+                continue;
+            }
+        };
+        slot.0 += 1;
+        slot.1 += lines;
+    }
+    for s in seams {
+        let is_fn = FN_KINDS.contains(&s.kind.as_str());
+        if !is_fn && !OTHER_KINDS.contains(&s.kind.as_str()) {
+            errors.push(format!("{}: unknown seam kind {:?}", s.loc, s.kind));
+        } else if is_fn
+            && s.status == Status::Discharged
+            && !trusted.iter().any(|(loc, _)| *loc == s.loc)
+        {
+            errors.push(format!(
+                "{}: discharged {} seam matches no trusted function",
+                s.loc, s.kind
+            ));
+        }
+    }
+    (checked, warnings, errors)
 }
 
 /// `REV:verus/FLOOR` under `root`'s repository, failing closed: a
@@ -554,12 +785,20 @@ fn read_floor(text: &str, name: &str) -> FloorFile {
     })
 }
 
-/// A verified share in tenths of a percent, rounded down: 84 is 8.4%.
+/// The figures verus/FLOOR records, in [`Floor`]'s order, and what each
+/// counts: the verified share of functions and of lines, and the combined
+/// share (verified or discharged) of each.
+const FIGURES: [(&str, &str); 4] = [
+    ("functions", "verified"),
+    ("lines", "verified"),
+    ("combined-functions", "verified or discharged"),
+    ("combined-lines", "verified or discharged"),
+];
+
+/// The shares, in tenths of a percent rounded down (84 is 8.4%), in
+/// [`FIGURES`]' order.
 #[derive(Debug, PartialEq, Eq)]
-struct Floor {
-    functions: u32,
-    lines: u32,
-}
+struct Floor([u32; 4]);
 
 fn tenths(a: usize, b: usize) -> u32 {
     (a * 1000)
@@ -567,20 +806,22 @@ fn tenths(a: usize, b: usize) -> u32 {
         .map_or(0, |t| u32::try_from(t).unwrap_or(u32::MAX))
 }
 
-/// verus/FLOOR: the two figures, and the `lowered` lines that give a
-/// reason for each figure set below the base revision's.
+/// verus/FLOOR: the figures, and the `lowered` lines that give a reason
+/// for each figure set below the base revision's.
 #[derive(Debug, PartialEq, Eq)]
 struct FloorFile {
     floor: Floor,
     lowered: Vec<(String, u32)>,
 }
 
-/// Reads verus/FLOOR: `#` comments, one `functions P` and one `lines P`
-/// line (P a percentage with at most one decimal), and any number of
-/// `lowered functions|lines P REASON` lines.
+/// Reads verus/FLOOR: `#` comments, one `FIGURE P` line per figure (P a
+/// percentage with at most one decimal), and any number of `lowered
+/// FIGURE P REASON` lines. `functions` and `lines` are required; a
+/// missing `combined-functions` or `combined-lines` is 0.0, so a base
+/// revision from before they existed still reads, and dropping one is a
+/// lowering like any other.
 fn parse_floor(text: &str) -> Result<FloorFile, String> {
-    let mut functions = None;
-    let mut lines = None;
+    let mut figures = [None; 4];
     let mut lowered = Vec::new();
     for (i, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
@@ -589,40 +830,37 @@ fn parse_floor(text: &str) -> Result<FloorFile, String> {
         }
         let words: Vec<&str> = line.split_whitespace().collect();
         let n = i + 1;
-        let figure = |key: &str, value: &str| -> Result<u32, String> {
-            if key != "functions" && key != "lines" {
+        let figure = |key: &str, value: &str| -> Result<(usize, u32), String> {
+            let Some(at) = FIGURES.iter().position(|(k, _)| *k == key) else {
                 return Err(format!("line {n}: unknown figure {key:?}"));
-            }
-            parse_tenths(value).ok_or_else(|| format!("line {n}: {value:?} is not P or P.D"))
+            };
+            let v = parse_tenths(value)
+                .ok_or_else(|| format!("line {n}: {value:?} is not P or P.D"))?;
+            Ok((at, v))
         };
         match words.as_slice() {
             ["lowered", key, value, reason @ ..] => {
                 if reason.is_empty() {
                     return Err(format!("line {n}: a lowered line needs a reason"));
                 }
-                lowered.push(((*key).to_owned(), figure(key, value)?));
+                lowered.push(((*key).to_owned(), figure(key, value)?.1));
             }
             [key, value] => {
-                let v = figure(key, value)?;
-                let slot = if *key == "functions" {
-                    &mut functions
-                } else {
-                    &mut lines
-                };
-                if slot.replace(v).is_some() {
+                let (at, v) = figure(key, value)?;
+                if figures[at].replace(v).is_some() {
                     return Err(format!("line {n}: {key} given twice"));
                 }
             }
             _ => {
                 return Err(format!(
-                    "line {n}: want `functions P`, `lines P` or `lowered FIGURE P REASON`"
+                    "line {n}: want `FIGURE P` or `lowered FIGURE P REASON`"
                 ));
             }
         }
     }
-    match (functions, lines) {
-        (Some(functions), Some(lines)) => Ok(FloorFile {
-            floor: Floor { functions, lines },
+    match figures {
+        [Some(functions), Some(lines), cf, cl] => Ok(FloorFile {
+            floor: Floor([functions, lines, cf.unwrap_or(0), cl.unwrap_or(0)]),
             lowered,
         }),
         _ => Err("want both a functions and a lines figure".into()),
@@ -636,10 +874,8 @@ fn parse_floor(text: &str) -> Result<FloorFile, String> {
 fn check_lowering(head: &FloorFile, base: &FloorFile) -> (bool, String) {
     let mut ok = true;
     let mut report = String::new();
-    for (name, h, b) in [
-        ("functions", head.floor.functions, base.floor.functions),
-        ("lines", head.floor.lines, base.floor.lines),
-    ] {
+    for (i, (name, _)) in FIGURES.iter().enumerate() {
+        let (h, b) = (head.floor.0[i], base.floor.0[i]);
         if h >= b {
             continue;
         }
@@ -691,27 +927,25 @@ fn parse_tenths(s: &str) -> Option<u32> {
 fn check_floor(got: &Floor, want: &Floor) -> (bool, String) {
     let mut ok = true;
     let mut report = String::new();
-    for (name, g, w) in [
-        ("functions", got.functions, want.functions),
-        ("lines", got.lines, want.lines),
-    ] {
+    for (i, (name, what)) in FIGURES.iter().enumerate() {
+        let (g, w) = (got.0[i], want.0[i]);
         if g < w {
             ok = false;
             report += &format!(
-                "FAIL coverage floor: {name} verified {}%, below the floor's {}%\n",
+                "FAIL coverage floor: {name} {what} {}%, below the floor's {}%\n",
                 shown(g),
                 shown(w)
             );
         } else if g > w {
             report += &format!(
-                "ok coverage floor: {name} verified {}%, above the floor's {}%; raise verus/FLOOR to `{name} {}`\n",
+                "ok coverage floor: {name} {what} {}%, above the floor's {}%; raise verus/FLOOR to `{name} {}`\n",
                 shown(g),
                 shown(w),
                 shown(g)
             );
         } else {
             report += &format!(
-                "ok coverage floor: {name} verified {}%, at the floor\n",
+                "ok coverage floor: {name} {what} {}%, at the floor\n",
                 shown(g)
             );
         }
@@ -737,6 +971,7 @@ mod tests {
             file: PathBuf::from("lib.rs"),
             list: false,
             tallies: BTreeMap::new(),
+            trusted: Vec::new(),
             errors: 0,
         };
         c.items(&parse_file(src).expect("parses").items, false);
@@ -840,10 +1075,7 @@ mod tests {
         assert_eq!(
             got,
             Ok(FloorFile {
-                floor: Floor {
-                    functions: 84,
-                    lines: 100
-                },
+                floor: Floor([84, 100, 0, 0]),
                 lowered: vec![("lines".into(), 100)],
             }),
             "floor: got = {got:?}, wanted = 8.4 and 10.0, lines lowered to 10.0"
@@ -859,6 +1091,10 @@ mod tests {
             "functions 8.4\nlines 1\nbranches 3\n",
             "functions 8.4 9\nlines 1\n",
             "functions .5\nlines 1\n",
+            "functions 8.4\nlines 1\ncombined-lines 2\ncombined-lines 3\n",
+            "functions 8.4\nlines 1\ncombined-functions 1.25\n",
+            "functions 8.4\nlines 1\ncombined 3\n",
+            "functions 8.4\nlines 1\nlowered combined-lines 3\n",
         ] {
             assert!(parse_floor(bad).is_err(), "{bad:?}: got = Ok, wanted = Err");
         }
@@ -893,6 +1129,223 @@ mod tests {
             let (ok, report) = check_lowering(&head(text), &base);
             assert_eq!(ok, want, "{text:?}: got = {ok}, wanted = {want}\n{report}");
         }
+    }
+
+    #[test]
+    fn the_combined_figures_are_optional_and_guarded_once_set() {
+        let got = parse_floor(
+            "functions 1\nlines 2\ncombined-functions 3\ncombined-lines 4.5\nlowered combined-lines 4.5 why\n",
+        );
+        assert_eq!(
+            got,
+            Ok(FloorFile {
+                floor: Floor([10, 20, 30, 45]),
+                lowered: vec![("combined-lines".into(), 45)],
+            }),
+            "floor: got = {got:?}, want = 1.0, 2.0, 3.0 and 4.5"
+        );
+        let floor = |text: &str| parse_floor(text).expect("parses");
+        // A base from before the combined figures: any head value raises them.
+        let (ok, report) = check_lowering(
+            &floor("functions 1\nlines 2\ncombined-lines 9\n"),
+            &floor("functions 1\nlines 2\n"),
+        );
+        assert!(ok, "adding combined-lines: got = fail, want = ok\n{report}");
+        let base = floor("functions 1\nlines 2\ncombined-functions 3\ncombined-lines 9\n");
+        for (text, want) in [
+            (
+                "functions 1\nlines 2\ncombined-functions 3\ncombined-lines 9\n",
+                true,
+            ),
+            (
+                "functions 1\nlines 2\ncombined-functions 3\ncombined-lines 8.9\n",
+                false,
+            ),
+            (
+                "functions 1\nlines 2\ncombined-functions 3\ncombined-lines 8.9\nlowered combined-lines 8.9 a seam lost its harness\n",
+                true,
+            ),
+            (
+                "functions 1\nlines 2\ncombined-functions 3\ncombined-lines 8.9\nlowered lines 8.9 wrong figure\n",
+                false,
+            ),
+            // Dropping a figure lowers it to 0.0.
+            ("functions 1\nlines 2\ncombined-functions 3\n", false),
+            (
+                "functions 1\nlines 2\ncombined-functions 3\nlowered combined-lines 0 no longer guarded\n",
+                true,
+            ),
+        ] {
+            let (ok, report) = check_lowering(&floor(text), &base);
+            assert_eq!(ok, want, "{text:?}: got = {ok}, want = {want}\n{report}");
+        }
+    }
+
+    fn seam(loc: &str, kind: &str, status: Status) -> Seam {
+        Seam {
+            loc: loc.into(),
+            kind: kind.into(),
+            status,
+        }
+    }
+
+    #[test]
+    fn a_ledger_entry_gives_its_place_kind_and_status() {
+        let text = r#"# Seams in `src/a.rs`
+
+| item | kind | category | tool | status |
+|---|---|---|---|---|
+| `f` | axiom | core library | Kani | discharged |
+
+## `f`
+
+src/a.rs:10. Kind: axiom. Category: core library.
+Tool: Kani. Status: discharged (Kani: a::kani_f::f).
+
+```rust
+axiom fn f();
+```
+
+## `g`
+
+src/a.rs:20. Kind: external_body. Category: FFI/syscall.
+Tool: Kani. Status: trusted (partly checked, Kani: a::kani_g::g; not checked: errno).
+
+## `h`
+
+src/a.rs:30. Kind: external_body const. Category: core library.
+Tool: Kani. Status:
+trusted
+
+## `k`
+
+src/a.rs:40. Kind: external_body proof. Category: x.
+Tool: none (assumption).
+Status: discharged (const assert: `k` in src/a.rs).
+"#;
+        let got = parse_ledger(text);
+        let want = vec![
+            seam("src/a.rs:10", "axiom", Status::Discharged),
+            seam("src/a.rs:20", "external_body", Status::Partly),
+            seam("src/a.rs:30", "external_body const", Status::Unchecked),
+            seam("src/a.rs:40", "external_body proof", Status::Discharged),
+        ];
+        assert_eq!(got, Ok(want), "seams: got = {got:?}");
+        // The status belongs to the entry's own paragraph.
+        let got = parse_ledger(
+            "src/a.rs:10. Kind: axiom. Category: x.\nTool: Kani.\n\nStatus: discharged\n",
+        );
+        assert!(
+            got.is_err(),
+            "no status in the entry: got = {got:?}, want = an error"
+        );
+        // A header without a category still gives its kind.
+        let got = parse_ledger("src/a.rs:10. Kind: axiom.\nStatus: discharged (x).\n");
+        assert_eq!(
+            got,
+            Ok(vec![seam("src/a.rs:10", "axiom", Status::Discharged)]),
+            "no category: got = {got:?}"
+        );
+    }
+
+    #[test]
+    fn trusted_functions_are_classed_by_their_seams() {
+        let trusted = vec![
+            ("src/a.rs:10".to_owned(), 5),
+            ("src/a.rs:20".to_owned(), 7),
+            ("src/a.rs:30".to_owned(), 11),
+            ("src/a.rs:40".to_owned(), 13),
+        ];
+        let seams = vec![
+            seam("src/a.rs:10", "axiom", Status::Discharged),
+            seam("src/a.rs:20", "external_body", Status::Partly),
+            seam("src/a.rs:30", "external_body proof", Status::Unchecked),
+            // Not functions: no trusted function to match, and none needed.
+            seam("src/a.rs:50", "external_body const", Status::Discharged),
+            seam("src/a.rs:60", "assume_spec", Status::Discharged),
+            // Another kind on a function's line does not class it.
+            seam("src/a.rs:40", "assume_new", Status::Discharged),
+        ];
+        let (checked, warnings, errors) = match_ledger(&trusted, &seams);
+        let want = Checked {
+            discharged: (1, 5),
+            partly: (1, 7),
+        };
+        assert_eq!(checked, want, "checked: got = {checked:?}, want = {want:?}");
+        assert_eq!(
+            warnings,
+            vec!["trusted function at src/a.rs:40 has no ledger entry".to_owned()],
+            "warnings: got = {warnings:?}"
+        );
+        assert!(errors.is_empty(), "errors: got = {errors:?}, want = none");
+
+        // A discharged function seam that no trusted function matches (its
+        // function moved, or now counts as verified) fails, and so does a
+        // kind the counter does not know; an unmatched unchecked or partly
+        // checked one does not.
+        let seams = vec![
+            seam("src/a.rs:11", "axiom", Status::Discharged),
+            seam("src/a.rs:12", "external_body", Status::Unchecked),
+            seam("src/a.rs:13", "external_body", Status::Partly),
+            seam("src/a.rs:14", "macro_seam", Status::Unchecked),
+        ];
+        let (_, _, errors) = match_ledger(&trusted, &seams);
+        assert_eq!(
+            errors,
+            vec![
+                "src/a.rs:11: discharged axiom seam matches no trusted function".to_owned(),
+                "src/a.rs:14: unknown seam kind \"macro_seam\"".to_owned(),
+            ],
+            "errors: got = {errors:?}"
+        );
+
+        // Two function seams on one line are an error, not a silent pick.
+        let seams = vec![
+            seam("src/a.rs:10", "axiom", Status::Unchecked),
+            seam("src/a.rs:10", "external_body", Status::Discharged),
+        ];
+        let (_, _, errors) = match_ledger(&trusted, &seams);
+        assert_eq!(
+            errors,
+            vec!["src/a.rs:10: two function seams on one line".to_owned()],
+            "errors: got = {errors:?}"
+        );
+    }
+
+    #[test]
+    fn the_four_shares_come_from_the_tally_and_the_discharged_functions() {
+        let t = Tally {
+            fns: [6, 3, 1],
+            lines: [60, 30, 10],
+            ghost: 0,
+        };
+        let c = Checked {
+            discharged: (2, 25),
+            partly: (1, 5),
+        };
+        let got = shares(&t, &c);
+        let want = Floor([600, 600, 800, 850]);
+        assert_eq!(got, want, "shares: got = {got:?}, want = {want:?}");
+    }
+
+    #[test]
+    fn the_counter_records_where_trusted_functions_start() {
+        let mut c = Counter {
+            krate: "k".into(),
+            file: PathBuf::from("src/a.rs"),
+            list: false,
+            tallies: BTreeMap::new(),
+            trusted: Vec::new(),
+            errors: 0,
+        };
+        let src = "verus! {\n    fn verified() {}\n    #[verifier::external_body]\n    fn trusted() {\n        1;\n    }\n}\n";
+        c.items(&parse_file(src).expect("parses").items, false);
+        assert_eq!(
+            c.trusted,
+            vec![("src/a.rs:4".to_owned(), 3)],
+            "trusted: got = {:?}, want = src/a.rs:4 with 3 lines",
+            c.trusted
+        );
     }
 
     #[test]
@@ -941,25 +1394,10 @@ mod tests {
 
     #[test]
     fn the_floor_fails_below_and_names_a_rise() {
-        let want = Floor {
-            functions: 84,
-            lines: 105,
-        };
-        let (ok, report) = check_floor(
-            &Floor {
-                functions: 84,
-                lines: 105,
-            },
-            &want,
-        );
+        let want = Floor([84, 105, 900, 950]);
+        let (ok, report) = check_floor(&Floor([84, 105, 900, 950]), &want);
         assert!(ok, "at the floor: got = fail, wanted = ok\n{report}");
-        let (ok, report) = check_floor(
-            &Floor {
-                functions: 83,
-                lines: 120,
-            },
-            &want,
-        );
+        let (ok, report) = check_floor(&Floor([83, 120, 900, 949]), &want);
         assert!(!ok, "below on functions: got = ok, wanted = fail\n{report}");
         assert!(
             report.contains("FAIL coverage floor: functions verified 8.3%, below the floor's 8.4%"),
@@ -967,6 +1405,12 @@ mod tests {
         );
         assert!(
             report.contains("raise verus/FLOOR to `lines 12.0`"),
+            "report: got = {report:?}"
+        );
+        assert!(
+            report.contains(
+                "FAIL coverage floor: combined-lines verified or discharged 94.9%, below the floor's 95.0%"
+            ),
             "report: got = {report:?}"
         );
         assert_eq!(
