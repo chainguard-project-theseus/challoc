@@ -136,7 +136,7 @@ pub const PERIODIC_EVERY: u32 = 64;
 /// may still move its home onto the arena of a slot it frees
 /// (`Heap::try_rehome`, design 6.5). A thread that takes over a dead
 /// thread's data (larson's successors) frees it from its first operation
-/// on, and moved within 2..3 slow-path entries on average (C4A); a thread
+/// on, and moved within 2..3 slow-path entries on average; a thread
 /// that frees other threads' data only after building its own (mstress:
 /// about 140 entries at the first such free) never qualifies, so it keeps
 /// its own data at home. Below the limit a heap has refilled at most a
@@ -4918,12 +4918,12 @@ impl Heap {
     /// on another one, and every `free` of the inherited data took the
     /// foreign cache while its own allocations came from fresh refills of
     /// its own arena (larson: each successor alternated between two
-    /// arenas, `narenas:1` was 31% faster at 10 rounds per thread on the
-    /// C4A). Most successors now create their heap after the exiting
-    /// thread's unbind ([`Heap::destroy`] unbinds before its flush) and
-    /// are homed on its arena directly; one started earlier moves there
-    /// here once that arena is idle, and the inherited slots feed its
-    /// home caches again.
+    /// arenas and ran measurably slower than with a single arena). Most
+    /// successors create their heap after the exiting thread's unbind
+    /// ([`Heap::destroy`] unbinds before its flush) and are homed on its
+    /// arena directly; one started earlier moves there here once that
+    /// arena is idle, and the inherited slots feed its home caches
+    /// again.
     ///
     /// The move flushes the home caches and the `FOREIGN` caches through
     /// the ordinary flush (every cached slot goes back to its slab, its bit
@@ -4939,11 +4939,11 @@ impl Heap {
     /// data (mstress's workers take transfer slots from every arena) would
     /// strand its own data on the arena it leaves and send every later
     /// free of it to the `FOREIGN` cache. Moving on the first free from
-    /// any idle arena cost mstress 6% (700 of its 775 workers moved, after
-    /// about 140 slow-path entries each); under the limit 46 still moved
-    /// (+2.3%). Hence the second condition: two cross-arena frees in a
-    /// row seen here went to the same arena (an inherited data set comes
-    /// from one arena; mstress's transfer slots from all of them).
+    /// any idle arena moved most of mstress's workers, at a measurable
+    /// cost, and with the age limit alone a few young ones still moved.
+    /// Hence the second condition: two cross-arena frees in a row seen
+    /// here went to the same arena (an inherited data set comes from one
+    /// arena; mstress's transfer slots from all of them).
     ///
     /// The heap stays well formed: the home headers are re-keyed through
     /// their permissions ([`Heap::hdr_mut`], [`Heap::lemma_set`]), the new

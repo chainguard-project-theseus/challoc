@@ -138,9 +138,9 @@ struct Sink {
 }
 
 impl Sink {
-    /// Room for the NUL after the buffered bytes, the sink was built
-    /// where a system call may be made (its flush is one), as
-    /// for `sys::abort::Stderr`, and its owner holds no allocator lock.
+    /// The buffer has room for a NUL after its bytes, the sink exists only
+    /// where a system call may be made (a flush is one, as for
+    /// `sys::abort::Stderr`), and its owner holds no allocator lock.
     #[verifier::type_invariant]
     spec fn wf(&self) -> bool {
         self.len < 1024 && crate::sys::may_syscall() && self.ord@.top() == 0

@@ -810,15 +810,15 @@ impl Heap {
     }
 }
 
-/// The entry points' form of [`free_fast_class`]: the heap comes as the
-/// thread's TLS slot value (`tls_heap_slot`, which proved the heap exists
-/// and so that this thread observed `READY`), and both it and the
-/// `free_flags` byte are produced only after the bit test. Nothing in the
-/// slot check needs them, and on x86_64 a byte loaded up front stays live
-/// across the bit arithmetic and costs `free` a callee-saved register
-/// (`push`/`pop` of `rbx`). `blk` is the caller's token for `p`
-/// ([`Live::claims`]): the push takes its slot token, and a `None` leaves
-/// it as it was, for the cold path.
+/// The entry points' `free` fast path, `Some(class)` when it pushed `p`:
+/// the heap comes as the thread's TLS slot value (`tls_heap_slot`, which
+/// proved the heap exists and so that this thread observed `READY`), and
+/// both it and the `free_flags` byte are produced only after the bit
+/// test. Nothing in the slot check needs them, and on x86_64 a byte
+/// loaded up front stays live across the bit arithmetic and costs `free`
+/// a callee-saved register (`push`/`pop` of `rbx`). `blk` is the caller's
+/// token for `p` ([`Live::claims`]): the push takes its slot token, and a
+/// `None` leaves it as it was, for the cold path.
 ///
 /// # Safety
 /// `(t, tp)` from [`tls_heap_slot`](super::thread::tls_heap_slot) on this
@@ -926,10 +926,8 @@ unsafe fn free_fast_tail(
     }
     // The two default configurations (one arena, several arenas) each get
     // one compare and the plain push; the opt-in hardening takes the
-    // general dispatch. SAFETY (all three): guaranteed by the caller;
-    // `flags` carries the process's `PUSH_PAC`, and the two default
-    // configurations have it clear, so their slot value is the heap itself
-    // and they skip the `PUSH_PAC` test of `heap_from_slot`.
+    // general dispatch. SAFETY: guaranteed by the caller; `flags` carries
+    // the process's `PUSH_PAC`, clear in both default configurations.
     let pushed = match flags {
         0 => unsafe { heap_from_slot(t, tp, false, Tracked(&tls.cell), Tracked(&mut tls.loan)) }.push_fast(
             class,
@@ -938,10 +936,12 @@ unsafe fn free_fast_tail(
             Tracked(&mut tk),
         ),
         FREE_ROUTE => {
+            // SAFETY: as above; `PUSH_PAC` is clear, so the slot value is the heap.
             let h = unsafe { heap_from_slot(t, tp, false, Tracked(&tls.cell), Tracked(&mut tls.loan)) };
             shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))
         }
         _ => {
+            // SAFETY: as above; the `PUSH_PAC` bit passed is the process's.
             let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked(&tls.cell), Tracked(&mut tls.loan)) };
             (flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
                 && h.push_fast(class, p, flags & !FREE_ROUTE, Tracked(&mut tk))
@@ -1539,12 +1539,12 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
     free_fast_class(shared, h, p, flags).is_some()
 }
 
-/// [`free_fast`] that also names the class it pushed, for
-/// `challoc_free_usable` (design 13.7): `Some(class)` when `p` was
-/// verified as a slot of `class` and pushed, `None` for anything off the
-/// fast path (the caller then takes its cold exact path). The same loads
-/// as `free_fast`, no call: [`free_fast_slot`]'s, with the heap and the
-/// byte given.
+/// Test helper: [`free_fast`] that also names the class it pushed.
+/// `Some(class)` when `p` was verified as a slot of `class` and pushed,
+/// `None` for anything off the fast path. Runs the entry points' path
+/// ([`free_fast_slot`]'s bit test and `free_fast_tail`) with the heap `h`
+/// and the `flags` byte given instead of read from the thread slot and
+/// `Shared`.
 #[cfg(test)]
 pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> Option<usize> {
     let (class, slab) = shared.set_slot(p)?;

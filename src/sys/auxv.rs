@@ -79,18 +79,16 @@ mod linux_tests {
         assert_eq!(AT_PAGESZ as u64, libc::AT_PAGESZ);
         assert_eq!(AT_HWCAP as u64, libc::AT_HWCAP);
         // SAFETY: `getauxval` has no preconditions.
-        assert_eq!(
-            getauxval(AT_PAGESZ),
-            unsafe { libc::getauxval(libc::AT_PAGESZ) } as usize
-        );
-        assert_eq!(
-            getauxval(AT_HWCAP),
-            unsafe { libc::getauxval(libc::AT_HWCAP) } as usize
-        );
-        assert_eq!(
-            getauxval(AT_RSEQ_FEATURE_SIZE),
-            unsafe { libc::getauxval(27) } as usize
-        );
+        let (pagesz, hwcap, rseq) = unsafe {
+            (
+                libc::getauxval(libc::AT_PAGESZ),
+                libc::getauxval(libc::AT_HWCAP),
+                libc::getauxval(27),
+            )
+        };
+        assert_eq!(getauxval(AT_PAGESZ), pagesz as usize);
+        assert_eq!(getauxval(AT_HWCAP), hwcap as usize);
+        assert_eq!(getauxval(AT_RSEQ_FEATURE_SIZE), rseq as usize);
         let raw = std::fs::read("/proc/self/auxv").unwrap();
         const W: usize = core::mem::size_of::<usize>();
         let mut found = std::collections::BTreeMap::new();

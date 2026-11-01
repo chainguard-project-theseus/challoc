@@ -119,7 +119,7 @@ impl BinStats {
 
     /// Bytes allocated: `curregs * size`.
     // Only the tests call it: the verified sums add the fields themselves.
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[inline]
     pub fn allocated(&self) -> (r: usize)
         requires
@@ -132,7 +132,7 @@ impl BinStats {
 
     /// Active bytes: `curslabs * slab_size`.
     // Only the tests call it: the verified sums add the fields themselves.
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[inline]
     pub fn active(&self) -> (r: usize)
         requires
@@ -145,7 +145,7 @@ impl BinStats {
 
     /// Dirty bytes: `Empty` slabs.
     // Only the tests call it: the verified sums add the fields themselves.
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[inline]
     pub fn dirty(&self) -> (r: usize)
         requires
@@ -158,7 +158,7 @@ impl BinStats {
 
     /// Retained bytes: `Purged` slabs.
     // Only the tests call it: the verified sums add the fields themselves.
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[inline]
     pub fn retained(&self) -> (r: usize)
         requires
@@ -335,7 +335,7 @@ impl ArenaStats {
 
     /// `allocated` for this arena: small plus large.
     // Only the tests call it: the report sums the fields with `fig_add`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[inline]
     pub fn allocated(&self) -> (r: usize)
         requires
@@ -348,7 +348,7 @@ impl ArenaStats {
 
     /// `active` for this arena: small plus large.
     // Only the tests call it: the verified sums add the fields themselves.
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[inline]
     pub fn active(&self) -> (r: usize)
         requires

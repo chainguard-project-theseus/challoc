@@ -299,11 +299,11 @@ impl Heap {
     /// Release the `n` highest-address entries of a cache to their slabs
     /// (in `arena`, which owns them) in one batch grouped by slab and keep
     /// the rest. Selecting by address sends the holes to the high slabs,
-    /// which is what lets them drain (design 6.4). One `sort_unstable` of
-    /// the whole slot array per flush would be 8..9% of glibc-simple and
-    /// 5% of the Python json row under tiny-object churn on both VMs, the
-    /// largest single term wherever challoc trailed mimalloc or tcmalloc
-    /// by more than 10%, so the ordering work is the least that keeps the release grouped:
+    /// which is what lets them drain (design 6.4). A full `sort_unstable`
+    /// of the slot array per flush would be the largest single cost
+    /// under tiny-object churn (glibc-simple, the Python json row), so
+    /// the ordering work is the least that keeps the release grouped,
+    /// as follows:
     ///
     /// - A slot array already in address order (a cache pushed in the order
     ///   a producer's refill batch was handed out, xmalloc-test's consumer
@@ -325,19 +325,19 @@ impl Heap {
     ///   in order that met one unsorted flush (its first fill, a producer
     ///   moving to a lower slab) gets back onto the sorted path, where a
     ///   scrambled kept half would have kept it on the selection forever
-    ///   (xmalloc-test +16% that way; a full sort re-establishes the order
-    ///   at every flush), while a cache pushed in arbitrary order pays two
-    ///   sorts of half the array and then one in 32 (the unconditional
-    ///   kept sort cost glibc-simple and Python their whole gain). The run
+    ///   (a measurable loss on xmalloc-test), while a cache pushed in
+    ///   arbitrary order pays two sorts of half the array and then one in
+    ///   32 (sorting the kept half at every flush gives back all that the
+    ///   selection saves on glibc-simple and Python). The run
     ///   is dropped in every case and rebuilt by the scheduled pop (design
     ///   6.4); the zero prefix is given up.
     ///
-    /// Candidates rejected, all in the results file: a selection followed
-    /// by a sort of the released half (the selection scrambles it, so that
-    /// is a full sort: xmalloc +51%); an in-place bucket pass over the
-    /// whole array by address (about 10 cycles per entry, a full sort's
-    /// cost on random input and ten times its cost on sorted input: xmalloc
-    /// +49%); the selection alone (xmalloc +21%, no self-healing).
+    /// Not done: a sort of the released half after the selection (the
+    /// selection scrambles it, so that is a full sort); an in-place bucket
+    /// pass over the whole array by address (about 10 cycles per entry: a
+    /// full sort's cost on random input and ten times its cost on sorted
+    /// input); the selection alone (a cache that leaves the sorted path
+    /// never returns to it).
     ///
     /// Double frees. `release_owned` aborts on a duplicate inside the
     /// released batch (a slab's slots are contiguous after the bucket pass
@@ -454,10 +454,10 @@ impl Heap {
             // masks the PAC field, one `and` per compare); only the
             // released half is authenticated, once, before the release,
             // and the kept half stays as it is. Authenticating the whole
-            // stack and re-signing the kept half was measured first:
-            // xmalloc-test -15.8% on the C4A (the consumer's flushes are
-            // the sorted path, 1.25k cycles each, and the two passes
-            // doubled them).
+            // stack and re-signing the kept half would add two passes to
+            // every flush; on the sorted path (about 1.25k cycles per
+            // flush on xmalloc-test's consumer side) that doubles the
+            // flush's cost.
             // The keyed forms only when signed: `sort_unstable_by_key` and
             // friends take a comparator closure and lose the primitive
             // pointer sort's specialisations, which costs every flush even
