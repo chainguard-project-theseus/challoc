@@ -28,6 +28,7 @@ use crate::heap::Shared;
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, NBINS, NCLASSES};
+use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::axiom_entry;
 use crate::purge;
@@ -72,47 +73,24 @@ enum Target {
     Stderr,
 }
 
-/// Ghost permit: the calling thread held no allocator lock when the
-/// report began. The report's external calls ([`emit`]) require it, so
-/// only report code reaches them. Private and opaque (verified code
-/// cannot build one), and made only by [`axiom_unlocked`]; the report's
-/// [`Sink`] holds it from creation to drop, so only the report functions
-/// and the formatting code that writes to the sink can reach it. It does
-/// not track locks taken after it is made: that none is held when the
-/// sink flushes rests on the report taking no allocator lock itself and
-/// on every call it makes that takes one dropping its guard before it
-/// returns, which review checks and Verus does not.
-#[verifier::external_body]
-pub(super) tracked struct Unlocked {
-    _no_copy: (),
-}
-
-/// Trusted: the calling thread holds no allocator lock at this call.
-/// Called only by the report entry points ([`stats_print`],
-/// [`malloc_info`], [`malloc_stats`]), once each, after [`super::shared`]
-/// and right before the report's [`Sink`] is made: their C caller holds
-/// no allocator lock (a premise), and `shared` releases every lock it
-/// takes before it returns. The permit says nothing about locks taken
-/// after this call ([`Unlocked`]).
-axiom fn axiom_unlocked() -> (tracked u: Unlocked);
-
 /// Hand `buf[..len]` to `target`: the report's only calls out of the
 /// allocator. Trusted: calls the caller's callback (a function pointer),
 /// the `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
-/// stderr), `fwrite` or `write(2)`; claims nothing. The permit `u`
-/// limits the calls to report code; it does not show that no allocator
-/// lock is held here (see [`Unlocked`] and the `fwrite` arm for why none
-/// is). `len < 1024`: the body stores the NUL at `buf[len]` and hands on
+/// stderr), `fwrite` or `write(2)`; claims nothing. The calling thread
+/// holds no allocator lock: `ord`, the report's lock-order token
+/// ([`Sink`]), has top 0 (see the `fwrite` arm for why that matters).
+/// `len < 1024`: the body stores the NUL at `buf[len]` and hands on
 /// `len` bytes of `buf`. `no_unwind`, as
 /// `Sink::flush` needs for its `&mut` of the buffer: a C callee cannot
 /// unwind into Rust, and the `panic = "abort"` profiles abort on a panic
 /// (test builds unwind).
 #[verifier::external_body]
 #[inline(always)]
-fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>)
+fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(ord): Tracked<&LockOrder>)
     requires
         crate::sys::may_syscall(),
         len < 1024,
+        ord.top() == 0,
     no_unwind
 {
     match *target {
@@ -122,7 +100,7 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
             // chunk is NUL-terminated within the buffer.
             unsafe { cb(opaque, buf.as_ptr() as *const c_char) };
         }
-        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len], Tracked(u)),
+        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len], Tracked(ord)),
         Target::File(f) => {
             // SAFETY: `f` is the caller's open stream; `len` bytes are
             // readable. `fwrite` may itself call `malloc` (glibc allocates
@@ -140,29 +118,41 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
 
 /// A `fmt::Write` that buffers up to 1023 bytes and forwards them,
 /// NUL-terminated where the target wants a C string.
+///
+/// The sink holds the report's lock-order token ([`LockOrder`]), made at
+/// top 0 by the report's entry point, from creation to drop. Every call of
+/// the report that may take an allocator lock gets a token lent from it
+/// ([`Report::lend`], through [`LockOrder::lend`]). The lent token borrows
+/// the sink, so the sink is not written, and so not flushed, until that
+/// token and every guard taken with it are gone, and it is not a root, so
+/// no lock outlives its guard ([`crate::lock::RawLock::lock_held`] needs a
+/// root); [`emit`] requires top 0.
 struct Sink {
     target: Target,
     buf: [u8; 1024],
     len: usize,
-    /// Ghost: the report's permit, for [`emit`] (read only in ghost code).
+    /// Ghost: the report's lock-order token, for [`emit`] and the calls
+    /// that take a lock (used only in ghost code).
     #[allow(dead_code)]
-    permit: Tracked<Unlocked>,
+    ord: Tracked<LockOrder<'static>>,
 }
 
 impl Sink {
-    /// Room for the NUL after the buffered bytes, and the sink was built
+    /// Room for the NUL after the buffered bytes, the sink was built
     /// where a system call may be made (its flush is one), as
-    /// for `sys::abort::Stderr`.
+    /// for `sys::abort::Stderr`, and its owner holds no allocator lock.
     #[verifier::type_invariant]
     spec fn wf(&self) -> bool {
-        self.len < 1024 && crate::sys::may_syscall()
+        self.len < 1024 && crate::sys::may_syscall() && self.ord@.top() == 0
     }
 
     /// Requires the syscall capability: a write may flush to the kernel,
-    /// so a sink is built only where a system call may be made.
-    fn new(target: Target, permit: Tracked<Unlocked>) -> (r: Sink)
+    /// so a sink is built only where a system call may be made. `ord` is
+    /// the report's token, with no lock held.
+    fn new(target: Target, ord: Tracked<LockOrder<'static>>) -> (r: Sink)
         requires
             crate::sys::may_syscall(),
+            ord@.top() == 0,
         ensures
             r.len == 0,
     {
@@ -170,13 +160,13 @@ impl Sink {
             target,
             buf: [0; 1024],
             len: 0,
-            permit,
+            ord,
         }
     }
 
     /// Hand the buffered bytes to the target ([`emit`], under the
-    /// report's permit) and empty the buffer. `emit`'s bound holds by the
-    /// type invariant (`len < 1024`).
+    /// report's token) and empty the buffer. `emit`'s bounds hold by the
+    /// type invariant (`len < 1024`, top 0).
     fn flush(&mut self)
         ensures
             final(self).len == 0,
@@ -187,9 +177,24 @@ impl Sink {
         if self.len == 0 {
             return;
         }
-        emit(&self.target, &mut self.buf, self.len, Tracked(self.permit.borrow()));
+        emit(&self.target, &mut self.buf, self.len, Tracked(self.ord.borrow()));
         self.len = 0;
     }
+}
+
+/// A report writer that holds the report's lock-order token: the report
+/// writers stay generic over the writer and reach the token through
+/// [`Report::lend`], which is ghost, so the bound erases and the writers
+/// compile to the same code.
+/// [`Sink`] is the only implementation.
+trait Report {
+    /// A token for one call of the report that may take an allocator
+    /// lock: top 0 and not a root, borrowing the writer for as long as it
+    /// lives, as [`LockOrder::lend`].
+    proof fn lend<'b>(tracked &'b mut self) -> (tracked o: LockOrder<'b>)
+        ensures
+            o.top() == 0,
+            !o.root();
 }
 
 /// The longest prefix of `s` that fits in `room` bytes and ends on a
@@ -283,6 +288,7 @@ impl Write for Sink {
             while i < n
                 invariant
                     crate::sys::may_syscall(),
+                    self.ord@.top() == 0,
                     self.len + n < 1024,
                     n <= b@.len(),
                     i <= n,
@@ -377,6 +383,17 @@ impl Opts {
     }
 }
 
+// The last impl of the module: rustc numbers a module's impls in order,
+// the number enters the mangled names of each impl's items, and those
+// names order `.text`, so an impl placed earlier would renumber the ones
+// after it.
+impl Report for Sink {
+    proof fn lend<'b>(tracked &'b mut self) -> (tracked o: LockOrder<'b>) {
+        use_type_invariant(&*self);
+        self.ord.borrow_mut().lend()
+    }
+}
+
 /// A configuration value's name (`config::Value::Str`, the `thp` key).
 /// Trusted: `CStr::to_str`, which vstd does not specify; nothing is
 /// claimed about the result.
@@ -407,7 +424,7 @@ fn decay_ms(ns: u64) -> (r: i64)
 // The indexed loops stand for `for key in KEYS`: Verus does not specify a
 // slice's `IntoIterator`.
 #[allow(clippy::needless_range_loop)]
-fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result
+fn text_general<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -529,8 +546,8 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     )?;
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.
-    // Premise (lock order): the report takes no lock around this.
-    let cgroup = shared.cgroup_now(Tracked(&mut axiom_entry()));
+    let tracked mut lent = out.lend();
+    let cgroup = shared.cgroup_now(Tracked(&mut lent));
     cgroup.sample(crate::sys::now_coarse_ns());
     // The `Cgroup` itself, not the reference to it.
     writeln!(out, "{}", *cgroup)?;
@@ -593,7 +610,7 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
 /// what it gives arena 0.
-fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
+fn policy_line<W: Write + Report>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
         crate::sys::may_syscall(),
         shared.wf(),
@@ -603,8 +620,8 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
         crate::policy::frac_one_value();
     }
     let p = &shared.policy;
-    // Premise (lock order): the report takes no lock around this.
-    if !shared.cgroup_now(Tracked(&mut axiom_entry())).tracked() {
+    let tracked mut lent = out.lend();
+    if !shared.cgroup_now(Tracked(&mut lent)).tracked() {
         return writeln!(out, "cgroup policy: off (not tracked)");
     }
     write!(out, "cgroup policy: ")?;
@@ -636,8 +653,8 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
     }
     // Out of the `writeln!` so that its ghost argument is erased (the
     // `verus!` expansion does not reach into a macro's arguments).
-    // Premise (lock order): the report takes no lock around this.
-    let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut axiom_entry()));
+    let tracked mut lent = out.lend();
+    let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut lent));
     writeln!(
         out,
         " keep {}% empty_bytes {} full_purges {}{} thp {}",
@@ -681,7 +698,7 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
     )
 }
 
-fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result
+fn text_arena<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -775,7 +792,7 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
 #[allow(clippy::while_let_loop)]
-fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result
+fn slab_histogram<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -840,8 +857,8 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
             if cs.table().bits(i).allocated(nslots) != live {
                 mismatched += 1;
             }
-            // Premise (lock order): the report takes no lock around this.
-            if live < nslots && !cs.is_partial(i, Tracked(&mut axiom_entry())) {
+            let tracked mut lent = out.lend();
+            if live < nslots && !cs.is_partial(i, Tracked(&mut lent)) {
                 unlisted += 1;
             }
         }
@@ -877,13 +894,14 @@ fn hist_line<W: Write>(
     )
 }
 
-fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
+fn text_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
-    let snap = stats::collect(shared, Tracked(&mut axiom_entry()));
+    let tracked mut lent = out.lend();
+    let snap = stats::collect(shared, Tracked(&mut lent));
     if !o.no_general {
         text_general(out, shared, &snap)?;
     }
@@ -899,7 +917,8 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
                 shared.wf(),
         {
             if let Some(a) = stats::arena_at(shared, i) {
-                let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
+                let tracked mut lent = out.lend();
+                let s = stats::collect_arena(shared, a, Tracked(&mut lent));
                 text_arena(out, a, &s, !o.no_bins)?;
             }
         }
@@ -917,7 +936,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
 /// follows (the `stats` line then ends with a comma).
 // As in `text_general`.
 #[allow(clippy::needless_range_loop)]
-fn json_general<W: Write>(
+fn json_general<W: Write + Report>(
     out: &mut W,
     shared: &Shared,
     snap: &Snapshot,
@@ -988,12 +1007,12 @@ fn json_general<W: Write>(
             None => "none",
         }
     )?;
-    // Premise (lock order): the report takes no lock around this.
-    let cg = shared.cgroup_now(Tracked(&mut axiom_entry()));
+    let tracked mut lent = out.lend();
+    let cg = shared.cgroup_now(Tracked(&mut lent));
     cg.sample(crate::sys::now_coarse_ns());
-    // Out of the `writeln!`, as in `policy_line`. Premise (lock order):
-    // the report takes no lock around this.
-    let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut axiom_entry()));
+    // Out of the `writeln!`, as in `policy_line`.
+    let tracked mut lent = out.lend();
+    let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut lent));
     writeln!(
         out,
         "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}, \"failed_discards\": {}, \"failed_discard_bytes\": {}}},",
@@ -1099,13 +1118,14 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// The JSON report (`J`): the `jemalloc` object with `version` and
 /// `implementation`, then [`json_general`] and the `stats.arenas` object of
 /// [`json_arena`]s, each under its option letter as in [`text_report`].
-fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
+fn json_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
-    let snap = stats::collect(shared, Tracked(&mut axiom_entry()));
+    let tracked mut lent = out.lend();
+    let snap = stats::collect(shared, Tracked(&mut lent));
     writeln!(out, "{{")?;
     writeln!(out, "\t\"jemalloc\": {{")?;
     writeln!(out, "\t\t\"version\": \"{}\",", super::mallctl::VERSION)?;
@@ -1126,7 +1146,8 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
                 shared.wf(),
         {
             if let Some(a) = stats::arena_at(shared, i) {
-                let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
+                let tracked mut lent = out.lend();
+                let s = stats::collect_arena(shared, a, Tracked(&mut lent));
                 if !first {
                     writeln!(out, ",")?;
                 }
@@ -1171,8 +1192,10 @@ fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cb
             cc.open_writes(cbuf::CArg::Str(opts as *const u8));
         }
     }
-    let tracked u = axiom_unlocked();
-    let mut sink = Sink::new(target, Tracked(u));
+    // Premise (lock order): the report's C caller holds no allocator
+    // lock, and `shared` releases every lock it takes before it returns.
+    let tracked ord = axiom_entry();
+    let mut sink = Sink::new(target, Tracked(ord));
     let _ = if o.json {
         json_report(&mut sink, shared, &o)
     } else {
@@ -1238,7 +1261,7 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
     writeln!(out, "</heap>")
 }
 
-fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
+fn xml_report<W: Write + Report>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1255,12 +1278,14 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result
             shared.wf(),
     {
         if let Some(a) = stats::arena_at(shared, i) {
-            let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
+            let tracked mut lent = out.lend();
+            let s = stats::collect_arena(shared, a, Tracked(&mut lent));
             xml_heap(out, a.index() as usize, &s)?;
         }
     }
     let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
-    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut axiom_entry()));
+    let tracked mut lent = out.lend();
+    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut lent));
     // The two `iter().map(..).sum()`s over `bins[..NBINS]` and
     // `bins[NBINS..]`, as one indexed loop.
     let (mut count, mut large) = (0usize, 0usize);
@@ -1307,8 +1332,10 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Trac
         return -1;
     }
     let shared = super::shared();
-    let tracked u = axiom_unlocked();
-    let mut sink = Sink::new(file_target(stream), Tracked(u));
+    // Premise (lock order): the report's C caller holds no allocator
+    // lock, and `shared` releases every lock it takes before it returns.
+    let tracked ord = axiom_entry();
+    let mut sink = Sink::new(file_target(stream), Tracked(ord));
     let _ = xml_report(&mut sink, shared);
     sink.flush();
     0
@@ -1322,15 +1349,17 @@ pub fn malloc_stats()
         crate::sys::may_syscall(),
 {
     let shared = super::shared();
-    let tracked u = axiom_unlocked();
-    let mut sink = Sink::new(stderr_target(), Tracked(u));
+    // Premise (lock order): the report's C caller holds no allocator
+    // lock, and `shared` releases every lock it takes before it returns.
+    let tracked ord = axiom_entry();
+    let mut sink = Sink::new(stderr_target(), Tracked(ord));
     let _ = glibc_stats(&mut sink, shared);
     sink.flush();
 }
 
 /// The lines of [`malloc_stats`]: the immediately called closure, as a
 /// function.
-fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
+fn glibc_stats<W: Write + Report>(sink: &mut W, shared: &Shared) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1345,7 +1374,8 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
             shared.wf(),
     {
         if let Some(a) = stats::arena_at(shared, i) {
-            let s = stats::collect_arena(shared, a, Tracked(&mut axiom_entry()));
+            let tracked mut lent = sink.lend();
+            let s = stats::collect_arena(shared, a, Tracked(&mut lent));
             writeln!(sink, "Arena {}:", a.index())?;
             writeln!(
                 sink,
@@ -1356,7 +1386,8 @@ fn glibc_stats<W: Write>(sink: &mut W, shared: &Shared) -> fmt::Result
         }
     }
     let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
-    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut axiom_entry()));
+    let tracked mut lent = sink.lend();
+    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut lent));
     writeln!(sink, "Total (incl. mmap):")?;
     writeln!(sink, "system bytes     = {:>10}", all.resident)?;
     writeln!(sink, "in use bytes     = {:>10}", fig_add(all.small_allocated, all.large_allocated))?;

@@ -346,6 +346,21 @@ impl<'a> LockOrder<'a> {
     {
         LockOrder { top: rank_spare(), root: false, life: PhantomData }
     }
+
+    /// A token for the code that runs while this one is lent: the same
+    /// bound, not a root, and only for as long as the borrow of this one
+    /// lasts (`'b`), so this one is unusable until the lent token and
+    /// every guard taken with it are gone. For a token kept in a field of
+    /// a type with an invariant, which Verus does not lend to an exec
+    /// call as `&mut` (the report sink of `api::print`).
+    pub proof fn lend<'b>(tracked &'b mut self) -> (tracked o: LockOrder<'b>)
+        ensures
+            o.top() == old(self).top(),
+            !o.root(),
+            *final(self) == *old(self),
+    {
+        LockOrder { top: self.top, root: false, life: PhantomData }
+    }
 }
 
 /// Premise (an entry point): the calling thread holds no allocator lock.
@@ -366,14 +381,16 @@ impl<'a> LockOrder<'a> {
 ///   allocator lock exists yet;
 /// - the background thread's `main` (`purge::background`), since a new
 ///   thread holds no allocator lock;
-/// - the report writers of `api::print` (under `malloc_stats_print`,
-///   `malloc_info` and `malloc_stats`), one token per call to
-///   `stats::collect`, `stats::collect_arena`, `stats::collect_all`,
+/// - the report entry points of `api::print` (`malloc_stats_print`,
+///   `malloc_info` and `malloc_stats`), one token per report: their C
+///   caller holds no allocator lock, and `api::shared`, called first,
+///   releases every lock it takes before it returns. The report's sink
+///   holds the token and lends it to each call that may take a lock
+///   (`stats::collect`, `stats::collect_arena`, `stats::collect_all`,
 ///   `Shared::cgroup_now`, `ClassState::is_partial` and
-///   `policy::empty_bytes`: the report's C caller holds no allocator lock,
-///   the report takes none itself, and each of those calls releases every
-///   lock it takes before it returns (none returns a guard), so none is
-///   held at the next call;
+///   `policy::empty_bytes`) through `LockOrder::lend`, whose token
+///   borrows the sink and is not a root, and the sink's flush (`emit`)
+///   requires top 0;
 /// - the readers of `api::mallctl` (under `mallctl` and `mallctlbymib`,
 ///   `batch_query` and `experimental.utilization.query` among them), one
 ///   token per reader or per `utilization` and `owner_of` call: the entry
