@@ -164,8 +164,8 @@ fn guard_page_faults() {
         ("guard", guard),
         ("first page past the mark", q as usize + 2 * page_size()),
     ] {
-        // SAFETY: `fork` has no memory-safety preconditions; the child only
-        // writes and leaves through `_exit`.
+        // SAFETY: the test binary is multithreaded; the child takes no lock: it
+        // writes one byte and leaves through `_exit`.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {

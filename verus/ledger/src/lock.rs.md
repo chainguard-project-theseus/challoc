@@ -168,12 +168,12 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ## `cell_ref`
 
-src/lock.rs:949. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:950. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 957.
+Body mints Tracked at line 958.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -187,12 +187,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:964. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:965. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 974.
+Body mints Tracked at line 975.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -208,7 +208,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:984. Kind: external_body. Category: atomics primitive.
+src/lock.rs:985. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 ```rust

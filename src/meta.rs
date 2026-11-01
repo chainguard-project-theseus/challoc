@@ -4451,8 +4451,8 @@ mod tests {
         // child so the test survives).
         // SAFETY: `small` is a committed table of three pages.
         unsafe { core::ptr::write_volatile(small as *mut u8, 1) };
-        // SAFETY: `fork` has no memory-safety preconditions; the child only
-        // writes and leaves through `_exit`.
+        // SAFETY: the test binary is multithreaded; the child takes no lock: it
+        // writes one byte and leaves through `_exit`.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {

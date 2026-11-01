@@ -2294,8 +2294,8 @@ fn guard_slab_faults_when_supported() {
         a <= env.regions.slab_addr(c, 0) && env.regions.slab_addr(c, 3) <= b
     });
     assert!(merged, "guard slab split the VMA");
-    // SAFETY: `fork` has no memory-safety preconditions; the child only
-    // writes and leaves through `_exit`.
+    // SAFETY: the test binary is multithreaded; the child takes no lock: it
+    // writes one byte and leaves through `_exit`.
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
     if pid == 0 {

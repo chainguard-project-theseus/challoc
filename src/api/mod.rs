@@ -2633,8 +2633,9 @@ mod tests {
     fn a_forked_child_inherits_the_discovered_cgroup() {
         // Init registers the fork handlers.
         let _ = shared();
-        // SAFETY: `fork` has no memory-safety preconditions; the child reads
-        // the shared state and leaves through `_exit`.
+        // SAFETY: the test binary is multithreaded; the child uses only challoc's
+        // state, which its fork handlers keep consistent, and leaves through
+        // `_exit`.
         let pid = unsafe { ::libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
@@ -2658,8 +2659,8 @@ mod tests {
     #[test]
     fn a_forked_child_does_not_wait_for_a_line_being_built() {
         let expect = feature_line().len();
-        // SAFETY: as in `a_forked_child_inherits_the_discovered_cgroup`; each
-        // child leaves through `_exit`.
+        // SAFETY: as in `a_forked_child_inherits_the_discovered_cgroup`: each
+        // child uses only challoc's state and leaves through `_exit`.
         let pid = unsafe { ::libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
@@ -3218,8 +3219,9 @@ mod tests {
         // The child checks with atomics and the state lock only and
         // answers through its exit status.
         assert!(purge::background::thread().is_some(), "no thread record");
-        // SAFETY: `fork` has no memory-safety preconditions; the child uses
-        // atomics and the state lock only and leaves through `_exit`.
+        // SAFETY: the test binary is multithreaded; the child uses only atomics
+        // and challoc's state lock, which its fork handlers keep consistent,
+        // and leaves through `_exit`.
         let pid = unsafe { ::libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {

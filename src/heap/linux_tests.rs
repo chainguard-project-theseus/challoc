@@ -377,8 +377,9 @@ fn heap_off_pac_executes_no_pac_instruction() {
         (false, shared()),
     ] {
         assert_eq!(s.pac(), !forced_off && pac::available());
-        // SAFETY: `fork` has no memory-safety preconditions; the child runs
-        // this test alone and leaves through `_exit`.
+        // SAFETY: the test binary is multithreaded; the child uses challoc's
+        // allocator, whose fork handlers keep it consistent, and its own
+        // thread-local output capture, and leaves through `_exit`.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
