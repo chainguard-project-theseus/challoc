@@ -1,4 +1,4 @@
-//! Slab descriptors (design.md section 4).
+//! Slab descriptors (design 4).
 //!
 //! Every slab of every class has one [`SlabDesc`] in the metadata region:
 //! a fixed 16-byte header holding the slab's state, its arena, its live

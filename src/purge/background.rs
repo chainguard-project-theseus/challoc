@@ -34,7 +34,7 @@ const PR_SET_NAME: i32 = 15;
 const MIN_SLEEP_NS: u64 = 1_000_000;
 
 /// Bookkeeping behind the state lock (the lock `fork_prepare` takes
-/// last, design section 9).
+/// last, design 9).
 struct State {
     present: bool,
     creating: bool,

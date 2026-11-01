@@ -1,4 +1,4 @@
-//! Decay and purge (design.md section 8) and the background thread (8.1).
+//! Decay and purge (design 8) and the background thread (8.1).
 //!
 //! - [`Batch`], the discard primitive. Callers collect up to [`MAX_BATCH`]
 //!   ranges, merging adjacent ones, and flush them with a loop of
@@ -65,7 +65,7 @@ pub use curve::{Curve, NEVER, STEPS, decay_ns_from_ms};
 
 verus! {
 
-/// Ranges per batch (design section 8).
+/// Ranges per batch (design 8).
 pub const MAX_BATCH: usize = 64;
 
 /// How long a decay walk whose discard failed holds its owner's next walk
@@ -1684,7 +1684,7 @@ pub fn discard_one(addr: usize, len: usize, Ghost(free): Ghost<Bytes>) -> bool
     discarded.discarded
 }
 
-/// The step gate of design section 8, one per `ClassState` and one in
+/// The step gate of design 8, one per `ClassState` and one in
 /// the huge allocator: `dirty_at` of the oldest `Empty` member (0 when
 /// none is known), written under the owner's lock and read without it by
 /// the decay driver, and the deadline of the owner's next walk.

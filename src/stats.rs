@@ -1,4 +1,4 @@
-//! Statistics (design.md section 13.4): the per-class, per-arena and
+//! Statistics (design 13.4): the per-class, per-arena and
 //! process-wide figures behind `stats.*`, `malloc_stats_print` and
 //! `experimental.utilization`, and the `epoch` that refreshes them.
 //!
@@ -283,7 +283,7 @@ pub struct ArenaStats {
     /// `stats.arenas.<i>.pdirty`: dirty pages (slabs and, for arena 0,
     /// huge extents).
     pub pdirty: usize,
-    /// `stats.arenas.<i>.pmuzzy`: always 0 (design section 8).
+    /// `stats.arenas.<i>.pmuzzy`: always 0 (design 8).
     pub pmuzzy: usize,
     /// `active + dirty + metadata`.
     pub resident: usize,
@@ -1126,7 +1126,7 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// arenas and totals from different collections, and a reader of the
 /// snapshot never sees the arenas of a collection whose totals are not
 /// stored yet. It nests outside the class, slab table, huge, metadata and
-/// per-arena statistics locks the collection takes (design section 9).
+/// per-arena statistics locks the collection takes (design 9).
 fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_abort_corrupt(),

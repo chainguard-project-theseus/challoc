@@ -638,7 +638,7 @@ fn decay_with_a_keep_ratio_purges_coalesced_extents() {
     assert_eq!(h.empty_bytes(Tracked::assume_new()), 0);
 }
 
-/// The decay driver's view of the huge allocator (design section 8):
+/// The decay driver's view of the huge allocator (design 8):
 /// the curve in pages over the `Empty` list, oldest extent first; a
 /// lone extent lasts until its weight is zero; `oldest_empty` follows
 /// the head through frees, purges and reuse.

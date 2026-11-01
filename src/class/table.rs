@@ -329,7 +329,7 @@ pub const fn desc_stagger(class: usize) -> (r: usize)
 #[repr(C, align(128))]
 pub struct SlabTable {
     /// Start of the class bitmap: bit `slab * slab_bits + slot` is the
-    /// allocation bit of `slot` in `slab` (design section 4).
+    /// allocation bit of `slot` in `slab` (design 4).
     pub(super) bits_base: usize,
     /// Start of the owner array: one `AtomicU16` per group of
     /// `1 << lg_group` slabs, the arena the group was handed to.
@@ -1537,7 +1537,7 @@ impl SlabTable {
     /// scales by a power of two), so that the sized fast path's test is a
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
-    /// guard (design section 5). `ord` is the caller's lock-order token,
+    /// guard (design 5). `ord` is the caller's lock-order token,
     /// which the reservations take for the metadata lock. `slot_once` and
     /// `words_once` are the one-shot tokens (ghost, `vspec::once`) of the
     /// steps that fix the class's slot-token authority ([`axiom_slot_loc`])
@@ -3062,7 +3062,7 @@ impl SlabTable {
         ptr_ref(p, Tracked(self.desc_perms.borrow().tracked_borrow(slab as int)))
     }
 
-    /// The slot bits of a handed-out slab (design section 4). Aborts for a
+    /// The slot bits of a handed-out slab (design 4). Aborts for a
     /// slab that was never handed out.
     #[inline]
     pub fn bits(&self, slab: usize) -> (r: AtomicBitmap<'_>)
@@ -3097,7 +3097,7 @@ impl SlabTable {
         slab < self.watermark(Ordering::Relaxed)
     }
 
-    /// The `free` check's bit (design section 4): whether `slot` of `slab`
+    /// The `free` check's bit (design 4): whether `slot` of `slab`
     /// is marked allocated (or cached). One relaxed load of the bitmap
     /// word, through its permission, no bounds checks. A set bit is not a
     /// guard slab's, and with the slot's token (`held`, [`holds_slot`]: a
@@ -3696,7 +3696,7 @@ impl SlabTable {
 }
 
 impl SlabTable {
-    /// Hand the next group of slabs to `arena` (design section 4):
+    /// Hand the next group of slabs to `arena` (design 4):
     /// commit their descriptors, bitmap words and owner word, initialise
     /// the descriptors (`Fresh`, owned by `arena`; guard slabs stay zero)
     /// and clear their bits, then publish the watermark. The set words of
@@ -4512,7 +4512,7 @@ impl SlabTable {
     /// the run faults at its end, and a process that never fills the run
     /// pays for no guard. Each `mprotect` that grows the class region's
     /// read-write mapping takes the process's `mmap_lock` for writing and
-    /// stalls every thread's page faults behind it (design section 5). The
+    /// stalls every thread's page faults behind it (design 5). The
     /// run is the caller's (its arena's group, past its cursor, under its
     /// class lock), so the syscalls run without the commit lock, which
     /// only counts the guard.

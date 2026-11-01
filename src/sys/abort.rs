@@ -1,4 +1,4 @@
-//! The abort path (design.md section 19): `challoc: <msg>` on stderr, then
+//! The abort path (design 19): `challoc: <msg>` on stderr, then
 //! `SIGABRT` delivered the way glibc's `abort` delivers it. Nothing here
 //! allocates; the sink is a fixed buffer on the stack.
 

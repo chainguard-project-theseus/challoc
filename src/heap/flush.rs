@@ -47,7 +47,7 @@ impl Heap {
     /// The batch claim behind a refill or a run rebuild: `cs.claim`, or
     /// with `slot_randomize` `cs.claim_random` with this heap's xorshift
     /// (the scan starts at a random bitmap word and the batch is shuffled;
-    /// design section 4). The key is read from the configuration here, on
+    /// design 4). The key is read from the configuration here, on
     /// the slow path, so the fast paths carry nothing for it.
     #[inline]
     #[allow(clippy::let_and_return, reason = "a proof reads the claim before it is returned")]
@@ -1919,7 +1919,7 @@ pub(super) fn straddling_double_free(p: *mut u8, class: usize) -> !
 
 verus! {
 
-/// `Config::slot_randomize` (design section 4), read on the slow path.
+/// `Config::slot_randomize` (design 4), read on the slow path.
 #[inline(always)]
 fn slot_randomize(shared: &Shared) -> bool {
     shared.config.slot_randomize

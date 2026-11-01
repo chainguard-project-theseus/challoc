@@ -1,4 +1,4 @@
-//! Huge allocations (design.md section 7).
+//! Huge allocations (design 7).
 //!
 //! Requests above the largest medium class are served from the huge region
 //! with page granularity. Every page below the high-water mark `next_page`
@@ -162,7 +162,7 @@ proof fn lemma_state_byte(v: u8)
 {
 }
 
-/// Descriptor of one extent (design section 7's `HugeDesc`). Allocated from
+/// Descriptor of one extent (design 7's `HugeDesc`). Allocated from
 /// the metadata region; free extents also carry the FIFO links of the
 /// `Empty` list.
 #[repr(C)]
@@ -7940,7 +7940,7 @@ impl Huge {
         }
     }
 
-    /// Decay walk (design section 8), as `ClassState::purge_curve` in
+    /// Decay walk (design 8), as `ClassState::purge_curve` in
     /// pages: the curve's allowance at `now` is the sum over the `Empty`
     /// extents of their pages times the weight of their age, rounded up,
     /// and the excess over it is purged oldest extent first, whole extents
@@ -8129,7 +8129,7 @@ impl Huge {
         self.decay_with(now, decay_ns, crate::policy::KEEP_ALL, Tracked(ord))
     }
 
-    /// Decay step (design section 8), as `ClassState::decay_with`: the
+    /// Decay step (design 8), as `ClassState::decay_with`: the
     /// gate runs `purge_curve` over the list at most once per step of the
     /// curve, with the cgroup policy's keep ratio (design 11), and returns
     /// the next deadline, `None` when nothing is `Empty`. Lock-free unless

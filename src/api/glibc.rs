@@ -1,4 +1,4 @@
-//! glibc's tuning and accounting extras (design.md section 13.1):
+//! glibc's tuning and accounting extras (design 13.1):
 //! `mallopt`, `mallinfo`, `mallinfo2`. `malloc_trim` is in `libc.rs` next
 //! to the allocation calls, `malloc_stats` and `malloc_info` in `print.rs`.
 //!

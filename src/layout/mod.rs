@@ -1,5 +1,5 @@
 //! Size classes, address-space regions, and pointer classification
-//! (design.md sections 2 and 3).
+//! (design 2 and 3).
 //!
 //! Everything in this module except [`Regions::reserve_owning`] is pure
 //! arithmetic over a class table fixed at init ([`CLASSES`]: the compile-time
@@ -179,7 +179,7 @@ const _: () = assert!(
     "slot_of_offset works on 32-bit in-slab offsets"
 );
 
-/// Allocation tier of a class (design section 3 table); the tests check
+/// Allocation tier of a class (design 3 table); the tests check
 /// the geometry per tier, nothing else distinguishes them.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,7 +225,7 @@ pub struct Class {
 pub const LINE_BITS: usize = 512;
 
 /// Slabs are handed to an arena in groups that own whole bitmap lines
-/// (`class/`, design section 4); a group spans at most this much of the
+/// (`class/`, design 4); a group spans at most this much of the
 /// class region (2 MiB), so a class whose slabs are large pads each slab's
 /// bits to a line rather than letting one line's group cover tens of MiB
 /// of address space per arena.
@@ -385,7 +385,7 @@ impl Class {
     /// the wrong slab. Debug builds assert it.
     ///
     /// One multiply, one rotate and one compare (the divisibility test of
-    /// Granlund and Montgomery, design section 3): with `size = d << tz`,
+    /// Granlund and Montgomery, design 3): with `size = d << tz`,
     /// `d` odd, `q = (offset * d^-1 mod 2^32).rotate_right(tz)` is
     /// `offset / size` when `size` divides `offset`; otherwise a low bit
     /// of `offset` below `tz` rotates into the top bits of `q`, or the
@@ -1697,7 +1697,7 @@ const fn build_small_lookup() -> (out: [u16; SMALL_LOOKUP_LEN])
 pub const CLASS_STRIDE: usize = 64;
 
 /// Request size rounded up to quanta, then class number times
-/// [`CLASS_STRIDE`] (design section 3: "a small table for requests up to
+/// [`CLASS_STRIDE`] (design 3: "a small table for requests up to
 /// 1024"). The fast paths scale the class by the stride to reach its
 /// lines; with the scaled entry in the table, [`class_of_small`]'s
 /// division and their multiplication cancel, which saves them a copy, a

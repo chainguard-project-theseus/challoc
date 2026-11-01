@@ -1,4 +1,4 @@
-//! The decay period and curve (design section 8): `dirty_decay_ms` as a
+//! The decay period and curve (design 8): `dirty_decay_ms` as a
 //! nanosecond period ([`NEVER`] for "never purge"), the window divided into
 //! [`STEPS`] steps, and [`WEIGHTS`], the share of a cohort that may still be
 //! dirty at each step of its age. [`Curve`] turns an age into a step and a
@@ -290,7 +290,7 @@ proof fn step_scaling(age: u64, decay_ns: u64)
     }
 }
 
-/// The decay curve of one period (design section 8).
+/// The decay curve of one period (design 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Curve {
     decay_ns: u64,

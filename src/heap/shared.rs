@@ -139,7 +139,7 @@ pub struct Shared {
     /// so the periodic tick's `immediate` load hits the line it reads
     /// anyway; written at most once per 10 ms by the sampler.
     pub policy: crate::policy::Policy,
-    /// The parsed `malloc_conf` (design section 12) as `init` applied it
+    /// The parsed `malloc_conf` (design 12) as `init` applied it
     /// (`narenas` resolved from the CPU count, `thp` forced to `never`
     /// under a small cgroup limit). Read back by `opt.*` and the report,
     /// and on the slow paths for the cache ladder (`cache_cap`).
@@ -3724,7 +3724,7 @@ impl Shared {
     /// `free_flags` byte it loads anyway; this form serves the tests.
     ///
     /// The two loads that depend on the pointer are from dense structures
-    /// (design section 4): the class bitmap word (one bit per slot, so a
+    /// (design 4): the class bitmap word (one bit per slot, so a
     /// 550 MiB heap of 1 KiB values is 70 KB of bitmap and stays in L2)
     /// and, with several arenas, the group owner word (one `u16` per
     /// line-sized group of slabs). Neither touches the slab descriptor

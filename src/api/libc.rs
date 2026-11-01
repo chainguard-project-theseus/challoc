@@ -1,4 +1,4 @@
-//! Standard and glibc allocation entry points (design.md section 13.1):
+//! Standard and glibc allocation entry points (design 13.1):
 //! `malloc`, `free`, `calloc`, `realloc`, `aligned_alloc`, `posix_memalign`,
 //! `memalign`, `valloc`, `pvalloc`, `free_sized`, `free_aligned_sized`,
 //! `reallocarray`, `malloc_usable_size`, `malloc_trim`, and challoc's own
@@ -12,7 +12,7 @@
 //! `.so` under `LD_PRELOAD` (see `tests/c/libc_api.c`).
 //!
 //! Rules followed here (glibc's documented contract for a replacement
-//! malloc, design section 1):
+//! malloc, design 1):
 //!
 //! - Failure returns null with `errno = ENOMEM`; `aligned_alloc` and
 //!   `memalign` set `EINVAL` for a bad alignment; `posix_memalign` returns

@@ -1,4 +1,4 @@
-//! `MALLOCX_*` flags (design.md section 13.2): the jemalloc flag layout
+//! `MALLOCX_*` flags (design 13.2): the jemalloc flag layout
 //! ([`Flags::decode`], [`Tcache`], the `mallocx_*` builders) and the
 //! routing of a `mallocx` / `dallocx` / `sdallocx` call onto the calling
 //! thread's heap, an explicit cache ([`Tcache::Explicit`], a `Heap` owned

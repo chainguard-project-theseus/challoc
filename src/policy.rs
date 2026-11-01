@@ -1,4 +1,4 @@
-//! The cgroup policy of design.md section 11: what the allocator does with
+//! The cgroup policy of design 11: what the allocator does with
 //! the figures `sys::cgroup` samples.
 //!
 //! The pure part ([`band`], [`effective_decay_ns`], [`retention_cap`],

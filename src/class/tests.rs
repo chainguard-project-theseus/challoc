@@ -442,7 +442,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     );
 }
 
-/// Slabs go to arenas in line-sized groups (design section 4): with 4
+/// Slabs go to arenas in line-sized groups (design 4): with 4
 /// slots per slab the bitmap line holds 128 slabs, so the second arena
 /// starts at slab 128 and the bits of neighbouring slabs share a word
 /// without disturbing each other. A slab handed out with the group but
@@ -900,7 +900,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
     );
 }
 
-/// The decay driver's view (design section 8): nothing is purged in
+/// The decay driver's view (design 8): nothing is purged in
 /// the first step of the window, about half of a cohort by mid-window
 /// (the highest addresses, so a claim still finds the lowest), all of
 /// it at the end; the walk runs once per step; older cohorts go first;

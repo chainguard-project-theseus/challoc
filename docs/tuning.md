@@ -66,7 +66,7 @@ Keys outside the table:
 
 - `stats_print` is *inert*: it parses as a boolean and is reported every
   time it is set, so a program cannot believe it turned something on;
-  nothing prints at exit (#62). `malloc_stats_print` lists it as
+  nothing prints at exit. `malloc_stats_print` lists it as
   `opt.stats_print: accepted, no effect`, and `mallctl("opt.stats_print")`
   returns `ENOENT`. To get the report at exit from a program that cannot
   call `malloc_stats_print` itself, preload an `atexit` hook that calls it.
@@ -96,7 +96,7 @@ One row per key, in `TABLE` order. "Values" is the grammar
 
 | key | values | default | what it does | change it when | cost or risk |
 |---|---|---|---|---|---|
-| `background_thread` | `true`, `false` | unset (lazy; reads `false`) | Runs decay (and the cgroup sampling) on a background thread as well as from allocation slow paths. Unset, the thread starts lazily: from a periodic tick that finds 64 MiB of freed memory waiting for decay, or 4 MiB for a second. `true` creates it on the first periodic tick, or synchronously through `mallctl("background_thread")`; `false` never starts one. | Set `false` for a program that must stay single-threaded after it has freed that much memory: `unshare(CLONE_NEWUSER)` and `setns` into a user or mount namespace fail with `EINVAL` in a multithreaded process (bwrap, container runtimes' init), code that checks it is the only thread, and a seccomp sandbox that kills on `clone` (one that fails `clone` with an errno, or a thread limit, just leaves the process purging in the foreground; the lazy start retries twice, a second apart, then stays off). Set `true` to purge on time from the start (Valkey does it itself). | One thread, one futex sleep; its stack is one metadata reservation. The thread counts against `pids.max`, `threads-max` and `RLIMIT_NPROC`: a program sized to exactly its limit gets `EAGAIN` from its own `pthread_create` one thread earlier (`false` avoids it). It runs `SCHED_OTHER` with the main thread's CPU affinity and nice value, not those of the thread that started it (lowering a nice value needs `CAP_SYS_NICE` or room under `RLIMIT_NICE`, so a thread started from a niced worker of an unprivileged process keeps the worker's nice value). A process that never frees that much never starts it and pays nothing; a fork child starts one only for dirty memory of its own. Once it runs, glibc treats the process as multithreaded for good (`__libc_single_threaded` is 0): libstdc++ `shared_ptr` counts become atomic and stdio takes its locks, which a single-threaded program that frees a burst then pays (not measured by any row yet; `false` avoids it). No measurable effect on a process that keeps allocating. |
+| `background_thread` | `true`, `false` | unset (lazy; reads `false`) | Runs decay (and the cgroup sampling) on a background thread as well as from allocation slow paths. Unset, the thread starts lazily once enough freed memory waits for decay; `true` creates it on the first periodic tick, or synchronously through `mallctl("background_thread")`; `false` never starts one. | `false` for a program that must stay single-threaded; `true` to purge on time from the start (Valkey does it itself). Details below the table. | One thread, one futex sleep; its stack is one metadata reservation. Details below the table. |
 | `dirty_decay_ms` | `-1`..`1000000000000` | `10000` | The window of the decay curve: freed slabs and huge extents go from dirty to purged over this many milliseconds along a smootherstep (about half by mid-window, all by the end). `-1` never purges; `0` purges at the next pass. | Lower it (1000..5000) when RSS after a burst matters more than refaults; raise it or set `-1` for a process that reuses everything it frees and never idles. | Purging costs `madvise` calls and refaults on reuse; never purging keeps every peak resident. Under a cgroup limit the policy scales this value down (section 4); `-1` is left alone in every band. |
 | `muzzy_decay_ms` | `-1`..`1000000000000` | `0` | Accepted for jemalloc compatibility, stored, readable as `opt.muzzy_decay_ms`; nothing reads it. There is no muzzy state: the two-advice purge (section 4) replaces it. | Never. | None. |
 | `narenas` | `0`..`4294967295` | `0` | Automatic arenas. `0` means `min(4 * ncpus, 64)` (`ncpus` is the affinity mask's width). Each new thread heap is bound to the least-loaded automatic arena, so a program with `t` live threads touches `min(t, narenas)` arenas; each arena has its own partial slabs per class. | A many-threaded process that wants one shared slab set for all its threads, the lowest RSS floor (`narenas:1`). | Fewer arenas means more threads share each arena's class locks on the slow path (refill and flush) and interleave their slots in the same slabs (about one L1D miss per operation on 10-thread `larson` under one arena); the fast paths are unaffected. |
@@ -105,7 +105,7 @@ One row per key, in `TABLE` order. "Values" is the grammar
 | `tcache_max` | `0`..`262144` | `32768` | Largest class size (bytes) whose slots are cached (`opt.tcache_max` reads as a `size_t`, like jemalloc's); classes above it are served from arena 0's slabs directly, so one partial slab per class serves every thread. | Never. | Raising it multiplies cached large slots by threads and arenas: 8 cached 40 KiB slots per (thread, arena) held 70 MiB of a 16-thread benchmark's RSS. |
 | `tcache_nslots_small_max` | `8`..`65536` | `1024` | Cache capacity for classes up to 128 bytes; the capacity halves per doubling of the class size above that (the ladder), down to a floor of 8. | To trade cache RSS for refill frequency: `512` halves every cache. | More refills and flushes (slow paths) per operation. |
 | `lg_tcache_nslots_mul` | `-16`..`16` | `1` | Shifts the whole ladder by `lg_tcache_nslots_mul - 1` doublings (jemalloc's key; Redis's `je_malloc_conf` sets `3`). | As `tcache_nslots_small_max`. | As above; the result is clamped to `[8, tcache_nslots_small_max]`. |
-| `thp` | `never` (alias `default`), `auto`, `always` | `never` | Transparent huge pages for challoc's regions (section 5). `never`: `MADV_NOHUGEPAGE` on the class superblock and the metadata region; the huge region (allocations above 256 KiB) follows the host's policy. `auto`: `MADV_HUGEPAGE` for sub-PMD folios (64 KiB) on slab groups and metadata, never a 2 MiB page; inert where no such size is enabled or the 2 MiB size is `madvise`-gated. `always`: 2 MiB chunks over the class regions, huge runs and metadata (jemalloc's `thp:always`); forced to `never` under a cgroup limit below 1 GiB. | `always` for a single-tenant, cache-shaped heap with RSS to spare that does not fork. `auto` on an aarch64 host with `hugepages-64kB` enabled and dTLB-bound rows. | `always`: the Valkey model's `SET` loop 5..18% faster for about +10% peak RSS on that heap and +30..66% on allocation microbenchmarks (#20). `auto`: about 1.6% slower on `larson` and 7..19% more RSS on small heaps. |
+| `thp` | `never` (alias `default`), `auto`, `always` | `never` | Transparent huge pages for challoc's regions (section 5). `never`: `MADV_NOHUGEPAGE` on the class superblock and the metadata region; the huge region (allocations above 256 KiB) follows the host's policy. `auto`: `MADV_HUGEPAGE` for sub-PMD folios (64 KiB) on slab groups and metadata, never a 2 MiB page; inert where no such size is enabled or the 2 MiB size is `madvise`-gated. `always`: 2 MiB chunks over the class regions, huge runs and metadata (jemalloc's `thp:always`); forced to `never` under a cgroup limit below 1 GiB. | `always` for a single-tenant, cache-shaped heap with RSS to spare that does not fork. `auto` on an aarch64 host with `hugepages-64kB` enabled and dTLB-bound rows. | `always`: the Valkey model's `SET` loop 5..18% faster for about +10% peak RSS on that heap and +30..66% on allocation microbenchmarks. `auto`: about 1.6% slower on `larson` and 7..19% more RSS on small heaps. |
 | `lazy_band` | `true`, `false` | `true` | `MADV_FREE` for purges made under 70% of a known cgroup limit (the headroom band); `false` makes every purge `MADV_DONTNEED`. | `false` when the container's RSS figure must track live memory exactly even with headroom (an autoscaler, a fragmentation ratio). | Refaults on reuse: re-allocating a lazily purged range costs a small fraction of refaulting an eagerly purged one. |
 | `guards` | `true`, `false` | `true` | Guard slabs between slabs (kernel 6.13+, `MADV_GUARD_INSTALL`) and a guard after every huge run (a `PROT_NONE` page on older kernels). | Never. | `false` removes an overflow barrier. |
 | `guard_slab_interval` | `0`, or `2`..`4194304`, a power of two | `8` | One guard slab per N x 64 KiB of slabs (every Nth slab for the 64 KiB-slab classes; the same span in bytes for the classes with smaller slabs). `0` is none; `1` is out of range and clamps to `2`; a non-power of two rounds up and is reported. | To trade address space and slab count for guard density. | A denser interval costs slabs; it never costs a fast-path instruction (the test is a mask). No guard slabs exist before kernel 6.13 whatever the value. |
@@ -118,6 +118,32 @@ One row per key, in `TABLE` order. "Values" is the grammar
 | `abort_conf` | `true`, `false` | `false` | Abort after parsing if any source reported a problem (section 1). | Package tests and any deployment that must not run on a misspelled key. | None at run time. |
 | `cgroup` | `true`, `false` | `true` | Read the memory cgroup (20 ms after init, section 4) and sample it: effective limits, `memory.current`, `memory.events`; apply the policy of section 4. `false` reads nothing, applies nothing, reports `cgroup: not tracked (cgroup:false)`. | `false` only as the control in a measurement. | With `cgroup:false` a container that frees 400 MiB of 512 MiB keeps most of it resident for the whole decay window; with the default it is back to about 13 MiB within 50 ms. |
 | `check_zero` | `true`, `false` | `false` | Debug: every slot or page handed out as known zero is read at its first and last word under the class or huge lock; a non-zero word aborts with the slab's prior state. Slow paths only. | Diagnosing a `calloc` zero bug. | Extra reads on every refill from `Fresh` or `Purged` memory. |
+
+**`background_thread` in detail.** Unset, the thread starts from a
+periodic tick that finds 64 MiB of freed memory waiting for decay, or
+4 MiB for a second. Set `false` for a program that must stay
+single-threaded after it has freed that much memory: `unshare(CLONE_NEWUSER)`
+and `setns` into a user or mount namespace fail with `EINVAL` in a
+multithreaded process (bwrap, container runtimes' init), as does code
+that checks it is the only thread, and a seccomp sandbox that kills on
+`clone`. A sandbox that fails `clone` with an errno, or a thread limit,
+just leaves the process purging in the foreground: the lazy start retries
+twice, a second apart, then stays off.
+
+The thread counts against `pids.max`, `threads-max` and `RLIMIT_NPROC`: a
+program sized to exactly its limit gets `EAGAIN` from its own
+`pthread_create` one thread earlier (`false` avoids it). It runs
+`SCHED_OTHER` with the main thread's CPU affinity and nice value, not
+those of the thread that started it (lowering a nice value needs
+`CAP_SYS_NICE` or room under `RLIMIT_NICE`, so a thread started from a
+niced worker of an unprivileged process keeps the worker's nice value). A
+process that never frees that much never starts it and pays nothing; a
+fork child starts one only for dirty memory of its own. Once it runs,
+glibc treats the process as multithreaded for good
+(`__libc_single_threaded` is 0): libstdc++ `shared_ptr` counts become
+atomic and stdio takes its locks, which a single-threaded program that
+frees a burst then pays (not measured yet; `false` avoids it). It has no
+measurable effect on a process that keeps allocating.
 
 Why the close call went the way it did: `thp:never` is the default
 because RSS comes first. On a host whose THP mode is `always`
@@ -380,7 +406,7 @@ The alternatives on an `always` host:
 
 The RSS cost of opting into `thp:always`, measured against the default
 on Chainguard OS 6.18 (`always` hosts) and on 7.x `madvise` hosts on both
-architectures (#20):
+architectures:
 
 - No row but the Valkey model's hot loop gains: `larson`, `xmalloc` and
   `mstress` are flat, and the Valkey soak shows no throughput gain.
@@ -470,28 +496,28 @@ churn), `lazy_band` (RSS-derived metrics under a limit) and `thp`
 
 ## 8. Known limitations
 
-Each has an issue with the measurements and the candidate fixes.
+Each records what was measured and, where it is known, the cause.
 
-- **Ruby threaded RSS on x86_64** (#43): on a 16-thread Ruby soak, peak
+- **Ruby threaded RSS on x86_64**: on a 16-thread Ruby soak, peak
   RSS is about 13% above jemalloc's on x86_64 (6% below it on aarch64),
   from 64 KiB-slab holes across many arenas and `Empty` slabs left in
   arenas already purged. `narenas:1` gives the lower peak.
-- **PostgreSQL `select500` on aarch64** (#44): pgbench select-only at 500
+- **PostgreSQL `select500` on aarch64**: pgbench select-only at 500
   clients reads up to 9% behind glibc on the C4A, in a run bound by the
   client's threads sharing the CPUs with the backends; instructions and
   cache misses per transaction are equal. It is ahead on x86_64. To be
   re-measured server-bound.
-- **Fork cost of per-class regions** (#45): a fresh process owns dozens
+- **Fork cost of per-class regions**: a fresh process owns dozens
   of class and metadata mappings, so a forked child (a PostgreSQL backend
   per connection) pays more for `fork`, first-touch faults and page-table
   teardown than under glibc: about 40..60% more on a connection-setup
   benchmark. Use a connection pooler (section 3).
-- **Valkey write phase on a small-L3 Xeon** (#46): on Sapphire Rapids
+- **Valkey write phase on a small-L3 Xeon**: on Sapphire Rapids
   8481C (GCE C3) the Valkey model's write phase has read 15..21% behind
   jemalloc, attributed to the instruction-window limit of an MLP-bound
   loop; two of the named suspects have since been removed, and the gap is
   to be re-measured.
-- **Post-delete RSS on 64 KiB-page aarch64** (#47): on a 64 KiB-page
+- **Post-delete RSS on 64 KiB-page aarch64**: on a 64 KiB-page
   kernel the Valkey soak's post-delete RSS is about 20% above jemalloc's
   (write phase and peak at parity). The gap is Valkey's defragmenter
   stopping on its absolute `active-defrag-ignore-bytes` threshold, which
