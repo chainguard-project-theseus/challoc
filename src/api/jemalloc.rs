@@ -2239,3 +2239,49 @@ mod tests {
         );
     }
 }
+
+/// Kani check of `message_hook` (`verus/ledger/src/api/jemalloc.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_hook {
+    use super::{MallocMessage, je_malloc_message, malloc_message, message_hook};
+    use core::ffi::{c_char, c_void};
+    use core::ptr;
+
+    unsafe extern "C" fn first(_: *mut c_void, _: *const c_char) {}
+
+    unsafe extern "C" fn second(_: *mut c_void, _: *const c_char) {}
+
+    /// `None`, `first` or `second`.
+    fn any_hook() -> MallocMessage {
+        if kani::any() {
+            None
+        } else if kani::any() {
+            Some(first)
+        } else {
+            Some(second)
+        }
+    }
+
+    /// The address of a hook, 0 for none.
+    fn addr(h: MallocMessage) -> usize {
+        h.map_or(0, |f| f as usize)
+    }
+
+    /// `message_hook`: no `ensures`; it returns, for every pair of values
+    /// of `malloc_message` and `je_malloc_message` (each none or one of
+    /// two functions), and (beyond the contract) gives `malloc_message`
+    /// when it is set, else `je_malloc_message`.
+    #[kani::proof]
+    fn message_hook_picks_first_set() {
+        let (m, j) = (any_hook(), any_hook());
+        // SAFETY: the two statics, written only here (no other code runs
+        // in a harness).
+        unsafe {
+            ptr::write_volatile(&raw mut malloc_message, m);
+            ptr::write_volatile(&raw mut je_malloc_message, j);
+        }
+        let want = if m.is_some() { m } else { j };
+        assert_eq!(addr(message_hook().map(|h| h.0)), addr(want));
+    }
+}

@@ -7,5 +7,12 @@ assert_flushed	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_flus
 mark_bound	raw pointer (internal)	RefinedRust
 # As `mark_bound`, for `rehome`, which the token does not record.
 mark_rehome	raw pointer (internal)	RefinedRust
+# Ghost only: returns the permission to the heap's whole block (the head,
+# which creation passed on in its `FreshHeap`, joined with the home
+# headers' permissions it uses up) and the block's `MetaClaim`, which
+# `init_fields` dropped: Verus ghost state RefinedRust cannot produce.
+# A Verus proof would keep the head and the claim in the heap's ghost
+# state; it rests on `tcaches::heap_at`'s one-reference contract.
+axiom_heap_block	allocator invariant	Verus
 # `assert_eq!` reaches `core::panicking::assert_failed`.
 assert_rekey_flushed	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_rekey_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)

@@ -14,12 +14,13 @@
 //! module that proof lanes rarely touch) or `kani.yaml`. `kani-main` runs
 //! after every landing on main and covers the rest: the `kani_*` modules in
 //! files most proof pull requests touch (`heap/cache.rs`, `heap/flush.rs`,
-//! `heap/mod.rs`, `heap/others.rs`, `heap/paths.rs`, `arena.rs`, `purge.rs` and
-//! `api/mallctl.rs`), and the checked items outside any listed path
+//! `heap/mod.rs`, `heap/others.rs`, `heap/paths.rs`, `arena.rs`, `purge.rs`,
+//! `api/mallctl.rs`, `api/mod.rs` and `layout/mod.rs`), and the checked items
+//! outside any listed path
 //! (`stats.rs`'s `fig_*`, `sys/abort.rs`, the class table, the enums `eq.rs` matches). The list is
 //! kept by hand: a `kani_*` module added to a rarely changed file belongs in
 //! `changed:`; one added to a hot file, one most proof pull requests
-//! touch (today the eight files above), is left to `kani-main`, so
+//! touch (today the ten files above), is left to `kani-main`, so
 //! a change that breaks it is caught after it lands, not before.
 //!
 //! The harnesses of items with private parts sit next to them, in a
@@ -27,7 +28,7 @@
 //! for one). Not every seam the ledger gives to Kani has a harness: some
 //! private items, the layout constants (`arena.rs`'s `A_*` and `AR_*`,
 //! `heap/shared.rs`'s `S_*` and others), `hint::spin_loop`, the `panic`
-//! accessors of `vspec/panic.rs`, `axiom_class_table_wf`, the `ExWrite`
+//! accessors of `vspec/panic.rs`, the `ExWrite`
 //! trait specification and the two `div_ceil`s (`core_int`) have none.
 
 mod abort;

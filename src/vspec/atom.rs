@@ -273,3 +273,26 @@ pub(crate) unsafe fn load_u16_at(p: *const AtomicU16, ordering: Ordering, Tracke
 }
 
 } // verus!
+
+/// Kani check of `usize_ptr` (`verus/ledger/src/vspec/atom.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_atom {
+    use super::usize_ptr;
+    use core::sync::atomic::AtomicUsize;
+
+    /// `usize_ptr`, `ensures usize_id_at(r) == usize_id(a)` and `r@.addr
+    /// != 0`, with both identities uninterpreted: the pointer is non-null,
+    /// every call on one atomic returns the same pointer, and two atomics
+    /// get two pointers (each is its atomic's address).
+    #[kani::proof]
+    fn usize_ptr_names_its_atomic() {
+        let a = AtomicUsize::new(kani::any());
+        let b = AtomicUsize::new(kani::any());
+        let r = usize_ptr(&a);
+        assert!(!r.is_null());
+        assert!(core::ptr::eq(r, &a));
+        assert!(usize_ptr(&a) == r);
+        assert!(usize_ptr(&b) != r);
+    }
+}

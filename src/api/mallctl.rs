@@ -4797,7 +4797,7 @@ mod tests {
     }
 }
 
-/// Kani check of `root` (`verus/ledger/src/api/mallctl.rs.md`;
+/// Kani checks of `root` and `VERSION` (`verus/ledger/src/api/mallctl.rs.md`;
 /// `cfg(kani)` only, see `verus/README.md`, "Kani").
 #[cfg(kani)]
 mod kani_root {
@@ -4813,5 +4813,29 @@ mod kani_root {
         assert!(core::ptr::eq(r, &ROOT[..]));
         let r2 = root();
         assert!(core::ptr::eq(r2, r));
+    }
+
+    /// Every byte of `s` from `i` to `j` is an ASCII digit, and there is
+    /// at least one.
+    fn digits(s: &[u8], i: usize, j: usize) -> bool {
+        i < j && s[i..j].iter().all(u8::is_ascii_digit)
+    }
+
+    /// `VERSION`, trusted as a value of its type: it is `VERSION_STR`,
+    /// whose shape (its comment) is jemalloc's
+    /// `<major>.<minor>.<bugfix>-<nrev>-g<gid>`, which this checks of
+    /// `5.3.0-0-gchalloc`, and `VERSION_CSTR` is the same bytes and a NUL.
+    #[kani::proof]
+    #[kani::unwind(20)]
+    fn version_is_version_str() {
+        use super::{VERSION, VERSION_CSTR, VERSION_STR};
+        assert_eq!(VERSION, VERSION_STR);
+        let s = VERSION.as_bytes();
+        assert!(digits(s, 0, 1) && s[1] == b'.' && digits(s, 2, 3) && s[3] == b'.');
+        assert!(digits(s, 4, 5) && s[5] == b'-' && digits(s, 6, 7) && s[7] == b'-');
+        assert!(s[8] == b'g' && s.len() > 9);
+        assert_eq!(&VERSION_CSTR[..s.len()], s);
+        assert_eq!(VERSION_CSTR[s.len()], 0);
+        assert_eq!(VERSION_CSTR.len(), s.len() + 1);
     }
 }

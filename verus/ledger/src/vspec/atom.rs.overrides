@@ -1,3 +1,3 @@
 # A reference-to-pointer cast, which Verus cannot state: the pointer names
 # the atomic it was made from while that atomic stays in place.
-usize_ptr	raw pointer (internal)	none (assumption)
+usize_ptr	raw pointer (internal)	Kani	trusted (partly checked, Kani: vspec::atom::kani_atom::usize_ptr_names_its_atomic; not checked: that `r` carries `a`'s provenance, so loads and stores through it reach `a` (the harness compares addresses))

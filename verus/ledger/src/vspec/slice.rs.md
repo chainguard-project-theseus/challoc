@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `slice::from_...rts::<'a, T>` | assume_spec | core library | Kani | trusted |
 | `array_get_unchecked` | external_body | core library | Kani | discharged |
-| `slice_from_perms` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `slice_from_perms` | external_body | raw pointer (internal) | Kani | trusted |
 | `<[T]>::swap` | assume_spec | core library | Kani | discharged |
 | `slice::from_ref` | assume_spec | core library | Kani | discharged |
 | `array::IntoIter<T, N>` | ext_type_spec | core library | Kani | trusted |
@@ -23,7 +23,7 @@ file.
 | `<[T]>::selec..._key::<K, F>` | assume_spec | core library | Kani | trusted |
 | `sort_ptrs_by_key` | external_body | core library | Kani | trusted |
 | `<[T]>::get_...d_mut::<I>` | assume_spec | core library | Kani | discharged |
-| `slice_mut_elems` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `slice_mut_elems` | external_body | raw pointer (internal) | Kani | trusted |
 | `<[T]>::swap_with_slice` | assume_spec | core library | Kani | trusted |
 | `<[T]>::rotate_left` | assume_spec | core library | Kani | trusted |
 
@@ -66,7 +66,7 @@ pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r
 ## `slice_from_perms`
 
 src/vspec/slice.rs:73. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: vspec::slice::kani_perms::slice_from_perms_elems; not checked: elements outside one allocation, the `# Safety` premise the `requires` does not state and the harness, on one array, assumes; that no permission holder writes the elements while the slice lives; element types other than `u64`, a padded pair and `AtomicU64`, and more than 5 elements).
 
 > `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose permissions `perms` holds from key `j0` on, element `i`'s at key `j0 + i`, at `p`, `p + size_of::<T>()`, ...
 
@@ -312,7 +312,7 @@ pub assume_specification<T, I>[ <[T]>::get_unchecked_mut::<I> ](slice: &mut [T],
 ## `slice_mut_elems`
 
 src/vspec/slice.rs:305. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: vspec::slice::kani_perms::slice_mut_elems_writes_through; not checked: elements outside one allocation, a zero-sized `T` or bytes not initialised, the premises the `requires` does not state and the harness, on one initialised array, assumes; that the elements are reached only through the slice while it lives; element types other than `u64` and `*mut u8`, and more than 5 elements).
 
 > `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `elems` holds keyed by their pointers, element `i`'s at `base.add(i)`, and no other permission: the slice of those elements, for as long as `elems` stays borrowed.
 

@@ -411,3 +411,120 @@ pub assume_specification<T>[ <[T]>::rotate_left ](s: &mut [T], mid: usize)
 ;
 
 } // verus!
+
+/// Kani checks of `slice_from_perms` and `slice_mut_elems`
+/// (`verus/ledger/src/vspec/slice.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani"). The permissions are ghost, so each harness
+/// passes erased ones and reads them as the `requires` describe them: the
+/// elements of one array, consecutive from the pointer, initialised.
+#[cfg(kani)]
+mod kani_perms {
+    use super::{slice_from_perms, slice_mut_elems};
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use vstd::prelude::{Ghost, Tracked};
+
+    /// The longest array checked.
+    const N: usize = 5;
+
+    /// `slice_from_perms` on an array of `N` words: from every `i0`, every
+    /// `n > 0` with `i0 + n <= N` (the permissions of the `n` elements from
+    /// `i0`, at consecutive addresses, initialised): the pointer and length
+    /// are what `from_raw_parts` requires (`can_dereference` of the
+    /// slice: non-null, aligned, in bounds, valid values), `r.len() == n`,
+    /// and `r[i]` is element `i0 + i`, the permission `j0 + i`'s value, at
+    /// its address.
+    fn from_perms_on<T: Copy + PartialEq + kani::Arbitrary>() {
+        let a: [T; N] = kani::any();
+        let i0: usize = kani::any();
+        let n: usize = kani::any();
+        kani::assume(0 < n && i0 <= N && n <= N - i0);
+        // SAFETY: `i0 <= N`: inside the array or one past it.
+        let p = unsafe { a.as_ptr().add(i0) };
+        assert!(kani::mem::can_dereference(core::ptr::slice_from_raw_parts(
+            p, n
+        )));
+        // SAFETY: the contract's precondition, with the `n` elements in
+        // one allocation (the array).
+        let r = unsafe { slice_from_perms(p, n, Ghost::assume_new(), Tracked::assume_new()) };
+        assert_eq!(r.len(), n);
+        for i in 0..n {
+            assert!(r[i] == a[i0 + i]);
+            assert!(core::ptr::eq(&r[i], &a[i0 + i]));
+        }
+    }
+
+    /// `slice_from_perms`, `ensures r@.len() == n` and `r@[i] ==
+    /// perms[j0 + i].value()`: at a word, a padded pair, and an
+    /// `AtomicU64` (the class table's bitmap words, its one caller),
+    /// whose values are read through the slice with `load`.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn slice_from_perms_elems() {
+        from_perms_on::<u64>();
+        from_perms_on::<(u64, u8)>();
+        let v: [u64; N] = kani::any();
+        let a = v.map(AtomicU64::new);
+        let i0: usize = kani::any();
+        let n: usize = kani::any();
+        kani::assume(0 < n && i0 <= N && n <= N - i0);
+        // SAFETY: as in `from_perms_on`.
+        let p = unsafe { a.as_ptr().add(i0) };
+        assert!(kani::mem::can_dereference(core::ptr::slice_from_raw_parts(
+            p, n
+        )));
+        // SAFETY: as in `from_perms_on`.
+        let r = unsafe { slice_from_perms(p, n, Ghost::assume_new(), Tracked::assume_new()) };
+        assert_eq!(r.len(), n);
+        for i in 0..n {
+            assert_eq!(r[i].load(Ordering::Relaxed), v[i0 + i]);
+            assert!(core::ptr::eq(&r[i], &a[i0 + i]));
+        }
+    }
+
+    /// `slice_mut_elems` on an array of `N` `T`s at `base`: from every
+    /// `start`, every `n > 0` with `start + n <= N` (the permissions of
+    /// elements `start..start + n`, keyed `base.add(i)`), the slice is
+    /// what `from_raw_parts_mut` requires (`can_dereference`), `r.len() ==
+    /// n`, it starts out holding the elements, and a write through `r[k]`
+    /// is the array's element `start + k` afterwards (`final(elems)`
+    /// holds `final(r)`), every other element unchanged.
+    fn mut_elems_on<T: Copy + PartialEq>(any: fn() -> T) {
+        let mut a: [T; N] = [any(); N];
+        for e in a.iter_mut() {
+            *e = any();
+        }
+        let old = a;
+        let start: usize = kani::any();
+        let n: usize = kani::any();
+        kani::assume(0 < n && start <= N && n <= N - start);
+        let base = a.as_mut_ptr();
+        // SAFETY: `start <= N`: inside the array or one past it.
+        let s = core::ptr::slice_from_raw_parts(unsafe { base.add(start) } as *const T, n);
+        assert!(kani::mem::can_dereference(s));
+        // SAFETY: the contract's precondition and premises: the elements
+        // lie in one array, `T` is not zero-sized, all are initialised.
+        let r = unsafe { slice_mut_elems(base, start, n, Tracked::assume_new()) };
+        assert_eq!(r.len(), n);
+        for i in 0..n {
+            assert!(r[i] == old[start + i]);
+        }
+        let k: usize = kani::any();
+        kani::assume(k < n);
+        let v = any();
+        r[k] = v;
+        for i in 0..N {
+            assert!(a[i] == if i == start + k { v } else { old[i] });
+        }
+    }
+
+    /// `slice_mut_elems`, `ensures r@.len() == n`, the elements'
+    /// permissions afterwards initialised to `final(r)`, and `r@` the
+    /// initialised elements' old values: at a word and at `*mut u8` (a
+    /// cache stack's entries, its one caller's).
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn slice_mut_elems_writes_through() {
+        mut_elems_on::<u64>(kani::any);
+        mut_elems_on::<*mut u8>(|| core::ptr::without_provenance_mut(kani::any()));
+    }
+}
