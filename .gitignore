@@ -3,5 +3,7 @@
 /dist
 /.ci
 /verus/count/target
-# Local-only internal cell overlays (internal-project.toml is tracked and unaffected)
+# A maintainer's local, untracked bench files (bench/README.md, "Operating
+# on GCE"): where cb launch runs, and the pinned bench image.
 /bench/cells/internal-*.toml
+/bench/internal-image.lock

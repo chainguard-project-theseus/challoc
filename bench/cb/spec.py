@@ -20,7 +20,7 @@ ROOT_DIR = os.path.dirname(BENCH_DIR)
 
 # Public cell files may only name images from these projects; anything
 # else (a private image project) belongs in an internal overlay,
-# bench/cells/internal-*.toml, which is deleted before publication. An
+# bench/cells/internal-*.toml, which stays untracked (.gitignore). An
 # overlay may list `[lint] markers = [...]`: strings that must then appear
 # in no public file (cell files, cb's code, rows, suites). The markers live
 # only in the overlay, so the public tree never names them.

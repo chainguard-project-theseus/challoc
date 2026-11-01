@@ -4,8 +4,7 @@ The floor checks (`.chainguard/ci/floor.yaml`) launch GCE VMs with `cb
 launch exp-floor`, so they hold a GCP credential: the `challoc-gce`
 workload identity of `.chainguard/ci/identities.yaml`. This is the GCP
 side of that identity, in the bench project (`dlorenc-dev`, number
-505132528589, the project `bench/cells/internal-project.toml` names), and
-how it was brought up.
+505132528589), and how to set it up for a new or recreated repository.
 
 ## What exists
 
@@ -13,19 +12,30 @@ how it was brought up.
   `https://issuer.enforce.dev` (the Chainguard workflow issuer), allowed
   audience
   `https://iam.googleapis.com/projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/providers/workflow`,
-  `google.subject = assertion.sub`.
+  `google.subject = assertion.sub`, and an attribute condition pinned to
+  this repository's exact subject,
+  `chainguard:90d0c3d145808bf716af24faab4b19aa:challoc-gce`.
 - The check's token subject is `chainguard:<repository-id>:challoc-gce`.
   The repository ID is a random 32-hex-character ID the Checks platform
   allocates the first time it issues one of this repository's identities;
-  nothing shows it before then.
+  nothing shows it before then, and a recreated repository gets a new one.
 - Data-access audit logs for `sts.googleapis.com` on the project, so a
   token exchange records its subject.
-
 - Service account `challoc-floor@dlorenc-dev.iam.gserviceaccount.com`
-  holds the roles `cb launch` needs. The federated principal
+  (`FLOOR_SA` in floor.yaml) holds the roles `cb launch` needs. The
+  federated principal
   `principal://iam.googleapis.com/projects/505132528589/locations/global/workloadIdentityPools/challoc-checks/subject/chainguard:<repository-id>:challoc-gce`
   holds nothing but `roles/iam.workloadIdentityUser` and
   `roles/iam.serviceAccountTokenCreator` on that account.
+- The bench bucket `gs://dlorenc-dev-challoc-bench` and the VMs' service
+  account `cb-bench-vm@dlorenc-dev.iam.gserviceaccount.com`. `ci/floor.sh`
+  derives the project from `FLOOR_SA` and these two from the project
+  (`<project>-challoc-bench`, `cb-bench-vm@<project>`), and passes all
+  three to `cb launch` as `CB_PROJECT`, `CB_BUCKET` and
+  `CB_SERVICE_ACCOUNT`. It takes the bench image lock from
+  `gs://dlorenc-dev-challoc-bench/internal-image.lock` (bench/README.md,
+  "Operating on GCE"); when that object is missing, every floor VM builds
+  the bench image itself.
 
 Why the service account: the platform's ADC file uses the federated
 principal directly, and the guest holds its token only as a sealed
@@ -37,19 +47,13 @@ of the ADC file with `service_account_impersonation_url` set to
 guest holds a plain one-hour token for `challoc-floor`, which can do only
 what the floor needs.
 
-## Bring-up (once, after identities.yaml lands on main)
+## Setting it up (a new or recreated repository, or a new identity)
 
-Done on 2026-10-12: the repository's subject is
-`chainguard:90d0c3d145808bf716af24faab4b19aa:challoc-gce`, the provider
-is pinned to it, the bindings below exist, and `floor` blocks. Repeat
-these steps only for a recreated repository (it gets a new ID) or a new
-identity.
-
-The provider starts with a provisional condition,
+Start the provider with a provisional condition,
 `assertion.sub.startsWith('chainguard:') && assertion.sub.endsWith(':challoc-gce')`,
-and no IAM grant names the principal, so a token that passes it can
-exchange for a federated token that can do nothing. The first floor run
-after the merge fails on a permission error; then:
+and no IAM grant naming the principal, so a token that passes it can
+exchange for a federated token that can do nothing. Once identities.yaml
+is on main, the first floor run fails on a permission error; then:
 
 1. Read the subject from the exchange:
 
@@ -88,8 +92,9 @@ after the merge fails on a permission error; then:
    ```
 
 4. Re-run the floor check on main (GitHub's Re-run on the postsubmit
-   check of main's latest commit), and once it passes, delete
-   `advisory: true` from `floor` in floor.yaml.
+   check of main's latest commit) and confirm it passes. While these
+   steps are pending, mark `floor` `advisory: true` in floor.yaml so the
+   expected failure does not block; remove it once the check passes.
 
 ## Who gets it
 

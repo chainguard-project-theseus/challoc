@@ -26,7 +26,7 @@ Suites (`python3 bench/cb suites`):
     exp-ladder  the CPU ladder: challoc vs jemalloc per CPU family
     exp-floor   the kernel floor: `make test` and `make fuzz` per public kernel image
     exp-churn   #94: larson thread churn at 10/100/1000 rounds per thread with PMU counts (metal cells)
-    exp-narenas, exp-slice   experiments (below)
+    exp-narenas default narenas vs narenas = the container's CPU quota (#21; "Experiment suites" below)
 
 Everything builds and runs inside the Wolfi bench image on the native
 architecture; emulated x86_64 is never used for numbers. The workflow
@@ -99,8 +99,8 @@ the plumbing, not for a decision. Verdicts of record come from `cb launch`.
     python3 bench/cb fp target/results/cb/<aa-run>/res/* --k 3   # FP rate of a 3-replicate run
 
 `cb launch SUITE` runs on the host (Python 3.11+ and an authenticated
-`gcloud`; the project, bucket and VM service account are in
-`bench/cells/public.toml` `[defaults]`). It packs the suite's rows into
+`gcloud`; the project, bucket and VM service account are the
+maintainer's own: "Operating on GCE" below). It packs the suite's rows into
 shards of about `shard_seconds` of runs (from each row's `est_s`), creates
 one spot VM per (cell, shard, replicate) with `gcloud compute instances
 bulk create` (`--max-run-duration` with DELETE, labels
@@ -248,12 +248,12 @@ in the report and `launch-summary.json`, nothing created, not a failure;
 when every cell is pending the exit code is 2).
 
 **Internal overlay.** Cells on non-public images live in
-`bench/cells/internal-*.toml`: loaded like any cell file, deleted before
-publication, and `cb cells --lint` fails when one of an overlay's
+`bench/cells/internal-*.toml`: loaded like any cell file, untracked
+(`.gitignore`), and `cb cells --lint` fails when one of an overlay's
 `[lint] markers` appears in a public file. Suites name such cells only
-through tags (`exp-slice` selects `tag:exp-slice`), so a public tree
-without the overlay still parses; there such a tag selects no cells. An
-overlay records the host facts of its own images.
+through tags (`cells = "tag:<tag>"`), so the tree without the overlay
+still parses; there such a tag selects no cells. An overlay records the
+host facts of its own images.
 
 ### Variants and host knobs
 
@@ -338,29 +338,9 @@ check that the process maps exactly the variant's library.
 ### Experiment suites
 
 An experiment is a suite: cells (by tag), variants (MALLOC_CONF and knobs
-on one build), a container profile, rows. `exp-slice` (audit D9) runs
-`off=head@slice_ext:off` against `auto=head@slice_ext:auto` on the kernel
-7.2 cell (which grants the rseq time slice extension, `slice_ext=on` in
-the features line) and a 6.18 cell (which cannot, `slice_ext=no-slice_ctrl`:
-the negative control, where every row must come out `same`), container
-pinned to 4 CPUs, rows larson16, larson64, xmalloc, valkey1, valkey1-free.
-The verdict was cut (#17): `slice_ext` is no longer a config key, so the
-suite only measures revisions that still have it, such as
-`archive/prototype-2026-09-30`; on a later head both variants are the same
-build with an unknown key.
-
-Measured (`cb-exp-slice-2`, 4 VMs per cell, 5 blocks, cpuset
-0-3, default seccomp): on the 7.2 cell every row is `same` (larson16
-+0.0% [-0.5, +0.5], larson64 -0.5% [-1.0, +0.0], xmalloc +0.0%, valkey1
--0.1%, valkey1-free -0.4%; margin 2%); the 6.18 control is `same` on
-three rows and inconclusive on the two valkey rows (bimodal, -1.0% and
--1.5%). A direct check on the 7.2 host with the allocator's stats print:
-the extension is on, but a 5 s larson16 run sees 5 grants, larson64 8,
-xmalloc 29, against about 10^9 operations, so the mechanism almost never
-fires on these rows; and under the default seccomp profile the grants are
-handed back through `sched_yield` (the `rseq_slice_yield` syscall is not
-in the profile). A first run with a `cpus = 4` quota instead of a cpuset
-(`cb-exp-slice-1`) also came out `same` on four of five 7.2 rows.
+on one build), a container profile, rows. `exp-narenas` runs the default
+narenas against narenas set to the container's CPU quota on the `cpusN`
+cells; its header gives the variant pair per quota.
 
 ## Rows
 
@@ -441,11 +421,36 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
 
 ## Operating on GCE
 
-- **Where.** The project, bucket and VM service account come from the
-  internal overlay `bench/cells/internal-project.toml` (or `CB_PROJECT`,
-  `CB_BUCKET`, `CB_SERVICE_ACCOUNT`, or the flags). Cells list their zones;
-  the reference shapes are `c4a-standard-16` (Axion) and `c4-standard-16`
-  (Xeon 8581C) in `us-east4-a`. A spot C4/C4A VM costs about $0.30 an
+- **Where.** The repository names no GCP project. A maintainer brings
+  their own: a project, a bucket for bundles and results (a 30-day
+  object lifecycle rule is assumed), an Artifact Registry repository for
+  the bench image, and a VM service account with object read/write on
+  that bucket and read on that repository, nothing else. `cb launch`
+  takes the first three from, in order, `--project`, `--bucket` and
+  `--service-account`; `CB_PROJECT`, `CB_BUCKET` and `CB_SERVICE_ACCOUNT`;
+  or the `[defaults]` of a local overlay (`cb gc` needs only the
+  project):
+
+      # bench/cells/internal-project.toml (untracked: .gitignore)
+      [defaults]
+      project = "<project>"
+      bucket = "<bucket>"
+      service_account = "<sa>@<project>.iam.gserviceaccount.com"
+      [lint]
+      markers = ["<project>"]   # cb cells --lint: never named in a tracked file
+
+  The pinned image and perf bundle live in `bench/internal-image.lock`,
+  also untracked (`CB_IMAGE_LOCK` points elsewhere): `make bench-image`
+  writes it (set `CB_IMAGE_REPO=<region>-docker.pkg.dev/<project>/<repo>/cb`
+  the first time) and `perf-upload.sh` adds to it; without it every VM
+  builds the image itself and runs without perf. The floor checks
+  (ci/floor.sh) read it from `gs://<bucket>/internal-image.lock`, so
+  after either step copy it there (`gcloud storage cp
+  bench/internal-image.lock gs://<bucket>/`), and copy it again if the
+  bucket's 30-day expiry removes it; without it their VMs build the image
+  too, which may not fit the check's 50-minute timeout. Cells list their
+  zones; the reference shapes are `c4a-standard-16` (Axion) and
+  `c4-standard-16` (Xeon 8581C) in `us-east4-a`. A spot C4/C4A VM costs about $0.30 an
   hour; `cb launch` prints its estimate and refuses a launch over the
   suite's `budget_usd` without `--allow-cost`.
 - **Caps.** At most `--max-vms` / `CB_MAX_VMS` (32) VMs of one launch at
@@ -486,8 +491,9 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
 - `build.sh`: every benchmark program, pinned (its header lists them);
   `Dockerfile.cb`: the bench image (Dockerfile.dev's `test` stage, the
   stock allocators, `build.sh`'s output, Fleetbench from its own stage,
-  the runtimes); `internal-image.lock`: the image per architecture by
-  digest, and the perf bundle per architecture by object and sha256.
+  the runtimes); `internal-image.lock` (local, untracked): the image per
+  architecture by digest, and the perf bundle per architecture by object
+  and sha256.
 - `drivers/`: the driver rows; `cb.sh` is what the short drivers share,
   `lib.sh` what the soak drivers share (they also run by hand: `make run
   CMD='sh bench/drivers/valkey-soak.sh'` with the variables in each

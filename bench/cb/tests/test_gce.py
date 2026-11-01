@@ -38,7 +38,7 @@ class VmTable(unittest.TestCase):
     def args(self, **kw):
         d = dict(suite="quick", base="HEAD", head="HEAD", variants=None, controls=None, rows=None, cells=None, cells_path=None,
                  replicas=None, blocks=None, warmup=None, looks=None, extend_replicas=None, shard_seconds=None, seed=7,
-                 max_vms=None, project=None, bucket=None, service_account=None, run_id="t-run", out=None, no_pmu=False,
+                 max_vms=None, project="t-project", bucket="t-bucket", service_account="t-sa@t-project.iam.gserviceaccount.com", run_id="t-run", out=None, no_pmu=False,
                  no_image=False, no_reschedule=False, allow_cost=False, dry_run=True)
         d.update(kw)
         return argparse.Namespace(**d)
