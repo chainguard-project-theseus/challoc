@@ -1072,10 +1072,11 @@ impl Heap {
         proof {
             old(self).lemma_array_hdr(node);
         }
-        // SAFETY: guaranteed by the caller.
         if node.is_null() {
             self.cache_ptr(class)
         } else {
+            // SAFETY: the caller passes a non-null `node` only if it is a
+            // live node owned by this heap.
             unsafe { Self::node_cache_ptr(node, class) }
         }
     }

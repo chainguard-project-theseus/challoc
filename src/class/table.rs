@@ -848,16 +848,17 @@ pub(super) const RUN_BYTES: usize = 512 << 10;
 
 } // verus!
 
-// SAFETY (all three): `addr..addr + len` is inside a class region this
-// allocator reserved (the callers pass slab or page-group ranges below
-// the region's end), so changing its protection or installing a guard
-// affects only pages nothing else in the process maps.
+// In the three wrappers below, `addr..addr + len` is inside a class
+// region this allocator reserved (the callers pass slab or page-group
+// ranges below the region's end), so changing its protection or
+// installing a guard affects only pages nothing else in the process maps.
 verus! {
 
 fn commit(addr: usize, len: usize) -> Result<(), Errno>
     requires
         crate::sys::may_syscall(),
 {
+    // SAFETY: a range of a reserved class region (above).
     unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
 }
 
@@ -865,6 +866,7 @@ fn decommit(addr: usize, len: usize) -> Result<(), Errno>
     requires
         crate::sys::may_syscall(),
 {
+    // SAFETY: a range of a reserved class region (above).
     unsafe { sys::mprotect(addr, len, PROT_NONE) }
 }
 
@@ -872,6 +874,7 @@ fn guard(addr: usize, len: usize) -> Result<(), Errno>
     requires
         crate::sys::may_syscall(),
 {
+    // SAFETY: a range of a reserved class region (above).
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
 
@@ -3863,11 +3866,11 @@ impl SlabTable {
             if self.is_guard_slab(slab) {
                 continue;
             }
-            // SAFETY: the descriptor page for `slab` was committed above.
             proof {
                 use_type_invariant(self);
                 self.lemma_desc_at(slab);
             }
+            // SAFETY: the descriptor page for `slab` was committed above.
             let recorded = unsafe { SlabDesc::at(self.desc_base, class, slab, Tracked(self.desc_perms.borrow().tracked_borrow(slab as int))).arena() };
             if recorded != previous {
                 owner_mismatch(class, s >> self.lg_group, slab, previous, recorded);
@@ -4144,9 +4147,9 @@ impl SlabTable {
         });
         if !gi.mirror.is_null() {
             let tracked mi = gi.mirror_inv.borrow().tracked_unwrap();
-            // SAFETY: `mirror_watermark`'s caller keeps the copy alive as
-            // long as the table.
             vstd::open_atomic_invariant!(mi => v => {
+                // SAFETY: `mirror_watermark`'s caller keeps the copy alive
+                // as long as the table.
                 unsafe { store_usize_at(gi.mirror, end, Ordering::Release, Tracked(&mut v.0)) };
                 proof {
                     // The copy becomes `end` with both halves of its

@@ -2609,6 +2609,7 @@ mod tests {
         let p = challoc_features();
         assert!(!p.is_null());
         assert_eq!(p, challoc_features());
+        // SAFETY: `challoc_features` returns a static NUL-terminated line.
         let s = unsafe { core::ffi::CStr::from_ptr(p) }.to_str().unwrap();
         let full = crate::sys::features::Features::probe(true);
         assert_eq!(s, std::format!("{full}"), "the line is the full probe's");
@@ -2632,13 +2633,17 @@ mod tests {
     fn a_forked_child_inherits_the_discovered_cgroup() {
         // Init registers the fork handlers.
         let _ = shared();
+        // SAFETY: `fork` has no memory-safety preconditions; the child reads
+        // the shared state and leaves through `_exit`.
         let pid = unsafe { ::libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
             let code = if shared().cgroup().is_some() { 0 } else { 1 };
+            // SAFETY: `_exit` has no preconditions; the child must not unwind.
             unsafe { ::libc::_exit(code) };
         }
         let mut status = 0;
+        // SAFETY: `pid` is this process's child; `status` is a local.
         assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
         assert!(::libc::WIFEXITED(status), "child status {status:#x}");
         assert_eq!(::libc::WEXITSTATUS(status), 0, "the child has no record");
@@ -2653,19 +2658,26 @@ mod tests {
     #[test]
     fn a_forked_child_does_not_wait_for_a_line_being_built() {
         let expect = feature_line().len();
+        // SAFETY: as in `a_forked_child_inherits_the_discovered_cgroup`; each
+        // child leaves through `_exit`.
         let pid = unsafe { ::libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
             LINE_STATE.store(LINE_BUILDING, Ordering::Release);
+            // SAFETY: as above.
             let gc = unsafe { ::libc::fork() };
             if gc == 0 {
+                // SAFETY: `alarm` has no preconditions.
                 unsafe { ::libc::alarm(10) };
                 let p = challoc_features();
+                // SAFETY: `challoc_features` returns a static NUL-terminated line.
                 let n = unsafe { core::ffi::CStr::from_ptr(p) }.to_bytes().len();
+                // SAFETY: `_exit` has no preconditions.
                 unsafe { ::libc::_exit(if n == expect { 0 } else { 2 }) };
             }
             let mut status = 0;
             let code = if gc > 0
+                // SAFETY: `gc` is this process's child; `status` is a local.
                 && unsafe { ::libc::waitpid(gc, &mut status, 0) } == gc
                 && ::libc::WIFEXITED(status)
             {
@@ -2673,9 +2685,11 @@ mod tests {
             } else {
                 3
             };
+            // SAFETY: `_exit` has no preconditions.
             unsafe { ::libc::_exit(code) };
         }
         let mut status = 0;
+        // SAFETY: `pid` is this process's child; `status` is a local.
         assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
         assert!(::libc::WIFEXITED(status), "child status {status:#x}");
         assert_eq!(
@@ -3169,6 +3183,7 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(!p.is_null());
+        // SAFETY: `p` is a live 8 MiB huge allocation.
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
         s.free_huge(
@@ -3203,6 +3218,8 @@ mod tests {
         // The child checks with atomics and the state lock only and
         // answers through its exit status.
         assert!(purge::background::thread().is_some(), "no thread record");
+        // SAFETY: `fork` has no memory-safety preconditions; the child uses
+        // atomics and the state lock only and leaves through `_exit`.
         let pid = unsafe { ::libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
@@ -3216,9 +3233,11 @@ mod tests {
                 .iter()
                 .enumerate()
                 .fold(0, |m, (i, &b)| m | ((b as i32) << i));
+            // SAFETY: `_exit` has no preconditions; the child must not unwind.
             unsafe { ::libc::_exit(code) };
         }
         let mut status = 0;
+        // SAFETY: `pid` is this process's child; `status` is a local.
         assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
         assert!(
             ::libc::WIFEXITED(status),
@@ -3357,6 +3376,7 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(!p.is_null());
+        // SAFETY: `p` is a live 8 MiB huge allocation.
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         s.free_huge(
             (p as usize - s.regions.huge_base) >> s.regions.lg_page,
@@ -3468,6 +3488,7 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(!p.is_null());
+        // SAFETY: `p` is a live 8 MiB huge allocation.
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
         // Nothing else `Empty` in the huge allocator, so the free in the
@@ -3745,11 +3766,14 @@ mod tests {
     #[test]
     fn fork_handlers_block_signals_while_locked() {
         fn current_mask() -> u64 {
+            // SAFETY: an all-zero `sigset_t` is a valid (empty) set.
             let mut set: ::libc::sigset_t = unsafe { core::mem::zeroed() };
             let rc =
+                // SAFETY: a null new set only reads the mask into `set`, a local.
                 unsafe { ::libc::pthread_sigmask(::libc::SIG_BLOCK, core::ptr::null(), &mut set) };
             assert_eq!(rc, 0);
             // The kernel mask is the first 8 bytes of glibc's 128-byte set.
+            // SAFETY: `sigset_t` is 128 bytes, so its first 8 are readable.
             unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
         }
         // glibc's SIGCANCEL (32) and SIGSETXID (33), never blocked.
@@ -3761,8 +3785,11 @@ mod tests {
         let _serial = crate::testutil::global_state();
         let all = blockable(!0);
         // Start from a distinctive mask so "restored" is not "left blocked".
+        // SAFETY: an all-zero `sigset_t` is a valid (empty) set.
         let mut want: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+        // SAFETY: as above.
         let mut before: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+        // SAFETY: `want` and `before` are local sets.
         unsafe {
             ::libc::sigemptyset(&mut want);
             ::libc::sigaddset(&mut want, ::libc::SIGUSR2);

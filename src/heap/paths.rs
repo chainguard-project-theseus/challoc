@@ -931,9 +931,11 @@ unsafe fn free_fast_tail(
     }
     // The two default configurations (one arena, several arenas) each get
     // one compare and the plain push; the opt-in hardening takes the
-    // general dispatch. SAFETY: guaranteed by the caller; `flags` carries
-    // the process's `PUSH_PAC`, clear in both default configurations.
+    // general dispatch. `flags` carries the process's `PUSH_PAC`, clear in
+    // both default configurations.
     let pushed = match flags {
+        // SAFETY: `(t, tp)` is this thread's slot (the caller's contract),
+        // and `flags == 0` means `PUSH_PAC` is clear.
         0 => unsafe { heap_from_slot(t, tp, false, Tracked(&tls.cell), Tracked(&mut tls.loan)) }.push_fast(
             class,
             p,

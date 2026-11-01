@@ -563,6 +563,8 @@ mod tests {
 
         fn at(&self, slab: usize) -> &SlabDesc {
             assert!((slab + 1) * desc_stride(self.class) <= self.buf.len() - DESC_ALIGN);
+            // SAFETY: `base` is the `DESC_ALIGN`-aligned start of `buf`, and the
+            // assertion keeps entry `slab` inside it.
             unsafe { SlabDesc::at(self.base, self.class, slab, Tracked::assume_new()) }
         }
     }

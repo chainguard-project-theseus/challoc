@@ -1014,6 +1014,7 @@ impl Regions {
         proof {
             assert(cls.wf());
         }
+        // SAFETY: `c < NCLASSES`, the length of `class_base`.
         let rel = p.wrapping_sub(unsafe { *crate::vspec::slice::array_get_unchecked(&self.class_base, c) });
         if rel >= self.region_len() {
             return None;

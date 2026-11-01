@@ -264,6 +264,8 @@ impl TestHeap {
     // The test heap stands in for the thread's heap (`heap_for_thread`).
     #[allow(clippy::mut_from_ref)]
     pub(crate) fn heap(&self) -> &mut Heap {
+        // SAFETY: `h` is the live heap `new` created, freed only by `destroy`;
+        // each test holds one reference from here at a time.
         unsafe { &mut *self.h }
     }
 
@@ -344,6 +346,8 @@ impl TestHeap {
     }
 
     pub(crate) fn destroy(self) {
+        // SAFETY: `h` came from `Heap::create` on `s`, and `destroy` consumes the
+        // `TestHeap`, so nothing reaches the heap afterwards.
         unsafe { Heap::destroy(self.h, self.s, Tracked::assume_new(), Tracked::assume_new()) }
     }
 }
@@ -679,6 +683,7 @@ fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
     let k = t.heap().cache(c).unwrap() as *const CacheHeader as *mut CacheHeader;
     // SAFETY: the test owns the heap; `allocs + 1` lands on the mask.
     unsafe { (*k).allocs = (*k).compact_mask as u64 };
+    // SAFETY: `k` is the live cache header of the test's heap.
     let allocs = unsafe { (*k).allocs };
     let len = t.cache(c).len();
     assert!(
@@ -686,6 +691,7 @@ fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
         "a due schedule declines the fast pop"
     );
     assert_eq!(
+        // SAFETY: as above.
         (unsafe { (*k).allocs }, t.cache(c).len()),
         (allocs, len),
         "nothing counted, nothing popped"
@@ -693,6 +699,7 @@ fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
     let b = t.alloc(c);
     assert!(!b.is_null());
     assert_eq!(
+        // SAFETY: as above.
         unsafe { (*k).allocs },
         allocs.wrapping_add(1),
         "the slow path counted the one pop"
@@ -1382,11 +1389,13 @@ fn zeroed_prefix_stays_below_low_water() {
             let (p, z) = t.alloc_zeroed(c);
             if z {
                 assert!(
+                    // SAFETY: `p` is a live 64-byte slot.
                     (0..64).all(|k| unsafe { *p.add(k) } == 0),
                     "op {i}: a dirty slot reported zero"
                 );
                 zeros += 1;
             }
+            // SAFETY: as above; the test owns the slot.
             unsafe { core::ptr::write_bytes(p, 0xa5, 64) };
             live.push(p);
         } else {
@@ -1429,6 +1438,7 @@ fn compacting_cache_with_run(t: &TestHeap, c: usize, seed: u64) -> Vec<*mut u8> 
             break;
         }
         let k = t.heap().cache_ptr(c);
+        // SAFETY: `k` is the live cache header of the test's heap.
         unsafe { (*k).allocs = (*k).compact_mask as u64 };
         live_ps.push(t.alloc(c));
     }
@@ -1473,11 +1483,13 @@ fn compacting_pop_zero_flag_matches_memory() {
             _ => at,
         };
         for (i, &q) in entries.iter().enumerate() {
+            // SAFETY: `q` is a cached `size`-byte slot of the test's heap, unused.
             unsafe { core::ptr::write_bytes(q, if (i as u32) < zeroed { 0 } else { 0xa5 }, size) };
         }
         let h = t.heap();
         h.slow_ticks = 0;
         let k = h.cache_ptr(c);
+        // SAFETY: `k` is the live cache header of the test's heap.
         unsafe {
             (*k).low_water = len;
             (*k).zeroed = zeroed;
@@ -1503,6 +1515,7 @@ fn compacting_pop_zero_flag_matches_memory() {
         let mut zeros = z as usize;
         while t.len(c) > 0 {
             let (q, zq) = t.alloc_zeroed(c);
+            // SAFETY: `q` is a live `size`-byte slot.
             let clean = (0..size).all(|b| unsafe { *q.add(b) } == 0);
             assert!(
                 !zq || clean,
@@ -1539,6 +1552,7 @@ fn compacting_pop_aborts_on_a_zeroed_prefix_above_low_water() {
     let h = t.heap();
     h.slow_ticks = 0;
     let k = h.cache_ptr(c);
+    // SAFETY: `k` is the live cache header of the test's heap.
     unsafe {
         // Every other clause holds: `run_end <= low_water < len`.
         (*k).low_water = run_end;
@@ -1858,6 +1872,7 @@ fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
             break;
         }
         let k = t.heap().cache_ptr(c);
+        // SAFETY: `k` is the live cache header of the test's heap.
         unsafe { (*k).allocs = (*k).compact_mask as u64 };
         live_ps.push(t.alloc(c));
     }
@@ -1888,6 +1903,7 @@ fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
     h.slow_ticks = PERIODIC_EVERY - 1;
     h.last_gc = now_ns().wrapping_sub(s.gc_interval_ns);
     let k = h.cache_ptr(c);
+    // SAFETY: `k` is the live cache header of the test's heap.
     unsafe { (*k).allocs = (*k).compact_mask as u64 };
     let ticks = t.ticks();
     let p = t.alloc(c);
@@ -2265,6 +2281,7 @@ fn free_of_a_misaligned_pointer_aborts() {
     let s = shared();
     let t = TestHeap::new(s);
     let p = t.alloc(class_with(64));
+    // SAFETY: 8 bytes into a live 64-byte slot.
     t.free(unsafe { p.add(8) });
 }
 
@@ -2277,6 +2294,7 @@ fn free_of_a_never_allocated_slot_aborts() {
     let p = t.alloc(c);
     // A slot of slab 0 above the first refill's HALF is committed but
     // was never claimed (the 16-byte slab has 1024 slots).
+    // SAFETY: still inside slab 0: slot 712 of its 1024.
     t.free(unsafe { p.add((HALF + 200) * 16) });
 }
 
@@ -3256,6 +3274,8 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert_eq!(a.classes[c].stats().empty, per_refill);
     // Destroying the heap frees the nodes too.
     let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
+    // SAFETY: `t.h` came from `Heap::create` on `s`; `t` is forgotten below,
+    // so nothing uses the heap again.
     unsafe { Heap::destroy(t.h, s, Tracked::assume_new(), Tracked::assume_new()) };
     assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < before);
     core::mem::forget(t);
@@ -3608,6 +3628,8 @@ fn push_flags_encode_zero_on_free_and_double_free_scan() {
 /// Slot memory is real (`TestShared`).
 fn bytes_of(p: *mut u8, n: usize) -> Vec<u8> {
     (0..n)
+        // SAFETY: the callers pass `n` bytes that stay mapped after a free
+        // (`TestShared` slot memory, or a huge run the allocator retains).
         .map(|i| unsafe { core::ptr::read_volatile(p.add(i)) })
         .collect()
 }
@@ -3622,6 +3644,7 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
     let size = CLASSES[c].size();
     let dirty = |t: &TestHeap| {
         let p = t.alloc(c);
+        // SAFETY: `p` is a live slot of `size` bytes.
         unsafe { ptr::write_bytes(p, 0xA5, size) };
         p
     };
@@ -3659,6 +3682,7 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
     // Sized path (`sdallocx`): the size hint's class, no bit test. With
     // the key the fast push declines and `free_sized_slow` takes the
     // exact route, which clears the slot in `free_slow_in`.
+    // SAFETY: `p` is a live slot of `size` bytes again (the `alloc` above).
     unsafe { ptr::write_bytes(p, 0xA5, size) };
     assert!(
         !free_sized_fast(
@@ -3695,6 +3719,7 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
         );
     }
     // Direct release (`MALLOCX_TCACHE_NONE`), with no cache involved.
+    // SAFETY: `p` is live again (the `alloc` above), `size` bytes.
     unsafe { ptr::write_bytes(p, 0xA5, size) };
     super::free_direct(s, p, Tracked::assume_new());
     assert!(
@@ -3723,6 +3748,7 @@ fn zero_on_free_clears_a_huge_run() {
         assert!(!p.is_null());
         let usable = s.huge.usable_for(n).unwrap();
         assert!(usable >= n);
+        // SAFETY: `usable` is the huge allocation's usable size.
         unsafe { ptr::write_bytes(p, 0xA5, usable) };
         if direct {
             super::free_direct(s, p, Tracked::assume_new())
@@ -3740,6 +3766,7 @@ fn zero_on_free_clears_a_huge_run() {
     let s = shared();
     let t2 = TestHeap::new(s);
     let (p, _) = t2.alloc_huge(n, page_size());
+    // SAFETY: `p` is a live huge allocation of at least `n` bytes.
     unsafe { ptr::write_bytes(p, 0xA5, n) };
     t2.free(p);
     assert!(
@@ -3931,6 +3958,9 @@ fn a_scheduled_pop_aborts_when_the_run_reaches_past_the_length() {
     let len = h.cache(c).unwrap().len() as u32;
     assert!(len > 1);
     let k = h.cache_ptr(c);
+    // SAFETY: `k` is the live cache header of the test's heap; the run past
+    // the length is the deliberate violation, which the release assertion
+    // catches (the expected panic).
     unsafe {
         (*k).mode = MODE_COMPACT;
         (*k).run_end = len + 1;
@@ -3956,6 +3986,8 @@ fn a_refill_of_a_cache_that_is_not_empty_aborts() {
     assert!(h.cache(c).unwrap().len() > 0);
     let a = s.arena(0, Tracked::assume_new()).unwrap().0;
     let k = h.cache_ptr(c);
+    // SAFETY: `k` is the heap's real cache for `(a, c)`; that it is not
+    // empty is the deliberate violation the release assertion catches.
     unsafe { h.refill(s, a, Tracked::assume_new(), k, c, Tracked::assume_new()) };
 }
 
@@ -4031,6 +4063,7 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     );
     assert!(!p1.is_null() && !p2.is_null());
     let arenas: Vec<u16> = Heap::nodes(h.others)
+        // SAFETY: `nodes` yields the heap's live nodes.
         .map(|o| unsafe { (*o).arena })
         .collect();
     assert_eq!(arenas, [a2, a1]);
@@ -4050,6 +4083,7 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     h.free(s, p2, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(h.stats().deallocated, 2 * 64);
     let arenas: Vec<u16> = Heap::nodes(h.others)
+        // SAFETY: as above.
         .map(|o| unsafe { (*o).arena })
         .collect();
     assert_eq!(arenas, [FOREIGN, a2, a1]);
@@ -4078,6 +4112,8 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     );
     // `destroy` frees each node as the walk hands it over.
     let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
+    // SAFETY: `t.h` came from `Heap::create` on `s`; `t` is forgotten below,
+    // so nothing uses the heap again.
     unsafe { Heap::destroy(t.h, s, Tracked::assume_new(), Tracked::assume_new()) };
     assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated < before);
     core::mem::forget(t);
@@ -4285,6 +4321,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     .build();
     let (hp, _, _) = Heap::create_detached(s, 2, Tracked::assume_new());
     assert!(!hp.is_null());
+    // SAFETY: `hp` is a live heap from `create_detached`, used only here.
     let h = unsafe { &mut *hp };
     assert!(s.arenas.get_existing(2).is_none());
     let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, Tracked::assume_new());
@@ -4303,6 +4340,8 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     );
     h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(a2.large(), (0, 0));
+    // SAFETY: `hp` came from `Heap::create_detached` on `s` (as for
+    // `tcache.destroy`) and is not used again.
     unsafe { Heap::destroy(hp, s, Tracked::assume_new(), Tracked::assume_new()) };
 }
 
@@ -4398,11 +4437,13 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
         (None, Some(c))
     );
     // Not a slot start, a never-claimed slot, a pointer outside every region.
+    // SAFETY: 8 bytes into the live 64-byte slot `p0`.
     let mid = unsafe { p0.add(8) };
     assert_eq!(
         (s.checked_slot(mid, h), s.checked_slot_any(mid)),
         (None, None)
     );
+    // SAFETY: inside `p0`'s class region (an unclaimed slot of its slab).
     let unclaimed = unsafe { p0.add((HALF + 200) * 64) };
     assert_eq!(
         (s.checked_slot(unclaimed, h), s.checked_slot_any(unclaimed)),

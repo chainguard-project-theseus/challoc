@@ -3,10 +3,12 @@ use super::*;
 use std::vec::Vec;
 
 fn fill(p: *mut u8, len: usize, v: u8) {
+    // SAFETY: the callers pass `len` writable bytes at `p`, a live run.
     unsafe { ptr::write_bytes(p, v, len) };
 }
 
 fn all(p: *mut u8, len: usize, v: u8) -> bool {
+    // SAFETY: the callers pass `len` readable bytes at `p`, a live run.
     let s = unsafe { core::slice::from_raw_parts(p, len) };
     s.iter().all(|&b| b == v)
 }
@@ -54,6 +56,9 @@ fn check_zero_aborts_on_a_dirty_purged_run() {
         h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
         1
     );
+    // SAFETY: the purged run stays mapped read-write (the region is never
+    // unmapped, only discarded); dirtying it is the setup `check_zero`
+    // must catch.
     unsafe { ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF) };
     let _ = env.alloc(&h, size, 1);
 }
@@ -159,15 +164,20 @@ fn guard_page_faults() {
         ("guard", guard),
         ("first page past the mark", q as usize + 2 * page_size()),
     ] {
+        // SAFETY: `fork` has no memory-safety preconditions; the child only
+        // writes and leaves through `_exit`.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
+            // SAFETY: `addr` is a guard page or past the run's mark: the write
+            // faults by design (the parent expects `SIGSEGV`), in the child only.
             unsafe {
                 core::ptr::write_volatile(addr as *mut u8, 1);
                 libc::_exit(0);
             }
         }
         let mut status = 0;
+        // SAFETY: `pid` is this process's child; `status` is a local.
         assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
         assert!(
             libc::WIFSIGNALED(status),
@@ -299,6 +309,7 @@ fn alignment_holes_are_committed_and_writable() {
         "hole below the second aligned run took {fillers} fillers"
     );
     for &p in &held {
+        // SAFETY: `p` is a live run of at least a page.
         let v = unsafe { *p };
         assert!(all(p, page_size(), v));
     }
@@ -337,12 +348,14 @@ fn concurrent_threads_see_their_own_patterns() {
                 held.push((p, size));
                 if held.len() > 12 {
                     let (q, n) = held.remove((rng >> 32) as usize % held.len());
+                    // SAFETY: `q` is a live run of `n >= 1` bytes this thread holds.
                     let v = unsafe { *q };
                     assert!(all(q, n, v), "thread {t} saw another thread's writes");
                     h.free(&env.meta, env.page_of(q));
                 }
             }
             for (q, n) in held {
+                // SAFETY: as above.
                 let v = unsafe { *q };
                 assert!(all(q, n, v));
                 h.free(&env.meta, env.page_of(q));
@@ -376,6 +389,7 @@ fn extents_whose_discard_fails_stay_empty() {
         return;
     }
     if !crate::testutil::mlock_or_skip(test, r as usize, size) {
+        // SAFETY: unlocking the test's own run; no memory is touched.
         unsafe { libc::munlock(p as *const _, size) };
         return;
     }
@@ -407,6 +421,7 @@ fn extents_whose_discard_fails_stay_empty() {
     let retry = t0 + W + purge::DISCARD_RETRY_NS;
     assert_eq!(h.decay(t0 + W, W, Tracked::assume_new()), Some(retry));
     check_empty();
+    // SAFETY: as above, for both runs.
     unsafe {
         libc::munlock(p as *const _, size);
         libc::munlock(r as *const _, size);

@@ -3288,17 +3288,20 @@ mod tests {
     use std::vec::Vec;
 
     fn errno() -> c_int {
+        // SAFETY: `__errno_location` returns this thread's `errno`.
         unsafe { *::libc::__errno_location() }
     }
 
     fn fill(p: *mut u8, n: usize, seed: u8) {
         for i in 0..n {
+            // SAFETY: the callers pass `n` writable bytes at `p`.
             unsafe { *p.add(i) = seed.wrapping_add(i as u8) };
         }
     }
 
     fn check(p: *mut u8, n: usize, seed: u8) {
         for i in 0..n {
+            // SAFETY: the callers pass `n` readable bytes at `p`.
             assert_eq!(unsafe { *p.add(i) }, seed.wrapping_add(i as u8), "byte {i}");
         }
     }
@@ -3378,6 +3381,7 @@ mod tests {
             let q = calloc(1, n, vstd::prelude::Tracked::assume_new());
             assert!(!q.is_null());
             for i in 0..n {
+                // SAFETY: `q` is a live `n`-byte allocation.
                 assert_eq!(unsafe { *q.add(i) }, 0, "calloc({n}) byte {i} not zero");
             }
             free(
@@ -3744,6 +3748,7 @@ mod tests {
             assert_eq!(u, malloc_usable_size(q));
             for i in 0..u {
                 assert_eq!(
+                    // SAFETY: `i < u`, the usable size of the live `q`.
                     unsafe { *q.add(i) },
                     0,
                     "calloc_usable({n}) byte {i} of {u} not zero"
@@ -3968,6 +3973,7 @@ mod tests {
     }
 
     fn is_zero(p: *mut u8, n: usize) -> bool {
+        // SAFETY: the callers pass `n` readable bytes at `p`.
         (0..n).all(|i| unsafe { *p.add(i) } == 0)
     }
 
@@ -4014,6 +4020,7 @@ mod tests {
         let purged = (0..8).any(|_| {
             let h = malloc(4 << 20, vstd::prelude::Tracked::assume_new());
             assert!(!h.is_null());
+            // SAFETY: `h` is a live 4 MiB allocation.
             unsafe { ptr::write_bytes(h, 1, 4 << 20) };
             free(
                 h,

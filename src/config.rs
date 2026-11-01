@@ -2949,7 +2949,9 @@ mod linux_tests {
 
     #[test]
     fn env_var_is_read_from_environ() {
-        // This is the only test that mutates the environment.
+        // SAFETY: not fully met: this is the only test that mutates the
+        // environment, but `env_var` in a concurrent test (or the global
+        // init) walks `environ` without std's lock and could race it.
         unsafe {
             std::env::set_var("CHALLOC_CONF_TEST", "narenas:3,tcache:false");
             std::env::set_var("CHALLOC_CONF_TEST_EMPTY", "");
