@@ -8,14 +8,14 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `addr_to_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
-| `ptr::co...g::<T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `<*mut T...s_null` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `<*const...s_null` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `ptr::copy_n...pping::<T>` | assume_spec | core library | Kani | discharged |
+| `<*mut T>::is_null` | assume_spec | core library | Kani | discharged |
+| `<*const T>::is_null` | assume_spec | core library | Kani | discharged |
 
 ## `addr_to_ptr`
 
 src/vspec/addr.rs:23. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: RefinedRust. Status: trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr_is_the_cast; not checked: the harness checks the address and the cast, not the `p@.provenance == cast_provenance()` clause, which Kani cannot observe).
 
 > `addr as *mut u8`: a pointer to `addr` (Verus supports only the other direction of the cast), [`addr_ptr`], with [`cast_provenance`].
 
@@ -30,8 +30,8 @@ pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
 
 ## `core::ptr::copy_nonoverlapping::<T>`
 
-src/vspec/addr.rs:43. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/addr.rs:43. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_copy_nonoverlapping).
 
 > `core::ptr::copy_nonoverlapping`, with the safety contract of the `core` documentation: both pointers are properly aligned and, unless the copy is empty, `src` is valid for reads and `dst` for writes of `count * size_of::<T>()` bytes, and the two ranges do not overlap.
 
@@ -53,8 +53,8 @@ pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T
 
 ## `<*mut T>::is_null`
 
-src/vspec/addr.rs:58. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/addr.rs:58. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_is_null).
 
 > `<*mut T>::is_null`: the address is zero.
 
@@ -69,8 +69,8 @@ pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: 
 
 ## `<*const T>::is_null`
 
-src/vspec/addr.rs:66. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/addr.rs:66. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_is_null).
 
 > `<*const T>::is_null`: the address is zero.
 

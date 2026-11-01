@@ -12,7 +12,7 @@ file.
 | `Reserve...sjoint` | external_body proof | platform/kernel fact | none (assumption) | trusted |
 | `Reserve...backed` | external_body proof | platform/kernel fact | none (assumption) | trusted |
 | `try_reserve` | external_body | FFI/syscall | none (assumption) | trusted |
-| `word` | external_body | core library | Kani | trusted |
+| `word` | external_body | core library | Kani | discharged |
 | `entry_barrier` | external_body | inline asm | Islaris/Isla | trusted |
 
 ## `Reserved`
@@ -92,7 +92,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 ## `word`
 
 src/layout/regions.rs:2207. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: layout::regions::linux::kani_word::word_returns).
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
 

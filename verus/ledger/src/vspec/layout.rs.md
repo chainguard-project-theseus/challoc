@@ -9,10 +9,10 @@ file.
 |---|---|---|---|---|
 | `Layout` | ext_type_spec | core library | Kani | trusted |
 | `alloc::LayoutError` | ext_type_spec | core library | Kani | trusted |
-| `Layout::size` | assume_spec | core library | Kani | trusted |
-| `Layout::align` | assume_spec | core library | Kani | trusted |
-| `Layout::from_size_align` | assume_spec | core library | Kani | trusted |
-| `Layout::new::<T>` | assume_spec | core library | Kani | trusted |
+| `Layout::size` | assume_spec | core library | Kani | discharged |
+| `Layout::align` | assume_spec | core library | Kani | discharged |
+| `Layout::from_size_align` | assume_spec | core library | Kani | discharged |
+| `Layout::new::<T>` | assume_spec | core library | Kani | discharged |
 
 ## `Layout`
 
@@ -35,7 +35,7 @@ pub struct ExLayoutError(core::alloc::LayoutError);
 ## `Layout::size`
 
 src/vspec/layout.rs:30. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances).
 
 ```rust
 pub assume_specification[ Layout::size ](l: &Layout) -> (r: usize)
@@ -48,7 +48,7 @@ pub assume_specification[ Layout::size ](l: &Layout) -> (r: usize)
 ## `Layout::align`
 
 src/vspec/layout.rs:36. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances).
 
 ```rust
 pub assume_specification[ Layout::align ](l: &Layout) -> (r: usize)
@@ -61,7 +61,7 @@ pub assume_specification[ Layout::align ](l: &Layout) -> (r: usize)
 ## `Layout::from_size_align`
 
 src/vspec/layout.rs:44. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align).
 
 > `Ok` exactly when `align` is a power of two and `size` rounded up to it does not exceed `isize::MAX`.
 
@@ -79,7 +79,7 @@ pub assume_specification[ Layout::from_size_align ](size: usize, align: usize) -
 ## `Layout::new::<T>`
 
 src/vspec/layout.rs:54. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_new_instances).
 
 > `Layout::new::<T>()`: the size and alignment of `T`.
 

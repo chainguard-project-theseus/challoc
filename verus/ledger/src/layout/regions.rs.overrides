@@ -5,4 +5,4 @@ Reserved::is_apart_from_static	platform/kernel fact	none (assumption)
 Reserved::is_disjoint	platform/kernel fact	none (assumption)
 Reserved::into_unbacked	platform/kernel fact	none (assumption)
 # `copy_from_slice` and `from_ne_bytes`; nothing is claimed of the word.
-word	core library	Kani
+word	core library	Kani	discharged (Kani: layout::regions::linux::kani_word::word_returns)

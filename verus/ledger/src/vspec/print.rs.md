@@ -8,9 +8,9 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `libc::FILE` | ext_type_spec | core library | Kani | trusted |
-| `base_slab_sizes` | external_body | function pointer | Kani | trusted |
+| `base_slab_sizes` | external_body | function pointer | Kani | discharged |
 | `DisplaySp...p::Cgroup` | spec_impl | allocator invariant | Verus | trusted |
-| `PartialEqSpec...::PercpuArena` | spec_impl | core library | Kani | trusted |
+| `PartialEqSpe...PercpuArena` | spec_impl | core library | Kani | discharged |
 
 ## `libc::FILE`
 
@@ -26,7 +26,7 @@ pub struct ExFile(libc::FILE);
 ## `base_slab_sizes`
 
 src/vspec/print.rs:28. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::report::base_slab_sizes_returns).
 
 > The smallest and largest [`crate::layout::BASE_CLASSES`] slab size of the classes `lo..=hi` (0 for an empty range), the table geometry the report compares a page-raised range with.
 
@@ -52,7 +52,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
 ## `PartialEqSpecImpl for config::PercpuArena`
 
 src/vspec/print.rs:55. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_percpu_arena).
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::PercpuArena {

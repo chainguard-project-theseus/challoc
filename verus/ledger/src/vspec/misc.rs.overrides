@@ -1,2 +1,10 @@
 # Specifications of `core` functions with no value claims.
-core::sync::atomic::Atomic::<u32>::as_ptr	core library	Kani
+core::sync::atomic::Atomic::<u32>::as_ptr	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_u32_as_ptr)
+# Checked by the Kani harnesses the status names (verus/README.md, "Kani").
+PartialEqSpecImpl for config::Thp	core library	Kani	discharged (Kani: kani_proofs::eq::eq_config_thp)
+PartialEqSpecImpl for sys::thp_host::ThpSetting	core library	Kani	discharged (Kani: kani_proofs::eq::eq_thp_setting)
+PartialEqSpecImpl for huge::RunState	core library	Kani	discharged (Kani: kani_proofs::eq::eq_run_state)
+PartialEqSpecImpl for slab::State	core library	Kani	discharged (Kani: kani_proofs::eq::eq_slab_state)
+core::sync::atomic::fence	core library	Kani	discharged (Kani: kani_proofs::atomic::fence)
+core::hint::assert_unchecked	core library	Kani	discharged (Kani: kani_proofs::misc::hint_assert_unchecked)
+Option::<T>::as_deref_mut	core library	Kani	discharged (Kani: kani_proofs::misc::option_as_deref_mut)

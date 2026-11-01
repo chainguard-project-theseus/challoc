@@ -7,21 +7,21 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `PartialEqSpec...r config::Thp` | spec_impl | core library | Kani | trusted |
-| `PartialEqSpec...t::ThpSetting` | spec_impl | core library | Kani | trusted |
-| `PartialEqSpec...uge::RunState` | spec_impl | core library | Kani | trusted |
-| `PartialEqSpec...r slab::State` | spec_impl | core library | Kani | trusted |
-| `fence` | assume_spec | core library | Kani | trusted |
+| `PartialEqSpe...config::Thp` | spec_impl | core library | Kani | discharged |
+| `PartialEqSpe...:ThpSetting` | spec_impl | core library | Kani | discharged |
+| `PartialEqSpe...e::RunState` | spec_impl | core library | Kani | discharged |
+| `PartialEqSpe...slab::State` | spec_impl | core library | Kani | discharged |
+| `fence` | assume_spec | core library | Kani | discharged |
 | `str::as_ptr` | assume_spec | core library | Kani | trusted |
-| `hint::assert_unchecked` | assume_spec | core library | Kani | trusted |
-| `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | trusted |
-| `Option::<T>::as_deref_mut` | assume_spec | core library | Kani | trusted |
+| `hint::assert_unchecked` | assume_spec | core library | Kani | discharged |
+| `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | discharged |
+| `Option::<T>..._deref_mut` | assume_spec | core library | Kani | discharged |
 | `Option::<T>::or_else` | assume_spec | core library | Kani | trusted |
 
 ## `PartialEqSpecImpl for config::Thp`
 
 src/vspec/misc.rs:13. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_config_thp).
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::Thp {
@@ -38,7 +38,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::Thp {
 ## `PartialEqSpecImpl for sys::thp_host::ThpSetting`
 
 src/vspec/misc.rs:23. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_thp_setting).
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::thp_host::ThpSetting {
@@ -55,7 +55,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::thp_host::ThpSettin
 ## `PartialEqSpecImpl for huge::RunState`
 
 src/vspec/misc.rs:33. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_run_state).
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
@@ -72,7 +72,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
 ## `PartialEqSpecImpl for slab::State`
 
 src/vspec/misc.rs:43. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_slab_state).
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::slab::State {
@@ -89,7 +89,7 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::slab::State {
 ## `core::sync::atomic::fence`
 
 src/vspec/misc.rs:57. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::fence).
 
 > `core::sync::atomic::fence`: panics on `Relaxed` only, and has no effect Verus models (Verus's memory model is sequentially consistent; the ordering it adds is checked by the loom models in `tests/loom`, not here).
 
@@ -116,7 +116,7 @@ pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
 ## `core::hint::assert_unchecked`
 
 src/vspec/misc.rs:73. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::hint_assert_unchecked).
 
 > `core::hint::assert_unchecked`: undefined behaviour unless `cond` holds (`core`'s safety contract), which this makes a precondition; it has no effect Verus models.
 
@@ -132,7 +132,7 @@ pub assume_specification[ core::hint::assert_unchecked ](cond: bool)
 ## `core::sync::atomic::Atomic::<u32>::as_ptr`
 
 src/vspec/misc.rs:83. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_u32_as_ptr).
 
 > `AtomicU32::as_ptr`: the address of the atomic's value, for a futex syscall argument.
 
@@ -143,7 +143,7 @@ pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::
 ## `Option::<T>::as_deref_mut`
 
 src/vspec/misc.rs:93. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::option_as_deref_mut).
 
 > `Option::as_deref_mut`: a reborrow of the contents.
 

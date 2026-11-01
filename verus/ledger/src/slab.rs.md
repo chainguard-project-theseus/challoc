@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `bad_state_byte` | external_body | panic/abort | Verus | trusted |
-| `desc_stride` | external_body | core library | Kani | trusted |
+| `desc_stride` | external_body | core library | Kani | discharged |
 | `SlabDesc::init` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...e_held` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...y_held` | external_body | atomics primitive | loom/GenMC | trusted |
@@ -31,7 +31,7 @@ fn bad_state_byte(v: u8) -> !
 ## `desc_stride`
 
 src/slab.rs:284. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: slab::kani_desc_stride::desc_stride_reads_the_table).
 
 > Descriptor stride for `class` in bytes.
 

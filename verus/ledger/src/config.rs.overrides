@@ -9,4 +9,7 @@ env_var	raw pointer from C caller	Miri (evidence only)
 THP_NAMES	core library	none (assumption)
 PERCPU_ARENA_NAMES	core library	none (assumption)
 # Built from `TABLE`, which holds function pointers; claimed only as a value of its type.
-KEYS	function pointer	Kani
+KEYS	function pointer	Kani	discharged (Kani: config::kani_config::keys_are_the_table_names)
+# Checked by the Kani harnesses the status names (verus/README.md, "Kani").
+Config::set_listed	function pointer	Kani	discharged (Kani: config::kani_config::set_listed_contract)
+Config::get	function pointer	Kani	trusted (partly checked, Kani: config::kani_config::get_contract; not checked: the real `Thp::name` and `PercpuArena::name`, which the harness stubs (they index the `CStr` tables `THP_NAMES` and `PERCPU_ARENA_NAMES`; Kani 0.68 has no C string literals))

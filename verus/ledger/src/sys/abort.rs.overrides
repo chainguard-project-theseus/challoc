@@ -1,3 +1,3 @@
-abort_integrity	panic/abort	Kani
-abort_kernel	panic/abort	Kani
-abort_pending	panic/abort	Kani
+abort_integrity	panic/abort	Kani	trusted (partly checked, Kani: kani_proofs::abort::abort_integrity_reaches_abort_fmt; not checked: the capability narrowing from `may_abort_corrupt()` to `abort_fmt`'s `may_abort()`, a ghost fact the stubbed harness does not show)
+abort_kernel	panic/abort	Kani	trusted (partly checked, Kani: kani_proofs::abort::abort_kernel_reaches_abort_fmt; not checked: the capability narrowing from `may_abort_kernel()` to `abort_fmt`'s `may_abort()`, a ghost fact the stubbed harness does not show)
+abort_pending	panic/abort	Kani	trusted (partly checked, Kani: kani_proofs::abort::abort_pending_reaches_abort_fmt; not checked: the capability narrowing from `may_abort_pending()` to `abort_fmt`'s `may_abort()`, a ghost fact the stubbed harness does not show)

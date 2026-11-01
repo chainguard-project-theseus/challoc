@@ -7,13 +7,13 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Explicit::drop` | external_body | atomics primitive | Kani | trusted |
+| `Explicit::drop` | external_body | atomics primitive | Kani | discharged |
 | `purged_zero` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `Explicit::drop`
 
 src/purge.rs:191. Kind: external_body. Category: atomics primitive.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: purge::kani_explicit::explicit_drop_returns).
 
 ```rust
 fn drop(&mut self)

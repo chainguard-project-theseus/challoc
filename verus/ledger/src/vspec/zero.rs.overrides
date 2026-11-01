@@ -4,4 +4,4 @@ axiom_zero_word	raw pointer (internal)	none (assumption)
 # pairs a permission with the token made with it under one lock hold.
 ZeroRaw::axiom_new	allocator invariant	none (assumption)
 # vstd states no effect of write_bytes: the bytes read as zero after.
-zero_raw	raw pointer (internal)	none (assumption)
+zero_raw	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::zero_raw_fills)

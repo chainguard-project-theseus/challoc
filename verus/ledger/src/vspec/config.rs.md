@@ -9,9 +9,9 @@ file.
 |---|---|---|---|---|
 | `ffi::c_void` | ext_type_spec | core library | Kani | trusted |
 | `ffi::CStr` | ext_type_spec | core library | Kani | trusted |
-| `<*const...t::<U>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `ffi::CStr::as_ptr` | assume_spec | core library | Kani | trusted |
-| `char::to_digit` | assume_spec | core library | Kani | trusted |
+| `<*const T>::cast::<U>` | assume_spec | core library | Kani | discharged |
+| `ffi::CStr::as_ptr` | assume_spec | core library | Kani | discharged |
+| `char::to_digit` | assume_spec | core library | Kani | discharged |
 
 ## `core::ffi::c_void`
 
@@ -37,8 +37,8 @@ pub struct ExCStr(core::ffi::CStr);
 
 ## `<*const T>::cast::<U>`
 
-src/vspec/config.rs:24. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/config.rs:24. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_cast).
 
 > `<*const T>::cast`: a pointer to `U`; nothing is claimed about it (`config::linux` only tests the result for null before a trusted read).
 
@@ -49,7 +49,7 @@ pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U
 ## `core::ffi::CStr::as_ptr`
 
 src/vspec/config.rs:28. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::cstr_as_ptr).
 
 > `CStr::as_ptr`: the address of the string; nothing is claimed about it.
 
@@ -60,7 +60,7 @@ pub assume_specification[ core::ffi::CStr::as_ptr ](s: &core::ffi::CStr) -> *con
 ## `char::to_digit`
 
 src/vspec/config.rs:33. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::char_to_digit).
 
 > `char::to_digit` (`core` documentation): the digits are `0`..`9`, then `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count; panics for a radix outside `2..=36`.
 

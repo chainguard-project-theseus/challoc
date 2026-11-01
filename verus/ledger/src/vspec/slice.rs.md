@@ -7,30 +7,30 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `slice::...'a, T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `array_get_unchecked` | external_body | core library | Kani | trusted |
+| `slice::from_...rts::<'a, T>` | assume_spec | core library | Kani | trusted |
+| `array_get_unchecked` | external_body | core library | Kani | discharged |
 | `slice_from_perms` | external_body | raw pointer (internal) | RefinedRust | trusted |
-| `<[T]>::swap` | assume_spec | core library | Kani | trusted |
-| `slice::from_ref` | assume_spec | core library | Kani | trusted |
+| `<[T]>::swap` | assume_spec | core library | Kani | discharged |
+| `slice::from_ref` | assume_spec | core library | Kani | discharged |
 | `array::IntoIter<T, N>` | ext_type_spec | core library | Kani | trusted |
-| `<[T; N] as c...>::into_iter` | assume_spec | core library | Kani | trusted |
-| `<core::array...rator>::next` | assume_spec | core library | Kani | trusted |
+| `<[T; N] as ...:into_iter` | assume_spec | core library | Kani | discharged |
+| `<core::arra...tor>::next` | assume_spec | core library | Kani | discharged |
 | `sort_ptrs` | external_body | core library | Kani | trusted |
-| `<&'a mut [T]...>::into_iter` | assume_spec | core library | Kani | trusted |
-| `<[T]>::is_sorted` | assume_spec | core library | Kani | trusted |
-| `<[T]>::is_so...::<'a, F, K>` | assume_spec | core library | Kani | trusted |
+| `<&'a mut [T...:into_iter` | assume_spec | core library | Kani | discharged |
+| `<[T]>::is_sorted` | assume_spec | core library | Kani | discharged |
+| `<[T]>::is_s...<'a, F, K>` | assume_spec | core library | Kani | discharged |
 | `<[T]>::select_nth_unstable` | assume_spec | core library | Kani | trusted |
 | `<[T]>::selec..._key::<K, F>` | assume_spec | core library | Kani | trusted |
 | `sort_ptrs_by_key` | external_body | core library | Kani | trusted |
-| `<[T]>::get_u...ked_mut::<I>` | assume_spec | core library | Kani | trusted |
+| `<[T]>::get_...d_mut::<I>` | assume_spec | core library | Kani | discharged |
 | `slice_mut_elems` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `<[T]>::swap_with_slice` | assume_spec | core library | Kani | trusted |
 | `<[T]>::rotate_left` | assume_spec | core library | Kani | trusted |
 
 ## `core::slice::from_raw_parts::<'a, T>`
 
-src/vspec/slice.rs:19. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/slice.rs:19. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `core::slice::from_raw_parts`, with the safety contract of the `core` documentation that can be stated here: `data` is not null, aligned, and valid for reads of the slice's `len * size_of::<T>()` bytes, at most `isize::MAX`.
 
@@ -49,7 +49,7 @@ pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *c
 ## `array_get_unchecked`
 
 src/vspec/slice.rs:40. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::array_get_unchecked).
 
 > `a.get_unchecked(i)` on an array, for the fast paths: vstd's array-to-slice coercion (`vstd::array::array_as_slice`) declares Verus's default invariant mask, `any`, which a function that opens none cannot call.
 
@@ -99,7 +99,7 @@ pub unsafe fn slice_from_perms<T>(
 ## `<[T]>::swap`
 
 src/vspec/slice.rs:102. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_swap).
 
 > `s.swap(a, b)`: panics unless both indices are in bounds.
 
@@ -116,7 +116,7 @@ pub assume_specification<T>[ <[T]>::swap ](s: &mut [T], a: usize, b: usize)
 ## `core::slice::from_ref`
 
 src/vspec/slice.rs:111. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_from_ref).
 
 > A one-element slice of `*s`.
 
@@ -141,7 +141,7 @@ pub struct ExArrayIntoIter<T, const N: usize>(core::array::IntoIter<T, N>);
 ## `<[T; N] as core::iter::IntoIterator>::into_iter`
 
 src/vspec/slice.rs:131. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::array_into_iter).
 
 > The iterator starts with every element of the array, in order.
 
@@ -158,7 +158,7 @@ pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator
 ## `<core::array::IntoIter<T, N> as core::iter::Iterator>::next`
 
 src/vspec/slice.rs:141. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::array_into_iter).
 
 > `next` hands out the front element, or `None` once every element has been handed out.
 
@@ -176,7 +176,7 @@ pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as cor
 ## `sort_ptrs`
 
 src/vspec/slice.rs:159. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::sort_ptrs_short, kani_proofs::slice::sort_ptrs_10, kani_proofs::slice::sort_ptrs_11, kani_proofs::slice::sort_ptrs_12; not checked: every length above 12: `core`'s `sort_unstable` sorts by insertion up to 20 elements and by a small sort and a quicksort past that, and the flush paths sort up to a cache's 1024 slots).
 
 > `s.sort_unstable()` on a slice of raw pointers: permutes `s`.
 
@@ -191,7 +191,7 @@ pub fn sort_ptrs(s: &mut [*mut u8])
 ## `<&'a mut [T] as core::iter::IntoIterator>::into_iter`
 
 src/vspec/slice.rs:175. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_iter_mut).
 
 > `for e in s` over a mutable slice: `s.iter_mut()`, whose `vstd` specification this repeats (the loop hands out each element once, and each one's final value flows back into `s`).
 
@@ -214,7 +214,7 @@ pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into
 ## `<[T]>::is_sorted`
 
 src/vspec/slice.rs:198. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_is_sorted).
 
 > `s.is_sorted()`.
 
@@ -225,7 +225,7 @@ pub assume_specification<T: PartialOrd>[ <[T]>::is_sorted ](s: &[T]) -> bool;
 ## `<[T]>::is_sorted_by_key::<'a, F, K>`
 
 src/vspec/slice.rs:201. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_is_sorted_by_key).
 
 > `s.is_sorted_by_key(f)`.
 
@@ -280,7 +280,7 @@ pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstab
 ## `sort_ptrs_by_key`
 
 src/vspec/slice.rs:249. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::sort_ptrs_by_key_short, kani_proofs::slice::sort_ptrs_by_key_10, kani_proofs::slice::sort_ptrs_by_key_11, kani_proofs::slice::sort_ptrs_by_key_12; not checked: every length above 12, as for `sort_ptrs`, and every key but `L - addr`).
 
 > `s.sort_unstable_by_key(f)` on a slice of raw pointers with a `usize` key: permutes `s`.
 
@@ -297,7 +297,7 @@ pub fn sort_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], f: F)
 ## `<[T]>::get_unchecked_mut::<I>`
 
 src/vspec/slice.rs:263. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_get_unchecked_mut).
 
 > `get_unchecked_mut` is `index_mut` without the bounds check: its safety contract is that the index is in bounds, so it has `index_mut`'s precondition.
 

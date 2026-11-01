@@ -7,25 +7,25 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `u64::count_ones` | assume_spec | core library | Kani | trusted |
-| `<[T]>::get_unchecked::<I>` | assume_spec | core library | Kani | trusted |
+| `u64::count_ones` | assume_spec | core library | Kani | discharged |
+| `<[T]>::get_...ecked::<I>` | assume_spec | core library | Kani | discharged |
 | `usize::div_ceil` | assume_spec | core library | Kani | trusted |
-| `usize::trailing_zeros` | assume_spec | core library | Kani | trusted |
-| `usize::leading_zeros` | assume_spec | core library | Kani | trusted |
-| `usize::is_power_of_two` | assume_spec | core library | Kani | trusted |
-| `u64::is_power_of_two` | assume_spec | core library | Kani | trusted |
-| `u32::is_power_of_two` | assume_spec | core library | Kani | trusted |
-| `usize::next_power_of_two` | assume_spec | core library | Kani | trusted |
-| `i64::wrapping_neg` | assume_spec | core library | Kani | trusted |
-| `usize::ilog2` | assume_spec | core library | Kani | trusted |
-| `u32::rotate_right` | assume_spec | core library | Kani | trusted |
-| `u64::rotate_right` | assume_spec | core library | Kani | trusted |
+| `usize::trailing_zeros` | assume_spec | core library | Kani | discharged |
+| `usize::leading_zeros` | assume_spec | core library | Kani | discharged |
+| `usize::is_power_of_two` | assume_spec | core library | Kani | discharged |
+| `u64::is_power_of_two` | assume_spec | core library | Kani | discharged |
+| `u32::is_power_of_two` | assume_spec | core library | Kani | discharged |
+| `usize::next_power_of_two` | assume_spec | core library | Kani | discharged |
+| `i64::wrapping_neg` | assume_spec | core library | Kani | discharged |
+| `usize::ilog2` | assume_spec | core library | Kani | discharged |
+| `u32::rotate_right` | assume_spec | core library | Kani | discharged |
+| `u64::rotate_right` | assume_spec | core library | Kani | discharged |
 | `hint::spin_loop` | assume_spec | core library | Kani | trusted |
 
 ## `u64::count_ones`
 
 src/vspec/core_int.rs:19. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_count_ones).
 
 > `u64::count_ones`: the number of set bits.
 
@@ -38,7 +38,7 @@ pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
 ## `<[T]>::get_unchecked::<I>`
 
 src/vspec/core_int.rs:25. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_get_unchecked).
 
 > `get_unchecked` is `index` without the bounds check: its safety contract is that the index is in bounds, so it has `index`'s precondition.
 
@@ -67,7 +67,7 @@ pub assume_specification[ usize::div_ceil ](x: usize, d: usize) -> (r: usize)
 ## `usize::trailing_zeros`
 
 src/vspec/core_int.rs:38. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_trailing_zeros).
 
 ```rust
 pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
@@ -78,7 +78,7 @@ pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
 ## `usize::leading_zeros`
 
 src/vspec/core_int.rs:42. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_leading_zeros).
 
 ```rust
 pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
@@ -90,7 +90,7 @@ pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
 ## `usize::is_power_of_two`
 
 src/vspec/core_int.rs:47. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_is_power_of_two).
 
 ```rust
 pub assume_specification[ usize::is_power_of_two ](x: usize) -> (r: bool)
@@ -101,7 +101,7 @@ pub assume_specification[ usize::is_power_of_two ](x: usize) -> (r: bool)
 ## `u64::is_power_of_two`
 
 src/vspec/core_int.rs:51. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_is_power_of_two).
 
 ```rust
 pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
@@ -112,7 +112,7 @@ pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
 ## `u32::is_power_of_two`
 
 src/vspec/core_int.rs:56. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u32_is_power_of_two).
 
 > `u32::is_power_of_two`.
 
@@ -125,7 +125,7 @@ pub assume_specification[ u32::is_power_of_two ](x: u32) -> (r: bool)
 ## `usize::next_power_of_two`
 
 src/vspec/core_int.rs:62. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_next_power_of_two).
 
 > `next_power_of_two` panics (debug) or wraps (release) above `2^63`; challoc never asks for that.
 
@@ -143,7 +143,7 @@ pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
 ## `i64::wrapping_neg`
 
 src/vspec/core_int.rs:72. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::i64_wrapping_neg).
 
 > `i64::wrapping_neg`: `-x`, except that `i64::MIN` is its own negation.
 
@@ -156,7 +156,7 @@ pub assume_specification[ i64::wrapping_neg ](x: i64) -> (r: i64)
 ## `usize::ilog2`
 
 src/vspec/core_int.rs:77. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_ilog2).
 
 > `usize::ilog2`: the position of the highest set bit; panics for 0.
 
@@ -170,7 +170,7 @@ pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
 ## `u32::rotate_right`
 
 src/vspec/core_int.rs:93. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u32_rotate_right).
 
 > `u32::rotate_right`: the bits shifted out at the bottom come back in at the top.
 
@@ -185,7 +185,7 @@ pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
 ## `u64::rotate_right`
 
 src/vspec/core_int.rs:111. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_rotate_right).
 
 > `u64::rotate_right`: the bits shifted out at the bottom come back in at the top (the count is taken modulo 64, as `core` documents).
 

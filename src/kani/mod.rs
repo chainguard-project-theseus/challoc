@@ -4,7 +4,10 @@
 //! `assume_specification` describes, against the contract Verus assumes,
 //! for every input of its instantiated types or within the bounds its
 //! comment states. Its comment names the item, as its ledger entry does.
-//! A harness is evidence for its seam; it changes no ledger status.
+//! A harness is evidence for its seam: the seam's ledger status cites it as
+//! `discharged (Kani: <harness>)` when it covers the whole contract, or
+//! `trusted (partly checked, ...)` when it covers part (`verus/SEAMS.md`,
+//! "Status").
 //! `.chainguard/ci/kani.yaml` runs them all, under both quanta, in two
 //! checks. `kani` runs on pull requests that change `src/kani/`,
 //! `src/vspec/`, a file in its `changed:` list (the files with a `kani_*`

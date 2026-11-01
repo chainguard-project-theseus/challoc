@@ -6,4 +6,4 @@ Heap::home_ptr_at	allocator invariant	none (assumption)
 # The scan's compare: four plain loads, or for a stack of fewer than four
 # an iterator Verus does not verify; a bounded fact about plain loads, for
 # a model checker over every `len` up to and past the four compares.
-Heap::cached_recently	raw pointer (internal)	Kani
+Heap::cached_recently	raw pointer (internal)	Kani	discharged (Kani: heap::cache::kani_cache::cached_recently_reads_the_top_entries)
