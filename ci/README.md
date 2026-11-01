@@ -37,7 +37,8 @@ require); each file is a workflow:
   per arch (`hosted-<arch>-*` cells in `expected-skips/`).
 - `floor.yaml`: `floor` (AlmaLinux 9's 5.14, both arches, default and
   privileged containers) and the advisory `tripwire` (Debian 11's 5.10),
-  on GCE VMs through `cb launch`; member pull requests and main only.
+  on GCE VMs through `cb launch`; on pushes to main only (postsubmit), so
+  a change that raises the floor shows up after it lands, not before.
 - `verus.yaml`: `verus` and `verus-arm64`, the seam ledger, the proofs at quantum 16 and 8, and the coverage floor; `verus-main` the same on main.
 - `codegen.yaml`: the advisory `codegen` and `codegen-arm64`, the machine-code diff from the merge base (`ci/codegen.sh`).
 - `kani.yaml`: `kani` (`q16`, `q8`), `cargo kani` over every harness (`src/kani/` and the `kani_*` modules of other files; `verus/README.md`, "Kani") at each quantum, on x86_64; on pull requests that change `src/kani/**`, `src/vspec/**`, a file in its `changed:` list or `kani.yaml` itself; and `kani-main` (`q16`, `q8`), the same run after every landing on main, which covers the `kani_*` modules in hot files (`heap/cache.rs`, `purge.rs`).
@@ -49,9 +50,9 @@ On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
   `oscillate` (the 600 s soak), `check-needed`, `consumers` (the Valkey and
   Ruby builds), each on both arches.
 
-`chainctl checks run` plans a commit without a pull request, so it cannot
-plan the floor checks (their condition reads the pull request); name the
-checks to run with `--check`.
+`chainctl checks run` plans a commit without a pull request; name the
+checks to run with `--check`. The floor checks run only on main, where
+their identity is released.
 
 `identities.yaml` holds the trust policy (which pull requests get which
 credentials) and the `challoc-gce` identity; its header says how to tighten
