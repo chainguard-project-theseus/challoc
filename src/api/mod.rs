@@ -1116,11 +1116,11 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
 /// `malloc_usable_size(NULL)` are called whole; `nallocx` and
 /// `challoc_features` through the calls their bodies make after
 /// `shared()`, whose init may abort (it returns at once once init has
-/// completed, which `shared` stands for here). `mallinfo2`, which is not
-/// verified, through the calls of its body that carry a contract
-/// (`stats::collect_all` and the page size); its figure arithmetic
-/// (`stats::fig_add`, `stats::fig_mul`) wraps in the shipped library and
-/// panics on overflow only where overflow checks are on (the tests).
+/// completed, which `shared` stands for here). `mallinfo2` (verified
+/// under `may_abort`, for its `shared()`) through the calls of its body
+/// that carry a contract (`stats::collect_all` and the page size); its
+/// figure arithmetic (`stats::fig_add`, `stats::fig_mul`) wraps in the
+/// shipped library and panics on overflow only with overflow checks on.
 /// [`mallctl::utilization`], the reading behind
 /// `experimental.utilization`, is called whole; the read-only keys of
 /// `mallctl` and `mallctlbymib` other than `thread.*`'s are covered by

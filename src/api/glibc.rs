@@ -10,9 +10,9 @@
 //! `mallinfo2` is filled from the *live* figures (glibc's are), with
 //! challoc's meaning for each field, chosen so that the identities glibc
 //! programs compute still hold (`arena >= uordblks`, `fordblks =
-//! arena - uordblks`). `hblkhd`, glibc's mmapped bytes, holds the large
-//! allocated bytes (jemalloc's `large.allocated`), and `arena` the rest
-//! of resident memory.
+//! arena - uordblks`) whenever the arenas' `mapped` sum fits. `hblkhd`,
+//! glibc's mmapped bytes, holds the large allocated bytes (jemalloc's
+//! `large.allocated`), and `arena` the rest of resident memory.
 //!
 //! | field      | challoc                                                                  |
 //! |------------|--------------------------------------------------------------------------|
@@ -27,14 +27,24 @@
 //! | `fordblks` | `arena - uordblks`                                                       |
 //! | `keepcost` | dirty bytes a purge would release                                        |
 //!
+//! So `uordblks + hblkhd` is `stats.allocated`, read live, when the sum
+//! fits ([`mallinfo2`]'s contract), and
+//! `hblkhd` can be non-zero with `hblks` zero: the classes above `BIN_MAX`
+//! are slab slots, counted with the huge runs as jemalloc counts them
+//! (`large.*`), not as mapped blocks.
+//!
 //! `mallinfo` is the same in `int`, saturating at `INT_MAX`, which is why
 //! glibc deprecated it.
 
 use core::ffi::c_int;
 
 use crate::layout::NCLASSES;
+#[cfg(verus_keep_ghost)]
+use crate::lock::axiom_entry;
 use crate::stats::{self, fig_add, fig_mul};
-use vstd::prelude::{Ghost, Seq, Tracked, int, verus};
+use vstd::prelude::*;
+
+verus! {
 
 /// glibc's `struct mallinfo` (ten `int`s).
 #[repr(C)]
@@ -69,29 +79,61 @@ pub struct MallInfo2 {
 }
 
 /// `mallopt(param, value)`: accepted and ignored.
-pub fn mallopt(_param: c_int, _value: c_int) -> c_int {
+pub fn mallopt(_param: c_int, _value: c_int) -> (r: c_int)
+    ensures
+        r == 1,
+{
     1
 }
-
-verus! {
 
 /// What [`mallinfo2`] read: [`stats::collect_all`]'s per-arena reads, their
 /// huge pages, and their sum.
 pub type Reads = Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)>;
 
-} // verus!
-
-/// `mallinfo2()`. `rd` gets what [`stats::collect_all`] read and summed.
+/// `mallinfo2()`. `rd` gets what [`stats::collect_all`] read and summed:
+/// `uordblks` and `hblkhd` are that sum's `small_allocated` and
+/// `large_allocated`, whose total is the true sum of the arenas'
+/// `allocated` when it fits ([`stats::summed`]), and `hblks` its huge
+/// runs. `arena` is the sum's `resident` less its `large_allocated`, and
+/// `fordblks` is `arena` less `uordblks`, each 0 where it would be
+/// negative. When the arenas' `mapped` sum fits, `arena >= uordblks` and
+/// `fordblks == arena - uordblks` (the identities glibc programs
+/// compute). The reads come from arenas of ascending registry IDs
+/// ([`stats::ids_ascending`]). This contract leaves out
+/// `ordblks` and `keepcost`: their figure arithmetic (`stats::fig_add`,
+/// `fig_mul`) is exact only when it fits and wraps in the shipped library.
 /// `theorem_read_only_never_aborts` restates its calls that carry a
 /// contract; `api::restated::read_only_restatements_match_their_bodies`
 /// checks that the two make the same calls.
-pub fn mallinfo2(_rd: Tracked<&mut Reads>) -> MallInfo2 {
+pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        r.arena == if final(rd)@.2.resident >= final(rd)@.2.large_allocated { final(rd)@.2.resident - final(rd)@.2.large_allocated } else { 0 },
+        r.fordblks == if r.arena >= r.uordblks { r.arena - r.uordblks } else { 0 },
+        r.fordblks <= r.arena,
+        stats::sum_mapped(final(rd)@.0) <= usize::MAX ==> r.arena >= r.uordblks && r.fordblks == r.arena - r.uordblks,
+        r.smblks == 0 && r.usmblks == 0 && r.fsmblks == 0,
+        stats::summed(final(rd)@.0, final(rd)@.1, final(rd)@.2),
+        stats::ids_ascending(final(rd)@.0),
+        forall|j: int| 0 <= j < final(rd)@.0.len() ==> ((#[trigger] final(rd)@.0[j]).index as usize) < crate::arena::MAX_ARENAS,
+        r.uordblks == final(rd)@.2.small_allocated,
+        r.hblkhd == final(rd)@.2.large_allocated,
+        r.hblks == final(rd)@.2.large_runs,
+{
     let shared = super::shared();
-    let all = stats::collect_all(
-        shared,
-        vstd::prelude::Tracked::assume_new(),
-        vstd::prelude::Tracked::assume_new(),
-    );
+    proof {
+        shared.lemma_wf();
+    }
+    let tracked mut sd = Ghost((Seq::<stats::ArenaStats>::empty(), Seq::<int>::empty()));
+    // Premise (lock order): `mallinfo2`'s callers (the C exports and the
+    // tests) hold no allocator lock.
+    let tracked mut ord = axiom_entry();
+    let all = stats::collect_all(shared, Tracked(&mut sd), Tracked(&mut ord));
+    proof {
+        *rd = Ghost((sd@.0, sd@.1, all));
+    }
     let page = shared.regions.page_size();
     let arena = all.resident.saturating_sub(all.large_allocated);
     let uordblks = all.small_allocated;
@@ -121,8 +163,13 @@ pub fn mallinfo2(_rd: Tracked<&mut Reads>) -> MallInfo2 {
 }
 
 /// `mallinfo()`: [`mallinfo2`] saturated into `int`s.
-pub fn mallinfo() -> MallInfo {
-    let m = mallinfo2(Tracked::assume_new());
+pub fn mallinfo() -> MallInfo
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+{
+    let tracked mut rd: Reads = Ghost(arbitrary());
+    let m = mallinfo2(Tracked(&mut rd));
     let clamp = |v: usize| v.min(c_int::MAX as usize) as c_int;
     MallInfo {
         arena: clamp(m.arena),
@@ -138,6 +185,8 @@ pub fn mallinfo() -> MallInfo {
     }
 }
 
+} // verus!
+
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see `libc.rs`).
 // ---------------------------------------------------------------------------
@@ -145,6 +194,9 @@ pub fn mallinfo() -> MallInfo {
 #[cfg(not(test))]
 mod exports {
     use core::ffi::c_int;
+    use vstd::prelude::*;
+
+    verus! {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn mallopt(param: c_int, value: c_int) -> c_int {
@@ -153,13 +205,24 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn mallinfo() -> super::MallInfo {
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
         super::mallinfo()
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn mallinfo2() -> super::MallInfo2 {
-        super::mallinfo2(vstd::prelude::Tracked::assume_new())
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let tracked mut rd: super::Reads = Ghost(arbitrary());
+        super::mallinfo2(Tracked(&mut rd))
     }
+
+    } // verus!
 }
 
 #[cfg(test)]
