@@ -58,6 +58,7 @@ checks:
         - "src/heap/tcaches.rs"
         - "src/huge/table.rs"
         - "src/layout/regions.rs"
+        - "src/rseq.rs"
         - "src/slab.rs"
         - "src/sys/cgroup.rs"
         - ".chainguard/ci/kani.yaml"

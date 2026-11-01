@@ -1,1 +1,7 @@
-read_global	raw pointer (internal)	RefinedRust
+# A raw read of a loader global: Kani checks the read on a live, aligned
+# `T`; that a non-null weak symbol's address is one is the loader's.
+read_global	raw pointer (internal)	Kani	trusted (partly checked, Kani: rseq::kani_rseq::read_global_reads_the_value; not checked: instances other than `T = isize` and `T = u32` (the two `probe` uses), and that a non-null `p` from `symbols` is the address of a live, aligned `T`, the `# Safety` premise the `requires` does not state, which the loader's resolution of the weak symbol provides)
+# A volatile read of the kernel-written `cpu_id`: Kani checks the read on
+# an area the `requires` admits; that `area` is this thread's registered
+# area is the loader's and the rseq ABI's.
+read_cpu_id	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: rseq::kani_rseq::read_cpu_id_reads_the_field; not checked: that `area` (the thread pointer plus `__rseq_offset`) is this thread's registered rseq area and `size` its registered size, and that the field is 4-byte aligned (the area is 32-byte aligned), the `# Safety` premise the `requires` does not state, which the loader and the rseq ABI provide, and that only the kernel writes the field while the read runs)

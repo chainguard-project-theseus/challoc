@@ -7,7 +7,7 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `addr_to_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `addr_to_ptr` | external_body | raw pointer (internal) | Kani | trusted |
 | `ptr::copy_n...pping::<T>` | assume_spec | core library | Kani | discharged |
 | `<*mut T>::is_null` | assume_spec | core library | Kani | discharged |
 | `<*const T>::is_null` | assume_spec | core library | Kani | discharged |
@@ -15,7 +15,7 @@ file.
 ## `addr_to_ptr`
 
 src/vspec/addr.rs:23. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr_is_the_cast; not checked: the harness checks the address and the cast, not the `p@.provenance == cast_provenance()` clause, which Kani cannot observe).
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr_is_the_cast; not checked: the harness checks the address and the cast, not the `p@.provenance == cast_provenance()` clause, which Kani cannot observe).
 
 > `addr as *mut u8`: a pointer to `addr` (Verus supports only the other direction of the cast), [`addr_ptr`], with [`cast_provenance`].
 
