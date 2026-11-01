@@ -11,10 +11,10 @@ file.
 | `axiom_t..._frame` | axiom | allocator invariant | none (assumption) | trusted |
 | `store_owner` | external_body | atomics primitive | loom/GenMC | trusted |
 | `word_index` | external_body | inline asm | Islaris/Isla | trusted |
-| `axiom_zero_desc` | axiom | raw pointer (internal) | none (assumption) | trusted |
-| `axiom_zero_owner` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `axiom_zero_desc` | axiom | raw pointer (internal) | Kani | trusted |
+| `axiom_zero_owner` | axiom | raw pointer (internal) | Kani | trusted |
 | `axiom_slot_loc` | axiom | allocator invariant | none (assumption) | trusted |
-| `axiom_f..._words` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_fresh_words` | axiom | allocator invariant | Kani | trusted |
 
 ## `axiom_table_lock_inv`
 
@@ -96,7 +96,7 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
 ## `axiom_zero_desc`
 
 src/class/table.rs:2391. Kind: axiom. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_desc_reads_fresh; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe, and `desc_id` and the `DescPerm`'s `id`, ghost identities).
 
 > Trusted: the 16 bytes at `addr`, which read as zero (`z`, a piece of the descriptor array `Meta::reserve_table` returned), are a `SlabDesc`, initialised: plain atomics, valid for every bit pattern (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw permissions do not track byte values).
 
@@ -118,7 +118,7 @@ axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int) -> (tracked r: (PointsTo
 ## `axiom_zero_owner`
 
 src/class/table.rs:2407. Kind: axiom. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_owner_loads_zero; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe: the harness reads through a pointer to its own buffer).
 
 > Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of the owner array `Meta::reserve_table` returned), are an `AtomicU16`, initialised (valid for every bit pattern), as [`axiom_zero_desc`].
 
@@ -155,7 +155,7 @@ axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracke
 ## `axiom_fresh_words`
 
 src/class/table.rs:2454. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::fresh_words_load_zero; not checked: the provenance clause of `perm_at` in `words_perms_ok` (`cast_provenance()`), which Kani cannot observe, the one-shot token `once` (one table per class per process), and the location identities `WordPerm::addr` and `word_addr`, ghost).
 
 > Trusted: the permissions of the `n` words of the class bitmap at `base`, each holding zero: `z`, the bitmap's reservation from `Meta::reserve_table`, reads as zero over them.
 

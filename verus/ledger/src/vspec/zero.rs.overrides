@@ -1,5 +1,6 @@
-# A gap in vstd's memory model (raw permissions carry no byte values).
-axiom_zero_word	raw pointer (internal)	none (assumption)
+# A gap in vstd's memory model (raw permissions carry no byte values); the
+# harness reads the eight zero bytes as a u64.
+axiom_zero_word	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::zero::zero_word_reads_zero)
 # A `Zeroed` token is not tied to the writes to its bytes; the one caller
 # pairs a permission with the token made with it under one lock hold.
 ZeroRaw::axiom_new	allocator invariant	none (assumption)

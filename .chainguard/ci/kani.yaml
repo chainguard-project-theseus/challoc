@@ -46,8 +46,9 @@ checks:
     # src/purge.rs, and any later kani_* module in a hot file) are covered by
     # kani-main below instead, after each landing, so presubmit doesn't pay
     # for Kani on every proof round. Items outside both (src/stats.rs,
-    # src/sys/abort.rs, the class table in src/layout/, the enums
-    # src/kani/eq.rs matches) are checked by kani-main too.
+    # src/sys/abort.rs, the zero axioms of src/class/table.rs, the class
+    # table in src/layout/, the enums src/kani/eq.rs matches) are checked
+    # by kani-main too.
     when:
       changed:
         - "src/kani/**"
