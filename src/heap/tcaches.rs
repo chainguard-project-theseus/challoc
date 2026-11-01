@@ -22,6 +22,7 @@ use super::thread::HeapPerm;
 use super::thread::slot_heap_ref;
 use super::{FreshHeap, Heap, Shared};
 use crate::sys::tls::HeapLoan;
+use crate::vspec::ctl::Change;
 
 verus! {
 
@@ -233,15 +234,18 @@ pub(super) unsafe fn heap_new<'a>(
 
 impl Tcaches {
     /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
-    /// when the table or the metadata region is full.
+    /// when the table or the metadata region is full. The caller's record
+    /// `fx` gets [`Change::Created`] when a cache is created.
     // Not isolated: the search returns while the guard borrows `ord`.
     #[verifier::loop_isolation(false)]
-    pub fn create(&self, shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u16>
+    pub fn create(&self, shared: &Shared, arena: u16, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)
         requires
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_tcaches()),
         ensures
+            r is Some ==> final(fx)@ == Change::Created,
+            r is None ==> *final(fx) == *old(fx),
             *final(ord) == *old(ord),
     {
         proof {
@@ -266,6 +270,9 @@ impl Tcaches {
             return None;
         }
         self.table[slot].store(h as *mut u8, Ordering::Release);
+        proof {
+            *fx = Ghost(Change::Created);
+        }
         Some(slot as u16)
     }
 

@@ -100,6 +100,8 @@ use crate::arena::homed_on;
 use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::rank_class;
+use crate::vspec::cbuf::CCall;
+use crate::vspec::ctl::Change;
 use crate::vspec::zero::Zeroed;
 use fresh::{FreshHeap, init_fields};
 use others::{node_block_layout, node_caches_detached, node_set_arena};
@@ -4665,7 +4667,14 @@ impl Heap {
     /// node on the `others` list without a stack ([`Heap::cleared`]), so
     /// caching nothing ([`Heap::drained`]), with the released log extended
     /// by exactly what they held, as [`Heap::flush_all`] states.
-    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool, Tracked(ord): Tracked<&mut LockOrder>)
+    pub fn set_tcache_enabled(
+        &mut self,
+        shared: &Shared,
+        on: bool,
+        Tracked(cc): Tracked<&CCall>,
+        Tracked(fx): Tracked<&mut Ghost<Change>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -4674,6 +4683,7 @@ impl Heap {
             old(self).wf(),
         ensures
             *final(ord) == *old(ord),
+            final(fx)@ == (Change::Set { read_first: cc.written() }),
             final(self).wf(),
             final(self).tcache_on() == on,
             on ==> final(self).caches_same(*old(self)),
@@ -4684,6 +4694,7 @@ impl Heap {
     {
         proof {
             shared.lemma_wf_slow();
+            *fx = Ghost(Change::Set { read_first: cc.written() });
         }
         self.tcache_enabled = on;
         if on {
@@ -4827,7 +4838,14 @@ impl Heap {
     ///
     /// The heap stays well formed: the exchange goes header by header
     /// through their permissions ([`Heap::swap_hdrs`]).
-    pub fn set_arena(&mut self, shared: &Shared, arena: u16, Tracked(ord): Tracked<&mut LockOrder>)
+    pub fn set_arena(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        Tracked(cc): Tracked<&CCall>,
+        Tracked(fx): Tracked<&mut Ghost<Change>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -4837,11 +4855,13 @@ impl Heap {
             (arena as usize) < crate::arena::MAX_ARENAS,
         ensures
             *final(ord) == *old(ord),
+            final(fx)@ == (Change::Set { read_first: cc.written() }),
             final(self).wf(),
             final(self).home() == arena,
     {
         proof {
             shared.lemma_wf_slow();
+            *fx = Ghost(Change::Set { read_first: cc.written() });
         }
         // An explicit home is kept, even one equal to the current home:
         // no late move away from it ([`Heap::try_rehome`]).

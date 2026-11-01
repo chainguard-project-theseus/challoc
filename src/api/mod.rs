@@ -2920,7 +2920,11 @@ mod tests {
         // A second arena so the handlers have more than arena 0 to cover.
         let extra = s
             .arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
             .unwrap();
         let arenas = [0, extra];
         crate::testutil::in_fork_child("fork handlers", 60_000, || {
@@ -2963,7 +2967,12 @@ mod tests {
         let _serial = crate::testutil::global_state();
         let s = shared();
         assert!(!tasks().iter().any(|n| n == "challoc-bg"));
-        purge::background::request(true, Tracked::assume_new());
+        purge::background::request(
+            true,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(
             purge::background::start(
                 s,
@@ -2997,7 +3006,7 @@ mod tests {
         // A 1 ms decay: free a huge run, wait, and the thread purges it
         // with nobody else touching the allocator.
         let old_ns = s.decay_ns();
-        s.set_decay_ms(1);
+        s.set_decay_ms(1, Tracked::assume_new(), Tracked::assume_new());
         let (p, _, _) = s.alloc_huge(
             8 << 20,
             4096,
@@ -3029,7 +3038,11 @@ mod tests {
             "background thread did not purge the freed run: {:?}",
             s.huge.stats(Tracked::assume_new())
         );
-        s.set_decay_ms((old_ns / 1_000_000) as i64);
+        s.set_decay_ms(
+            (old_ns / 1_000_000) as i64,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
 
         // A real fork: the child handler forgets the thread and the
         // request in the child, and leaves this process's thread alone.
@@ -3070,7 +3083,12 @@ mod tests {
         // Withdraw the request: the kick wakes the thread and it exits
         // there; the exit is asynchronous, so wait for it, bounded, and
         // join it.
-        purge::background::request(false, Tracked::assume_new());
+        purge::background::request(
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let mut stopped = false;
         for _ in 0..400 {
             if !purge::background::present() {
@@ -3156,7 +3174,7 @@ mod tests {
         assert!(!purge::background::present());
         // A window long enough that nothing decays between the looks.
         let old_ns = s.decay_ns();
-        s.set_decay_ms(1_000_000);
+        s.set_decay_ms(1_000_000, Tracked::assume_new(), Tracked::assume_new());
         assert!((8u64 << 20) >= AUTO_FLOOR && (8u64 << 20) < AUTO_BURST);
         purge::background::set_auto(Some(s));
         let t0 = crate::sys::now_coarse_ns();
@@ -3233,7 +3251,12 @@ mod tests {
         );
         let held = purge::background::present();
         let armed = purge::background::auto();
-        purge::background::request(false, Tracked::assume_new());
+        purge::background::request(
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let disarmed = !purge::background::auto();
         for _ in 0..400 {
             if !purge::background::present() {
@@ -3248,7 +3271,11 @@ mod tests {
         purge::background::set_auto(None);
         s.huge
             .purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
-        s.set_decay_ms((old_ns / 1_000_000) as i64);
+        s.set_decay_ms(
+            (old_ns / 1_000_000) as i64,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
 
         assert!(!clean, "nothing dirty started the thread");
         assert!(!first, "8 MiB started the thread at the first look");
@@ -3278,7 +3305,7 @@ mod tests {
         let s = crate::testutil::shared();
         assert!(!purge::background::present());
         let old_ns = s.decay_ns();
-        s.set_decay_ms(1);
+        s.set_decay_ms(1, Tracked::assume_new(), Tracked::assume_new());
         let (p, _, _) = s.alloc_huge(
             8 << 20,
             4096,
@@ -3323,7 +3350,12 @@ mod tests {
                 let first = none_before && s.huge.oldest_empty() != 0;
                 hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
             }));
-        purge::background::request(true, Tracked::assume_new());
+        purge::background::request(
+            true,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let started = purge::background::start(
             s,
             Tracked::assume_new(),
@@ -3350,8 +3382,17 @@ mod tests {
                 vstd::prelude::Tracked::assume_new(),
             );
         }
-        s.set_decay_ms((old_ns / 1_000_000) as i64);
-        purge::background::request(false, Tracked::assume_new());
+        s.set_decay_ms(
+            (old_ns / 1_000_000) as i64,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        purge::background::request(
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         for _ in 0..400 {
             if !purge::background::present() {
                 break;
@@ -3394,7 +3435,12 @@ mod tests {
             Some(std::boxed::Box::new(move || {
                 // No panics here: unwinding out of `start` would leave the
                 // state marked as creating for every later test.
-                purge::background::request(false, Tracked::assume_new());
+                purge::background::request(
+                    false,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
                 for _ in 0..1000 {
                     if purge::background::EXITS.load(Ordering::SeqCst) != exits {
                         exited_seen.store(true, Ordering::SeqCst);
@@ -3403,7 +3449,12 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
             }));
-        purge::background::request(true, Tracked::assume_new());
+        purge::background::request(
+            true,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         purge::background::start(
             s,
             Tracked::assume_new(),
@@ -3414,7 +3465,12 @@ mod tests {
         let present_after_exit = purge::background::present();
         // Asked again, the thread must come back: a stale `present` would
         // make `start` return at once with no thread running.
-        purge::background::request(true, Tracked::assume_new());
+        purge::background::request(
+            true,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let restarted = purge::background::start(
             s,
             Tracked::assume_new(),
@@ -3422,7 +3478,12 @@ mod tests {
             Tracked::assume_new(),
         );
         let exits_before_stop = purge::background::EXITS.load(Ordering::SeqCst);
-        purge::background::request(false, Tracked::assume_new());
+        purge::background::request(
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let mut stopped = false;
         for _ in 0..400 {
             if purge::background::EXITS.load(Ordering::SeqCst) != exits_before_stop
@@ -3466,7 +3527,12 @@ mod tests {
         let _serial = crate::testutil::global_state();
         let s = shared();
         assert!(!purge::background::present());
-        purge::background::request(true, Tracked::assume_new());
+        purge::background::request(
+            true,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(
             purge::background::start(
                 s,
@@ -3479,9 +3545,19 @@ mod tests {
         let stack = purge::background::stack();
         assert_ne!(stack, 0);
         for cycle in 0..8 {
-            purge::background::request(false, Tracked::assume_new());
+            purge::background::request(
+                false,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             wait_absent();
-            purge::background::request(true, Tracked::assume_new());
+            purge::background::request(
+                true,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             assert!(
                 purge::background::start(
                     s,
@@ -3498,7 +3574,12 @@ mod tests {
                 "restart {cycle} took a new stack"
             );
         }
-        purge::background::request(false, Tracked::assume_new());
+        purge::background::request(
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         wait_absent();
         assert!(purge::background::join_exited());
         assert!(purge::background::thread().is_none());

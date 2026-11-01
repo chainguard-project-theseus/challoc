@@ -51,9 +51,11 @@ use crate::stats::ArenaStats;
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::arena::axiom_arena_stats_lock_inv;
+use crate::vspec::cbuf::CCall;
 use crate::vspec::count::CountPerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::count::{count_id, wrap32};
+use crate::vspec::ctl::Change;
 use crate::vspec::entry::EntryPerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::entry::entry_id;
@@ -1374,11 +1376,17 @@ impl Arena {
 impl Arena {
     /// Change the decay period; `-1` turns purging off. Takes effect at the
     /// next periodic tick, or at once for a background thread, which is
-    /// woken to recompute its deadline.
-    pub fn set_decay_ms(&self, ms: i64)
+    /// woken to recompute its deadline. The caller's record `fx` gets the
+    /// setting, read first if `cc`'s read was made ([`Change::Set`]).
+    pub fn set_decay_ms(&self, ms: i64, Tracked(cc): Tracked<&CCall>, Tracked(fx): Tracked<&mut Ghost<Change>>)
         requires
             crate::sys::may_syscall(),
+        ensures
+            final(fx)@ == (Change::Set { read_first: cc.written() }),
     {
+        proof {
+            *fx = Ghost(Change::Set { read_first: cc.written() });
+        }
         self.decay_ns
             .store(crate::purge::decay_ns_from_ms(ms), Ordering::Relaxed);
         crate::purge::note_decay_changed();
@@ -3701,14 +3709,17 @@ impl Arenas {
     }
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
-    /// metadata region is full.
-    pub fn create(&self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)
+    /// metadata region is full. The caller's record `fx` gets
+    /// [`Change::Created`] when an arena is created.
+    pub fn create(&self, shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)
         requires
             crate::sys::may_syscall(),
             shared.wf(),
             old(ord).allows(rank_arenas()),
         ensures
             r matches Some(i) ==> (i as usize) < MAX_ARENAS,
+            r is Some ==> final(fx)@ == Change::Created,
+            r is None ==> *final(fx) == *old(fx),
             *final(ord) == *old(ord),
     {
         proof {
@@ -3754,6 +3765,9 @@ impl Arenas {
             assert(lock_inv(*c));
             // And its frame: the count went up, the half kept its location.
             assert(lock_frame(lock_init(self.lock), *c));
+        }
+        proof {
+            *fx = Ghost(Change::Created);
         }
         Some(index as u16)
     }

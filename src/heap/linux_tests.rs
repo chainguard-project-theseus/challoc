@@ -694,7 +694,11 @@ fn changed_arena_child() {
     })
     .build();
     assert_eq!(
-        s.arenas.create(s, vstd::prelude::Tracked::assume_new()),
+        s.arenas.create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         Some(1)
     );
     let c = class_of(64).unwrap();

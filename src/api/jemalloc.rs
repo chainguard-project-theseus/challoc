@@ -1479,7 +1479,11 @@ mod tests {
         let s = shared();
         let lua = s
             .arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
             .expect("arenas.create");
         let c = crate::layout::class_of(300).unwrap();
         // Default cache, explicit arena.
@@ -1539,7 +1543,12 @@ mod tests {
         // Explicit cache.
         let t = s
             .tcaches
-            .create(s, 0, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                0,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
             .expect("tcache.create");
         let flags = mallocx_tcache(t) as c_int;
         let e = mallocx(300, flags, vstd::prelude::Tracked::assume_new());
@@ -1618,7 +1627,11 @@ mod tests {
         let s = shared();
         let lua = s
             .arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
             .expect("arenas.create");
         assert!(s.multi_arena());
         let c = class_of(200).unwrap();
@@ -1797,7 +1810,12 @@ mod tests {
         // Explicit cache.
         let t = s
             .tcaches
-            .create(s, 0, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                0,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
             .expect("tcache.create");
         let f = Flags::decode(mallocx_tcache(t) | mallocx_arena(lua));
         assert_eq!(f.tcache, Tcache::Explicit(t));
@@ -1871,7 +1889,13 @@ mod tests {
         // young and the other thread's arena is idle now, so its first
         // free of a slot there would otherwise move it onto that arena
         // (`Heap::try_rehome`, covered in heap/tests.rs).
-        h.set_arena(s, home, vstd::prelude::Tracked::assume_new());
+        h.set_arena(
+            s,
+            home,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         h.flush_all(s, vstd::prelude::Tracked::assume_new());
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;
@@ -1976,7 +2000,11 @@ mod tests {
         let s = shared();
         let a = s
             .arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
             .expect("arenas.create");
         let flags = (mallocx_arena(a) | MALLOCX_TCACHE_NONE) as c_int;
         let c = crate::layout::class_of(100).unwrap();

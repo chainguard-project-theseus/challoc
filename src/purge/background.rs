@@ -13,6 +13,8 @@ use crate::lock::{RawLock, axiom_entry, lock_inv, rank_class, rank_meta, rank_st
 use crate::sys::tls::TlsCell;
 use crate::sys::{self, Timespec};
 use crate::vspec::addr::addr_to_ptr;
+use crate::vspec::cbuf::CCall;
+use crate::vspec::ctl::Change;
 use crate::vspec::errno::{ThreadErrno, get_errno, set_errno};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
@@ -180,14 +182,19 @@ pub fn auto() -> bool {
 /// Ask for (or, with `false`, stop asking for) a background thread. The
 /// next periodic tick creates it; a running thread that finds the
 /// request withdrawn exits at its next wake-up. An explicit answer
-/// either way disarms the lazy start.
-pub fn request(on: bool, Tracked(ord): Tracked<&mut LockOrder>)
+/// either way disarms the lazy start. The caller's record `fx` gets the
+/// setting, read first if `cc`'s read was made ([`Change::Set`]).
+pub fn request(on: bool, Tracked(cc): Tracked<&CCall>, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         old(ord).allows(rank_state()),
     ensures
         *final(ord) == *old(ord),
+        final(fx)@ == (Change::Set { read_first: cc.written() }),
 {
+    proof {
+        *fx = Ghost(Change::Set { read_first: cc.written() });
+    }
     {
         // Under the state lock, so a failing lazy start (`start_requested`)
         // cannot withdraw this request after it was made.
