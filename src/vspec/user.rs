@@ -137,9 +137,9 @@ impl UserMem {
 
     /// The permission makes the `len` bytes from `p` (of its provenance)
     /// valid for reads and, when there are some, inside the allocation `p`
-    /// is derived from (`vspec::ptr::axiom_raw_valid`). The one read of user memory open
-    /// to verified code outside this module, so it needs
-    /// [`may_read_user`].
+    /// is derived from (`vspec::ptr::axiom_raw_readable`, from the borrow:
+    /// no write validity). The one read of user memory open to verified
+    /// code outside this module, so it needs [`may_read_user`].
     pub proof fn lemma_valid_reads(tracked &self, p: *mut u8, len: int)
         requires
             may_read_user(),
@@ -155,8 +155,7 @@ impl UserMem {
                 broadcast use vstd::set_lib::range_set_properties;
             }
         }
-        crate::vspec::ptr::axiom_raw_valid(&self.raw, p, len);
-        crate::vspec::ptr::lemma_writes_read(p, len);
+        crate::vspec::ptr::axiom_raw_readable(&self.raw, p, len);
     }
 
     /// Two permissions held at once own no byte in common

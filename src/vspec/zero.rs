@@ -103,7 +103,7 @@ impl ZeroRaw {
         self.raw.dom()
     }
 
-    /// The permission, borrowed (for `vspec::ptr::axiom_raw_valid`).
+    /// The permission, borrowed (for `vspec::ptr::axiom_raw_readable`).
     pub proof fn raw(tracked &self) -> (tracked r: &PointsToRaw)
         ensures
             r.dom() == self.dom(),
