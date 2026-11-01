@@ -6656,6 +6656,107 @@ proof fn lemma_drop(l: Seq<*mut HugeDesc>, y: *mut HugeDesc)
     }
 }
 
+/// The huge retain cap (`huge_retain_max`), at the huge lock's
+/// release by [`Huge::free_run`]: `v1` is the value it releases, `v0`
+/// the one it locked, `[page, page + n)` the freed run (guard included),
+/// `usable` its usable bytes, `cap` the `retain_max` it read, `pof`
+/// `free_run`'s binding of what its `purge_on_free` read returned (read
+/// only at or below the cap, false when unread), `now` its clock reading,
+/// and `discarded` whether `purge::discard_one` of the run's pages
+/// returned true.
+///
+/// The first conjunct checks `free_run`'s cap comparison: the run is
+/// discarded only when `usable > cap` or when the flag read returned
+/// true. The values of `cap` and the flag are unconstrained, because
+/// `retain_max` and `purge_on_free` are plain atomics with no spec view.
+/// The predicate bounds when a discard may happen; it does not say that a
+/// run above the cap is discarded, since `discard_one` exports no
+/// contract for its result. Discarded, the run's pages lie in a free
+/// extent that is `Purged` with no age, or `Empty` with the age of an
+/// `Empty` extent of `v0` touching the run. Otherwise, the extent is
+/// `Empty`, aged `now` or such a touching extent's age.
+spec fn retain_cap(
+    v0: Inner,
+    v1: Inner,
+    page: int,
+    n: int,
+    usable: int,
+    cap: int,
+    pof: bool,
+    now: u64,
+    discarded: bool,
+) -> bool {
+    &&& discarded ==> (usable > cap || pof)
+    &&& exists|x: *mut HugeDesc| #[trigger] v1.descs@.contains_key(x) && {
+        let e = v1.descs@[x].value();
+        &&& e.start <= page && page + n <= e.start + e.pages
+        &&& if discarded {
+            (e.state == RunState::Purged as u8 && e.dirty_at == 0) || (e.state == RunState::Empty as u8 && empty_nbr_at(
+                v0,
+                page,
+                n,
+                e.dirty_at,
+            ))
+        } else {
+            e.state == RunState::Empty as u8 && (e.dirty_at == now || empty_nbr_at(v0, page, n, e.dirty_at))
+        }
+    }
+}
+
+/// `v0` has an `Empty` extent aged `t` that ends where `[page, page + n)`
+/// starts or starts where it ends.
+spec fn empty_nbr_at(v0: Inner, page: int, n: int, t: u64) -> bool {
+    exists|y: *mut HugeDesc| #[trigger] v0.descs@.contains_key(y) && {
+        let e = v0.descs@[y].value();
+        &&& e.state == RunState::Empty as u8
+        &&& e.dirty_at == t
+        &&& (e.start + e.pages == page || e.start == page + n)
+    }
+}
+
+/// `retain_cap` from what [`Huge::free_run`] knows of the extent `x`
+/// holding the freed run: when `kept`, `x` is an `Empty` neighbour in
+/// `v0` that kept its age; otherwise `x` is the run's own descriptor,
+/// `Purged` with no age when the run was discarded, else `Empty` aged
+/// `now`.
+proof fn lemma_retain_cap(
+    v0: Inner,
+    v1: Inner,
+    x: *mut HugeDesc,
+    kept: bool,
+    page: int,
+    n: int,
+    usable: int,
+    cap: int,
+    pof: bool,
+    now: u64,
+    discarded: bool,
+)
+    requires
+        v1.descs@.contains_key(x),
+        v1.descs@[x].value().start <= page,
+        page + n <= v1.descs@[x].value().start + v1.descs@[x].value().pages,
+        discarded ==> (usable > cap || pof),
+        kept ==> {
+            let e = v0.descs@[x].value();
+            &&& v0.descs@.contains_key(x)
+            &&& e.state == RunState::Empty as u8
+            &&& e.dirty_at == v1.descs@[x].value().dirty_at
+            &&& e.start + e.pages == page || e.start == page + n
+            &&& v1.descs@[x].value().state == RunState::Empty as u8
+        },
+        !kept && discarded ==> v1.descs@[x].value().state == RunState::Purged as u8
+            && v1.descs@[x].value().dirty_at == 0,
+        !kept && !discarded ==> v1.descs@[x].value().state == RunState::Empty as u8
+            && v1.descs@[x].value().dirty_at == now,
+    ensures
+        retain_cap(v0, v1, page, n, usable, cap, pof, now, discarded),
+{
+    if kept {
+        assert(empty_nbr_at(v0, page, n, v1.descs@[x].value().dirty_at));
+    }
+}
+
 impl Huge {
     /// Free the run starting at `page` (from `Regions::classify`). Aborts
     /// unless it is the start of a live run. Returns the run as it was
@@ -6792,8 +6893,12 @@ impl Huge {
         // Purged at once: above `huge_retain_max`, or under a zero huge
         // decay period (`huge_dirty_decay_ms:0`). A run the discard fails
         // on is kept `Empty` for decay or the next explicit purge.
+        // The flag is read only at or below the cap; `pof` is false when
+        // it is not read.
         let cap = self.retain_max();
-        let purge = usable > cap || self.purge_on_free();
+        let over = usable > cap;
+        let pof = !over && self.purge_on_free();
+        let purge = over || pof;
         // The run's pages left the run authority with its token above:
         // they are no live run's.
         let ghost held = g@.pgs@@;
@@ -6814,6 +6919,8 @@ impl Huge {
         } else {
             RunState::Empty
         };
+        // Ghost: whether the run was discarded here.
+        let ghost discarded = st == RunState::Purged;
         // Best effort: a fuller table still works, only slower.
         proof {
             g0.lemma_mid();
@@ -7120,6 +7227,22 @@ impl Huge {
             // The lock's frame: the ghost page count, shift and `Meta`
             // identity are the ones `new` set.
             assert(lock_frame(lock_init(self.inner), g@));
+            // The retain cap holds of the value the lock is released
+            // with.
+            assert(g@.descs@.contains_key(survivor));
+            lemma_retain_cap(
+                g0,
+                g@,
+                survivor,
+                survivor != d,
+                page as int,
+                n as int,
+                usable as int,
+                cap as int,
+                pof,
+                now,
+                discarded,
+            );
         }
         let first = self.sync_oldest(&g);
         drop(g);
