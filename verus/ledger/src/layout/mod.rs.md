@@ -9,9 +9,9 @@ file.
 |---|---|---|---|---|
 | `ClassTable` | external_body type | UnsafeCell/volatile/transmute | none (assumption) | trusted |
 | `axiom_c..._table` | axiom | allocator invariant | none (assumption) | trusted |
-| `ClassTable::new` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
-| `ClassTa...:table` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
-| `classes_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
+| `ClassTable::new` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
+| `ClassTa...:table` | external_body | UnsafeCell/volatile/transmute | Kani | trusted |
+| `classes_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 
 ## `ClassTable`
 
@@ -44,7 +44,7 @@ pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Clas
 ## `ClassTable::new`
 
 src/layout/mod.rs:1373. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: discharged (Kani: layout::kani_classes::class_table_new).
 
 ```rust
 const fn new(table: [Class; NCLASSES]) -> ClassTable
@@ -53,7 +53,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 ## `ClassTable::table`
 
 src/layout/mod.rs:1388. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: page sizes outside 4 to 64 KiB, and that a reader sees the table `init` left, which is the `Sync` impl's argument).
 
 > The table, for verified code.
 
@@ -68,7 +68,7 @@ pub fn table(&self) -> (r: &[Class; NCLASSES])
 ## `classes_ptr`
 
 src/layout/mod.rs:1439. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 > The storage of [`CLASSES`]' table, as a raw pointer.
 

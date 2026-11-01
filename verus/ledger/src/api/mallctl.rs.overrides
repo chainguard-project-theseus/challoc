@@ -2,7 +2,7 @@
 # claims only that every call returns the same nodes.
 root	allocator invariant	Verus
 # `VERSION_STR`, whose definition lies outside verus!; it claims only that
-# the value is a `&'static str`.
-VERSION	core library	none (assumption)
+# the value is a `&'static str` (it is `VERSION_STR`).
+VERSION	core library	Kani	discharged (Kani: api::mallctl::kani_root::version_is_version_str)
 # The C caller passed the arguments under the entry point's contract.
 axiom_c_call	C-program contract	none (assumption)

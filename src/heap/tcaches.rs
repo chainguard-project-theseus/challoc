@@ -444,3 +444,23 @@ mod tests {
         }
     }
 }
+
+/// Kani check of `EMPTY_TABLE` (`verus/ledger/src/heap/tcaches.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_tcaches {
+    use super::{EMPTY_TABLE, MAX_TCACHES};
+    use core::sync::atomic::Ordering;
+
+    /// `EMPTY_TABLE`, trusted as a value of its type, with (its comment)
+    /// every entry null: its `MAX_TCACHES` entries all load null.
+    #[kani::proof]
+    #[kani::unwind(1026)]
+    fn empty_table_is_null() {
+        let t = EMPTY_TABLE;
+        assert_eq!(t.len(), MAX_TCACHES);
+        for e in &t {
+            assert!(e.load(Ordering::Relaxed).is_null());
+        }
+    }
+}

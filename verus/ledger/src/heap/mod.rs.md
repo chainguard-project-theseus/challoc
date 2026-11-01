@@ -12,7 +12,7 @@ file.
 | `assert_rekey_flushed` | external_body | panic/abort | Kani | discharged |
 | `mark_bound` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `mark_rehome` | external_body | raw pointer (internal) | RefinedRust | trusted |
-| `axiom_heap_block` | axiom | allocator invariant | RefinedRust | trusted |
+| `axiom_heap_block` | axiom | allocator invariant | Verus | trusted |
 | `Heap::a...latile` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 
 ## `assert_flushed`
@@ -100,7 +100,7 @@ unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
 ## `axiom_heap_block`
 
 src/heap/mod.rs:5462. Kind: axiom. Category: allocator invariant.
-Tool: RefinedRust. Status: trusted.
+Tool: Verus. Status: trusted.
 
 > The block of the heap `heap` at `h`, which `Heap::create` took from [`Meta::alloc_raw`](crate::meta::Meta::alloc_raw), for `Heap::destroy` to give back: the permission to the block's `size_of::<Heap>()` bytes and the block's claim, for the permissions to the heap's home headers (the run from `h + 128`, [`home_hdr`]), which this takes out of the heap's cache permissions `perms` and uses up.
 

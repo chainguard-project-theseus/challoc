@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `store_usize` | external_body | atomics primitive | loom/GenMC | trusted |
 | `load_usize` | external_body | atomics primitive | loom/GenMC | trusted |
-| `usize_ptr` | external_body | raw pointer (internal) | none (assumption) | trusted |
+| `usize_ptr` | external_body | raw pointer (internal) | Kani | trusted |
 | `store_usize_at` | external_body | atomics primitive | loom/GenMC | trusted |
 | `load_usize_seen` | external_body | atomics primitive | loom/GenMC | trusted |
 | `load_u16_at` | external_body | atomics primitive | loom/GenMC | trusted |
@@ -56,7 +56,7 @@ pub fn load_usize(a: &AtomicUsize, ordering: Ordering, Tracked(perm): Tracked<&U
 ## `usize_ptr`
 
 src/vspec/atom.rs:159. Kind: external_body. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: vspec::atom::kani_atom::usize_ptr_names_its_atomic; not checked: that `r` carries `a`'s provenance, so loads and stores through it reach `a` (the harness compares addresses)).
 
 > `a as *const AtomicUsize`: a pointer to the atomic, which names it ([`usize_id_at`]).
 

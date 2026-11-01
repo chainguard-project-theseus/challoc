@@ -1911,3 +1911,134 @@ mod tests;
 
 #[cfg(test)]
 mod linux_tests;
+
+/// Kani checks of the class table's trusted access, `ClassTable::new`,
+/// `ClassTable::table` and `classes_ptr`, and of
+/// `vspec::class::axiom_class_table_wf`, which restates `table`'s facts
+/// (`verus/ledger/src/layout/mod.rs.md`, `verus/ledger/src/vspec/class.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_classes {
+    use super::{
+        BASE_CLASSES, CLASSES, Class, ClassTable, LG_LINEAR_MAX, LG_MAX_SLAB, LG_MIN_SLAB,
+        LINE_BITS, LINEAR_CLASSES, MAX_SLAB, MAX_SLAB_WORDS, MEDIUM_MAX, NCLASSES,
+        adopt_page_geometry, classes_ptr,
+    };
+    use crate::QUANTUM;
+    use core::mem::{align_of, size_of};
+    use vstd::prelude::Tracked;
+
+    /// `spec_class_size(i)`: `(i + 1) * QUANTUM` for the linear classes,
+    /// and above them `base + ((i - LINEAR_CLASSES) % 4 + 1) * (base / 4)`
+    /// with `base = pow2(LG_LINEAR_MAX + (i - LINEAR_CLASSES) / 4)`.
+    fn class_size(i: usize) -> u128 {
+        if i < LINEAR_CLASSES {
+            (i as u128 + 1) * QUANTUM as u128
+        } else {
+            let base = 1u128 << (LG_LINEAR_MAX as usize + (i - LINEAR_CLASSES) / 4);
+            base + ((i - LINEAR_CLASSES) as u128 % 4 + 1) * (base / 4)
+        }
+    }
+
+    /// `Class::wf`, with `inv_ok` and `meta::is_pow2` (a power of two
+    /// below `2^64`: `is_power_of_two` of a `usize`), conjunct by conjunct.
+    fn wf(c: &Class) -> bool {
+        let (size, lg) = (c.size as u128, c.lg_slab as u32);
+        if !(LG_MIN_SLAB <= lg && lg <= LG_MAX_SLAB) {
+            return false;
+        }
+        let slab = 1u128 << lg;
+        let bits = c.slab_bits as usize;
+        QUANTUM as u128 <= size
+            && size <= MEDIUM_MAX as u128
+            && 1 <= c.nslots
+            && c.nslots as u128 * size <= MAX_SLAB as u128
+            && c.nslots as u128 * size <= slab
+            && c.slab_mask as u128 == slab - 1
+            && 1 <= bits
+            && (bits > LINE_BITS || bits.is_power_of_two())
+            && c.nslots as usize <= bits
+            && bits <= 64 * MAX_SLAB_WORDS
+            && (bits < 64 || bits % 64 == 0)
+            && inv_ok(c)
+    }
+
+    /// `Class::inv_ok`: `size` is `d << tz` with `d` odd and `tz < 32`,
+    /// and `d * inv_odd == 1` modulo `2^32`.
+    fn inv_ok(c: &Class) -> bool {
+        if c.tz >= 32 {
+            return false;
+        }
+        let d = c.size >> c.tz;
+        d << c.tz == c.size && d & 1 == 1 && d.wrapping_mul(c.inv_odd) == 1
+    }
+
+    /// `table_ok`: every entry well formed and sized `spec_class_size`.
+    fn table_ok(t: &[Class; NCLASSES]) {
+        for i in 0..NCLASSES {
+            assert!(wf(&t[i]));
+            assert!(t[i].size as u128 == class_size(i));
+        }
+    }
+
+    /// `ClassTable::table`, `ensures *r == class_table()`, every `r[i]`
+    /// well formed and `r[i].size == spec_class_size(i)`, and
+    /// `axiom_class_table_wf`, the same facts of `class_table()`: with
+    /// `class_table()` read as the contents of `CLASSES`' storage (what
+    /// `axiom_class_table` fixes, from a permission to `classes_storage()`),
+    /// the reference is to that storage (`classes_ptr`), and its entries
+    /// meet both facts, before `adopt_page_geometry` (`BASE_CLASSES`) and
+    /// after it at the kernel page sizes `lg_page` 12 to 16 (4 KiB to 64
+    /// KiB). The adoption runs once, as at init (nothing else runs in a
+    /// harness).
+    #[kani::proof]
+    #[kani::unwind(60)]
+    fn class_table_entries() {
+        let r = CLASSES.table();
+        assert!(core::ptr::eq(r, classes_ptr()));
+        assert!(*r == BASE_CLASSES);
+        table_ok(r);
+        // The address only: `r` must not be used once the adoption writes
+        // the storage.
+        let first: *const [Class; NCLASSES] = r;
+        let lg_page: u32 = kani::any();
+        kani::assume(12 <= lg_page && lg_page <= 16);
+        // SAFETY: once, before any other access (nothing else runs in a
+        // harness); the permission is ghost.
+        unsafe { adopt_page_geometry(lg_page, Tracked::assume_new()) };
+        let r2 = CLASSES.table();
+        assert!(core::ptr::eq(r2, first));
+        table_ok(r2);
+    }
+
+    /// `ClassTable::new`: no contract; it returns, and (beyond it) the
+    /// table it makes holds its argument, at `BASE_CLASSES` (`CLASSES`'
+    /// initialiser).
+    #[kani::proof]
+    #[kani::unwind(60)]
+    fn class_table_new() {
+        let t = ClassTable::new(BASE_CLASSES);
+        assert!(*t.table() == BASE_CLASSES);
+    }
+
+    /// `classes_ptr`, `ensures p == classes_storage()`, uninterpreted:
+    /// every call returns the same pointer. Beyond the contract, it is
+    /// `CLASSES`' storage: non-null, aligned for the table, at the
+    /// static's address, and its first and last bytes are writable through
+    /// it (Kani fails a write outside the object `p` is derived from).
+    #[kani::proof]
+    fn classes_ptr_fixed() {
+        let p = classes_ptr();
+        assert!(classes_ptr() == p);
+        assert!(!p.is_null());
+        assert!(p as usize % align_of::<[Class; NCLASSES]>() == 0);
+        assert!(p as usize == (&raw const CLASSES) as usize);
+        let b = p.cast::<u8>();
+        // SAFETY: the static's `UnsafeCell` storage, written only here (no
+        // other code runs in a harness).
+        unsafe {
+            b.write(0);
+            b.add(size_of::<[Class; NCLASSES]>() - 1).write(0);
+        }
+    }
+}

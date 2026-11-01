@@ -1,3 +1,3 @@
-axiom_class_table_wf	allocator invariant	Kani
+axiom_class_table_wf	allocator invariant	Kani	trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: page sizes outside 4 to 64 KiB, and that `class_table()` is the table every reader sees, which is the `Sync` impl's argument)
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 core::mem::drop	core library	Kani	discharged (Kani: kani_proofs::atomic::mem_drop)

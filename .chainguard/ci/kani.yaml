@@ -52,8 +52,10 @@ checks:
       changed:
         - "src/kani/**"
         - "src/vspec/**"
+        - "src/api/jemalloc.rs"
         - "src/api/print.rs"
         - "src/config.rs"
+        - "src/heap/tcaches.rs"
         - "src/huge/table.rs"
         - "src/layout/regions.rs"
         - "src/slab.rs"
