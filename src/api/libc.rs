@@ -2962,7 +2962,10 @@ mod exports {
 
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.malloc")]
-    pub extern "C" fn malloc(size: usize) -> *mut c_void {
+    pub extern "C" fn malloc(size: usize) -> (r: *mut c_void)
+        ensures
+            heap::fits(r as *mut u8, size as int, QUANTUM as int),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -2972,7 +2975,10 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn je_malloc(size: usize) -> *mut c_void {
+    pub extern "C" fn je_malloc(size: usize) -> (r: *mut c_void)
+        ensures
+            heap::fits(r as *mut u8, size as int, QUANTUM as int),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -2983,7 +2989,10 @@ mod exports {
 
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.free")]
-    pub extern "C" fn free(p: *mut c_void) {
+    pub extern "C" fn free(p: *mut c_void)
+        ensures
+            p@.addr != 0 ==> heap::free_target(p as *mut u8),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -2993,7 +3002,10 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn je_free(p: *mut c_void) {
+    pub extern "C" fn je_free(p: *mut c_void)
+        ensures
+            p@.addr != 0 ==> heap::free_target(p as *mut u8),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -3064,36 +3076,61 @@ mod exports {
     }
 
     verified_export_pair! {
-        fn calloc / je_calloc(n: usize, m: usize) -> *mut c_void {
+        fn calloc / je_calloc(n: usize, m: usize) -> (r: *mut c_void) ensures [
+            n * m > usize::MAX ==> r@.addr == 0,
+            heap::fits(r as *mut u8, n * m, QUANTUM as int),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::calloc(n, m, Tracked(&mut errno)) as *mut c_void
         }
-        fn realloc / je_realloc(p: *mut c_void, size: usize) -> *mut c_void {
+        fn realloc / je_realloc(p: *mut c_void, size: usize) -> (r: *mut c_void) ensures [
+            p@.addr != 0 && size == 0 ==> r@.addr == 0,
+            heap::fits(r as *mut u8, size as int, QUANTUM as int),
+            p@.addr != 0 ==> heap::free_target(p as *mut u8),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::realloc(p as *mut u8, size, Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void
         }
-        fn aligned_alloc / je_aligned_alloc(align: usize, size: usize) -> *mut c_void {
+        fn aligned_alloc / je_aligned_alloc(align: usize, size: usize) -> (r: *mut c_void) ensures [
+            !is_pow2(align) ==> r@.addr == 0,
+            is_pow2(align) ==> heap::fits(r as *mut u8, size as int, align as int),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void
         }
-        fn memalign / je_memalign(align: usize, size: usize) -> *mut c_void {
+        fn memalign / je_memalign(align: usize, size: usize) -> (r: *mut c_void) ensures [
+            !is_pow2(align) ==> r@.addr == 0,
+            is_pow2(align) ==> heap::fits(r as *mut u8, size as int, align as int),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void
         }
-        fn posix_memalign / je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
+        fn posix_memalign / je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> (r: c_int) ensures [
+            r == 0 || r == ENOMEM || r == EINVAL,
+            r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             let oout = memptr_out(out as *mut *mut u8);
             super::posix_memalign(out as *mut *mut u8, align, size, oout, Tracked(&mut errno))
         }
-        fn valloc / je_valloc(size: usize) -> *mut c_void {
+        fn valloc / je_valloc(size: usize) -> (r: *mut c_void) ensures [
+            heap::fits(r as *mut u8, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::valloc(size, Tracked(&mut errno)) as *mut c_void
         }
-        fn pvalloc / je_pvalloc(size: usize) -> *mut c_void {
+        fn pvalloc / je_pvalloc(size: usize) -> (r: *mut c_void) ensures [
+            heap::fits(r as *mut u8, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::pvalloc(size, Tracked(&mut errno)) as *mut c_void
         }
-        fn malloc_usable_size / je_malloc_usable_size(p: *mut c_void) -> usize {
+        fn malloc_usable_size / je_malloc_usable_size(p: *mut c_void) -> (r: usize) ensures [
+            p@.addr == 0 ==> r == 0,
+            p@.addr != 0 ==> heap::free_target(p as *mut u8),
+            p@.addr != 0 ==> usable_of(p as *mut u8, r as int),
+            p@.addr != 0 ==> 0 < r,
+        ] {
             super::malloc_usable_size(p as *mut u8)
         }
     }
@@ -3101,7 +3138,12 @@ mod exports {
     // The glibc-only names, which jemalloc does not prefix.
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn reallocarray(p: *mut c_void, n: usize, m: usize) -> *mut c_void {
+    pub extern "C" fn reallocarray(p: *mut c_void, n: usize, m: usize) -> (r: *mut c_void)
+        ensures
+            n * m > usize::MAX ==> r@.addr == 0,
+            heap::fits(r as *mut u8, n * m, QUANTUM as int),
+            p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p as *mut u8),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -3113,7 +3155,11 @@ mod exports {
     /// C23 `free_sized`: the size is checked against the class and stands
     /// in for the slot bit test (design 6.3).
     #[unsafe(no_mangle)]
-    pub extern "C" fn free_sized(p: *mut c_void, size: usize) {
+    pub extern "C" fn free_sized(p: *mut c_void, size: usize)
+        ensures
+            p@.addr != 0 ==> heap::free_target(p as *mut u8),
+            p@.addr != 0 ==> heap::hint_ok(p as *mut u8, spec_class_for(size, 1)),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -3124,7 +3170,11 @@ mod exports {
 
     /// C23 `free_aligned_sized`: as `free_sized`, with the alignment.
     #[unsafe(no_mangle)]
-    pub extern "C" fn free_aligned_sized(p: *mut c_void, align: usize, size: usize) {
+    pub extern "C" fn free_aligned_sized(p: *mut c_void, align: usize, size: usize)
+        ensures
+            p@.addr != 0 ==> heap::free_target(p as *mut u8),
+            p@.addr != 0 ==> heap::hint_ok(p as *mut u8, if is_pow2(align) { spec_class_for(size, align) } else { None }),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -3134,7 +3184,10 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn malloc_trim(pad: usize) -> c_int {
+    pub extern "C" fn malloc_trim(pad: usize) -> (r: c_int)
+        ensures
+            r == 0 || r == 1,
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -3147,7 +3200,10 @@ mod exports {
     // names, no `je_` twins, declared in <challoc/challoc.h>.
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn challoc_malloc_usable(size: usize, usable: *mut usize) -> *mut c_void {
+    pub extern "C" fn challoc_malloc_usable(size: usize, usable: *mut usize) -> (r: *mut c_void)
+        ensures
+            heap::fits(r as *mut u8, size as int, QUANTUM as int),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -3158,7 +3214,11 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn challoc_calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut c_void {
+    pub extern "C" fn challoc_calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut c_void)
+        ensures
+            n * m > usize::MAX ==> r@.addr == 0,
+            heap::fits(r as *mut u8, n * m, QUANTUM as int),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -3169,7 +3229,12 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn challoc_realloc_usable(p: *mut c_void, size: usize, usable: *mut usize) -> *mut c_void {
+    pub extern "C" fn challoc_realloc_usable(p: *mut c_void, size: usize, usable: *mut usize) -> (r: *mut c_void)
+        ensures
+            p@.addr != 0 && size == 0 ==> r@.addr == 0,
+            heap::fits(r as *mut u8, size as int, QUANTUM as int),
+            p@.addr != 0 ==> heap::free_target(p as *mut u8),
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
@@ -3180,7 +3245,13 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn challoc_free_usable(p: *mut c_void) -> usize {
+    pub extern "C" fn challoc_free_usable(p: *mut c_void) -> (r: usize)
+        ensures
+            p@.addr == 0 ==> r == 0,
+            p@.addr != 0 ==> heap::free_target(p as *mut u8),
+            p@.addr != 0 ==> usable_of(p as *mut u8, r as int),
+            p@.addr != 0 ==> 0 < r,
+    {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();

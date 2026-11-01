@@ -3287,7 +3287,7 @@ mod exports {
     }
 
     verified_export_pair! {
-        fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
+        fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> (r: c_int) {
             let Tracked(mut cc) = nametomib_call(name, mibp, miblenp);
             super::mallctlnametomib(name, mibp, miblenp, Tracked(&mut cc))
         }
