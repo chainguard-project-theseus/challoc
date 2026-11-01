@@ -15,6 +15,7 @@ file.
 | `call_handler` | external_body | function pointer | Kani | trusted |
 | `call_handler_caught` | external_body | function pointer | Kani | trusted |
 | `oom` | no_decreases | termination | none (assumption) | trusted |
+| `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
 ## `get_new_handler_addr`
 
@@ -133,4 +134,20 @@ fn oom(
         align != 0 && !is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
         !nothrow ==> r@.addr != 0,
+```
+
+## `axiom_c_call`
+
+src/api/cxx.rs:489. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> The token of a C++ call that hands over the block at `p` to an `operator delete` ([`CCall`], [`CEntry::Frees`]).
+
+```rust
+axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+    requires
+        e is Frees,
+    ensures
+        c.fresh(e),
+;
 ```

@@ -1,2 +1,4 @@
 # Opaque wrapper of the program's `malloc_message` hook, a function pointer.
 Hook	function pointer	Kani
+# The C caller hands over the block it frees under the entry point's contract.
+axiom_c_call	C-program contract	none (assumption)

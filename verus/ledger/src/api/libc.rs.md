@@ -7,11 +7,28 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 | `axiom_c_out` | axiom | C-program contract | none (assumption) | trusted |
+
+## `axiom_c_call`
+
+src/api/libc.rs:2803. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> Trusted (the C contract of a free or a realloc, `vspec::cbuf`): the token of this call from C, which hands over the block at `p` ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to use up.
+
+```rust
+axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+    requires
+        e is Frees,
+    ensures
+        c.fresh(e),
+;
+```
 
 ## `axiom_c_out`
 
-src/api/libc.rs:2831. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:2896. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, `vspec::cbuf`): the token of this call for the C caller's out-pointer `p`, the permission to write the `T` it names: none for a null `p`, and `p` is not null when the contract does not allow null (`nullable` false: `posix_memalign`'s `memptr`).
