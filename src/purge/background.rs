@@ -493,12 +493,11 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
 /// when creation fails, for the next attempt) and the new thread.
 /// A slot holding a heap is parked on [`TLS_CREATING`] through the
 /// caller's slot cell `cell` across the pthread calls, which require an
-/// empty slot or a sentinel (or, for `spawn`, a heap no caller holds),
-/// and put back after: the cell is as it was
+/// empty slot or a sentinel, and put back after: the cell is as it was
 /// ([`TlsCell::kept`]), unless the slot was empty, when a nested free in
 /// `pthread_join` or a nested allocation in `pthread_create` may create
-/// the thread's heap. A heap the join created stays in the slot for
-/// `pthread_create`: no caller holds it.
+/// the thread's heap. A heap the join created is parked the same way
+/// for `pthread_create` and put back after it.
 // The `match` stands for `Option::filter`, which vstd does not specify.
 #[allow(clippy::manual_filter)]
 fn create(
@@ -541,8 +540,8 @@ fn create(
     // and `pthread_join` frees an exited thread's key data, neither of
     // which may re-enter this thread's heap mid-operation.
     let ghost cell0 = *cell;
-    let saved = crate::sys::tls::get(Tracked(&*cell));
-    let park = saved as usize > TLS_EXITED;
+    let mut saved = crate::sys::tls::get(Tracked(&*cell));
+    let mut park = saved as usize > TLS_EXITED;
     if park {
         crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut *cell));
     }
@@ -559,6 +558,15 @@ fn create(
                 "pthread_join of the background thread failed: {}",
                 sys::Errno(rc)
             ));
+        }
+        // At an empty slot the join's nested free may have created this
+        // thread's heap: park it too, for `pthread_create`.
+        if !park {
+            saved = crate::sys::tls::get(Tracked(&*cell));
+            park = saved as usize > TLS_EXITED;
+            if park {
+                crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut *cell));
+            }
         }
     }
     // Reserved once, then committed above the lowest page, which stays
@@ -613,7 +621,7 @@ fn create(
         }
     };
     let thread = match stack {
-        Some(stack) => spawn(shared, stack + page, STACK_SIZE - page, Tracked(&mut *cell), Ghost(cell0.value() == 0)),
+        Some(stack) => spawn(shared, stack + page, STACK_SIZE - page, Tracked(&mut *cell)),
         None => None,
     };
     if park {
@@ -637,21 +645,16 @@ fn create(
 /// it of the pointer passed here.
 /// `cell` is the calling thread's slot cell: `pthread_create` allocates
 /// the new thread's DTV, which may re-enter the allocator on this thread,
-/// so the slot must be empty, hold a sentinel, as for [`pthread_join`], or
-/// hold a heap no caller holds: `fresh` says the slot was empty when the
-/// caller (`create`) began, so a heap in it now is one a nested free in
-/// `pthread_join` created, which that free gave back. Trusted too: the
-/// caller's `fresh`, which the ghost state cannot check (no loan records
-/// that the heap is not held). A nested entry leaves
-/// a sentinel or a heap in the slot as it found it and may fill an empty
-/// slot ([`TlsCell::kept`]).
+/// so the slot must be empty or hold a sentinel, as for [`pthread_join`].
+/// A nested entry leaves a sentinel in the slot as it found it and may
+/// fill an empty slot ([`TlsCell::kept`]).
 #[verifier::external_body]
-fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>, Ghost(fresh): Ghost<bool>) -> Option<::libc::pthread_t>
+fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()) || fresh,
+        old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()),
     ensures
         final(cell).kept(*old(cell)),
 {

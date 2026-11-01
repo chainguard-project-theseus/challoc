@@ -93,9 +93,8 @@ verus! {
 /// `create`) stands for the outer token lent to it. At a sentinel the
 /// nested call leaves it as it found it (`heap::thread`); at an empty slot
 /// (only `create`'s calls) it may create the thread's heap and fill the
-/// slot, which [`TlsCell::kept`] allows. `create`'s `pthread_create` then
-/// runs on that heap, which no caller holds, and a nested entry leaves a
-/// slot holding a heap as it found it (`heap::thread`).
+/// slot, which [`TlsCell::kept`] allows; `create` parks a heap its
+/// `pthread_join` left there before `pthread_create`.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct TlsSlot {
     /// The slot cell.
