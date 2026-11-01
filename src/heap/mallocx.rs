@@ -12,6 +12,7 @@ use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked};
 
 use super::Shared;
+use crate::vspec::errno::ThreadErrno;
 use crate::vspec::zero::Zeroed;
 
 verus! {
@@ -311,6 +312,7 @@ pub fn alloc(
     arena: Option<u16>,
     tcache: Tcache,
     _blk: Tracked<&mut super::Live>,
+    _errno: Tracked<&mut ThreadErrno>,
 ) -> (*mut u8, bool, Tracked<Zeroed>) {
     match tcache {
         Tcache::Default => match crate::heap::heap_for_thread(shared) {
@@ -331,7 +333,8 @@ pub fn alloc(
                     (p, zero, z)
                 }
                 None => {
-                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked::assume_new());
+                    let (p, zero) =
+                        h.alloc_zeroed(shared, class, Tracked::assume_new(), Tracked::assume_new());
                     let z = h.take_handed(
                         Ghost::assume_new(),
                         Ghost::assume_new(),
@@ -365,7 +368,8 @@ pub fn alloc(
                     (p, zero, z)
                 }
                 None => {
-                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked::assume_new());
+                    let (p, zero) =
+                        h.alloc_zeroed(shared, class, Tracked::assume_new(), Tracked::assume_new());
                     let z = h.take_handed(
                         Ghost::assume_new(),
                         Ghost::assume_new(),
@@ -438,11 +442,19 @@ pub fn alloc_huge(
 
 /// Routing of a `MALLOCX` free (`dallocx`, `sdallocx`) on the calling
 /// thread. Aborts unless `p` is a live allocation.
-pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, _blk: Tracked<super::Live>) {
+pub fn free(
+    shared: &Shared,
+    p: *mut u8,
+    tcache: Tcache,
+    _blk: Tracked<super::Live>,
+    _errno: Tracked<&mut ThreadErrno>,
+) {
     match tcache {
-        Tcache::Default => crate::heap::free(shared, p, Tracked::assume_new()),
+        Tcache::Default => {
+            crate::heap::free(shared, p, Tracked::assume_new(), Tracked::assume_new())
+        }
         Tcache::Explicit(t) => match shared.tcaches.get(t) {
-            Some(h) => h.free(shared, p, Tracked::assume_new()),
+            Some(h) => h.free(shared, p, Tracked::assume_new(), Tracked::assume_new()),
             None => invalid_tcache(t),
         },
         Tcache::None => crate::heap::free_direct(shared, p, Tracked::assume_new()),

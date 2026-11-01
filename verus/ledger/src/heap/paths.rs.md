@@ -17,12 +17,12 @@ file.
 
 ## `free_fast_slot`
 
-src/heap/paths.rs:772. Kind: external_body. Category: allocator invariant.
+src/heap/paths.rs:785. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The entry points' form of [`free_fast_class`]: the heap comes as the thread's TLS slot value (`tls_heap_slot`, which proved the heap exists and so that this thread observed `READY`), and both it and the `free_flags` byte are produced only after the bit test.
 
-Body mints Tracked at line 810; mints Tracked at line 811.
+Body mints Tracked at line 823; mints Tracked at line 824.
 
 ```rust
 pub unsafe fn free_fast_slot(
@@ -52,15 +52,15 @@ pub unsafe fn free_fast_slot(
 
 ## `alloc`
 
-src/heap/paths.rs:950. Kind: external_body. Category: allocator invariant.
+src/heap/paths.rs:963. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > `malloc` of a non-huge class on the calling thread.
 
-Body mints Tracked at line 961; mints Tracked at line 968; mints Tracked at line 969.
+Body mints Tracked at line 974; mints Tracked at line 981; mints Tracked at line 982.
 
 ```rust
-pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -73,15 +73,15 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) ->
 
 ## `alloc_declined`
 
-src/heap/paths.rs:987. Kind: external_body. Category: allocator invariant.
+src/heap/paths.rs:1000. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > `malloc` of a non-huge class whose fast pop declined (`Heap::alloc_fast` returned `None`: an empty cache, or the scheduled pop of design 6.4 that `pop_fast` leaves to the slow path): straight to [`Heap::alloc_slow`], without the retry of the pop that [`alloc`] makes first, so a scheduled pop costs the entry point one tail call and the dispatch in `alloc_slow`, not a second pass through its own fast path (measured: through `alloc` the mixed `valkey1` row paid 4 instructions per operation for the one pop in eight the compacting mode schedules).
 
-Body mints Tracked at line 999; mints Tracked at line 1008; mints Tracked at line 1009.
+Body mints Tracked at line 1012; mints Tracked at line 1021; mints Tracked at line 1022.
 
 ```rust
-pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -94,15 +94,15 @@ pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut 
 
 ## `alloc_zeroed`
 
-src/heap/paths.rs:1024. Kind: external_body. Category: allocator invariant.
+src/heap/paths.rs:1037. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > `calloc` of a non-huge class on the calling thread; the flag says the memory is known zero.
 
-Body mints Tracked at line 1037; mints Ghost at line 1039; mints Ghost at line 1040; mints Ghost at line 1041; mints Tracked at line 1049; mints Tracked at line 1050.
+Body mints Tracked at line 1050; mints Ghost at line 1052; mints Ghost at line 1053; mints Ghost at line 1054; mints Tracked at line 1062; mints Tracked at line 1063.
 
 ```rust
-pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -116,15 +116,15 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
 
 ## `free`
 
-src/heap/paths.rs:1060. Kind: external_body. Category: allocator invariant.
+src/heap/paths.rs:1073. Kind: external_body. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > `free` of a non-null pointer on the calling thread.
 
-Body mints Tracked at line 1071; mints Tracked at line 1072.
+Body mints Tracked at line 1084; mints Tracked at line 1085.
 
 ```rust
-pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
+pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, _errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -137,7 +137,7 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
 
 ## `shared_ptr`
 
-src/heap/paths.rs:1123. Kind: external_body. Category: allocator invariant.
+src/heap/paths.rs:1136. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `shared` as the raw pointer [`existing_heap`] takes and `init_fields` stores in a new heap: the process's `Shared`, at its storage.
@@ -153,7 +153,7 @@ pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
 
 ## `debug_scheduled`
 
-src/heap/paths.rs:1226. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1239. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > The scheduled pop's check, in debug builds: `allocs` is a multiple of the compaction period.

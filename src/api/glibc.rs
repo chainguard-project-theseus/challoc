@@ -206,7 +206,11 @@ mod tests {
         );
         assert!(i.uordblks as usize >= 200 * size);
         for p in small.into_iter().chain(huge) {
-            free(p, vstd::prelude::Tracked::assume_new());
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
     }
 }

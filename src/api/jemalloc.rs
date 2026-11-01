@@ -215,7 +215,14 @@ fn alloc_with(
     let align = f.align();
     let (p, usable, zeroed, z) = match class_for(size, align) {
         Some(c) => {
-            let (p, zero, z) = mallocx::alloc(shared, c, f.arena, f.tcache, Tracked::assume_new());
+            let (p, zero, z) = mallocx::alloc(
+                shared,
+                c,
+                f.arena,
+                f.tcache,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             (p, CLASSES.table()[c].size(), zero, z)
         }
         None => {
@@ -316,7 +323,13 @@ pub fn rallocx_zeroed(
             Tracked::assume_new(),
         )
     };
-    mallocx::free(shared, p, f.tcache, Tracked::assume_new());
+    mallocx::free(
+        shared,
+        p,
+        f.tcache,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     (q, Ghost::assume_new(), Tracked::assume_new())
 }
 
@@ -354,7 +367,13 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, _blk: Tracked<Live>) {
     let Some(shared) = super::shared_if_ready() else {
         not_an_allocation("dallocx", p)
     };
-    mallocx::free(shared, p, f.tcache, Tracked::assume_new());
+    mallocx::free(
+        shared,
+        p,
+        f.tcache,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }
 
 /// `sdallocx(p, size, flags)`: `size` must satisfy `nallocx(size, flags)
@@ -379,7 +398,7 @@ pub fn sdallocx(p: *mut u8, size: usize, flags: c_int, _c: Tracked<CCall>) {
 #[inline(always)]
 pub fn sdallocx_block(p: *mut u8, size: usize, flags: c_int, _blk: Tracked<Live>) {
     if flags == 0 {
-        return super::libc::free_sized_with(p, size, Tracked::assume_new());
+        return super::libc::free_sized_with(p, size, Tracked::assume_new(), Tracked::assume_new());
     }
     sdallocx_flags(p, size, flags, Tracked::assume_new())
 }
@@ -394,6 +413,7 @@ fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int, _blk: Tracked<Live>) {
             p,
             size,
             class_for(size, f.align()),
+            Tracked::assume_new(),
             Tracked::assume_new(),
         ),
         // The raw flags, not `f`: a `Flags` argument goes by pointer to a
@@ -433,7 +453,13 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, _blk: Tracked<Live>) {
         }
     }
     shared.check_size_hint(p, size, hint, Tracked::assume_new());
-    mallocx::free(shared, p, f.tcache, Tracked::assume_new());
+    mallocx::free(
+        shared,
+        p,
+        f.tcache,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }
 
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when
@@ -857,6 +883,7 @@ mod tests {
             f.arena,
             f.tcache,
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         );
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
@@ -876,7 +903,11 @@ mod tests {
         let cached_foreign = |h: &heap::Heap| h.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
         let before = cached_in(h);
         let before_foreign = cached_foreign(h);
-        api_libc::free(p, vstd::prelude::Tracked::assume_new());
+        api_libc::free(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(cached_in(h), before);
         assert_eq!(cached_foreign(h), before_foreign + 1);
         // realloc within the class keeps the pointer and the arena.
@@ -885,6 +916,7 @@ mod tests {
             c,
             Some(lua),
             Tcache::Default,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
         // (Written again: this is a fresh slot of the Lua arena's cache,
@@ -913,7 +945,11 @@ mod tests {
                 .map(|x| x.1),
             Ok(home)
         );
-        api_libc::free(q, vstd::prelude::Tracked::assume_new());
+        api_libc::free(
+            q,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
 
         // Direct path: live count moves at once, no cache involved.
         let f = Flags::decode(mallocx_arena(lua) | MALLOCX_TCACHE_NONE);
@@ -924,13 +960,20 @@ mod tests {
             f.arena,
             f.tcache,
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         );
         let (slab, _) = s.table(c).locate(d);
         let desc = s.table(c).desc(slab);
         assert_eq!(desc.arena(), lua);
         let live = desc.live();
         let cached = cached_in(h);
-        mallocx::free(s, d, Tcache::None, vstd::prelude::Tracked::assume_new());
+        mallocx::free(
+            s,
+            d,
+            Tcache::None,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(desc.live(), live - 1);
         assert_eq!(cached_in(h), cached);
         // A non-existent arena is null, not an abort.
@@ -940,6 +983,7 @@ mod tests {
                 c,
                 Some(4000),
                 Tcache::Default,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new()
             )
             .0
@@ -951,6 +995,7 @@ mod tests {
                 c,
                 Some(4000),
                 Tcache::None,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new()
             )
             .0
@@ -993,7 +1038,11 @@ mod tests {
                 .arena,
             lua
         );
-        api_libc::free(hp, vstd::prelude::Tracked::assume_new());
+        api_libc::free(
+            hp,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
 
         // Explicit cache.
         let t = s
@@ -1007,6 +1056,7 @@ mod tests {
             c,
             f.arena,
             f.tcache,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(
@@ -1022,6 +1072,7 @@ mod tests {
             s,
             e,
             Tcache::Explicit(t),
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(th.cache_in(lua, c).unwrap().len(), before);
@@ -1051,6 +1102,7 @@ mod tests {
                     c,
                     a,
                     Tcache::Default,
+                    vstd::prelude::Tracked::assume_new(),
                     vstd::prelude::Tracked::assume_new(),
                 );
                 assert!(!p.is_null());
@@ -1083,7 +1135,11 @@ mod tests {
             } else {
                 assert_eq!(arena, other);
             }
-            api_libc::free(p, vstd::prelude::Tracked::assume_new());
+            api_libc::free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
         assert_eq!(
             cached_in(h),
@@ -1314,7 +1370,13 @@ mod tests {
         sdallocx(p, 64, flags, vstd::prelude::Tracked::assume_new());
         let p = crate::api::libc::aligned_alloc(1 << 20, 64, vstd::prelude::Tracked::assume_new());
         assert!(!p.is_null());
-        crate::api::libc::free_aligned_sized(p, 1 << 20, 64, vstd::prelude::Tracked::assume_new());
+        crate::api::libc::free_aligned_sized(
+            p,
+            1 << 20,
+            64,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         // A run `realloc` kept takes the size the caller last asked for.
         let p = mallocx(1 << 20, 0);
         let q = crate::api::libc::realloc(
@@ -1324,6 +1386,11 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(q, p);
-        crate::api::libc::free_sized(q, (1 << 20) - 100, vstd::prelude::Tracked::assume_new());
+        crate::api::libc::free_sized(
+            q,
+            (1 << 20) - 100,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 }

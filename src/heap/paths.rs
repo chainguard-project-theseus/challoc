@@ -37,7 +37,13 @@ impl Heap {
     /// `malloc` of a non-huge class in the home arena: the cache pop, then
     /// the slow path.
     #[inline(always)]
-    pub fn alloc(&mut self, shared: &Shared, class: usize, _blk: Tracked<&mut Live>) -> *mut u8 {
+    pub fn alloc(
+        &mut self,
+        shared: &Shared,
+        class: usize,
+        _blk: Tracked<&mut Live>,
+        _errno: Tracked<&mut ThreadErrno>,
+    ) -> *mut u8 {
         match self.alloc_fast(class, shared.push_flags(), Tracked::assume_new()) {
             Some(p) => p,
             None => {
@@ -183,6 +189,7 @@ impl Heap {
         shared: &Shared,
         class: usize,
         _blk: Tracked<&mut Live>,
+        _errno: Tracked<&mut ThreadErrno>,
     ) -> (*mut u8, bool) {
         match self.pop_fast(class, shared.push_flags(), Tracked::assume_new()) {
             Some(r) => r,
@@ -194,7 +201,13 @@ impl Heap {
     /// a live huge run. A slot of another arena goes onto this heap's
     /// [`FOREIGN`] cache for the class (design 6.3 step 4).
     #[inline(always)]
-    pub fn free(&mut self, shared: &Shared, p: *mut u8, _blk: Tracked<Live>) {
+    pub fn free(
+        &mut self,
+        shared: &Shared,
+        p: *mut u8,
+        _blk: Tracked<Live>,
+        _errno: Tracked<&mut ThreadErrno>,
+    ) {
         match shared.classify_free(p, Tracked::assume_new()) {
             Ok((class, arena)) => {
                 if arena == self.arena {
@@ -947,7 +960,7 @@ proof fn lend_slot(tracked blk: &mut Live, tracked tk: &mut Map<int, GhostSingle
 /// `blk` gets the block's token.
 #[verifier::external_body]
 #[inline(always)]
-pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -958,7 +971,7 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) ->
         r@.addr != 0 ==> final(blk).slot_block(r, class as int),
 {
     match heap_for_thread(shared) {
-        Some(h) => h.alloc(shared, class, Tracked::assume_new()),
+        Some(h) => h.alloc(shared, class, Tracked::assume_new(), Tracked::assume_new()),
         None => {
             shared
                 .alloc_direct(
@@ -984,7 +997,7 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) ->
 /// `blk` gets the block's token.
 #[verifier::external_body]
 #[inline(always)]
-pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: *mut u8)
+pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1021,7 +1034,7 @@ pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut 
 /// which `covers` alone does not say.
 #[verifier::external_body]
 #[inline(always)]
-pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1034,7 +1047,7 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
 {
     match heap_for_thread(shared) {
         Some(h) => {
-            let (p, zero) = h.alloc_zeroed(shared, class, Tracked::assume_new());
+            let (p, zero) = h.alloc_zeroed(shared, class, Tracked::assume_new(), Tracked::assume_new());
             let z = h.take_handed(
                 Ghost::assume_new(),
                 Ghost::assume_new(),
@@ -1057,7 +1070,7 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
 /// `blk` is the caller's token for `p` ([`Live::claims`]).
 #[verifier::external_body]
 #[inline(always)]
-pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
+pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, _errno: Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1068,7 +1081,7 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
         blk.block(p),
 {
     match heap_for_thread(shared) {
-        Some(h) => h.free(shared, p, Tracked::assume_new()),
+        Some(h) => h.free(shared, p, Tracked::assume_new(), Tracked::assume_new()),
         None => free_direct(shared, p, Tracked::assume_new()),
     }
 }
