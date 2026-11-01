@@ -2906,12 +2906,22 @@ mod tests {
         assert!(!tasks().iter().any(|n| n == "challoc-bg"));
         purge::background::request(true, Tracked::assume_new());
         assert!(
-            purge::background::start(s, Tracked::assume_new(), Tracked::assume_new()),
+            purge::background::start(
+                s,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
             "background thread did not start"
         );
         assert!(purge::background::present());
         assert!(
-            purge::background::start(s, Tracked::assume_new(), Tracked::assume_new()),
+            purge::background::start(
+                s,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
             "second start is idempotent"
         );
         // The name is set by the thread itself; give it a moment.
@@ -3091,11 +3101,19 @@ mod tests {
         assert!((8u64 << 20) >= AUTO_FLOOR && (8u64 << 20) < AUTO_BURST);
         purge::background::set_auto(Some(s));
         let t0 = crate::sys::now_coarse_ns();
-        purge::on_tick(s, t0, true, Tracked::assume_new(), Tracked::assume_new());
+        purge::on_tick(
+            s,
+            t0,
+            true,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         purge::on_tick(
             s,
             t0 + 2 * AUTO_HOLD_NS,
             true,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
         );
@@ -3115,12 +3133,20 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         let t1 = t0 + 3 * AUTO_HOLD_NS;
-        purge::on_tick(s, t1, true, Tracked::assume_new(), Tracked::assume_new());
+        purge::on_tick(
+            s,
+            t1,
+            true,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let first = purge::background::present();
         purge::on_tick(
             s,
             t1 + AUTO_HOLD_NS / 2,
             true,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
         );
@@ -3134,6 +3160,7 @@ mod tests {
             false,
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         let freed = purge::background::present();
         let pending = purge::background::requested();
@@ -3141,6 +3168,7 @@ mod tests {
             s,
             t1 + AUTO_HOLD_NS + 2,
             true,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
         );
@@ -3237,7 +3265,12 @@ mod tests {
                 hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
             }));
         purge::background::request(true, Tracked::assume_new());
-        let started = purge::background::start(s, Tracked::assume_new(), Tracked::assume_new());
+        let started = purge::background::start(
+            s,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let mut purged = false;
         if started && hook_state.load(Ordering::SeqCst) == 3 {
             for _ in 0..400 {
@@ -3312,13 +3345,23 @@ mod tests {
                 }
             }));
         purge::background::request(true, Tracked::assume_new());
-        purge::background::start(s, Tracked::assume_new(), Tracked::assume_new());
+        purge::background::start(
+            s,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         purge::background::BEFORE_PUBLISH.lock().unwrap().take();
         let present_after_exit = purge::background::present();
         // Asked again, the thread must come back: a stale `present` would
         // make `start` return at once with no thread running.
         purge::background::request(true, Tracked::assume_new());
-        let restarted = purge::background::start(s, Tracked::assume_new(), Tracked::assume_new());
+        let restarted = purge::background::start(
+            s,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let exits_before_stop = purge::background::EXITS.load(Ordering::SeqCst);
         purge::background::request(false, Tracked::assume_new());
         let mut stopped = false;
@@ -3366,7 +3409,12 @@ mod tests {
         assert!(!purge::background::present());
         purge::background::request(true, Tracked::assume_new());
         assert!(
-            purge::background::start(s, Tracked::assume_new(), Tracked::assume_new()),
+            purge::background::start(
+                s,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
             "background thread did not start"
         );
         let stack = purge::background::stack();
@@ -3376,7 +3424,12 @@ mod tests {
             wait_absent();
             purge::background::request(true, Tracked::assume_new());
             assert!(
-                purge::background::start(s, Tracked::assume_new(), Tracked::assume_new()),
+                purge::background::start(
+                    s,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new()
+                ),
                 "restart {cycle} failed"
             );
             assert!(purge::background::present());

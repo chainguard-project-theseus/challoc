@@ -21,7 +21,7 @@ use vstd::raw_ptr::{PointsTo, ptr_mut_write};
 use super::thread::HeapPerm;
 use super::thread::slot_heap_ref;
 use super::{FreshHeap, Heap, Shared};
-use crate::sys::tls::TlsSlot;
+use crate::sys::tls::HeapLoan;
 
 verus! {
 
@@ -160,15 +160,15 @@ pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 }
 
 /// The heap [`Heap::create`] has just returned, as a reference, before
-/// its ghost state is installed, borrowed from the thread's slot token
-/// `tls`, which takes its permission ([`HeapPerm`], made here by
+/// its ghost state is installed, borrowed from the thread's heap loan
+/// `loan`, which takes its permission ([`HeapPerm`], made here by
 /// [`HeapPerm::assemble`]) and is lent for as long as the reference
 /// lives: its `others` field is null, as `init_fields` stored it, and its
 /// `shared`, `arena` and `bound` are what `s` records (`init_fields` and
 /// `mark_bound` stored them). Nothing is claimed about the heap's ghost
 /// fields: the caller installs the permissions and the ticket creation
 /// returned (`create_heap_for_thread`), through the reference, so the
-/// token's permission describes the heap with them once the reference
+/// loan's permission describes the heap with them once the reference
 /// ends.
 ///
 /// # Safety
@@ -179,29 +179,26 @@ pub(super) unsafe fn heap_new<'a>(
     p: *mut Heap,
     Tracked(s): Tracked<FreshHeap>,
     Tracked(perms): Tracked<&super::CachePerms>,
-    Tracked(tls): Tracked<&'a mut TlsSlot>,
+    Tracked(loan): Tracked<&'a mut HeapLoan>,
 ) -> (r: &'a mut Heap)
     requires
         s.heap() == p,
         super::heap_head(p, s.head()),
         perms.fresh(p),
-        old(tls).heap() is None,
+        old(loan).heap() is None,
     ensures
         r.others@.addr == 0,
         r.arena as int == s.arena(),
         r.bound == s.bound(),
         r.shared == s.shared(),
-        final(tls).value() == old(tls).value(),
-        final(tls).creates() == old(tls).creates(),
-        final(tls).tp() == old(tls).tp(),
-        final(tls).heap() matches Some(hp) && hp.addr() == p@.addr && hp.value() == *final(r),
+        final(loan).heap() matches Some(hp) && hp.addr() == p@.addr && hp.value() == *final(r),
 {
     let tracked hp = HeapPerm::assemble(s, perms);
     proof {
-        tls.put_heap(hp);
+        loan.put(hp);
     }
     // SAFETY: guaranteed by the caller.
-    unsafe { slot_heap_ref(p, Tracked(tls)) }
+    unsafe { slot_heap_ref(p, Tracked(loan)) }
 }
 
 impl Tcaches {

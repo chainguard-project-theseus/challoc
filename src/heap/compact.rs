@@ -199,6 +199,7 @@ impl Heap {
         len: u32,
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -232,7 +233,7 @@ impl Heap {
                     // Premise (lock order): as in `Heap::rebuild_run`, the scheduled
                     // pops' callers hold no allocator lock at the call.
                     let tracked mut ord = axiom_entry();
-                    self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno));
+                    self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno), Tracked(Some(&mut *cell)));
                     proof {
                         Heap::lemma_keeps_poppable(*old(self), *self, class as int, cache);
                     }
@@ -277,7 +278,7 @@ impl Heap {
                         Heap::lemma_set(h1, *self, cache, *h);
                         Heap::lemma_poppable_same(h1, *self, class as int, cache);
                     }
-                    return self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno));
+                    return self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell));
                 }
                 _ => {
                     let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
@@ -287,7 +288,7 @@ impl Heap {
                     return r;
                 },
             }
-            self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno))
+            self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell))
         }
     }
 
@@ -305,6 +306,7 @@ impl Heap {
         len: u32,
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -340,7 +342,7 @@ impl Heap {
             }
             let mut len = len;
             if self.hdr_ref(cache).run_end == 0 {
-                self.rebuild_run(cache, class, Tracked(errno));
+                self.rebuild_run(cache, class, Tracked(errno), Tracked(cell));
                 len = self.hdr_ref(cache).len;
                 if self.hdr_ref(cache).run_end == 0 {
                     if len == 0 {
@@ -510,6 +512,7 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     )
         requires
             crate::sys::may_abort(),
@@ -531,7 +534,7 @@ impl Heap {
         // which calls `Heap::pop_compact` directly with no allocator lock
         // held, so this rebuild holds none either.
         let tracked mut ord = axiom_entry();
-        self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno));
+        self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno), Tracked(Some(&mut *cell)));
         let ghost h0 = *self;
         // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
         // `cap - len` slots of storage follow them.

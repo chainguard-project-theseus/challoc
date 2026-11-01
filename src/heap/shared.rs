@@ -53,7 +53,7 @@ use super::tcaches::Tcaches;
 use super::thread::reentry_benign;
 use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 use crate::arena::Published;
-use crate::sys::tls::TlsSlot;
+use crate::sys::tls::TlsCell;
 use crate::vspec::flags::RouteByte;
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_keep_ghost)]
@@ -972,7 +972,7 @@ impl ThreadKey {
     /// does not exist. `pthread_setspecific` may re-enter the allocator
     /// on this thread, so the slot (`tls`) must hold a sentinel
     /// ([`reentry_benign`]); the call leaves it as it was.
-    pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: bool)
+    pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsCell>) -> (r: bool)
         requires
             crate::sys::may_syscall(),
             reentry_benign(old(tls).value()),
@@ -1002,7 +1002,7 @@ impl ThreadKey {
 /// sets a non-null value for a key in it), re-entering the allocator on
 /// this thread, so it may reach the kernel (`may_syscall`).
 /// Each nested entry stands for a `heap::thread` core
-/// holding `tls`, lent to it ([`TlsSlot`]): at a [`reentry_benign`]
+/// holding the slot cell `tls`, lent to it ([`TlsCell`](crate::sys::tls::TlsCell)): at a [`reentry_benign`]
 /// value the cores return `None` and leave the token as they found it
 /// ([`heap_for_thread_in`](super::thread::heap_for_thread_in),
 /// [`existing_heap_in`](super::thread::existing_heap_in)), and the
@@ -1014,7 +1014,7 @@ impl ThreadKey {
 /// `key` was created by `pthread_key_create`.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: i32)
+unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsCell>) -> (r: i32)
     requires
         crate::sys::may_syscall(),
         reentry_benign(old(tls).value()),

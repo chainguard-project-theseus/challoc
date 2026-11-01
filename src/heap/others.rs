@@ -607,6 +607,7 @@ impl Heap {
         class: usize,
         Tracked(blk): Tracked<&mut super::Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -638,10 +639,10 @@ impl Heap {
             let len = unsafe { self.hdr_ref(cache) }.len;
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
-                return unsafe { self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno)) };
+                return unsafe { self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell)) };
             }
         }
-        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno))
+        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
     }
 
     /// Free of a slot whose slab belongs to another arena than the home

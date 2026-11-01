@@ -45,6 +45,7 @@ impl Heap {
         class: usize,
         Tracked(blk): Tracked<&mut Live>,
         errno: Tracked<&mut ThreadErrno>,
+        cell: Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: *mut u8)
         requires
             crate::sys::may_abort(),
@@ -62,7 +63,7 @@ impl Heap {
         }
         match self.alloc_fast(class, shared.push_flags(), Tracked(blk)) {
             Some(p) => p,
-            None => self.alloc_slow(shared, class, Tracked(blk), errno).0,
+            None => self.alloc_slow(shared, class, Tracked(blk), errno, cell).0,
         }
     }
 
@@ -196,6 +197,7 @@ impl Heap {
         class: usize,
         Tracked(blk): Tracked<&mut Live>,
         errno: Tracked<&mut ThreadErrno>,
+        cell: Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -221,7 +223,7 @@ impl Heap {
                 }
                 r
             },
-            None => self.alloc_slow(shared, class, Tracked(blk), errno),
+            None => self.alloc_slow(shared, class, Tracked(blk), errno, cell),
         }
     }
 
@@ -306,6 +308,7 @@ impl Heap {
         class: usize,
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -325,7 +328,7 @@ impl Heap {
             shared.lemma_wf();
         }
         if arena != self.arena {
-            return self.alloc_other(shared, arena, class, Tracked(blk), Tracked(errno));
+            return self.alloc_other(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell));
         }
         let cache = self.cache_ptr(class);
         proof {
@@ -335,11 +338,11 @@ impl Heap {
         let len = unsafe { self.hdr_ref(cache) }.len;
         if len != 0 {
             // SAFETY: a real cache with `len` entries.
-            return unsafe { self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno)) };
+            return unsafe { self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell)) };
         }
         // Not `alloc_slow`: an explicit arena is kept even for a shared
         // class (design 13.3).
-        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno))
+        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
     }
 
     /// Huge allocation on this thread in `arena` (which must exist).
@@ -472,6 +475,7 @@ impl Heap {
         class: usize,
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -490,7 +494,7 @@ impl Heap {
         // the home arena (`Config::shared_class`); explicit `MALLOCX_ARENA`
         // allocations (`alloc_in`) keep theirs.
         if shared.config.shared_class(class) {
-            return self.alloc_slow_in(shared, 0, class, Tracked(blk), Tracked(errno));
+            return self.alloc_slow_in(shared, 0, class, Tracked(blk), Tracked(errno), Tracked(cell));
         }
         // A non-empty home cache means `pop_fast` declined the scheduled
         // pop (design 6.4) rather than found the cache empty: count the
@@ -520,7 +524,7 @@ impl Heap {
             }
             // SAFETY: `cache` is this heap's home cache for `class`, with
             // `len` entries.
-            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno)) };
+            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell)) };
         }
         proof {
             CachePerms::lemma_update(old_perms, self.perms@, cache);
@@ -529,7 +533,7 @@ impl Heap {
             CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
             CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
         }
-        self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno))
+        self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
     }
 
     /// The slow allocation path for any arena: the home arena or an arena
@@ -542,6 +546,7 @@ impl Heap {
         class: usize,
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -563,7 +568,7 @@ impl Heap {
         // Premise (lock order): the slow allocation path is entered from a
         // fast path or an entry point, none of which holds a lock.
         let tracked mut ord = axiom_entry();
-        self.tick::<true>(shared, Tracked(&mut ord), Tracked(&mut *errno));
+        self.tick::<true>(shared, Tracked(&mut ord), Tracked(&mut *errno), Tracked(Some(&mut *cell)));
         let Some((a, w)) = shared.arena(arena, Tracked(&mut ord)) else {
             return (ptr::null_mut(), false);
         };
@@ -588,7 +593,7 @@ impl Heap {
             if len == 0 {
                 return (ptr::null_mut(), false);
             }
-            self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno))
+            self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell))
         }
     }
 
@@ -753,7 +758,7 @@ impl Heap {
         }
         let tracked tok = blk.take_slot(class as int);
         if cache.is_null() {
-            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno));
+            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(None));
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
             shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut ord));
@@ -771,7 +776,7 @@ impl Heap {
             if shared.double_free_scan() {
                 self.scan_or_abort(shared, cache, p);
             }
-            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno));
+            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(None));
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.
@@ -829,7 +834,7 @@ pub unsafe fn free_fast_slot(
         crate::sys::may_abort_corrupt(),
         shared.wf(),
         old(blk).claims(p),
-        slot_ok(*old(tls)),
+        slot_ok(old(tls).cell, old(tls).loan),
         t == old(tls).value(),
         t > TLS_EXITED,
         tp == old(tls).tp(),
@@ -892,7 +897,7 @@ unsafe fn free_fast_tail(
         slab < shared.tables[class as int].spec_nslabs(),
         flags & !FREE_ROUTE == shared.route_fixed(),
         old(blk).claims(p),
-        slot_ok(*old(tls)),
+        slot_ok(old(tls).cell, old(tls).loan),
         t == old(tls).value(),
         t > TLS_EXITED,
         tp == old(tls).tp(),
@@ -921,18 +926,18 @@ unsafe fn free_fast_tail(
     // configurations have it clear, so their slot value is the heap itself
     // and they skip the `PUSH_PAC` test of `heap_from_slot`.
     let pushed = match flags {
-        0 => unsafe { heap_from_slot(t, tp, false, Tracked(tls)) }.push_fast(
+        0 => unsafe { heap_from_slot(t, tp, false, Tracked(&tls.cell), Tracked(&mut tls.loan)) }.push_fast(
             class,
             p,
             0,
             Tracked(&mut tk),
         ),
         FREE_ROUTE => {
-            let h = unsafe { heap_from_slot(t, tp, false, Tracked(tls)) };
+            let h = unsafe { heap_from_slot(t, tp, false, Tracked(&tls.cell), Tracked(&mut tls.loan)) };
             shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))
         }
         _ => {
-            let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked(tls)) };
+            let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked(&tls.cell), Tracked(&mut tls.loan)) };
             (flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
                 && h.push_fast(class, p, flags & !FREE_ROUTE, Tracked(&mut tk))
         }
@@ -1052,8 +1057,9 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, er
         r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
         r@.addr != 0 ==> final(blk).slot_block(r, class as int),
 {
-    match heap_for_thread(shared) {
-        Some(h) => h.alloc(shared, class, Tracked(blk), errno),
+    let tracked tls = TlsSlot::entry();
+    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
+        Some(h) => h.alloc(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell)),
         // Premise (lock order, `lock::axiom_entry`): the C caller holds no
         // allocator lock.
         None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut axiom_entry())).0,
@@ -1080,8 +1086,9 @@ pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut 
         r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
         r@.addr != 0 ==> final(blk).slot_block(r, class as int),
 {
-    match heap_for_thread(shared) {
-        Some(h) => h.alloc_slow(shared, class, Tracked(blk), errno).0,
+    let tracked tls = TlsSlot::entry();
+    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
+        Some(h) => h.alloc_slow(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell)).0,
         // Premise (lock order, `lock::axiom_entry`): the C caller holds no
         // allocator lock.
         None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut axiom_entry())).0,
@@ -1106,12 +1113,13 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
         r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
 {
-    match heap_for_thread(shared) {
+    let tracked tls = TlsSlot::entry();
+    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
         Some(h) => {
             proof {
                 h.lemma_wf_regions();
             }
-            let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno);
+            let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell));
             let ghost take = p@.addr != 0 && zero;
             let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
             (p, zero, z)
