@@ -43,6 +43,37 @@ covered paths.
 These results rest on stated trust assumptions. See [Verus
 results](verus/RESULTS.md).
 
+Three tools do the checking; each covers less than the whole allocator,
+and CI runs all three on every pull request.
+
+- **Verus proofs.** Functions inside `verus! { ... }` blocks in `src/`
+  are checked by [Verus](https://github.com/verus-lang/verus) against
+  their stated contracts and for overflow, out-of-bounds indexing,
+  reachable panics and termination. The badge above is the share of
+  functions and lines Verus verifies, and `verus/FLOOR` keeps it from
+  falling. Code outside `verus!` is not verified, and what a verified
+  function relies on without proof (contracts for `core` functions in
+  `src/vspec/`, `external_body` functions such as the syscall wrappers)
+  is a *seam*, listed in a generated ledger. See
+  [verus/README.md](verus/README.md) for what counts as verified and
+  how to run it (`make verus`, which runs on the host with Verus
+  installed rather than in the dev container), and
+  [verus/SEAMS.md](verus/SEAMS.md) for the seams and their status.
+- **Kani harnesses.** `src/kani/` (and `kani_*` modules next to the code
+  they check) holds bounded model-checking harnesses that check some
+  seams' bodies against the contract Verus assumes for them; each states
+  its bounds.
+- **loom models.** `tests/loom/` checks copies of the atomics protocols
+  (the background thread's wake-up and exit, `RawLock`, the slab bitmap,
+  the free path's reads and others) under every interleaving and C11
+  weak-memory outcome loom explores. They model the protocols, not the
+  shipped code itself; `tests/loom/tests/pins.rs` fails when the source
+  lines a model copies change.
+
+`make isla` also traces the aarch64 inline assembly (system calls, the
+TLS slot) with [Isla](https://github.com/rems-project/isla) to partly
+check the seams it lists ([verus/ISLA.md](verus/ISLA.md)); it runs by
+hand, not in CI.
 
 ## Support
 
@@ -57,7 +88,7 @@ libcs and operating systems are not supported.
 
 Prerequisites: Docker is the only host prerequisite for building and
 testing; the toolchain and every build and test dependency live in the
-dev container. (The proof tools are separate; see "Verification".)
+dev container. (The proof tools are separate; see "Formal verification".)
 
 Everything builds and runs inside a Wolfi dev container (`Dockerfile.dev`),
 whatever the machine running Docker:
@@ -213,36 +244,6 @@ are built and tested on challoc on both architectures (`make valkey`,
 
 Tagged pointers (a software tag in the ignored top bits, Arm MTE or
 Intel LAM) are designed but not implemented (design section 18).
-
-## Verification
-
-Alongside the tests, three tools check parts of the code; each covers
-less than the whole allocator, and CI runs all three on every pull
-request.
-
-- **Verus proofs.** Functions inside `verus! { ... }` blocks in `src/`
-  are checked by [Verus](https://github.com/verus-lang/verus) against
-  their stated contracts and for overflow, out-of-bounds indexing,
-  reachable panics and termination. The badge above is the share of
-  functions and lines Verus verifies, and `verus/FLOOR` keeps it from
-  falling. Code outside `verus!` is not verified, and what a verified
-  function relies on without proof (contracts for `core` functions in
-  `src/vspec/`, `external_body` functions such as the syscall wrappers)
-  is a *seam*, listed in a generated ledger. See
-  [verus/README.md](verus/README.md) for what counts as verified and
-  how to run it (`make verus`, which runs on the host with Verus
-  installed rather than in the dev container), and
-  [verus/SEAMS.md](verus/SEAMS.md) for the seams and their status.
-- **Kani harnesses.** `src/kani/` (and `kani_*` modules next to the code
-  they check) holds bounded model-checking harnesses that check some
-  seams' bodies against the contract Verus assumes for them; each states
-  its bounds.
-- **loom models.** `tests/loom/` checks copies of the atomics protocols
-  (the background thread's wake-up and exit, `RawLock`, the slab bitmap,
-  the free path's reads and others) under every interleaving and C11
-  weak-memory outcome loom explores. They model the protocols, not the
-  shipped code itself; `tests/loom/tests/pins.rs` fails when the source
-  lines a model copies change.
 
 ## Contributing
 
