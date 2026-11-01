@@ -8,10 +8,10 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `ExWrite` | ext_trait_spec | core library | Kani | trusted |
-| `fmt::Formatt...>::write_str` | assume_spec | core library | Kani | trusted |
-| `fmt::Formatt...>::write_fmt` | assume_spec | core library | Kani | trusted |
-| `DisplaySpecIm...or sys::Errno` | spec_impl | core library | Kani | trusted |
-| `DebugSpecImpl for slab::State` | spec_impl | core library | Kani | trusted |
+| `fmt::Format...:write_str` | assume_spec | core library | Kani | discharged |
+| `fmt::Format...:write_fmt` | assume_spec | core library | Kani | discharged |
+| `DisplaySpecI... sys::Errno` | spec_impl | core library | Kani | discharged |
+| `DebugSpecImp...slab::State` | spec_impl | core library | Kani | discharged |
 
 ## `ExWrite`
 
@@ -33,7 +33,7 @@ pub trait ExWrite {
 ## `core::fmt::Formatter::<'a>::write_str`
 
 src/vspec/fmt.rs:24. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::formatter_write_str).
 
 > `Formatter::write_str`: nothing is claimed about what it writes or returns.
 
@@ -44,7 +44,7 @@ pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_str ](f: &mut co
 ## `core::fmt::Formatter::<'a>::write_fmt`
 
 src/vspec/fmt.rs:27. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::formatter_write_fmt).
 
 > `Formatter::write_fmt`: as for `write_str`.
 
@@ -55,7 +55,7 @@ pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_fmt ](f: &mut co
 ## `DisplaySpecImpl for sys::Errno`
 
 src/vspec/fmt.rs:40. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::fmt::display_errno).
 
 ```rust
 impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::Errno {
@@ -68,7 +68,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::Errno {
 ## `DebugSpecImpl for slab::State`
 
 src/vspec/fmt.rs:56. Kind: spec_impl. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::fmt::debug_slab_state).
 
 ```rust
 impl vstd::std_specs::fmt::DebugSpecImpl for crate::slab::State {

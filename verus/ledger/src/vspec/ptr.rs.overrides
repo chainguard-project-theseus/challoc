@@ -1,4 +1,4 @@
-axiom_ptr_add_addr	core library	Kani
+axiom_ptr_add_addr	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences)
 axiom_array_elem	core library	none (assumption)
 axiom_array_view	core library	none (assumption)
 axiom_raw_valid	raw pointer (internal)	none (assumption)
@@ -11,3 +11,14 @@ axiom_plain_isize	core library	none (assumption)
 axiom_plain_u32	core library	none (assumption)
 # Any address is a valid raw pointer value; the value carries no usable provenance.
 axiom_plain_ptr	core library	none (assumption)
+# Checked by the Kani harnesses the status names (verus/README.md, "Kani").
+core::ptr::write_bytes::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_bytes; not checked: zero-sized `T`, which the harness leaves out because Kani 0.68 reports an empty fill there as a write to a region that is not writeable (every caller fills bytes))
+<*mut T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences)
+<*const T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences)
+ref_ptr	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::ptr_ref_ptr)
+# `core::ptr` functions, specified against `core`'s documentation.
+<*mut T>::sub	core library	Kani
+core::ptr::read_unaligned::<T>	core library	Kani
+<*const T>::read_unaligned	core library	Kani
+core::ptr::write_unaligned::<T>	core library	Kani
+<*mut T>::write_unaligned	core library	Kani

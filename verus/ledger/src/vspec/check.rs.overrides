@@ -1,2 +1,2 @@
 # An assert! with a message, which Verus does not model.
-check	panic/abort	Kani
+check	panic/abort	Kani	discharged (Kani: kani_proofs::abort::check_returns_only_if_c, kani_proofs::abort::check_true_returns)

@@ -7,9 +7,9 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `assert_flushed` | external_body | panic/abort | none (assumption) | trusted |
-| `assert_..._empty` | external_body | panic/abort | none (assumption) | trusted |
-| `assert_...lushed` | external_body | panic/abort | none (assumption) | trusted |
+| `assert_flushed` | external_body | panic/abort | Kani | discharged |
+| `assert_refill_empty` | external_body | panic/abort | Kani | discharged |
+| `assert_rekey_flushed` | external_body | panic/abort | Kani | discharged |
 | `mark_bound` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `mark_rehome` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `axiom_heap_block` | axiom | allocator invariant | RefinedRust | trusted |
@@ -18,7 +18,7 @@ file.
 ## `assert_flushed`
 
 src/heap/mod.rs:4288. Kind: external_body. Category: panic/abort.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
 
@@ -33,7 +33,7 @@ fn assert_flushed(len: &u32)
 ## `assert_refill_empty`
 
 src/heap/mod.rs:4309. Kind: external_body. Category: panic/abort.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_refill_empty_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns.
 
@@ -48,7 +48,7 @@ fn assert_refill_empty(len: &u32)
 ## `assert_rekey_flushed`
 
 src/heap/mod.rs:4324. Kind: external_body. Category: panic/abort.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_rekey_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
 

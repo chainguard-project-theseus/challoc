@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_class_table_wf` | axiom | allocator invariant | Kani | trusted |
-| `mem::drop` | assume_spec | core library | Kani | trusted |
+| `mem::drop` | assume_spec | core library | Kani | discharged |
 
 ## `axiom_class_table_wf`
 
@@ -30,7 +30,7 @@ pub broadcast axiom fn axiom_class_table_wf(i: int)
 ## `core::mem::drop`
 
 src/vspec/class.rs:21. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::mem_drop).
 
 > `core::mem::drop`: runs `x`'s destructor (for a lock guard, the unlock).
 

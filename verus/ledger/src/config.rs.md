@@ -9,12 +9,12 @@ file.
 |---|---|---|---|---|
 | `THP_NAMES` | external_body const | core library | none (assumption) | trusted |
 | `PERCPU_..._NAMES` | external_body const | core library | none (assumption) | trusted |
-| `Config::set_listed` | external_body | function pointer | Kani | trusted |
+| `Config::set_listed` | external_body | function pointer | Kani | discharged |
 | `Config::get` | external_body | function pointer | Kani | trusted |
 | `Parse` | ext_type_spec | function pointer | Kani | trusted |
 | `Read` | ext_type_spec | function pointer | Kani | trusted |
 | `TABLE` | external_body const | function pointer | Kani | trusted |
-| `KEYS` | external_body const | function pointer | Kani | trusted |
+| `KEYS` | external_body const | function pointer | Kani | discharged |
 | `parse_from` | external_body | function pointer | Kani | trusted |
 | `read_slot` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
@@ -48,7 +48,7 @@ const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu
 ## `Config::set_listed`
 
 src/config.rs:400. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: config::kani_config::set_listed_contract).
 
 > The [`TABLE`] entry's parser for `key`, `None` when no entry is named `key`.
 
@@ -63,7 +63,7 @@ fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Resul
 ## `Config::get`
 
 src/config.rs:414. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: config::kani_config::get_contract; not checked: the real `Thp::name` and `PercpuArena::name`, which the harness stubs (they index the `CStr` tables `THP_NAMES` and `PERCPU_ARENA_NAMES`; Kani 0.68 has no C string literals)).
 
 > The value of a key by name, for `mallctl("opt.<key>")`: the [`TABLE`] entry's reader.
 
@@ -103,7 +103,7 @@ pub exec const TABLE: &'static [Key] = ENTRIES;
 ## `KEYS`
 
 src/config.rs:872. Kind: external_body const. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: config::kani_config::keys_are_the_table_names).
 
 > Every key readable through [`Config::get`], in table order, for the `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at compile time, by position) and the tests: the names of [`TABLE`].
 

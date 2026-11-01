@@ -1,0 +1,5 @@
+# Checked by the Kani harnesses the status names (verus/README.md, "Kani").
+Layout::size	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances)
+Layout::align	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances)
+Layout::from_size_align	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align)
+Layout::new::<T>	core library	Kani	discharged (Kani: kani_proofs::misc::layout_new_instances)
