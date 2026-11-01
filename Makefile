@@ -259,10 +259,10 @@ verus: ## the seam ledger, the Verus proofs, then the coverage floor (verus/READ
 	cd verus/count && cargo run --locked --release -- --floor ../FLOOR $(if $(VERUS_BASE),--base-rev $(VERUS_BASE)) ../..
 
 # isla runs where it is invoked, not in the dev container: it needs the
-# isla, isla-snapshots, z3 and llvm packages (verus/ISLA.md). ISLA_TARGETS
-# picks the targets (default aarch64); a target other than the host's needs
-# its rust standard library.
-isla: ## Isla over the inline-assembly seams verus/isla/seams.md lists (verus/ISLA.md; ISLA_TARGETS)
+# isla, isla-snapshots, sail, isla-sail, z3 and llvm packages
+# (verus/ISLA.md). ISLA_TARGETS picks the targets (default both); a target
+# other than the host's needs its rust standard library.
+isla: ## Isla over the inline-assembly seams verus/isla/seams.md lists (verus/ISLA.md; ISLA_TARGETS, ISLA_X86_IR)
 	sh verus/isla/run.sh
 
 clean-volumes: ## remove the target and cargo-registry volumes TARGET_VOLUME and CARGO_VOLUME name

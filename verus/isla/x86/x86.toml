@@ -1,0 +1,58 @@
+# Isla configuration for the x86 model built by build-ir.sh
+# (sail-x86-from-acl2 with the entry in this directory; verus/ISLA.md).
+# Adapted from rems-project/isla-testgen's x86.toml; the toolchain names
+# `true` because the harness passes opcodes, never assembly.
+
+pc = "rip"
+
+ifetch = "Read_ifetch"
+
+read_exclusives = []
+write_exclusives = []
+
+[[toolchain]]
+name = "default"
+assembler = "true"
+objdump = "true"
+nm = "true"
+linker = "true"
+
+[mmu]
+page_table_base = "0x300000"
+page_size = "4096"
+s2_page_table_base = "0x300000"
+s2_page_size = "4096"
+
+[threads]
+base = "0x400000"
+top = "0x500000"
+stride = "0x10000"
+
+[symbolic_addrs]
+base = "0x600000"
+top = "0x600000"
+stride = "0x10"
+
+[registers]
+ignore = []
+
+# Set before symbolic execution; every other register starts symbolic.
+# The ACL2 model's system view (app_view false: segmentation, paging and
+# SYSCALL as the SDM describes them, rather than the application view's
+# emulated system calls), not in the halted or faulted model state, and
+# no logging; isla_fault (isla_entry.sail) starts clear.
+[registers.defaults]
+log_register_writes = false
+app_view = false
+marking_view = false
+ms_reg = false
+fault_reg = false
+isla_fault = false
+
+[registers.renames]
+
+[reads]
+
+[writes]
+
+[cache_ops]

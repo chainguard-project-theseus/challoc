@@ -1,27 +1,28 @@
 #!/bin/sh
 # Check the inline-assembly seams verus/isla/seams.md lists with Isla
 # (verus/ISLA.md): against the Sail Armv8.5-A model on the aarch64 code
-# built from this tree.
+# built from this tree, and against the Sail x86 model (verus/isla/x86/)
+# on the x86_64 code.
 #
-#   verus/isla/run.sh [-a LIBCHALLOC.a] [OUT]
+#   verus/isla/run.sh [-a LIBCHALLOC.a] [-x LIBCHALLOC.a] [OUT]
 #
 # Checks that each seam seams.md lists is the ledger entry whose overrides
 # line cites it (`Isla: verus/isla/seams.md`), with the contract seams.md
 # quotes, and that the asm templates are the ones templates.txt lists
 # (`seams.sh --check`). Then, for each target in ISLA_TARGETS, builds the
-# release static library (or takes the one given with -a for aarch64),
-# finds every instance of each checked template in the compiled code,
-# runs isla-footprint on each distinct instruction and checks each job
-# with isla-check (verus/isla/check.rs): run-aarch64.sh. Last, checks
-# that the jobs each seam's `Jobs:` line in seams.md names for a target
-# in ISLA_TARGETS ran and passed. OUT (default: a fresh temporary
-# directory) keeps the traces and the jobs. Exit status 0 when every
-# check holds.
+# release static library (or takes the one given with -a for aarch64, -x
+# for x86_64), finds every instance of each checked template in the
+# compiled code, runs isla-footprint on each distinct instruction and
+# checks each job with isla-check (verus/isla/check.rs): run-aarch64.sh
+# and run-x86_64.sh. Last, checks that the jobs each seam's `Jobs:` line
+# in seams.md names for a target in ISLA_TARGETS ran and passed. OUT
+# (default: a fresh temporary directory) keeps the traces and the jobs.
+# Exit status 0 when every check holds.
 #
 # Tools (verus/ISLA.md, "Setup"; the defaults are where the isla,
-# isla-snapshots, z3 and llvm packages put them):
-#   ISLA_TARGETS    the targets to check (default "aarch64"); a target
-#                   without a library from -a is built with
+# isla-snapshots, sail, isla-sail, z3 and llvm packages put them):
+#   ISLA_TARGETS    the targets to check (default "aarch64 x86_64"); a
+#                   target without a library from -a or -x is built with
 #                   `cargo rustc --target <target>-unknown-linux-gnu`,
 #                   which needs that target's standard library
 #   ISLA_FOOTPRINT  isla-footprint (default: on PATH)
@@ -29,6 +30,9 @@
 #                   (default /usr/share/isla/configs)
 #   ISLA_SNAPSHOTS  the Sail models, armv8p5.ir
 #                   (default /usr/share/isla-snapshots)
+#   ISLA_X86_IR     the x86 model (needed for x86_64 only); without it,
+#                   run.sh fetches sail-x86-from-acl2 at a pinned commit
+#                   and builds the model with verus/isla/x86/build-ir.sh
 #   Z3              the z3 binary isla-check calls (default: z3 on PATH)
 #   ISLA_CHECK_JOBS the threads each isla-check judges prefixes on
 #                   (default 1)
@@ -38,13 +42,15 @@
 #   LLVM_OBJDUMP, LLVM_AR  llvm-objdump and llvm-ar (default: on PATH)
 set -eu
 usage() {
-	echo "usage: $0 [-a LIBCHALLOC.a] [OUT]" >&2
+	echo "usage: $0 [-a LIBCHALLOC.a] [-x LIBCHALLOC.a] [OUT]" >&2
 	exit 2
 }
 lib=
-while getopts a: o; do
+xlib=
+while getopts a:x: o; do
 	case $o in
 	a) lib=$OPTARG ;;
+	x) xlib=$OPTARG ;;
 	*) usage ;;
 	esac
 done
@@ -54,14 +60,15 @@ abspath() { # FILE: FILE's absolute path (the library is extracted in another di
 	echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 }
 [ -z "$lib" ] || lib=$(abspath "$lib")
+[ -z "$xlib" ] || xlib=$(abspath "$xlib")
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out=${1:-$(mktemp -d "${TMPDIR:-/tmp}/challoc-isla.XXXXXX")}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-targets=${ISLA_TARGETS:-aarch64}
+targets=${ISLA_TARGETS:-aarch64 x86_64}
 for t in $targets; do
-	case $t in aarch64) ;; *) echo "isla: unknown target $t in ISLA_TARGETS" >&2; exit 2 ;; esac
+	case $t in aarch64 | x86_64) ;; *) echo "isla: unknown target $t in ISLA_TARGETS" >&2; exit 2 ;; esac
 done
 want() { case " $targets " in *" $1 "*) return 0 ;; esac; return 1; }
 tool() { # NAME: NAME's path, from PATH when it has no slash
@@ -79,10 +86,29 @@ need="$footprint $llvm_objdump $llvm_ar"
 if want aarch64; then
 	need="$need $ir $configs/armv8p5.toml"
 fi
+if want x86_64; then
+	xir=${ISLA_X86_IR:-}
+	if [ -z "$xir" ]; then
+		# The x86 model from sail-x86-from-acl2 at the commit the x86 jobs
+		# were written against, built with the sail and isla-sail packages.
+		sx=$out/sail-x86-from-acl2
+		sxc=0c6c023dccc7c20d8d9dbfc481f01d9bb49d62bf
+		if [ "$(git -C "$sx" rev-parse HEAD 2>/dev/null)" != "$sxc" ]; then
+			rm -rf "${sx:?}"
+			git init -q "$sx"
+			git -C "$sx" fetch -q --depth 1 https://github.com/rems-project/sail-x86-from-acl2 \
+				"$sxc"
+			git -C "$sx" checkout -q FETCH_HEAD
+		fi
+		sh "$here/x86/build-ir.sh" "$sx" "$out/x86"
+		xir=$out/x86.ir
+	fi
+	need="$need $xir"
+fi
 for t in $need; do
 	[ -e "$t" ] || { echo "isla: missing $t" >&2; exit 2; }
 done
-export ISLA_CHECK_JOBS=${ISLA_CHECK_JOBS:-1}
+export ISLA_CHECK_JOBS="${ISLA_CHECK_JOBS:-1}"
 fails=0
 fail() {
 	echo "FAIL $*"
@@ -222,6 +248,18 @@ refute() { # NAME JOB-TEXT REASON
 		echo "negative control $1: rejected, as it should be"
 	fi
 }
+# The negative controls of a check that is not a job (sections 1 and 9
+# and the last): each runs the check on a mutated copy of its input,
+# which must fail for the reason the mutation causes.
+refuted() { # NAME LOG REASON: LOG, a check's output on a mutated copy, has a FAIL line naming REASON
+	if ! grep -q '^FAIL' "$2"; then
+		fail "negative control $1 passed"
+	elif ! grep '^FAIL' "$2" | grep -qF -- "$3"; then
+		fail "negative control $1 did not fail for its reason ($3): $(grep -m 1 '^FAIL' "$2")"
+	else
+		echo "negative control $1: rejected, as it should be"
+	fi
+}
 traced=
 le() { # WORD: the instruction's bytes in memory order, as -x takes them
 	printf '%02x%02x%02x%02x' $(($1 & 255)) $(($1 >> 8 & 255)) $(($1 >> 16 & 255)) $(($1 >> 24 & 255))
@@ -244,6 +282,10 @@ build() { # TARGET: the static library for TARGET-unknown-linux-gnu
 if want aarch64; then
 	[ -n "$lib" ] || lib=$(build aarch64)
 	. "$here/run-aarch64.sh"
+fi
+if want x86_64; then
+	[ -n "$xlib" ] || xlib=$(build x86_64)
+	. "$here/run-x86_64.sh"
 fi
 
 # Last: each seam's jobs. The runners pick their jobs by instruction
@@ -312,18 +354,7 @@ seam_jobs() { # SEAMS-MD JOBS-RAN: per seam heading, `FAIL ...` lines or one `se
 seam_jobs "$smd" "$out/jobs-ran.txt" >"$out/seam-jobs.txt"
 report "$out/seam-jobs.txt"
 
-# The negative controls of section 1 and of this one: each runs a check on
-# a mutated copy of its input, which must fail for the reason the
-# mutation causes.
-refuted() { # NAME LOG REASON: LOG, a check's output on a mutated copy, has a FAIL line naming REASON
-	if ! grep -q '^FAIL' "$2"; then
-		fail "negative control $1 passed"
-	elif ! grep '^FAIL' "$2" | grep -qF -- "$3"; then
-		fail "negative control $1 did not fail for its reason ($3): $(grep -m 1 '^FAIL' "$2")"
-	else
-		echo "negative control $1: rejected, as it should be"
-	fi
-}
+# The negative controls of section 1 and of this one.
 # arch_at itself on the x86_64 raw::syscall0 (syscall0#1, an fn in a mod
 # under the cfg): the aarch64-only seams alone would not tell it from an
 # arch_at that gives aarch64 everywhere.

@@ -130,8 +130,8 @@
 //! undefined fails), the footprint lines must hold, and every event must be
 //! one the checker knows. A job with no feasible combination fails.
 //!
-//! On x86_64 the traces come from an Isla entry for the
-//! sail-x86-from-acl2 model: its own registers (`isla_*`) are the
+//! On x86_64 the traces come from the Isla entry in verus/isla/x86/ (the
+//! sail-x86-from-acl2 model): its own registers (`isla_*`) are the
 //! entry's bookkeeping, never linked between instructions, and a write of
 //! `isla_fault` marks a path where the model raised a fault or a model
 //! error (abnormal). A write of a whole vector or struct register counts

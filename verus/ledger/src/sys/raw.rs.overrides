@@ -1,7 +1,15 @@
-# Inline assembly checked with Isla (verus/ISLA.md) up to the SVC
-# exception it takes, so the kernel's side of the call stays unchecked:
+# Inline assembly checked with Isla (verus/ISLA.md) up to the exception
+# the system call takes (aarch64 `svc`) or the kernel's entry point
+# (x86_64 `syscall`), so the kernel's side of the call stays unchecked:
 # run.sh checks each against the contract verus/isla/seams.md quotes.
-# `#2` is the aarch64 `mod imp` (`#1` the x86_64 one).
+# `#1` is the x86_64 `mod imp`, `#2` the aarch64 one.
+syscall0#1	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
+syscall1#1	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
+syscall2#1	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
+syscall3#1	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
+syscall4#1	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
+syscall5#1	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
+syscall6#1	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
 syscall0#2	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
 syscall1#2	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
 syscall2#2	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: the kernel's side of the call)
