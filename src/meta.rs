@@ -647,10 +647,12 @@ impl Meta {
             lemma_align_in_bin(layout, bin);
         }
         let tracked mut ord = axiom_meta_order();
-        self.inner
-            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()))
-            .alloc(bin)
-            .0
+        let mut g = self
+            .inner
+            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+        let p = g.alloc(bin).0;
+        g.unlock();
+        p
     }
 
     /// [`alloc`](Meta::alloc), with the permission to the object's
@@ -683,10 +685,11 @@ impl Meta {
             panic!("meta: object too large")
         };
         let tracked mut ord = axiom_meta_order();
-        let (p, Tracked(blk)) = self
+        let mut g = self
             .inner
-            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()))
-            .alloc(bin);
+            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+        let (p, Tracked(blk)) = g.alloc(bin);
+        g.unlock();
         let tracked (raw, mc, _fz) = blk;
         let tracked MetaClaim { claim, .. } = mc;
         proof {
@@ -766,12 +769,7 @@ impl Meta {
         // The bin's slack past `layout.size()` goes with the claim.
         let tracked (obj, mc) = split_block(raw, claim, p, layout, bin, self.live_id());
         let tracked z = zero_prefix(z, layout_size(layout) as int);
-        proof {
-            // The guard drops with the lock's invariant restored, and its
-            // frame.
-            assert(g@.wf());
-            assert(lock_frame(lock_init(self.inner), g@));
-        }
+        g.unlock();
         (p, Tracked((obj, mc)), Tracked(z))
     }
 
@@ -809,9 +807,11 @@ impl Meta {
             panic!("meta: free with an impossible layout")
         };
         let tracked mut ord = axiom_meta_order();
-        self.inner
-            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()))
-            .free(p, bin, Tracked(raw), Tracked(claim));
+        let mut g = self
+            .inner
+            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+        g.free(p, bin, Tracked(raw), Tracked(claim));
+        g.unlock();
     }
 
     /// Carve `len` bytes (rounded up to pages) aligned to `align` (at least a
@@ -847,9 +847,12 @@ impl Meta {
 
         let tracked mut given = Unbacked::empty(0);
         let tracked mut ord = axiom_meta_order();
-        self.inner
-            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()))
-            .reserve(len, align, Tracked(claim), Tracked(&mut given))
+        let mut g = self
+            .inner
+            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+        let r = g.reserve(len, align, Tracked(claim), Tracked(&mut given));
+        g.unlock();
+        r
     }
 
     /// A never-freed table of `len` bytes aligned to `align` whose owner
@@ -937,19 +940,14 @@ impl Meta {
                     lemma_align_up_fit(len, page, tlen);
                     lemma_claim_range(claim@, p as int, p + align_up_spec(len, page), p + tlen, false);
                 }
-                proof {
-                    assert(g@.wf());
-                    assert(lock_frame(lock_init(self.inner), g@));
-                }
+                g.unlock();
                 return (Some(p), Tracked(z));
             }
         }
         let ghost g2 = g@;
         let tracked mut given = Unbacked::empty(0);
         let r = g.reserve(len, align, Tracked(&mut *claim), Tracked(&mut given));
-        proof {
-            assert(lock_frame(lock_init(self.inner), g@));
-        }
+        g.unlock();
         (r, Tracked(reserved_table(given, claim@, len, g2.page, g2.top, false)))
     }
 
@@ -986,9 +984,12 @@ impl Meta {
         }
 
         let tracked mut ord = axiom_meta_order();
-        self.inner
-            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()))
-            .commit(addr, len, Ghost(side), Tracked(claim))
+        let mut g = self
+            .inner
+            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+        let r = g.commit(addr, len, Ghost(side), Tracked(claim));
+        g.unlock();
+        r
     }
 
     /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
@@ -1027,9 +1028,12 @@ impl Meta {
         }
 
         let tracked mut ord = axiom_meta_order();
-        self.inner
-            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()))
-            .reserve_committed(len, align)
+        let mut g = self
+            .inner
+            .lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+        let r = g.reserve_committed(len, align);
+        g.unlock();
+        r
     }
 
     pub fn stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: MetaStats)
@@ -1046,7 +1050,10 @@ impl Meta {
             use_type_invariant(self);
         }
 
-        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).stats()
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        let r = g.stats();
+        g.unlock();
+        r
     }
 
     /// The lock's rank in the lock order.
@@ -4517,6 +4524,154 @@ mod tests {
         assert!(
             libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
             "child saw a different mapping"
+        );
+    }
+
+    /// Every guard of the metadata lock (`Meta::inner`, private to this
+    /// file) outside the tests ends in an explicit `unlock()`, whose
+    /// `requires` checks the lock's invariant and frame; a guard that
+    /// drops instead releases with nothing checked. In each function that
+    /// acquires the lock, the guard is bound with `let` (a guard chained
+    /// into a call drops at the end of the statement), every `return`
+    /// after the acquisition follows the guard's `unlock()`, one more
+    /// `unlock()` stands at the body's own indentation (so on the path to
+    /// the tail), and no `?` follows it (an early exit). A panic aborts
+    /// outside the tests (`panic = "abort"`), so it never releases.
+    #[test]
+    fn meta_guards_end_in_unlock() {
+        let text = include_str!("meta.rs");
+        assert!(
+            text.lines().any(|l| l == "    inner: Lock<Inner>,"),
+            "Meta::inner must stay private to this file"
+        );
+        // Nor does a reference to the lock leave the file's scanned code:
+        // every use of the field calls a method on it (or is a spec read).
+        let field = std::format!("{}{}", "self.", "inner");
+        for l in text.lines().take_while(|l| l.trim() != "mod tests {") {
+            for (i, _) in l.match_indices(field.as_str()) {
+                let after = &l[i + field.len()..];
+                assert!(
+                    after.starts_with('.') || after.starts_with(')'),
+                    "a reference to the metadata lock escapes: `{}`",
+                    l.trim()
+                );
+            }
+        }
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let is_fn = |t: &str| !t.starts_with("//") && (t.starts_with("fn ") || t.contains(" fn "));
+        // Each function outside the tests and `#[cfg(test)]` items, as its
+        // name, its indentation, and its lines.
+        let mut fns: Vec<(&str, usize, Vec<&str>)> = Vec::new();
+        let mut open = false;
+        let mut skip_to: Option<std::string::String> = None;
+        let mut cfg_test = false;
+        for line in text.lines() {
+            let t = line.trim();
+            if t == "mod tests {" {
+                break;
+            }
+            if let Some(close) = &skip_to {
+                if line == close {
+                    skip_to = None;
+                }
+                continue;
+            }
+            if cfg_test && !t.starts_with("#[") && !t.starts_with("//") {
+                cfg_test = false;
+                if !t.ends_with(';') {
+                    skip_to = Some(std::format!("{}}}", " ".repeat(indent(line))));
+                }
+                continue;
+            }
+            if t == "#[cfg(test)]" {
+                cfg_test = true;
+                continue;
+            }
+            if is_fn(t) {
+                let name = t[t.find("fn ").unwrap() + 3..]
+                    .split(['(', '<'])
+                    .next()
+                    .unwrap();
+                fns.push((name, indent(line), Vec::new()));
+                open = true;
+                continue;
+            }
+            if open {
+                let (_, ind, body) = fns.last_mut().unwrap();
+                if t == "}" && indent(line) <= *ind {
+                    open = false;
+                } else {
+                    body.push(line);
+                }
+            }
+        }
+        let acquire = [".lock(", ".try_lock(", ".lock_t("];
+        let mut checked = Vec::new();
+        for (name, ind, body) in &fns {
+            let hits: Vec<usize> = (0..body.len())
+                .filter(|&k| {
+                    let t = body[k].trim();
+                    !t.starts_with("//") && acquire.iter().any(|a| t.contains(a))
+                })
+                .collect();
+            let [a] = hits[..] else {
+                assert!(hits.is_empty(), "{name}: more than one acquisition");
+                continue;
+            };
+            assert!(
+                body[a].trim().ends_with(");"),
+                "{name}: the guard is chained into a call"
+            );
+            let decl = body[..=a]
+                .iter()
+                .rev()
+                .map(|l| l.trim())
+                .find(|l| l.starts_with("let "))
+                .unwrap_or_else(|| panic!("{name}: the guard is not bound with `let`"));
+            let guard = decl
+                .trim_start_matches("let ")
+                .trim_start_matches("mut ")
+                .split([' ', '='])
+                .next()
+                .unwrap();
+            let release = std::format!("{guard}.unlock();");
+            let rest = &body[a + 1..];
+            let mut tail_unlock = false;
+            for (k, l) in rest.iter().enumerate() {
+                let t = l.trim();
+                assert!(
+                    t.starts_with("//") || !t.contains('?'),
+                    "{name}: `?` after the acquisition"
+                );
+                if t.starts_with("return") || t.contains(" return ") {
+                    assert!(
+                        k > 0 && rest[k - 1].trim() == release,
+                        "{name}: a `return` without `{release}` before it"
+                    );
+                }
+                if t == release && indent(l) == ind + 4 {
+                    tail_unlock = true;
+                }
+            }
+            assert!(
+                tail_unlock,
+                "{name}: no `{release}` on the path to the tail"
+            );
+            checked.push(*name);
+        }
+        assert_eq!(
+            checked,
+            [
+                "alloc",
+                "alloc_raw",
+                "alloc_zeroed",
+                "free",
+                "reserve",
+                "reserve_table",
+                "commit",
+                "reserve_committed_raw",
+                "stats",
+            ]
         );
     }
 }
