@@ -32,7 +32,10 @@ side of that identity, in the bench project (`dlorenc-dev`, number
   derives the project from `FLOOR_SA` and these two from the project
   (`<project>-challoc-bench`, `cb-bench-vm@<project>`), and passes all
   three to `cb launch` as `CB_PROJECT`, `CB_BUCKET` and
-  `CB_SERVICE_ACCOUNT`.
+  `CB_SERVICE_ACCOUNT`. It takes the bench image lock from
+  `gs://dlorenc-dev-challoc-bench/internal-image.lock` (bench/README.md,
+  "Operating on GCE"); when that object is missing, every floor VM builds
+  the bench image itself.
 
 Why the service account: the platform's ADC file uses the federated
 principal directly, and the guest holds its token only as a sealed

@@ -448,9 +448,9 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
   after either step copy it there (`gcloud storage cp
   bench/internal-image.lock gs://<bucket>/`), and copy it again if the
   bucket's 30-day expiry removes it; without it their VMs build the image
-  too, which may not fit the check's 50-minute timeout. Cells list their zones;
-  the reference shapes are `c4a-standard-16` (Axion) and `c4-standard-16`
-  (Xeon 8581C) in `us-east4-a`. A spot C4/C4A VM costs about $0.30 an
+  too, which may not fit the check's 50-minute timeout. Cells list their
+  zones; the reference shapes are `c4a-standard-16` (Axion) and
+  `c4-standard-16` (Xeon 8581C) in `us-east4-a`. A spot C4/C4A VM costs about $0.30 an
   hour; `cb launch` prints its estimate and refuses a launch over the
   suite's `budget_usd` without `--allow-cost`.
 - **Caps.** At most `--max-vms` / `CB_MAX_VMS` (32) VMs of one launch at
