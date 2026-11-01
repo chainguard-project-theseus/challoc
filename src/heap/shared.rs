@@ -2933,8 +2933,8 @@ impl Shared {
     /// pointer into the huge region (the huge allocator checks it). Aborts
     /// on anything else. `blk` is the caller's token for `p`: with the
     /// token of the live block there, neither `invalid_free` nor
-    /// `check_located`'s bit test can fire; its watermark compare is not
-    /// yet proved not to fire.
+    /// `check_located`'s bit test can fire, and the arena is the slot's
+    /// owner; its watermark compare is not yet proved not to fire.
     #[inline(always)]
     pub fn classify_free(&self, p: *mut u8, Tracked(blk): Tracked<&Live>) -> (r: Result<(usize, u16), usize>)
         requires
@@ -2942,6 +2942,8 @@ impl Shared {
             self.wf(),
         ensures
             r matches Ok((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+            // With the live block's token, the arena it names owns the slot.
+            blk.block(p) ==> (r matches Ok((c, a)) ==> a == crate::class::slot_owner(c as int, p@.addr)),
             r matches Err(page) ==> page <= self.huge_pages(),
             // Exact: a page start of the huge region, `page` its index.
             r matches Err(page) ==> crate::layout::process_regions().is_huge_block(p@.addr, 1)
@@ -2970,6 +2972,8 @@ impl Shared {
                 proof {
                     // `check_located` returned: not a guard slab.
                     self.regions.lemma_is_slot(class as int, slab as int, slot as int, p as usize);
+                    // Its slab is the one `slot_owner` names.
+                    self.regions.lemma_slab_index(class as int, slab as int, slot as int, p as usize);
                 }
                 Ok((class, arena))
             }
@@ -3053,7 +3057,7 @@ impl Shared {
     #[inline(never)]
     pub fn zero_huge(&self, page: usize, Tracked(blk): Tracked<&mut Live>) -> (z: Tracked<Zeroed>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
@@ -3139,7 +3143,7 @@ impl Shared {
     /// run start. Returns the usable bytes released.
     pub fn free_huge(&self, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_huge()),
             self.wf(),

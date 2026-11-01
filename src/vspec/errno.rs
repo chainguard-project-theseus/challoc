@@ -71,8 +71,9 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
 /// spec already says the key is present. Init, which runs in the
 /// process's first C call (an allocation or `mallctl`), adds `getauxval`
 /// of `AT_PAGESZ` and `AT_SECURE`, keys Linux always passes, and
-/// `pthread_key_create`, which returns its error instead of writing
-/// `errno`. A later trusted seam on an
+/// `pthread_key_create` and `pthread_atfork` (`atfork_handlers`), which
+/// return their error instead of writing `errno`; a failed registration
+/// aborts. A later trusted seam on an
 /// allocation path that calls libc must take the token `&mut` and state
 /// nothing about its value.
 #[verifier::external_body]

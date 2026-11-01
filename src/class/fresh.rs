@@ -13,7 +13,7 @@ use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use super::table::{
     desc_handed, guard_marked, lemma_guard_marked_mono, lemma_lg_group, lemma_slab_marked_mono,
-    lemma_spec_class, lemma_spec_nslabs, slab_marked, slab_owner,
+    lemma_spec_class, lemma_spec_nslabs, owner_mark, owner_marks, slab_marked, slab_owner,
 };
 #[cfg(verus_keep_ghost)]
 use super::{desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, owned_rec, whole_groups};
@@ -251,7 +251,7 @@ impl ClassState {
                     }
                     // `g0` with the record it had before the group: the value
                     // the group joins, which has the invariant.
-                    let g0r = Inner { oauth: ga.oauth, ..g0 };
+                    let g0r = Inner { oauth: ga.oauth, seen: ga.seen, ..g0 };
                     assert(g0r.same_sets(ga));
                     assert forall|x: nat| #[trigger] g0r.owns(x) implies x < start by {
                         assert(ga.owns(x));
@@ -366,6 +366,9 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
         forall|x: int| start <= x < end && g0.table@.spec_is_guard(x as usize)
             ==> #[trigger] guard_marked(g0.table@, x, g1.inited@@),
         g1.oauth@@ == g0.oauth@@.union(vstd::set::Set::<int>::range(start as int, end as int)),
+        g1.seen@.id() == g0.table@.spec_sloc(),
+        g0.seen@.id() == g0.table@.spec_sloc() ==> g0.seen@@.subset_of(g1.seen@@),
+        owner_marks(start as int, end as int).subset_of(g1.seen@@),
     ensures
         g1.inv(),
 {
@@ -377,6 +380,18 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
                 assert(g0.owns(x as nat));
             }
             assert(g1.owns(x as nat));
+        }
+    }
+    // The group's witness markers join the value's.
+    assert forall|x: nat| #[trigger] g1.states@.contains_key(x)
+        implies g1.seen@.id() == g1.table@.spec_sloc() && g1.seen@@.contains(owner_mark(x as int)) by {
+        broadcast use vstd::set_lib::range_set_properties;
+        assert(g1.owns(x));
+        if !(start <= x < end) {
+            assert(g0.owns(x));
+            assert(g0.seen@@.contains(owner_mark(x as int)));
+        } else {
+            assert(owner_marks(start as int, end as int).contains(owner_mark(x as int)));
         }
     }
     assert(g1.nbits() == g0.nbits());

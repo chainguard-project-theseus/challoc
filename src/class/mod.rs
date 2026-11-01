@@ -134,7 +134,7 @@ use table::{
     slab_owner, words_of,
 };
 #[cfg(verus_keep_ghost)]
-pub use table::{committed_ns, owner_ns, slot_loc, slot_owner};
+pub use table::{committed_ns, owner_mark, owner_ns, slot_loc, slot_owner};
 use verify::{fresh_with_live, release_into_fresh};
 #[cfg(verus_keep_ghost)]
 use vstd::set::Set as VSet;
@@ -1184,6 +1184,13 @@ struct Inner {
     /// state's.
     #[allow(dead_code)]
     oauth: Tracked<GhostSetAuth<int>>,
+    /// Ghost: the owner-word witness markers (`table::owner_mark`, at the
+    /// table's witness location) of every slab this arena owns, which
+    /// `take_group` adds as it stores the group's owner word: what a claim
+    /// from the slab needs (`AtomicBitmap::seen_by`), for the word's
+    /// invariant to keep with the bits it sets.
+    #[allow(dead_code)]
+    seen: Tracked<GhostPersistentSubset<int>>,
 }
 
 } // verus!
@@ -1586,8 +1593,9 @@ impl Inner {
     /// slab's owner ([`slab_owner`]) is this arena, the owned slabs being
     /// whole hand-out groups ([`whole_groups`]); the value holds every
     /// owned slab's descriptor permission, which agrees with the ghost
-    /// ([`Inner::descs`]); and the owned-slab record has owned slabs only
-    /// ([`owned_rec`]).
+    /// ([`Inner::descs`]); the owned-slab record has owned slabs only
+    /// ([`owned_rec`]); and the value holds every owned slab's owner-word
+    /// witness marker ([`Inner::seen`]).
     spec fn base(&self) -> bool {
         &&& set_wf(self.partial, self.nbits())
         &&& set_wf(self.empty, self.nbits())
@@ -1616,6 +1624,8 @@ impl Inner {
         &&& whole_groups(self.states@.dom(), self.table@)
         &&& self.descs()
         &&& owned_rec(self.oauth@@, self.states@)
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s)
+            ==> self.seen@.id() == self.table@.spec_sloc() && self.seen@@.contains(owner_mark(s as int))
     }
 
     /// The ghost link at slab `s`, apart from the current group: the
@@ -1687,10 +1697,12 @@ impl Inner {
         &&& self.same_sets_but_rec(o)
         &&& self.oauth@@ == o.oauth@@
         &&& self.oauth@.id() == o.oauth@.id()
+        &&& self.seen == o.seen
     }
 
     /// [`Inner::same_sets`] but for the owned-slab record
-    /// ([`Inner::oauth`]), which `SlabTable::take_group` adds a group to.
+    /// ([`Inner::oauth`]) and the witness markers ([`Inner::seen`]), which
+    /// `SlabTable::take_group` adds a group to.
     spec fn same_sets_but_rec(&self, o: Inner) -> bool {
         &&& self.partial.map == o.partial.map
         &&& self.empty.map == o.empty.map
@@ -1749,6 +1761,7 @@ impl Inner {
         &&& self.dperms == o.dperms
         &&& self.oauth@@ == o.oauth@@
         &&& self.oauth@.id() == o.oauth@.id()
+        &&& self.seen == o.seen
     }
 
     /// The exempt slab back in the link closes the invariant.
@@ -2144,7 +2157,7 @@ broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
 /// holds and update the ghost state and stamp with it: verified, so they
 /// keep `Inner::descs` when their callers meet their preconditions, which
 /// nothing checks at these unverified call sites. None of them updates the other ghost fields (`committed`,
-/// `inited`, `oauth`), so for them the assumption is also the set and
+/// `inited`, `oauth`, `seen`), so for them the assumption is also the set and
 /// count shapes (`Inner::base`), the sets' disjointness, and the ghost
 /// link between the sets and the ghost states (`Inner::slab_core`), which
 /// their set updates and the bridges' state updates are meant to keep
@@ -2228,6 +2241,9 @@ impl ClassState {
         let tracked im = table.empty_marks();
         let tracked dm = Map::<nat, DescPerm>::tracked_empty();
         let tracked (oa, _) = GhostSetAuth::<int>::new(vstd::set::Set::empty());
+        // No witness markers: nothing owned yet (`take_group` gives the set
+        // its location with the first group).
+        let tracked sn = GhostPersistentSubset::<int>::dummy();
         let inner = Inner {
             partial,
             empty,
@@ -2250,6 +2266,7 @@ impl ClassState {
             inited: Tracked(im),
             dperms: Tracked(dm),
             oauth: Tracked(oa),
+            seen: Tracked(sn),
         };
         proof {
             let n = inner.nbits();
@@ -2576,6 +2593,7 @@ impl ClassState {
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
             final(g).inited == old(g).inited,
+            final(g).seen == old(g).seen,
             final(g).oauth == old(g).oauth,
     {
         let ghost g0 = *g;
@@ -2619,6 +2637,7 @@ impl ClassState {
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
             final(g).inited == old(g).inited,
+            final(g).seen == old(g).seen,
             final(g).oauth == old(g).oauth,
     {
         let ghost g0 = *g;
@@ -3116,13 +3135,21 @@ impl ClassState {
             }
             let tracked cm = pm.tracked_remove(pi);
             proof {
+                assert(pm.contains_key(seen_key(pi)));
+            }
+            let tracked cs = pm.tracked_remove(seen_key(pi));
+            proof {
                 assert forall|j: int| #![trigger pm.contains_key(j)] #![trigger pm[j]] #![trigger picks@[j]] i <= j < picks@.len() implies {
                     &&& pm.contains_key(j)
                     &&& pm[j].id() == s.mloc
                     &&& slab_marked(*_t0, picks@[j].slab as int, pm[j]@)
                     &&& !_t0.spec_is_guard(picks@[j].slab as usize)
+                    &&& pm.contains_key(seen_key(j))
+                    &&& pm[seen_key(j)].id() == _t0.spec_sloc()
+                    &&& pm[seen_key(j)]@.contains(owner_mark(picks@[j].slab as int))
                 } by {
                     assert(pm0.contains_key(j));
+                    assert(pm0.contains_key(seen_key(j)));
                 }
                 assert(picks_zero(*_t0, picks@, i, picks@.len() as int, pz));
                 assert(picks_marks(*_t0, picks@, i, picks@.len() as int, pm));
@@ -3271,6 +3298,9 @@ impl ClassState {
             let mut empty_passes = 0u32;
             proof {
                 assert(picks_marks(*_t0, picks@, i, picks@.len() as int, pm));
+                // The pick's slab's witness marker covers its bits.
+                assert(pm0.contains_key(seen_key(pi)));
+                _t0.lemma_seen_view(bm, slab, cs);
             }
             while k < want
                 invariant
@@ -3312,10 +3342,11 @@ impl ClassState {
                     picks_zero(*_t0, picks@, i, picks@.len() as int, pz),
                     picks_marks(*_t0, picks@, i, picks@.len() as int, pm),
                     bm.inited_by(cm),
+                    bm.seen_by(cs),
                 decreases want - k, MAX_EMPTY_PASSES - empty_passes,
             {
                 let tracked mut wt = t.empty_tokens();
-                let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm)) else {
+                let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {
                     // Every word was full when inspected. `plan` reserved
                     // no more than `nslots - live` and set bits never
                     // exceed `live`, so the slots exist: a concurrent
@@ -3649,15 +3680,25 @@ spec fn picks_owned(c: int, a: u16, p: Seq<Pick>, lo: int, hi: int) -> bool {
     forall|j: int| lo <= j < hi ==> slab_owner(c, (#[trigger] p[j]).slab as int) == a
 }
 
+/// The key in a pick map (`plan`'s `pm`) of pick `j`'s owner-word
+/// witness markers: negative, apart from the pick indices.
+spec fn seen_key(j: int) -> int {
+    -1 - j
+}
+
 /// `pm` holds, by pick index, the fresh markers of the slab of each of
 /// picks `lo..hi`: `init` ran on it (`AtomicBitmap::inited_by`), so it is
-/// not a guard slab.
+/// not a guard slab; and, at [`seen_key`], the slab's owner-word witness
+/// marker (`AtomicBitmap::seen_by`).
 spec fn picks_marks(t: SlabTable, p: Seq<Pick>, lo: int, hi: int, pm: Map<int, GhostPersistentSubset<int>>) -> bool {
     forall|j: int| #![trigger pm.contains_key(j)] #![trigger pm[j]] #![trigger p[j]] lo <= j < hi ==> {
         &&& pm.contains_key(j)
         &&& pm[j].id() == t.spec_slots().mloc
         &&& slab_marked(t, p[j].slab as int, pm[j]@)
         &&& !t.spec_is_guard(p[j].slab as usize)
+        &&& pm.contains_key(seen_key(j))
+        &&& pm[seen_key(j)].id() == t.spec_sloc()
+        &&& pm[seen_key(j)]@.contains(owner_mark(p[j].slab as int))
     }
 }
 
@@ -3675,10 +3716,12 @@ proof fn lemma_picks_marks_step(
         0 <= k,
         picks_marks(t, p0, 0, k, m0),
         forall|i: int| 0 <= i < k ==> p1[i] == p0[i],
-        m1 == m0.insert(k, m1[k]),
+        m1 == m0.insert(k, m1[k]).insert(seen_key(k), m1[seen_key(k)]),
         m1[k].id() == t.spec_slots().mloc,
         slab_marked(t, p1[k].slab as int, m1[k]@),
         !t.spec_is_guard(p1[k].slab as usize),
+        m1[seen_key(k)].id() == t.spec_sloc(),
+        m1[seen_key(k)]@.contains(owner_mark(p1[k].slab as int)),
     ensures
         picks_marks(t, p1, 0, k + 1, m1),
 {
@@ -3687,9 +3730,13 @@ proof fn lemma_picks_marks_step(
         &&& m1[j].id() == t.spec_slots().mloc
         &&& slab_marked(t, p1[j].slab as int, m1[j]@)
         &&& !t.spec_is_guard(p1[j].slab as usize)
+        &&& m1.contains_key(seen_key(j))
+        &&& m1[seen_key(j)].id() == t.spec_sloc()
+        &&& m1[seen_key(j)]@.contains(owner_mark(p1[j].slab as int))
     } by {
         if j < k {
             assert(m0.contains_key(j));
+            assert(m0.contains_key(seen_key(j)));
             assert(p1[j] == p0[j]);
         }
     }
@@ -4003,7 +4050,10 @@ impl ClassState {
             final(ptoks)[*old(np) as int]@ == pick_addrs(self.spec_table(), final(picks)[*old(np) as int]),
             *final(pz) == old(pz).insert(*old(np) as int, final(pz)[*old(np) as int]),
             pick_zero(self.spec_table(), final(picks)[*old(np) as int], final(pz)[*old(np) as int]),
-            *final(pm) == old(pm).insert(*old(np) as int, final(pm)[*old(np) as int]),
+            *final(pm) == old(pm).insert(*old(np) as int, final(pm)[*old(np) as int])
+                .insert(seen_key(*old(np) as int), final(pm)[seen_key(*old(np) as int)]),
+            final(pm)[seen_key(*old(np) as int)].id() == self.spec_table().spec_sloc(),
+            final(pm)[seen_key(*old(np) as int)]@.contains(owner_mark(final(picks)[*old(np) as int].slab as int)),
             final(pm)[*old(np) as int].id() == self.spec_table().spec_slots().mloc,
             slab_marked(self.spec_table(), final(picks)[*old(np) as int].slab as int, final(pm)[*old(np) as int]@),
             !self.spec_table().spec_is_guard(final(picks)[*old(np) as int].slab as usize),
@@ -4095,7 +4145,11 @@ impl ClassState {
         let _t = self.table();
         let tracked mut pt = _t.empty_tokens();
         if zero {
-            self.claim_prefix(slab, n, state, live, Tracked(&mut pt), Tracked(g.inited.borrow()));
+            proof {
+                // The slab is owned, so the value holds its witness marker.
+                assert(g.states@.contains_key(slab as nat));
+            }
+            self.claim_prefix(slab, n, state, live, Tracked(&mut pt), Tracked(g.inited.borrow()), Tracked(g.seen.borrow()));
         }
         // The zero pick's bytes, slots `0..n` of the slab: a `Fresh` slab
         // was never handed out since its pages were mapped, so they are
@@ -4131,6 +4185,8 @@ impl ClassState {
             ptoks.tracked_insert(*np as int, pt);
             pz.tracked_insert(*np as int, zt);
             pm.tracked_insert(*np as int, g.inited.borrow().duplicate());
+            assert(g.states@.contains_key(slab as nat));
+            pm.tracked_insert(seen_key(*np as int), g.seen.borrow().duplicate());
         }
         *np += 1;
         *remaining -= n;
@@ -4184,8 +4240,12 @@ impl ClassState {
     /// that another refill claimed from the now-partial slab, handed out,
     /// and got back dirty in the meantime. Anything but a clean claim of
     /// bits `0..n` means `live` no longer bounds the set bits: abort.
+    /// `inited` and `seen`, the slab's fresh markers and owner-word witness
+    /// marker, are what the claim needs (`AtomicBitmap::claim_word`).
     ///
     /// [`finish`]: ClassState::finish
+    // The extra arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
     fn claim_prefix(
         &self,
         slab: usize,
@@ -4194,6 +4254,7 @@ impl ClassState {
         live: usize,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
         Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
+        Tracked(seen): Tracked<&GhostPersistentSubset<int>>,
     )
         requires
             crate::sys::may_abort(),
@@ -4202,6 +4263,8 @@ impl ClassState {
             old(toks).id() == self.spec_table().spec_slots().loc,
             inited.id() == self.spec_table().spec_slots().mloc,
             slab_marked(self.spec_table(), slab as int, inited@),
+            seen.id() == self.spec_table().spec_sloc(),
+            seen@.contains(owner_mark(slab as int)),
         ensures
             final(toks).id() == old(toks).id(),
             final(toks)@ == old(toks)@.union(prefix_addrs(self.spec_table(), slab as int, n as int)),
@@ -4216,6 +4279,7 @@ impl ClassState {
             broadcast use crate::vspec::class::axiom_class_table_wf;
             assert(class_table()[self.spec_class() as int].wf());
             self.spec_table().lemma_slots_wf();
+            self.spec_table().lemma_seen_view(bm, slab, *seen);
             broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, VSet::lemma_map_contains};
             assert(prefix_addrs(self.spec_table(), slab as int, 0) =~= VSet::<int>::empty());
             assert(old(toks)@.union(VSet::<int>::empty()) =~= old(toks)@);
@@ -4228,6 +4292,7 @@ impl ClassState {
                 bits_shape(bm, sb),
                 bits_ghost(bm, self.spec_table(), slab),
                 bm.inited_by(*inited),
+                bm.seen_by(*seen),
                 self.spec_table().inv(),
                 self.spec_table().spec_class() == self.spec_class(),
                 self.spec_table().spec_nslabs() == self.spec_nslabs(),
@@ -4259,7 +4324,7 @@ impl ClassState {
                 assert(want < 64 ==> (1u64 << want) >= 1u64) by (bit_vector);
             }
             let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
-            let got = bm.claim_word(w, want, Tracked(&mut *toks), Tracked(inited));
+            let got = bm.claim_word(w, want, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
             if got != expect {
                 zero_slab_had_bits_set(self.class as usize, slab, self.arena, state, live, w, got, expect);
             }

@@ -11,7 +11,7 @@ file.
 
 ## `allocated`
 
-src/bitmap.rs:1337. Kind: external_body. Category: panic/abort.
+src/bitmap.rs:1385. Kind: external_body. Category: panic/abort.
 Tool: Verus. Status: trusted.
 
 > Set slot bits, padding excluded: the slab's allocated (or cached) slots for a class with `nslots` real slots.

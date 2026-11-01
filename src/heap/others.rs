@@ -664,7 +664,7 @@ impl Heap {
         Tracked(errno): Tracked<&mut ThreadErrno>,
     )
         requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && !old(self).rehome),
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             process_regions().is_slot(class as int, p@.addr),
             blk.slot_block(p, class as int),
