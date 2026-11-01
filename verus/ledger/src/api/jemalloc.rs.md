@@ -13,7 +13,7 @@ file.
 
 ## `Hook`
 
-src/api/jemalloc.rs:106. Kind: ext_type_spec. Category: function pointer.
+src/api/jemalloc.rs:107. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -22,7 +22,7 @@ pub struct ExHook(Hook);
 
 ## `message_hook`
 
-src/api/jemalloc.rs:112. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/jemalloc.rs:113. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > The installed hook, if any: `malloc_message`, else `je_malloc_message`.
@@ -33,7 +33,7 @@ pub fn message_hook() -> Option<Hook>
 
 ## `call_hook`
 
-src/api/jemalloc.rs:130. Kind: external_body. Category: function pointer.
+src/api/jemalloc.rs:131. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc calls it, on the C string in `buf`, which holds a NUL.

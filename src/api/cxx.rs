@@ -122,16 +122,26 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
 
 } // verus!
 
+/// The installed `new_handler`.
+struct Handler(unsafe extern "C" fn());
+
+/// Call `std::get_new_handler` at `get`, its non-null address: the
+/// installed `new_handler`, if one is set.
+#[inline(always)]
+fn call_get_new_handler(get: *const c_void) -> Option<Handler> {
+    // SAFETY: `std::get_new_handler` takes no arguments and returns a plain
+    // function pointer, which is C-compatible on both ABIs.
+    let get: unsafe extern "C" fn() -> NewHandler = unsafe { core::mem::transmute(get) };
+    unsafe { get() }.map(Handler)
+}
+
 /// The installed `new_handler`, if libstdc++ is present and one is set.
-fn new_handler() -> NewHandler {
+fn installed_handler() -> Option<Handler> {
     let get = get_new_handler_addr();
     if get.is_null() {
         return None;
     }
-    // SAFETY: `std::get_new_handler` takes no arguments and returns a plain
-    // function pointer, which is C-compatible on both ABIs.
-    let get: unsafe extern "C" fn() -> NewHandler = unsafe { core::mem::transmute(get) };
-    unsafe { get() }
+    call_get_new_handler(get)
 }
 
 verus! {
@@ -174,10 +184,32 @@ fn throw_bad_alloc() -> !
 
 } // verus!
 
+/// Call the program's `new_handler`, which may write `errno`: `_errno`
+/// is the calling thread's, taken `&mut` so that nothing is known of its
+/// value afterwards.
+#[inline(always)]
+fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>) {
+    // SAFETY: a `void (*)()` installed by the program through
+    // `std::set_new_handler`; an exception it throws unwinds through here
+    // to the caller of `operator new`.
+    unsafe { (handler.0)() }
+}
+
+/// Call the program's `new_handler` through `challoc_call_new_handler`
+/// (`cxx_handler.cpp`), which catches anything it throws: `false` when it
+/// threw. The handler may write `errno`, as for [`call_handler`].
+#[inline(always)]
+fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> bool {
+    // SAFETY: a `void (*)()` installed by the program through
+    // `std::set_new_handler`; the shim catches whatever it throws.
+    unsafe { challoc_call_new_handler(handler.0) != 0 }
+}
+
 /// The `operator new` failure protocol: call the `new_handler` and retry
 /// until an attempt succeeds or no handler is installed, then throw
 /// `std::bad_alloc` (or return null for the `nothrow_t` forms, also when
-/// the handler throws). `align` is 0 for the unaligned operators.
+/// the handler throws). `align` is 0 for the unaligned operators. `blk`
+/// gets the block's token.
 #[cold]
 #[inline(never)]
 fn oom(
@@ -188,27 +220,23 @@ fn oom(
     _errno: Tracked<&mut ThreadErrno>,
 ) -> *mut u8 {
     loop {
-        let Some(handler) = new_handler() else {
+        let Some(handler) = installed_handler() else {
             if nothrow {
                 return ptr::null_mut();
             }
             throw_bad_alloc()
         };
         if nothrow {
-            // SAFETY: a `void (*)()` installed by the program through
-            // `std::set_new_handler`; the shim catches whatever it throws.
-            if unsafe { challoc_call_new_handler(handler) } == 0 {
+            if !call_handler_caught(handler, Tracked::assume_new()) {
                 return ptr::null_mut();
             }
         } else {
-            // SAFETY: as above; an exception it throws unwinds through
-            // here to the caller of `operator new`.
-            unsafe { handler() };
+            call_handler(handler, Tracked::assume_new());
         }
         let p = if align == 0 {
-            libc::malloc(size, vstd::prelude::Tracked::assume_new())
+            libc::malloc_block(size, Tracked::assume_new(), Tracked::assume_new())
         } else {
-            libc::aligned_alloc(align, size, vstd::prelude::Tracked::assume_new())
+            libc::aligned_alloc_block(align, size, Tracked::assume_new(), Tracked::assume_new())
         };
         if !p.is_null() {
             return p;
@@ -314,24 +342,30 @@ pub fn new_aligned_block(
 
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
 #[inline(always)]
-pub fn delete(p: *mut u8, _c: Tracked<CCall>) {
-    libc::free(p, Tracked::assume_new(), Tracked::assume_new())
+pub fn delete(p: *mut u8, _c: Tracked<CCall>, errno: Tracked<&mut ThreadErrno>) {
+    libc::free(p, Tracked::assume_new(), errno)
 }
 
 /// `operator delete(void*, size_t)` and its array form: `free_sized`. The
 /// size is the one the matching `operator new(size)` was called with, so
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
-pub fn delete_sized(p: *mut u8, size: usize, _c: Tracked<CCall>) {
-    libc::free_sized(p, size, Tracked::assume_new(), Tracked::assume_new())
+pub fn delete_sized(p: *mut u8, size: usize, _c: Tracked<CCall>, errno: Tracked<&mut ThreadErrno>) {
+    libc::free_sized(p, size, Tracked::assume_new(), errno)
 }
 
 /// `operator delete(void*, size_t, std::align_val_t)` and its array form:
 /// `free_aligned_sized` with the arguments the matching aligned `new`
 /// passed to `aligned_alloc`.
 #[inline(always)]
-pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, _c: Tracked<CCall>) {
-    libc::free_aligned_sized(p, align, size, Tracked::assume_new(), Tracked::assume_new())
+pub fn delete_sized_aligned(
+    p: *mut u8,
+    size: usize,
+    align: usize,
+    _c: Tracked<CCall>,
+    errno: Tracked<&mut ThreadErrno>,
+) {
+    libc::free_aligned_sized(p, align, size, Tracked::assume_new(), errno)
 }
 
 // ---------------------------------------------------------------------------
@@ -402,55 +436,93 @@ mod exports {
     /// `operator delete(void*)`
     #[unsafe(export_name = "_ZdlPv")]
     pub extern "C" fn delete(p: *mut c_void) {
-        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
+        super::delete(
+            p as *mut u8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete[](void*)`
     #[unsafe(export_name = "_ZdaPv")]
     pub extern "C" fn delete_array(p: *mut c_void) {
-        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
+        super::delete(
+            p as *mut u8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete(void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvRKSt9nothrow_t")]
     pub extern "C" fn delete_nothrow(p: *mut c_void, _tag: *const c_void) {
-        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
+        super::delete(
+            p as *mut u8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete[](void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdaPvRKSt9nothrow_t")]
     pub extern "C" fn delete_array_nothrow(p: *mut c_void, _tag: *const c_void) {
-        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
+        super::delete(
+            p as *mut u8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete(void*, size_t)`
     #[unsafe(export_name = "_ZdlPvm")]
     pub extern "C" fn delete_sized(p: *mut c_void, size: usize) {
-        super::delete_sized(p as *mut u8, size, vstd::prelude::Tracked::assume_new())
+        super::delete_sized(
+            p as *mut u8,
+            size,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete[](void*, size_t)`
     #[unsafe(export_name = "_ZdaPvm")]
     pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize) {
-        super::delete_sized(p as *mut u8, size, vstd::prelude::Tracked::assume_new())
+        super::delete_sized(
+            p as *mut u8,
+            size,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete(void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_t")]
     pub extern "C" fn delete_aligned(p: *mut c_void, _align: usize) {
-        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
+        super::delete(
+            p as *mut u8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete[](void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvSt11align_val_t")]
     pub extern "C" fn delete_array_aligned(p: *mut c_void, _align: usize) {
-        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
+        super::delete(
+            p as *mut u8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete(void*, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_tRKSt9nothrow_t")]
     pub extern "C" fn delete_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *const c_void) {
-        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
+        super::delete(
+            p as *mut u8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete[](void*, std::align_val_t, const std::nothrow_t&)`
@@ -460,7 +532,11 @@ mod exports {
         _align: usize,
         _tag: *const c_void,
     ) {
-        super::delete(p as *mut u8, vstd::prelude::Tracked::assume_new())
+        super::delete(
+            p as *mut u8,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
     }
 
     /// `operator delete(void*, size_t, std::align_val_t)`
@@ -470,6 +546,7 @@ mod exports {
             p as *mut u8,
             size,
             align,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         )
     }
@@ -481,6 +558,7 @@ mod exports {
             p as *mut u8,
             size,
             align,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         )
     }
@@ -498,6 +576,6 @@ mod tests {
         // run here.
         assert!(get_new_handler_addr().is_null());
         assert!(throw_bad_alloc_addr().is_null());
-        assert!(new_handler().is_none());
+        assert!(installed_handler().is_none());
     }
 }
