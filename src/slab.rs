@@ -36,11 +36,16 @@ pub const HEADER: usize = 16;
 /// never spans two arenas' slab groups (see [`desc_stride`]).
 pub const DESC_ALIGN: usize = 64;
 
-/// Trusted: Verus does not model the panic's formatted message.
+/// Abort on a state byte no [`State`] has. A pending check
+/// (`sys::may_abort_pending`): the class lock's permissions record a valid
+/// state for an owned slab, but no verified invariant bounds the byte of
+/// `SlabDesc::state` or of a slab the reader does not own.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
-fn bad_state_byte(v: u8) -> ! {
+fn bad_state_byte(v: u8) -> !
+    requires
+        crate::sys::may_abort_pending(),
+{
     crate::sys::abort_pending(format_args!("slab: state byte {v:#x} is not a slab state"))
 }
 
@@ -66,6 +71,8 @@ impl State {
     /// zero memory for `calloc`.
     #[inline]
     pub fn from_u8(v: u8) -> (r: State)
+        requires
+            crate::sys::may_abort_pending(),
         ensures
             state_byte(r) == v,
     {
@@ -354,7 +361,10 @@ impl SlabDesc {
     }
 
     #[inline]
-    pub fn state(&self) -> State {
+    pub fn state(&self) -> State
+        requires
+            crate::sys::may_abort_pending(),
+    {
         State::from_u8(self.state.load(Ordering::Relaxed))
     }
 
@@ -363,6 +373,8 @@ impl SlabDesc {
     /// records when that is this descriptor's.
     #[inline(always)]
     pub fn state_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: State)
+        requires
+            crate::sys::may_abort_pending(),
         ensures
             perm_for(*m, k, self) ==> state_byte(r) == m[k].state(),
     {
