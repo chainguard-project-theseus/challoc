@@ -48,7 +48,7 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
 
 ## `axiom_c_call`
 
-src/api/jemalloc.rs:1161. Kind: axiom. Category: C-program contract.
+src/api/jemalloc.rs:1163. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).

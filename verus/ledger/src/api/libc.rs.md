@@ -28,7 +28,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 
 ## `axiom_c_out`
 
-src/api/libc.rs:3046. Kind: axiom. Category: C-program contract.
+src/api/libc.rs:3058. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, `vspec::cbuf`): the token of this call for the C caller's out-pointer `p`, the permission to write the `T` it names: none for a null `p`, and `p` is not null when the contract does not allow null (`nullable` false: `posix_memalign`'s `memptr`).

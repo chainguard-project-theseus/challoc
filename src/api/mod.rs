@@ -68,15 +68,19 @@ macro_rules! export_pair {
 
 /// [`export_pair`] with the bodies inside `verus!`: Verus checks them,
 /// after granting each export the syscall and abort capabilities of a C
-/// entry point.
+/// entry point. A pair that returns a value names its result (`-> (r: T)`),
+/// and a pair may give both exports the same `ensures [..]` clauses, which
+/// state the Rust entry point's postcondition at the C boundary.
 #[cfg(not(test))]
 macro_rules! verified_export_pair {
-    ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? $body:block)*) => {
+    ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> ($r:ident: $ret:ty))? $(ensures [$($ens:tt)*])? $body:block)*) => {
         ::vstd::prelude::verus! {
         $(
             $(#[$m])*
             #[unsafe(no_mangle)]
-            pub extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
+            pub extern "C" fn $name($($arg: $ty),*) $(-> ($r: $ret))?
+                $(ensures $($ens)*)?
+            {
                 proof {
                     crate::sys::grant_syscalls();
                     crate::sys::grant_aborts();
@@ -85,7 +89,9 @@ macro_rules! verified_export_pair {
             }
             $(#[$m])*
             #[unsafe(no_mangle)]
-            pub extern "C" fn $je($($arg: $ty),*) $(-> $ret)? {
+            pub extern "C" fn $je($($arg: $ty),*) $(-> ($r: $ret))?
+                $(ensures $($ens)*)?
+            {
                 proof {
                     crate::sys::grant_syscalls();
                     crate::sys::grant_aborts();
