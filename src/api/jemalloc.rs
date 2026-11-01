@@ -53,7 +53,6 @@ use core::ptr;
 use super::libc::{class_for, old_size_or_keep, usable_size};
 #[cfg(verus_keep_ghost)]
 use super::libc::{keeps, lemma_class_aligned, spec_class_for};
-use super::print::Unlocked;
 #[cfg(verus_keep_ghost)]
 use crate::heap::mallocx::MALLOCX_ZERO;
 use crate::heap::mallocx::{self, Flags, Tcache};
@@ -61,6 +60,7 @@ use crate::heap::{Live, Shared};
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind};
+use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::axiom_entry;
 use crate::vspec::cbuf::CCall;
@@ -136,15 +136,16 @@ pub fn message_hook() -> Option<Hook> {
 
 /// `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc
 /// calls it, on the C string in `buf`, which holds a NUL. Trusted: a call
-/// through the program's function pointer; claims nothing. The permit
-/// `u` says that the calling thread holds no allocator lock, as for the
-/// report's other calls out (`print::emit`), so a hook that allocates
-/// cannot deadlock on one.
+/// through the program's function pointer; claims nothing. The calling
+/// thread holds no allocator lock (`ord`, the report's lock-order token,
+/// has top 0), as for the report's other calls out (`print::emit`), so a
+/// hook that allocates cannot deadlock on one.
 #[verifier::external_body]
 #[inline(always)]
-fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
+fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
     requires
         crate::sys::may_syscall(),
+        ord.top() == 0,
         exists|i: int| 0 <= i < 512 && #[trigger] buf@[i] == 0,
 {
     // SAFETY: the program installed `cb` as a
@@ -154,11 +155,13 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
 
 /// jemalloc's `malloc_write`: hand `s` to the `malloc_message` hook in
 /// NUL-terminated chunks (with a null `cbopaque`, as jemalloc does) or, with
-/// no hook, write it to stderr with `write(2)`. Under the report's permit
-/// (`print::Unlocked`): `print::emit` is the only caller.
-pub(super) fn malloc_write(s: &[u8], Tracked(u): Tracked<&Unlocked>)
+/// no hook, write it to stderr with `write(2)`. Under the report's lock-order
+/// token `ord`, with no allocator lock held (top 0): `print::emit` is the
+/// only caller.
+pub(super) fn malloc_write(s: &[u8], Tracked(ord): Tracked<&LockOrder>)
     requires
         crate::sys::may_syscall(),
+        ord.top() == 0,
 {
     match message_hook() {
         None => crate::sys::write_all(crate::sys::STDERR_FILENO, s),
@@ -171,6 +174,7 @@ pub(super) fn malloc_write(s: &[u8], Tracked(u): Tracked<&Unlocked>)
             while at < s.len()
                 invariant
                     crate::sys::may_syscall(),
+                    ord.top() == 0,
                     at <= s@.len(),
                 decreases s@.len() - at,
             {
@@ -183,7 +187,7 @@ pub(super) fn malloc_write(s: &[u8], Tracked(u): Tracked<&Unlocked>)
                 buf[..chunk.len()].copy_from_slice(chunk);
                 buf[chunk.len()] = 0;
                 assert(buf@[n as int] == 0);
-                call_hook(cb, &buf, Tracked(u));
+                call_hook(cb, &buf, Tracked(ord));
                 at += n;
             }
         }
