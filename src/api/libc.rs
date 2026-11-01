@@ -2956,6 +2956,8 @@ mod exports {
     use super::*;
     #[cfg(verus_keep_ghost)]
     use crate::vspec::cbuf::CEntry;
+    #[cfg(verus_keep_ghost)]
+    use crate::vspec::errno::c_errno;
     use core::ffi::c_void;
 
     verus! {
@@ -2981,26 +2983,36 @@ mod exports {
     pub extern "C" fn malloc(size: usize) -> (r: *mut c_void)
         ensures
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
+            r@.addr == 0 ==> c_errno() == ENOMEM,
     {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::malloc(size, Tracked(&mut errno)) as *mut c_void
+        let r = super::malloc(size, Tracked(&mut errno)) as *mut c_void;
+        proof {
+            crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+        }
+        r
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn je_malloc(size: usize) -> (r: *mut c_void)
         ensures
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
+            r@.addr == 0 ==> c_errno() == ENOMEM,
     {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::malloc(size, Tracked(&mut errno)) as *mut c_void
+        let r = super::malloc(size, Tracked(&mut errno)) as *mut c_void;
+        proof {
+            crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+        }
+        r
     }
 
     #[unsafe(no_mangle)]
@@ -3095,51 +3107,88 @@ mod exports {
         fn calloc / je_calloc(n: usize, m: usize) -> (r: *mut c_void) ensures [
             n * m > usize::MAX ==> r@.addr == 0,
             heap::fits(r as *mut u8, n * m, QUANTUM as int),
+            r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::calloc(n, m, Tracked(&mut errno)) as *mut c_void
+            let r = super::calloc(n, m, Tracked(&mut errno)) as *mut c_void;
+            proof {
+                crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+            }
+            r
         }
         fn realloc / je_realloc(p: *mut c_void, size: usize) -> (r: *mut c_void) ensures [
             p@.addr != 0 && size == 0 ==> r@.addr == 0,
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
+            r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::realloc(p as *mut u8, size, Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void
+            let r = super::realloc(p as *mut u8, size, Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void;
+            proof {
+                crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0 && !(p@.addr != 0 && size == 0));
+            }
+            r
         }
         fn aligned_alloc / je_aligned_alloc(align: usize, size: usize) -> (r: *mut c_void) ensures [
             !is_pow2(align) ==> r@.addr == 0,
             is_pow2(align) ==> heap::fits(r as *mut u8, size as int, align as int),
+            !is_pow2(align) ==> c_errno() == EINVAL,
+            is_pow2(align) && r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void
+            let r = super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void;
+            proof {
+                crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+            }
+            r
         }
         fn memalign / je_memalign(align: usize, size: usize) -> (r: *mut c_void) ensures [
             !is_pow2(align) ==> r@.addr == 0,
             is_pow2(align) ==> heap::fits(r as *mut u8, size as int, align as int),
+            !is_pow2(align) ==> c_errno() == EINVAL,
+            is_pow2(align) && r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void
+            let r = super::aligned_alloc(align, size, Tracked(&mut errno)) as *mut c_void;
+            proof {
+                crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+            }
+            r
         }
         fn posix_memalign / je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> (r: c_int) ensures [
             r == 0 || r == ENOMEM || r == EINVAL,
             r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
+            r == ENOMEM ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             let oout = memptr_out(out as *mut *mut u8);
-            super::posix_memalign(out as *mut *mut u8, align, size, oout, Tracked(&mut errno))
+            let r = super::posix_memalign(out as *mut *mut u8, align, size, oout, Tracked(&mut errno));
+            proof {
+                crate::vspec::errno::axiom_errno_at_return(errno, r == ENOMEM);
+            }
+            r
         }
         fn valloc / je_valloc(size: usize) -> (r: *mut c_void) ensures [
             heap::fits(r as *mut u8, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+            r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::valloc(size, Tracked(&mut errno)) as *mut c_void
+            let r = super::valloc(size, Tracked(&mut errno)) as *mut c_void;
+            proof {
+                crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+            }
+            r
         }
         fn pvalloc / je_pvalloc(size: usize) -> (r: *mut c_void) ensures [
             heap::fits(r as *mut u8, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+            r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::pvalloc(size, Tracked(&mut errno)) as *mut c_void
+            let r = super::pvalloc(size, Tracked(&mut errno)) as *mut c_void;
+            proof {
+                crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+            }
+            r
         }
         fn malloc_usable_size / je_malloc_usable_size(p: *mut c_void) -> (r: usize) ensures [
             p@.addr == 0 ==> r == 0,
@@ -3159,13 +3208,19 @@ mod exports {
             n * m > usize::MAX ==> r@.addr == 0,
             heap::fits(r as *mut u8, n * m, QUANTUM as int),
             p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p as *mut u8),
+            n * m > usize::MAX ==> c_errno() == ENOMEM,
+            r@.addr == 0 && !(p@.addr != 0 && n * m == 0) ==> c_errno() == ENOMEM,
     {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::reallocarray(p as *mut u8, n, m, Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void
+        let r = super::reallocarray(p as *mut u8, n, m, Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void;
+        proof {
+            crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0 && !(p@.addr != 0 && n * m == 0));
+        }
+        r
     }
 
     /// C23 `free_sized`: the size is checked against the class and stands
@@ -3219,6 +3274,7 @@ mod exports {
     pub extern "C" fn challoc_malloc_usable(size: usize, usable: *mut usize) -> (r: *mut c_void)
         ensures
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
+            r@.addr == 0 ==> c_errno() == ENOMEM,
     {
         proof {
             crate::sys::grant_syscalls();
@@ -3226,7 +3282,11 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked uout = axiom_c_out(usable, true);
-        super::malloc_usable(size, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void
+        let r = super::malloc_usable(size, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void;
+        proof {
+            crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+        }
+        r
     }
 
     #[unsafe(no_mangle)]
@@ -3234,6 +3294,7 @@ mod exports {
         ensures
             n * m > usize::MAX ==> r@.addr == 0,
             heap::fits(r as *mut u8, n * m, QUANTUM as int),
+            r@.addr == 0 ==> c_errno() == ENOMEM,
     {
         proof {
             crate::sys::grant_syscalls();
@@ -3241,7 +3302,11 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked uout = axiom_c_out(usable, true);
-        super::calloc_usable(n, m, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void
+        let r = super::calloc_usable(n, m, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void;
+        proof {
+            crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+        }
+        r
     }
 
     #[unsafe(no_mangle)]
@@ -3250,6 +3315,7 @@ mod exports {
             p@.addr != 0 && size == 0 ==> r@.addr == 0,
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
+            r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> c_errno() == ENOMEM,
     {
         proof {
             crate::sys::grant_syscalls();
@@ -3257,7 +3323,11 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked uout = axiom_c_out(usable, true);
-        super::realloc_usable(p as *mut u8, size, usable, Tracked(uout), Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void
+        let r = super::realloc_usable(p as *mut u8, size, usable, Tracked(uout), Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void;
+        proof {
+            crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0 && !(p@.addr != 0 && size == 0));
+        }
+        r
     }
 
     #[unsafe(no_mangle)]

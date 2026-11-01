@@ -8,25 +8,40 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `lend` | external_body | C-program contract | none (assumption) | trusted |
+| `axiom_e...return` | axiom | C-program contract | none (assumption) | trusted |
 | `set_errno` | external_body | FFI/syscall | none (assumption) | trusted |
 | `get_errno` | external_body | FFI/syscall | none (assumption) | trusted |
 
 ## `lend`
 
-src/vspec/errno.rs:41. Kind: external_body. Category: C-program contract.
+src/vspec/errno.rs:43. Kind: external_body. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: lends the calling thread's `errno` to one call into challoc, with its value unknown.
 
-Body mints Tracked at line 42.
+Body mints Tracked at line 44.
 
 ```rust
 pub fn lend() -> (e: Tracked<ThreadErrno>)
 ```
 
+## `axiom_errno_at_return`
+
+src/vspec/errno.rs:90. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> Trusted (the C-program contract of `errno`): when an export returns and `failed` holds, the `errno` its C caller reads ([`c_errno`]) is the value of the token the export lent ([`lend`]), as the token stands after its last use.
+
+```rust
+pub axiom fn axiom_errno_at_return(tracked e: ThreadErrno, failed: bool)
+    ensures
+        failed ==> c_errno() == e.val(),
+;
+```
+
 ## `set_errno`
 
-src/vspec/errno.rs:49. Kind: external_body. Category: FFI/syscall.
+src/vspec/errno.rs:99. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: writes `e` to the calling thread's `errno` through libc's pointer.
@@ -39,7 +54,7 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
 
 ## `get_errno`
 
-src/vspec/errno.rs:81. Kind: external_body. Category: FFI/syscall.
+src/vspec/errno.rs:131. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: reads the calling thread's `errno` through libc's pointer, and claims the value is the token's ([`ThreadErrno::val`]): challoc's last write through it, or the caller's `errno` before any.

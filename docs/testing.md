@@ -134,7 +134,7 @@ so a broken preload cannot pass.
 
 | Group | Programs |
 |---|---|
-| Entry points | `libc_api.c` (the libc functions), `jemalloc_api.c` (the jemalloc and glibc extras, declared weak), `cxx_new.cpp` (every `operator new`/`delete` resolves into challoc), `usable_api.c` (the `challoc_*_usable` functions), `positive.c` (C23 `free_sized`, `free_aligned_sized` and other paths no other program reaches), `jemalloc_link.c` (a link-only `-ljemalloc` consumer of the jemalloc-compat stage) |
+| Entry points | `libc_api.c` (the libc functions), `jemalloc_api.c` (the jemalloc and glibc extras, declared weak), `cxx_new.cpp` (every `operator new`/`delete` resolves into challoc), `usable_api.c` (the `challoc_*_usable` functions), `export_results.c` (every nullable export returns its entry point's result: NULL with its `errno` for an impossible request, a block for a small one), `positive.c` (C23 `free_sized`, `free_aligned_sized` and other paths no other program reaches), `jemalloc_link.c` (a link-only `-ljemalloc` consumer of the jemalloc-compat stage) |
 | Correctness under load | `align.c`, `calloc_zero.c`, `realloc_tiers.c`, `random_ops.c` (1M random operations on 8 threads), `producer_consumer.c` (pure cross-thread frees), `thread_exit.c`, `tls_threads.c`, `huge_hole.c` |
 | Fork | `fork_alloc.c` (allocation in parent, child and grandchild), `fork_signal.c` (fork from a signal handler while the fork handlers hold every lock) |
 | Abort conditions | `negative.c`: one invalid operation per mode (invalid, double and mis-sized frees, guard faults); the driver checks the signal and the `challoc:` line on stderr |

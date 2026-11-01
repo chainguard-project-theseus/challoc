@@ -286,6 +286,11 @@ static void test_bad_alloc()
     CHECK(sink == nullptr, "nothrow new(SIZE_MAX / 4) returned %p", sink);
     sink = operator new[](IMPOSSIBLE, std::align_val_t(4096), std::nothrow);
     CHECK(sink == nullptr, "nothrow aligned new[](SIZE_MAX / 4) returned %p", sink);
+    /* operator new[](nothrow) returns a block when one can be had; the
+     * other nothrow forms are checked above. */
+    sink = operator new[](64, std::nothrow);
+    CHECK(sink != nullptr, "nothrow new[](64) returned nullptr");
+    operator delete[](sink);
 
     /* The allocator must still work after the failures. */
     void *p = operator new(100);

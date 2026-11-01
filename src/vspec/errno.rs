@@ -1,7 +1,9 @@
 //! The `errno` model: one ghost resource, [`ThreadErrno`], stands for the
 //! calling thread's `errno` during one C call; [`set_errno`] is the only
 //! write through a token and takes it `&mut`, and [`get_errno`] the only
-//! read through one.
+//! read through one. At an export's return, [`axiom_errno_at_return`]
+//! uses the token up and names its value as the `errno` the C caller
+//! reads ([`c_errno`]).
 
 use core::ffi::c_int;
 use vstd::prelude::*;
@@ -41,6 +43,54 @@ impl ThreadErrno {
 pub fn lend() -> (e: Tracked<ThreadErrno>) {
     Tracked::assume_new()
 }
+
+/// The calling thread's `errno` as the C program reads it once the
+/// export being verified has returned: the value
+/// [`axiom_errno_at_return`] fixes from that export's token. It takes no
+/// arguments because it names one return, the one of the function whose
+/// `ensures` mention it: each export is verified on its own, calls the
+/// axiom at most once, and no verified code calls an export, so no proof
+/// sees two returns.
+pub uninterp spec fn c_errno() -> c_int;
+
+/// Trusted (the C-program contract of `errno`): when an export returns
+/// and `failed` holds, the `errno` its C caller reads ([`c_errno`]) is
+/// the value of the token the export lent ([`lend`]), as the token stands
+/// after its last use. The token is used up, so nothing writes through it
+/// afterwards.
+///
+/// `failed` is the export's own condition for a result that the entry
+/// point returns right after challoc's last `errno` write: a null result
+/// (`api::libc`'s `enomem` and `einval`), except a `realloc` (or
+/// `reallocarray`) of a block to size 0, and `posix_memalign`'s
+/// `ENOMEM`. Under it the claim holds. Without it the claim can fail: a
+/// libc call in trusted code may write `errno` while the token keeps its
+/// value ([`ThreadErrno`]; `pthread_setspecific` failing when a call
+/// creates its thread's heap, [`get_errno`]'s doc), and then the C caller
+/// reads that write. A `realloc` to size 0 is such a call: it frees the
+/// block, the free may create the thread's heap, and it returns null
+/// with no `errno` write of challoc's after that. Verus proves an
+/// export's `c_errno()` clauses only where its `failed` holds, so a
+/// clause about a success path, or that `errno` is unchanged after a
+/// `realloc` to size 0, does not verify. Verus does not check `failed`
+/// itself: an export that passed `true` would get the claim on every
+/// path. The shape test requires each export's own condition, as the
+/// exports spell them.
+///
+/// It lets an export's `ensures` restate its callee's `errno` claims,
+/// which name the lent token, in terms the C caller sees: a nullable
+/// export that returns null where its callee returned a block cannot
+/// prove `c_errno() == ENOMEM` from the callee's `ensures`. Verus does
+/// not stop the export from writing the token itself before the axiom;
+/// the shape test does. Called only by the `extern "C"` exports of
+/// `api::libc`, at most once each, on the token it lent, right after the
+/// call whose result it returns, and only exports lend tokens
+/// (`api::tests::exports_return_their_callees_result` checks the shape,
+/// the call sites and each export's `failed`).
+pub axiom fn axiom_errno_at_return(tracked e: ThreadErrno, failed: bool)
+    ensures
+        failed ==> c_errno() == e.val(),
+;
 
 /// Trusted: writes `e` to the calling thread's `errno` through libc's
 /// pointer.
