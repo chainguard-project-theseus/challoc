@@ -15,5 +15,9 @@ axiom_fork_resumed_sig	platform/kernel fact	none (assumption)
 axiom_fork_resumed	platform/kernel fact	none (assumption)
 # The fork child's orphaned feature line: only the forking thread runs there.
 axiom_line_orphaned	allocator invariant	none (assumption)
-# A raw-pointer projection of a static: the pointer `Shared::storage` names.
-shared_ptr	UnsafeCell/volatile/transmute	RefinedRust
+# Raw-pointer projections of the init-once statics: each returns one pointer,
+# its static's storage, and `shared_ptr` and `shared_storage_ptr` agree.
+shared_ptr	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: api::kani_statics::shared_ptrs_agree; not checked: that it carries the provenance of `shared_storage_ptr`'s pointer, which it derives another way (the harness compares addresses))
+shared_storage_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::shared_ptrs_agree)
+features_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)
+line_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)

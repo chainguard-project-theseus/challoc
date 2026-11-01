@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_t...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
-| `EMPTY_TABLE` | external_body const | core library | Kani | trusted |
+| `EMPTY_TABLE` | external_body const | core library | Kani | discharged |
 | `axiom_heap_use` | axiom | C-program contract | none (assumption) | trusted |
 | `heap_at` | external_body | allocator invariant | none (assumption) | trusted |
 
@@ -29,7 +29,7 @@ pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
 ## `EMPTY_TABLE`
 
 src/heap/tcaches.rs:64. Kind: external_body const. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: heap::tcaches::kani_tcaches::empty_table_is_null).
 
 > The empty table [`Tcaches::init`] writes, every entry null.
 

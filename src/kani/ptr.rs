@@ -190,7 +190,8 @@ fn ptr_add() {
 
 /// The bytes of `T`s.
 fn bytes_of<T>(a: &[T]) -> &[u8] {
-    // SAFETY: the plain-integer `T`s of these harnesses have no padding.
+    // SAFETY: the `T`s of these harnesses (integers, `bool` and pointers)
+    // have no padding.
     unsafe { core::slice::from_raw_parts(a.as_ptr().cast::<u8>(), size_of::<T>() * a.len()) }
 }
 
@@ -626,7 +627,7 @@ fn write_unaligned_on<T: Copy, const N: usize>(any: fn() -> T) {
                 // SAFETY: as above.
                 unsafe { core::ptr::write_unaligned(p, v) };
             }
-            let vb = ne8(&v);
+            let vb = bytes_of(core::slice::from_ref(&v));
             for k in 0..N {
                 let want = if k >= i && k < i + size_of::<T>() {
                     vb[k - i]
@@ -637,16 +638,6 @@ fn write_unaligned_on<T: Copy, const N: usize>(any: fn() -> T) {
             }
         }
     }
-}
-
-/// The bytes of `v`, native order, zero-padded to 8.
-fn ne8<T: Copy>(v: &T) -> [u8; 8] {
-    let mut b = [0u8; 8];
-    // SAFETY: `size_of::<T>() <= 8` at every `T` below, all without padding.
-    unsafe {
-        core::ptr::copy_nonoverlapping(v as *const T as *const u8, b.as_mut_ptr(), size_of::<T>())
-    };
-    b
 }
 
 /// `core::ptr::write_unaligned::<T>` and `<*mut T>::write_unaligned`: no

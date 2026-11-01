@@ -18,13 +18,13 @@ file.
 | `line_load` | external_body | atomics primitive | loom/GenMC | trusted |
 | `line_co...change` | external_body | atomics primitive | loom/GenMC | trusted |
 | `line_store` | external_body | atomics primitive | loom/GenMC | trusted |
-| `shared_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
+| `shared_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | trusted |
 | `shared_base` | external_body | inline asm | Islaris/Isla | trusted |
 | `line_ready` | no_decreases | termination | loom/GenMC | trusted |
 | `init_slow` | no_decreases | termination | loom/GenMC | trusted |
-| `shared_...ge_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
-| `features_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
-| `line_ptr` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
+| `shared_...ge_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
+| `features_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
+| `line_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `axiom_statics` | axiom | allocator invariant | none (assumption) | trusted |
 | `atfork_handlers` | external_body | function pointer | none (assumption) | trusted |
 | `axiom_f..._state` | axiom | platform/kernel fact | none (assumption) | trusted |
@@ -210,7 +210,7 @@ fn line_store(v: u8, ordering: Ordering, Tracked(perm): Tracked<&mut LinePerm>)
 ## `shared_ptr`
 
 src/api/mod.rs:774. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: api::kani_statics::shared_ptrs_agree; not checked: that it carries the provenance of `shared_storage_ptr`'s pointer, which it derives another way (the harness compares addresses)).
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
 
@@ -270,7 +270,7 @@ fn init_slow() -> (r: &'static Shared)
 ## `shared_storage_ptr`
 
 src/api/mod.rs:1166. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: discharged (Kani: api::kani_statics::shared_ptrs_agree).
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
 
@@ -284,7 +284,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 ## `features_ptr`
 
 src/api/mod.rs:1182. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURES`].
 
@@ -298,7 +298,7 @@ fn features_ptr() -> (p: *mut Features)
 ## `line_ptr`
 
 src/api/mod.rs:1194. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURE_LINE`].
 

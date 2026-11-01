@@ -13,7 +13,7 @@ file.
 ## `axiom_class_table_wf`
 
 src/vspec/class.rs:12. Kind: axiom. Category: allocator invariant.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: page sizes outside 4 to 64 KiB, and that `class_table()` is the table every reader sees, which is the `Sync` impl's argument).
 
 > Every entry of the class table is well formed and has its class's size: the facts [`crate::layout::ClassTable::table`] returns with every read, available to proofs that do not read the table themselves (same trust).
 

@@ -3660,3 +3660,62 @@ mod tests {
         unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
     }
 }
+
+/// Kani checks of the static-cell pointers `shared_ptr`,
+/// `shared_storage_ptr`, `features_ptr` and `line_ptr`
+/// (`verus/ledger/src/api/mod.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_statics {
+    use super::{
+        FEATURE_LINE, FEATURES, FeatureLine, Features, SHARED, Shared, features_ptr, line_ptr,
+        shared_ptr, shared_storage_ptr,
+    };
+    use core::mem::{align_of, size_of};
+
+    /// The storage of a `Global<T>` at `p`, as the permissions
+    /// `axiom_statics` and `Shared::init` hand out for it need it:
+    /// non-null, aligned for `T`, and its first and last bytes writable
+    /// through `p` (Kani fails a write outside the object `p` is derived
+    /// from), so the `size_of::<T>()` bytes from `p` are the cell.
+    fn is_cell<T>(p: *mut T, cell: *const u8) {
+        assert!(!p.is_null());
+        assert!(p as usize % align_of::<T>() == 0);
+        assert!(p as usize == cell as usize);
+        let b = p.cast::<u8>();
+        // SAFETY: the static's `MaybeUninit<T>` storage, written only here
+        // (no other code runs in a harness).
+        unsafe {
+            b.write(0);
+            b.add(size_of::<T>() - 1).write(0);
+        }
+    }
+
+    /// `shared_storage_ptr`, `ensures p == Shared::storage()`, and
+    /// `shared_ptr`, `ensures r == Shared::storage() as *const Shared`,
+    /// with `Shared::storage` uninterpreted: every call of either returns
+    /// one pointer, the same for both (both name `Shared::storage()`).
+    /// Beyond the contracts, it is `SHARED`'s storage (`is_cell`).
+    #[kani::proof]
+    fn shared_ptrs_agree() {
+        let p = shared_storage_ptr();
+        assert!(shared_storage_ptr() == p);
+        assert!(shared_ptr() == p as *const Shared);
+        assert!(shared_ptr() == shared_ptr());
+        is_cell(p, (&raw const SHARED).cast());
+    }
+
+    /// `features_ptr`, `ensures p == features_storage()`, and `line_ptr`,
+    /// `ensures p == line_storage()`, both uninterpreted: every call
+    /// returns the same pointer. Beyond the contracts, each is its
+    /// static's storage (`is_cell`).
+    #[kani::proof]
+    fn feature_ptrs_fixed() {
+        let f = features_ptr();
+        assert!(features_ptr() == f);
+        is_cell::<Features>(f, (&raw const FEATURES).cast());
+        let l = line_ptr();
+        assert!(line_ptr() == l);
+        is_cell::<FeatureLine>(l, (&raw const FEATURE_LINE).cast());
+    }
+}

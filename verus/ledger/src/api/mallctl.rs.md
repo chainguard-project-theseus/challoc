@@ -7,14 +7,14 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `VERSION` | external_body const | core library | none (assumption) | trusted |
+| `VERSION` | external_body const | core library | Kani | discharged |
 | `root` | external_body | allocator invariant | Verus | trusted |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
 ## `VERSION`
 
 src/api/mallctl.rs:111. Kind: external_body const. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: api::mallctl::kani_root::version_is_version_str).
 
 > [`VERSION_STR`] for verified code, its value opaque to the verifier.
 
