@@ -25,7 +25,7 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
 
 ## `call_throw_bad_alloc`
 
-src/api/cxx.rs:145. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:155. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call `std::__throw_bad_alloc` at `t`, its non-null address ([`is_throw_bad_alloc`]).

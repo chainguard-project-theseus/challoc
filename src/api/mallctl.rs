@@ -4242,9 +4242,17 @@ mod tests {
         assert!(a >= 1);
         assert!(s.arenas.get_existing(a as u16).is_some());
         assert!(get::<c_uint>("arenas.narenas") > a);
-        let p = mallocx(500, mallocx_arena(a as u16) as c_int);
+        let p = mallocx(
+            500,
+            mallocx_arena(a as u16) as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!p.is_null());
-        let h = mallocx(2 << 20, mallocx_arena(a as u16) as c_int);
+        let h = mallocx(
+            2 << 20,
+            mallocx_arena(a as u16) as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         // arenas.lookup finds both tiers; garbage is EFAULT, not an abort.
         for q in [p, h] {
             let mut out: c_uint = 0;
@@ -4304,8 +4312,18 @@ mod tests {
         assert_eq!(set("arena.4096.dirty_decay_ms", default), 0);
         assert_eq!(get::<isize>("arena.4096.dirty_decay_ms"), default);
         // Free everything in the arena, then purge: its Empty slab goes.
-        dallocx(p, 0, vstd::prelude::Tracked::assume_new());
-        dallocx(h, 0, vstd::prelude::Tracked::assume_new());
+        dallocx(
+            p,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
+        dallocx(
+            h,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         let arena = s
             .arena(a as u16, vstd::prelude::Tracked::assume_new())
             .unwrap();
@@ -4376,7 +4394,11 @@ mod tests {
             get::<c_uint>("arenas.narenas") >= narenas_before,
             "destroy retires no index"
         );
-        let again = mallocx(500, mallocx_arena(a as u16) as c_int);
+        let again = mallocx(
+            500,
+            mallocx_arena(a as u16) as c_int,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(
             !again.is_null(),
             "the destroyed arena still serves MALLOCX_ARENA allocations"
@@ -4391,7 +4413,12 @@ mod tests {
             0,
             "destroy is repeatable"
         );
-        dallocx(again, 0, vstd::prelude::Tracked::assume_new());
+        dallocx(
+            again,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
     }
 
     #[test]
@@ -4487,9 +4514,14 @@ mod tests {
         // Explicit caches.
         let t: c_uint = get("tcache.create");
         let flags = mallocx_tcache(t as u16) as c_int;
-        let e = mallocx(200, flags);
+        let e = mallocx(200, flags, vstd::prelude::Tracked::assume_new());
         let c = crate::layout::class_of(200).unwrap();
-        dallocx(e, flags, vstd::prelude::Tracked::assume_new());
+        dallocx(
+            e,
+            flags,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         let th = s.tcaches.get(t as u16).unwrap();
         assert!(th.cache_in(th.arena(), c).unwrap().len() >= 1);
         assert_eq!(set("tcache.flush", t), 0);
@@ -4506,7 +4538,13 @@ mod tests {
         let c = crate::layout::class_of(100).unwrap();
         let cls = &CLASSES[c];
         let ptrs: Vec<*mut u8> = (0..500)
-            .map(|_| mallocx(100, MALLOCX_TCACHE_NONE as c_int))
+            .map(|_| {
+                mallocx(
+                    100,
+                    MALLOCX_TCACHE_NONE as c_int,
+                    vstd::prelude::Tracked::assume_new(),
+                )
+            })
             .collect();
         // Direct allocations on a thread that has no heap yet come from
         // arena 0 (`heap::mallocx::alloc`, `Tcache::None`); once the thread has a
@@ -4593,8 +4631,8 @@ mod tests {
         // A huge run is one region of its own, and so is a slot of a class
         // above BIN_MAX (reported like jemalloc's large extents); a
         // non-allocation is zeros.
-        let h = mallocx(3 << 20, 0);
-        let m = mallocx(100 << 10, 0);
+        let h = mallocx(3 << 20, 0, vstd::prelude::Tracked::assume_new());
+        let m = mallocx(100 << 10, 0, vstd::prelude::Tracked::assume_new());
         let cm = crate::layout::class_of(100 << 10).unwrap();
         assert!((NBINS..crate::layout::NCLASSES).contains(&cm));
         let stack = 0u64;
@@ -4632,17 +4670,33 @@ mod tests {
         // the thread's own arena.
         assert_eq!(owner_of(s, m as *const c_void), Some(0));
         let home = crate::heap::existing_heap(s).unwrap().arena();
-        let mid = mallocx(8 << 10, 0);
+        let mid = mallocx(8 << 10, 0, vstd::prelude::Tracked::assume_new());
         assert!(crate::layout::class_of(8 << 10).unwrap() >= NBINS);
         assert_eq!(owner_of(s, mid as *const c_void), Some(home));
-        dallocx(mid, 0, vstd::prelude::Tracked::assume_new());
-        dallocx(m, 0, vstd::prelude::Tracked::assume_new());
-        dallocx(h, 0, vstd::prelude::Tracked::assume_new());
+        dallocx(
+            mid,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
+        dallocx(
+            m,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
+        dallocx(
+            h,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         // A freed slot (direct release, so the bit is clear) is zeros too.
         let gone = ptrs[2] as *const c_void;
         dallocx(
             ptrs[2],
             MALLOCX_TCACHE_NONE as c_int,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(utilization(s, gone, true), Utilization::ZERO);
@@ -4653,6 +4707,7 @@ mod tests {
                 dallocx(
                     p,
                     MALLOCX_TCACHE_NONE as c_int,
+                    vstd::prelude::Tracked::assume_new(),
                     vstd::prelude::Tracked::assume_new(),
                 );
             }
