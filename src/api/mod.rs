@@ -52,25 +52,11 @@
 /// the `exports` modules, which are compiled out of the test binary (see
 /// `libc.rs`); `#[unsafe(no_mangle)]` exports each function under its own
 /// name, so the alias is spelled out in full at the definition.
-#[cfg(not(test))]
-macro_rules! export_pair {
-    ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? $body:block)*) => {
-        $(
-            $(#[$m])*
-            #[unsafe(no_mangle)]
-            pub extern "C" fn $name($($arg: $ty),*) $(-> $ret)? $body
-            $(#[$m])*
-            #[unsafe(no_mangle)]
-            pub extern "C" fn $je($($arg: $ty),*) $(-> $ret)? $body
-        )*
-    };
-}
-
-/// [`export_pair`] with the bodies inside `verus!`: Verus checks them,
-/// after granting each export the syscall and abort capabilities of a C
-/// entry point. A pair that returns a value names its result (`-> (r: T)`),
-/// and a pair may give both exports the same `ensures [..]` clauses, which
-/// state the Rust entry point's postcondition at the C boundary.
+/// The bodies are inside `verus!`: Verus checks them, after granting
+/// each export the syscall and abort capabilities of a C entry point. A
+/// pair that returns a value names its result (`-> (r: T)`), and a pair
+/// may give both exports the same `ensures [..]` clauses, which state the
+/// Rust entry point's postcondition at the C boundary.
 #[cfg(not(test))]
 macro_rules! verified_export_pair {
     ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> ($r:ident: $ret:ty))? $(ensures [$($ens:tt)*])? $body:block)*) => {
