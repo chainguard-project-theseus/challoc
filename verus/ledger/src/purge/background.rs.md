@@ -46,27 +46,27 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
 
 ## `spawn`
 
-src/purge/background.rs:649. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:652. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
 
-Body mints Tracked at line 669; mints Tracked at line 677.
+Body mints Tracked at line 672; mints Tracked at line 680.
 
 ```rust
-fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>, Ghost(fresh): Ghost<bool>) -> Option<::libc::pthread_t>
+fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()) || fresh,
+        old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()),
     ensures
         final(cell).kept(*old(cell)),
 ```
 
 ## `shared_arg`
 
-src/purge/background.rs:739. Kind: external_body. Category: raw pointer from C caller.
+src/purge/background.rs:742. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -79,7 +79,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ## `main`
 
-src/purge/background.rs:755. Kind: no_decreases. Category: termination.
+src/purge/background.rs:758. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -90,7 +90,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:855. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:858. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_lock`] is the raw lock of [`STATE`].

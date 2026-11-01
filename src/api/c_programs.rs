@@ -684,6 +684,13 @@ ctests! {
     c_setxid => [
         CTest { prog: "setxid", conf: Some("abort_conf:true,background_thread:true"), ..BASE },
     ];
+    /// `tests/c/bg_restart.c`: a thread with no heap restarts the
+    /// background thread; the heap its `pthread_join` creates is parked
+    /// for `pthread_create` and is the thread's heap afterwards, holding
+    /// the join's free and serving the thread's allocations.
+    c_bg_restart => [
+        CTest { prog: "bg_restart", conf: Some("abort_conf:true"), stdout_has: &["the join's free left"], ..BASE },
+    ];
     /// `tests/c/mlock_purge.c`: purge over `mlock`ed memory, whose
     /// `madvise` fails. A freed locked huge run and locked slabs survive
     /// `malloc_trim(0)`, the purge at free time, the decay walk and the
