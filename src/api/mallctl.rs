@@ -3606,6 +3606,50 @@ mod tests {
         mib[..len].to_vec()
     }
 
+    /// The read-only subtrees: `opt`, `arenas` and `stats` are entries 4,
+    /// 5 and 7 of the root, and no reader under them is one of the
+    /// `thread.*` readers, the only ones that may abort
+    /// (`Reader::aborts`): theorem "Read-only APIs never abort"
+    /// (`theorem_mallctl_reads_never_abort`) covers every read under them.
+    #[test]
+    fn read_only_subtrees_are_roots_4_5_and_7() {
+        assert_eq!(
+            (ROOT[4].name, ROOT[5].name, ROOT[7].name),
+            ("opt", "arenas", "stats")
+        );
+        fn readers(n: &Node, count: &mut usize) {
+            match n.entry {
+                Entry::Dir(children) => {
+                    for c in children {
+                        readers(c, count);
+                    }
+                }
+                Entry::Read(r) => {
+                    assert!(
+                        !matches!(
+                            r,
+                            Reader::ThreadAllocated
+                                | Reader::ThreadAllocatedp
+                                | Reader::ThreadDeallocated
+                                | Reader::ThreadDeallocatedp
+                        ),
+                        "`{}` is read by a `thread.*` reader",
+                        n.name
+                    );
+                    *count += 1;
+                }
+                Entry::Op(_) => {}
+            }
+        }
+        // The readers under `opt` (one per key), `arenas` and `stats`.
+        let counts = [4, 5, 7].map(|i| {
+            let mut count = 0;
+            readers(&ROOT[i], &mut count);
+            count
+        });
+        assert_eq!(counts, [KEYS.len(), 8, 35]);
+    }
+
     /// A pointer count whose triples overflow `usize` must not pass the
     /// length check: `n * 24` wrapping to the caller's 8-byte `oldlen`
     /// would have the loop read `n` pointers and write `3 * n` words.
