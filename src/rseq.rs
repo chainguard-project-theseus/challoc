@@ -423,3 +423,54 @@ mod tests {
         }
     }
 }
+
+/// Kani checks of `read_global` and `read_cpu_id`
+/// (`verus/ledger/src/rseq.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_rseq {
+    use super::{CPU_ID_OFFSET, read_cpu_id, read_global};
+    use vstd::prelude::Ghost;
+
+    /// `read_global`, `requires p@.addr != 0`, no `ensures`, at its two
+    /// instances (`isize`, `__rseq_offset`; `u32`, `__rseq_size` and
+    /// `__rseq_flags`), on a pointer to a live, aligned `T` holding any
+    /// value (the `# Safety` premise, which the `requires` does not
+    /// state): the read is defined (`can_dereference`, which checks the
+    /// alignment Kani 0.68 does not check on the read itself) and returns
+    /// the value.
+    #[kani::proof]
+    fn read_global_reads_the_value() {
+        let o: isize = kani::any();
+        let p = &raw const o;
+        assert!(kani::mem::can_dereference(p));
+        // SAFETY: `p` is the address of a live, aligned `isize`.
+        assert_eq!(unsafe { read_global(p) }, o);
+        let s: u32 = kani::any();
+        let q = &raw const s;
+        assert!(kani::mem::can_dereference(q));
+        // SAFETY: as above, for a `u32`.
+        assert_eq!(unsafe { read_global(q) }, s);
+    }
+
+    /// `read_cpu_id`, `requires size >= CPU_ID_OFFSET + 4` (`size` is
+    /// ghost), no `ensures`, on an area of `CPU_ID_OFFSET + 4` bytes, the
+    /// least for which the `requires` on `size` can hold, aligned for a
+    /// `u32` and holding any
+    /// bytes (the `# Safety` premise, which the `requires` does not
+    /// state): the volatile read stays inside the area, is defined
+    /// (`can_dereference` on the field) and returns the `cpu_id` field. A
+    /// longer area reads the same 4 bytes.
+    #[kani::proof]
+    fn read_cpu_id_reads_the_field() {
+        let mut area: [u32; (CPU_ID_OFFSET + 4) / 4] = kani::any();
+        let p = (&raw mut area).cast::<u8>();
+        // SAFETY: `CPU_ID_OFFSET` bytes in, inside the area.
+        let f = unsafe { p.add(CPU_ID_OFFSET) }.cast::<u32>();
+        assert!(kani::mem::can_dereference(f));
+        // SAFETY: `p` is an area of `CPU_ID_OFFSET + 4` bytes, aligned for
+        // a `u32`.
+        let r = unsafe { read_cpu_id(p, Ghost::assume_new()) };
+        assert_eq!(r, area[CPU_ID_OFFSET / 4]);
+    }
+}

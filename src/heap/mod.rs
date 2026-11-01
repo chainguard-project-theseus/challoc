@@ -103,7 +103,7 @@ use crate::lock::rank_class;
 use crate::vspec::cbuf::CCall;
 use crate::vspec::ctl::Change;
 use crate::vspec::zero::Zeroed;
-use fresh::{FreshHeap, init_fields};
+use fresh::{FreshHeap, init_fields, mark_bound, mark_rehome};
 use others::{node_block_layout, node_caches_detached, node_set_arena};
 use paths::invalid_free;
 #[cfg(test)]
@@ -4536,13 +4536,14 @@ fn assert_rekey_flushed(len: &u32)
 /// `head` is the permission to the 128 bytes of the heap at `h` before
 /// its home headers (its plain fields): what [`Heap::create_detached`]
 /// splits off the heap's block for [`init_fields`], which keeps it in the
-/// [`FreshHeap`] returned with the heap; `h` is not null and aligned for a
-/// `Heap` (64 bytes).
+/// [`FreshHeap`] returned with the heap; `h` is not null, aligned for a
+/// `Heap` (64 bytes), and `h + 128` is at most `usize::MAX`.
 pub(super) open spec fn heap_head(h: *mut Heap, head: vstd::raw_ptr::PointsToRaw) -> bool {
     &&& head.is_range(h@.addr as int, 128)
     &&& head.provenance() == h@.provenance
     &&& h@.addr != 0
     &&& h@.addr as int % 64 == 0
+    &&& h@.addr + 128 <= usize::MAX
 }
 
 /// [`Arenas::assign`](crate::arena::Arenas::assign) on the process's
@@ -4566,61 +4567,6 @@ fn assign_home(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u
         shared.arenas.lemma_homed(t@, arena as int);
     }
     (arena, t)
-}
-
-/// `(*h).bound = true` for a heap [`Heap::create`] has just made.
-/// A field store through the raw heap pointer, to a field [`init_fields`]
-/// wrote, inside the 128 bytes `s` holds the permission to
-/// ([`FreshHeap::head`], [`heap_head`]); it leaves the permission as it
-/// was and records the store in `s`. Trusted: that the store changes
-/// only `bound`, and that this is what `s` records, rests on what
-/// [`FreshHeap`] stands for.
-///
-/// # Safety
-/// `h` is a fresh heap, exclusively owned.
-#[inline(always)]
-#[verifier::external_body]
-unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
-    requires
-        old(s).heap() == h,
-        heap_head(h, old(s).head()),
-    ensures
-        final(s).heap() == h,
-        final(s).head() == old(s).head(),
-        final(s).arena() == old(s).arena(),
-        final(s).bound(),
-        final(s).shared() == old(s).shared(),
-{
-    // SAFETY: guaranteed by the caller.
-    unsafe { (*h).bound = true };
-}
-
-/// `(*h).rehome = true` for a thread heap [`Heap::create`] has just made
-/// and marked bound ([`mark_bound`]): it may still move its home
-/// ([`Heap::try_rehome`]). A field store through the raw heap pointer, to
-/// a field [`init_fields`] wrote (`false`), inside the 128 bytes `s` holds
-/// the permission to ([`FreshHeap::head`], [`heap_head`]) but after the
-/// fields the token records (`rehome` follows `rng`): it leaves the
-/// permission and the token as they were. Trusted: that the store
-/// changes only `rehome` (`arena` and `bound` among the bytes it keeps)
-/// rests on what [`FreshHeap`] stands for. A heap with `rehome` set is
-/// bound (a conjunct of [`Heap::homed_ok`]): the token must record
-/// [`mark_bound`]'s store first.
-///
-/// # Safety
-/// `h` is a fresh heap, exclusively owned.
-#[inline(always)]
-#[verifier::external_body]
-unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
-    requires
-        old(s).heap() == h,
-        heap_head(h, old(s).head()),
-        old(s).bound(),
-    ensures
-        *final(s) == *old(s),
-{
-    // SAFETY: guaranteed by the caller.
-    unsafe { (*h).rehome = true };
 }
 
 impl CachePerms {
@@ -7429,5 +7375,30 @@ mod kani_aborts {
         assert_flushed(&0);
         assert_refill_empty(&0);
         assert_rekey_flushed(&0);
+    }
+}
+
+/// Kani check of `Heap::arena_volatile` (`verus/ledger/src/heap/mod.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_volatile {
+    use super::Heap;
+
+    /// `Heap::arena_volatile`, no `requires`, no `ensures`: on a heap with
+    /// any `arena`, the volatile read through `&self` is defined
+    /// (`can_dereference` on the field, which checks the alignment Kani
+    /// 0.68 does not check on the read itself) and returns the field (more
+    /// than the contract states). The heap's other
+    /// fields are zero: the read touches only `arena`'s two bytes, and
+    /// `&self` makes it in bounds and aligned whatever they hold.
+    #[kani::proof]
+    fn arena_volatile_reads_arena() {
+        // SAFETY: every field of `Heap` is an integer, a `bool`, a raw
+        // pointer, an array of `CacheHeader`s (the same) or a ghost
+        // wrapper with no bytes, for each of which zero is a valid value.
+        let mut h: Heap = unsafe { core::mem::zeroed() };
+        h.arena = kani::any();
+        assert!(kani::mem::can_dereference(&raw const h.arena));
+        assert_eq!(h.arena_volatile(), h.arena);
     }
 }

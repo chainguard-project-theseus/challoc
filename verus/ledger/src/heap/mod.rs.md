@@ -10,10 +10,8 @@ file.
 | `assert_flushed` | external_body | panic/abort | Kani | discharged |
 | `assert_refill_empty` | external_body | panic/abort | Kani | discharged |
 | `assert_rekey_flushed` | external_body | panic/abort | Kani | discharged |
-| `mark_bound` | external_body | raw pointer (internal) | RefinedRust | trusted |
-| `mark_rehome` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `axiom_heap_block` | axiom | allocator invariant | Verus | trusted |
-| `Heap::a...latile` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
+| `Heap::a...latile` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 
 ## `assert_flushed`
 
@@ -60,46 +58,9 @@ fn assert_rekey_flushed(len: &u32)
         *len == 0,
 ```
 
-## `mark_bound`
-
-src/heap/mod.rs:4583. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
-
-> `(*h).bound = true` for a heap [`Heap::create`] has just made.
-
-```rust
-unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
-    requires
-        old(s).heap() == h,
-        heap_head(h, old(s).head()),
-    ensures
-        final(s).heap() == h,
-        final(s).head() == old(s).head(),
-        final(s).arena() == old(s).arena(),
-        final(s).bound(),
-        final(s).shared() == old(s).shared(),
-```
-
-## `mark_rehome`
-
-src/heap/mod.rs:4614. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
-
-> `(*h).rehome = true` for a thread heap [`Heap::create`] has just made and marked bound ([`mark_bound`]): it may still move its home ([`Heap::try_rehome`]).
-
-```rust
-unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap>)
-    requires
-        old(s).heap() == h,
-        heap_head(h, old(s).head()),
-        old(s).bound(),
-    ensures
-        *final(s) == *old(s),
-```
-
 ## `axiom_heap_block`
 
-src/heap/mod.rs:5462. Kind: axiom. Category: allocator invariant.
+src/heap/mod.rs:5408. Kind: axiom. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The block of the heap `heap` at `h`, which `Heap::create` took from [`Meta::alloc_raw`](crate::meta::Meta::alloc_raw), for `Heap::destroy` to give back: the permission to the block's `size_of::<Heap>()` bytes and the block's claim, for the permissions to the heap's home headers (the run from `h + 128`, [`home_hdr`]), which this takes out of the heap's cache permissions `perms` and uses up.
@@ -120,8 +81,8 @@ axiom fn axiom_heap_block(h: *mut Heap, heap: Heap, tracked perms: &mut CachePer
 
 ## `Heap::arena_volatile`
 
-src/heap/mod.rs:7277. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted.
+src/heap/mod.rs:7223. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+Tool: Kani. Status: discharged (Kani: heap::kani_volatile::arena_volatile_reads_arena).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.
 
