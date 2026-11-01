@@ -9,13 +9,13 @@ verus! {
 /// and valid for reads of the slice's `len * size_of::<T>()` bytes, at
 /// most `isize::MAX`. The read bound must be the read-only one a C
 /// caller's argument has (`r_len`, which only `vspec::cbuf`'s facts
-/// bound), not the read-write one of memory verified code holds a
-/// permission to (`rw_len`, `axiom_raw_valid`), whose bytes it may write
-/// through that permission while the slice lives. Not stated: that the
-/// elements are initialised `T`s and unchanged for `'a` (the one caller,
-/// `mallctl`'s `name_bytes`, reads the caller's string for the call and
-/// ties `'a` to the call's token). The length is the result's; its
-/// elements are not stated.
+/// bound), not the read-write one (`rw_len`) of memory verified code
+/// holds a permission to (`vspec::ptr::axiom_raw_readable`), whose bytes
+/// it may write through that permission while the slice lives. Not
+/// stated: that the elements are initialised `T`s and unchanged for `'a`
+/// (the one caller, `mallctl`'s `name_bytes`, reads the caller's string
+/// for the call and ties `'a` to the call's token). The length is the
+/// result's; its elements are not stated.
 pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *const T, len: usize) -> (r: &'a [T])
     requires
         data@.addr != 0,

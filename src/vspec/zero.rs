@@ -437,11 +437,12 @@ pub proof fn theorem_zeroed_memory(z: Zeroed, p: *mut u8, from: int, size: int)
 /// from the same bytes, a [`ZeroRaw`] or a `UserMem` lending them) is
 /// held across the fill; the token for what it wrote. Trusted: the
 /// `core` contract of `write_bytes` for `u8` (`p` non-null; the bytes
-/// valid for writes, which the permission stands for, as for
-/// `vspec::ptr::axiom_raw_valid`, whose premise a caller keeps too: a
-/// lazily committed table's bytes only once their page is committed)
-/// and its effect, which nothing in vstd states: the `n` bytes read as
-/// zero afterwards. The permission names no contents, so it is unchanged.
+/// valid for writes, which the permission, held `&mut`, stands for: the
+/// read-write memory `vspec::ptr::axiom_raw_readable` describes, with
+/// that axiom's premise, which a caller keeps too: a lazily committed
+/// table's bytes only once their page is committed) and its effect,
+/// which nothing in vstd states: the `n` bytes read as zero afterwards.
+/// The permission names no contents, so it is unchanged.
 #[verifier::external_body]
 #[inline(always)]
 pub unsafe fn zero_raw(p: *mut u8, n: usize, Tracked(raw): Tracked<&mut PointsToRaw>) -> (z: Tracked<Zeroed>)

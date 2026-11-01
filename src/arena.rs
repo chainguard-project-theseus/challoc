@@ -60,7 +60,7 @@ use crate::vspec::entry::EntryPerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::entry::entry_id;
 #[cfg(verus_keep_ghost)]
-use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
+use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_readable, in_alloc, ptr_add};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::zero::ZeroRaw;
 use vstd::atomic::{PAtomicPtr, PermissionPtr};
@@ -398,8 +398,8 @@ pub(crate) proof fn split_array<T, const N: usize>(tracked a: PointsTo<[T; N]>) 
     a.is_nonnull();
     a.is_aligned();
     let base = a.ptr() as *mut T;
-    let tracked mut raw = a.into_raw();
-    axiom_raw_valid(&mut raw, a.ptr() as *mut u8, N as int * size_of::<T>());
+    let tracked raw = a.into_raw();
+    axiom_raw_readable(&raw, a.ptr() as *mut u8, N as int * size_of::<T>());
     assert(0 * size_of::<T>() == 0) by (nonlinear_arith);
     split_elems(raw, base, 0, N as nat)
 }
@@ -675,8 +675,8 @@ impl Arena {
         let p = perm.ptr();
         perm.is_nonnull();
         perm.is_aligned();
-        let tracked mut raw = perm.into_raw();
-        axiom_raw_valid(&mut raw, p as *mut u8, size_of::<Arena>() as int);
+        let tracked raw = perm.into_raw();
+        axiom_raw_readable(&raw, p as *mut u8, size_of::<Arena>() as int);
         let tracked (index, raw) = take_field::<Arena, u16>(raw, p, A_INDEX, A_DECAY_NS as int);
         let tracked (decay_ns, raw) = take_field::<Arena, AtomicU64>(raw, p, A_DECAY_NS, A_SETS as int);
         let tracked (sets, raw) = take_field::<Arena, *const SetTable>(raw, p, A_SETS, A_SETS_PERM as int);
@@ -2051,8 +2051,8 @@ impl Arenas {
         let p = perm.ptr();
         perm.is_nonnull();
         perm.is_aligned();
-        let tracked mut raw = perm.into_raw();
-        axiom_raw_valid(&mut raw, p as *mut u8, size_of::<Arenas>() as int);
+        let tracked raw = perm.into_raw();
+        axiom_raw_readable(&raw, p as *mut u8, size_of::<Arenas>() as int);
         let tracked (table, raw) = take_field::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(raw, p, AR_TABLE, AR_BOUND as int);
         let tracked (bound, raw) = take_field::<Arenas, [AtomicU32; MAX_ARENAS]>(raw, p, AR_BOUND, AR_LOCK as int);
         let tracked (lock, raw) = take_field::<Arenas, Lock<Created>>(raw, p, AR_LOCK, AR_SPARE as int);

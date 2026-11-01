@@ -45,7 +45,7 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
 
 ## `copy_raw`
 
-src/vspec/user.rs:279. Kind: external_body. Category: raw pointer (internal).
+src/vspec/user.rs:280. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: vspec::user::kani_copy::copy_raw_copies, vspec::user::kani_copy::copy_raw_copies_within).
 
 > `copy_nonoverlapping(src, dst, n)` for `u8` with the permissions to both ranges, and its effect on `d`'s byte state: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.
