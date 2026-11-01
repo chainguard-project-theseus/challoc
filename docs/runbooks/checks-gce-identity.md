@@ -87,14 +87,14 @@ after the merge fails on a permission error; then:
      --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
    ```
 
-4. Re-run the floor check (GitHub's Re-run on a pull request), and once it
-   passes, delete `advisory: true` from `floor` in floor.yaml.
+4. Re-run the floor check on main (GitHub's Re-run on the postsubmit
+   check of main's latest commit), and once it passes, delete
+   `advisory: true` from `floor` in floor.yaml.
 
 ## Who gets it
 
-`ring: 1.member`: pull requests opened by chainguard-dev members (and
-Dependabot), and pushes to main. The floor checks also skip any pull
-request whose head is a fork, so an outside contributor's pull request
-never asks for the credential. To require review before a member's pull
-request can launch VMs, move the identity to `ring: 2` (released to a pull
-request by the platform's two-person approval, once that lands).
+`ring: 1.member`, with a single `allow` entry: postsubmit runs on main.
+The floor checks are postsubmit-only, so no pull request, a member's or a
+fork's, asks for the credential. To require review before a member's
+change can launch VMs at all, move the identity to `ring: 2` (released by
+the platform's two-person approval, once that lands).

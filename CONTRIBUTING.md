@@ -20,7 +20,10 @@ glibc 2.44 or newer, on host kernels 5.14 and newer, on x86_64 and
 aarch64 (the latter with 4, 16 or 64 KiB pages). Newer kernels and CPUs turn on more
 features at run time; they are never required. Other distributions,
 other libcs, older kernels and non-Linux hosts are out of scope. A change
-must not raise the floor.
+must not raise the floor. The `floor` check (ci/README.md) tests that on
+AlmaLinux 9's 5.14 kernel after each landing on main, not on pull
+requests, so a change that may need a newer kernel (a new syscall, flag
+or `/proc` file without a fallback) should say how it keeps the floor.
 
 ## Development environment
 
