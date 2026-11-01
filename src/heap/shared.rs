@@ -222,7 +222,8 @@ impl Shared {
     /// [`process_pages_id`](crate::meta::process_pages_id)'s, on the
     /// regions' page), and the statistics lock is at its rank
     /// ([`rank_stats`](crate::lock::rank_stats)); `region_hi` is the offset
-    /// bits past a class region, each table is its class's, and each class
+    /// bits past a class region, each table is its class's and keeps its
+    /// arrays in the metadata region ([`SlabTable::meta_ok`]), and each class
     /// line is well formed over its table ([`ClassLine::wf`]); the huge
     /// allocator covers the huge region on the regions' page, with its
     /// records from `meta`; [`PUSH_PAC`] is [`pac_mode`](super::pac_mode),
@@ -251,6 +252,7 @@ impl Shared {
         &&& self.meta.pages_id() == crate::meta::process_pages_id()
         &&& self.meta.page() == (1usize << self.regions.lg_page)
         &&& self.huge.spec_mid() == self.meta.live_id()
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
         &&& self.arena0.spec_index() == 0
         &&& self.stats.rank() == crate::lock::rank_stats()
         &&& self.arenas.wf()
@@ -277,6 +279,20 @@ impl Shared {
             self.regions == crate::layout::process_regions(),
             self.regions.separated(),
             self.meta.is_process(),
+    {
+    }
+
+    /// `meta` is the process's metadata allocator, and each class table
+    /// keeps its arrays in the metadata region ([`Shared::wf`]). Kept apart
+    /// from [`Shared::lemma_wf`] so that lemma's many callers do not get the
+    /// `meta_ok` quantifier in their context; `theorem_metadata_integrity`
+    /// is the one caller that needs it.
+    pub(crate) proof fn lemma_meta(&self)
+        requires
+            self.wf(),
+        ensures
+            self.meta.is_process(),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok(),
     {
     }
 
@@ -2122,6 +2138,7 @@ impl Shared {
                     elems_init(table_perms, 0, c as int),
                     elems_uninit(table_perms, c as int, NCLASSES as int),
                     forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().spec_class() == d,
+                    forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().meta_ok(),
                     ord.allows(rank_meta()),
                     ord.allows(rank_table(0)),
                     forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::SlotLoc(d)),
@@ -2152,7 +2169,7 @@ impl Shared {
                                 assert(before.contains_key(d));
                             }
                             assert forall|d: int| 0 <= d < NCLASSES implies (d < c + 1 ==> (#[trigger] table_perms[d]).is_init()
-                                && table_perms[d].value().spec_class() == d)
+                                && table_perms[d].value().spec_class() == d && table_perms[d].value().meta_ok())
                                 && (c + 1 <= d ==> table_perms[d].is_uninit()) by {
                                 if d != c {
                                     assert(before[d] == table_perms[d]);
@@ -2176,6 +2193,7 @@ impl Shared {
                 }
                 assert forall|d: int| 0 <= d < NCLASSES implies (#[trigger] table_perms[d]).is_init() by {}
                 assert forall|d: int| 0 <= d < NCLASSES implies (#[trigger] table_perms[d]).value().spec_class() == d by {}
+                assert forall|d: int| 0 <= d < NCLASSES implies (#[trigger] table_perms[d]).value().meta_ok() by {}
                 assert(in_alloc(tables, NCLASSES as int * size_of::<SlabTable>()));
             }
             // Each class's line, from its table and the regions, and the
@@ -2312,7 +2330,8 @@ impl Shared {
                 assert(shared_at(this).regions == regions0);
                 // The class lines and tables are the ones written above.
                 assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] shared_at(this).tables[d].spec_class() == d
-                    && shared_at(this).lines[d].wf(shared_at(this).tables[d], shared_at(this).regions, d) by {
+                    && shared_at(this).lines[d].wf(shared_at(this).tables[d], shared_at(this).regions, d)
+                    && shared_at(this).tables[d].meta_ok() by {
                     assert(table_perms.contains_key(d));
                     assert(line_perms.contains_key(d));
                 }

@@ -2331,6 +2331,7 @@ impl Inner {
         &&& self.np == g0.np
         &&& self.lg == g0.lg
         &&& self.free.map.wf()
+        &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
         &&& self.free.own_claimed()
         &&& self.free.l1_words <= 0x1_0000_0000
@@ -2979,6 +2980,7 @@ impl Inner {
         &&& coalesced(self.descs@)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@)
         &&& self.free.map.wf()
+        &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
         &&& self.free.own_claimed()
         &&& self.table.spec_mid() == self.mid@
@@ -3100,6 +3102,7 @@ impl Inner {
                 ==> self.elist@.contains(d),
             forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_claimed(self.dclaims@, d, self.mid@),
             self.free.map.wf(),
+            self.free.map.in_meta(),
             self.free.map.spec_nbits() == self.np@,
             self.free.own_claimed(),
             self.table.spec_mid() == self.mid@,
@@ -3158,6 +3161,48 @@ impl Inner {
         assert(run_ok(self.descs@[d2].value(), self.lg@));
         if d1 != d2 {
             assert(apart(self.descs@[d1].value(), self.descs@[d2].value()));
+        }
+    }
+
+    /// `d` is a live descriptor: the lock's value holds its permission,
+    /// which every descriptor read and write goes through.
+    pub(crate) closed spec fn has_desc(&self, d: *mut HugeDesc) -> bool {
+        self.descs@.contains_key(d)
+    }
+
+    /// Slots in the descriptor table.
+    pub(crate) closed spec fn table_cap(&self) -> int {
+        self.table.spec_cap()
+    }
+
+    /// The address of descriptor table slot `i` (`Table::slot_addr`).
+    pub(crate) closed spec fn table_slot_addr(&self, i: int) -> int {
+        self.table.slot_addr(i)
+    }
+
+    /// The free-page set's bitmap.
+    pub(crate) closed spec fn free_map(&self) -> crate::bitmap::TwoLevelBitmap {
+        self.free.map
+    }
+
+    /// The memory the huge lock's holders write through permissions is
+    /// metadata: every live descriptor ([`alloc_desc`] takes each from the
+    /// process's `Meta`), every slot of the descriptor table
+    /// (`Table::storage`) and every word of the free-page bitmap
+    /// (`Set::new`).
+    pub(crate) proof fn lemma_in_meta(&self, d: *mut HugeDesc, i: int)
+        requires
+            self.wf(),
+        ensures
+            vstd::layout::size_of::<HugeDesc>() == 48,
+            self.has_desc(d) ==> desc_in_meta(d),
+            crate::layout::process_regions().wf() && 0 <= i < self.table_cap() ==> crate::layout::process_regions().in_meta(self.table_slot_addr(i), 16),
+            self.free_map().wf(),
+            self.free_map().in_meta(),
+    {
+        if crate::layout::process_regions().wf() && 0 <= i < self.table_cap() {
+            self.table.lemma_wf_storage();
+            self.table.lemma_slots_in_meta(i);
         }
     }
 
@@ -5557,7 +5602,7 @@ impl Huge {
                 assert(g.table.wf());
                 assert(perms_ok(g.descs@));
                 assert(g.next_page == t.nm && g.np == old(g).np && g.mid == old(g).mid);
-                assert(g.free.map.wf() && g.free.map.spec_nbits() == g.np@);
+                assert(g.free.map.wf() && g.free.map.in_meta() && g.free.map.spec_nbits() == g.np@);
                 assert(elist_ok(g.empty_head, g.empty_tail, g.elist@, g.descs@));
             }
             // The run's token: its extent and pages enter the run
@@ -5756,6 +5801,7 @@ impl Inner {
         &&& self.np == g0.np
         &&& self.lg == g0.lg
         &&& self.free.map.wf()
+        &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
         &&& self.free.own_claimed()
         &&& self.free.l1_words <= 0x1_0000_0000
@@ -6399,6 +6445,7 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         },
         forall|j: int| 0 <= j < 6 ==> #[trigger] stat(g1.stats, j) == stat(gl.stats, j) + weight(m.vm, j),
         g1.free.map.wf(),
+        g1.free.map.in_meta(),
         g1.free.map.spec_nbits() == g1.np@,
         g1.free.own_claimed(),
         g1.free.l1_words <= 0x1_0000_0000,
@@ -7062,7 +7109,7 @@ impl Huge {
             } else {
                 t0.lookup(key)
             } by {}
-            assert(g0.free.own_claimed() && g0.free.l1_words <= 0x1_0000_0000) by {
+            assert(g0.free.map.in_meta() && g0.free.own_claimed() && g0.free.l1_words <= 0x1_0000_0000) by {
                 reveal(Inner::wf);
             }
             assert(gl.free.map.place() == g0.free.map.place());

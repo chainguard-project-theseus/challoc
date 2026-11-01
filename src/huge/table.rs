@@ -163,6 +163,12 @@ spec fn lookup(v: Seq<Entry>, key: usize) -> Option<*mut HugeDesc> {
     }
 }
 
+/// The `2^lg` entries from `p` on are metadata
+/// ([`Regions::in_meta`](crate::layout::Regions::in_meta)).
+spec fn entries_in_meta(p: *mut Entry, lg: u32) -> bool {
+    crate::layout::process_regions().in_meta(p@.addr as int, cap_of(lg) * 16)
+}
+
 /// The permissions `slots` cover `2^lg` entries from `p` on.
 spec fn covers(p: *mut Entry, lg: u32, slots: Map<int, PointsTo<Entry>>) -> bool {
     forall|i: int| 0 <= i < cap_of(lg) ==> slot_at(p, slots, i)
@@ -384,7 +390,9 @@ impl Table {
 
     /// Zeroed storage for `1 << lg_cap` entries, all empty, with what the
     /// table holds of it ([`Own`]): the permission for each entry; the
-    /// block's claim when it is binned; and `meta`'s identity. Trusted:
+    /// block's claim when it is binned; and `meta`'s identity. The storage
+    /// is `meta`'s (`Meta::holds`, which `Meta::alloc_zeroed` and
+    /// `Meta::reserve_committed` ensure of what they return). Trusted:
     /// `Meta::alloc_zeroed` hands out a binned block's permission, claim
     /// and zero token (its contract), but `Meta::reserve_committed` hands
     /// out no permission for a reserved block, so a variant of it that
@@ -406,6 +414,7 @@ impl Table {
                 16 * cap_of(lg_cap),
                 16,
             ))),
+            r matches Some((p, _, _)) ==> meta.holds(p@.addr as int, cap_of(lg_cap) * 16),
             r matches Some((_, _, own)) ==> own@.mid@ == meta.live_id(),
             r matches Some((p, _, _)) ==> p@.addr + 16 * cap_of(lg_cap) <= usize::MAX,
     {
@@ -488,12 +497,14 @@ impl Table {
         lookup(self.view(), key)
     }
 
-    /// The storage: `2^lg_cap` slots, each with its permission, below the
-    /// top of the address space; binned storage with its claim, from the
-    /// `Meta` the table was made with ([`Table::spec_mid`]).
+    /// The storage: `2^lg_cap` slots, each with its permission, in the
+    /// metadata region, below the top of the address space; binned
+    /// storage with its claim, from the `Meta` the table was made with
+    /// ([`Table::spec_mid`]).
     pub(super) closed spec fn storage_ok(self) -> bool {
         &&& LG_INITIAL_TABLE <= self.lg_cap <= 58
         &&& covers(self.entries, self.lg_cap, self.own@.slots)
+        &&& entries_in_meta(self.entries, self.lg_cap)
         &&& self.entries@.addr + 16 * cap_of(self.lg_cap) <= usize::MAX
         &&& self.binned ==> (self.own@.claim matches Some(c) && c.held(
             self.own@.mid@,
@@ -507,6 +518,25 @@ impl Table {
     /// comes from.
     pub(super) closed spec fn spec_mid(self) -> vstd::resource::Loc {
         self.own@.mid@
+    }
+
+    /// The address of slot `i`: where the permission the table reads and
+    /// writes it through ([`Table::slot`], [`Table::set_slot`]) points.
+    pub(super) closed spec fn slot_addr(self, i: int) -> int {
+        self.own@.slots[i].ptr()@.addr as int
+    }
+
+    /// Every slot is 16 bytes of the metadata region.
+    pub(super) proof fn lemma_slots_in_meta(self, i: int)
+        requires
+            self.storage_ok(),
+            0 <= i < self.spec_cap(),
+            crate::layout::process_regions().wf(),
+        ensures
+            crate::layout::process_regions().in_meta(self.slot_addr(i), 16),
+    {
+        assert(slot_at(self.entries, self.own@.slots, i));
+        crate::vspec::ptr::axiom_ptr_add_addr(self.entries, i as usize);
     }
 
     /// The table invariant.
@@ -530,6 +560,7 @@ impl Table {
     pub(super) fn new(meta: &Meta, page: usize) -> (r: Option<Table>)
         requires
             crate::sys::may_syscall(),
+            meta.is_process(),
             meta::is_pow2(page),
         ensures
             r matches Some(t) ==> t.wf() && t.spec_count() == 0 && forall|k: usize| t.lookup(k) is None,
@@ -905,6 +936,7 @@ impl Table {
     pub(super) fn ensure(&mut self, meta: &Meta, page: usize, extra: usize) -> (r: Result<(), ()>)
         requires
             crate::sys::may_syscall(),
+            meta.is_process(),
             meta::is_pow2(page),
             old(self).wf(),
             old(self).spec_mid() == meta.live_id(),
@@ -1690,11 +1722,15 @@ mod tests {
     }
 }
 
-/// Kani harness for the part of `Table::storage`'s trust that Kani can
+/// Kani harnesses for the parts of `Table::storage`'s trust that Kani can
 /// run (`verus/ledger/src/huge/table.rs.md`).
 #[cfg(kani)]
 mod kani_table {
-    use super::Entry;
+    use super::{Entry, Layout, Meta, MetaClaim, Table, Tracked};
+    use crate::meta::{MAX_ALIGN, MAX_BINNED};
+    use crate::vspec::zero::Zeroed;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use vstd::raw_ptr::PointsToRaw;
 
     /// `Table::storage`'s last trusted step: an all-zero `Entry` is empty.
     /// 16 zero bytes, aligned as an `Entry`, read as an `Entry` (a
@@ -1712,5 +1748,80 @@ mod kani_table {
         let e: Entry = unsafe { core::ptr::read(z.as_ptr().cast::<Entry>()) };
         assert_eq!(e.desc as usize, 0);
         assert_eq!(e.key, 0);
+    }
+
+    /// The region `storage_in_meta` gives its `Meta`, `[REGION_BASE,
+    /// REGION_BASE + REGION_LEN)`, for the stubs below to place blocks in.
+    static REGION_BASE: AtomicUsize = AtomicUsize::new(0);
+    static REGION_LEN: AtomicUsize = AtomicUsize::new(0);
+
+    /// `[a, a + len)` lies in the region (`Meta::holds`).
+    fn in_region(a: usize, len: usize) -> bool {
+        let base = REGION_BASE.load(Ordering::Relaxed) as u128;
+        let end = base + REGION_LEN.load(Ordering::Relaxed) as u128;
+        base <= a as u128 && a as u128 + len as u128 <= end
+    }
+
+    /// `Meta::alloc_zeroed` as its contract states: its `requires` on
+    /// `layout` asserted, then null, or a block aligned to `layout` that
+    /// the region holds.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    fn stub_alloc_zeroed(
+        _meta: &Meta,
+        layout: Layout,
+    ) -> (*mut u8, Tracked<(PointsToRaw, MetaClaim)>, Tracked<Zeroed>) {
+        assert!(layout.align() <= MAX_ALIGN && layout.size() <= MAX_BINNED);
+        let p: usize = kani::any();
+        kani::assume(p == 0 || (p % layout.align() == 0 && in_region(p, layout.size())));
+        (p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
+    }
+
+    /// `Meta::reserve_committed` as its contract states: its `requires`
+    /// (`align` a power of two) asserted, then `None`, or a nonzero start
+    /// aligned to `align` whose `len` bytes the region holds.
+    #[allow(dead_code)] // As `stub_alloc_zeroed`.
+    fn stub_reserve_committed(_meta: &Meta, len: usize, align: usize) -> Option<usize> {
+        assert!(align.is_power_of_two());
+        let s: usize = kani::any();
+        if kani::any() {
+            kani::assume(s > 0 && s % align == 0 && in_region(s, len));
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    /// `Table::storage`'s `meta.holds(p, cap * 16)` ensures: for every
+    /// region `Meta::owning` accepts with a page of `2^4` to `2^30` bytes,
+    /// every power-of-two `page` argument and `lg_cap <= 58`, the table it
+    /// returns lies in the region. `Meta::alloc_zeroed` and
+    /// `Meta::reserve_committed` are stubbed by their contracts (verified
+    /// by Verus), so this checks the rest of the body: that each branch
+    /// asks for `16 << lg_cap` bytes and returns that block's start.
+    #[kani::proof]
+    #[kani::stub(Meta::alloc_zeroed, stub_alloc_zeroed)]
+    #[kani::stub(Meta::reserve_committed, stub_reserve_committed)]
+    fn storage_in_meta() {
+        let lg_page: u32 = kani::any();
+        kani::assume(4 <= lg_page && lg_page <= 30);
+        let page = 1usize << lg_page;
+        let lg_align: u32 = kani::any();
+        kani::assume(lg_align < 64);
+        let base: usize = kani::any();
+        let len: usize = kani::any();
+        kani::assume(base > 0 && base % page == 0 && len > 0 && len % page == 0);
+        kani::assume(base as u128 + len as u128 <= 0x200_0000_0000_0000);
+        REGION_BASE.store(base, Ordering::Relaxed);
+        REGION_LEN.store(len, Ordering::Relaxed);
+        let meta = Meta::owning(base, len, page, Tracked::assume_new());
+        let lg_cap: u32 = kani::any();
+        kani::assume(lg_cap <= 58);
+        if let Some((p, binned, _)) = Table::storage(&meta, 1usize << lg_align, lg_cap) {
+            let bytes = 16u128 << lg_cap;
+            assert!(base as u128 <= p as usize as u128);
+            assert!(p as usize as u128 + bytes <= base as u128 + len as u128);
+            kani::cover!(binned, "a binned table");
+            kani::cover!(!binned, "a reserved table");
+        }
     }
 }
