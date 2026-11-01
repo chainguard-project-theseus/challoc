@@ -116,6 +116,8 @@ pub mod print;
 
 #[cfg(test)]
 mod c_programs;
+#[cfg(test)]
+mod restated;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -912,7 +914,9 @@ verus! {
 /// allocate. Like `malloc`, not async-signal-safe: a signal handler that
 /// asks for the line while its own thread is building it waits forever.
 /// Hands back the line's permissions, frozen at `LINE_READY`
-/// ([`LinePred`]).
+/// ([`LinePred`]). `challoc_features`'s restatement in
+/// `theorem_read_only_never_aborts` includes its calls (checked with
+/// `challoc_features`'s).
 fn feature_line_ready() -> (r: Tracked<&'static LineCell>)
     requires
         crate::sys::may_abort(),
@@ -983,6 +987,10 @@ pub fn feature_line() -> &'static str
 /// The string is static, built once at its first request without
 /// allocating, and identical to the `Kernel and CPU features:` line of
 /// `malloc_stats_print`. Initialises the allocator if needed.
+/// `theorem_read_only_never_aborts` restates its calls after `shared()`,
+/// `feature_line_ready`'s included;
+/// `api::restated::read_only_restatements_match_their_bodies` checks
+/// that the two make the same calls.
 #[unsafe(no_mangle)]
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     proof {
@@ -1010,8 +1018,11 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
 /// `experimental.utilization`, is called whole; `mallctl` and
 /// `mallctlbymib` themselves are not covered here. The calls listed for
 /// `nallocx`, `challoc_features` and `mallinfo2` restate those bodies,
-/// kept in step by hand: a call added to one of them is not covered until
-/// its restatement here changes too.
+/// and Verus checks only the callees called here; the test
+/// `api::restated::read_only_restatements_match_their_bodies` fails when
+/// a body and its restatement differ in the names or order of their exec
+/// calls (`shared()` and `mallinfo2`'s arithmetic left out). It
+/// does not compare arguments or control flow.
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]

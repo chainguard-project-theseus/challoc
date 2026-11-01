@@ -80,6 +80,9 @@ pub type Reads = Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)>;
 } // verus!
 
 /// `mallinfo2()`. `rd` gets what [`stats::collect_all`] read and summed.
+/// `theorem_read_only_never_aborts` restates its calls that carry a
+/// contract; `api::restated::read_only_restatements_match_their_bodies`
+/// checks that the two make the same calls.
 pub fn mallinfo2(_rd: Tracked<&mut Reads>) -> MallInfo2 {
     let shared = super::shared();
     let all = stats::collect_all(

@@ -801,6 +801,9 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
 
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when
 /// no allocation can satisfy the request (see [`usable_for`]).
+/// `theorem_read_only_never_aborts` restates its calls after `shared()`;
+/// `api::restated::read_only_restatements_match_their_bodies` checks
+/// that the two make the same calls.
 pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
     requires
         crate::sys::may_abort(),
