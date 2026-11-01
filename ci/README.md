@@ -33,9 +33,11 @@ Every pull request (`Chainguard Checks (presubmit)` is the aggregate to
 require); each file is a workflow:
 
 - `lint.yaml`: rustfmt, clippy (`-D warnings`, the release library and
-  every target), the loom models, shellcheck, the codegen-fncmp fixtures,
-  the Kani bool-comparison lint (`ci/kani-boolcmp-test.sh`), the bench
-  harness's unit tests (`make bench-unit`), msrv-build (1.94).
+  every target, quantum 16 and 8), the `ctest-cc.sh` quantum-cache race
+  test (`tests/ctest-cc-race.sh`), the loom models, shellcheck, the
+  codegen-fncmp fixtures, the Kani bool-comparison lint
+  (`ci/kani-boolcmp-test.sh`), the bench harness's unit tests (`make
+  bench-unit`), msrv-build (1.94).
 - `test.yaml`: `linux` {x86_64, aarch64} x quantum {16, 8}, `privileged`
   per arch (`hosted-<arch>-*` cells in `expected-skips/`).
 - `floor.yaml`: `floor` (AlmaLinux 9's 5.14, both arches, default and

@@ -1,9 +1,9 @@
 # Lint, on every pull request: rustfmt, clippy with -D warnings (which
-# also fails the build on any rustc warning), the loom models, shellcheck,
-# the codegen-fncmp fixtures, the Kani bool-comparison lint and the bench
-# harness's unit tests all block. msrv-build builds the shipped cdylib with
-# the rust-version toolchain. The toolchains run in the guest directly, no
-# container.
+# also fails the build on any rustc warning), the ctest-cc.sh cache race
+# test, the loom models, shellcheck, the codegen-fncmp fixtures, the Kani
+# bool-comparison lint and the bench harness's unit tests all block.
+# msrv-build builds the shipped cdylib with the rust-version toolchain.
+# The toolchains run in the guest directly, no container.
 version: 1
 
 environment:
@@ -26,8 +26,8 @@ checks:
   clippy:
     description: >-
       cargo clippy -D warnings over the shipped no_std library (release) and
-      over every target, tests included. Any clippy or rustc warning fails
-      it.
+      over every target, tests included, at quantum 16 and 8. Any clippy or
+      rustc warning fails it.
     resources: medium
     timeout: 20m
     network: &crates
@@ -37,6 +37,22 @@ checks:
         cmd: [cargo, clippy, --release, --, -D, warnings]
       - name: clippy (tests)
         cmd: [cargo, clippy, --all-targets, --, -D, warnings]
+      - name: clippy (quantum 8, every target)
+        cmd: [cargo, clippy, --all-targets, --no-default-features, --features, quantum8, --, -D, warnings]
+
+  ctest-cc-race:
+    description: >-
+      tests/ctest-cc-race.sh: concurrent scripts/ctest-cc.sh --quantum calls
+      on a cold cache all exit 0 with the built library's quantum and leave
+      no temporary file behind.
+    resources: medium
+    timeout: 15m
+    network: *crates
+    steps:
+      - name: build
+        cmd: [cargo, build, --release]
+      - name: concurrent callers
+        cmd: [sh, tests/ctest-cc-race.sh]
 
   loom:
     description: >-
