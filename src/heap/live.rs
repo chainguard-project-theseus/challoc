@@ -10,8 +10,7 @@
 //! ([`Live::take_mem`], [`Live::put_mem`]); `Shared::classify_free` and
 //! `Shared::check_size_hint` take the token of the live block at the
 //! pointer they are given ([`Live::block`]); their unverified callers
-//! (`Heap::free` and `free_direct` in `heap::paths`, and those in
-//! `api::jemalloc` and `api::mallctl`) pass `Tracked::assume_new()`. The `check_zero` reads
+//! (in `api::jemalloc` and `api::mallctl`) pass `Tracked::assume_new()`. The `check_zero` reads
 //! make the token of each block they read and take the slot or run token
 //! back out ([`Live::take_slot`], [`Live::into_run`]), dropping the
 //! permission.

@@ -671,6 +671,7 @@ impl Heap {
             class < NCLASSES,
             old(self).wf(),
         ensures
+            final(errno).val() == old(errno).val(),
             final(self).wf(),
     {
         // As in `Heap::push`.

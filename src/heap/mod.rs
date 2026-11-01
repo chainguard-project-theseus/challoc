@@ -5730,6 +5730,7 @@ impl Heap {
             old(self).wf(),
             old(self).rehome,
         ensures
+            final(errno).val() == old(errno).val(),
             *final(ord) == *old(ord),
             final(self).wf(),
             !r ==> final(self).keeps(*old(self)),
@@ -5793,6 +5794,7 @@ impl Heap {
             old(self).wf(),
             shared.wf(),
         ensures
+            final(errno).val() == old(errno).val(),
             *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
     {

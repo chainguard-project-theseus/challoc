@@ -30,7 +30,7 @@ fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
 
 ## `Heap::cached_recently`
 
-src/heap/cache.rs:735. Kind: external_body. Category: raw pointer (internal).
+src/heap/cache.rs:736. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted.
 
 > `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.

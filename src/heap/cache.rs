@@ -568,6 +568,7 @@ impl Heap {
             class < NCLASSES,
             old(self).wf(),
         ensures
+            final(errno).val() == old(errno).val(),
             final(self).keeps(*old(self)),
         // With `free_slow`, `free_slow_in` and `Heap::rehome_on_free`, whose
         // push follows a move of the home, which clears `rehome`.

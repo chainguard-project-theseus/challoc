@@ -16,6 +16,7 @@ file.
 | `hint::assert_unchecked` | assume_spec | core library | Kani | trusted |
 | `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | trusted |
 | `Option::<T>::as_deref_mut` | assume_spec | core library | Kani | trusted |
+| `Option::<T>::or_else` | assume_spec | core library | Kani | trusted |
 
 ## `PartialEqSpecImpl for config::Thp`
 
@@ -148,4 +149,21 @@ Tool: Kani. Status: trusted.
 
 ```rust
 pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
+```
+
+## `Option::<T>::or_else`
+
+src/vspec/misc.rs:97. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
+
+> `Option::or_else`: `option` itself when it is `Some`, else `f()`.
+
+```rust
+pub assume_specification<T, F: FnOnce() -> Option<T>>[ Option::<T>::or_else ](option: Option<T>, f: F) -> (r: Option<T>)
+    requires
+        option is None ==> f.requires(()),
+    ensures
+        option is Some ==> r == option,
+        option is None ==> f.ensures((), r),
+;
 ```
