@@ -497,7 +497,7 @@ pub(crate) open spec fn slot_alloc_ok(groups: [Group; SET_GROUPS], nslabs: [usiz
 
 /// Every slot of a table of `65 * l1` rows of `stride` words at `base`
 /// from `lo` on lies in the allocation of `raw`, the permission to the
-/// table ([`slot_alloc_ok`], by `vspec::ptr::axiom_raw_valid`).
+/// table ([`slot_alloc_ok`], by `vspec::ptr::axiom_raw_readable`).
 proof fn lemma_slots_alloc(tracked raw: &ZeroRaw, base: int, l1: int, stride: int, lo: int)
     requires
         0 < base,
@@ -521,7 +521,7 @@ proof fn lemma_slots_alloc(tracked raw: &ZeroRaw, base: int, l1: int, stride: in
     assert(8 * lo + 8 * span <= 8 * (65 * l1 * stride)) by (nonlinear_arith)
         requires span == (65 * l1 - 1) * stride + 1, 0 <= lo < stride, l1 >= 1;
     let p = vstd::raw_ptr::ptr_mut_from_data::<u8>(vstd::raw_ptr::PtrData::<u8> { addr: a as usize, provenance: cast_provenance(), metadata: () });
-    crate::vspec::ptr::axiom_raw_valid(raw.raw(), p, 8 * span);
+    crate::vspec::ptr::axiom_raw_readable(raw.raw(), p, 8 * span);
     lemma_slots_alloc(raw, base, l1, stride, lo + 1);
 }
 
@@ -766,7 +766,7 @@ impl SetTable {
 
 /// The `len` bytes of a table at `base` whose permission `raw` holds lie
 /// in the allocation of an address-cast pointer to them (`Set::new`,
-/// `vspec::ptr::axiom_raw_valid`).
+/// `vspec::ptr::axiom_raw_readable`).
 proof fn lemma_table_alloc(tracked raw: &ZeroRaw, base: int, len: int)
     requires
         0 < len,
@@ -779,7 +779,7 @@ proof fn lemma_table_alloc(tracked raw: &ZeroRaw, base: int, len: int)
 {
     broadcast use vstd::set_lib::range_set_properties;
     let p = vstd::raw_ptr::ptr_mut_from_data::<u8>(vstd::raw_ptr::PtrData::<u8> { addr: base as usize, provenance: cast_provenance(), metadata: () });
-    crate::vspec::ptr::axiom_raw_valid(raw.raw(), p, len);
+    crate::vspec::ptr::axiom_raw_readable(raw.raw(), p, len);
 }
 
 impl Set {

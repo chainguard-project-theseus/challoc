@@ -28,10 +28,10 @@ pub open spec fn ptr_sub<T>(p: *mut T, count: usize) -> *mut T {
 /// with provenance `prov` and address `addr` is derived from (negative
 /// when there is none). Uninterpreted: verified code cannot learn it on
 /// its own. The trusted function that produced a pointer states a bound on
-/// it for the offsets its callers use, or [`axiom_raw_valid`] derives one
-/// from a permission to the bytes, and verified code carries that bound
-/// from there. Address and provenance survive pointer casts, so the
-/// bound does too.
+/// it for the offsets its callers use, or [`axiom_raw_valid`] or
+/// [`axiom_raw_readable`] derives one from a permission to the bytes, and
+/// verified code carries that bound from there. Address and provenance
+/// survive pointer casts, so the bound does too.
 pub uninterp spec fn alloc_len(prov: Provenance, addr: usize) -> int;
 
 /// The `len` bytes from `p` lie inside the allocation `p` is derived from
@@ -66,15 +66,6 @@ pub open spec fn valid_writes<T>(p: *mut T, len: int) -> bool {
 /// validity: the bound it holds by may be the read-only one.
 pub open spec fn valid_reads<T>(p: *const T, len: int) -> bool {
     0 <= len && (len <= rw_len(p@.provenance, p@.addr) || len <= r_len(p@.provenance, p@.addr))
-}
-
-/// Bytes valid for writes are valid for reads.
-pub proof fn lemma_writes_read(p: *mut u8, len: int)
-    requires
-        valid_writes(p, len),
-    ensures
-        valid_reads(p as *const u8, len),
-{
 }
 
 /// Read validity is of the address and provenance, so it carries over a
@@ -185,7 +176,11 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 
 /// A permission to the `len` bytes from `p`, of `p`'s provenance, makes
 /// them valid for writes through `p` and, when there are some, puts them
-/// inside the allocation `p` is derived from ([`in_alloc`]). Trusted: what a `PointsToRaw`
+/// inside the allocation `p` is derived from ([`in_alloc`]). The
+/// permission is taken `&mut`, so no other view of the same bytes (a
+/// shared borrow of it, or a `vspec::zero::ZeroRaw` or `vspec::user::UserMem`
+/// lending it) is held at the step; a shared view gives only
+/// [`axiom_raw_readable`]. Trusted: what a `PointsToRaw`
 /// stands for. The permissions verified code holds start as committed memory
 /// (`vspec::unbacked::Unbacked::commit`) or as a lazily committed table
 /// (`Unbacked::into_lazy`) and are split and joined from there, all inside
@@ -199,13 +194,34 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 /// are writable only once its owner has committed their page, the premise
 /// of `into_lazy`, which a caller of this axiom keeps too.
 #[verifier::external_body]
-pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
+pub proof fn axiom_raw_valid(tracked raw: &mut vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
+    requires
+        old(raw).contains_range(p@.addr as int, len),
+        old(raw).provenance() == p@.provenance,
+        0 <= len,
+    ensures
+        *final(raw) == *old(raw),
+        valid_writes(p, len),
+        len > 0 ==> in_alloc(p, len),
+{
+}
+
+/// [`axiom_raw_valid`] for a shared view of the permission: the `len`
+/// bytes from `p` are valid for reads through `p` and, when there are
+/// some, inside the allocation `p` is derived from ([`in_alloc`]). It
+/// gives no write validity, so a view that may be stale (a borrow of a
+/// `vspec::zero::ZeroRaw` or `vspec::user::UserMem` whose bytes another
+/// holder writes) cannot be used to write. Trusted: what a
+/// `PointsToRaw` stands for, as for [`axiom_raw_valid`], which states
+/// more.
+#[verifier::external_body]
+pub proof fn axiom_raw_readable(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
     requires
         raw.contains_range(p@.addr as int, len),
         raw.provenance() == p@.provenance,
         0 <= len,
     ensures
-        valid_writes(p, len),
+        valid_reads(p as *const u8, len),
         len > 0 ==> in_alloc(p, len),
 {
 }
