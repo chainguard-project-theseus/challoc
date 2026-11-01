@@ -258,7 +258,7 @@ proof fn lemma_huge_result(p: *mut u8, size: usize, align: usize)
 
 /// A slot of class `c` handed out for `size` bytes, with its token, gives
 /// them ([`Live::gives`]).
-proof fn lemma_class_gives(blk: Live, p: *mut u8, c: int, size: usize)
+pub(super) proof fn lemma_class_gives(blk: Live, p: *mut u8, c: int, size: usize)
     requires
         0 <= c < NCLASSES,
         size <= class_table()[c].size,
@@ -1405,7 +1405,8 @@ pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno
 /// ranges do not overlap). Afterwards `out`'s byte state reads its first
 /// `n` bytes as `blk`'s ([`Live::copied_from`]); `blk` is unchanged.
 /// It reads `p`'s bytes, so it needs `may_read_user`, which the realloc
-/// cores grant for this copy ([`realloc_block`], [`realloc_usable_stored`]).
+/// cores grant for this copy ([`realloc_block`], [`realloc_usable_stored`],
+/// `api::jemalloc::rallocx_zeroed`).
 ///
 /// # Safety
 /// `p` and `q` are live blocks of at least `n` usable bytes each, which

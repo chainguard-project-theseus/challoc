@@ -389,6 +389,10 @@ impl<'a> LockOrder<'a> {
 ///   `alloc_direct` and `alloc_huge`: reached from the C entry points
 ///   (`malloc`, `free` and the `mallocx` family) through code that holds
 ///   no allocator lock;
+/// - `api::jemalloc`'s `get_defrag_hint`, one token for its
+///   `ClassState::lowest_partial` and `ClassState::bin_stats` calls: a C
+///   entry point, which holds no allocator lock, and each call releases the
+///   class lock before it returns;
 /// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes

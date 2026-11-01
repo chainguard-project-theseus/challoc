@@ -9,8 +9,8 @@
 //! `Shared::zero_huge` borrows its permission for the clear
 //! ([`Live::take_mem`], [`Live::put_mem`]); `Shared::classify_free` and
 //! `Shared::check_size_hint` take the token of the live block at the
-//! pointer they are given ([`Live::block`]); their unverified callers
-//! (in `api::jemalloc` and `api::mallctl`) pass `Tracked::assume_new()`. The `check_zero` reads
+//! pointer they are given ([`Live::block`]); the unit tests in `api::jemalloc`
+//! and `api::mallctl`, outside the proof, pass `Tracked::assume_new()`. The `check_zero` reads
 //! make the token of each block they read and take the slot or run token
 //! back out ([`Live::take_slot`], [`Live::into_run`]), dropping the
 //! permission.
@@ -905,7 +905,8 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
 /// the huge table lookup, the cache flush's release) stay in the code for
 /// such programs. Its callers are the Rust entry points of the frees
 /// and of the reallocations (`api::libc::free`, `free_sized`,
-/// `free_sized_hint`, `free_usable`, `realloc` and `realloc_usable`), each with the
+/// `free_sized_hint`, `free_usable`, `realloc` and `realloc_usable`;
+/// `api::jemalloc::dallocx`, `sdallocx` and `rallocx`), each with the
 /// call's token it is passed.
 pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
     requires

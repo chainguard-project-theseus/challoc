@@ -160,6 +160,27 @@ spec fn arena_code(arena: Option<u16>) -> u32 {
     }
 }
 
+/// [`Flags::decode`]'s result, field by field from jemalloc's bit layout:
+/// what the specs of the `mallocx` entry points name. `decode` ensures it
+/// is its result, which [`Flags::lemma_round_trip`] shows is the one
+/// well-formed `Flags` the macros encode as `flags`.
+pub open spec fn decode_spec(flags: u32) -> Flags {
+    let t = (flags >> 8u32) & 0xfff;
+    let a = (flags >> 20u32) & 0xfff;
+    Flags {
+        lg_align: flags & 0x3f,
+        zero: flags & 0x40 != 0,
+        tcache: if t == 0 {
+            Tcache::Default
+        } else if t == 1 {
+            Tcache::None
+        } else {
+            Tcache::Explicit((t - 2) as u16)
+        },
+        arena: if a == 0 { None } else { Some((a - 1) as u16) },
+    }
+}
+
 impl Flags {
     /// The fields fit the macros' bits: `lg_align` in 6, a cache id or an
     /// arena index in 12 once offset by 2 or 1.
@@ -247,6 +268,7 @@ impl Flags {
         ensures
             r.wf(),
             r.encode() == flags & !0x80u32,
+            r == decode_spec(flags),
     {
         let t = (flags >> TCACHE_SHIFT) & TCACHE_MASK;
         let a = (flags >> ARENA_SHIFT) & ARENA_MASK;
