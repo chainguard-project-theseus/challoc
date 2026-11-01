@@ -1305,7 +1305,7 @@ const _: () = assert!(
         && core::mem::size_of::<Shared>() <= isize::MAX as usize
 );
 
-// `arena::Arena::axiom_array_layout` at `split`'s two instances, checked.
+// `arena::axiom_array_layout` at `split`'s two instances, checked.
 const _: () = assert!(
     core::mem::size_of::<[ClassLine; NCLASSES]>() == NCLASSES * core::mem::size_of::<ClassLine>()
         && core::mem::align_of::<[ClassLine; NCLASSES]>() == core::mem::align_of::<ClassLine>()

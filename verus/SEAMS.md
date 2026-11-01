@@ -78,6 +78,20 @@ not. `discharged (Kani: <harness path>)` names the Kani harnesses that
 do so, which `.chainguard/ci/kani.yaml` runs at both quanta (`kani-main`
 runs those in the hot files `src/kani/mod.rs` lists, after a change
 lands; `seams.sh --check` fails when a path names no `#[kani::proof]`
-fn). A check that covers only part of the contract leaves the status
-"trusted", with a note that names the check and what it does not cover:
-`trusted (partly checked, Kani: <harness path>; not checked: <what>)`.
+fn). `discharged (const assert: <label> in <file>)` names a top-level
+`const _: () = assert!(..)` in `<file>`, the one whose `//` comment
+block starts with `<label>` (a name in backquotes, and as many of the
+words after it as it takes to single out one assertion). The compiler
+evaluates the assertion in every build, at each quantum and on each
+target, and a false one is a compile error; `seams.sh --check` fails
+unless exactly one assertion in `<file>` carries the label. For a
+struct layout axiom the assertion states every `ensures` clause, its
+`field_fits` ones through `arena::fits`, which Verus verifies against
+`field_fits`; for an `offset_of!` constant, whose value Verus does
+not see, it checks every clause of the layout axiom that names the
+constant. A check that covers only part of the contract leaves the
+status "trusted", with a note that names the check and what it does
+not cover: `trusted (partly checked, <check>; not checked: <what>)`,
+where `<check>` is `Kani: <harness path>`, `const assert: <label> in
+<file>`, or both joined by `, and`. A list separates its items with
+`, ` or ` and `, and ends at `;`, `)` or the next tag.
