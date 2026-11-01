@@ -2,24 +2,24 @@
 ThreadKey::create	function pointer	none (assumption)
 # Byte offsets (`offset_of!`, which Verus cannot evaluate), and the
 # layout the build checks with `fits`.
-S_LINES	core library	Kani
-S_FREE_FLAGS	core library	Kani
-S_PUSH_FLAGS	core library	Kani
-S_REGION_HI	core library	Kani
-S_REGIONS	core library	Kani
-S_TABLES	core library	Kani
-S_ARENA0	core library	Kani
-S_META	core library	Kani
-S_HUGE	core library	Kani
-S_GC_INTERVAL_NS	core library	Kani
-S_POLICY	core library	Kani
-S_CONFIG	core library	Kani
-S_KEY	core library	Kani
-S_ARENAS	core library	Kani
-S_TCACHES	core library	Kani
-S_STATS	core library	Kani
-S_CGROUP	core library	Kani
-axiom_shared_layout	core library	Kani
+S_LINES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_FREE_FLAGS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_PUSH_FLAGS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_REGION_HI	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_REGIONS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_TABLES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_ARENA0	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_META	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_HUGE	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_GC_INTERVAL_NS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_POLICY	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_CONFIG	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_KEY	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_ARENAS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_TCACHES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_STATS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_CGROUP	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+axiom_shared_layout	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
 # One `Shared` per process: defines `process_regions`.
 axiom_process_shared	allocator invariant	none (assumption)
 # A field fixed once its permission is frozen: no vstd counterpart.

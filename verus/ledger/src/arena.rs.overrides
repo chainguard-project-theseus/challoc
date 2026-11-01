@@ -1,32 +1,32 @@
-# The build checks the array layout at each instance used (the const
-# assertion after `Arena`'s layout).
-axiom_array_layout	core library	Kani
+# The build checks the array layout at each instance the proofs use (the
+# `const` assertions after `Arena`'s, `Arenas`'s and `Shared`'s layouts).
+axiom_array_layout	core library	Kani	trusted (partly checked, const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, and Kani: arena::kani_array_layout::array_layout_samples; not checked: the axiom is generic in `T` and `N`, and these check only the five instances the proofs use and the sampled ones)
 # Byte offsets (`offset_of!`, which Verus cannot evaluate), and the
 # layout the build checks with `fits`.
-A_INDEX	core library	Kani
-A_DECAY_NS	core library	Kani
-A_SETS	core library	Kani
-A_SETS_PERM	core library	Kani
-A_CLASSES	core library	Kani
-A_LARGE	core library	Kani
-A_STATS	core library	Kani
-A_LAST_EXIT_PURGE	core library	Kani
-axiom_arena_layout	core library	Kani
+A_INDEX	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+A_DECAY_NS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+A_SETS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+A_SETS_PERM	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+A_CLASSES	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+A_LARGE	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+A_STATS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+A_LAST_EXIT_PURGE	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+axiom_arena_layout	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arena_assemble	raw pointer (internal)	none (assumption)
 # `core`'s tuple and `bool` order, as documented.
 key_less	core library	Kani	discharged (Kani: arena::kani_key_less::key_less_is_key_lt)
 # `Arenas`'s byte offsets and layout, which the build checks with `fits`.
-AR_TABLE	core library	Kani
-AR_BOUND	core library	Kani
-AR_LOCK	core library	Kani
-AR_COUNT	core library	Kani
-AR_AUTO	core library	Kani
-AR_SPARE	core library	Kani
-AR_INVS	core library	Kani
-AR_COUNT_INV	core library	Kani
-AR_SPARE_INV	core library	Kani
-axiom_arenas_layout	core library	Kani
+AR_TABLE	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_BOUND	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_LOCK	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_COUNT	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_AUTO	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_SPARE	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_INVS	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_COUNT_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_SPARE_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+axiom_arenas_layout	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arenas_assemble	raw pointer (internal)	none (assumption)
 # The creation lock's invariant (lock_inv is uninterpreted); its writers
