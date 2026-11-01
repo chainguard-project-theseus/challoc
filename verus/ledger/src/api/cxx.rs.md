@@ -7,12 +7,29 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
+| `get_new_...ler_addr` | external_body | inline asm | Islaris/Isla | trusted |
 | `throw_ba...loc_addr` | external_body | inline asm | Islaris/Isla | trusted |
+| `Handler` | external_body type | function pointer | Kani | trusted |
+| `call_get_new_handler` | external_body | function pointer | Kani | trusted |
 | `call_throw_bad_alloc` | external_body | function pointer | Kani | trusted |
+| `call_handler` | external_body | function pointer | Kani | trusted |
+| `call_handler_caught` | external_body | function pointer | Kani | trusted |
+| `oom` | no_decreases | termination | none (assumption) | trusted |
+
+## `get_new_handler_addr`
+
+src/api/cxx.rs:70. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
+
+> Address of libstdc++'s `std::get_new_handler()`, or null when no libstdc++ is loaded in the process.
+
+```rust
+fn get_new_handler_addr() -> *const c_void
+```
 
 ## `throw_bad_alloc_addr`
 
-src/api/cxx.rs:97. Kind: external_body. Category: inline asm.
+src/api/cxx.rs:101. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
@@ -23,9 +40,34 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
         is_throw_bad_alloc(r),
 ```
 
+## `Handler`
+
+src/api/cxx.rs:130. Kind: external_body type. Category: function pointer.
+Tool: Kani. Status: trusted.
+
+> The installed `new_handler`, opaque to Verus (which has no function pointer types).
+
+```rust
+struct Handler(unsafe extern "C" fn());
+```
+
+## `call_get_new_handler`
+
+src/api/cxx.rs:139. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: trusted.
+
+> Call `std::get_new_handler` at `get`, its non-null address: the installed `new_handler`, if one is set.
+
+```rust
+fn call_get_new_handler(get: *const c_void) -> Option<Handler>
+    requires
+        crate::sys::may_syscall(),
+        get@.addr != 0,
+```
+
 ## `call_throw_bad_alloc`
 
-src/api/cxx.rs:155. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:168. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call `std::__throw_bad_alloc` at `t`, its non-null address ([`is_throw_bad_alloc`]).
@@ -37,4 +79,58 @@ fn call_throw_bad_alloc(t: *const c_void) -> !
         crate::sys::may_syscall(),
         is_throw_bad_alloc(t),
         t@.addr != 0,
+```
+
+## `call_handler`
+
+src/api/cxx.rs:205. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: trusted.
+
+> Call the program's `new_handler`, which may write `errno`: `errno` is the calling thread's, taken `&mut` with no ensures, so nothing is known of its value afterwards.
+
+```rust
+fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `call_handler_caught`
+
+src/api/cxx.rs:222. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: trusted.
+
+> Call the program's `new_handler` through `challoc_call_new_handler` (`cxx_handler.cpp`), which catches anything it throws: `false` when it threw.
+
+```rust
+fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> bool
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `oom`
+
+src/api/cxx.rs:240. Kind: no_decreases. Category: termination.
+Tool: none (assumption). Status: trusted.
+
+> The `operator new` failure protocol: call the `new_handler` and retry until an attempt succeeds or no handler is installed, then throw `std::bad_alloc` (or return null for the `nothrow_t` forms, also when the handler throws).
+
+```rust
+fn oom(
+    size: usize,
+    align: usize,
+    nothrow: bool,
+    Tracked(blk): Tracked<&mut Live>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        align != 0 && is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        // A non-zero alignment that is not a power of two never gets a
+        // block: `aligned_alloc` refuses it on every attempt.
+        align != 0 && !is_pow2(align) ==> r@.addr == 0,
+        final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
 ```
