@@ -1,0 +1,52 @@
+# `syscall` (0f 05) in 64-bit mode, the x86_64 sys::raw::syscall0..6
+# (verus/isla/seams.md), on the sail-x86-from-acl2
+# model in its system view (x86.toml), every register symbolic but the
+# model's mode flags. run.sh appends the insn line.
+arch x86_64
+no-mem-write
+mem-reads 0
+# The registers SYSCALL loads (Intel SDM vol. 2B, SYSCALL): RCX, R11,
+# RFLAGS (the model's rflags is its low 32 bits) and the CS and SS
+# selectors and hidden descriptor parts (index 1 and 2 of the model's
+# segment vectors). Anything else written fails the job: rax, rdx, rsi,
+# rdi, rsp, rbp, rbx, r8-r10, r12-r15, the zmm registers, the FS and GS
+# bases (seg_hidden_bases.4/.5, msrs.1/.2) and every other MSR,
+# control and segment register the model has.
+writes rcx r11 rflags.bits seg_visibles.1 seg_visibles.2 seg_hidden_bases.1 seg_hidden_bases.2 seg_hidden_limits.1 seg_hidden_limits.2 seg_hidden_attrs.1 seg_hidden_attrs.2
+# Linux user space on x86_64 (residual assumptions, named in
+# verus/isla/seams.md): IA32_EFER (msrs.0) has SCE (bit 0, set by
+# Linux's head_64.S) and LMA (bit 10, long mode), and CS.L is set (64-bit
+# code), so the
+# processor is in 64-bit mode with SYSCALL enabled; the instruction and
+# the next one are user addresses, below 2^47; IA32_LSTAR (msrs.5) is
+# canonical (WRMSR faults on anything else); IA32_STAR[47:32] (msrs.4)
+# + 8 fits the model's signed 16-bit check (Linux: __KERNEL_CS, 0x10).
+assume (= ((_ extract 0 0) init.msrs.0) #b1)
+assume (= ((_ extract 10 10) init.msrs.0) #b1)
+assume (= ((_ extract 9 9) init.seg_hidden_attrs.1) #b1)
+assume (bvult init.rip #x00007ffffffffffe)
+assume (= init.msrs.5 ((_ sign_extend 16) ((_ extract 47 0) init.msrs.5)))
+assume (bvult ((_ extract 47 32) init.msrs.4) #x7ff8)
+# What SYSCALL does to them: RCX is the next instruction, R11 the old
+# RFLAGS, RIP is IA32_LSTAR, RFLAGS loses the IA32_FMASK (msrs.6) bits,
+# CS is IA32_STAR[47:32] with RPL 0 and SS that plus 8.
+assert (= final.rcx (bvadd init.rip #x0000000000000002))
+assert (= final.r11 ((_ zero_extend 32) init.rflags.bits))
+assert (= final.rip init.msrs.5)
+assert (= final.rflags.bits (bvand init.rflags.bits (bvnot ((_ extract 31 0) init.msrs.6))))
+assert (= final.seg_visibles.1 (bvand ((_ extract 47 32) init.msrs.4) #xfffc))
+assert (= final.seg_visibles.2 (bvadd ((_ extract 47 32) init.msrs.4) #x0008))
+# The flat CS and SS descriptors SYSCALL loads (base 0, limit 4G with
+# G = 1, DPL 0, present), in the model's attribute encoding (x86isa's
+# code- and data-segment-descriptor-attributes: bit 0 accessed, 1
+# readable/writable, 2 conforming/expand-down, 3 code, 4 S, 5-6 DPL, 7 P,
+# 8 AVL, 9 L, 10 D/B, 11 G): CS is an accessed readable 64-bit code
+# segment (L = 1, D = 0), SS an accessed writable data segment (B = 1);
+# the bits SYSCALL leaves alone (AVL, SS.L and the model's bits 12-15)
+# keep their values.
+assert (= final.seg_hidden_bases.1 #x0000000000000000)
+assert (= final.seg_hidden_bases.2 #x0000000000000000)
+assert (= final.seg_hidden_limits.1 #xffffffff)
+assert (= final.seg_hidden_limits.2 #xffffffff)
+assert (= final.seg_hidden_attrs.1 (bvor (bvand init.seg_hidden_attrs.1 #xf100) #x0a9b))
+assert (= final.seg_hidden_attrs.2 (bvor (bvand init.seg_hidden_attrs.2 #xf300) #x0c93))

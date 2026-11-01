@@ -204,14 +204,15 @@ often a call runs, and they cover only the bodies listed above.
 ## Isla
 
 [ISLA.md](ISLA.md) checks the inline-assembly seams with
-[Isla](https://github.com/rems-project/isla) on Sail's Arm model:
-the compiled code of each `asm!` block, traced instruction by
+[Isla](https://github.com/rems-project/isla) on Sail's Arm and x86
+models: the compiled code of each `asm!` block, traced instruction by
 instruction and composed by `verus/isla/check.rs`. The seams it
 checks, with the contract each run is held to, are in
 [isla/seams.md](isla/seams.md); their overrides lines cite `Isla:
 verus/isla/seams.md`, in `discharged (...)` or, where the runs cover
-only part of the contract, `trusted (partly checked, ...)`. `make isla` runs it, with the
-`isla`, `isla-snapshots`, `z3` and `llvm-21` packages.
+only part of the contract, `trusted (partly checked, ...)`. `make isla`
+runs it, with the `isla`, `isla-snapshots`, `sail`, `isla-sail`, `z3` and
+`llvm-21` packages.
 
 ## Conventions
 
