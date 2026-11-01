@@ -30,7 +30,7 @@ file.
 ## `core::slice::from_raw_parts::<'a, T>`
 
 src/vspec/slice.rs:19. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::slice_from_raw_parts; not checked: that the elements are initialised and unchanged for `'a`, which the `requires` leaves to the caller (`name_bytes`)).
 
 > `core::slice::from_raw_parts`, with the safety contract of the `core` documentation that can be stated here: `data` is not null, aligned, and valid for reads of the slice's `len * size_of::<T>()` bytes, at most `isize::MAX`.
 
@@ -348,7 +348,7 @@ pub unsafe fn slice_mut_elems<'a, T>(
 ## `<[T]>::swap_with_slice`
 
 src/vspec/slice.rs:397. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::slice_swap_with_slice; not checked: the provenance of the `*mut u8` elements, which the harness builds without provenance and compares by address).
 
 > `a.swap_with_slice(b)`: panics unless the lengths are equal.
 
@@ -365,7 +365,7 @@ pub assume_specification<T>[ <[T]>::swap_with_slice ](a: &mut [T], b: &mut [T])
 ## `<[T]>::rotate_left`
 
 src/vspec/slice.rs:406. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::slice_rotate_left, kani_proofs::slice::slice_rotate_left_swap; not checked: the verified instance's element type, a cache stack's `*mut u8` (the harnesses rotate `u64`s), the block-swap path at lengths other than 66 and 67, and the buffer path past 6 words, while a cache stack is longer).
 
 > `s.rotate_left(mid)`: panics unless `mid <= s.len()`.
 

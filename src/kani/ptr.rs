@@ -1,6 +1,7 @@
 //! The raw-pointer functions of `core` that `vspec/addr.rs`,
-//! `vspec/ptr.rs`, `vspec/config.rs` and `vspec/sys.rs` specify, and the
-//! proof `vspec::ptr::axiom_ptr_add_addr` and the trusted wrappers
+//! `vspec/ptr.rs`, `vspec/config.rs` and `vspec/sys.rs` specify, the
+//! proof `vspec::ptr::axiom_ptr_add_addr`, the axioms `axiom_plain_*`,
+//! `axiom_array_elem` and `axiom_array_view`, and the trusted wrappers
 //! `vspec::addr::addr_to_ptr`, `vspec::ptr::ref_ptr`,
 //! `vspec::zero::zero_raw` and `vspec::slice::array_get_unchecked`
 //! (`verus/ledger/src/vspec/`), checked against their contracts. The
@@ -15,9 +16,17 @@
 //! `zero_raw`'s permission is ghost; each is read here as "the range
 //! lies inside the array", the one allocation the pointer is derived
 //! from. Kani fails a harness on any access outside the object a pointer
-//! is derived from and on a misaligned or null pointer where `core`'s
-//! safety contract forbids one, so a passing harness shows the call
-//! defined on every such range; the assertions then show what it did.
+//! is derived from, so a passing harness shows the call defined on every
+//! such range; the assertions then show what it did. Kani 0.68 does not
+//! check alignment on a typed read or write (`ptr::read` and `ptr::write`
+//! on a misaligned pointer verify): only `copy_nonoverlapping` and
+//! `write_bytes` carry their own checks for a null or misaligned pointer.
+//! The harnesses of the typed reads and writes (`read_volatile`, the
+//! unaligned pair) state what `core` requires of the pointer with
+//! `kani::mem`'s predicates (`-Z mem-predicates`): `can_dereference`
+//! holds when the pointer is non-null, aligned and in bounds and the bytes
+//! are a valid value; `can_read_unaligned` and `can_write_unaligned` drop
+//! the alignment (and, for a write, the value).
 //!
 //! The lengths of the fills and copies are constants (loops over every
 //! value), not symbolic: with a symbolic count, Kani 0.68 (CBMC 6.11)
@@ -434,4 +443,325 @@ fn ptr_ref_ptr() {
     on::<(u8, u64)>();
     on::<[u8; 3]>();
     on::<()>();
+}
+
+/// The plain types `axiom_plain_*` name (`u8`, `u32`, `u64`, `usize`,
+/// `isize`), each built from its native-order bytes.
+trait Plain: Copy + PartialEq {
+    fn from_bytes(b: &[u8]) -> Self;
+}
+
+macro_rules! plain_int {
+    ($($t:ty),*) => {$(
+        impl Plain for $t {
+            fn from_bytes(b: &[u8]) -> Self {
+                let mut w = [0u8; size_of::<$t>()];
+                w.copy_from_slice(b);
+                <$t>::from_ne_bytes(w)
+            }
+        }
+    )*};
+}
+
+plain_int!(u8, u32, u64, usize, isize);
+
+/// Every `size_of::<T>()` bytes, whatever their values, are a valid `T`:
+/// `kani::mem::can_read_unaligned` checks the value's validity (it fails
+/// at `bool`, whose invalid bit patterns these bytes reach:
+/// `plain_rejects_bool`).
+fn plain_on<T>() {
+    let b: [u8; 8] = kani::any();
+    assert!(size_of::<T>() <= 8);
+    assert!(kani::mem::can_read_unaligned(b.as_ptr() as *const T));
+}
+
+/// `axiom_plain_u8`, `axiom_plain_u32`, `axiom_plain_u64`,
+/// `axiom_plain_usize`, `axiom_plain_isize` and `axiom_plain_ptr`,
+/// `ensures plain::<T>()`, read as `plain`'s doc states it ("every
+/// initialised value of `T`'s size is a `T`"): every byte pattern of
+/// `size_of::<T>()` bytes is a valid value of the type. `axiom_plain_ptr`
+/// at `*const T` for a byte, a word, `c_void` (the proofs' one
+/// instance) and a zero-sized `T`: a thin pointer's validity does not
+/// depend on `T`. That the value carries no provenance the reader may use
+/// is a restriction on the proofs, not a fact to check.
+#[kani::proof]
+fn plain_bytes_are_values() {
+    plain_on::<u8>();
+    plain_on::<u32>();
+    plain_on::<u64>();
+    plain_on::<usize>();
+    plain_on::<isize>();
+    plain_on::<*const u8>();
+    plain_on::<*const u64>();
+    plain_on::<*const core::ffi::c_void>();
+    plain_on::<*const ()>();
+}
+
+/// The control for `plain_bytes_are_values`: at `bool`, which has invalid
+/// bit patterns, `can_read_unaligned` fails on some byte, so the check
+/// there tests validity and not only bounds.
+#[kani::proof]
+#[kani::should_panic]
+fn plain_rejects_bool() {
+    plain_on::<bool>();
+}
+
+/// `read_volatile` at `T` on a 16-byte buffer of two words: from every
+/// offset `i` aligned for `T` with `i + size_of::<T>() <= 16` (the
+/// contract's `valid_reads` read as "the range lies inside the buffer",
+/// and its alignment conjunct; `plain::<T>()` holds at these `T`s), the
+/// pointer is what `core` requires (`can_dereference`: non-null, aligned,
+/// in bounds, a valid `T`), and the call returns the `T` those bytes make
+/// (`is`: the value is that of the bytes from `i`).
+fn read_volatile_on<T: Copy>(is: fn(T, &[u8]) -> bool) {
+    let a: [u64; 2] = kani::any();
+    let b = bytes_of(&a);
+    let mut i = 0;
+    while i + size_of::<T>() <= 16 {
+        // SAFETY: `i <= 16`: inside the buffer or one past it.
+        let p = unsafe { b.as_ptr().add(i) } as *const T;
+        assert!(kani::mem::can_dereference(p));
+        // SAFETY: the contract's precondition, checked above.
+        let v = unsafe { core::ptr::read_volatile(p) };
+        assert!(is(v, &b[i..i + size_of::<T>()]));
+        i += core::mem::align_of::<T>();
+    }
+}
+
+/// `core::ptr::read_volatile::<T>`: no `ensures`; under the `requires`
+/// (`plain::<T>()`, the `size_of::<T>()` bytes at `src` valid for reads,
+/// `src` aligned for `T`) the call is defined and returns, at the types
+/// `axiom_plain_*` give `plain` for (the integers, and `*const u8` for the
+/// pointers; verified code reads `u64`), from every aligned offset of a
+/// 16-byte buffer; and (beyond the contract, which states no value) it
+/// returns the value of those bytes.
+#[kani::proof]
+#[kani::unwind(18)]
+fn ptr_read_volatile() {
+    read_volatile_on::<u8>(|v, b| v == u8::from_bytes(b));
+    read_volatile_on::<u32>(|v, b| v == u32::from_bytes(b));
+    read_volatile_on::<u64>(|v, b| v == u64::from_bytes(b));
+    read_volatile_on::<usize>(|v, b| v == usize::from_bytes(b));
+    read_volatile_on::<isize>(|v, b| v == isize::from_bytes(b));
+    read_volatile_on::<*const u8>(|v, b| v as usize == usize::from_bytes(b));
+}
+
+/// `N` arbitrary bytes, read at every offset `i` with `i + size_of::<T>()
+/// <= N` (the contract's `valid_reads(src, size_of::<T>())`, read as "the
+/// range lies inside the buffer"; `plain::<T>()` holds at these `T`s), so
+/// at every alignment: the pointer is what `core` requires
+/// (`can_read_unaligned`: in bounds, a valid `T`, no alignment), both
+/// `core::ptr::read_unaligned` and `<*const T>::read_unaligned` return,
+/// and (beyond the contract, which states no value) give the `T` those
+/// bytes make.
+fn read_unaligned_on<T: Plain, const N: usize>() {
+    let a: [u8; N] = kani::any();
+    for i in 0..=N - size_of::<T>() {
+        // SAFETY: `i <= N`: inside the buffer or one past it.
+        let p = unsafe { a.as_ptr().add(i) } as *const T;
+        assert!(kani::mem::can_read_unaligned(p));
+        let want = T::from_bytes(&a[i..i + size_of::<T>()]);
+        // SAFETY: the contract's precondition, checked above.
+        assert!(unsafe { core::ptr::read_unaligned(p) } == want);
+        // SAFETY: as above.
+        assert!(unsafe { p.read_unaligned() } == want);
+    }
+}
+
+/// `core::ptr::read_unaligned::<T>` and `<*const T>::read_unaligned`: no
+/// `ensures`; under the `requires` (`plain::<T>()` and the `size_of::<T>()`
+/// bytes at `src` valid for reads, no alignment) the call is defined and
+/// returns, at every plain type `axiom_plain_*` names (the pointers at
+/// `*const u8` and `*const c_void`, `mallctl`'s), from every offset of a
+/// 12-byte buffer, so aligned and misaligned alike.
+#[kani::proof]
+#[kani::unwind(14)]
+fn ptr_read_unaligned() {
+    read_unaligned_on::<u8, 12>();
+    read_unaligned_on::<u32, 12>();
+    read_unaligned_on::<u64, 12>();
+    read_unaligned_on::<usize, 12>();
+    read_unaligned_on::<isize, 12>();
+    read_ptr_unaligned_on::<u8>();
+    read_ptr_unaligned_on::<core::ffi::c_void>();
+}
+
+/// `read_unaligned_on` at `*const T`, whose value is compared by address.
+fn read_ptr_unaligned_on<T>() {
+    let a: [u8; 12] = kani::any();
+    for i in 0..=12 - size_of::<*const T>() {
+        // SAFETY: as in `read_unaligned_on`.
+        let p = unsafe { a.as_ptr().add(i) } as *const *const T;
+        assert!(kani::mem::can_read_unaligned(p));
+        let want = usize::from_bytes(&a[i..i + size_of::<usize>()]);
+        // SAFETY: the contract's precondition.
+        let r = unsafe { core::ptr::read_unaligned(p) };
+        assert_eq!(r as usize, want);
+        // SAFETY: as above.
+        assert_eq!(unsafe { p.read_unaligned() } as usize, want);
+    }
+}
+
+/// `N` arbitrary bytes and an arbitrary `T`, written at every offset `i`
+/// with `i + size_of::<T>() <= N` (the contract's `valid_writes(dst,
+/// size_of::<T>())`; `c_apart` and `c_writes` say whose memory it is, not
+/// whether the call is defined, and are not checked here): the pointer is
+/// what `core` requires (`can_write_unaligned`: in bounds, no alignment),
+/// both `core::ptr::write_unaligned` and `<*mut T>::write_unaligned`
+/// return, and (beyond the contract, which states no effect) write `v`'s
+/// bytes there and leave every other byte.
+fn write_unaligned_on<T: Copy, const N: usize>(any: fn() -> T) {
+    for i in 0..=N - size_of::<T>() {
+        for method in [false, true] {
+            let mut a: [u8; N] = kani::any();
+            let old = a;
+            let v: T = any();
+            // SAFETY: `i <= N`: inside the buffer or one past it.
+            let p = unsafe { a.as_mut_ptr().add(i) } as *mut T;
+            assert!(kani::mem::can_write_unaligned(p));
+            if method {
+                // SAFETY: the contract's precondition, checked above.
+                unsafe { p.write_unaligned(v) };
+            } else {
+                // SAFETY: as above.
+                unsafe { core::ptr::write_unaligned(p, v) };
+            }
+            let vb = ne8(&v);
+            for k in 0..N {
+                let want = if k >= i && k < i + size_of::<T>() {
+                    vb[k - i]
+                } else {
+                    old[k]
+                };
+                assert_eq!(a[k], want);
+            }
+        }
+    }
+}
+
+/// The bytes of `v`, native order, zero-padded to 8.
+fn ne8<T: Copy>(v: &T) -> [u8; 8] {
+    let mut b = [0u8; 8];
+    // SAFETY: `size_of::<T>() <= 8` at every `T` below, all without padding.
+    unsafe {
+        core::ptr::copy_nonoverlapping(v as *const T as *const u8, b.as_mut_ptr(), size_of::<T>())
+    };
+    b
+}
+
+/// `core::ptr::write_unaligned::<T>` and `<*mut T>::write_unaligned`: no
+/// `ensures`; under the `requires` the call is defined and returns, at
+/// the word-sized types `mallctl` writes (`bool`, `u32`, `u64`, `usize`,
+/// `isize`, pointers), from every offset of a 12-byte buffer. Not at
+/// `mallctl`'s 48-byte `Utilization`.
+#[kani::proof]
+#[kani::unwind(14)]
+fn ptr_write_unaligned() {
+    write_unaligned_on::<bool, 12>(kani::any);
+    write_unaligned_on::<u32, 12>(kani::any);
+    write_unaligned_on::<u64, 12>(kani::any);
+    write_unaligned_on::<usize, 12>(kani::any);
+    write_unaligned_on::<isize, 12>(kani::any);
+    write_unaligned_on::<*mut u8, 12>(|| core::ptr::without_provenance_mut(kani::any()));
+    write_unaligned_on::<*const u64, 12>(|| core::ptr::without_provenance(kani::any()));
+}
+
+/// `<*mut T>::sub` on an array of `N` `T`s: from element `i` (`i <= N`),
+/// every `count <= i` (the range from the result to `p` lies in the
+/// allocation: the contract's `in_alloc` of `ptr_sub(p, count)`, and the
+/// byte offset at most `p`'s address and below `isize::MAX`, as an
+/// array's always is) gives the pointer `count * size_of::<T>()` bytes
+/// back, of `p`'s allocation (a read through it is a read of element
+/// `i - count`, which Kani accepts only through a pointer derived from
+/// the array). And `sub(0)` on any pointer, even null or dangling, gives
+/// the pointer back (the contract's empty-offset case).
+fn ptr_sub_on<T: Copy + PartialEq, const N: usize>(any: fn() -> T) {
+    let mut a: [T; N] = [any(); N];
+    for e in a.iter_mut() {
+        *e = any();
+    }
+    let i: usize = kani::any();
+    let count: usize = kani::any();
+    kani::assume(i <= N && count <= i);
+    // SAFETY: `i <= N`: inside the array or one past it.
+    let p = unsafe { a.as_mut_ptr().add(i) };
+    // SAFETY: the contract's precondition, `count <= i`.
+    let r = unsafe { p.sub(count) };
+    assert_eq!(r as usize, p as usize - count * size_of::<T>());
+    if i - count < N {
+        // SAFETY: element `i - count` of `a`.
+        assert!(unsafe { *r } == a[i - count]);
+    }
+    let d = core::ptr::without_provenance_mut::<T>(kani::any());
+    // SAFETY: a zero offset, which `core` allows on any pointer.
+    assert_eq!(unsafe { d.sub(0) }, d);
+}
+
+/// `<*mut T>::sub`: `r == ptr_sub(p, count)`, the address
+/// `count * size_of::<T>()` bytes back, with `p`'s provenance (a read
+/// through it is a read of the array) and metadata (`()`, `T` being
+/// sized). At a byte and a `*mut u8` (verified code's two instances: a
+/// block's bytes, a cache stack's entries), a word, a padded element and a
+/// zero-sized type (for which every `count` is an empty offset).
+#[kani::proof]
+#[kani::unwind(7)]
+fn ptr_sub() {
+    ptr_sub_on::<u8, 5>(kani::any);
+    ptr_sub_on::<*mut u8, 5>(|| core::ptr::without_provenance_mut(kani::any()));
+    ptr_sub_on::<u64, 5>(kani::any);
+    ptr_sub_on::<(u64, u8), 3>(kani::any);
+    let mut z = [(); 4];
+    // SAFETY: one past the end of `z`.
+    let p = unsafe { z.as_mut_ptr().add(4) };
+    let count: usize = kani::any();
+    // SAFETY: a zero-sized `T`: every offset is empty.
+    let r = unsafe { p.sub(count) };
+    assert_eq!(r, p);
+}
+
+/// The array `a` at its own address: element `i`'s pointer, `i *
+/// size_of::<T>()` bytes from the array's address and derived from it,
+/// is in bounds (Kani fails an `add` past the array) and aligned, holds
+/// `a[i]`, and is `&a[i]`, for every `i < N`; the bytes of the
+/// whole array (`N * size_of::<T>()`, below `isize::MAX`) from that
+/// address read as the array whose elements those are.
+fn array_layout_on<T: Copy + PartialEq, const N: usize>(a: [T; N]) {
+    let base: *const [T; N] = &a;
+    assert!(N * size_of::<T>() <= isize::MAX as usize);
+    assert!(base as usize + N * size_of::<T>() >= base as usize);
+    let e0 = base as *const T;
+    for i in 0..N {
+        // SAFETY: `i < N`: inside the array.
+        let e = unsafe { e0.add(i) };
+        assert_eq!(e as usize, base as usize + i * size_of::<T>());
+        assert!(kani::mem::can_dereference(e));
+        // SAFETY: checked above.
+        assert!(unsafe { *e } == a[i]);
+        assert!(core::ptr::eq(e, &a[i]));
+    }
+    assert!(kani::mem::can_dereference(base));
+    // SAFETY: checked above.
+    let whole = unsafe { *base };
+    for i in 0..N {
+        // SAFETY: `i < N`, as above.
+        assert!(whole[i] == unsafe { *e0.add(i) });
+    }
+}
+
+/// `axiom_array_elem` and `axiom_array_view`, the `core` layout of
+/// arrays they rest on: `N` elements `size_of::<T>()` apart from the
+/// array's address, aligned as `T`, each holding its element, the whole
+/// at most `isize::MAX` bytes and not wrapping the address space. At
+/// sampled `T` and `N` only: a byte, a word, a padded pair, and the
+/// class table `[Class; NCLASSES]` at `BASE_CLASSES` (the instance
+/// `layout::regions`' `class_entry` takes `axiom_array_elem` at; the
+/// other proof instance, `heap::others`' `[CacheHeader; NCLASSES]`, is
+/// not checked). The permissions themselves are ghost.
+#[kani::proof]
+#[kani::unwind(70)]
+fn array_layout_elems() {
+    array_layout_on::<u8, 3>(kani::any());
+    array_layout_on::<u64, 4>(kani::any());
+    array_layout_on::<(u64, u8), 3>(kani::any());
+    array_layout_on(crate::layout::BASE_CLASSES);
 }
