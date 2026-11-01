@@ -13,7 +13,7 @@ file.
 
 ## `scan_lines`
 
-src/sys/cgroup.rs:898. Kind: no_decreases. Category: termination.
+src/sys/cgroup.rs:880. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Feed `buf`-sized chunks from `read` to `on_line` one complete line at a time (without the newline), carrying a partial line across chunks; stops early when `on_line` returns `true`, and returns where that line is in `buf` (`None` when no line was taken).
@@ -35,7 +35,7 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
 
 ## `axiom_cell_orphaned`
 
-src/sys/cgroup.rs:1513. Kind: axiom. Category: platform/kernel fact.
+src/sys/cgroup.rs:1520. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned cell): in the child of a `fork`, a record whose phase the child's reset found `RUNNING` (`before`, the phase's permission just before the reset, and `perm`, just after it, at `PENDING`) was being discovered by a thread of the parent, which holds the cell's permission between its winning exchange and its `DONE` store ([`Deferred::claim`], [`Deferred::publish`]).
@@ -55,7 +55,7 @@ axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &Byte
 
 ## `Deferred::discover`
 
-src/sys/cgroup.rs:1594. Kind: no_decreases. Category: termination.
+src/sys/cgroup.rs:1601. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Run discovery if it has not run: `true` when this call ran it, so the caller sets the policy up from the first figures.

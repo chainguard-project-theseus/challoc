@@ -54,12 +54,10 @@ pub const PATH_CAP: usize = 2048;
 pub const FILE_ROOM: usize = 32;
 /// Buffer for one cgroup file (`memory.events` is a handful of lines).
 const FILE_BUF: usize = 1024;
-/// Buffer for `/proc/self/cgroup`. A hybrid v1+v2 host lists one line per
-/// v1 hierarchy (a dozen, each carrying the cgroup path) before the `0::`
-/// line: room for 4 KiB of those plus a `0::` line as long as
-/// [`PATH_CAP`]. A file that fills it is untracked ([`proc_cgroup_path`]).
-const PROC_CGROUP_BUF: usize = 4096 + PATH_CAP;
-/// Chunk size for the `/proc/self/mountinfo` line scan.
+/// Chunk size for the `/proc/self/cgroup` and `/proc/self/mountinfo` line
+/// scans ([`scan_lines`]). A longer line is dropped: a `0::` line that
+/// long has a path past what [`PATH_CAP`] leaves room for, and it reads as
+/// no unified path rather than as a cut one.
 const SCAN_BUF: usize = 2048;
 
 /// Minimum interval between two samples of `memory.current` and
@@ -258,9 +256,11 @@ pub open spec fn cgroup_path_spec(s: Seq<u8>) -> Option<Seq<u8>>
 /// The unified-hierarchy path from the whole of `/proc/self/cgroup`, or
 /// `None` when there is no `0::` line (a cgroup v1 only system). Every
 /// non-empty line is tried in order; a final line without a newline
-/// counts.
+/// counts, so `contents` must be the whole file. Discovery streams the
+/// file instead ([`proc_cgroup_path`]); this is the tests' reference.
 // One test per step of the line scan, not one collapsed `if`.
 #[allow(clippy::collapsible_if)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn cgroup_path(contents: &[u8]) -> (r: Option<&[u8]>)
     ensures
         r matches Some(p) ==> p@.len() <= contents@.len(),
@@ -298,26 +298,6 @@ pub fn cgroup_path(contents: &[u8]) -> (r: Option<&[u8]>)
         assert(contents@.skip(start as int) =~= Seq::<u8>::empty());
     }
     None
-}
-
-/// The unified-hierarchy path from a read of `/proc/self/cgroup` that
-/// filled `n` bytes of `buf`. A read that fills `buf` is
-/// `Err(PathTooLong)`: the file may go on past it, and a `0::` line cut
-/// short would name the wrong cgroup ([`cgroup_path`] takes a final line
-/// without a newline). `Err(NoUnifiedPath)` without a `0::` line.
-fn proc_cgroup_path(buf: &[u8], n: usize) -> (r: Result<&[u8], State>)
-    requires
-        n <= buf@.len(),
-    ensures
-        r matches Ok(p) ==> p@.len() <= buf@.len(),
-{
-    if n == buf.len() {
-        return Err(State::PathTooLong);
-    }
-    match cgroup_path(&buf[..n]) {
-        Some(p) => Ok(p),
-        None => Err(State::NoUnifiedPath),
-    }
 }
 
 /// ` - ` starts at `j` in `s`.
@@ -892,8 +872,10 @@ verus! {
 /// stops early when `on_line` returns `true`, and returns where that line
 /// is in `buf` (`None` when no line was taken). A line longer than `buf`
 /// is dropped. `read` returns the bytes it filled, 0 at end of file, or
-/// `None` on error (which ends the scan). Runs until `read` reports the
-/// end or an error, so a reader that never does keeps it going.
+/// `None` on error, which ends the scan with no line taken: a final line
+/// without a newline is passed on only at end of file, never one the
+/// error may have cut. Runs until `read` reports the end or an error, so
+/// a reader that never does keeps it going.
 #[verifier::exec_allows_no_decreases_clause]
 pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: Option<(usize, usize)>)
     where
@@ -920,7 +902,8 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
             forall|l: &[u8]| call_requires(on_line, (l,)),
     {
         let n = match read(&mut buf[len..]) {
-            Some(0) | None => break,
+            Some(0) => break,
+            None => return None,
             Some(n) => n,
         };
         proof {
@@ -962,6 +945,30 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
         return Some((0, len));
     }
     None
+}
+
+/// The unified-hierarchy path of `/proc/self/cgroup` streamed from `read`
+/// through `scan` ([`scan_lines`]), in `scan`. The file is scanned whole
+/// (a hybrid v1+v2 host lists a dozen v1 lines before the `0::` line), so
+/// a `0::` line is never taken cut short. `None` without one, on a read
+/// error, or when it is longer than `scan`. The scan stops at the first
+/// `0::` line and leaves it in `scan`, where it is parsed again (the line
+/// closure cannot hand back a borrow of `scan`).
+pub fn proc_cgroup_path<R: FnMut(&mut [u8]) -> Option<usize>>(scan: &mut [u8], read: R) -> (r: Option<&[u8]>)
+    requires
+        forall|b: &mut [u8]| call_requires(read, (b,)),
+        forall|b: &mut [u8], r: Option<usize>|
+            call_ensures(read, (b,), r) ==> (r matches Some(n) ==> n <= b@.len()) && final(b)@.len() == b@.len(),
+    ensures
+        r matches Some(p) ==> p@.len() <= old(scan)@.len(),
+{
+    let found = scan_lines(
+        scan,
+        read,
+        |line: &[u8]| -> bool { cgroup_path_from_line(line).is_some() },
+    );
+    let (lo, hi) = found?;
+    cgroup_path_from_line(&scan[lo..hi])
 }
 
 } // verus!
@@ -1967,16 +1974,21 @@ mod linux {
             proof {
                 use_type_invariant(&cg);
             }
-            let mut pathbuf = [0u8; PROC_CGROUP_BUF];
-            let Some(n) = read_small_file(&PROC_SELF_CGROUP, &mut pathbuf) else {
+            let mut scan = [0u8; SCAN_BUF];
+            let Ok(fd) = sys::open(&PROC_SELF_CGROUP, O_RDONLY) else {
                 return cg;
             };
-            let path = match proc_cgroup_path(&pathbuf, n) {
-                Ok(p) => p,
-                Err(s) => {
-                    cg.state = s;
-                    return cg;
-                },
+            let path = proc_cgroup_path(
+                &mut scan,
+                |b: &mut [u8]| -> (r: Option<usize>)
+                    ensures
+                        r matches Some(n) ==> n <= old(b)@.len(),
+                        final(b)@.len() == old(b)@.len(),
+                    { sys::read_full(fd, b).ok() },
+            );
+            let _ = sys::close(fd);
+            let Some(path) = path else {
+                return cg;
             };
 
             let mut mount = [0u8; PATH_CAP];
@@ -1997,10 +2009,10 @@ mod linux {
             cg.state = State::Tracked;
 
             let dir = &cg.dir[..dir_len];
-            // `pathbuf` is free again (`path` was copied into `cg.dir`).
-            cg.has_limit_files = read_in(dir, b"memory.max", &mut pathbuf).is_some();
-            cg.has_current = read_in(dir, b"memory.current", &mut pathbuf).is_some();
-            cg.has_events = read_in(dir, b"memory.events", &mut pathbuf).is_some();
+            // `scan` is free again (`path` was copied into `cg.dir`).
+            cg.has_limit_files = read_in(dir, b"memory.max", &mut scan).is_some();
+            cg.has_current = read_in(dir, b"memory.current", &mut scan).is_some();
+            cg.has_events = read_in(dir, b"memory.events", &mut scan).is_some();
             let now = sys::now_coarse_ns();
             cg.walk_limits(now);
             cg.sample_now(now);
@@ -2193,23 +2205,34 @@ mod tests {
         assert_eq!(cgroup_path_from_line(b"0::/a/b"), Some(&b"/a/b"[..]));
     }
 
-    /// `file` read into a buffer of `cap` bytes as `read_full` does: the
-    /// buffer and the count filled.
-    fn read_capped(file: &[u8], cap: usize) -> (Vec<u8>, usize) {
-        let mut buf = std::vec![0u8; cap];
-        let n = file.len().min(cap);
-        buf[..n].copy_from_slice(&file[..n]);
-        (buf, n)
+    /// `file` streamed through `proc_cgroup_path` with a scan buffer of
+    /// `scan` bytes, `chunk` bytes per read; the read fails once `fail_at`
+    /// bytes have been handed over.
+    fn streamed(file: &[u8], chunk: usize, scan: usize, fail_at: Option<usize>) -> Option<Vec<u8>> {
+        let mut b: Vec<u8> = std::vec![0; scan];
+        let mut pos = 0;
+        let end = fail_at.unwrap_or(file.len()).min(file.len());
+        proc_cgroup_path(&mut b, |dst| {
+            if pos == end && fail_at.is_some() {
+                return None;
+            }
+            let n = chunk.min(dst.len()).min(end - pos);
+            dst[..n].copy_from_slice(&file[pos..pos + n]);
+            pos += n;
+            Some(n)
+        })
+        .map(|p| p.to_vec())
     }
 
     /// A Kubernetes container's cgroup path (191 bytes).
     const K8S_PATH: &str = "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod0f6a1c2e_3b4d_4e5f_8a9b_0c1d2e3f4a5b.slice/cri-containerd-9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.scope";
 
-    /// A hybrid v1+v2 host's `/proc/self/cgroup`: the first `v1` of a
-    /// dozen v1 hierarchies' lines carrying [`K8S_PATH`], then the `0::`
-    /// line carrying `unified`.
-    fn proc_cgroup_hybrid(v1: usize, unified: &str) -> Vec<u8> {
-        let hierarchies = [
+    /// A hybrid v1+v2 host's `/proc/self/cgroup`: a dozen v1 hierarchies'
+    /// lines carrying [`K8S_PATH`] (about 2.3 KiB), then the `0::` line
+    /// carrying `unified`.
+    fn proc_cgroup_hybrid(unified: &str) -> Vec<u8> {
+        let mut file = String::new();
+        for h in [
             "12:pids",
             "11:hugetlb",
             "10:net_cls,net_prio",
@@ -2222,9 +2245,7 @@ mod tests {
             "3:perf_event",
             "2:rdma",
             "1:name=systemd",
-        ];
-        let mut file = String::new();
-        for h in &hierarchies[..v1] {
+        ] {
             file.push_str(&std::format!("{h}:{K8S_PATH}\n"));
         }
         file.push_str(&std::format!("0::{unified}\n"));
@@ -2232,55 +2253,79 @@ mod tests {
     }
 
     #[test]
-    fn proc_cgroup_hybrid_fits() {
-        let file = proc_cgroup_hybrid(12, K8S_PATH);
-        assert!(file.len() > 2048);
-        let (buf, n) = read_capped(&file, PROC_CGROUP_BUF);
-        assert_eq!(proc_cgroup_path(&buf, n), Ok(K8S_PATH.as_bytes()));
-        // A `0::` path as long as `PATH_CAP` after the dozen v1 lines.
-        let long = std::format!("/{}", "x".repeat(PATH_CAP - 1));
-        let file = proc_cgroup_hybrid(12, &long);
-        let (buf, n) = read_capped(&file, PROC_CGROUP_BUF);
-        assert_eq!(proc_cgroup_path(&buf, n), Ok(long.as_bytes()));
-    }
-
-    #[test]
-    fn proc_cgroup_cut_short_is_untracked() {
-        // A buffer that ends inside the `0::` line (as 1 KiB could on a
-        // hybrid host) cuts the path, and `cgroup_path` takes the cut
-        // line as a (wrong) path: every such read is untracked.
-        let file = proc_cgroup_hybrid(12, K8S_PATH);
-        let zero = file.len() - K8S_PATH.len() - 4;
-        for cap in zero + 4..file.len() - 1 {
-            let (buf, n) = read_capped(&file, cap);
-            let cut = cgroup_path(&buf[..n]).unwrap();
-            assert!(cut.len() < K8S_PATH.len() && K8S_PATH.as_bytes().starts_with(cut));
-            assert_eq!(proc_cgroup_path(&buf, n), Err(State::PathTooLong));
+    fn proc_cgroup_streams_a_hybrid_file() {
+        let file = proc_cgroup_hybrid(K8S_PATH);
+        assert!(file.len() > SCAN_BUF);
+        for chunk in [1, 7, 64, 1024, 4096] {
+            assert_eq!(
+                streamed(&file, chunk, SCAN_BUF, None).as_deref(),
+                Some(K8S_PATH.as_bytes()),
+                "chunk {chunk}"
+            );
         }
-        // Cut in the v1 lines: untracked too, not "no `0::` line".
-        let (buf, n) = read_capped(&file, 1024);
-        assert_eq!(proc_cgroup_path(&buf, n), Err(State::PathTooLong));
-        // With room to spare, the whole path.
-        let (buf, n) = read_capped(&file, file.len() + 1);
-        assert_eq!(proc_cgroup_path(&buf, n), Ok(K8S_PATH.as_bytes()));
-        // A file too big even for that is untracked, not a guess.
-        let long = std::format!("/{}", "x".repeat(PROC_CGROUP_BUF));
-        let (buf, n) = read_capped(&proc_cgroup_hybrid(12, &long), PROC_CGROUP_BUF);
-        assert_eq!(proc_cgroup_path(&buf, n), Err(State::PathTooLong));
+        // The longest `0::` line the scan buffer holds, newline included.
+        let long = std::format!("/{}", "x".repeat(SCAN_BUF - 5));
+        let file = proc_cgroup_hybrid(&long);
+        assert_eq!(
+            streamed(&file, 4096, SCAN_BUF, None).as_deref(),
+            Some(long.as_bytes())
+        );
+        // The same file agrees with the whole-file reference.
+        assert_eq!(cgroup_path(&file), Some(long.as_bytes()));
+        assert_eq!(
+            streamed(PROC_CGROUP_MIXED, 5, SCAN_BUF, None).as_deref(),
+            Some(&b"/docker/abc"[..])
+        );
+        assert_eq!(streamed(PROC_CGROUP_V1, 5, SCAN_BUF, None), None);
+        // A final line without a newline at end of file is whole.
+        assert_eq!(
+            streamed(b"0::/a/b", 3, 64, None).as_deref(),
+            Some(&b"/a/b"[..])
+        );
     }
 
     #[test]
-    fn proc_cgroup_exact_fill_is_untracked() {
-        // A read that fills the buffer cannot tell a file of exactly that
-        // size from a longer one: untracked, never a guessed path.
-        let file = b"0::/a/b\n";
-        let (buf, n) = read_capped(file, file.len());
-        assert_eq!(n, buf.len());
-        assert_eq!(proc_cgroup_path(&buf, n), Err(State::PathTooLong));
-        let (buf, n) = read_capped(file, file.len() + 1);
-        assert_eq!(proc_cgroup_path(&buf, n), Ok(&b"/a/b"[..]));
-        let (buf, n) = read_capped(PROC_CGROUP_V1, PROC_CGROUP_BUF);
-        assert_eq!(proc_cgroup_path(&buf, n), Err(State::NoUnifiedPath));
+    fn proc_cgroup_never_takes_a_cut_line() {
+        let file = proc_cgroup_hybrid(K8S_PATH);
+        let zero = file.len() - K8S_PATH.len() - 4;
+        // Every prefix that ends inside the `0::` line names a wrong
+        // (cut) path when taken as the whole file: what a 1 KiB read did
+        // on a hybrid host whose `0::` line straddled 1 KiB.
+        for end in zero + 4..file.len() - 1 {
+            let cut = cgroup_path(&file[..end]).unwrap();
+            assert!(cut.len() < K8S_PATH.len() && K8S_PATH.as_bytes().starts_with(cut));
+            // A read error there ends the scan with nothing taken.
+            assert_eq!(
+                streamed(&file, 64, SCAN_BUF, Some(end)),
+                None,
+                "error at {end}"
+            );
+        }
+        // An error in the v1 lines, too.
+        assert_eq!(streamed(&file, 64, SCAN_BUF, Some(1024)), None);
+        // A `0::` line longer than the scan buffer is dropped, not cut.
+        let long = std::format!("/{}", "x".repeat(SCAN_BUF));
+        assert_eq!(
+            streamed(&proc_cgroup_hybrid(&long), 4096, SCAN_BUF, None),
+            None
+        );
+    }
+
+    #[test]
+    fn proc_cgroup_exact_fill() {
+        // A line plus its newline that fill the scan buffer exactly is
+        // whole; a line that fills it without the newline is dropped,
+        // whatever follows.
+        let path = std::format!("/{}", "x".repeat(64 - 5));
+        let line = std::format!("0::{path}\n");
+        assert_eq!(line.len(), 64);
+        assert_eq!(
+            streamed(line.as_bytes(), 64, 64, None).as_deref(),
+            Some(path.as_bytes())
+        );
+        let longer = std::format!("0::{path}y\n");
+        assert_eq!(streamed(longer.as_bytes(), 64, 64, None), None);
+        assert_eq!(streamed(&longer.as_bytes()[..64], 64, 64, None), None);
     }
 
     #[test]
