@@ -527,8 +527,8 @@ fn create(
     let page = shared.regions.page_size();
     proof {
         // The stack arithmetic below relies on a page no larger than the
-        // stack, as the code does: Linux pages are 4 to 64 KiB.
-        crate::layout::axiom_process_page_at_most_64k();
+        // stack, as the code does: the regions' page is at most 64 KiB
+        // (`Regions::separated`).
         let lg = shared.regions.lg_page;
         assert((1usize << lg) <= 0x4_0000usize) by (bit_vector)
             requires

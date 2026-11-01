@@ -184,16 +184,6 @@ pub open spec fn guard_slab(c: int, slab: int) -> bool {
     guard_of(guard_geom(c).0, guard_geom(c).1, slab as usize)
 }
 
-/// The process's page is at most 64 KiB: Linux on x86_64 uses 4 KiB pages
-/// and on aarch64 4, 16 or 64 KiB. Trusted: a kernel fact the code relies on
-/// without checking it (the background thread's stack keeps one page as its
-/// guard out of 256 KiB). The same premise as the `getauxval`
-/// specification (`sys::auxv`), which init reads the page through, stated
-/// for the process's regions without that call.
-pub axiom fn axiom_process_page_at_most_64k()
-    ensures
-        process_regions().lg_page <= 16;
-
 /// Entries `lo..hi` of `s` are slot starts of class `c` in the process's
 /// regions.
 pub open spec fn slots_in(s: Seq<*mut u8>, c: int, lo: int, hi: int) -> bool {
@@ -266,7 +256,9 @@ impl Regions {
     /// and below `sys::pac::user_va_limit`; every class base and the huge
     /// base are above address 0, so no slot and no huge page start is null
     /// ([`Regions::lemma_block_nonzero`]); the huge base is
-    /// `MAX_SLAB`-aligned and the page is between 4 KiB and `MAX_SLAB`;
+    /// `MAX_SLAB`-aligned and the page is between 4 KiB and 64 KiB, the
+    /// largest page Linux uses on x86_64 and aarch64 (the kernel's page,
+    /// which [`Regions::reserve_owning`] is given), so below `MAX_SLAB`;
     /// and the superblock's strides, the huge region and the metadata
     /// region are pairwise disjoint, and none holds a byte of the
     /// process's `Shared` static ([`Regions::outside`]). [`from_parts`]
@@ -278,6 +270,7 @@ impl Regions {
         let stride = (1usize << self.lg_stride) as int;
         let region = (1usize << self.lg_region) as int;
         &&& 12 <= self.lg_page <= LG_MAX_SLAB
+        &&& self.lg_page <= 16
         &&& 0 < self.superblock
         &&& self.superblock + NCLASSES * stride <= 0x1_0000_0000_0000
         &&& self.superblock + NCLASSES * stride <= crate::sys::pac::user_va_limit()
@@ -577,8 +570,9 @@ impl Regions {
             forall|i: int| 0 <= i < 3 ==> #[trigger] maps[i].addr + maps[i].len <= usize::MAX,
             // What `separated` needs of the caller: each region lies
             // inside its own mapping, the huge base is `MAX_SLAB`-aligned
-            // like the superblock, and the page is between 4 KiB (the
-            // kernel's page) and `MAX_SLAB` (`reserve` checks the bound).
+            // like the superblock, and the page, the kernel's, is between
+            // 4 KiB and 64 KiB (`reserve_owning` checks 4 KiB to `MAX_SLAB`
+            // at run time and takes the 64 KiB bound as its precondition).
             // The mappings are three `mmap`s without `MAP_FIXED`, which
             // the kernel places apart from each other.
             maps[0].addr <= superblock,
@@ -602,6 +596,7 @@ impl Regions {
             forall|i: int| 0 <= i < 3 ==> disjoint(#[trigger] maps[i].addr as int, maps[i].len as int, shared_static_addr(), shared_static_len()),
             huge.0 & ((MAX_SLAB - 1) as usize) == 0,
             12 <= lg_page <= LG_MAX_SLAB,
+            lg_page <= 16,
         ensures
             r.wf(),
             r.separated(),
@@ -2315,14 +2310,17 @@ mod linux {
         /// with the metadata region's uncommitted address space, for
         /// `Meta::owning`, which commits it as it hands it out.
         /// The page size must be the kernel's (`api::init` passes the probed
-        /// one): a power of two from 4 KiB, the smallest page of any Linux
-        /// target, to `MAX_SLAB`; anything else aborts.
+        /// one), which the `getauxval` specification bounds at 64 KiB
+        /// (`sys::features::page_size`); [`Regions::separated`] carries that
+        /// bound. At run time, a page that is not a power of two from 4 KiB,
+        /// the smallest page of any Linux target, to `MAX_SLAB` aborts.
         // The index carries a Verus invariant.
         #[allow(clippy::needless_range_loop)]
         pub fn reserve_owning(page_size: usize, anon_name: bool) -> (res: (Regions, Tracked<Unbacked>))
             requires
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
+                page_size <= 0x1_0000,
             ensures
                 res.0.wf(),
                 res.0.separated(),
@@ -2343,6 +2341,8 @@ mod linux {
                 assert(MAX_SLAB == 0x40_0000) by (bit_vector);
                 assert(12 <= lg <= 22) by (bit_vector)
                     requires page_size == 1usize << lg, 0x1000 <= page_size <= 0x40_0000, lg < 64;
+                assert(lg <= 16) by (bit_vector)
+                    requires page_size == 1usize << lg, page_size <= 0x1_0000, lg < 64;
             }
 
             // One 64-bit random per class offset, one each for the two
