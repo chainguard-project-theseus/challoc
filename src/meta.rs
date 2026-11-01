@@ -959,7 +959,7 @@ impl Meta {
     /// or `reserve_table` handed out; `side` says which of the two it
     /// came from (`true` for the reservation side). A commit takes the
     /// range's part of the claim, so a verified caller commits no page
-    /// twice; the unverified callers pass a claim taken on trust.
+    /// twice; the unit tests pass a claim taken on trust.
     pub fn commit(
         &self,
         addr: usize,

@@ -45,7 +45,7 @@ impl Heap {
         class: usize,
         Tracked(blk): Tracked<&mut Live>,
         errno: Tracked<&mut ThreadErrno>,
-        cell: Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: *mut u8)
         requires
             crate::sys::may_abort(),
@@ -54,6 +54,7 @@ impl Heap {
             shared.wf(),
             old(self).wf(),
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
             r@.addr != 0 ==> final(blk).slot_block(r, class as int),
@@ -63,7 +64,7 @@ impl Heap {
         }
         match self.alloc_fast(class, shared.push_flags(), Tracked(blk)) {
             Some(p) => p,
-            None => self.alloc_slow(shared, class, Tracked(blk), errno, cell).0,
+            None => self.alloc_slow(shared, class, Tracked(blk), errno, Tracked(cell)).0,
         }
     }
 
@@ -197,7 +198,7 @@ impl Heap {
         class: usize,
         Tracked(blk): Tracked<&mut Live>,
         errno: Tracked<&mut ThreadErrno>,
-        cell: Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -206,6 +207,7 @@ impl Heap {
             shared.wf(),
             old(self).wf(),
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
@@ -223,7 +225,7 @@ impl Heap {
                 }
                 r
             },
-            None => self.alloc_slow(shared, class, Tracked(blk), errno, cell),
+            None => self.alloc_slow(shared, class, Tracked(blk), errno, Tracked(cell)),
         }
     }
 
@@ -318,6 +320,7 @@ impl Heap {
             old(self).wf(),
             arena != FOREIGN,
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
@@ -484,6 +487,7 @@ impl Heap {
             class < NCLASSES,
             old(self).wf(),
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
@@ -556,6 +560,7 @@ impl Heap {
             old(self).wf(),
             arena != FOREIGN || arena == old(self).home(),
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
