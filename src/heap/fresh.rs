@@ -193,7 +193,7 @@ pub(super) unsafe fn init_fields(
     let tracked (mut raw, _) = head;
     let ghost base = h@.addr as int;
     proof {
-        crate::vspec::ptr::axiom_raw_valid(&raw, h as *mut u8, 128);
+        crate::vspec::ptr::axiom_raw_valid(&mut raw, h as *mut u8, 128);
         super::others::lemma_field_aligned::<*const Shared>(base, H_SHARED as int);
         super::others::lemma_field_aligned::<u32>(base, H_TID as int);
         super::others::lemma_field_aligned::<u16>(base, H_ARENA as int);

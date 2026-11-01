@@ -3,6 +3,7 @@ axiom_ptr_add_addr	core library	Kani	trusted (partly checked, Kani: kani_proofs:
 axiom_array_elem	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: the provenance clause of the element pointers, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table, which is this axiom's instance in `layout::regions`))
 axiom_array_view	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: its one verified instance, `heap::others`' `[CacheHeader; NCLASSES]`, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table))
 axiom_raw_valid	raw pointer (internal)	none (assumption)
+axiom_raw_readable	raw pointer (internal)	none (assumption)
 # Integers and thin pointers: every byte pattern is a valid value
 # (kani::mem::can_read_unaligned checks validity: it fails at bool, plain_rejects_bool).
 axiom_plain_u64	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)

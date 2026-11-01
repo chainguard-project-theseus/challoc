@@ -1033,7 +1033,7 @@ impl Heap {
             return cache;
         }
         let (slots, Tracked(blk)) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap));
-        let tracked (raw, mc) = blk;
+        let tracked (mut raw, mc) = blk;
         if slots.is_null() {
             return ptr::null_mut();
         }
@@ -1042,7 +1042,7 @@ impl Heap {
             // The stack's bounds (`slot_in` up to `cap`); its entries are
             // written only through the permissions carved from `raw`,
             // never through this fact's `valid_writes`.
-            crate::vspec::ptr::axiom_raw_valid(&raw, slots, 8 * cap as int);
+            crate::vspec::ptr::axiom_raw_valid(&mut raw, slots, 8 * cap as int);
             assert(vstd::layout::size_of::<*mut u8>() == 8);
             assert((slots as *mut *mut u8)@.addr == slots@.addr);
             assert((slots as *mut *mut u8)@.provenance == slots@.provenance);

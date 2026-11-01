@@ -5233,7 +5233,7 @@ impl Heap {
         let ghost base = h@.addr as int;
         proof {
             assert(size == 128 + 64 * NCLASSES);
-            crate::vspec::ptr::axiom_raw_valid(&raw, block, size);
+            crate::vspec::ptr::axiom_raw_valid(&mut raw, block, size);
             crate::vspec::ptr::axiom_ptr_add_addr(block, 128);
         }
         let tracked (head, mut rest) = raw.split(Set::range(base, base + 128));
@@ -5250,7 +5250,7 @@ impl Heap {
         let tracked mut perms = CachePerms::tracked_empty();
         proof {
             assert(Set::range(base + 128, base + size) <= rest.dom());
-            crate::vspec::ptr::axiom_raw_valid(&rest, caches as *mut u8, 64 * NCLASSES);
+            crate::vspec::ptr::axiom_raw_valid(&mut rest, caches as *mut u8, 64 * NCLASSES);
             assert(caches@.addr == base + 128 && caches@.provenance == h@.provenance);
             assert(base % 64 == 0) by {
                 assert(block@.addr as int % 64 == 0);
@@ -5707,12 +5707,12 @@ impl Heap {
                 assert(o@.addr + 64 + 64 * NCLASSES <= usize::MAX);
                 let tracked nh = heap.heads.borrow_mut().tracked_remove(o);
                 let tracked hr = take_hdr_run(&mut heap.perms.borrow_mut().hdrs, o@.addr + 64, o@.provenance, NCLASSES as int);
-                let tracked others::NodeHead { arena: mut pa, next: mut pn, pad: mut pp, rest, claim } = nh;
+                let tracked others::NodeHead { arena: mut pa, next: mut pn, pad: mut pp, mut rest, claim } = nh;
                 broadcast use vstd::raw_ptr::group_raw_ptr_axioms, vstd::layout::layout_of_primitives,
                     vstd::layout::layout_of_references_and_pointers_for_sized_types;
                 crate::vspec::ptr::axiom_ptr_add_addr(o as *mut u8, 2);
                 crate::vspec::ptr::axiom_ptr_add_addr(o as *mut u8, 8);
-                crate::vspec::ptr::axiom_raw_valid(&rest, crate::vspec::ptr::ptr_sub(o as *mut u8, (64 * pad) as usize), 64 * pad as int);
+                crate::vspec::ptr::axiom_raw_valid(&mut rest, crate::vspec::ptr::ptr_sub(o as *mut u8, (64 * pad) as usize), 64 * pad as int);
                 pa.leak_contents();
                 pp.leak_contents();
                 pn.leak_contents();
