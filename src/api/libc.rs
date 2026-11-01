@@ -355,6 +355,9 @@ fn malloc_medium(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): 
 }
 
 /// `malloc`'s pop for a known class `c` of `size` (`class_index`'s).
+/// `theorem_no_syscall_on_fast_paths` restates its fast path (path 0);
+/// `api::restated::fast_path_restatements_match_their_bodies` checks
+/// that the two make the same calls.
 #[inline(always)]
 fn malloc_class(size: usize, c: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
@@ -604,7 +607,9 @@ pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadEr
 }
 
 /// [`free`] with the caller's token for `p` ([`Live::claims`]), which the
-/// free takes back.
+/// free takes back. `theorem_no_syscall_on_fast_paths` restates its fast
+/// path (path 2); `api::restated::fast_path_restatements_match_their_bodies`
+/// checks that the two make the same calls.
 #[inline(always)]
 pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
@@ -649,10 +654,15 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Track
 /// capability). `which` picks the path, so each one starts from a fresh
 /// heap borrow. Paths 0, 2, 3 and the last restate the fast-path code of
 /// [`malloc_class`], [`free_block`], [`free_sized_block`] and
-/// [`free_usable_block`]; path 1 calls [`malloc_fast`]. A restated path
-/// checks only the callees it calls: nothing ties it to the body it
-/// restates, which is kept in step by hand, so a call added to one of
-/// those bodies is not covered until its restatement here changes too.
+/// [`free_usable_block`]; path 1 calls [`malloc_fast`]. Verus checks only
+/// the callees a restated path calls, not that it matches the body it
+/// restates; the test
+/// `api::restated::fast_path_restatements_match_their_bodies` does: it
+/// fails when a body and its restatement differ in the names or order of
+/// their exec calls (the slow-path tail calls, the tests that pick the
+/// fast or slow path, and the class computation the paths take from
+/// their callers left out). It does not compare
+/// arguments or control flow.
 /// The block tokens are taken as
 /// the entry points take them: an empty `Live` for a pop,
 /// [`heap::live::axiom_c_claim`] for a free, of the call's token for `p`
@@ -812,6 +822,9 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c):
 
 /// [`free_sized_hint`] with the caller's token for `p` ([`Live::claims`]),
 /// which the free takes back: the token of the live block `p`.
+/// `theorem_no_syscall_on_fast_paths` restates its fast path (path 3);
+/// `api::restated::fast_path_restatements_match_their_bodies` checks
+/// that the two make the same calls.
 #[inline(always)]
 pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
     requires
@@ -2367,7 +2380,10 @@ pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut T
 
 /// [`free_usable`] with the caller's token for `p` ([`Live::claims`]),
 /// which the free takes back: the token of the live block `p`, whose
-/// usable size is the result.
+/// usable size is the result. `theorem_no_syscall_on_fast_paths`
+/// restates its fast path (its last path);
+/// `api::restated::fast_path_restatements_match_their_bodies` checks
+/// that the two make the same calls.
 #[inline(always)]
 pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>) -> (r: usize)
     requires
