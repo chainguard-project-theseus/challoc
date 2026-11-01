@@ -12,6 +12,7 @@
 //! elements; a small sort and a quicksort run past that).
 //! `from_raw_parts` is also checked at bytes, and `rotate_left` on two
 //! longer slices, the shortest that reach its second algorithm.
+//! `reverse`, which vstd specifies, is checked the same way.
 //! `select_nth_unstable` and `select_nth_unstable_by_key` have no
 //! harness: they switch algorithm with the length, the proofs use them
 //! on slices of thousands, and Kani reaches only the short branches.
@@ -61,6 +62,21 @@ fn slice_swap() {
     want[i] = old[j];
     want[j] = old[i];
     assert!(same(&a, &want));
+}
+
+/// vstd's specification of `<[T]>::reverse`, which verified code uses
+/// (`heap/compact.rs` and `heap/flush.rs`) and the ledger does not list:
+/// `old.reverse()`, element `k` is `old[n - 1 - k]`.
+#[kani::proof]
+#[kani::unwind(8)]
+fn slice_reverse() {
+    let (mut a, n) = any_words();
+    let old = a;
+    a[..n].reverse();
+    for k in 0..n {
+        assert_eq!(a[k], old[n - 1 - k]);
+    }
+    assert!(same(&a[n..], &old[n..]));
 }
 
 /// A slice of `SORTED_MAX` arbitrary words and an arbitrary length up to

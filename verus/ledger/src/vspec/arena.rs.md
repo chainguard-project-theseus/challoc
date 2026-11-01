@@ -7,16 +7,16 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Atomic:...::load` | assume_spec | atomics primitive | loom/GenMC | trusted |
-| `Atomic:...:store` | assume_spec | atomics primitive | loom/GenMC | trusted |
-| `Atomic:...>::new` | assume_spec | atomics primitive | loom/GenMC | trusted |
-| `Atomic:...::swap` | assume_spec | atomics primitive | loom/GenMC | trusted |
+| `Atomic::<*mut T>::load` | assume_spec | core library | Kani | discharged |
+| `Atomic::<*mut T>::store` | assume_spec | core library | Kani | discharged |
+| `Atomic::<*mut T>::new` | assume_spec | core library | Kani | discharged |
+| `Atomic::<*mut T>::swap` | assume_spec | core library | Kani | discharged |
 | `axiom_a...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `core::sync::atomic::Atomic::<*mut T>::load`
 
-src/vspec/arena.rs:12. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/arena.rs:12. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::load`, which vstd does not specify: any pointer.
 
@@ -33,8 +33,8 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
 
 ## `core::sync::atomic::Atomic::<*mut T>::store`
 
-src/vspec/arena.rs:23. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/arena.rs:23. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::store`, which vstd does not specify.
 
@@ -52,8 +52,8 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::store ](
 
 ## `core::sync::atomic::Atomic::<*mut T>::new`
 
-src/vspec/arena.rs:34. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/arena.rs:34. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::new`, which vstd does not specify.
 
@@ -63,8 +63,8 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut
 
 ## `core::sync::atomic::Atomic::<*mut T>::swap`
 
-src/vspec/arena.rs:37. Kind: assume_spec. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/vspec/arena.rs:37. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::swap`, which vstd does not specify: any previous pointer.
 

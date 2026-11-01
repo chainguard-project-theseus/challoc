@@ -16,7 +16,7 @@ file.
 | `hint::assert_unchecked` | assume_spec | core library | Kani | discharged |
 | `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | discharged |
 | `Option::<T>..._deref_mut` | assume_spec | core library | Kani | discharged |
-| `Option::<T>::or_else` | assume_spec | core library | Kani | trusted |
+| `Option::<T>::or_else` | assume_spec | core library | Kani | discharged |
 
 ## `PartialEqSpecImpl for config::Thp`
 
@@ -154,7 +154,7 @@ pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o:
 ## `Option::<T>::or_else`
 
 src/vspec/misc.rs:97. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::option_or_else).
 
 > `Option::or_else`: `option` itself when it is `Some`, else `f()`.
 

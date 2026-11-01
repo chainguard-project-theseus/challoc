@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `libc::FILE` | ext_type_spec | core library | Kani | trusted |
 | `base_slab_sizes` | external_body | function pointer | Kani | discharged |
-| `DisplaySp...p::Cgroup` | spec_impl | allocator invariant | Verus | trusted |
+| `DisplaySpecI...oup::Cgroup` | spec_impl | core library | Kani | discharged |
 | `PartialEqSpe...PercpuArena` | spec_impl | core library | Kani | discharged |
 
 ## `libc::FILE`
@@ -38,8 +38,8 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
 
 ## `DisplaySpecImpl for sys::cgroup::Cgroup`
 
-src/vspec/print.rs:46. Kind: spec_impl. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/vspec/print.rs:47. Kind: spec_impl. Category: core library.
+Tool: Kani. Status: discharged (Kani: sys::cgroup::kani_fmt::display_cgroup).
 
 ```rust
 impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
@@ -51,7 +51,7 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
 
 ## `PartialEqSpecImpl for config::PercpuArena`
 
-src/vspec/print.rs:55. Kind: spec_impl. Category: core library.
+src/vspec/print.rs:56. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_percpu_arena).
 
 ```rust
