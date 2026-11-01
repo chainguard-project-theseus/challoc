@@ -92,4 +92,14 @@ verus! {
 /// `xorshift`.
 pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
 
+/// `Option::or_else`: `option` itself when it is `Some`, else `f()`. Its
+/// caller is `heap::mallocx::alloc`'s arena choice.
+pub assume_specification<T, F: FnOnce() -> Option<T>>[ Option::<T>::or_else ](option: Option<T>, f: F) -> (r: Option<T>)
+    requires
+        option is None ==> f.requires(()),
+    ensures
+        option is Some ==> r == option,
+        option is None ==> f.ensures((), r),
+;
+
 } // verus!

@@ -384,6 +384,11 @@ impl<'a> LockOrder<'a> {
 ///   C entry points, and the entry point `malloc_trim`: their callers hold
 ///   no allocator lock, and `malloc_trim`'s
 ///   `Heap::flush_all` and `purge::purge_all` leave the token unchanged;
+/// - `heap::alloc`, `heap::alloc_declined` and `heap::alloc_zeroed` without
+///   a thread heap, `heap::free_direct`, and `heap::mallocx`'s
+///   `alloc_direct` and `alloc_huge`: reached from the C entry points
+///   (`malloc`, `free` and the `mallocx` family) through code that holds
+///   no allocator lock;
 /// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes

@@ -11,7 +11,8 @@
 //! is the made one, with or without [`ROUTE`]: an invariant of the
 //! writers, which no ghost permission needs to carry (the reader is the
 //! `free` fast path, which holds no ghost state for the byte). [`fixed`]
-//! names the bits it keeps (a later proof ties them to `push_flags`). Each
+//! names the bits it keeps; `Shared::built` ties them to `push_flags`
+//! (`Shared::lemma_route_flags` reads them back). Each
 //! wrapper is `#[inline(always)]` and passes the caller's ordering through
 //! unchanged, which leaves the machine code of the bare `core` call.
 //!

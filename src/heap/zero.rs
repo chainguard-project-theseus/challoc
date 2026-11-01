@@ -447,9 +447,8 @@ pub(super) proof fn lemma_rebuild_entries(
 /// slot `p` of class `c` read as zero covers the slot's whole usable size
 /// ([`block_usable`]: one class per slot address, so its size is `c`'s).
 /// A free path that releases the slot under `Shared::zero_on_free` holds
-/// such a token once it has cleared the slot. `Heap::free_slow_in` calls
-/// it with the token `zero_slot` returns; `heap::free_direct`, the other
-/// caller of `zero_slot`, is unverified and drops the token.
+/// such a token once it has cleared the slot. `Heap::free_slow_in` and
+/// `heap::free_direct` call it with the token `zero_slot` returns.
 pub proof fn theorem_zero_on_free(tracked z: &Zeroed, p: *mut u8, c: int)
     requires
         super::regions_ok(),
@@ -468,10 +467,9 @@ pub proof fn theorem_zero_on_free(tracked z: &Zeroed, p: *mut u8, c: int)
 /// the run's usable length (`Live::len`, the run token's pages before the
 /// guard), so it covers the run's whole usable size, a block of the huge
 /// region. The second `ensures` restates the `requires` through
-/// [`Zeroed::has`], for callers. `Heap::free_huge` calls it with
-/// `zero_huge`'s token before it frees the run; `heap::free_direct`, the
-/// other caller of `Shared::free_huge` on the free paths, is unverified
-/// and drops the token.
+/// [`Zeroed::has`], for callers. `Heap::free_huge` and
+/// `heap::free_direct` call it with `zero_huge`'s token before they free
+/// the run.
 pub(crate) proof fn theorem_zero_on_free_huge(tracked z: &Zeroed, blk: Live, page: int)
     requires
         blk.run_block(page),

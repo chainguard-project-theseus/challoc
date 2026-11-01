@@ -230,9 +230,9 @@ fn kick()
 /// thread (the caller then purges in the foreground for this tick).
 ///
 /// `errno` (the calling thread's, through its [`ThreadErrno`] token) is
-/// preserved: this runs from `free`'s slow path (design
-/// section 1 promises `free` leaves `errno` alone) and glibc's
-/// `pthread_create` / `pthread_join` may set it on their way.
+/// preserved: this runs from an allocation's tick and from
+/// `mallctl("background_thread")`, and glibc's `pthread_create` /
+/// `pthread_join` may set it on their way.
 pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>) -> bool
     requires
         crate::sys::may_abort(),
@@ -240,6 +240,7 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
         shared.wf(),
         old(ord).allows(rank_meta()),
     ensures
+        final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
     broadcast use axiom_state_lock_inv;
@@ -306,6 +307,7 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, T
         shared.wf(),
         old(ord).allows(rank_meta()),
     ensures
+        final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
     if start(shared, Tracked(ord), Tracked(&mut *errno)) {
@@ -348,6 +350,7 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
     ensures
+        final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
     if !auto() {

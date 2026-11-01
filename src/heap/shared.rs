@@ -226,7 +226,8 @@ impl Shared {
     /// line is well formed over its table ([`ClassLine::wf`]); the huge
     /// allocator covers the huge region on the regions' page, with its
     /// records from `meta`; [`PUSH_PAC`] is [`pac_mode`](super::pac_mode),
-    /// set only where pointer authentication is available; the
+    /// set only where pointer authentication is available, and
+    /// `free_flags`' bits other than [`FREE_ROUTE`] are `push_flags`'; the
     /// configuration is well formed; `meta`'s live-object records are the
     /// process's ([`process_live_id`](crate::meta::process_live_id)); and
     /// arena 0 has index 0 and is the process's arena registry's.
@@ -238,6 +239,7 @@ impl Shared {
         &&& self.huge.spec_base() == self.regions.huge_base
         &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
         &&& (self.push_flags & PUSH_PAC != 0) == super::pac_mode()
+        &&& crate::vspec::flags::fixed(&self.free_flags) == self.push_flags & !FREE_ROUTE
         &&& super::pac_mode() ==> crate::sys::pac::pac_available()
         &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
@@ -1448,6 +1450,7 @@ axiom fn axiom_shared_built(
         arena0.is_init(),
     ensures
         shared_at(p).push_flags == parts.push_flags.value(),
+        shared_at(p).free_flags == parts.free_flags.value(),
         shared_at(p).region_hi == parts.region_hi.value(),
         shared_at(p).huge == parts.huge.value(),
         shared_at(p).config == parts.config.value(),
@@ -1703,6 +1706,7 @@ impl Shared {
             final(ph).value() == region_hi,
             final(pa).ptr() == old(pa).ptr(),
             final(pa).is_init(),
+            crate::vspec::flags::fixed(&final(pa).value()) == flags & !FREE_ROUTE,
             *r == pr.value(),
     {
         proof {
@@ -3442,9 +3446,8 @@ impl Shared {
 
     /// The `free` fast path's dispatch byte (see the field): `push_flags`,
     /// plus [`FREE_ROUTE`] once a second arena exists. Its bits other than
-    /// [`FREE_ROUTE`] are [`Shared::route_fixed`]; that they are
-    /// `push_flags`' is a fact of `Shared::init` that `Shared::built` does
-    /// not state.
+    /// [`FREE_ROUTE`] are [`Shared::route_fixed`], `push_flags`'
+    /// ([`Shared::lemma_route_flags`]).
     #[inline(always)]
     pub fn free_flags(&self) -> (r: u8)
         ensures
@@ -3452,6 +3455,21 @@ impl Shared {
         opens_invariants none
     {
         crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)
+    }
+
+    /// What a `free_flags` byte `f` carries over from `push_flags`: its
+    /// [`PUSH_PAC`] bit is [`pac_mode`](super::pac_mode), set only where the
+    /// process may execute the PAC instructions.
+    pub proof fn lemma_route_flags(&self, f: u8)
+        requires
+            self.wf(),
+            f & !FREE_ROUTE == self.route_fixed(),
+        ensures
+            (f & PUSH_PAC != 0) == super::pac_mode(),
+            (f & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
+    {
+        let pf = self.push_flags;
+        assert(f & !8u8 == pf & !8u8 ==> f & 4u8 == pf & 4u8) by (bit_vector);
     }
 
     /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]

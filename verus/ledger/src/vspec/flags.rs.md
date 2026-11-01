@@ -13,7 +13,7 @@ file.
 
 ## `new`
 
-src/vspec/flags.rs:59. Kind: external_body. Category: atomics primitive.
+src/vspec/flags.rs:60. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `AtomicU8::new(v)`: a byte whose bits other than [`ROUTE`] are `v`'s from here on.
@@ -28,7 +28,7 @@ pub fn new(v: u8) -> (r: RouteByte)
 
 ## `load`
 
-src/vspec/flags.rs:72. Kind: external_body. Category: atomics primitive.
+src/vspec/flags.rs:73. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `b.load(ordering)` (it panics for a `Release` or `AcqRel` ordering): the made value, with or without [`ROUTE`].
@@ -46,7 +46,7 @@ pub fn load(b: &RouteByte, ordering: Ordering) -> (r: u8)
 
 ## `fetch_or`
 
-src/vspec/flags.rs:88. Kind: external_body. Category: atomics primitive.
+src/vspec/flags.rs:89. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `b.fetch_or(v, ordering)`, for bits `v` within [`ROUTE`]: the previous value, which is the made value with or without [`ROUTE`].

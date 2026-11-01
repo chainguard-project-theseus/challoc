@@ -606,12 +606,13 @@ pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadEr
 /// [`free`] with the caller's token for `p` ([`Live::claims`]), which the
 /// free takes back.
 #[inline(always)]
-pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
+pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         blk.claims(p),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> blk.block(p),
 {
@@ -633,7 +634,7 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut T
             return;
         }
     }
-    free_slow(p, Tracked(blk), errno)
+    free_slow(p, Tracked(blk), Tracked(errno))
 }
 
 /// Sized free on the calling thread's heap: `hint` is the class the size
@@ -837,12 +838,13 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tra
 /// same message it always did).
 #[cold]
 #[inline(never)]
-fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
+fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> blk.block(p),
 {
@@ -850,7 +852,7 @@ fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut Thread
         return;
     }
     match super::shared_if_ready() {
-        Some(shared) => heap::free(shared, p, Tracked(blk), errno),
+        Some(shared) => heap::free(shared, p, Tracked(blk), Tracked(errno)),
         None => free_before_init(p),
     }
 }
@@ -1376,11 +1378,10 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
 /// pages (`old_size_or_keep`; exactly then: [`keeps`] in [`realloc_block`]);
 /// otherwise allocate, copy `min(old usable, new size)`, free. On failure
 /// the old block is intact and `errno = ENOMEM`; `realloc(p, 0)` frees `p`
-/// and returns null without setting `errno` (the ensures do not state it:
-/// `heap::free` takes the `errno` token and its contract says nothing
-/// about the value it leaves). C holds the token
-/// of the block it passes ([`heap::live::axiom_c_claim`]), and gets the
-/// result's.
+/// and returns null without setting `errno` (a free never starts the
+/// background thread, and leaves `errno` as it was). C holds the
+/// token of the block it passes ([`heap::live::axiom_c_claim`]), and gets
+/// the result's.
 pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>) -> (r: *mut u8)
     requires
         c.block() == Some(p),
@@ -1391,6 +1392,7 @@ pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno
         heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
     let tracked mut out = Live::empty();
@@ -1459,6 +1461,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         p@.addr != 0 && size != 0 && r@.addr != 0 && r@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
         p@.addr != 0 && size != 0 ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     if p.is_null() {
         return malloc_block(size, Tracked(out), Tracked(errno));
@@ -1574,6 +1577,7 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize, Tracked(errno): Tracked<&mut
         heap::fits(r, n * m, QUANTUM as int),
         p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && n * m == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && n * m == 0 ==> final(errno).val() == old(errno).val(),
 {
     match n.checked_mul(m) {
         Some(size) => realloc(p, size, Tracked(errno), Tracked(c)),
@@ -1997,6 +2001,7 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout)
         heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
     let tracked mut uout = uout;
@@ -2030,6 +2035,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         p@.addr != 0 && size != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     if p.is_null() {
         return malloc_usable_stored(size, usable, Tracked(uout), Tracked(out), Tracked(errno));
