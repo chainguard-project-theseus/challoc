@@ -987,6 +987,65 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     published_line(line).as_ptr()
 }
 
+/// The read-only entry points make these calls, in a context where only
+/// [`sys::integrity_aborts`] holds, not [`sys::may_abort`]. Each call
+/// verifies, so none of these functions requires `may_abort`, and every
+/// abort but an integrity check does: they abort at most at an integrity
+/// check, for no argument. `get_defrag_hint` and
+/// `malloc_usable_size(NULL)` are called whole; `nallocx` and
+/// `challoc_features` through the calls their bodies make after
+/// `shared()`, whose init may abort (it returns at once once init has
+/// completed, which `shared` stands for here). `mallinfo2`, which is not
+/// verified, through the calls of its body that carry a contract
+/// (`stats::collect_all` and the page size); its figure arithmetic
+/// (`stats::fig_add`, `stats::fig_mul`) wraps in the shipped library and
+/// panics on overflow only where overflow checks are on (the tests).
+/// [`mallctl::utilization`], the reading behind
+/// `experimental.utilization`, is called whole; `mallctl` and
+/// `mallctlbymib` themselves are not covered here. The calls listed for
+/// `nallocx`, `challoc_features` and `mallinfo2` restate those bodies,
+/// kept in step by hand: a call added to one of them is not covered until
+/// its restatement here changes too.
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi::c_int, p: *const u8, verbose: bool)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::integrity_aborts(),
+        shared.wf(),
+{
+    proof {
+        shared.lemma_wf();
+    }
+    // `get_defrag_hint`, whole.
+    let _ = jemalloc::get_defrag_hint(p);
+    // `malloc_usable_size(NULL)`, whole.
+    let _ = libc::malloc_usable_size(core::ptr::null_mut());
+    // `nallocx` after its `shared()`.
+    let f = crate::heap::mallocx::Flags::decode(flags as u32);
+    let _ = jemalloc::usable_for(shared, size, &f).unwrap_or(0);
+    // `mallinfo2` after its `shared()`: its calls that carry a contract.
+    let tracked mut sd = Ghost((Seq::<crate::stats::ArenaStats>::empty(), Seq::<int>::empty()));
+    // Premise (lock order), as at an entry point: it holds no allocator
+    // lock.
+    let tracked mut ord = axiom_entry();
+    let all = crate::stats::collect_all(shared, Tracked(&mut sd), Tracked(&mut ord));
+    let page = shared.regions.page_size();
+    let _ = crate::stats::fig_mul(all.pdirty, page);
+    // `challoc_features` after its `shared()`: the line's build on the
+    // first request, or the wait for it.
+    let tracked published;
+    proof {
+        shared.lemma_wf_ready();
+        published = axiom_published();
+    }
+    let line = line_ready(Tracked(published));
+    let _ = published_line(line).as_ptr();
+    // `mallctl::utilization`, whole.
+    let _ = mallctl::utilization(shared, p as *const core::ffi::c_void, verbose);
+}
+
 } // verus!
 
 /// Whether init has completed (for the tests; the entry points use

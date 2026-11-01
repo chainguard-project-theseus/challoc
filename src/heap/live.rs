@@ -907,7 +907,9 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
 /// and of the reallocations (`api::libc::free`, `free_sized`,
 /// `free_sized_hint`, `free_usable`, `realloc` and `realloc_usable`;
 /// `api::jemalloc::dallocx`, `sdallocx` and `rallocx`), each with the
-/// call's token it is passed.
+/// call's token it is passed, and the verification-only
+/// `api::libc::theorem_no_syscall_on_fast_paths` and
+/// `theorem_no_user_reads`, as those entry points do.
 pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
     requires
         c.block() is Some,

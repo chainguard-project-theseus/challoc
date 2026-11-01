@@ -81,8 +81,10 @@ verus! {
 /// the slot: `heap_for_thread`, `existing_heap`, `heap_destructor`,
 /// `api::libc::free_block`, `api::libc::free_usable_block`, the heap
 /// entry points `heap::paths::alloc`, `alloc_declined` and `alloc_zeroed`,
-/// `heap::mallocx::alloc`, and `mallctl`'s `background_thread` write
-/// (`api::mallctl::ctl`). The two frees use their token only on their
+/// `heap::mallocx::alloc`, `mallctl`'s `background_thread` write
+/// (`api::mallctl::ctl`), and, in verification only, the two free paths
+/// of `api::libc::theorem_no_syscall_on_fast_paths`, which restate the
+/// two frees' fast paths. The two frees use their token only on their
 /// fast path; the slow path they take after a declined fast path reaches
 /// `heap_for_thread`, which makes its own after they are done with the
 /// first.
