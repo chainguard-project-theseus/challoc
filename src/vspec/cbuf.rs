@@ -24,10 +24,13 @@
 //! usable bytes of blocks it is handing out (`vspec::user::UserMem`), in
 //! the slab and huge regions, which [`c_apart`] does not exclude: a
 //! contract-keeping argument lies in a block the program holds, never in
-//! one the call is handing out, so those stay apart by the contract. A C
-//! program that breaks the contract (a string that is not NUL-terminated,
-//! wraps the address space or lies in challoc's memory other than a
-//! published counter) makes the token's facts false.
+//! one the call is handing out, so those stay apart by the contract.
+//! `core::ptr::write_bytes`, which verified code never points at a C
+//! caller's buffer, also needs the bytes outside those regions
+//! ([`blocks_apart`]). A C program that breaks the contract (a string
+//! that is not NUL-terminated, wraps the address space or lies in
+//! challoc's memory other than a published counter) makes the token's
+//! facts false.
 
 #[cfg(verus_keep_ghost)]
 use crate::layout::{disjoint, process_regions, shared_static_addr, shared_static_len};
@@ -51,6 +54,20 @@ pub open spec fn c_apart(addr: int, len: int) -> bool {
     let m = process_regions().meta_map;
     &&& disjoint(addr, len, m.addr as int, m.len as int)
     &&& disjoint(addr, len, shared_static_addr(), shared_static_len())
+}
+
+/// The `len` bytes at `addr` are apart from the mappings that hold user
+/// blocks: the class superblock (`Regions::superblock_map`, every slab
+/// slot) and the huge region (`Regions::huge_map`, every huge run). The
+/// bytes of a block verified code is handing out are there, under a
+/// `vspec::user::UserMem` whose byte state a write it does not see would
+/// make stale. Not part of [`c_apart`]: a C caller's buffer may well be
+/// a block the program holds there. The premise of `core::ptr::write_bytes`
+/// (`vspec::ptr`), which verified code never uses on a C caller's buffer.
+pub open spec fn blocks_apart(addr: int, len: int) -> bool {
+    let r = process_regions();
+    &&& disjoint(addr, len, r.superblock_map.addr as int, r.superblock_map.len as int)
+    &&& disjoint(addr, len, r.huge_map.addr as int, r.huge_map.len as int)
 }
 
 /// The `len` bytes at `addr` are counters challoc publishes for C to

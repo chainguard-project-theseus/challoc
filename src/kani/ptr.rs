@@ -234,11 +234,11 @@ fn write_bytes_on<T: Copy + kani::Arbitrary, const N: usize>() {
 
 /// `core::ptr::write_bytes::<T>`: no `ensures`; under its `requires`
 /// it is defined and returns (and writes what `core` documents), at a
-/// byte and a word. The contract's `c_apart` and `c_writes` conjuncts
-/// say whose memory it is, not whether the call is defined, and are not
-/// checked here. (Not at a zero-sized type: Kani 0.68 reports an empty
-/// fill through a pointer to an array of `()` as a write to a region
-/// that is not writeable.)
+/// byte and a word. The contract's `c_apart`, `blocks_apart` and
+/// `c_writes` conjuncts say whose memory it is, not whether the call is
+/// defined, and are not checked here. (Not at a zero-sized type: Kani
+/// 0.68 reports an empty fill through a pointer to an array of `()` as
+/// a write to a region that is not writeable.)
 #[kani::proof]
 #[kani::unwind(41)]
 fn ptr_write_bytes() {

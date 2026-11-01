@@ -166,10 +166,11 @@ pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
 /// permission covers: as for the unaligned writes below, unless the fill
 /// is empty, the bytes must be apart from challoc's memory
 /// (`vspec::cbuf::c_apart`), where verified code holds its permissions,
-/// and writes through their provenance must be open
-/// (`vspec::cbuf::c_writes`). Verified code fills its own memory through
-/// `vspec::zero::zero_raw` and `vspec::user::zero_user`, which take the
-/// permission `&mut`.
+/// and from the slab and huge regions (`vspec::cbuf::blocks_apart`), where
+/// the user blocks it hands out are, and writes through their provenance
+/// must be open (`vspec::cbuf::c_writes`). Verified code fills its own
+/// memory through `vspec::zero::zero_raw` and `vspec::user::zero_user`,
+/// which take the permission `&mut`.
 pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8, count: usize)
     requires
         dst@.addr != 0,
@@ -177,6 +178,7 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
         count as int * vstd::layout::size_of::<T>() == 0 || {
             &&& valid_writes(dst, count as int * vstd::layout::size_of::<T>())
             &&& crate::vspec::cbuf::c_apart(dst@.addr as int, count as int * vstd::layout::size_of::<T>())
+            &&& crate::vspec::cbuf::blocks_apart(dst@.addr as int, count as int * vstd::layout::size_of::<T>())
             &&& crate::vspec::cbuf::c_writes(dst@.provenance)
         },
 ;
