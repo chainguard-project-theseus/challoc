@@ -476,42 +476,87 @@ pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): T
 
 #[cfg(not(test))]
 mod exports {
+    #[cfg(verus_keep_ghost)]
+    use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::c_void;
+    use vstd::prelude::{Tracked, verus};
+
+    verus! {
+
+    /// The token of a C++ call that hands over the block at `p` to an
+    /// `operator delete` ([`CCall`], [`CEntry::Frees`]). Trusted: as
+    /// `libc`'s `axiom_c_call`, which this module cannot name.
+    axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+        requires
+            e is Frees,
+        ensures
+            c.fresh(e),
+    ;
 
     /// `operator new(size_t)`
     #[unsafe(export_name = "_Znwm")]
     pub extern "C" fn new(size: usize) -> *mut c_void {
-        super::new(size, vstd::prelude::Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new(size, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new[](size_t)`
     #[unsafe(export_name = "_Znam")]
     pub extern "C" fn new_array(size: usize) -> *mut c_void {
-        super::new(size, vstd::prelude::Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new(size, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new(size_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnwmRKSt9nothrow_t")]
     pub extern "C" fn new_nothrow(size: usize, _tag: *const c_void) -> *mut c_void {
-        super::new_nothrow(size, vstd::prelude::Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_nothrow(size, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new[](size_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnamRKSt9nothrow_t")]
     pub extern "C" fn new_array_nothrow(size: usize, _tag: *const c_void) -> *mut c_void {
-        super::new_nothrow(size, vstd::prelude::Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_nothrow(size, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZnwmSt11align_val_t")]
     pub extern "C" fn new_aligned(size: usize, align: usize) -> *mut c_void {
-        super::new_aligned(size, align, false, vstd::prelude::Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_aligned(size, align, false, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZnamSt11align_val_t")]
     pub extern "C" fn new_array_aligned(size: usize, align: usize) -> *mut c_void {
-        super::new_aligned(size, align, false, vstd::prelude::Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_aligned(size, align, false, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t, const std::nothrow_t&)`
@@ -521,7 +566,12 @@ mod exports {
         align: usize,
         _tag: *const c_void,
     ) -> *mut c_void {
-        super::new_aligned(size, align, true, vstd::prelude::Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_aligned(size, align, true, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t, const std::nothrow_t&)`
@@ -531,99 +581,111 @@ mod exports {
         align: usize,
         _tag: *const c_void,
     ) -> *mut c_void {
-        super::new_aligned(size, align, true, vstd::prelude::Tracked::assume_new()) as *mut c_void
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::new_aligned(size, align, true, Tracked(&mut errno)) as *mut c_void
     }
 
     /// `operator delete(void*)`
     #[unsafe(export_name = "_ZdlPv")]
     pub extern "C" fn delete(p: *mut c_void) {
-        super::delete(
-            p as *mut u8,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete[](void*)`
     #[unsafe(export_name = "_ZdaPv")]
     pub extern "C" fn delete_array(p: *mut c_void) {
-        super::delete(
-            p as *mut u8,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete(void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvRKSt9nothrow_t")]
     pub extern "C" fn delete_nothrow(p: *mut c_void, _tag: *const c_void) {
-        super::delete(
-            p as *mut u8,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete[](void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdaPvRKSt9nothrow_t")]
     pub extern "C" fn delete_array_nothrow(p: *mut c_void, _tag: *const c_void) {
-        super::delete(
-            p as *mut u8,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete(void*, size_t)`
     #[unsafe(export_name = "_ZdlPvm")]
     pub extern "C" fn delete_sized(p: *mut c_void, size: usize) {
-        super::delete_sized(
-            p as *mut u8,
-            size,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete_sized(p as *mut u8, size, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete[](void*, size_t)`
     #[unsafe(export_name = "_ZdaPvm")]
     pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize) {
-        super::delete_sized(
-            p as *mut u8,
-            size,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete_sized(p as *mut u8, size, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete(void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_t")]
     pub extern "C" fn delete_aligned(p: *mut c_void, _align: usize) {
-        super::delete(
-            p as *mut u8,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete[](void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvSt11align_val_t")]
     pub extern "C" fn delete_array_aligned(p: *mut c_void, _align: usize) {
-        super::delete(
-            p as *mut u8,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete(void*, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_tRKSt9nothrow_t")]
     pub extern "C" fn delete_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *const c_void) {
-        super::delete(
-            p as *mut u8,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete[](void*, std::align_val_t, const std::nothrow_t&)`
@@ -633,36 +695,48 @@ mod exports {
         _align: usize,
         _tag: *const c_void,
     ) {
-        super::delete(
-            p as *mut u8,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
-        )
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
     }
 
     /// `operator delete(void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvmSt11align_val_t")]
     pub extern "C" fn delete_sized_aligned(p: *mut c_void, size: usize, align: usize) {
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
         super::delete_sized_aligned(
             p as *mut u8,
             size,
             align,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
+            Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })),
+            Tracked(&mut errno),
         )
     }
 
     /// `operator delete[](void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvmSt11align_val_t")]
     pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, size: usize, align: usize) {
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let Tracked(mut errno) = crate::vspec::errno::lend();
         super::delete_sized_aligned(
             p as *mut u8,
             size,
             align,
-            vstd::prelude::Tracked::assume_new(),
-            vstd::prelude::Tracked::assume_new(),
+            Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })),
+            Tracked(&mut errno),
         )
     }
+    } // verus!
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ file.
 | `Hook` | ext_type_spec | function pointer | Kani | trusted |
 | `message_hook` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 | `call_hook` | external_body | function pointer | Kani | trusted |
+| `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
 ## `Hook`
 
@@ -43,4 +44,20 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
     requires
         crate::sys::may_syscall(),
         exists|i: int| 0 <= i < 512 && #[trigger] buf@[i] == 0,
+```
+
+## `axiom_c_call`
+
+src/api/jemalloc.rs:1157. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
+
+```rust
+axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
+    requires
+        e is Frees,
+    ensures
+        c.fresh(e),
+;
 ```
