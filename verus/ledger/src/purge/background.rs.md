@@ -30,39 +30,43 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 
 ## `pthread_join`
 
-src/purge/background.rs:470. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:473. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
 
 ```rust
-unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&TlsCell>) -> i32
+unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell>) -> i32
     requires
         crate::sys::may_syscall(),
-        cell.value() == 0 || crate::heap::reentry_benign(cell.value()),
+        old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()),
+    ensures
+        final(cell).kept(*old(cell)),
 ```
 
 ## `spawn`
 
-src/purge/background.rs:627. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:642. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
 
-Body mints Tracked at line 645; mints Tracked at line 653.
+Body mints Tracked at line 662; mints Tracked at line 670.
 
 ```rust
-fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&TlsCell>) -> Option<::libc::pthread_t>
+fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>, Ghost(fresh): Ghost<bool>) -> Option<::libc::pthread_t>
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        cell.value() == 0 || crate::heap::reentry_benign(cell.value()),
+        old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()) || fresh,
+    ensures
+        final(cell).kept(*old(cell)),
 ```
 
 ## `shared_arg`
 
-src/purge/background.rs:715. Kind: external_body. Category: raw pointer from C caller.
+src/purge/background.rs:732. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -75,7 +79,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ## `main`
 
-src/purge/background.rs:731. Kind: no_decreases. Category: termination.
+src/purge/background.rs:748. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -86,7 +90,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:831. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:848. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_lock`] is the raw lock of [`STATE`].

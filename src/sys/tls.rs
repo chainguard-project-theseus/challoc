@@ -92,8 +92,10 @@ verus! {
 /// or from `pthread_create` and `pthread_join` in the background thread's
 /// `create`) stands for the outer token lent to it. At a sentinel the
 /// nested call leaves it as it found it (`heap::thread`); at an empty slot
-/// (only `create`'s calls, which require one or the other) it may create
-/// the thread's heap and fill the slot, which [`TlsCell::kept`] allows.
+/// (only `create`'s calls) it may create the thread's heap and fill the
+/// slot, which [`TlsCell::kept`] allows. `create`'s `pthread_create` then
+/// runs on that heap, which no caller holds, and a nested entry leaves a
+/// slot holding a heap as it found it (`heap::thread`).
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct TlsSlot {
     /// The slot cell.
@@ -112,14 +114,8 @@ pub tracked struct TlsSlot {
 /// or `&mut TlsCell` with an `ensures` that keeps it, neither writes the
 /// slot nor creates a thread heap through it; that it does not do so at
 /// all also needs that nothing it calls makes a token of its own (only
-/// the top-level slot users do). The exception is `create`'s
-/// `pthread_join` and `spawn`: they take `&TlsCell`, yet at an empty slot
-/// either may fill it (see [`TlsSlot`]): a nested allocation in
-/// `pthread_create`, or the nested free of the exited thread's data in
-/// `pthread_join`, whose slow path (`heap::free`, `heap_for_thread`)
-/// creates this thread's heap. Their trusted specs claim more than they
-/// keep there, and `spawn`'s `requires` on the cell's value, read after
-/// `pthread_join`, rests on that claim. `tp` is the thread pointer, the modifier
+/// the top-level slot users do, and the nested entries [`TlsSlot`] lists).
+/// `tp` is the thread pointer, the modifier
 /// a signed slot value is signed with ([`get_tp`]).
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct TlsCell {
@@ -174,8 +170,9 @@ impl TlsCell {
 
     /// `self` is the cell `old` after a call that may create the
     /// background thread (`purge::background::create`): the same cell,
-    /// unless `old` is an empty slot, which a nested allocation in
-    /// `pthread_create` may fill with the thread's new heap.
+    /// unless `old` is an empty slot, which a nested free in
+    /// `pthread_join` or a nested allocation in `pthread_create` may fill
+    /// with the thread's new heap.
     pub open spec fn kept(self, old: TlsCell) -> bool {
         old.value() != 0 ==> self == old
     }
