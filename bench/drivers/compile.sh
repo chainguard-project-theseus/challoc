@@ -24,6 +24,7 @@ case $PROJECT in
     tar -xzf "$IN/lua.tar.gz" -C "$W" --strip-components=1
     # No readline (not in the image) and no -march=native (the same code
     # for every cell of an architecture).
+    # shellcheck disable=SC2016 # $(MYCFLAGS) is make's variable, not a command substitution
     timed build make -C "$W" -j "$JOBS" CC=gcc MYCFLAGS="-std=c99 -DLUA_USE_LINUX" MYLIBS=-ldl \
       CFLAGS='-Wall -O2 $(MYCFLAGS) -fno-stack-protector -fno-common'
     [ -x "$W/lua" ] || die "lua did not build"

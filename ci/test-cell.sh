@@ -21,7 +21,7 @@ bash ci/known-failures.sh "$log"
 # Both unit-test groups must have finished (the known failures are in the
 # second, `api::`); a first group that failed never ran the second.
 if [ "$(grep -ac '^test result: ' "$log")" -lt 2 ]; then
-  echo "::error::make test stopped before its second unit-test group ran"
+  echo "error: make test stopped before its second unit-test group ran"
   exit 1
 fi
 # The recipe of `test`: its first line runs the unit tests, every other
@@ -37,7 +37,7 @@ fi
   [[ $first == *'$(DOCKER_RUN)'* ]] && unit_first=1
 }
 if [ "$nstep" = 0 ] || [ "$unit_first" != 1 ] || [ "$ncmd" != "$((nstep + 1))" ]; then
-  echo "::error::the recipe of make test is not the unit-test command followed by \$(MAKE) steps; ci/test-cell.sh needs updating"
+  echo "error: the recipe of make test is not the unit-test command followed by \$(MAKE) steps; ci/test-cell.sh needs updating"
   exit 1
 fi
 echo "=== make test failed only on known failures; running its remaining steps: $(tr '\n' ' ' <<<"$steps")"

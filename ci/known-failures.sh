@@ -36,15 +36,15 @@ failed=$(
 )
 failed=$(sort -u <<<"$failed" | { grep -v '^$' || true; })
 if [ -z "$failed" ]; then
-  echo "::error::the run failed, but no unit test or cgroup program did (a build or other step failed; see the log)"
+  echo "error: the run failed, but no unit test or cgroup program did (a build or other step failed; see the log)"
   exit 1
 fi
 rc=0
 while read -r t; do
   if grep -qxF "$t" <<<"$known"; then
-    echo "::warning::known failure (ci/known-failures.txt): $t"
+    echo "warning: known failure (ci/known-failures.txt): $t"
   else
-    echo "::error::failed: $t"
+    echo "error: failed: $t"
     rc=1
   fi
 done <<<"$failed"

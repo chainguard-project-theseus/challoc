@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # bench/drivers/cb.sh: what the small cb drivers share (startup.sh,
 # compile.sh, rocksdb.sh, nginx.sh, sidecar.sh, node-server.sh,
 # postgres.sh). Sourced, POSIX sh. The contract is bench/README.md
@@ -36,10 +37,11 @@ timed() {
   tag=$1; shift
   rt_file=$CB_OUT/$tag.rt
   rm -f "$rt_file"
-  # shellcheck disable=SC2046
+  # shellcheck disable=SC2046 # alloc_env prints VAR=value words for env
   RT_OUT=$rt_file RT_JSON=1 "$CB_TOOLS/rt" env $(alloc_env) "$@" > "$CB_OUT/$tag.out" 2>&1 \
     || { tail -20 "$CB_OUT/$tag.out" >&2; die "$tag: $* failed"; }
   WALL_S=$(sed -n 's/.*"wall_s":\([0-9.]*\).*/\1/p' "$rt_file")
+  # shellcheck disable=SC2034 # read by the sourcing driver
   MAXRSS_KIB=$(sed -n 's/.*"maxrss_kib":\([0-9]*\).*/\1/p' "$rt_file")
   [ -n "$WALL_S" ] || die "$tag: no rt record"
 }
@@ -53,6 +55,7 @@ hwm_kib() { awk '/^VmHWM:/ { print $2 }' "/proc/$1/status" 2>/dev/null || echo 0
 cpu_ticks() {
   for p in "$@"; do cat "/proc/$p/stat" 2>/dev/null; done | awk '{ sub(/^.*\) /, ""); t += $12 + $13 } END { print t + 0 }'
 }
+# shellcheck disable=SC2034 # read by the sourcing driver
 CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 
 # maps_check PID WHAT: the process must map the variant's library (by real

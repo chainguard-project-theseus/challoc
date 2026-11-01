@@ -79,9 +79,11 @@ for p in $(nginx_pids); do maps_check "$p" nginx; done
 # Warm-up (discarded), then the measured window.
 "$WRK" -t "$THREADS" -c "$CONNS" -d 5s -R "$RATE" -H 'Accept-Encoding: gzip' "$url" > "$CB_OUT/warm.out" 2>&1 || true
 pids=$(nginx_pids)
+# shellcheck disable=SC2086 # one argument per pid
 t0=$(cpu_ticks $pids)
 "$WRK" -t "$THREADS" -c "$CONNS" -d "${SECS}s" -R "$RATE" --latency -H 'Accept-Encoding: gzip' "$url" > "$CB_OUT/wrk.out" 2>&1 \
   || { tail -20 "$CB_OUT/wrk.out" >&2; die "wrk2 failed"; }
+# shellcheck disable=SC2086 # one argument per pid
 t1=$(cpu_ticks $pids)
 rss=0
 for p in $pids; do rss=$((rss + $(rss_kib "$p"))); done

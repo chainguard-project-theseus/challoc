@@ -49,7 +49,8 @@ cargo build --release --target-dir "$TARGET_DIR" \
 # directly under $OUT whatever PREFIX the pc file names, so install under a
 # scratch DESTDIR and move the two directories up.
 scratch=$OUT/.install
-rm -rf "$scratch" "$OUT/lib" "$OUT/include"
+rm -rf "$scratch" "${OUT:?}/lib" "${OUT:?}/include"
+# shellcheck disable=SC2097,SC2098 # PREFIX has the same value inside and out
 DESTDIR=$scratch PREFIX=$PREFIX LIBDIR=$PREFIX/lib INCLUDEDIR=$PREFIX/include \
     LIB=$TARGET_DIR/release/libchalloc.so sh scripts/install.sh jemalloc-compat
 mv "$scratch$PREFIX/lib" "$OUT/lib"

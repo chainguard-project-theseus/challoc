@@ -33,7 +33,7 @@ for d in "$ROOT"/target/cb/src/*/; do
 done
 [ "$n" = 1 ] || { echo "floor: expected one challoc source tree under $ROOT/target/cb/src, found $n"; exit 2; }
 cd "$SRC" || exit 2
-export CARGO_TARGET_DIR="$SRC/target" CHALLOC_TEST_ALLOW_SKIP=1 QUANTUM=${QUANTUM:-16}
+export CARGO_TARGET_DIR="$SRC/target" CHALLOC_TEST_ALLOW_SKIP=1 QUANTUM="${QUANTUM:-16}"
 LOG=$CARGO_TARGET_DIR/floor-test.log
 mkdir -p "$CARGO_TARGET_DIR"
 : > "$LOG"
@@ -68,7 +68,8 @@ if [ -n "$CGM" ] && [ -w "$CGB/cgroup.subtree_control" ] && grep -qw memory "$CG
    && mkdir -p "$CGB/cb-floor-init" 2>/dev/null; then
   # A process forked between the move and the write keeps the parent busy
   # (EBUSY): move again and retry.
-  for try in 1 2 3 4 5; do
+  for _ in 1 2 3 4 5; do
+    # shellcheck disable=SC2013 # a snapshot of the pids: reading the file while they move out of it could skip some
     for p in $(cat "$CGB/cgroup.procs"); do echo "$p" > "$CGB/cb-floor-init/cgroup.procs" 2>/dev/null; done
     echo +memory > "$CGB/cgroup.subtree_control" 2>/dev/null && { cg_ready=1; break; }
     sleep 1
@@ -82,8 +83,9 @@ cgn=0
 cg_step() {
   name=$1 lim=$2 swap=$3; shift 3
   cgn=$((cgn + 1)); d=$CGB/cb-floor-$cgn
-  mkdir -p "$d" && echo "$lim" > "$d/memory.max" || { echo "floor: $name FAIL (cannot create $d)"; rc=1; return; }
+  { mkdir -p "$d" && echo "$lim" > "$d/memory.max"; } || { echo "floor: $name FAIL (cannot create $d)"; rc=1; return; }
   [ -f "$d/memory.swap.max" ] && echo "$swap" > "$d/memory.swap.max"
+  # shellcheck disable=SC2016 # $$ and "$@" are the inner shell's
   step "$name" sh -c 'echo $$ > "$0/cgroup.procs" && exec "$@"' "$d" "$@"
   rmdir "$d" 2>/dev/null
 }

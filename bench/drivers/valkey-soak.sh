@@ -345,6 +345,7 @@ mt_run() { # phase test args...
   echo "$phase memtier $test:" >> "$D/generators.log"
   echo "$out" | sed -n '/^ALL STATS/,$p' >> "$D/generators.log"
   # Totals  Ops/sec  Hits/sec  Misses/sec  Avg  p50  p99  p99.9  KB/sec
+  # shellcheck disable=SC2046 # the two fields, one word each
   set -- $(echo "$out" | awk '$1=="Totals" {printf "%.0f %s", $2, $7}')
   record_run "$phase" memtier "$test" "$s" "$e" "${1:-0}" "${2:-}"
 }
@@ -382,6 +383,7 @@ soak() { # alloc
     [ -n "${CHALLOC_CONF:-}" ] && conf_env="MALLOC_CONF=$CHALLOC_CONF"
     [ -n "${CHALLOC_LIB:-}" ] && { [ -f "$CHALLOC_LIB/libchalloc.so.0" ] || { echo "valkey-soak: CHALLOC_LIB=$CHALLOC_LIB has no libchalloc.so.0" >&2; exit 1; }; conf_env="$conf_env LD_PRELOAD=$CHALLOC_LIB/libchalloc.so.0"; };;
   esac
+  # shellcheck disable=SC2086 # conf_env is VAR=value words for env
   env $conf_env "$server" --port "$PORT" --save "" --appendonly no --daemonize no \
     --logfile "$D/server.log" --activedefrag "$DEFRAG" ${IO_THREADS:+--io-threads $IO_THREADS} >/dev/null 2>&1 9>&- &
   SERVER_PID=$!
@@ -432,7 +434,7 @@ soak() { # alloc
   echo delete > "$D/phase"; rm -f "$D/last"
   cgroup_peak_phase "$D" delete
   echo "-- delete phase, ${half}s"
-  while [ $(($(now) - T0)) -lt $DURATION ]; do delete_phase; printf .; done; echo
+  while [ $(($(now) - T0)) -lt "$DURATION" ]; do delete_phase; printf .; done; echo
   echo "$(($(now) - T0))" > "$D/delete_end"
   echo settle > "$D/phase"; rm -f "$D/last"
   cgroup_peak_phase "$D" settle
@@ -567,6 +569,7 @@ ALLOCS=$SUMMARY_ALLOCS
   echo "- clients: valkey-benchmark from the challoc tree, $(memtier_benchmark --version 2>&1 | head -1)"
   [ -n "${CHALLOC_CONF:-}" ] && echo "- challoc server MALLOC_CONF: $CHALLOC_CONF (CHALLOC_CONF; the jemalloc server runs stock)"
   for alloc in $ALLOCS; do [ -f "$OUT/$alloc/lib.txt" ] && echo "- $alloc allocator library (path, sha256 prefix): $(cat "$OUT/$alloc/lib.txt")${CHALLOC_LIB:+$([ "$alloc" = challoc ] && echo " (CHALLOC_LIB=$CHALLOC_LIB, an A/B build preloaded under the soname)")}"; done
+  # shellcheck disable=SC2086 # the first word of ALLOCS, whatever whitespace separates them
   echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; io-threads $(cat "$OUT/$(echo $ALLOCS | cut -d' ' -f1)/io-threads.txt" 2>/dev/null || echo "${IO_THREADS:-default}"); INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
   echo "- throughput is the mean requests/s over a tool's runs in a phase; p99 is the median of the per-run p99 (ms, client-side); peak RSS is the server's VmHWM; the RSS columns are used_memory_rss (MiB) at the last sample of each phase"
   echo "- $(cgroup_peak_note)"

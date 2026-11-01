@@ -30,7 +30,7 @@ case $kind in
       # scripts/ctest-cc.sh caches the library's `arenas.quantum` here.
       got=$(cat .ci/target/release/ctest-quantum)
       echo "arenas.quantum $got"
-      [ "$got" = "$QUANTUM" ] || { echo "::error::built quantum $got, wanted $QUANTUM"; status=1; }
+      [ "$got" = "$QUANTUM" ] || { echo "error: built quantum $got, wanted $QUANTUM"; status=1; }
     else
       status=1
     fi

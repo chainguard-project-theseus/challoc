@@ -38,6 +38,7 @@ quantum() {
     cache=$(dirname "$LIB")/ctest-quantum
     if [ -f "$cache" ] && [ ! "$LIB" -nt "$cache" ]; then cat "$cache"; return; fi
     tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp" "$cache.$$"' EXIT
     cat >"$tmp/probe.c" <<'EOF'
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -57,8 +58,11 @@ int main(void)
 EOF
     "$CC" -O2 -Wall "$tmp/probe.c" -o "$tmp/probe" -ldl
     q=$(LD_PRELOAD=$LIB "$tmp/probe")
-    echo "$q" >"$tmp/quantum" && mv -f "$tmp/quantum" "$cache"
-    rm -rf "$tmp"
+    # Parallel compiles race to fill the cache: write a per-process file
+    # beside it and rename it into place, which is atomic within one
+    # filesystem (a mv from $tmp is a copy and an O_EXCL create when /tmp
+    # is another filesystem, and loses that race with "File exists").
+    echo "$q" >"$cache.$$" && mv -f "$cache.$$" "$cache"
     echo "$q"
 }
 
@@ -67,9 +71,11 @@ case ${1:-} in
 esac
 Q=$(quantum)
 FLAGS="-O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=$Q -I$ROOT/tests/c"
+# shellcheck disable=SC2086 # FLAGS is a list of compiler flags
 case ${1:-} in
     --flags) echo "$FLAGS"; exit 0 ;;
     --cxx) shift; exec "$CXX" -std=c++17 $FLAGS "$@" -ldl ;;
     '') echo "usage: sh scripts/ctest-cc.sh [--cxx] SRC -o OUT [flags...]" >&2; exit 2 ;;
 esac
+# shellcheck disable=SC2086 # FLAGS is a list of compiler flags
 exec "$CC" $FLAGS "$@" -ldl

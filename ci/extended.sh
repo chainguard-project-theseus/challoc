@@ -51,7 +51,7 @@ case $task in
 esac
 # A failed fuzz run is reproduced from its seed.
 if [ "$status" != 0 ] && [[ $task == fuzz* ]]; then
-  echo "::error::$task failed; seed: $(grep -a -i -m 3 'seed' "$log" | tr '\n' ' ')"
+  echo "error: $task failed; seed: $(grep -a -i -m 3 'seed' "$log" | tr '\n' ' ')"
 fi
 # The consumer scripts keep each step's full output under target/<task>/logs,
 # which goes with the guest; print the end of each one here.

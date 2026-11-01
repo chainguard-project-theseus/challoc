@@ -55,7 +55,9 @@ PDF_URL=https://raw.githubusercontent.com/geekaaron/Resources/master/resources/W
 PDF_SHA=49541882e9e5c049cc47e4fd78aa625ba32c0ae53961291374a2130fdb6eed12
 LUA_TAG=v5.4.7 LUA_SHA=5c39111b3fc4c1c9e56671008955a1730f54a15b95e1f1bd0752b868b929d8e3
 Z3_VER=5.1.0
+# shellcheck disable=SC2034 # read by name through the eval in the apps section
 Z3_SHA_arm64=2832cfd43c6862fbaf78834b5f1e35d031b4a87e85456b696c1c6f609cd5609e Z3_ZIP_arm64=z3-5.1.0-arm64-glibc-2.38
+# shellcheck disable=SC2034 # read by name through the eval in the apps section
 Z3_SHA_amd64=f47be8d27d3230e823bf1eeede2fe0abaca55bb78d0b59974370e6689a92284a Z3_ZIP_amd64=z3-5.1.0-x64-glibc-2.39
 ROCKSDB_VER=10.10.1 ROCKSDB_SHA=df2ff348f3fac8578fd4b727eee7267aaf90cd403c99b55e898d1db63fa8cff5
 WRK2_REV=44a94c17d8e6a0bac8559b53da76848e430cb7a7 WRK2_SHA=40fb577303ae83bfc211855880696b6e14daf1eaea2a684fe8cf2252c735b47e
@@ -142,7 +144,7 @@ if [ ! -f "$BIN/libmimalloc.so" ]; then
   ( cd "$SRC/mimalloc/out"
     cmake -DCMAKE_BUILD_TYPE=Release -DMI_BUILD_TESTS=OFF -DMI_BUILD_STATIC=OFF -DMI_BUILD_OBJECT=OFF .. >/dev/null
     cmake --build . --parallel "$PROCS" >/dev/null )
-  cp "$(ls "$SRC/mimalloc/out"/libmimalloc.so.*.* | head -1)" "$BIN/libmimalloc.so"
+  for f in "$SRC/mimalloc/out"/libmimalloc.so.*.*; do cp "$f" "$BIN/libmimalloc.so"; break; done
 fi
 
 # jemalloc from the release tarballs, upstream's default configuration
@@ -175,7 +177,7 @@ cp "$FETCHED" "$IN/lua.tar.gz"
 
 echo "== sqlite amalgamation ($SQLITE_ZIP, the cc1 compile row)"
 fetch "https://sqlite.org/2026/$SQLITE_ZIP.zip" "$SQLITE_SHA"
-rm -rf "$SRC/$SQLITE_ZIP"; unzip_to "$FETCHED" "$SRC"
+rm -rf "$SRC/${SQLITE_ZIP:?}"; unzip_to "$FETCHED" "$SRC"
 cp "$SRC/$SQLITE_ZIP/sqlite3.c" "$SRC/$SQLITE_ZIP/sqlite3.h" "$IN/"
 
 echo "== ruby $RUBY_VER benchmark/ (the Ruby rows' scripts)"
@@ -187,8 +189,9 @@ eval "z3_sha=\$Z3_SHA_$ARCH z3_zip=\${Z3_ZIP_$ARCH:-}"
 if [ -n "$z3_zip" ]; then
   if [ ! -x "$BIN/z3/bin/z3" ]; then
     echo "== z3 $Z3_VER ($z3_zip)"
+    # shellcheck disable=SC2154 # z3_sha is assigned by the eval above
     fetch "https://github.com/Z3Prover/z3/releases/download/z3-$Z3_VER/$z3_zip.zip" "$z3_sha"
-    rm -rf "$SRC/$z3_zip" "$BIN/z3"; unzip_to "$FETCHED" "$SRC"
+    rm -rf "$SRC/${z3_zip:?}" "$BIN/z3"; unzip_to "$FETCHED" "$SRC"
     mkdir -p "$BIN/z3"; cp -r "$SRC/$z3_zip/bin" "$BIN/z3/bin"; chmod +x "$BIN/z3/bin/z3"
   fi
 else
