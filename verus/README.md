@@ -144,6 +144,37 @@ cargo kani ... --harness kani_proofs::stats::fig_add_exact   # one harness
 cargo kani ... --harness config::kani_config::get_contract   # one in a file
 ```
 
+## Restated bodies
+
+Two verification-only theorems restate executable code instead of
+calling it, because they check its callees in a context the code's own
+contract does not give:
+
+- `api::libc::theorem_no_syscall_on_fast_paths` restates the fast paths
+  of `malloc_class` (path 0), `free_block` (path 2), `free_sized_block`
+  (path 3) and `free_usable_block` (the last path);
+- `api::theorem_read_only_never_aborts` restates the calls of
+  `jemalloc::nallocx`, `challoc_features` (with `feature_line_ready`'s)
+  and `glibc::mallinfo2`.
+
+Verus checks only the callees a restatement calls, not that it still
+matches its body. The tests in `src/api/restated.rs` do:
+
+```sh
+cargo test --release --locked restated
+```
+
+Each reads the body and its restatement from the source and compares the
+names of their exec calls, in source order, with comments, attributes and
+ghost code (`proof` blocks, `let tracked`, `let ghost`, `assert`,
+`assume` and `reveal`, `Tracked` and `Ghost` paths) left out. A call added to or removed from either side fails
+the test until the other side follows. Each case lists the call names it
+skips on both sides, with the reason: the slow-path tail calls, the tests
+that pick the fast or slow path, the class computation a fast path takes
+from its callers, `shared()`, and `mallinfo2`'s arithmetic. The
+tests compare names and order only, not arguments, control flow or how
+often a call runs, and they cover only the bodies listed above.
+
 ## Conventions
 
 - Keep the executable code as it is. A rewrite needed only to get through
