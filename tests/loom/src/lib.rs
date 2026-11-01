@@ -2,7 +2,13 @@
 //! built in `const` context, which loom cannot construct, so each model
 //! here is a copy of the code it checks, step by step, naming the
 //! function each step mirrors. `tests/pins.rs` checks that the source
-//! still has the copied lines, in order.
+//! still has the copied lines, in order, and that every other line with an
+//! `Ordering::`, a `fence(` or a `futex_` call inside a function a pin falls
+//! in is pinned too or waived with its reason (`WAIVED`).
+//! `tests/kani_trigger.rs`, here because this check runs on every pull
+//! request, checks that each file with a `kani_*` module or a seam its
+//! ledger gives to Kani is in `.chainguard/ci/kani.yaml`'s `changed:` list
+//! or in `src/kani/mod.rs`'s list of files left to `kani-main`.
 //!
 //! ```sh
 //! sh tests/loom/run.sh
