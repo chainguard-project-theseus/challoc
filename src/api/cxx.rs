@@ -43,6 +43,8 @@ use core::ptr;
 
 use super::libc;
 use crate::heap::Live;
+#[cfg(verus_keep_ghost)]
+use crate::meta::is_pow2;
 use crate::vspec::cbuf::CCall;
 use crate::vspec::errno::ThreadErrno;
 #[cfg(verus_keep_ghost)]
@@ -58,8 +60,12 @@ unsafe extern "C" {
     fn challoc_call_new_handler(handler: unsafe extern "C" fn()) -> core::ffi::c_int;
 }
 
+verus! {
+
 /// Address of libstdc++'s `std::get_new_handler()`, or null when no
 /// libstdc++ is loaded in the process.
+/// Trusted: inline assembly.
+#[verifier::external_body]
 #[inline(never)]
 fn get_new_handler_addr() -> *const c_void {
     let out: *const c_void;
@@ -83,8 +89,6 @@ fn get_new_handler_addr() -> *const c_void {
     }
     out
 }
-
-verus! {
 
 /// `t` is what [`throw_bad_alloc_addr`] read: the address of libstdc++'s
 /// `std::__throw_bad_alloc()`, or null.
@@ -120,15 +124,23 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
     out
 }
 
-} // verus!
-
-/// The installed `new_handler`.
+/// The installed `new_handler`, opaque to Verus (which has no function
+/// pointer types).
+#[verifier::external_body]
 struct Handler(unsafe extern "C" fn());
 
 /// Call `std::get_new_handler` at `get`, its non-null address: the
 /// installed `new_handler`, if one is set.
+/// Trusted: calls a function pointer and reads one from libstdc++. That
+/// `get` is the address [`get_new_handler_addr`] returned is not stated;
+/// [`installed_handler`] is the one caller.
+#[verifier::external_body]
 #[inline(always)]
-fn call_get_new_handler(get: *const c_void) -> Option<Handler> {
+fn call_get_new_handler(get: *const c_void) -> Option<Handler>
+    requires
+        crate::sys::may_syscall(),
+        get@.addr != 0,
+{
     // SAFETY: `std::get_new_handler` takes no arguments and returns a plain
     // function pointer, which is C-compatible on both ABIs.
     let get: unsafe extern "C" fn() -> NewHandler = unsafe { core::mem::transmute(get) };
@@ -136,15 +148,16 @@ fn call_get_new_handler(get: *const c_void) -> Option<Handler> {
 }
 
 /// The installed `new_handler`, if libstdc++ is present and one is set.
-fn installed_handler() -> Option<Handler> {
+fn installed_handler() -> Option<Handler>
+    requires
+        crate::sys::may_syscall(),
+{
     let get = get_new_handler_addr();
     if get.is_null() {
         return None;
     }
     call_get_new_handler(get)
 }
-
-verus! {
 
 /// Call `std::__throw_bad_alloc` at `t`, its non-null address
 /// ([`is_throw_bad_alloc`]).
@@ -182,13 +195,17 @@ fn throw_bad_alloc() -> !
     call_throw_bad_alloc(t)
 }
 
-} // verus!
-
-/// Call the program's `new_handler`, which may write `errno`: `_errno`
-/// is the calling thread's, taken `&mut` so that nothing is known of its
-/// value afterwards.
+/// Call the program's `new_handler`, which may write `errno`: `errno` is
+/// the calling thread's, taken `&mut` with no ensures, so nothing is
+/// known of its value afterwards.
+/// Trusted: calls a function pointer; it may throw, which unwinds through
+/// here.
+#[verifier::external_body]
 #[inline(always)]
-fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>) {
+fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: a `void (*)()` installed by the program through
     // `std::set_new_handler`; an exception it throws unwinds through here
     // to the caller of `operator new`.
@@ -198,8 +215,14 @@ fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>) {
 /// Call the program's `new_handler` through `challoc_call_new_handler`
 /// (`cxx_handler.cpp`), which catches anything it throws: `false` when it
 /// threw. The handler may write `errno`, as for [`call_handler`].
+/// Trusted: an FFI call with a function pointer; nothing is claimed
+/// about the result or `errno`.
+#[verifier::external_body]
 #[inline(always)]
-fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> bool {
+fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> bool
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: a `void (*)()` installed by the program through
     // `std::set_new_handler`; the shim catches whatever it throws.
     unsafe { challoc_call_new_handler(handler.0) != 0 }
@@ -212,14 +235,32 @@ fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> b
 /// gets the block's token.
 #[cold]
 #[inline(never)]
+// Ends only when the program's handler frees memory, is removed or throws.
+#[verifier::exec_allows_no_decreases_clause]
 fn oom(
     size: usize,
     align: usize,
     nothrow: bool,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
-    loop {
+    Tracked(blk): Tracked<&mut Live>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        align != 0 && is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        // A non-zero alignment that is not a power of two never gets a
+        // block: `aligned_alloc` refuses it on every attempt.
+        align != 0 && !is_pow2(align) ==> r@.addr == 0,
+        final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
+{
+    loop
+        invariant
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+    {
         let Some(handler) = installed_handler() else {
             if nothrow {
                 return ptr::null_mut();
@@ -227,16 +268,16 @@ fn oom(
             throw_bad_alloc()
         };
         if nothrow {
-            if !call_handler_caught(handler, Tracked::assume_new()) {
+            if !call_handler_caught(handler, Tracked(&mut *errno)) {
                 return ptr::null_mut();
             }
         } else {
-            call_handler(handler, Tracked::assume_new());
+            call_handler(handler, Tracked(&mut *errno));
         }
         let p = if align == 0 {
-            libc::malloc_block(size, Tracked::assume_new(), Tracked::assume_new())
+            libc::malloc_block(size, Tracked(blk), Tracked(errno))
         } else {
-            libc::aligned_alloc_block(align, size, Tracked::assume_new(), Tracked::assume_new())
+            libc::aligned_alloc_block(align, size, Tracked(blk), Tracked(errno))
         };
         if !p.is_null() {
             return p;
@@ -250,34 +291,53 @@ fn oom(
 fn new_slow(
     size: usize,
     nothrow: bool,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
-    let p = libc::malloc_slow(size, Tracked::assume_new(), Tracked::assume_new());
+    Tracked(blk): Tracked<&mut Live>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
+{
+    let p = libc::malloc_slow(size, Tracked(blk), Tracked(errno));
     if p.is_null() {
-        oom(
-            size,
-            0,
-            nothrow,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
+        oom(size, 0, nothrow, Tracked(blk), Tracked(errno))
     } else {
         p
     }
 }
 
 /// `operator new(size)` and `operator new[](size)`: `malloc`'s fast path
-/// inline, everything else one tail call away.
+/// inline, everything else one tail call away. The block's token goes to
+/// C++ with it.
 #[inline(always)]
-pub fn new(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
-    new_block(size, false, Tracked::assume_new(), Tracked::assume_new())
+pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        // The C++ contract: a throwing `operator new` never returns null.
+        r@.addr != 0,
+{
+    let tracked mut blk = Live::empty();
+    new_block(size, false, Tracked(&mut blk), Tracked(errno))
 }
 
 /// The `nothrow_t` forms: null on failure after the handler loop.
 #[inline(always)]
-pub fn new_nothrow(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
-    new_block(size, true, Tracked::assume_new(), Tracked::assume_new())
+pub fn new_nothrow(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        crate::heap::fits(r, size as int, crate::QUANTUM as int),
+{
+    let tracked mut blk = Live::empty();
+    new_block(size, true, Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`new`] (`nothrow` false) and [`new_nothrow`] with the block's token,
@@ -286,87 +346,128 @@ pub fn new_nothrow(size: usize, _errno: Tracked<&mut ThreadErrno>) -> *mut u8 {
 pub fn new_block(
     size: usize,
     nothrow: bool,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
-    match libc::malloc_fast(size, Tracked::assume_new()) {
+    Tracked(blk): Tracked<&mut Live>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
+{
+    match libc::malloc_fast(size, Tracked(blk)) {
         Some(p) => p,
-        None => new_slow(size, nothrow, Tracked::assume_new(), Tracked::assume_new()),
+        None => new_slow(size, nothrow, Tracked(blk), Tracked(errno)),
     }
 }
 
-/// The `align_val_t` forms. A non-power-of-two `align` fails here and
-/// skips the handler loop: no amount of freed memory makes it valid.
+/// The `align_val_t` forms. The block's token goes to C++ with it. An
+/// alignment that is not a power of two (0 included; undefined in C++)
+/// never gets a block: it fails here and skips the handler loop, since no
+/// amount of freed memory makes it valid. The `nothrow_t` forms return
+/// null and the others throw.
 pub fn new_aligned(
     size: usize,
     align: usize,
     nothrow: bool,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
-    new_aligned_block(
-        size,
-        align,
-        nothrow,
-        Tracked::assume_new(),
-        Tracked::assume_new(),
-    )
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        !is_pow2(align) ==> r@.addr == 0,
+        !nothrow ==> r@.addr != 0,
+{
+    let tracked mut blk = Live::empty();
+    new_aligned_block(size, align, nothrow, Tracked(&mut blk), Tracked(errno))
 }
 
-/// [`new_aligned`] with the block's token, as `libc::malloc_block`.
+/// [`new_aligned`] with the block's token, as `libc::aligned_alloc_block`.
 pub fn new_aligned_block(
     size: usize,
     align: usize,
     nothrow: bool,
-    _blk: Tracked<&mut Live>,
-    _errno: Tracked<&mut ThreadErrno>,
-) -> *mut u8 {
+    Tracked(blk): Tracked<&mut Live>,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+        !is_pow2(align) ==> r@.addr == 0,
+        final(blk).gives(r, size as int),
+        !nothrow ==> r@.addr != 0,
+{
     if !align.is_power_of_two() {
         if nothrow {
             return ptr::null_mut();
         }
         throw_bad_alloc()
     }
-    let p = libc::aligned_alloc_block(align, size, Tracked::assume_new(), Tracked::assume_new());
+    proof {
+        crate::meta::lemma_pow2_bits(align);
+    }
+    let p = libc::aligned_alloc_block(align, size, Tracked(blk), Tracked(errno));
     if p.is_null() {
-        oom(
-            size,
-            align,
-            nothrow,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
+        oom(size, align, nothrow, Tracked(blk), Tracked(errno))
     } else {
         p
     }
 }
 
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
+/// C++ holds the token of the block it frees
+/// ([`crate::heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn delete(p: *mut u8, _c: Tracked<CCall>, errno: Tracked<&mut ThreadErrno>) {
-    libc::free(p, Tracked::assume_new(), errno)
+pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+    requires
+        c.block() == Some(p),
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
+    libc::free(p, Tracked(c), errno)
 }
 
 /// `operator delete(void*, size_t)` and its array form: `free_sized`. The
 /// size is the one the matching `operator new(size)` was called with, so
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
-pub fn delete_sized(p: *mut u8, size: usize, _c: Tracked<CCall>, errno: Tracked<&mut ThreadErrno>) {
-    libc::free_sized(p, size, Tracked::assume_new(), errno)
+pub fn delete_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+    requires
+        c.block() == Some(p),
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> crate::heap::hint_ok(p, libc::spec_class_for(size, 1)),
+{
+    libc::free_sized(p, size, Tracked(c), errno)
 }
 
 /// `operator delete(void*, size_t, std::align_val_t)` and its array form:
 /// `free_aligned_sized` with the arguments the matching aligned `new`
 /// passed to `aligned_alloc`.
 #[inline(always)]
-pub fn delete_sized_aligned(
-    p: *mut u8,
-    size: usize,
-    align: usize,
-    _c: Tracked<CCall>,
-    errno: Tracked<&mut ThreadErrno>,
-) {
-    libc::free_aligned_sized(p, align, size, Tracked::assume_new(), errno)
+pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+    requires
+        c.block() == Some(p),
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 ==> crate::heap::hint_ok(p, if is_pow2(align) { libc::spec_class_for(size, align) } else { None }),
+{
+    libc::free_aligned_sized(p, align, size, Tracked(c), errno)
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // Itanium C++ ABI symbols (identical on x86_64 and aarch64: `m` is

@@ -1,0 +1,7 @@
+# Opaque wrapper of the program's `new_handler`, a function pointer.
+Handler	function pointer	Kani
+# Calls the handler through the C++ shim that catches its exception.
+call_handler_caught	function pointer	Kani
+# Termination rests on the program's `new_handler`: it frees memory, is
+# removed or throws (the C++ contract).
+oom	termination	none (assumption)
