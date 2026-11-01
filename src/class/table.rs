@@ -1205,9 +1205,48 @@ impl SlabTable {
         *self.word_invs@
     }
 
+    /// The descriptor array, the class bitmap and the owner array lie in
+    /// the metadata region: [`new`] reserves each from `meta`
+    /// ([`Lazy::reserve`]) with room for every slab's descriptor, every
+    /// slab's `slab_bits` bits and every hand-out group's owner word.
+    ///
+    /// [`new`]: SlabTable::new
+    pub closed spec fn meta_ok(&self) -> bool {
+        let r = process_regions();
+        &&& self.group >= 1
+        &&& r.in_meta(self.desc_base as int, self.nslabs * (self.desc_stride as int))
+        &&& r.in_meta(self.bits_base as int, (self.nslabs * (self.slab_bits as int) + 7) / 8)
+        &&& r.in_meta(self.owners_base as int, ((self.nslabs + self.group - 1) / (self.group as int)) * 2)
+    }
+
+    /// Where slab `slab`'s descriptor starts.
+    pub closed spec fn desc_addr(&self, slab: int) -> int {
+        self.desc_base + slab * (self.desc_stride as int)
+    }
+
+    /// A descriptor's bytes (`desc_stride(class)`).
+    pub closed spec fn spec_desc_stride(&self) -> int {
+        self.desc_stride as int
+    }
+
     /// Where hand-out group `group`'s owner word starts.
     pub closed spec fn owner_addr(&self, group: int) -> int {
         self.owners_base + 2 * group
+    }
+
+    /// Slabs per hand-out group.
+    pub closed spec fn spec_group(&self) -> int {
+        self.group as int
+    }
+
+    /// Where the bitmap word holding bit `bit` of the class bitmap starts.
+    pub closed spec fn bit_word_addr(&self, bit: int) -> int {
+        self.bits_base + 8 * (bit / 64)
+    }
+
+    /// Bits in the class bitmap: `slab_bits` per slab.
+    pub closed spec fn spec_nbits(&self) -> int {
+        self.nslabs * (self.slab_bits as int)
     }
 
     /// The slab range of hand-out group `group` ([`group_range`]): `group`
@@ -1244,6 +1283,78 @@ impl SlabTable {
         assert(slab * d <= self.nslabs * d) by (nonlinear_arith)
             requires slab < self.nslabs, d >= 0;
         assert(self.desc_perms@.contains_key(slab as int));
+    }
+
+    /// The descriptor of a slab of the region, the bytes
+    /// [`desc_unchecked`](SlabTable::desc_unchecked) points at
+    /// (`desc_base + slab * desc_stride`), is metadata.
+    pub proof fn lemma_desc_in_meta(&self, slab: int)
+        requires
+            self.meta_ok(),
+            0 <= slab < self.spec_nslabs(),
+        ensures
+            process_regions().in_meta(self.desc_addr(slab), self.spec_desc_stride()),
+            self.spec_desc_stride() >= 0,
+    {
+        let d = self.desc_stride as int;
+        assert(slab * d + d <= self.nslabs * d) by (nonlinear_arith)
+            requires
+                slab < self.nslabs,
+                d >= 0,
+        ;
+        assert(0 <= slab * d) by (nonlinear_arith)
+            requires
+                slab >= 0,
+                d >= 0,
+        ;
+    }
+
+    /// The owner word of a hand-out group of the region, the two bytes
+    /// [`owner_word`](SlabTable::owner_word) and
+    /// [`owner_at`](SlabTable::owner_at) point at
+    /// (`owners_base + 2 * group`), is metadata.
+    pub proof fn lemma_owner_in_meta(&self, group: int)
+        requires
+            self.meta_ok(),
+            0 <= group,
+            group * self.spec_group() < self.spec_nslabs(),
+        ensures
+            process_regions().in_meta(self.owner_addr(group), 2),
+    {
+        let (n, g) = (self.nslabs as int, self.group as int);
+        assert(group + 1 <= (n + g - 1) / g) by {
+            vstd::arithmetic::div_mod::lemma_div_is_ordered(group * g + g, n + g - 1, g);
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(group + 1, g);
+            assert(group * g + g == (group + 1) * g) by (nonlinear_arith);
+        }
+    }
+
+    /// The bitmap word holding bit `bit` of the class bitmap, the eight
+    /// bytes [`is_set_unchecked`](SlabTable::is_set_unchecked) and
+    /// [`bits_unchecked`](SlabTable::bits_unchecked) point at
+    /// (`bits_base + 8 * (bit / 64)`), is metadata when the bitmap's bits
+    /// fill whole words ([`meta_ok`](SlabTable::meta_ok) covers the bits'
+    /// bytes, not the last word's padding).
+    pub proof fn lemma_bit_word_in_meta(&self, bit: int)
+        requires
+            self.meta_ok(),
+            0 <= bit < self.spec_nbits(),
+            self.spec_nbits() % 64 == 0,
+        ensures
+            process_regions().in_meta(self.bit_word_addr(bit), 8),
+    {
+        let nb = self.nslabs * (self.slab_bits as int);
+        assert(8 * (bit / 64) + 8 <= (nb + 7) / 8) by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(nb, 64);
+            vstd::arithmetic::div_mod::lemma_div_is_ordered(bit, nb - 1, 64);
+            assert((nb - 1) / 64 == nb / 64 - 1) by {
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(nb - 1, 64);
+                vstd::arithmetic::div_mod::lemma_mod_bound(nb - 1, 64);
+            }
+            assert((nb + 7) / 8 == 8 * (nb / 64)) by {
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(nb + 7, 8);
+            }
+        }
     }
 
     /// The slot tokens' geometry, spelled out: the class's slab bits, slots,
@@ -1471,6 +1582,7 @@ impl SlabTable {
             r matches Some(t) ==> {
                 &&& t.spec_class() == class
                 &&& t.spec_nslabs() == (1usize << regions.lg_region) >> class_table()[class as int].lg_slab
+                &&& meta.is_process() ==> t.meta_ok()
             },
             *final(ord) == *old(ord),
     {

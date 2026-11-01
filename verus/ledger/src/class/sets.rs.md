@@ -11,7 +11,7 @@ file.
 
 ## `axiom_set_tables_lock_inv`
 
-src/class/sets.rs:972. Kind: axiom. Category: allocator invariant.
+src/class/sets.rs:975. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit watermarks behind [`SetTable::tables`] keep each table's claim to its uncommitted pages ([`Lazy::claimed`]), which `Lazy::ensure` needs and keeps; the bounds `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s.
