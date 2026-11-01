@@ -114,6 +114,34 @@ impl Tcaches {
     }
 }
 
+/// Ghost: the right to hold one reference to an existing heap, which
+/// [`heap_at`] (and through it [`Tcaches::get`]) lends for as long as the
+/// reference lives, so one token gives one reference at a time.
+/// `Heap::destroy` takes the token by value and keeps it, so a destroyed
+/// heap cannot be reached again with the token that destroyed it. Its
+/// field is private, so outside this module only [`axiom_heap_use`]
+/// makes one.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct HeapUse {
+    ghost unit: (),
+}
+
+/// Premise (the C caller's contract): the calling thread uses the heap it
+/// is about to reach through [`heap_at`] with no other reference to it
+/// live, here or on another thread: an explicit cache is used by one
+/// thread at a time and not after `tcache.destroy` (the contract of
+/// [`Tcaches::get`]), a destroyed cache is unreachable through the table,
+/// a thread's heap reaches its key destructor once, at thread exit, and
+/// a heap created and never published has no other reference.
+/// One token per call that reaches heaps that way, made where it starts,
+/// each before any reference it lends: `heap::mallocx`'s `alloc`,
+/// `alloc_huge` and `free` (the `MALLOCX_TCACHE` paths), `api::jemalloc`'s
+/// `sdallocx_routed`, [`Tcaches::flush`], [`Tcaches::destroy`],
+/// `heap::thread::heap_destructor` and `heap::thread::create_heap_for_thread`
+/// (the heap it could not register).
+pub axiom fn axiom_heap_use() -> (tracked u: HeapUse);
+
 /// A heap [`Heap::create`] or [`Heap::create_detached`] returned and
 /// nothing has destroyed: an explicit cache's non-null table entry, or
 /// the heap `Heap::destroy` is handed. Trusted: Verus has no raw-pointer
@@ -127,8 +155,10 @@ impl Tcaches {
 /// heap is created under a well-formed `&Shared` (`init_fields`). That
 /// includes the heap's arena ticket ([`Heap::homed_ok`]): an explicit
 /// cache is not counted and holds none; a thread heap holds the one its
-/// creator installed and `set_arena` exchanged. The safety contract (one
-/// reference at a time) is what keeps a ticket from being used twice.
+/// creator installed and `set_arena` exchanged. The reference borrows
+/// `u` ([`HeapUse`]) for as long as it lives, so two of them cannot be
+/// live from one token, and two tokens rest on [`axiom_heap_use`]'s
+/// premise: that is what keeps a ticket from being used twice.
 /// It also includes the permissions to the `others` nodes' `arena`,
 /// `pad` and `next` fields and the rest of their blocks with the blocks'
 /// claims (`Heap::heads`). And the heap's home headers are the ones
@@ -150,7 +180,7 @@ impl Tcaches {
 /// lives (see [`Tcaches::get`]).
 #[verifier::external_body]
 #[inline(always)]
-pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
+pub(super) unsafe fn heap_at(p: *mut Heap, Tracked(_u): Tracked<&mut HeapUse>) -> (r: &mut Heap)
     ensures
         r.wf(),
         r.home_at(p),
@@ -244,10 +274,11 @@ impl Tcaches {
     /// jemalloc, and so is using an id after `tcache.destroy`: `destroy`
     /// frees the heap while another thread may still hold the `&mut Heap`
     /// this returns. Every `MALLOCX_TCACHE(t)` path (`mallocx`, `rallocx`,
-    /// `dallocx`, `sdallocx`) inherits that rule.
+    /// `dallocx`, `sdallocx`) inherits that rule. The reference borrows
+    /// the caller's token `u` ([`HeapUse`]) for as long as it lives.
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub fn get(&self, id: u16) -> (r: Option<&mut Heap>)
+    pub fn get<'a>(&'a self, id: u16, Tracked(u): Tracked<&'a mut HeapUse>) -> (r: Option<&'a mut Heap>)
         ensures
             r matches Some(h) ==> h.wf(),
             // An id no `tcache.create` hands out names no cache.
@@ -263,7 +294,7 @@ impl Tcaches {
         if p.is_null() {
             None
         } else {
-            Some(unsafe { heap_at(p) })
+            Some(unsafe { heap_at(p, Tracked(u)) })
         }
     }
 
@@ -282,7 +313,10 @@ impl Tcaches {
             id as usize >= MAX_TCACHES ==> !r,
             *final(ord) == *old(ord),
     {
-        match self.get(id) {
+        // Premise (`axiom_heap_use`): `tcache.flush`'s caller uses the
+        // cache on no other thread, and this call holds no other reference.
+        let tracked mut u = axiom_heap_use();
+        match self.get(id, Tracked(&mut u)) {
             Some(h) => {
                 h.flush_all(shared, Tracked(ord));
                 proof {
@@ -346,11 +380,60 @@ impl Tcaches {
         if p.is_null() {
             return false;
         }
+        // Premise (`axiom_heap_use`): `p` is now unreachable through the
+        // table, and `tcache.destroy`'s caller uses the cache on no other
+        // thread.
+        let tracked u = axiom_heap_use();
         // SAFETY: `p` came from `create_detached` and is now unreachable
         // through the table.
-        unsafe { Heap::destroy(p, shared, Tracked(&mut under)) };
+        unsafe { Heap::destroy(p, shared, Tracked(u), Tracked(&mut under)) };
         true
     }
 }
 
 } // verus!
+
+#[cfg(test)]
+mod tests {
+    /// `axiom_heap_use` is called once in each of the 8 functions its doc
+    /// lists, and nowhere else: each call rests on that doc's premise for
+    /// its own caller, so a new call needs a premise of its own.
+    #[test]
+    fn heap_use_axiom_only_at_listed_mint_sites() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let name = std::format!("{}{}", "axiom_", "heap_use");
+        let call = std::format!("{name}(");
+        let sites: std::vec::Vec<_> = crate::sys::tests::grant_sites(&name)
+            .into_iter()
+            .filter(|(_, at)| at.contains(call.as_str()) && !at.contains("axiom fn "))
+            .collect();
+        let callers = [
+            ("heap/mallocx.rs:", "pub fn alloc("),
+            ("heap/mallocx.rs:", "pub fn alloc_huge("),
+            ("heap/mallocx.rs:", "pub fn free("),
+            ("api/jemalloc.rs:", "fn sdallocx_routed("),
+            ("heap/tcaches.rs:", "pub fn flush("),
+            ("heap/tcaches.rs:", "pub fn destroy("),
+            (
+                "heap/thread.rs:",
+                "pub unsafe extern \"C\" fn heap_destructor(",
+            ),
+            ("heap/thread.rs:", "fn create_heap_for_thread<"),
+        ];
+        for (sig, at) in &sites {
+            assert!(
+                callers
+                    .iter()
+                    .any(|(file, f)| at.starts_with(file) && sig.starts_with(f)),
+                "{at}: a heap-use token made in `{sig}`"
+            );
+        }
+        for (file, f) in callers {
+            let n = sites
+                .iter()
+                .filter(|(sig, at)| at.starts_with(file) && sig.starts_with(f))
+                .count();
+            assert_eq!(n, 1, "{file} `{f}`: got = {n} tokens, want = 1");
+        }
+    }
+}

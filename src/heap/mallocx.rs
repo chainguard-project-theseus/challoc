@@ -395,7 +395,10 @@ pub fn alloc(
         },
         Tcache::Explicit(t) => {
             let tracked tls = crate::sys::tls::TlsSlot::entry();
-            let Some(h) = shared.tcaches.get(t) else {
+            // Premise (`axiom_heap_use`): the caller uses cache `t` on no other
+            // thread (the `MALLOCX_TCACHE` contract).
+            let tracked mut u = super::axiom_heap_use();
+            let Some(h) = shared.tcaches.get(t, Tracked(&mut u)) else {
                 invalid_tcache(t)
             };
             proof {
@@ -488,9 +491,12 @@ pub fn alloc_huge(
         r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
         arena is None ==> !bad_tcache(tcache),
 {
+    // Premise (`axiom_heap_use`): the caller uses the explicit cache
+    // `tcache` names on no other thread (the `MALLOCX_TCACHE` contract).
+    let tracked mut u = super::axiom_heap_use();
     let a = match (arena, tcache) {
         (Some(a), _) => a,
-        (None, Tcache::Explicit(t)) => match shared.tcaches.get(t) {
+        (None, Tcache::Explicit(t)) => match shared.tcaches.get(t, Tracked(&mut u)) {
             Some(h) => h.arena(),
             None => invalid_tcache(t),
         },
@@ -524,9 +530,12 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
         blk.block(p),
         !bad_tcache(tcache),
 {
+    // Premise (`axiom_heap_use`): the caller uses the explicit cache
+    // `tcache` names on no other thread (the `MALLOCX_TCACHE` contract).
+    let tracked mut u = super::axiom_heap_use();
     match tcache {
         Tcache::Default => crate::heap::free(shared, p, Tracked(blk), errno),
-        Tcache::Explicit(t) => match shared.tcaches.get(t) {
+        Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u)) {
             Some(h) => h.free(shared, p, Tracked(blk), errno),
             None => invalid_tcache(t),
         },
