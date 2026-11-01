@@ -63,3 +63,21 @@ so is a seam with no category.
 The tool is a proposal. A seam's status stays "trusted" until the
 fourth column of its overrides line names another status, citing the
 other tool's result.
+
+A seam is "discharged" when a check outside Verus covers its whole
+contract: under every input its `requires` admits, the call is defined
+and every `ensures` clause holds when it returns, within the bounds and
+at the type instances the check's comment states, running the item's
+own body and the code it calls (no stub but of verified code). A
+clause about ghost state counts as covered when the check shows the
+fact that state stands for (a `Zeroed` token's bytes read zero) or
+when the item's body cannot change it (a token it does not touch,
+an invariant it cannot open, the contents of an immutable static);
+one about a real pointer's provenance, which Kani cannot observe, does
+not. `discharged (Kani: <harness path>)` names the Kani harnesses that
+do so, which `.chainguard/ci/kani.yaml` runs at both quanta (`kani-main`
+runs those in the hot files `src/kani/mod.rs` lists, after a change
+lands; `seams.sh --check` fails when a path names no `#[kani::proof]`
+fn). A check that covers only part of the contract leaves the status
+"trusted", with a note that names the check and what it does not cover:
+`trusted (partly checked, Kani: <harness path>; not checked: <what>)`.

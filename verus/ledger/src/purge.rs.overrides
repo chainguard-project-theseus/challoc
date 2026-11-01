@@ -3,4 +3,4 @@
 purged_zero	atomics primitive	loom/GenMC
 # The explicit purge's guard: Verus wants a destructor that opens no
 # invariant and cannot unwind; the body is one atomic subtract.
-Explicit::drop	atomics primitive	Kani
+Explicit::drop	atomics primitive	Kani	discharged (Kani: purge::kani_explicit::explicit_drop_returns)

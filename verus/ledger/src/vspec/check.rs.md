@@ -7,12 +7,12 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `check` | external_body | panic/abort | Kani | trusted |
+| `check` | external_body | panic/abort | Kani | discharged |
 
 ## `check`
 
 src/vspec/check.rs:16. Kind: external_body. Category: panic/abort.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::abort::check_returns_only_if_c, kani_proofs::abort::check_true_returns).
 
 > `assert!(c, "{}", msg)`: returns only if `c` holds.
 

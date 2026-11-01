@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `ZeroRaw...om_new` | external_body proof | allocator invariant | none (assumption) | trusted |
 | `axiom_zero_word` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
-| `zero_raw` | external_body | raw pointer (internal) | none (assumption) | trusted |
+| `zero_raw` | external_body | raw pointer (internal) | Kani | discharged |
 
 ## `ZeroRaw::axiom_new`
 
@@ -50,7 +50,7 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
 ## `zero_raw`
 
 src/vspec/zero.rs:447. Kind: external_body. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::zero_raw_fills).
 
 > `write_bytes(p, 0, n)` through `raw`, the permission to the `n` bytes at `p`, taken `&mut` so that no other view of them (a `PointsTo` held from the same bytes, a [`ZeroRaw`] or a `UserMem` lending them) is held across the fill; the token for what it wrote.
 

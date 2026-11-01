@@ -115,7 +115,7 @@ The seam ledger is generated from `src/`, one file per source file
 (`verus/ledger/src/a/b.rs.md` for `src/a/b.rs`), so changes to different
 source files touch different ledger files. It lists every item Verus
 takes on trust, with its place, the contract Verus assumes, a category, a
-proposed tool to discharge it and a status (all "trusted" today). Regenerate it in the change that adds, moves or edits a seam.
+proposed tool to discharge it and a status ("trusted" until another tool's result discharges it, SEAMS.md). Regenerate it in the change that adds, moves or edits a seam.
 `seams.sh` picks the category and tool from the item's kind, path and
 body; a line in the source file's overrides file
 (`verus/ledger/src/a/b.rs.overrides`) corrects them where the guess is

@@ -1,0 +1,5 @@
+# Checked by the Kani harnesses the status names (verus/README.md, "Kani").
+core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (Kani: kani_proofs::misc::formatter_write_str)
+core::fmt::Formatter::<'a>::write_fmt	core library	Kani	discharged (Kani: kani_proofs::misc::formatter_write_fmt)
+DisplaySpecImpl for sys::Errno	core library	Kani	discharged (Kani: kani_proofs::fmt::display_errno)
+DebugSpecImpl for slab::State	core library	Kani	discharged (Kani: kani_proofs::fmt::debug_slab_state)

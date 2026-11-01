@@ -7,23 +7,23 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `u8::is_ascii_digit` | assume_spec | core library | Kani | trusted |
-| `u8::is_ascii_whitespace` | assume_spec | core library | Kani | trusted |
-| `isize::wrapping_neg` | assume_spec | core library | Kani | trusted |
-| `<[T]>::as_mut_ptr` | assume_spec | core library | Kani | trusted |
-| `<[T]>::as_ptr` | assume_spec | core library | Kani | trusted |
-| `ptr::from_ref` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `ptr::from_mut` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `Option::<T>::map_or` | assume_spec | core library | Kani | trusted |
-| `Result::<T, E>::map_or` | assume_spec | core library | Kani | trusted |
-| `Result::<T, E>::unwrap_or` | assume_spec | core library | Kani | trusted |
+| `u8::is_ascii_digit` | assume_spec | core library | Kani | discharged |
+| `u8::is_ascii_whitespace` | assume_spec | core library | Kani | discharged |
+| `isize::wrapping_neg` | assume_spec | core library | Kani | discharged |
+| `<[T]>::as_mut_ptr` | assume_spec | core library | Kani | discharged |
+| `<[T]>::as_ptr` | assume_spec | core library | Kani | discharged |
+| `ptr::from_ref` | assume_spec | core library | Kani | discharged |
+| `ptr::from_mut` | assume_spec | core library | Kani | discharged |
+| `Option::<T>::map_or` | assume_spec | core library | Kani | discharged |
+| `Result::<T, E>::map_or` | assume_spec | core library | Kani | discharged |
+| `Result::<T,...:unwrap_or` | assume_spec | core library | Kani | discharged |
 | `str::Utf8Error` | ext_type_spec | core library | Kani | trusted |
 | `str::from_utf8` | assume_spec | core library | Kani | trusted |
 
 ## `u8::is_ascii_digit`
 
 src/vspec/sys.rs:9. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u8_is_ascii_digit).
 
 > `u8::is_ascii_digit`: `0`..`9`.
 
@@ -36,7 +36,7 @@ pub assume_specification[ u8::is_ascii_digit ](b: &u8) -> (r: bool)
 ## `u8::is_ascii_whitespace`
 
 src/vspec/sys.rs:15. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u8_is_ascii_whitespace).
 
 > `u8::is_ascii_whitespace`: space, tab, line feed, form feed and carriage return (not vertical tab).
 
@@ -49,7 +49,7 @@ pub assume_specification[ u8::is_ascii_whitespace ](b: &u8) -> (r: bool)
 ## `isize::wrapping_neg`
 
 src/vspec/sys.rs:21. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::isize_wrapping_neg).
 
 > `isize::wrapping_neg`: `-x`, except that `isize::MIN` is its own negation.
 
@@ -62,7 +62,7 @@ pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)
 ## `<[T]>::as_mut_ptr`
 
 src/vspec/sys.rs:31. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_as_ptr).
 
 > The address of a slice's first element, for a syscall argument; the verified code never dereferences it.
 
@@ -76,7 +76,7 @@ pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
 ## `<[T]>::as_ptr`
 
 src/vspec/sys.rs:36. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_as_ptr).
 
 ```rust
 pub assume_specification<T>[ <[T]>::as_ptr ](s: &[T]) -> *const T;
@@ -84,8 +84,8 @@ pub assume_specification<T>[ <[T]>::as_ptr ](s: &[T]) -> *const T;
 
 ## `core::ptr::from_ref`
 
-src/vspec/sys.rs:39. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/sys.rs:39. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_from_ref_mut).
 
 > A reference as a raw pointer, for a syscall argument.
 
@@ -95,8 +95,8 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r
 
 ## `core::ptr::from_mut`
 
-src/vspec/sys.rs:41. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/sys.rs:41. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_from_ref_mut).
 
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r: &mut T) -> *mut T;
@@ -105,7 +105,7 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r
 ## `Option::<T>::map_or`
 
 src/vspec/sys.rs:44. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::option_map_or).
 
 > `Option::map_or`: `f` of the value, else `default`.
 
@@ -126,7 +126,7 @@ pub assume_specification<T, U, F: FnOnce(T) -> U>[ Option::<T>::map_or ](
 ## `Result::<T, E>::map_or`
 
 src/vspec/sys.rs:57. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::result_map_or).
 
 > `Result::map_or`: `f` of the `Ok` value, else `default`.
 
@@ -147,7 +147,7 @@ pub assume_specification<T, E, U, F: FnOnce(T) -> U>[ Result::<T, E>::map_or ](
 ## `Result::<T, E>::unwrap_or`
 
 src/vspec/sys.rs:70. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::misc::result_unwrap_or).
 
 > `Result::unwrap_or`: the `Ok` value, else `default`.
 
@@ -173,7 +173,7 @@ pub struct ExUtf8Error(core::str::Utf8Error);
 ## `core::str::from_utf8`
 
 src/vspec/sys.rs:83. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::misc::str_from_utf8; not checked: the harness checks byte strings up to 4 bytes; `core`'s word-at-a-time ASCII path (16 bytes and longer) is not reached).
 
 > `core::str::from_utf8`: the bytes as a `str` when they are UTF-8.
 

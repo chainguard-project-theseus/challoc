@@ -7,12 +7,12 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `addr_mix` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `addr_mix` | external_body | raw pointer (internal) | Kani | discharged |
 
 ## `addr_mix`
 
 src/heap/flush.rs:1935. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: discharged (Kani: heap::flush::kani_flush::addr_mix_returns).
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
 

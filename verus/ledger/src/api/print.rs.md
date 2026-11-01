@@ -12,7 +12,7 @@ file.
 | `axiom_unlocked` | axiom | C-program contract | none (assumption) | trusted |
 | `emit` | external_body | FFI/syscall | none (assumption) | trusted |
 | `word` | external_body | core library | Kani | trusted |
-| `hist_line` | external_body | core library | Kani | trusted |
+| `hist_line` | external_body | core library | Kani | discharged |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
 ## `WriteCallback`
@@ -66,7 +66,7 @@ fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&
 ## `word`
 
 src/api/print.rs:384. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: api::print::kani_print::word_returns; not checked: the harness checks C strings up to 3 bytes; `core::str::from_utf8`'s word-at-a-time ASCII path (16 bytes and longer) is not reached).
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
 
@@ -77,7 +77,7 @@ fn word(s: &CStr) -> &str
 ## `hist_line`
 
 src/api/print.rs:864. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
 

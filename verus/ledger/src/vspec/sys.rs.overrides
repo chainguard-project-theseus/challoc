@@ -1,0 +1,12 @@
+# Checked by the Kani harnesses the status names (verus/README.md, "Kani").
+u8::is_ascii_digit	core library	Kani	discharged (Kani: kani_proofs::core_int::u8_is_ascii_digit)
+u8::is_ascii_whitespace	core library	Kani	discharged (Kani: kani_proofs::core_int::u8_is_ascii_whitespace)
+isize::wrapping_neg	core library	Kani	discharged (Kani: kani_proofs::core_int::isize_wrapping_neg)
+<[T]>::as_mut_ptr	core library	Kani	discharged (Kani: kani_proofs::slice::slice_as_ptr)
+<[T]>::as_ptr	core library	Kani	discharged (Kani: kani_proofs::slice::slice_as_ptr)
+Option::<T>::map_or	core library	Kani	discharged (Kani: kani_proofs::misc::option_map_or)
+Result::<T, E>::map_or	core library	Kani	discharged (Kani: kani_proofs::misc::result_map_or)
+Result::<T, E>::unwrap_or	core library	Kani	discharged (Kani: kani_proofs::misc::result_unwrap_or)
+core::str::from_utf8	core library	Kani	trusted (partly checked, Kani: kani_proofs::misc::str_from_utf8; not checked: the harness checks byte strings up to 4 bytes; `core`'s word-at-a-time ASCII path (16 bytes and longer) is not reached)
+core::ptr::from_ref	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_from_ref_mut)
+core::ptr::from_mut	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_from_ref_mut)

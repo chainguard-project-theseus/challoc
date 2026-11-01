@@ -15,7 +15,7 @@ axiom_arena_layout	core library	Kani
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arena_assemble	raw pointer (internal)	none (assumption)
 # `core`'s tuple and `bool` order, as documented.
-key_less	core library	Kani
+key_less	core library	Kani	discharged (Kani: arena::kani_key_less::key_less_is_key_lt)
 # `Arenas`'s byte offsets and layout, which the build checks with `fits`.
 AR_TABLE	core library	Kani
 AR_BOUND	core library	Kani

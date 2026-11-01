@@ -7,12 +7,12 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `assert_not_home` | external_body | panic/abort | none (assumption) | trusted |
+| `assert_not_home` | external_body | panic/abort | Kani | discharged |
 
 ## `assert_not_home`
 
 src/heap/others.rs:579. Kind: external_body. Category: panic/abort.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: heap::others::kani_aborts::assert_not_home_returns).
 
 > [`Heap::other_caches`]'s abort on a node for the home arena, which its callers rule out (the requires).
 

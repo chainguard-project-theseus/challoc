@@ -1,11 +1,11 @@
-# Trusted: `assert_eq!` reaches `core::panicking::assert_failed`.
-assert_refill_empty	panic/abort	none (assumption)
-# Trusted: `assert_eq!` reaches `core::panicking::assert_failed`.
-assert_flushed	panic/abort	none (assumption)
+# `assert_eq!` reaches `core::panicking::assert_failed`.
+assert_refill_empty	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_refill_empty_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)
+# `assert_eq!` reaches `core::panicking::assert_failed`.
+assert_flushed	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)
 # A field store through the raw heap pointer into the bytes the fresh
 # token holds the permission to; the token records the store.
 mark_bound	raw pointer (internal)	RefinedRust
 # As `mark_bound`, for `rehome`, which the token does not record.
 mark_rehome	raw pointer (internal)	RefinedRust
-# Trusted: `assert_eq!` reaches `core::panicking::assert_failed`.
-assert_rekey_flushed	panic/abort	none (assumption)
+# `assert_eq!` reaches `core::panicking::assert_failed`.
+assert_rekey_flushed	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_rekey_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)

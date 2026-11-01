@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `axiom_z..._bytes` | external_body proof | allocator invariant | none (assumption) | trusted |
 | `axiom_cast` | external_body proof | platform/kernel fact | none (assumption) | trusted |
-| `copy_raw` | external_body | raw pointer (internal) | none (assumption) | trusted |
+| `copy_raw` | external_body | raw pointer (internal) | Kani | discharged |
 
 ## `axiom_zeroed_bytes`
 
@@ -46,7 +46,7 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
 ## `copy_raw`
 
 src/vspec/user.rs:276. Kind: external_body. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: vspec::user::kani_copy::copy_raw_copies, vspec::user::kani_copy::copy_raw_copies_within).
 
 > `copy_nonoverlapping(src, dst, n)` for `u8` with the permissions to both ranges, and its effect on `d`'s byte state: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.
 

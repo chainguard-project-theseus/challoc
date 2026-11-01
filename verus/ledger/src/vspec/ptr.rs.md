@@ -14,19 +14,19 @@ file.
 | `axiom_plain_u32` | axiom | core library | none (assumption) | trusted |
 | `axiom_plain_ptr` | axiom | core library | none (assumption) | trusted |
 | `ptr::re...e::<T>` | assume_spec | UnsafeCell/volatile/transmute | RefinedRust | trusted |
-| `ptr::wr...s::<T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `ptr::write_bytes::<T>` | assume_spec | core library | Kani | trusted |
 | `axiom_raw_valid` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_ptr_add_addr` | external_body proof | core library | Kani | trusted |
-| `<*mut T>::sub` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `<*mut T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `<*const T>::add` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `<*mut T>::sub` | assume_spec | core library | Kani | trusted |
+| `<*mut T>::add` | assume_spec | core library | Kani | trusted |
+| `<*const T>::add` | assume_spec | core library | Kani | trusted |
 | `axiom_array_elem` | axiom | core library | none (assumption) | trusted |
 | `axiom_array_view` | axiom | core library | none (assumption) | trusted |
-| `ref_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
-| `ptr::re...d::<T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `<*const...ligned` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `ptr::wr...d::<T>` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
-| `<*mut T...ligned` | assume_spec | raw pointer (internal) | RefinedRust | trusted |
+| `ref_ptr` | external_body | raw pointer (internal) | Kani | discharged |
+| `ptr::read_unaligned::<T>` | assume_spec | core library | Kani | trusted |
+| `<*const T>::read_unaligned` | assume_spec | core library | Kani | trusted |
+| `ptr::write_unaligned::<T>` | assume_spec | core library | Kani | trusted |
+| `<*mut T>::write_unaligned` | assume_spec | core library | Kani | trusted |
 
 ## `axiom_plain_u64`
 
@@ -131,8 +131,8 @@ pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
 
 ## `core::ptr::write_bytes::<T>`
 
-src/vspec/ptr.rs:173. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:173. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_bytes; not checked: zero-sized `T`, which the harness leaves out because Kani 0.68 reports an empty fill there as a write to a region that is not writeable (every caller fills bytes)).
 
 > `core::ptr::write_bytes`, with the safety contract of the `core` documentation: `dst` is non-null and properly aligned and, unless the fill is empty, valid for writes of `count * size_of::<T>()` bytes.
 
@@ -170,7 +170,7 @@ pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u
 ## `axiom_ptr_add_addr`
 
 src/vspec/ptr.rs:221. Kind: external_body proof. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
 
 > The address [`ptr_add`] stands for: `count` elements past `p`, when that stays inside the allocation `p` points into (the only case in which `<*mut T>::add` is defined, and so the only one verified code reaches), and the address does not wrap (the caller shows it: no allocation does, but `alloc_len` is not tied to the address space).
 
@@ -187,8 +187,8 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 
 ## `<*mut T>::sub`
 
-src/vspec/ptr.rs:239. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:239. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `<*mut T>::sub`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize` and is at most `p`'s address, and, when it is not zero, the whole range from the result to `p` is inside the allocation `p` points into ([`in_alloc`] of the result).
 
@@ -206,8 +206,8 @@ pub assume_specification<T>[ <*mut T>::sub ](p: *mut T, count: usize) -> (r: *mu
 
 ## `<*mut T>::add`
 
-src/vspec/ptr.rs:253. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:253. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
 
 > `<*mut T>::add`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize`, and, when it is not zero, the whole range from `p` to the result is inside the allocation `p` points into ([`in_alloc`]).
 
@@ -224,8 +224,8 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
 
 ## `<*const T>::add`
 
-src/vspec/ptr.rs:265. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:265. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
 
 > `<*const T>::add`, with the safety contract of `<*mut T>::add`: the result is [`ptr_add`] of the pointer as a `*mut T`, back as a `*const T` (`axiom_ptr_add_addr` gives its address).
 
@@ -287,7 +287,7 @@ pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut
 ## `ref_ptr`
 
 src/vspec/ptr.rs:349. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_ref_ptr).
 
 > `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
 
@@ -300,8 +300,8 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
 
 ## `core::ptr::read_unaligned::<T>`
 
-src/vspec/ptr.rs:383. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:383. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `core::ptr::read_unaligned`.
 
@@ -316,8 +316,8 @@ pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> 
 
 ## `<*const T>::read_unaligned`
 
-src/vspec/ptr.rs:391. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:391. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `<*const T>::read_unaligned`.
 
@@ -332,8 +332,8 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
 
 ## `core::ptr::write_unaligned::<T>`
 
-src/vspec/ptr.rs:399. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:399. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `core::ptr::write_unaligned`.
 
@@ -349,8 +349,8 @@ pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src:
 
 ## `<*mut T>::write_unaligned`
 
-src/vspec/ptr.rs:408. Kind: assume_spec. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/vspec/ptr.rs:408. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: trusted.
 
 > `<*mut T>::write_unaligned`.
 

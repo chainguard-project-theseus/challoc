@@ -7,15 +7,15 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `fig_add` | external_body | core library | Kani | trusted |
-| `fig_mul` | external_body | core library | Kani | trusted |
-| `fig_add64` | external_body | core library | Kani | trusted |
+| `fig_add` | external_body | core library | Kani | discharged |
+| `fig_mul` | external_body | core library | Kani | discharged |
+| `fig_add64` | external_body | core library | Kani | discharged |
 | `axiom_s...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `fig_add`
 
 src/stats.rs:483. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_add_exact).
 
 > `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
 
@@ -28,7 +28,7 @@ pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
 ## `fig_mul`
 
 src/stats.rs:494. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_mul_exact).
 
 > `a * b` for a statistics figure; see [`fig_add`].
 
@@ -41,7 +41,7 @@ pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
 ## `fig_add64`
 
 src/stats.rs:505. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_add64_exact).
 
 > `a + b` for a statistics counter; see [`fig_add`].
 

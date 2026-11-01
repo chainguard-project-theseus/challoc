@@ -18,7 +18,7 @@ file.
 | `A_LAST_EXIT_PURGE` | external_body const | core library | Kani | trusted |
 | `axiom_arena_layout` | axiom | core library | Kani | trusted |
 | `axiom_a...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
-| `key_less` | external_body | core library | Kani | trusted |
+| `key_less` | external_body | core library | Kani | discharged |
 | `AR_TABLE` | external_body const | core library | Kani | trusted |
 | `AR_BOUND` | external_body const | core library | Kani | trusted |
 | `AR_LOCK` | external_body const | core library | Kani | trusted |
@@ -201,7 +201,7 @@ axiom fn axiom_arena_assemble(
 ## `key_less`
 
 src/arena.rs:1832. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: arena::kani_key_less::key_less_is_key_lt).
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
 

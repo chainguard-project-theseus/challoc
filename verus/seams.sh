@@ -4,6 +4,7 @@
 #   sh verus/seams.sh            print the totals on stdout
 #   sh verus/seams.sh --write    regenerate the ledger under verus/ledger/
 #   sh verus/seams.sh --check    exit 1 if the ledger under verus/ledger/ is stale
+#                                or a status cites a check that is gone
 #
 # The ledger is one file per source file with seams: the seams of
 # src/a/b.rs are in verus/ledger/src/a/b.rs.md. Pull requests that add
@@ -37,7 +38,8 @@
 # `name<TAB>category<TAB>tool[<TAB>status]` per line, `#` comments; the
 # name as printed in that file's ledger, or `name#N` for the Nth seam of
 # that name in the file, in source order), which overrides them and
-# carries every status other than "trusted".
+# carries every status other than "trusted". --check also fails when a
+# status cites `Kani: <harness>` and no `#[kani::proof]` fn has that path.
 # The output depends only on the tree: files are read in byte order.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,7 +51,7 @@ case ${1:-} in
   '') ;;
   --write) mode='write' ;;
   --check) mode='check' ;;
-  *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
 
 files=$(find src -name '*.rs' ! -name tests.rs ! -name linux_tests.rs \
@@ -530,6 +532,57 @@ $prog
 $render"
 }
 
+# The checks the overrides statuses cite: one line `<overrides file> <tag>
+# <item>` per item of each `Kani: a, b and c` list (up to `;`, `)` or the
+# next tag), tag `Kani`; `none` for a "discharged" or "partly checked"
+# status, or a list, that cites nothing.
+cites() {
+  for o in $ovfiles; do
+    awk -F '\t' -v o="$o" '!/^#/ && NF >= 4 {
+      s = $4; k = 0
+      while ((i = index(s, "Kani: ")) > 0) {
+        s = substr(s, i + 6); l = s; sub(/[;)].*$/, "", l)
+        n = split(l, h, /,? and |, */); m = 0
+        for (j = 1; j <= n; j++) {
+          if (index(h[j], ": ")) break
+          if (h[j] != "") { print o, "Kani", h[j]; m++ }
+        }
+        k++; if (m == 0) print o, "none", $1
+      }
+      if (k == 0 && $4 ~ /^(discharged|trusted \(partly checked)/) print o, "none", $1
+    }' "$o"
+  done
+}
+
+# harness PATH: exit 0 if PATH names a `#[kani::proof]` fn.
+# `kani_proofs::m::f` is `f` in src/kani/m.rs; `a::b::m::f` is `f` in the
+# inline `mod m` of src/a/b.rs (or src/a/b/mod.rs), one `mod` per segment
+# after the file's. Inline mods are found by rustfmt's indentation.
+harness() {
+  # shellcheck disable=SC2046 # one word per path segment
+  set -- $(echo "$1" | sed 's/::/ /g')
+  [ $# -ge 2 ] && [ "$1" != kani ] || return 1
+  if [ "$1" = kani_proofs ]; then shift; set -- kani "$@"; fi
+  segs=$*; n=$(($# - 1)); file=''; mods=''
+  while [ "$n" -ge 1 ]; do
+    p=src/$(echo "$segs" | cut -d' ' -f1-"$n" | tr ' ' /)
+    if [ -f "$p.rs" ]; then file=$p.rs; elif [ -f "$p/mod.rs" ]; then file=$p/mod.rs; fi
+    [ -n "$file" ] && break
+    n=$((n - 1))
+  done
+  [ -n "$file" ] || return 1
+  mods=$(echo "$segs" | cut -d' ' -f$((n + 1))- | awk '{ $NF = ""; print }')
+  awk -v mods="$mods" -v f="${segs##* }" '
+    BEGIN { nm = split(mods, m, " "); d = 0; ind = ""; pub = "(pub(\\([a-z]+\\))? )?" }
+    d < nm && $0 ~ ("^" ind pub "mod " m[d + 1] " \\{$") { d++; ind = ind "    "; p = 0; next }
+    d > 0 && $0 == substr(ind, 5) "}" { exit 1 }
+    d == nm && $0 ~ ("^" ind pub "fn " f "[(<]") { rc = !p; done = 1; exit }
+    $0 ~ ("^" ind "#\\[kani::proof\\]$") { p = 1; next }
+    $0 !~ ("^" ind "(#\\[|//)") { p = 0 }
+    END { exit done ? rc : 1 }
+  ' "$file"
+}
+
 case $mode in
   print) gen summary '' ;;
   write)
@@ -555,10 +608,25 @@ case $mode in
       md=${o#verus/ledger/}; md=${md%.overrides}.md
       [ -f "$tmp/ledger/$md" ] || { echo "seams: $o: its source file has no seams" >&2; stale=1; }
     done
-    if [ $stale = 0 ]; then
+    # A status cites a check that is gone (renamed or removed), or none.
+    cites | while read -r o t c; do
+      case $t in
+        Kani) harness "$c" || echo "seams: $o: Kani: $c names no #[kani::proof] fn" ;;
+        *) echo "seams: $o: $c: the status cites no check" ;;
+      esac
+    done > "$tmp/cites"
+    # Self-test: paths that name no harness must be rejected, so a change
+    # that makes the resolver accept everything fails here.
+    for c in kani_proofs::ptr::no_such_harness kani::ptr::ptr_add \
+        heap::no_such_mod::no_such_harness; do
+      if harness "$c"; then echo "seams: self-test: $c resolved, want rejected"; fi
+    done >> "$tmp/cites"
+    bad=0
+    if [ -s "$tmp/cites" ]; then cat "$tmp/cites" >&2; bad=1; fi
+    if [ $stale = 0 ] && [ $bad = 0 ]; then
       echo "verus/ledger is up to date"
     else
-      echo "verus/ledger is stale: run sh verus/seams.sh --write" >&2
+      [ $stale = 0 ] || echo "verus/ledger is stale: run sh verus/seams.sh --write" >&2
       exit 1
     fi ;;
 esac

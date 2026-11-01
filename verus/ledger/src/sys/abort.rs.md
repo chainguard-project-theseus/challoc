@@ -14,7 +14,7 @@ file.
 ## `abort_integrity`
 
 src/sys/abort.rs:175. Kind: external_body. Category: panic/abort.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::abort::abort_integrity_reaches_abort_fmt; not checked: the capability narrowing from `may_abort_corrupt()` to `abort_fmt`'s `may_abort()`, a ghost fact the stubbed harness does not show).
 
 > [`abort_fmt`] at an integrity check: a test of allocator state that no verified invariant constrains failed ([`super::integrity_aborts`]).
 
@@ -27,7 +27,7 @@ pub fn abort_integrity(args: fmt::Arguments<'_>) -> !
 ## `abort_kernel`
 
 src/sys/abort.rs:190. Kind: external_body. Category: panic/abort.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::abort::abort_kernel_reaches_abort_fmt; not checked: the capability narrowing from `may_abort_kernel()` to `abort_fmt`'s `may_abort()`, a ghost fact the stubbed harness does not show).
 
 > [`abort_fmt`] at a resource failure: a resource the allocator needs failed it (a system call that returns an error, such as an `madvise`, or metadata the reservation or the kernel cannot supply), which nothing the program does rules out ([`super::kernel_aborts`]).
 
@@ -40,7 +40,7 @@ pub fn abort_kernel(args: fmt::Arguments<'_>) -> !
 ## `abort_pending`
 
 src/sys/abort.rs:204. Kind: external_body. Category: panic/abort.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::abort::abort_pending_reaches_abort_fmt; not checked: the capability narrowing from `may_abort_pending()` to `abort_fmt`'s `may_abort()`, a ghost fact the stubbed harness does not show).
 
 > [`abort_fmt`] at a check of the free paths that fires on an invalid free, and on a valid one only if allocator state is corrupt (the watermark, the live count, the slab state, the owner word; [`super::pending_aborts`]).
 
