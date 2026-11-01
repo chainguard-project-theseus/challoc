@@ -4,7 +4,10 @@
 //! `libc::theorem_no_syscall_on_fast_paths` restates the fast paths of
 //! `libc::malloc_class`, `free_block`, `free_sized_block` and
 //! `free_usable_block`, and `theorem_read_only_never_aborts` the bodies of
-//! `jemalloc::nallocx`, `challoc_features` and `glibc::mallinfo2`. Verus
+//! `jemalloc::nallocx`, `challoc_features` and `glibc::mallinfo2`, and
+//! `mallctl::theorem_mallctl_reads_never_abort` and
+//! `theorem_mallctlbymib_reads_never_abort` the bodies of `mallctl` and
+//! `mallctlbymib`. Verus
 //! checks only the callees a theorem calls, so nothing in the proof ties a
 //! restatement to its body. These tests read both from the source and
 //! compare the ordered call names: a call added to (or dropped from) a
@@ -43,6 +46,7 @@ const FAST_PATHS: &str = "api/libc.rs";
 const FAST_PATHS_DEF: &str = "fn theorem_no_syscall_on_fast_paths(";
 const READ_ONLY: &str = "api/mod.rs";
 const READ_ONLY_DEF: &str = "fn theorem_read_only_never_aborts(";
+const MALLCTL: &str = "api/mallctl.rs";
 
 /// `theorem_no_syscall_on_fast_paths`'s restated arms. Skipped: the slow
 /// paths' tail calls, which the theorem leaves out because they may make
@@ -121,6 +125,29 @@ const READ_ONLY_CASES: &[Case] = &[
     },
 ];
 
+/// `theorem_mallctl_reads_never_abort`'s and
+/// `theorem_mallctlbymib_reads_never_abort`'s restated bodies. Skipped:
+/// `shared_published`, for which the theorems take its results as
+/// parameters, and `never_aborts`, the theorems' test that the key is
+/// one they cover.
+const MALLCTL_SKIP: &[&str] = &["shared_published", "never_aborts"];
+
+const MALLCTL_CASES: &[Case] = &[Case {
+    file: MALLCTL,
+    def: "pub fn mallctl(",
+    inline: None,
+    part: "mallctl",
+    skip: MALLCTL_SKIP,
+}];
+
+const MALLCTLBYMIB_CASES: &[Case] = &[Case {
+    file: MALLCTL,
+    def: "pub fn mallctlbymib(",
+    inline: None,
+    part: "mallctlbymib",
+    skip: MALLCTL_SKIP,
+}];
+
 fn source(file: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
@@ -152,14 +179,24 @@ fn close(s: &[u8], open: usize) -> usize {
 }
 
 /// The body (braces included) of the one function in `text` whose
-/// definition starts with `def`: the first `{` after its parameters.
+/// definition starts with `def`: the first `{` after its parameters, or,
+/// when a `requires` or `ensures` clause comes first (whose expressions
+/// may hold braces, `CEntry::Mallctl { .. }`), the first line that is
+/// a lone `{` at column 0, where a top-level function's body opens.
 fn body<'a>(text: &'a str, def: &str) -> &'a str {
     let hits: Vec<_> = text.match_indices(def).collect();
     assert_eq!(hits.len(), 1, "`{def}` is not defined exactly once");
     let at = hits[0].0 + def.len() - 1;
     let s = text.as_bytes();
     let params = close(s, at);
-    let open = params + text[params..].find('{').unwrap();
+    let rest = &text[params..];
+    let first = rest.find('{').unwrap();
+    let open = params
+        + if rest[..first].contains("requires") || rest[..first].contains("ensures") {
+            rest.find("\n{").unwrap() + 1
+        } else {
+            first
+        };
     &text[open..close(s, open)]
 }
 
@@ -397,6 +434,25 @@ fn fast_path_restatements_match_their_bodies() {
 #[test]
 fn read_only_restatements_match_their_bodies() {
     check(READ_ONLY_CASES, READ_ONLY, READ_ONLY_DEF, part);
+}
+
+/// `theorem_mallctl_reads_never_abort` and
+/// `theorem_mallctlbymib_reads_never_abort` make the calls of `mallctl`
+/// and `mallctlbymib` after their `shared_published`.
+#[test]
+fn mallctl_restatements_match_their_bodies() {
+    check(
+        MALLCTL_CASES,
+        MALLCTL,
+        "fn theorem_mallctl_reads_never_abort(",
+        part,
+    );
+    check(
+        MALLCTLBYMIB_CASES,
+        MALLCTL,
+        "fn theorem_mallctlbymib_reads_never_abort(",
+        part,
+    );
 }
 
 /// The call scan keeps exec calls in order and leaves out comments,
