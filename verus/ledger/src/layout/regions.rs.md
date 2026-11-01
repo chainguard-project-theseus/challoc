@@ -7,7 +7,6 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `axiom_p...st_64k` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `Reserved` | external_body type | platform/kernel fact | none (assumption) | trusted |
 | `Reserve...static` | external_body proof | platform/kernel fact | none (assumption) | trusted |
 | `Reserve...sjoint` | external_body proof | platform/kernel fact | none (assumption) | trusted |
@@ -16,22 +15,9 @@ file.
 | `word` | external_body | core library | Kani | discharged |
 | `entry_barrier` | external_body | inline asm | Islaris/Isla | trusted |
 
-## `axiom_process_page_at_most_64k`
-
-src/layout/regions.rs:193. Kind: axiom. Category: platform/kernel fact.
-Tool: none (assumption). Status: trusted.
-
-> The process's page is at most 64 KiB: Linux on x86_64 uses 4 KiB pages and on aarch64 4, 16 or 64 KiB.
-
-```rust
-pub axiom fn axiom_process_page_at_most_64k()
-    ensures
-        process_regions().lg_page <= 16;
-```
-
 ## `Reserved`
 
-src/layout/regions.rs:1933. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:1928. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
@@ -42,7 +28,7 @@ pub tracked struct Reserved
 
 ## `Reserved::is_apart_from_static`
 
-src/layout/regions.rs:1950. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1945. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
@@ -57,7 +43,7 @@ pub proof fn is_apart_from_static(tracked &self)
 
 ## `Reserved::is_disjoint`
 
-src/layout/regions.rs:1967. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1962. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
@@ -74,7 +60,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
 
 ## `Reserved::into_unbacked`
 
-src/layout/regions.rs:1986. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:1981. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
@@ -88,12 +74,12 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
 
 ## `try_reserve`
 
-src/layout/regions.rs:2006. Kind: external_body. Category: FFI/syscall.
+src/layout/regions.rs:2001. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 2023.
+Body mints Tracked at line 2018.
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
@@ -105,7 +91,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ## `word`
 
-src/layout/regions.rs:2217. Kind: external_body. Category: core library.
+src/layout/regions.rs:2212. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: layout::regions::linux::kani_word::word_returns).
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
