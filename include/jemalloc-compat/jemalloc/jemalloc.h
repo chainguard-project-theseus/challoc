@@ -1,6 +1,7 @@
 /* <jemalloc/jemalloc.h> as shipped by challoc-jemalloc-compat-dev: jemalloc
  * 5.3's public API, unprefixed, as exported by challoc's libjemalloc.so.2
- * (docs/design.md sections 13.2 to 13.4; docs/plan.md Phase 3 task 3).
+ * (docs/design.md sections 13.2 to 13.4; contrib/wolfi/README.md,
+ * "Swapping a jemalloc consumer").
  *
  * This is the header a jemalloc consumer built against jemalloc-dev sees
  * (Ruby's configure probes <jemalloc/jemalloc.h> for `malloc_conf`; KeyDB
@@ -18,7 +19,10 @@
  * malloc_usable_size takes `void *` as glibc's does (jemalloc's
  * JEMALLOC_USABLE_SIZE_CONST is empty on glibc for the same reason).
  *
- * Copyright (c) Chainguard, Inc. Licensed under the same terms as challoc.
+ * Copyright (c) Chainguard, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ * The jemalloc API layout follows jemalloc 5.3's public headers
+ * (BSD-2-Clause); see NOTICE.
  */
 #ifndef JEMALLOC_H_
 #define JEMALLOC_H_

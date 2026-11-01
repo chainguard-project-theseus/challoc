@@ -1,4 +1,4 @@
-//! Pointer authentication (design.md sections 6.1, 6.2 and 17).
+//! Pointer authentication (design 6.1, 6.2 and 17).
 //!
 //! On an arm64 host whose kernel exposes `HWCAP_PACA` and `HWCAP_PACG`
 //! (Armv8.3 FEAT_PAuth with the keys enabled for user space; every

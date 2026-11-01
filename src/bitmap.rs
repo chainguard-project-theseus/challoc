@@ -1,4 +1,4 @@
-//! Bitmaps (design.md sections 4, 5 and 7).
+//! Bitmaps (design 4, 5 and 7).
 //!
 //! Two structures live here and both are pure logic.
 //!
@@ -428,7 +428,7 @@ proof fn lemma_count_le(x: u64, y: u64)
 }
 
 
-/// One slab's slots in the class bitmap (design section 4).
+/// One slab's slots in the class bitmap (design 4).
 ///
 /// The class bitmap is one contiguous array of `AtomicU64` per class, slab
 /// `s` owning bits `s * slab_bits .. (s + 1) * slab_bits`
@@ -1654,7 +1654,7 @@ proof fn lemma_one_bit(b: u64)
 }
 
 /// Ordered set of small integers with a one-word-per-64 summary level
-/// (design section 5). Not thread safe; callers hold a lock.
+/// (design 5). Not thread safe; callers hold a lock.
 ///
 /// Storage is caller-provided: [`words_needed`] words of zeroed `u64`, level
 /// 1 first then level 0, so that it can be carved out of the metadata region.

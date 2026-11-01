@@ -1,6 +1,7 @@
 # rethinkdb on challoc: the Wolfi package definition with the allocator
 # switched from Wolfi's jemalloc to challoc through challoc-jemalloc-compat
-# (docs/plan.md Phase 3 task 3, docs/design.md section 13.6). Based on
+# (docs/design.md section 13.6; contrib/wolfi/README.md, "Swapping a
+# jemalloc consumer"). Based on
 # wolfi-dev/os rethinkdb.yaml at 8c473de (2026-09-20; the file itself last
 # changed in d3dc8df, the glibc 2.44 transition); contrib/wolfi/README.md
 # ("RethinkDB") lists every change from it.

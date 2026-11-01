@@ -1,4 +1,4 @@
-//! Transparent huge pages for the regions (design.md sections 7, 10 and 17).
+//! Transparent huge pages for the regions (design 7, 10 and 17).
 //!
 //! The `thp` key (`config::Thp`) names what the program wants; the kernel's
 //! sysfs table (`sys::thp_host::Thp`, read at init) says what a

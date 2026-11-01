@@ -1,5 +1,5 @@
-# challoc: Wolfi/melange package definition (docs/plan.md Phase 3 task 1,
-# docs/design.md section 13.6). Draft tracked here under contrib/; the copy
+# challoc: Wolfi/melange package definition
+# (docs/design.md section 13.6). Draft tracked here under contrib/; the copy
 # that ships lives in the wolfi-dev/os repository.
 #
 # Four packages from one source tree and two cargo builds:

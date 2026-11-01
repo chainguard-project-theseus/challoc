@@ -81,6 +81,18 @@ test program; it is not part of the library. The rest of tests/mimalloc/
 tests/mimalloc/README.md records the upstream commit.
 
 --------------------------------------------------------------------------
+loom DPOR patch (MIT context; test-only)
+
+  tests/loom/loom-0.7.2-dpor.patch
+
+A patch against loom 0.7.2 (https://github.com/tokio-rs/loom), written
+for challoc; its header describes the change. Its context and removed
+lines are loom source, Copyright (c) 2019 Carl Lerche, under loom's MIT
+licence (the LICENSE file of the loom 0.7.2 crate). tests/loom/run.sh
+applies it to a copy of the crate for the loom models only; it is not
+part of the library.
+
+--------------------------------------------------------------------------
 Valkey patches (BSD-3-Clause context)
 
   contrib/valkey/*.patch

@@ -1,4 +1,4 @@
-//! Raw Linux syscalls (design.md section 19).
+//! Raw Linux syscalls (design 19).
 //!
 //! Everything the allocator asks the kernel for goes through this module via
 //! `asm!` syscall instructions, never through libc. That keeps `errno`
@@ -946,7 +946,7 @@ mod linux {
     }
 
     /// Monotonic coarse clock in nanoseconds; the only clock the allocator
-    /// reads on its own behalf (design.md section 11).
+    /// reads on its own behalf (design 11).
     #[inline]
     pub fn now_coarse_ns() -> u64
         requires

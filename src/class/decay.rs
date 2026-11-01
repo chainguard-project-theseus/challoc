@@ -1,4 +1,4 @@
-//! Purge and the decay walk over the `empty` set (design section 8).
+//! Purge and the decay walk over the `empty` set (design 8).
 
 use super::SlabTable;
 use super::abort::slab_count_underflow;
@@ -1604,7 +1604,7 @@ impl<'a> EmptyVisitor for PurgeCurve<'a> {
 verus! {
 
 impl ClassState {
-    /// Decay walk (design section 8): purge the oldest `Empty` slabs until
+    /// Decay walk (design 8): purge the oldest `Empty` slabs until
     /// the number left is within the curve's allowance at `now`, the sum
     /// over the `Empty` slabs of the weight of their age, rounded up. Slabs
     /// are purged oldest step first; within the cut-off step the highest
@@ -1679,7 +1679,7 @@ impl ClassState {
         v.p.t.purged
     }
 
-    /// Decay step (design section 8): the gate runs `purge_curve` over
+    /// Decay step (design 8): the gate runs `purge_curve` over
     /// the empty set at most once per step of the curve and returns the
     /// class's next deadline, `None` when nothing is `Empty`. Takes the
     /// lock only when a walk is due.

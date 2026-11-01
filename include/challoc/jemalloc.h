@@ -10,7 +10,10 @@
  * It lives under <challoc/...> rather than <jemalloc/...> so that it never
  * collides with a jemalloc-dev header installed on the same system.
  *
- * Copyright (c) Chainguard, Inc. Licensed under the same terms as challoc.
+ * Copyright (c) Chainguard, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ * The jemalloc API layout follows jemalloc 5.3's public headers
+ * (BSD-2-Clause); see NOTICE.
  */
 #ifndef CHALLOC_JEMALLOC_H
 #define CHALLOC_JEMALLOC_H

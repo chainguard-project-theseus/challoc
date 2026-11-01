@@ -1,4 +1,4 @@
-//! Address-space parameters (design section 2 table), [`Regions`] (the
+//! Address-space parameters (design 2 table), [`Regions`] (the
 //! reserved regions of one process and pointer classification over them)
 //! and [`Regions::reserve_owning`], the one piece that talks to the kernel.
 
@@ -13,7 +13,7 @@ verus! {
 
 broadcast use {vstd::slice::group_slice_axioms, vstd::array::group_array_axioms};
 
-/// Address-space parameters (design section 2 table), as `log2`.
+/// Address-space parameters (design 2 table), as `log2`.
 pub const LG_REGION_PREFERRED: u32 = 38;
 pub const LG_REGION_MIN: u32 = 32;
 pub const LG_HUGE_PREFERRED: u32 = 40;
@@ -961,7 +961,7 @@ impl Regions {
         (out, n)
     }
 
-    /// Slab-slot lookup of design section 2, the whole of the `free` fast
+    /// Slab-slot lookup of design 2, the whole of the `free` fast
     /// path's classification: `Some((class, slab, slot))` when `p` is
     /// exactly a slot start inside a class region, `None` for anything else
     /// (a gap, a mid-slot address, the huge or metadata region, or outside
@@ -1111,7 +1111,7 @@ impl Regions {
         p.wrapping_sub(self.superblock) >> self.lg_stride < NCLASSES
     }
 
-    /// Classify a pointer (design section 2): [`slab_slot`] for the class
+    /// Classify a pointer (design 2): [`slab_slot`] for the class
     /// regions, then the huge region.
     ///
     /// [`slab_slot`]: Regions::slab_slot
@@ -2300,7 +2300,7 @@ mod linux {
             Regions::reserve_owning(page_size, anon_name).0
         }
 
-        /// Probe and reserve every region (design section 10 step 2). Never
+        /// Probe and reserve every region (design 10 step 2). Never
         /// allocates. Aborts if even the minimum layout cannot be reserved.
         /// `anon_name` should be the probed `PR_SET_VMA_ANON_NAME` support.
         /// The result is well formed, separated and inside its three
