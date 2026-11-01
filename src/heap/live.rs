@@ -1027,6 +1027,205 @@ impl Live {
             crate::vspec::class::axiom_class_table_wf(self.class);
         }
     }
+
+    /// Two live blocks are at two addresses ([`Live::theorem_apart`] with
+    /// [`Live::lemma_nonnull`]: their usable bytes are disjoint and each
+    /// has at least one). So `malloc(0)` returns, when it does not fail,
+    /// a pointer no other live block has: a block of its own, as the
+    /// module doc of `api::libc` promises.
+    pub proof fn theorem_distinct(tracked &mut self, tracked other: &Live)
+        requires
+            crate::heap::regions_ok(),
+            old(self).wf(),
+            other.wf(),
+        ensures
+            final(self).wf(),
+            final(self).addr() == old(self).addr(),
+            final(self).len() == old(self).len(),
+            final(self).mem() == old(self).mem(),
+            forall|p: *mut u8| #[trigger] old(self).claims(p) ==> final(self).claims(p),
+            final(self).addr() != 0,
+            final(self).addr() != other.addr(),
+    {
+        self.theorem_apart(other);
+        self.lemma_nonnull();
+        other.lemma_nonnull();
+    }
+
+    /// Purge never discards live data, for huge purges: a byte a huge
+    /// purge may discard, one of a page of the huge region the page
+    /// authority `auth` does not hold
+    /// ([`free_page_byte`](crate::huge::free_page_byte), in the process's
+    /// terms, which are the huge allocator's under `Shared::wf`), is no
+    /// usable byte of any live block, wherever its token is held. A run's
+    /// pages are in the authority ([`RunToken::theorem_purge_apart`]); a
+    /// slot lies in the class superblock, apart from the huge region.
+    pub proof fn theorem_purge_huge(tracked &self, tracked auth: &vstd::resource::set::GhostSetAuth<int>, b: int)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+            auth.id() == crate::huge::page_loc(),
+            crate::huge::free_page_byte(
+                process_regions().huge_base as int,
+                page_size(),
+                (process_regions().huge_len >> process_regions().lg_page) as int,
+                auth@,
+                b,
+            ),
+        ensures
+            !(self.addr() <= b < self.addr() + self.len()),
+    {
+        let r = process_regions();
+        let base = r.huge_base as int;
+        let pg = page_size();
+        let l8 = r.lg_page;
+        let lg = l8 as usize;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg);
+        vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+        assert((1usize << l8) == (1usize << lg)) by (bit_vector)
+            requires
+                lg == l8 as usize,
+        ;
+        assert(pg > 0);
+        if self.run is Some {
+            let tracked t = self.run.tracked_borrow();
+            t.lemma_wf();
+            t.theorem_purge_apart(auth, base, pg, (r.huge_len >> r.lg_page) as int, b);
+            let (s, n) = (t.start(), t.npages());
+            assert(s * pg + (n - GUARD_PAGES) * pg <= (s + n) * pg) by (nonlinear_arith)
+                requires
+                    GUARD_PAGES == 1,
+                    pg > 0,
+            ;
+        } else {
+            // The slot lies in its class's stride of the superblock; `b`
+            // in the huge region, which `separated` keeps apart.
+            let c = self.class;
+            let stride = (1usize << r.lg_stride) as int;
+            r.lemma_slot_in_region(c, self.addr);
+            crate::vspec::class::axiom_class_table_wf(c);
+            assert(r.superblock + c * stride <= r.class_base[c]);
+            assert(r.class_base[c] + (1usize << r.lg_region) <= r.superblock + (c + 1) * stride);
+            assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+                requires
+                    c < NCLASSES,
+                    stride >= 0,
+            ;
+            assert(0 <= c * stride) by (nonlinear_arith)
+                requires
+                    c >= 0,
+                    stride >= 0,
+            ;
+            // `b` is in one of the region's pages, below its end.
+            let np = (r.huge_len >> r.lg_page) as int;
+            let k = (b - base) / pg;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b - base, pg);
+            vstd::arithmetic::div_mod::lemma_mod_bound(b - base, pg);
+            let len = r.huge_len;
+            vstd::bits::lemma_usize_shr_is_div(len, lg);
+            assert(len >> l8 == len >> lg) by (bit_vector)
+                requires
+                    lg == l8 as usize,
+            ;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(len as int, pg);
+            vstd::arithmetic::div_mod::lemma_mod_bound(len as int, pg);
+            assert(k * pg + pg <= np * pg) by (nonlinear_arith)
+                requires
+                    k + 1 <= np,
+                    pg > 0,
+            ;
+            assert(pg * k == k * pg && pg * np == np * pg) by (nonlinear_arith);
+            assert(b < base + len);
+        }
+    }
+
+    /// An interior pointer of a live block is no free target: a pointer
+    /// `k` bytes into the block, `0 < k < len()`, is no slot start and no
+    /// huge page start ([`free_target`](crate::heap::free_target)), unless
+    /// the block is a huge run and `k` a whole number of pages. A free of
+    /// that page start aborts in `Huge::free_run`, which finds no run
+    /// starting there, but the proof excludes it only by the C contract
+    /// ([`axiom_c_claim`]).
+    pub proof fn theorem_interior(&self, p: *mut u8, k: int)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+            0 < k < self.len(),
+            p@.addr == self.addr() + k,
+        ensures
+            crate::heap::free_target(p) ==> self.run_of() && k % page_size() == 0,
+    {
+        if self.run is None {
+            lemma_slot_interior(self.class, self.addr, p@.addr);
+        } else {
+            lemma_run_interior(self.addr, self.len(), p@.addr);
+        }
+    }
+}
+
+/// A pointer strictly inside slot `a` of class `c` is no slot start and no
+/// huge page start.
+proof fn lemma_slot_interior(c: int, a: usize, b: usize)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_slot(c, a),
+        a < b < a + class_table()[c].size,
+    ensures
+        forall|d: int| !#[trigger] process_regions().is_slot(d, b),
+        !process_regions().is_huge_block(b, 1),
+{
+    let r = process_regions();
+    crate::vspec::class::axiom_class_table_wf(c);
+    assert forall|d: int| !#[trigger] r.is_slot(d, b) by {
+        if r.is_slot(d, b) {
+            crate::vspec::class::axiom_class_table_wf(d);
+            if d == c {
+                lemma_slots_apart(c, a, b);
+            } else {
+                lemma_classes_apart(c, a, d, b);
+            }
+        }
+    }
+    if r.is_huge_block(b, 1) {
+        lemma_slot_run_apart(c, a, b, 1);
+    }
+}
+
+/// A pointer inside the `len` bytes of the huge region at page start `a`
+/// that is not a whole number of pages past `a` is no slot start and no
+/// huge page start.
+proof fn lemma_run_interior(a: usize, len: int, b: usize)
+    requires
+        crate::heap::regions_ok(),
+        process_regions().is_huge_block(a, len),
+        a < b < a + len,
+    ensures
+        forall|d: int| !#[trigger] process_regions().is_slot(d, b),
+        process_regions().is_huge_block(b, 1) ==> (b - a) % page_size() == 0,
+{
+    let r = process_regions();
+    assert forall|d: int| !#[trigger] r.is_slot(d, b) by {
+        if r.is_slot(d, b) {
+            crate::vspec::class::axiom_class_table_wf(d);
+            lemma_slot_run_apart(d, b, a, len);
+        }
+    }
+    if r.is_huge_block(b, 1) {
+        let lgp = r.lg_page;
+        assert((1usize << lgp) > 0) by (bit_vector)
+            requires
+                lgp < 64,
+        ;
+        let pg = page_size();
+        let x = b - r.huge_base;
+        let y = a - r.huge_base;
+        assert(x % pg == 0 && y % pg == 0);
+        vstd::arithmetic::div_mod::lemma_sub_mod_noop(x, y, pg);
+        vstd::arithmetic::div_mod::lemma_small_mod(0, pg as nat);
+        assert((x - y) % pg == 0);
+        assert(b - a == x - y);
+    }
 }
 
 /// A slot lies inside the address space, above 0.
