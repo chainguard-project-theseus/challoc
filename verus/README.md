@@ -12,6 +12,11 @@ Verified code sits in `verus!` blocks across `src/`; `make verus` prints
 the current counts (Coverage, below). Everything else sits outside
 `verus!`, and Verus does not look at it.
 
+[RESULTS.md](RESULTS.md) summarizes what is proved.
+[THEOREMS.md](THEOREMS.md) states each whole-allocator theorem as the
+code does, with the entry points it covers and every trusted premise it
+rests on, by `file:line`.
+
 ## Running
 
 ```sh
