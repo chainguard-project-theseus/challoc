@@ -13,6 +13,7 @@ pub(crate) mod byte;
 pub(crate) mod cbuf;
 pub(crate) mod check;
 pub(crate) mod count;
+pub(crate) mod ctl;
 pub(crate) mod entry;
 pub(crate) mod errno;
 pub(crate) mod flags;

@@ -81,6 +81,7 @@ use crate::vspec::cbuf::CCall;
 use crate::vspec::cbuf::{
     CArg, CEntry, c_buffer, c_readable, c_writes, lemma_c_buffer_at, lemma_c_readable_at,
 };
+use crate::vspec::ctl::Change;
 use crate::vspec::errno::ThreadErrno;
 use crate::vspec::ptr::ref_ptr;
 #[cfg(verus_keep_ghost)]
@@ -2712,27 +2713,6 @@ fn read_out(io: &Io, r: Reading, Tracked(cc): Tracked<&mut CCall>) -> (res: Resu
     }
 }
 
-/// What a [`ctl`] call changed of the allocator state the `mallctl` keys
-/// set (ghost): the settings (`background_thread`'s request,
-/// `arena.<i>.dirty_decay_ms`, `thread.tcache.enabled`, `thread.arena`)
-/// and the explicit arenas and tcaches it creates (`tcache.destroy`
-/// reports none).
-// Ghost: ordinary builds keep the type but erase the code that reads it.
-#[allow(dead_code)]
-ghost enum Change {
-    /// Nothing of it.
-    Unchanged,
-    /// A setting took the key's new value; `read_first`: the call's read
-    /// through `oldp`, if it asked for one, had been made before
-    /// ([`CCall::written`]), so it got the old value.
-    Set { read_first: bool },
-    /// `arenas.create` or `tcache.create` created an arena or a tcache.
-    Created,
-    /// `epoch`'s write refreshed the stats (before its read, as jemalloc's
-    /// `epoch_ctl`).
-    Refreshed,
-}
-
 /// The two errors that may follow a change `c`, both in jemalloc 5.3.0's
 /// order: `epoch`'s read after its refresh (`Change::Refreshed`; jemalloc's
 /// `epoch_ctl` reads after `ctl_refresh` too), and `background_thread`'s
@@ -2746,9 +2726,11 @@ spec fn error_after_change(node: Node, r: Result<(), c_int>, c: Change) -> bool 
 /// Perform the key `node` names with the numeric components of `mib`:
 /// a read-only key through its reader, an [`Op`] as an arm. `ENOENT` for
 /// an interior node. `cc` is the call's token, before any write through
-/// its buffers. `fx` gets what the call changed: nothing when it fails,
-/// but for [`error_after_change`]; and a setting with the old value read
-/// first when the caller asked for it. `errno` is the calling thread's
+/// its buffers. `fx` gets what the call changed ([`Change`], recorded by
+/// the callee that makes the change, with `cc` as it stands
+/// then): nothing when it fails, but for [`error_after_change`]; and a
+/// setting with the old value read first when the caller asked for it.
+/// `errno` is the calling thread's
 /// `errno` token, for `background_thread`'s start.
 fn ctl(
     shared: &Shared,
@@ -2792,14 +2774,9 @@ fn ctl(
             // A write reads back the number its own refresh stored, not a
             // later writer's.
             let e = match io.write::<u64>()? {
-                Some(_) => stats::epoch(shared, Tracked(&mut ord)),
+                Some(_) => stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut ord)),
                 None => stats::snapshot(shared, Tracked(&mut ord)).epoch,
             };
-            proof {
-                if io.newp@.addr != 0 {
-                    *fx = Ghost(Change::Refreshed);
-                }
-            }
             io.read(e, Tracked(cc))
         },
         BackgroundThread => {
@@ -2807,10 +2784,7 @@ fn ctl(
             // The old state, before the write changes it.
             io.read(purge::background::present(), Tracked(cc))?;
             if let Some(on) = on {
-                proof {
-                    *fx = Ghost(Change::Set { read_first: cc.written() });
-                }
-                purge::background::request(on, Tracked(&mut ord));
+                purge::background::request(on, Tracked(&*cc), Tracked(&mut *fx), Tracked(&mut ord));
                 // The slot token: `start` parks the slot through its cell
                 // while it creates the thread. No heap is borrowed here.
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
@@ -2834,10 +2808,7 @@ fn ctl(
             // `newp` may carry extent hooks, which challoc has no use for.
             // A read that would fail must not leave an arena behind.
             io.verify_read::<c_uint>(Tracked(&*cc))?;
-            let i = shared.arenas.create(shared, Tracked(&mut ord)).ok_or(EAGAIN)?;
-            proof {
-                *fx = Ghost(Change::Created);
-            }
+            let i = shared.arenas.create(shared, Tracked(&mut *fx), Tracked(&mut ord)).ok_or(EAGAIN)?;
             io.read(i as c_uint, Tracked(cc))
         },
         ArenasLookup => {
@@ -2895,20 +2866,14 @@ fn ctl(
             if i == ARENAS_ALL as usize {
                 io.read(ms_of(shared.decay_ns()), Tracked(cc))?;
                 if let Some(ms) = new {
-                    proof {
-                        *fx = Ghost(Change::Set { read_first: cc.written() });
-                    }
-                    shared.set_decay_ms(ms as i64);
+                    shared.set_decay_ms(ms as i64, Tracked(&*cc), Tracked(&mut *fx));
                 }
                 return Ok(());
             }
             let arena = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
             io.read(ms_of(arena.0.decay_ns()), Tracked(cc))?;
             if let Some(ms) = new {
-                proof {
-                    *fx = Ghost(Change::Set { read_first: cc.written() });
-                }
-                arena.0.set_decay_ms(ms as i64);
+                arena.0.set_decay_ms(ms as i64, Tracked(&*cc), Tracked(&mut *fx));
             }
             Ok(())
         },
@@ -2922,10 +2887,7 @@ fn ctl(
             let on = io.write_bool()?;
             io.read(h.tcache_enabled(), Tracked(cc))?;
             if let Some(on) = on {
-                proof {
-                    *fx = Ghost(Change::Set { read_first: cc.written() });
-                }
-                h.set_tcache_enabled(shared, on, Tracked(&mut ord));
+                h.set_tcache_enabled(shared, on, Tracked(&*cc), Tracked(&mut *fx), Tracked(&mut ord));
             }
             Ok(())
         },
@@ -2941,10 +2903,7 @@ fn ctl(
             }
             io.read(h.arena() as c_uint, Tracked(cc))?;
             if let Some(a) = new {
-                proof {
-                    *fx = Ghost(Change::Set { read_first: cc.written() });
-                }
-                h.set_arena(shared, a as u16, Tracked(&mut ord));
+                h.set_arena(shared, a as u16, Tracked(&*cc), Tracked(&mut *fx), Tracked(&mut ord));
             }
             Ok(())
         },
@@ -2958,10 +2917,7 @@ fn ctl(
                 Some(h) => h.arena(),
                 None => 0,
             };
-            let t = shared.tcaches.create(shared, home, Tracked(&mut ord)).ok_or(EFAULT)?;
-            proof {
-                *fx = Ghost(Change::Created);
-            }
+            let t = shared.tcaches.create(shared, home, Tracked(&mut *fx), Tracked(&mut ord)).ok_or(EFAULT)?;
             io.read(t as c_uint, Tracked(cc))
         },
         TcacheFlush | TcacheDestroy => {
@@ -3664,7 +3620,11 @@ mod tests {
         // Only arena 0's call walks the huge extents.
         let a = s
             .arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
             .unwrap();
         decay(s, a);
         assert_eq!(

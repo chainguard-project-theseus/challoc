@@ -56,6 +56,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::{rank_arena_stats, rank_class, rank_stats};
 use crate::meta::MetaStats;
+use crate::vspec::ctl::Change;
 use vstd::prelude::*;
 
 pub mod ledger;
@@ -1233,8 +1234,9 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
 }
 
 /// `epoch`: refresh every arena's stored [`ArenaStats`] and the process
-/// [`Snapshot`]. Returns the new epoch number.
-pub fn epoch(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
+/// [`Snapshot`]. Returns the new epoch number. The caller's record `fx`
+/// gets [`Change::Refreshed`].
+pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
@@ -1242,7 +1244,11 @@ pub fn epoch(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
         old(ord).allows(rank_stats()),
     ensures
         *final(ord) == *old(ord),
+        final(fx)@ == Change::Refreshed,
 {
+    proof {
+        *fx = Ghost(Change::Refreshed);
+    }
     let tracked mut rd = Ghost((Seq::<ArenaStats>::empty(), Seq::<int>::empty()));
     collect_into(shared, true, Tracked(&mut rd), Tracked(ord)).epoch
 }
@@ -1819,7 +1825,7 @@ mod tests {
     fn identities_hold_through_the_lifecycle() {
         let s = shared();
         assert_eq!(snapshot(s, Tracked::assume_new()), Snapshot::EMPTY);
-        assert_eq!(epoch(s, Tracked::assume_new()), 1);
+        assert_eq!(epoch(s, Tracked::assume_new(), Tracked::assume_new()), 1);
         let first = snapshot(s, Tracked::assume_new());
         assert_eq!(first.epoch, 1);
         assert_eq!(first.narenas, 1);
@@ -1867,7 +1873,7 @@ mod tests {
         assert!(collect(s, Tracked::assume_new()).totals.allocated > 0);
         assert_eq!(collect(s, Tracked::assume_new()).epoch, 1);
 
-        assert_eq!(epoch(s, Tracked::assume_new()), 2);
+        assert_eq!(epoch(s, Tracked::assume_new(), Tracked::assume_new()), 2);
         let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
         let tot = snapshot(s, Tracked::assume_new()).totals;
         assert_eq!(a.index, 0);
@@ -1949,7 +1955,7 @@ mod tests {
         t.free(h);
         t.free(pm);
         t.flush_all();
-        assert_eq!(epoch(s, Tracked::assume_new()), 3);
+        assert_eq!(epoch(s, Tracked::assume_new(), Tracked::assume_new()), 3);
         let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
         let tot = snapshot(s, Tracked::assume_new()).totals;
         assert_eq!((tot.allocated, tot.active), (0, 0));
@@ -1987,7 +1993,7 @@ mod tests {
 
         // Purge: dirty becomes retained; resident falls back to metadata.
         assert!(crate::purge::purge_all(s, Tracked::assume_new(), Tracked::assume_new()) > 0);
-        assert_eq!(epoch(s, Tracked::assume_new()), 4);
+        assert_eq!(epoch(s, Tracked::assume_new(), Tracked::assume_new()), 4);
         let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
         let tot = snapshot(s, Tracked::assume_new()).totals;
         assert_eq!((a.small_dirty, a.large_dirty, a.huge_dirty), (0, 0, 0));
@@ -2066,7 +2072,11 @@ mod tests {
         assert_eq!(s.arenas.count(), 2);
         assert!(s.arenas.get_existing(1).is_none());
         assert_eq!(
-            s.arenas.create(s, vstd::prelude::Tracked::assume_new()),
+            s.arenas.create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
             Some(2)
         );
         assert_eq!(s.arenas.count(), 3);
@@ -2097,7 +2107,7 @@ mod tests {
         assert!(!p0.is_null() && !p2.is_null() && !q2.is_null());
 
         let live = collect(s, Tracked::assume_new());
-        epoch(s, Tracked::assume_new());
+        epoch(s, Tracked::assume_new(), Tracked::assume_new());
         let snap = snapshot(s, Tracked::assume_new());
         assert_eq!((live.narenas, snap.narenas), (2, 2));
         assert!(arena_stats(s, 1, Tracked::assume_new()).is_none());
@@ -2122,7 +2132,11 @@ mod tests {
         let t = TestHeap::new(s);
         let a1 = s
             .arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
             .expect("arena 1");
         assert_eq!(a1, 1);
         let c32 = class_with(32);
@@ -2143,7 +2157,7 @@ mod tests {
         assert!(!h1.is_null());
         let usable = s.huge.usable_for(size).unwrap();
 
-        epoch(s, Tracked::assume_new());
+        epoch(s, Tracked::assume_new(), Tracked::assume_new());
         let snap = snapshot(s, Tracked::assume_new());
         assert_eq!(snap.narenas, 2);
         let s0 = arena_stats(s, 0, Tracked::assume_new()).unwrap();
@@ -2177,7 +2191,7 @@ mod tests {
         t.free(p1);
         t.free(p0);
         t.flush_all();
-        epoch(s, Tracked::assume_new());
+        epoch(s, Tracked::assume_new(), Tracked::assume_new());
         let s0 = arena_stats(s, 0, Tracked::assume_new()).unwrap();
         let s1 = arena_stats(s, 1, Tracked::assume_new()).unwrap();
         assert_eq!((s1.large_runs, s1.large_allocated), (0, 0));
@@ -2207,7 +2221,11 @@ mod tests {
         // and the totals' store.
         for _ in 0..15 {
             s.arenas
-                .create(s, vstd::prelude::Tracked::assume_new())
+                .create(
+                    s,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                )
                 .expect("arena");
         }
         let stop = AtomicBool::new(false);
@@ -2242,7 +2260,7 @@ mod tests {
                     for _ in 0..2 {
                         w.spawn(|| {
                             go.wait();
-                            epoch(s, Tracked::assume_new());
+                            epoch(s, Tracked::assume_new(), Tracked::assume_new());
                         });
                     }
                 });

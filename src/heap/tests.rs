@@ -66,11 +66,14 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert_eq!(s.config.huge_dirty_decay_ms, None);
     assert_eq!(s.huge_decay_ns(), s.decay_ns());
     assert_eq!(s.huge_decay_ns(), 10 * S);
-    s.arena0.set_decay_ms(3000);
+    s.arena0
+        .set_decay_ms(3000, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(s.huge_decay_ns(), 3 * S, "follows arena 0");
-    s.arena0.set_decay_ms(-1);
+    s.arena0
+        .set_decay_ms(-1, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(s.huge_decay_ns(), crate::purge::NEVER);
-    s.arena0.set_decay_ms(10_000);
+    s.arena0
+        .set_decay_ms(10_000, Tracked::assume_new(), Tracked::assume_new());
     // A freed run is still `Empty` two seconds in on the 10 s window.
     let p = s
         .alloc_huge(size, 16, 0, Tracked::assume_new(), Tracked::assume_new())
@@ -110,13 +113,15 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     .build();
     assert_eq!(s.huge_decay_ns(), 2 * S);
     assert_eq!(s.decay_ns(), 10 * S);
-    s.arena0.set_decay_ms(500);
+    s.arena0
+        .set_decay_ms(500, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(
         (s.huge_decay_ns(), s.decay_ns()),
         (2 * S, S / 2),
         "its own period"
     );
-    s.arena0.set_decay_ms(10_000);
+    s.arena0
+        .set_decay_ms(10_000, Tracked::assume_new(), Tracked::assume_new());
     let p = s
         .alloc_huge(size, 16, 0, Tracked::assume_new(), Tracked::assume_new())
         .0;
@@ -2345,7 +2350,11 @@ fn free_flags_gain_the_route_bit_with_a_second_arena() {
     assert!(!s.multi_arena());
     let _ = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     assert!(s.multi_arena());
     assert_eq!(s.free_flags(), s.push_flags() | FREE_ROUTE);
@@ -2504,11 +2513,19 @@ fn arena_registry_creates_and_looks_up() {
     }
     let a1 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let a2 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     assert_eq!((a1, a2), (1, 2));
     assert_eq!(s.arenas.count(), 3);
@@ -2524,10 +2541,10 @@ fn arena_registry_creates_and_looks_up() {
     assert_eq!(seen, [0, 1, 2]);
     // Still assigning 0: created arenas are explicit, not automatic.
     assert_eq!(s.arenas.assign(vstd::prelude::Tracked::assume_new()).0, 0);
-    a.set_decay_ms(-1);
+    a.set_decay_ms(-1, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(a.decay_ns(), crate::purge::NEVER);
     assert_ne!(s.decay_ns(), crate::purge::NEVER);
-    s.set_decay_ms(5);
+    s.set_decay_ms(5, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(a.decay_ns(), 5_000_000);
     assert_eq!(s.decay_ns(), 5_000_000);
 }
@@ -2546,7 +2563,11 @@ fn failed_arena_build_leaves_its_storage_to_the_next() {
     crate::arena::FAIL_INIT.store(&s.meta as *const _ as usize, Relaxed);
     assert!(
         s.arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
             .is_none()
     );
     assert_eq!(crate::arena::FAIL_INIT.load(Relaxed), 0, "init never ran");
@@ -2554,7 +2575,11 @@ fn failed_arena_build_leaves_its_storage_to_the_next() {
     assert_eq!(s.arenas.count(), 1);
     let i = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     assert_eq!(i, 1);
     assert_eq!(
@@ -2594,7 +2619,11 @@ fn failed_arena_init_frees_its_set_table_object() {
     let allocated = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
     assert!(
         s.arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
             .is_none()
     );
     assert_eq!(
@@ -2639,12 +2668,19 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
     // Explicit arenas and explicit caches take no part in it.
     assert!(
         s.arenas
-            .create(s, vstd::prelude::Tracked::assume_new())
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
             .is_some_and(|i| i == 3)
     );
     assert_eq!(s.arenas.bound(3), 0);
     let before = s.arenas.bound(0);
-    let tc = s.tcaches.create(s, 0, Tracked::assume_new()).unwrap();
+    let tc = s
+        .tcaches
+        .create(s, 0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!(s.arenas.bound(0), before);
     assert!(s.tcaches.destroy(s, tc, Tracked::assume_new()));
     assert_eq!(s.arenas.bound(0), before);
@@ -2659,7 +2695,13 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
         .free(s, p, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(t.heap().cache(c).unwrap().len(), HALF);
     // `thread.arena` moves the binding with the heap.
-    t.heap().set_arena(s, 3, Tracked::assume_new());
+    t.heap().set_arena(
+        s,
+        3,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!((s.arenas.bound(1), s.arenas.bound(3)), (1, 1));
     t.destroy();
     assert_eq!((s.arenas.bound(1), s.arenas.bound(3)), (1, 0));
@@ -2834,7 +2876,13 @@ fn rehoming_only_takes_an_idle_automatic_arena() {
     assert_eq!(s.arenas.bound(1), 1);
     assert!(w3.heap().rehome);
     // `thread.arena` pins the home.
-    w3.heap().set_arena(s, 0, Tracked::assume_new());
+    w3.heap().set_arena(
+        s,
+        0,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!w3.heap().rehome);
     let r = w2.alloc(c);
     w2.destroy();
@@ -2845,7 +2893,11 @@ fn rehoming_only_takes_an_idle_automatic_arena() {
     // An explicit arena is never a target.
     let x = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     assert!(x as u32 >= s.arenas.auto());
     let w4 = TestHeap::new(s);
@@ -3061,11 +3113,19 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     let s = shared();
     let a1 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let a2 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
@@ -3249,9 +3309,9 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
     let a1 = s.arena(1, Tracked::assume_new()).unwrap();
     assert!(!a1.0.take_exit_purge(now_ns()));
     assert!(a1.0.take_exit_purge(now_ns() + a1.0.decay_ns()));
-    a1.0.set_decay_ms(-1);
+    a1.0.set_decay_ms(-1, Tracked::assume_new(), Tracked::assume_new());
     assert!(!a1.0.take_exit_purge(now_ns() + 2 * 10_000_000_000));
-    a1.0.set_decay_ms(10_000);
+    a1.0.set_decay_ms(10_000, Tracked::assume_new(), Tracked::assume_new());
     // Arena 0 keeps `b2`: flushed, still `Empty`.
     a.destroy();
     let s0 = s.arena0.classes[c].stats();
@@ -3270,7 +3330,11 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     let s = shared();
     let a1 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
@@ -3278,7 +3342,13 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     assert!(s.config.shared_class(c));
     assert_eq!(s.config.cap_for(0, 0, c), 0);
     assert_eq!(s.config.cap_for(0, a1, c), 0);
-    h.set_arena(s, a1, Tracked::assume_new());
+    h.set_arena(
+        s,
+        a1,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     // Default path: arena 0.
     let (d, _) = h.alloc_zeroed(
         s,
@@ -3382,7 +3452,11 @@ fn set_arena_swaps_cache_arrays() {
     let s = shared();
     let a1 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
@@ -3396,7 +3470,13 @@ fn set_arena_swaps_cache_arrays() {
         Tracked::assume_new(),
         Tracked::assume_new(),
     );
-    h.set_arena(s, a1, Tracked::assume_new());
+    h.set_arena(
+        s,
+        a1,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(h.arena(), a1);
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(0, c).unwrap().len(), HALF - 1);
@@ -3412,7 +3492,13 @@ fn set_arena_swaps_cache_arrays() {
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert_eq!(h.cache_in(0, c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 1);
-    h.set_arena(s, 0, Tracked::assume_new());
+    h.set_arena(
+        s,
+        0,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF);
     h.flush_all(s, Tracked::assume_new());
@@ -3431,8 +3517,14 @@ fn set_arena_swaps_cache_arrays() {
 fn explicit_caches_create_flush_destroy() {
     let s = shared();
     assert!(s.tcaches.is_empty());
-    let t0 = s.tcaches.create(s, 0, Tracked::assume_new()).unwrap();
-    let t1 = s.tcaches.create(s, 0, Tracked::assume_new()).unwrap();
+    let t0 = s
+        .tcaches
+        .create(s, 0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
+    let t1 = s
+        .tcaches
+        .create(s, 0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert_eq!((t0, t1), (0, 1));
     assert_eq!(s.tcaches.len(), 2);
     assert!(s.tcaches.get(2, Tracked::assume_new()).is_none());
@@ -3467,7 +3559,11 @@ fn explicit_caches_create_flush_destroy() {
     assert!(s.tcaches.get(t0, Tracked::assume_new()).is_none());
     assert_eq!(s.tcaches.len(), 1);
     // The slot is reused.
-    assert_eq!(s.tcaches.create(s, 0, Tracked::assume_new()), Some(t0));
+    assert_eq!(
+        s.tcaches
+            .create(s, 0, Tracked::assume_new(), Tracked::assume_new()),
+        Some(t0)
+    );
 }
 
 // The opt-in `zero_on_free` and `slot_randomize` keys.
@@ -3899,11 +3995,19 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     let s = shared();
     let a1 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let a2 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
@@ -3952,7 +4056,13 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
     // Turning the caches off walks the list, flushes and frees every
     // node's caches (the nodes stay) and folds their counters.
-    h.set_tcache_enabled(s, false, Tracked::assume_new());
+    h.set_tcache_enabled(
+        s,
+        false,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(Heap::nodes(h.others).count(), 3);
     assert!(
         h.cache_in(a1, c).is_none()
@@ -4260,7 +4370,11 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     let s = shared();
     let a1 = s
         .arenas
-        .create(s, vstd::prelude::Tracked::assume_new())
+        .create(
+            s,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        )
         .unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
