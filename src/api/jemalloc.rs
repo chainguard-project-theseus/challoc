@@ -1149,6 +1149,8 @@ mod exports {
     #[cfg(verus_keep_ghost)]
     use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::{c_int, c_void};
+    #[cfg(verus_keep_ghost)]
+    use vstd::prelude::*;
     use vstd::prelude::{Tracked, verus};
 
     // `verified_export_pair!` expands inside its own `verus!`; this outer
@@ -1166,32 +1168,63 @@ mod exports {
     ;
 
     verified_export_pair! {
-        fn mallocx / je_mallocx(size: usize, flags: c_int) -> *mut c_void {
+        fn mallocx / je_mallocx(size: usize, flags: c_int) -> (r: *mut c_void) ensures [
+            crate::heap::fits(r as *mut u8, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+            r@.addr != 0 ==> crate::vspec::usable::usable_is(r as *mut u8, size as int, super::nalloc_usable(size, (flags as u32) & 0x3f)),
+            super::tcache_checked(size, flags),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::mallocx(size, flags, Tracked(&mut errno)) as *mut c_void
         }
-        fn rallocx / je_rallocx(p: *mut c_void, size: usize, flags: c_int) -> *mut c_void {
+        fn rallocx / je_rallocx(p: *mut c_void, size: usize, flags: c_int) -> (r: *mut c_void) ensures [
+            crate::heap::fits(r as *mut u8, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+            p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
+            p@.addr != 0 && r@.addr != 0 && r as *mut u8 != p as *mut u8 ==> !crate::heap::mallocx::bad_tcache(crate::heap::mallocx::decode_spec(flags as u32).tcache),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::rallocx(p as *mut u8, size, flags, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno)) as *mut c_void
         }
-        fn xallocx / je_xallocx(p: *mut c_void, size: usize, extra: usize, flags: c_int) -> usize {
+        fn xallocx / je_xallocx(p: *mut c_void, size: usize, extra: usize, flags: c_int) -> (r: usize) ensures [
+            crate::heap::free_target(p as *mut u8),
+            crate::vspec::usable::usable_of(p as *mut u8, r as int),
+            p@.addr != 0,
+            0 < r,
+        ] {
             super::xallocx(p as *mut u8, size, extra, flags)
         }
-        fn sallocx / je_sallocx(p: *mut c_void, flags: c_int) -> usize {
+        fn sallocx / je_sallocx(p: *mut c_void, flags: c_int) -> (r: usize) ensures [
+            crate::heap::free_target(p as *mut u8),
+            crate::vspec::usable::usable_of(p as *mut u8, r as int),
+            p@.addr != 0,
+            0 < r,
+        ] {
             super::sallocx(p as *mut u8, flags)
         }
-        fn dallocx / je_dallocx(p: *mut c_void, flags: c_int) {
+        fn dallocx / je_dallocx(p: *mut c_void, flags: c_int) ensures [
+            p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
+            p@.addr != 0 ==> !crate::heap::mallocx::bad_tcache(crate::heap::mallocx::decode_spec(flags as u32).tcache),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::dallocx(p as *mut u8, flags, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
         }
-        fn sdallocx / je_sdallocx(p: *mut c_void, size: usize, flags: c_int) {
+        fn sdallocx / je_sdallocx(p: *mut c_void, size: usize, flags: c_int) ensures [
+            p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
+            p@.addr != 0 ==> !crate::heap::mallocx::bad_tcache(crate::heap::mallocx::decode_spec(flags as u32).tcache),
+            p@.addr != 0 ==> crate::heap::hint_ok(p as *mut u8, super::spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
+        ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             super::sdallocx(p as *mut u8, size, flags, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
         }
-        fn nallocx / je_nallocx(size: usize, flags: c_int) -> usize {
+        fn nallocx / je_nallocx(size: usize, flags: c_int) -> (r: usize) ensures [
+            r == 0 || size <= r,
+            r == super::nalloc_usable(size, (flags as u32) & 0x3f),
+        ] {
             super::nallocx(size, flags)
         }
-        fn get_defrag_hint / je_get_defrag_hint(p: *mut c_void) -> c_int {
+        fn get_defrag_hint / je_get_defrag_hint(p: *mut c_void) -> (r: c_int) ensures [
+            r == 0 || r == 1,
+            exists|rd: super::HintRead| #[trigger] super::hint_read((p as *const u8) as usize, rd, r),
+        ] {
             super::get_defrag_hint(p as *const u8)
         }
     }
