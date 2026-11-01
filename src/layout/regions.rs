@@ -184,6 +184,16 @@ pub open spec fn guard_slab(c: int, slab: int) -> bool {
     guard_of(guard_geom(c).0, guard_geom(c).1, slab as usize)
 }
 
+/// The process's page is at most 64 KiB: Linux on x86_64 uses 4 KiB pages
+/// and on aarch64 4, 16 or 64 KiB. Trusted: a kernel fact the code relies on
+/// without checking it (the background thread's stack keeps one page as its
+/// guard out of 256 KiB). The same premise as the `getauxval`
+/// specification (`sys::auxv`), which init reads the page through, stated
+/// for the process's regions without that call.
+pub axiom fn axiom_process_page_at_most_64k()
+    ensures
+        process_regions().lg_page <= 16;
+
 /// Entries `lo..hi` of `s` are slot starts of class `c` in the process's
 /// regions.
 pub open spec fn slots_in(s: Seq<*mut u8>, c: int, lo: int, hi: int) -> bool {

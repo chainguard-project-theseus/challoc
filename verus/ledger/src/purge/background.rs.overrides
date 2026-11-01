@@ -6,11 +6,5 @@ axiom_state_lock	allocator invariant	none (assumption)
 pthread_join	FFI/syscall	none (assumption)
 spawn	FFI/syscall	none (assumption)
 shared_arg	raw pointer from C caller	none (assumption)
-# Temporary seam, discharged by a later PR in the series: verifying it needs
-# the TLS slot token (the `TlsSlot` and `HeapPerm` ghost model) passed down
-# on_tick -> start -> create, which no caller does yet. `create` parks the
-# TLS slot around the pthread calls, which needs the slot's permission and
-# the heap's.
-create	allocator invariant	Verus
 # The thread's loop ends only when another thread withdraws the request.
 main	termination	none (assumption)

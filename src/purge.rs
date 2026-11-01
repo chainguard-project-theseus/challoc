@@ -2371,6 +2371,7 @@ pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mu
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
     ensures
+        cell matches Some(c) ==> final(c).kept(*c),
         final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {

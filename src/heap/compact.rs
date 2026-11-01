@@ -212,6 +212,7 @@ impl Heap {
             len == old(self).hdr(cache).len,
             len > 0,
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
@@ -319,6 +320,7 @@ impl Heap {
             len == old(self).hdr(cache).len,
             len > 0,
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
@@ -522,6 +524,7 @@ impl Heap {
             old(self).owns(cache),
             old(self).hdr_class(cache) == class,
         ensures
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
     {
         // SAFETY: `self.shared` is the process's `Shared` and it is ready

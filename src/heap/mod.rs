@@ -74,10 +74,10 @@ pub use shared::Shared;
 pub use shared::shared_storage;
 #[cfg(test)]
 use shared::{FAIL_SETSPECIFIC, guard_interval_for};
-#[cfg(verus_keep_ghost)]
-pub use thread::slot_ok;
 pub use thread::{HeapPerm, TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
+#[cfg(verus_keep_ghost)]
+pub use thread::{reentry_benign, slot_ok};
 
 use core::alloc::Layout;
 use core::ptr;
@@ -5796,6 +5796,7 @@ impl Heap {
             old(self).wf(),
             shared.wf(),
         ensures
+            cell matches Some(c) ==> final(c).kept(*c),
             final(errno).val() == old(errno).val(),
             *final(ord) == *old(ord),
             final(self).keeps(*old(self)),

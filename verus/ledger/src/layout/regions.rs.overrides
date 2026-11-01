@@ -6,3 +6,6 @@ Reserved::is_disjoint	platform/kernel fact	none (assumption)
 Reserved::into_unbacked	platform/kernel fact	none (assumption)
 # `copy_from_slice` and `from_ne_bytes`; nothing is claimed of the word.
 word	core library	Kani	discharged (Kani: layout::regions::linux::kani_word::word_returns)
+# The kernel's page size: the background thread's stack keeps one page of
+# 256 KiB as its guard.
+axiom_process_page_at_most_64k	platform/kernel fact	none (assumption)
