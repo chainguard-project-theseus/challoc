@@ -985,7 +985,9 @@ verus! {
 pub enum State {
     /// `cgroup:false`: nothing was read.
     Disabled = 0,
-    /// No `0::` line in `/proc/self/cgroup` (cgroup v1 only).
+    /// No usable `0::` line in `/proc/self/cgroup`: none (cgroup v1
+    /// only), the file could not be read whole, or the line is longer
+    /// than the 2 KiB scan buffer (a path past [`PATH_CAP`]).
     NoUnifiedPath = 1,
     /// No `cgroup2` filesystem in `/proc/self/mountinfo`.
     NoMount = 2,
