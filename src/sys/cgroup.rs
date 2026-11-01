@@ -13,17 +13,17 @@
 //!
 //! Everything is read with raw `open`/`read`/`close` on fixed-size stack
 //! buffers through `sys`, never libc stdio, and nothing here allocates. The
-//! parsers at the top of the module are pure functions over byte slices and
-//! are unit tested on the host with captured file contents; the runtime
-//! half (`discover`, `sample`) is Linux-only and exercised in the
-//! container.
+//! parsers at the top of the module are pure functions over byte slices,
+//! unit tested with captured file contents; the runtime half (`discover`,
+//! `sample`) reads the live files, and its samplers are tested through a
+//! reader over captured files.
 //!
 //! Costs: discovery is one read of `/proc/self/cgroup`, one line scan of
 //! `/proc/self/mountinfo` and two small reads per level of the cgroup path,
 //! once, [`DEFER_NS`] into the process's life ([`Deferred`]) rather than at
 //! init: about 90 us of system time per exec that a process living less
-//! than that never pays (#29). Sampling is two small reads, plus one per ancestor in
-//! [`LEVELS`] with a limit of its own, at most once per
+//! than that never pays. Sampling is two small reads, plus one per ancestor
+//! in [`LEVELS`] with a limit of its own, at most once per
 //! [`SAMPLE_INTERVAL_NS`] (10 ms on `CLOCK_MONOTONIC_COARSE`), from slow
 //! paths only; the limit walk is repeated at most once per
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
@@ -52,11 +52,12 @@ pub const PATH_CAP: usize = 2048;
 /// Room after the directory for `/` plus the longest file name read here
 /// (`memory.current`, 14 bytes) plus the NUL, rounded up.
 pub const FILE_ROOM: usize = 32;
-/// Buffer for one cgroup file. `memory.events` is a handful of lines;
-/// `/proc/self/cgroup` can carry a dozen v1 lines on a hybrid host and
-/// still fits.
+/// Buffer for one cgroup file (`memory.events` is a handful of lines).
 const FILE_BUF: usize = 1024;
-/// Chunk size for the `/proc/self/mountinfo` line scan.
+/// Chunk size for the `/proc/self/cgroup` and `/proc/self/mountinfo` line
+/// scans ([`scan_lines`]). A longer line is dropped: a `0::` line that
+/// long has a path past what [`PATH_CAP`] leaves room for, and it reads as
+/// no unified path rather than as a cut one.
 const SCAN_BUF: usize = 2048;
 
 /// Minimum interval between two samples of `memory.current` and
@@ -255,9 +256,11 @@ pub open spec fn cgroup_path_spec(s: Seq<u8>) -> Option<Seq<u8>>
 /// The unified-hierarchy path from the whole of `/proc/self/cgroup`, or
 /// `None` when there is no `0::` line (a cgroup v1 only system). Every
 /// non-empty line is tried in order; a final line without a newline
-/// counts.
+/// counts, so `contents` must be the whole file. Discovery streams the
+/// file instead ([`proc_cgroup_path`]); this is the tests' reference.
 // One test per step of the line scan, not one collapsed `if`.
 #[allow(clippy::collapsible_if)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn cgroup_path(contents: &[u8]) -> (r: Option<&[u8]>)
     ensures
         r matches Some(p) ==> p@.len() <= contents@.len(),
@@ -512,11 +515,10 @@ pub fn parse_limit(contents: &[u8]) -> (r: Option<u64>)
 }
 
 /// The counters of `memory.events` (cgroup v2 format, one `key value` per
-/// line, all five since kernel 4.13: `low 0`, `high 3`, `max 1`, `oom 0`,
-/// `oom_kill 0`; `oom_kill` was added in 4.13 and reads 0 on the 4.5..4.12
-/// kernels that lack the line, and `oom_group_kill`, 5.17, is ignored). A
-/// missing line reads as 0. [`Cgroup::events`] returns the last sample of
-/// all five; the policy acts on `high` and `max`.
+/// line, all five on every supported kernel: `low 0`, `high 3`, `max 1`,
+/// `oom 0`, `oom_kill 0`; `oom_group_kill`, 5.17, is ignored). A missing
+/// line reads as 0. [`Cgroup::events`] returns the last sample of all
+/// five; the policy acts on `high` and `max`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Events {
     /// Times the cgroup was reclaimed below `memory.low`.
@@ -528,7 +530,7 @@ pub struct Events {
     /// Times the cgroup's usage reached the limit and the kernel had
     /// nothing left to reclaim (an OOM condition, kill or not).
     pub oom: u64,
-    /// Processes of the cgroup the OOM killer killed (4.13+).
+    /// Processes of the cgroup the OOM killer killed.
     pub oom_kill: u64,
 }
 
@@ -870,8 +872,10 @@ verus! {
 /// stops early when `on_line` returns `true`, and returns where that line
 /// is in `buf` (`None` when no line was taken). A line longer than `buf`
 /// is dropped. `read` returns the bytes it filled, 0 at end of file, or
-/// `None` on error (which ends the scan). Runs until `read` reports the
-/// end or an error, so a reader that never does keeps it going.
+/// `None` on error, which ends the scan with no line taken: a final line
+/// without a newline is passed on only at end of file, never one the
+/// error may have cut. Runs until `read` reports the end or an error, so
+/// a reader that never does keeps it going.
 #[verifier::exec_allows_no_decreases_clause]
 pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: Option<(usize, usize)>)
     where
@@ -898,7 +902,8 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
             forall|l: &[u8]| call_requires(on_line, (l,)),
     {
         let n = match read(&mut buf[len..]) {
-            Some(0) | None => break,
+            Some(0) => break,
+            None => return None,
             Some(n) => n,
         };
         proof {
@@ -942,6 +947,30 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
     None
 }
 
+/// The unified-hierarchy path of `/proc/self/cgroup` streamed from `read`
+/// through `scan` ([`scan_lines`]), in `scan`. The file is scanned whole
+/// (a hybrid v1+v2 host lists a dozen v1 lines before the `0::` line), so
+/// a `0::` line is never taken cut short. `None` without one, on a read
+/// error, or when it is longer than `scan`. The scan stops at the first
+/// `0::` line and leaves it in `scan`, where it is parsed again (the line
+/// closure cannot hand back a borrow of `scan`).
+pub fn proc_cgroup_path<R: FnMut(&mut [u8]) -> Option<usize>>(scan: &mut [u8], read: R) -> (r: Option<&[u8]>)
+    requires
+        forall|b: &mut [u8]| call_requires(read, (b,)),
+        forall|b: &mut [u8], r: Option<usize>|
+            call_ensures(read, (b,), r) ==> (r matches Some(n) ==> n <= b@.len()) && final(b)@.len() == b@.len(),
+    ensures
+        r matches Some(p) ==> p@.len() <= old(scan)@.len(),
+{
+    let found = scan_lines(
+        scan,
+        read,
+        |line: &[u8]| -> bool { cgroup_path_from_line(line).is_some() },
+    );
+    let (lo, hi) = found?;
+    cgroup_path_from_line(&scan[lo..hi])
+}
+
 } // verus!
 
 // ---------------------------------------------------------------------------
@@ -956,7 +985,9 @@ verus! {
 pub enum State {
     /// `cgroup:false`: nothing was read.
     Disabled = 0,
-    /// No `0::` line in `/proc/self/cgroup` (cgroup v1 only).
+    /// No usable `0::` line in `/proc/self/cgroup`: none (cgroup v1
+    /// only), the file could not be read whole, or the line is longer
+    /// than the 2 KiB scan buffer (a path past [`PATH_CAP`]).
     NoUnifiedPath = 1,
     /// No `cgroup2` filesystem in `/proc/self/mountinfo`.
     NoMount = 2,
@@ -1163,8 +1194,7 @@ impl Cgroup {
     }
 
     /// The last `memory.events` counters sampled, every field the file
-    /// has (zero before the first sample, and for a line the kernel does
-    /// not print: `oom_kill` before 4.13).
+    /// has (zero before the first sample, and for a line the file lacks).
     pub fn events(&self) -> Events {
         Events {
             low: self.events_low.load(Ordering::Relaxed),
@@ -1946,11 +1976,20 @@ mod linux {
             proof {
                 use_type_invariant(&cg);
             }
-            let mut pathbuf = [0u8; FILE_BUF];
-            let Some(n) = read_small_file(&PROC_SELF_CGROUP, &mut pathbuf) else {
+            let mut scan = [0u8; SCAN_BUF];
+            let Ok(fd) = sys::open(&PROC_SELF_CGROUP, O_RDONLY) else {
                 return cg;
             };
-            let Some(path) = cgroup_path(&pathbuf[..n]) else {
+            let path = proc_cgroup_path(
+                &mut scan,
+                |b: &mut [u8]| -> (r: Option<usize>)
+                    ensures
+                        r matches Some(n) ==> n <= old(b)@.len(),
+                        final(b)@.len() == old(b)@.len(),
+                    { sys::read_full(fd, b).ok() },
+            );
+            let _ = sys::close(fd);
+            let Some(path) = path else {
                 return cg;
             };
 
@@ -1972,10 +2011,10 @@ mod linux {
             cg.state = State::Tracked;
 
             let dir = &cg.dir[..dir_len];
-            let mut buf = [0u8; FILE_BUF];
-            cg.has_limit_files = read_in(dir, b"memory.max", &mut buf).is_some();
-            cg.has_current = read_in(dir, b"memory.current", &mut buf).is_some();
-            cg.has_events = read_in(dir, b"memory.events", &mut buf).is_some();
+            // `scan` is free again (`path` was copied into `cg.dir`).
+            cg.has_limit_files = read_in(dir, b"memory.max", &mut scan).is_some();
+            cg.has_current = read_in(dir, b"memory.current", &mut scan).is_some();
+            cg.has_events = read_in(dir, b"memory.events", &mut scan).is_some();
             let now = sys::now_coarse_ns();
             cg.walk_limits(now);
             cg.sample_now(now);
@@ -2141,6 +2180,9 @@ mod tests {
         23 29 0:22 / /sys rw,nosuid,nodev,noexec,relatime shared:2 - sysfs sysfs rw\n\
         35 24 0:30 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:9 - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot\n\
         36 24 0:31 / /sys/fs/bpf rw,nosuid,nodev,noexec,relatime shared:10 - bpf bpf rw,mode=700\n";
+    // The root field (`/../../docker/abc`) is ignored: discovery joins the
+    // `/proc/self/cgroup` path to the mount point as is, exact when the
+    // mount's root is the process's cgroup namespace root.
     const MOUNTINFO_DOCKER: &[u8] = b"1301 1288 0:30 /../../docker/abc /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw,nsdelegate\n";
     const MOUNTINFO_HYBRID: &[u8] = b"25 24 0:23 / /sys/fs/cgroup ro,nosuid,nodev,noexec shared:9 - tmpfs tmpfs ro,mode=755\n\
         26 25 0:24 / /sys/fs/cgroup/unified rw,nosuid,nodev,noexec,relatime shared:10 - cgroup2 cgroup2 rw,nsdelegate\n\
@@ -2163,6 +2205,129 @@ mod tests {
             "only hierarchy 0 is the unified one"
         );
         assert_eq!(cgroup_path_from_line(b"0::/a/b"), Some(&b"/a/b"[..]));
+    }
+
+    /// `file` streamed through `proc_cgroup_path` with a scan buffer of
+    /// `scan` bytes, `chunk` bytes per read; the read fails once `fail_at`
+    /// bytes have been handed over.
+    fn streamed(file: &[u8], chunk: usize, scan: usize, fail_at: Option<usize>) -> Option<Vec<u8>> {
+        let mut b: Vec<u8> = std::vec![0; scan];
+        let mut pos = 0;
+        let end = fail_at.unwrap_or(file.len()).min(file.len());
+        proc_cgroup_path(&mut b, |dst| {
+            if pos == end && fail_at.is_some() {
+                return None;
+            }
+            let n = chunk.min(dst.len()).min(end - pos);
+            dst[..n].copy_from_slice(&file[pos..pos + n]);
+            pos += n;
+            Some(n)
+        })
+        .map(|p| p.to_vec())
+    }
+
+    /// A Kubernetes container's cgroup path (191 bytes).
+    const K8S_PATH: &str = "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod0f6a1c2e_3b4d_4e5f_8a9b_0c1d2e3f4a5b.slice/cri-containerd-9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.scope";
+
+    /// A hybrid v1+v2 host's `/proc/self/cgroup`: a dozen v1 hierarchies'
+    /// lines carrying [`K8S_PATH`] (about 2.3 KiB), then the `0::` line
+    /// carrying `unified`.
+    fn proc_cgroup_hybrid(unified: &str) -> Vec<u8> {
+        let mut file = String::new();
+        for h in [
+            "12:pids",
+            "11:hugetlb",
+            "10:net_cls,net_prio",
+            "9:cpu,cpuacct",
+            "8:memory",
+            "7:blkio",
+            "6:freezer",
+            "5:devices",
+            "4:cpuset",
+            "3:perf_event",
+            "2:rdma",
+            "1:name=systemd",
+        ] {
+            file.push_str(&std::format!("{h}:{K8S_PATH}\n"));
+        }
+        file.push_str(&std::format!("0::{unified}\n"));
+        file.into_bytes()
+    }
+
+    #[test]
+    fn proc_cgroup_streams_a_hybrid_file() {
+        let file = proc_cgroup_hybrid(K8S_PATH);
+        assert!(file.len() > SCAN_BUF);
+        for chunk in [1, 7, 64, 1024, 4096] {
+            assert_eq!(
+                streamed(&file, chunk, SCAN_BUF, None).as_deref(),
+                Some(K8S_PATH.as_bytes()),
+                "chunk {chunk}"
+            );
+        }
+        // The longest `0::` line the scan buffer holds, newline included.
+        let long = std::format!("/{}", "x".repeat(SCAN_BUF - 5));
+        let file = proc_cgroup_hybrid(&long);
+        assert_eq!(
+            streamed(&file, 4096, SCAN_BUF, None).as_deref(),
+            Some(long.as_bytes())
+        );
+        // The same file agrees with the whole-file reference.
+        assert_eq!(cgroup_path(&file), Some(long.as_bytes()));
+        assert_eq!(
+            streamed(PROC_CGROUP_MIXED, 5, SCAN_BUF, None).as_deref(),
+            Some(&b"/docker/abc"[..])
+        );
+        assert_eq!(streamed(PROC_CGROUP_V1, 5, SCAN_BUF, None), None);
+        // A final line without a newline at end of file is whole.
+        assert_eq!(
+            streamed(b"0::/a/b", 3, 64, None).as_deref(),
+            Some(&b"/a/b"[..])
+        );
+    }
+
+    #[test]
+    fn proc_cgroup_never_takes_a_cut_line() {
+        let file = proc_cgroup_hybrid(K8S_PATH);
+        let zero = file.len() - K8S_PATH.len() - 4;
+        // Every prefix that ends inside the `0::` line names a wrong
+        // (cut) path when taken as the whole file: what a 1 KiB read did
+        // on a hybrid host whose `0::` line straddled 1 KiB.
+        for end in zero + 4..file.len() - 1 {
+            let cut = cgroup_path(&file[..end]).unwrap();
+            assert!(cut.len() < K8S_PATH.len() && K8S_PATH.as_bytes().starts_with(cut));
+            // A read error there ends the scan with nothing taken.
+            assert_eq!(
+                streamed(&file, 64, SCAN_BUF, Some(end)),
+                None,
+                "error at {end}"
+            );
+        }
+        // An error in the v1 lines, too.
+        assert_eq!(streamed(&file, 64, SCAN_BUF, Some(1024)), None);
+        // A `0::` line longer than the scan buffer is dropped, not cut.
+        let long = std::format!("/{}", "x".repeat(SCAN_BUF));
+        assert_eq!(
+            streamed(&proc_cgroup_hybrid(&long), 4096, SCAN_BUF, None),
+            None
+        );
+    }
+
+    #[test]
+    fn proc_cgroup_exact_fill() {
+        // A line plus its newline that fill the scan buffer exactly is
+        // whole; a line that fills it without the newline is dropped,
+        // whatever follows.
+        let path = std::format!("/{}", "x".repeat(64 - 5));
+        let line = std::format!("0::{path}\n");
+        assert_eq!(line.len(), 64);
+        assert_eq!(
+            streamed(line.as_bytes(), 64, 64, None).as_deref(),
+            Some(path.as_bytes())
+        );
+        let longer = std::format!("0::{path}y\n");
+        assert_eq!(streamed(longer.as_bytes(), 64, 64, None), None);
+        assert_eq!(streamed(&longer.as_bytes()[..64], 64, 64, None), None);
     }
 
     #[test]
@@ -2241,7 +2406,7 @@ mod tests {
         );
         assert_eq!(parse_events(b""), Events::default());
         assert_eq!(parse_events(b"high x\nmax\n"), Events::default());
-        // A 4.5..4.12 file has no `oom_kill` line: it reads 0.
+        // A missing line (here `oom_kill`) reads 0.
         assert_eq!(
             parse_events(b"low 1\nhigh 2\nmax 3\noom 4\n"),
             Events {
@@ -2307,7 +2472,7 @@ mod tests {
             }
         );
         assert_eq!(cg.rises(), (2, 2));
-        // A kernel without the `oom_kill` line: the field reads 0, the
+        // A sample without the `oom_kill` line: the field reads 0, the
         // others are kept.
         cg.note_events(parse_events(b"low 8\nhigh 5\nmax 2\noom 2\n"));
         assert_eq!(
