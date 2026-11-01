@@ -315,7 +315,7 @@ pub fn new_aligned_block(
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
 #[inline(always)]
 pub fn delete(p: *mut u8, _c: Tracked<CCall>) {
-    libc::free(p, Tracked::assume_new())
+    libc::free(p, Tracked::assume_new(), Tracked::assume_new())
 }
 
 /// `operator delete(void*, size_t)` and its array form: `free_sized`. The
@@ -323,7 +323,7 @@ pub fn delete(p: *mut u8, _c: Tracked<CCall>) {
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
 pub fn delete_sized(p: *mut u8, size: usize, _c: Tracked<CCall>) {
-    libc::free_sized(p, size, Tracked::assume_new())
+    libc::free_sized(p, size, Tracked::assume_new(), Tracked::assume_new())
 }
 
 /// `operator delete(void*, size_t, std::align_val_t)` and its array form:
@@ -331,7 +331,7 @@ pub fn delete_sized(p: *mut u8, size: usize, _c: Tracked<CCall>) {
 /// passed to `aligned_alloc`.
 #[inline(always)]
 pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, _c: Tracked<CCall>) {
-    libc::free_aligned_sized(p, align, size, Tracked::assume_new())
+    libc::free_aligned_sized(p, align, size, Tracked::assume_new(), Tracked::assume_new())
 }
 
 // ---------------------------------------------------------------------------

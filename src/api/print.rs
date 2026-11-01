@@ -1647,7 +1647,11 @@ mod tests {
             .unwrap();
         assert!(allocated >= 100 * size);
         for p in live {
-            free(p, vstd::prelude::Tracked::assume_new());
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
         // Option letters.
         let g = report("g");
@@ -1946,6 +1950,7 @@ mod tests {
         free(
             malloc(64, vstd::prelude::Tracked::assume_new()),
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         );
         let counters = || {
             let st = crate::heap::heap_for_thread(s).unwrap().materialise_stats();
@@ -2033,9 +2038,17 @@ mod tests {
             malloc_info(0, core::ptr::null_mut(), Tracked::assume_new()),
             -1
         );
-        free(big, vstd::prelude::Tracked::assume_new());
+        free(
+            big,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         for p in live {
-            free(p, vstd::prelude::Tracked::assume_new());
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
         }
         // glibc's malloc_stats just has to run and stay on stderr.
         malloc_stats();
