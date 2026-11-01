@@ -25,6 +25,25 @@ instead of jemalloc. Three things set it apart:
 a few pages on how it works; `docs/design.md` is the full design. Where
 the project stands is under "Status and contributing" below.
 
+## Formal verification
+
+As of 2026-11-01 (main `a1165e7f`), Verus verifies 92.8% of executable
+lines and 82.5% of functions. Counting seams discharged by Kani and
+constant assertions raises those shares to 93.6% and 84.9%.
+
+`theorem_metadata_integrity` proves that an allocated block shares no
+byte with the allocator metadata it covers or the `Shared` static.
+
+`theorem_no_syscall_on_fast_paths` proves that the covered `malloc` and
+`free` fast paths make no system call except an integrity abort. The
+`theorem_valid_*_free_never_aborts` family proves that freeing a live
+block never reaches the invalid-free or double-free checks on its
+covered paths.
+
+These results rest on stated trust assumptions. See [Verus
+results](verus/RESULTS.md).
+
+
 ## Support
 
 challoc supports Chainguard OS and Wolfi containers with glibc 2.44 or
