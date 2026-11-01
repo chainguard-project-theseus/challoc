@@ -39,11 +39,13 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
 
 ## `get_errno`
 
-src/vspec/errno.rs:63. Kind: external_body. Category: FFI/syscall.
+src/vspec/errno.rs:80. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
-> Trusted: reads the calling thread's `errno` through libc's pointer.
+> Trusted: reads the calling thread's `errno` through libc's pointer, and claims the value is the token's ([`ThreadErrno::val`]): challoc's last write through it, or the caller's `errno` before any.
 
 ```rust
-pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> c_int
+pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> (r: c_int)
+    ensures
+        r == errno.val(),
 ```

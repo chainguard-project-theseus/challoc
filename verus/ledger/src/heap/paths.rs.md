@@ -7,137 +7,12 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `free_fast_slot` | external_body | allocator invariant | Verus | trusted |
-| `alloc` | external_body | allocator invariant | Verus | trusted |
-| `alloc_declined` | external_body | allocator invariant | Verus | trusted |
-| `alloc_zeroed` | external_body | allocator invariant | Verus | trusted |
-| `free` | external_body | allocator invariant | Verus | trusted |
 | `shared_ptr` | external_body | allocator invariant | none (assumption) | trusted |
 | `debug_scheduled` | external_body | panic/abort | Kani | trusted |
 
-## `free_fast_slot`
-
-src/heap/paths.rs:785. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> The entry points' form of [`free_fast_class`]: the heap comes as the thread's TLS slot value (`tls_heap_slot`, which proved the heap exists and so that this thread observed `READY`), and both it and the `free_flags` byte are produced only after the bit test.
-
-Body mints Tracked at line 823; mints Tracked at line 824.
-
-```rust
-pub unsafe fn free_fast_slot(
-    shared: &Shared,
-    t: usize,
-    tp: usize,
-    p: *mut u8,
-    Tracked(blk): Tracked<&mut Live>,
-    Tracked(tls): Tracked<&mut TlsSlot>,
-) -> (r: Option<usize>)
-    requires
-        shared.wf(),
-        old(blk).claims(p),
-        slot_ok(*old(tls)),
-        t == old(tls).value(),
-        t > TLS_EXITED,
-        tp == old(tls).tp(),
-    ensures
-        r matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
-        r is Some ==> free_target(p),
-        r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
-        r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
-        r matches Some(c) ==> old(blk).slot_block(p, c as int),
-        final(tls).lent(*old(tls)),
-    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns()]
-```
-
-## `alloc`
-
-src/heap/paths.rs:963. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> `malloc` of a non-huge class on the calling thread.
-
-Body mints Tracked at line 974; mints Tracked at line 981; mints Tracked at line 982.
-
-```rust
-pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: *mut u8)
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-        class < NCLASSES,
-        shared.wf(),
-    ensures
-        r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
-        r@.addr != 0 ==> final(blk).slot_block(r, class as int),
-```
-
-## `alloc_declined`
-
-src/heap/paths.rs:1000. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> `malloc` of a non-huge class whose fast pop declined (`Heap::alloc_fast` returned `None`: an empty cache, or the scheduled pop of design 6.4 that `pop_fast` leaves to the slow path): straight to [`Heap::alloc_slow`], without the retry of the pop that [`alloc`] makes first, so a scheduled pop costs the entry point one tail call and the dispatch in `alloc_slow`, not a second pass through its own fast path (measured: through `alloc` the mixed `valkey1` row paid 4 instructions per operation for the one pop in eight the compacting mode schedules).
-
-Body mints Tracked at line 1012; mints Tracked at line 1021; mints Tracked at line 1022.
-
-```rust
-pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: *mut u8)
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-        shared.wf(),
-        class < NCLASSES,
-    ensures
-        r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
-        r@.addr != 0 ==> final(blk).slot_block(r, class as int),
-```
-
-## `alloc_zeroed`
-
-src/heap/paths.rs:1037. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> `calloc` of a non-huge class on the calling thread; the flag says the memory is known zero.
-
-Body mints Tracked at line 1050; mints Ghost at line 1052; mints Ghost at line 1053; mints Ghost at line 1054; mints Tracked at line 1062; mints Tracked at line 1063.
-
-```rust
-pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, _errno: Tracked<&mut ThreadErrno>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-        class < NCLASSES,
-        shared.wf(),
-    ensures
-        r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
-        r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
-        r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
-```
-
-## `free`
-
-src/heap/paths.rs:1073. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> `free` of a non-null pointer on the calling thread.
-
-Body mints Tracked at line 1084; mints Tracked at line 1085.
-
-```rust
-pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, _errno: Tracked<&mut ThreadErrno>)
-    requires
-        crate::sys::may_abort(),
-        crate::sys::may_syscall(),
-        shared.wf(),
-        blk.claims(p),
-    ensures
-        free_target(p),
-        blk.block(p),
-```
-
 ## `shared_ptr`
 
-src/heap/paths.rs:1136. Kind: external_body. Category: allocator invariant.
+src/heap/paths.rs:1227. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `shared` as the raw pointer [`existing_heap`] takes and `init_fields` stores in a new heap: the process's `Shared`, at its storage.
@@ -153,7 +28,7 @@ pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
 
 ## `debug_scheduled`
 
-src/heap/paths.rs:1239. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1330. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: trusted.
 
 > The scheduled pop's check, in debug builds: `allocs` is a multiple of the compaction period.

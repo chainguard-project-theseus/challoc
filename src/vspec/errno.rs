@@ -54,13 +54,33 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
     unsafe { *::libc::__errno_location() = e };
 }
 
-/// Trusted: reads the calling thread's `errno` through libc's pointer.
-/// Nothing is claimed about the value: libc calls in trusted code may
-/// have written `errno` since challoc's last write, which `val()` does
-/// not track.
+/// Trusted: reads the calling thread's `errno` through libc's pointer,
+/// and claims the value is the token's ([`ThreadErrno::val`]): challoc's
+/// last write through it, or the caller's `errno` before any. That is an
+/// assumption: no libc call in trusted code has written `errno` since.
+/// The one caller, [`crate::purge::background::start`], reads it before
+/// the thread creation (`pthread_create`, `pthread_join`) and writes it
+/// back. Only an allocation's tick and `mallctl("background_thread")`
+/// reach it; a free's tick never starts the thread. On an allocation
+/// path two libc calls can come before it in the same C call:
+/// `pthread_setspecific`, when the call creates the thread's heap
+/// (`ThreadKey::set`), which glibc lets write `errno` only when the
+/// registration fails, and then the call is served without a heap and
+/// never ticks; and `getauxval(AT_PAGESZ)` in `purge::discard`, which
+/// writes `errno` only for an absent key, while `getauxval`'s trusted
+/// spec already says the key is present. Init, which runs in the
+/// process's first C call (an allocation or `mallctl`), adds `getauxval`
+/// of `AT_PAGESZ` and `AT_SECURE`, keys Linux always passes, and
+/// `pthread_key_create`, which returns its error instead of writing
+/// `errno`. A later trusted seam on an
+/// allocation path that calls libc must take the token `&mut` and state
+/// nothing about its value.
 #[verifier::external_body]
 #[inline(always)]
-pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> c_int {
+pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> (r: c_int)
+    ensures
+        r == errno.val(),
+{
     // SAFETY: `__errno_location` returns the calling thread's `errno`.
     unsafe { *::libc::__errno_location() }
 }

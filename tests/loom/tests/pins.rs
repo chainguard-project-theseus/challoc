@@ -201,9 +201,9 @@ const PINS: &[(&str, &[&str])] = &[
         &[
             "let Some((class, slab)) = shared.set_slot(p) else {",
             "let flags = shared.free_flags();",
-            "0 => unsafe { heap_from_slot(t, tp, false, Tracked::assume_new()) }.push_fast(",
+            "0 => unsafe { heap_from_slot(t, tp, false, Tracked(tls)) }.push_fast(",
             "FREE_ROUTE => {",
-            "shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked::assume_new())",
+            "shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))",
             "(flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))",
         ],
     ),
