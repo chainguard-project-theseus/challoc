@@ -40,6 +40,11 @@ byte with the allocator metadata it covers or the `Shared` static.
 block never reaches the invalid-free or double-free checks on its
 covered paths.
 
+The contracts of `malloc`, `calloc`, `mallocx` and the aligned
+allocators rule out, on those entry points, the size-overflow bug
+classes behind glibc, jemalloc and TCMalloc CVEs such as CVE-2013-4332
+and CVE-2017-17426 ([list](verus/RESULTS.md#vulnerability-classes-ruled-out)).
+
 These results rest on stated trust assumptions. See [Verus
 results](verus/RESULTS.md).
 
