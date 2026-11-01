@@ -426,11 +426,10 @@ pub fn existing_heap_in<'a>(shared: *const Shared, Tracked(tls): Tracked<&'a mut
 /// holds a heap pointer (plain or signed), `None` on null or a sentinel.
 /// A heap pointer there means the allocator is published
 /// ([`crate::api::ready`]): the heap the token holds is well formed
-/// ([`slot_ok`]). (Branching once here into two copies of the whole fast
-/// path was tried: LLVM merged the copies' tails back together and gave
-/// `malloc` a stack frame it did not have, so the entry points take
-/// [`existing_heap`] and the `autda`s sit behind their own predicted
-/// `tbz`s.)
+/// ([`slot_ok`]). The entry points take [`existing_heap`] and the
+/// `autda`s sit behind their own predicted `tbz`s rather than branching
+/// once into two copies of the fast path, which LLVM merges back
+/// together at the cost of a stack frame in `malloc`.
 #[inline(always)]
 pub fn tls_heap_slot(Tracked(tls): Tracked<&TlsSlot>) -> (r: Option<(usize, usize)>)
     ensures

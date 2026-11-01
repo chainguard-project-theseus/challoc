@@ -30,7 +30,7 @@
 //! already, and otherwise only counts. A carve itself makes no system call:
 //! the object side's commit is deferred to the next object or table commit
 //! that needs it, so the dozens of tables init carves back to back cost one
-//! `mprotect` rather than one each (#29). Larger tables stay on the
+//! `mprotect` rather than one each. Larger tables stay on the
 //! reservation side: making them
 //! writable whole would put never-touched address space into core dumps,
 //! `mlockall` and `RLIMIT_DATA`. Eager carving is off when the kernel

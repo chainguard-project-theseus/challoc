@@ -648,9 +648,9 @@ impl Heap {
     /// ([`Heap::free_slow_in`]) clears the slot and pushes it: the clear
     /// must not be a call from here, since a call inside the inlined fast
     /// path costs every default `free` a callee-saved register spill in
-    /// its prologue (measured: larson1 +1.9% on aarch64 with the `memset`
-    /// call inlined here, the `sdallocx` frame 0x20 -> 0x50 with `x19`
-    /// saved). With `double_free_scan` alone it is the scanning push.
+    /// its prologue (on aarch64 a `memset` call here grows the `sdallocx`
+    /// frame and saves `x19`). With `double_free_scan` alone it is the
+    /// scanning push.
     ///
     /// # Safety
     /// As for [`Heap::push_cache`].

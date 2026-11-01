@@ -108,6 +108,8 @@ impl TestShared {
         let (sb, mb, hb) = {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let reserve = |len: usize| -> usize {
+                // SAFETY: a fresh reservation at an address the kernel
+                // picks replaces nothing.
                 unsafe {
                     crate::sys::mmap(
                         0,
@@ -134,6 +136,9 @@ impl TestShared {
         // One raw pointer for `init` and the returned `&Shared`, as in
         // `api::init`: `init` keeps pointers derived from it.
         let p = Box::into_raw(Box::new(MaybeUninit::<Shared>::uninit())).cast::<Shared>();
+        // SAFETY: `p` is a leaked, never-moved allocation for a `Shared`
+        // that nothing reads before `init` returns, and the regions are
+        // the reservations made above.
         assert!(unsafe {
             Shared::init(
                 p,
@@ -146,6 +151,8 @@ impl TestShared {
                 vstd::prelude::Tracked::assume_new(),
             )
         });
+        // SAFETY: `init` returned `true`, so `*p` is initialised; it is
+        // leaked, so the reference is valid for `'static`.
         unsafe { &*p }
     }
 }
@@ -169,7 +176,7 @@ pub(crate) fn xorshift(state: &mut u64) -> u64 {
 /// process-wide setting (decay, the background thread request, the stats
 /// epoch, the fork handlers' lock state) or assert one take turns on this
 /// guard. libtest runs the tests of one process in parallel, and without it
-/// one test's write lands between another's write and its assertion (#69).
+/// one test's write lands between another's write and its assertion.
 /// Tests that only allocate and free need not take it: none of the guarded
 /// assertions depends on another thread not allocating, and the one that
 /// would (every lock free after the fork handlers) runs in a fork child.
@@ -183,28 +190,34 @@ pub(crate) fn global_state() -> std::sync::MutexGuard<'static, ()> {
 /// Run `f` in a child of a real `fork` and assert that it returned. The
 /// child has one thread, so a check of process-wide state there cannot be
 /// raced by the other tests of this process, and what `f` writes (a
-/// sticky flag, a lock state) never reaches them (#69). A panic in `f`
+/// sticky flag, a lock state) never reaches them. A panic in `f`
 /// exits the child with status 1 (its message goes to stderr) instead of
 /// unwinding into a copy of the test harness; a child still running after
 /// `timeout_ms` is killed and fails the test. The test binary's own
 /// allocator is glibc's, which `fork` leaves usable in the child, so `f`
 /// may allocate and use `assert!`.
 pub(crate) fn in_fork_child(what: &str, timeout_ms: u64, f: impl FnOnce()) {
+    // SAFETY: the child only runs `f` and exits; see the doc above for
+    // why the test binary's allocator is usable there.
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "{what}: fork failed");
     if pid == 0 {
         let r = std::panic::catch_unwind(core::panic::AssertUnwindSafe(f));
+        // SAFETY: `_exit` has no preconditions; it skips the harness's
+        // exit handlers, which belong to the parent.
         unsafe { libc::_exit(if r.is_ok() { 0 } else { 1 }) };
     }
     let mut status = 0;
     let mut waited = 0;
     loop {
+        // SAFETY: `status` is a valid `int` to write.
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
         assert!(r >= 0, "{what}: waitpid failed");
         if r == pid {
             break;
         }
         if waited >= timeout_ms {
+            // SAFETY: `pid` is our unreaped child; `status` as above.
             unsafe {
                 libc::kill(pid, libc::SIGKILL);
                 libc::waitpid(pid, &mut status, 0);
@@ -223,6 +236,7 @@ pub(crate) fn in_fork_child(what: &str, timeout_ms: u64, f: impl FnOnce()) {
 /// `mlock` `[addr, addr + len)` for a test, or, when the host refuses (a
 /// low `RLIMIT_MEMLOCK`), [`skip`] the test and return false.
 pub(crate) fn mlock_or_skip(test: &str, addr: usize, len: usize) -> bool {
+    // SAFETY: `mlock` only pins pages; it fails on an unmapped range.
     if unsafe { libc::mlock(addr as *const _, len) } == 0 {
         return true;
     }

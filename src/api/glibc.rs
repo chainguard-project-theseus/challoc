@@ -10,20 +10,22 @@
 //! `mallinfo2` is filled from the *live* figures (glibc's are), with
 //! challoc's meaning for each field, chosen so that the identities glibc
 //! programs compute still hold (`arena >= uordblks`, `fordblks =
-//! arena - uordblks`, `hblkhd` is mmapped bytes):
+//! arena - uordblks`). `hblkhd`, glibc's mmapped bytes, holds the large
+//! allocated bytes (jemalloc's `large.allocated`), and `arena` the rest
+//! of resident memory.
 //!
-//! | field      | challoc                                                    |
-//! |------------|------------------------------------------------------------|
-//! | `arena`    | resident bytes minus huge runs (slabs, dirty slabs, metadata) |
-//! | `ordblks`  | free slots in slabs that are neither `Empty` nor `Purged`  |
-//! | `smblks`   | 0                                                          |
-//! | `hblks`    | live huge runs                                             |
-//! | `hblkhd`   | usable bytes of live huge runs                             |
-//! | `usmblks`  | 0                                                          |
-//! | `fsmblks`  | 0                                                          |
-//! | `uordblks` | bytes in allocated slots (thread caches count, as in `stats.allocated`) |
-//! | `fordblks` | `arena - uordblks`                                         |
-//! | `keepcost` | dirty bytes a purge would release                          |
+//! | field      | challoc                                                                  |
+//! |------------|--------------------------------------------------------------------------|
+//! | `arena`    | resident bytes minus `hblkhd`                                            |
+//! | `ordblks`  | free slots in slabs that are neither `Empty` nor `Purged`                |
+//! | `smblks`   | 0                                                                        |
+//! | `hblks`    | live huge runs                                                           |
+//! | `hblkhd`   | bytes in allocated slots above `BIN_MAX` plus usable bytes of huge runs  |
+//! | `usmblks`  | 0                                                                        |
+//! | `fsmblks`  | 0                                                                        |
+//! | `uordblks` | bytes in allocated slots up to `BIN_MAX`, thread-cached ones included    |
+//! | `fordblks` | `arena - uordblks`                                                       |
+//! | `keepcost` | dirty bytes a purge would release                                        |
 //!
 //! `mallinfo` is the same in `int`, saturating at `INT_MAX`, which is why
 //! glibc deprecated it.

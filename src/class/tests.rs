@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::vec;
 use std::vec::Vec;
 
-/// The page size the environment is built with: the kernel's (the
-/// reservations are real; the 64 KiB-page matrix cell found the 4 KiB
-/// constant).
+/// The page size the environment is built with: the kernel's, never a
+/// 4 KiB constant, because the reservations are real and must hold on
+/// 16 and 64 KiB-page hosts too.
 fn page_size() -> usize {
     crate::sys::features::page_size()
 }
@@ -1999,14 +1999,14 @@ fn check_zero_aborts_on_a_dirty_purged_slab() {
     let _ = env.claim(cs, 2);
 }
 
-/// The calloc race: thread A's
-/// `plan` selects a `Fresh` slab, flags its pick zero and drops the
-/// class lock; thread B refills from the same, now partial, slab, hands
-/// the slot to the program, which writes to it and frees it; then A's
-/// `finish` runs. Before the fix A's bit loop won the slot B had just
-/// released and reported it zero. Now A's slots are claimed in `take`,
-/// under the lock, so B gets the next slot and A's reads zero. The
-/// same for a `Purged` slab when the purge advice zeroes.
+/// The calloc race: thread A's `plan` selects a `Fresh` slab, flags its
+/// pick zero and drops the class lock; thread B refills from the same,
+/// now partial, slab, hands the slot to the program, which writes to it
+/// and frees it; then A's `finish` runs. Invariant: a slot reported zero
+/// was never handed out since it was last zeroed. A's slots are claimed
+/// in `take`, under the lock, so B gets a different slot and A's still
+/// reads zero. The same holds for a `Purged` slab when the purge advice
+/// zeroes.
 #[test]
 fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
     let env = Env::new();

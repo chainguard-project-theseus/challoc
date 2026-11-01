@@ -1,13 +1,13 @@
 //! `malloc_conf` parsing (design.md section 12).
 //!
 //! The parser is pure logic over byte slices so it can be unit tested
-//! against fixtures; the source readers (weak `malloc_conf` symbol,
+//! against fixtures; the source readers (the `malloc_conf` symbols,
 //! `/etc/challoc.conf`, environment) never allocate: the file is read into
 //! a stack buffer with raw syscalls and the environment is walked through
 //! `environ` without `getenv`.
 //!
-//! Sources apply in increasing priority: compiled defaults, the weak
-//! `malloc_conf` and `je_malloc_conf` globals (jemalloc style; Redis and
+//! Sources apply in increasing priority: compiled defaults, the
+//! `malloc_conf` global and the weak `je_malloc_conf` reference (Redis and
 //! Valkey define the latter), the first line of `/etc/challoc.conf`, then the
 //! `MALLOC_CONF` and `CHALLOC_CONF` environment variables. A later source
 //! overrides an earlier one key by key.

@@ -188,9 +188,10 @@ pub(super) fn forget_other_threads_explicit_purges() {
 
 /// The default (no limit) discards with `MADV_DONTNEED`, so purged
 /// memory is zero. The headroom band is exercised end to end by
-/// `tests/c/cgroup_lazy.c`; issuing a lazy batch here would make the flag sticky for the class
-/// and huge tests that read it. In a fork child: in this process an
-/// explicit purge of another test reads as "explicit purge" (#69).
+/// `tests/c/cgroup_lazy.c`; issuing a lazy batch here would make the flag
+/// sticky for the class and huge tests that read it. In a fork child: in
+/// this process an explicit purge of another test reads as "explicit
+/// purge".
 #[test]
 fn purged_memory_is_zero_by_default() {
     crate::testutil::in_fork_child("purge default advice", 30_000, || {
@@ -207,8 +208,8 @@ fn purged_memory_is_zero_by_default() {
 /// this process any test's policy sample resets the mirror
 /// (`policy::evaluate` without a limit) between the write and the read,
 /// and a concurrent flush under the flipped mirror would issue a lazy
-/// batch and make [`purged_is_zero`] false for the class and huge tests
-/// (#69).
+/// batch and make [`purged_is_zero`] false for the class and huge
+/// tests.
 #[test]
 fn advice_follows_headroom_band_key_and_explicit_purges() {
     crate::testutil::in_fork_child("purge advice", 30_000, || {
@@ -251,18 +252,20 @@ fn advice_follows_headroom_band_key_and_explicit_purges() {
 
 /// The batch tests flush (for real), one at a time; the advice test,
 /// which flips the headroom mirror, runs in a fork child instead.
-pub(super) static ADVICE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(super) static BATCH_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Take [`ADVICE_TEST`]; a panic in one holder must not fail the rest.
+/// Take [`BATCH_SERIAL`]; a panic in one holder must not fail the rest.
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
-    ADVICE_TEST.lock().unwrap_or_else(|e| e.into_inner())
+    BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// `background::axiom_state_lock` names the raw lock of every
 /// `Lock<State>` of rank `rank_state` as `state_lock()`, which is sound
 /// only while `STATE` is the one such lock: the axiom is called once (in
 /// `STATE`'s initialiser), `STATE` is the only `Lock<State>`, and the only
-/// lock created with that rank.
+/// lock created with that rank. The axiom is trusted, not proved, and
+/// this source count is its only guard: if a count changes, re-audit the
+/// axiom's soundness before updating the expected numbers.
 #[test]
 fn state_lock_axiom_names_the_one_state_lock() {
     let src = include_str!("background.rs");

@@ -1017,7 +1017,7 @@ verus! {
 /// asks first; the others wait): init skips the per-size THP files under
 /// `thp:never`, which nothing but the line's `mthp` key reads, so they
 /// are read here instead, and a process that never asks for the line
-/// never reads them (#29). Initialises the allocator if needed. Does not
+/// never reads them. Initialises the allocator if needed. Does not
 /// allocate. Like `malloc`, not async-signal-safe: a signal handler that
 /// asks for the line while its own thread is building it waits forever.
 /// Hands back the line's permissions, frozen at `LINE_READY`
@@ -3065,7 +3065,7 @@ mod tests {
     /// sides. The checks run in a fork child: in this process another test
     /// can take a heap lock (a huge allocation, a refill) the moment the
     /// handlers release it, so "every lock free" is only exact where no
-    /// other thread runs (#69). The real `fork` runs the handlers through
+    /// other thread runs. The real `fork` runs the handlers through
     /// `pthread_atfork`, so the child starts from `fork_child`'s release.
     #[test]
     fn fork_handlers_take_and_release_every_lock() {
