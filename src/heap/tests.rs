@@ -263,17 +263,25 @@ impl TestHeap {
     }
 
     pub(crate) fn alloc(&self, c: usize) -> *mut u8 {
-        let p = self
-            .heap()
-            .alloc(self.s, c, Tracked::assume_new(), Tracked::assume_new());
+        let p = self.heap().alloc(
+            self.s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         p
     }
 
     pub(crate) fn alloc_zeroed(&self, c: usize) -> (*mut u8, bool) {
-        let (p, z) =
-            self.heap()
-                .alloc_zeroed(self.s, c, Tracked::assume_new(), Tracked::assume_new());
+        let (p, z) = self.heap().alloc_zeroed(
+            self.s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         (p, z)
     }
@@ -2841,12 +2849,22 @@ fn rehoming_only_takes_an_idle_automatic_arena() {
         .unwrap();
     assert!(x as u32 >= s.arenas.auto());
     let w4 = TestHeap::new(s);
-    let (e1, _) = w4
-        .heap()
-        .alloc_in(s, x, c, Tracked::assume_new(), Tracked::assume_new());
-    let (e2, _) = w4
-        .heap()
-        .alloc_in(s, x, c2, Tracked::assume_new(), Tracked::assume_new());
+    let (e1, _) = w4.heap().alloc_in(
+        s,
+        x,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    let (e2, _) = w4.heap().alloc_in(
+        s,
+        x,
+        c2,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!e1.is_null() && !e2.is_null());
     let w5 = TestHeap::new(s);
     let home = w5.heap().arena();
@@ -3054,9 +3072,23 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert_eq!(h.arena(), 0);
     let c = class_with(64);
     let p0 = t.alloc(c);
-    let (p1, zero) = h.alloc_in(s, a1, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p1, zero) = h.alloc_in(
+        s,
+        a1,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!p1.is_null() && zero);
-    let (p2, _) = h.alloc_in(s, a2, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p2, _) = h.alloc_in(
+        s,
+        a2,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(s.classify_free(p0, Tracked::assume_new()), Ok((c, 0)));
     assert_eq!(s.classify_free(p1, Tracked::assume_new()), Ok((c, a1)));
     assert_eq!(s.classify_free(p2, Tracked::assume_new()), Ok((c, a2)));
@@ -3078,9 +3110,16 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert_eq!(s.arena0.classes[c].stats().committed, per_refill);
     // Non-existent arena: null, nothing touched.
     assert!(
-        h.alloc_in(s, 77, c, Tracked::assume_new(), Tracked::assume_new())
-            .0
-            .is_null()
+        h.alloc_in(
+            s,
+            77,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        )
+        .0
+        .is_null()
     );
     // The fast path takes only the home arena's slots; the others go onto
     // the one FOREIGN cache, whatever their arena, never onto the arena's
@@ -3104,7 +3143,14 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     // Nothing pops from it: a default allocation is the home's LIFO top,
     // an explicit one the arena node's.
     assert_eq!(t.alloc(c), p0);
-    let (p3, _) = h.alloc_in(s, a1, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p3, _) = h.alloc_in(
+        s,
+        a1,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_ne!(p3, p1);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
     // Byte counters cover every cache.
@@ -3234,10 +3280,23 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     assert_eq!(s.config.cap_for(0, a1, c), 0);
     h.set_arena(s, a1, Tracked::assume_new());
     // Default path: arena 0.
-    let (d, _) = h.alloc_zeroed(s, c, Tracked::assume_new(), Tracked::assume_new());
+    let (d, _) = h.alloc_zeroed(
+        s,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(s.classify_free(d, Tracked::assume_new()), Ok((c, 0)));
     // The home arena named explicitly: stays home.
-    let (p, _) = h.alloc_in(s, a1, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p, _) = h.alloc_in(
+        s,
+        a1,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(s.classify_free(p, Tracked::assume_new()), Ok((c, a1)));
     assert_eq!(
         s.arena(a1, Tracked::assume_new()).unwrap().0.classes[c]
@@ -3248,7 +3307,14 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     // A foreign arena named explicitly, through a heap that caches
     // nothing of that class there: no node, no cache, right arena.
     let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
-    let (q, _) = h.alloc_in(s, 0, c, Tracked::assume_new(), Tracked::assume_new());
+    let (q, _) = h.alloc_in(
+        s,
+        0,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(s.classify_free(q, Tracked::assume_new()), Ok((c, 0)));
     assert_eq!(
         s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
@@ -3322,7 +3388,14 @@ fn set_arena_swaps_cache_arrays() {
     let h = t.heap();
     let c = class_with(64);
     let p0 = t.alloc(c);
-    let (p1, _) = h.alloc_in(s, a1, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p1, _) = h.alloc_in(
+        s,
+        a1,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     h.set_arena(s, a1, Tracked::assume_new());
     assert_eq!(h.arena(), a1);
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
@@ -3366,7 +3439,14 @@ fn explicit_caches_create_flush_destroy() {
     assert!(s.tcaches.get(u16::MAX).is_none());
     let c = class_with(64);
     let h = s.tcaches.get(t0).unwrap();
-    let (p, _) = h.alloc_in(s, 0, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p, _) = h.alloc_in(
+        s,
+        0,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!p.is_null());
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
@@ -3639,8 +3719,13 @@ fn slot_randomize_shuffles_the_batch_and_keeps_the_slot_set() {
     let cs = &s.arena0.classes[c];
     let (first_z, zeroed): (Vec<*mut u8>, Vec<bool>) = (0..batch)
         .map(|_| {
-            t.heap()
-                .alloc_zeroed(s, c, Tracked::assume_new(), Tracked::assume_new())
+            t.heap().alloc_zeroed(
+                s,
+                c,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
         })
         .unzip();
     assert!(
@@ -3745,7 +3830,14 @@ fn a_scheduled_pop_aborts_when_the_run_reaches_past_the_length() {
     unsafe {
         (*k).mode = MODE_COMPACT;
         (*k).run_end = len + 1;
-        h.pop_compact_run(k, c, len, Tracked::assume_new(), Tracked::assume_new());
+        h.pop_compact_run(
+            k,
+            c,
+            len,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     }
 }
 
@@ -3809,8 +3901,22 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     let h = t.heap();
     assert_eq!(Heap::nodes(h.others).count(), 0);
     let c = class_with(64);
-    let (p1, _) = h.alloc_in(s, a1, c, Tracked::assume_new(), Tracked::assume_new());
-    let (p2, _) = h.alloc_in(s, a2, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p1, _) = h.alloc_in(
+        s,
+        a1,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    let (p2, _) = h.alloc_in(
+        s,
+        a2,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!p1.is_null() && !p2.is_null());
     let arenas: Vec<u16> = Heap::nodes(h.others)
         .map(|o| unsafe { (*o).arena })
@@ -4152,7 +4258,14 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     let h = t.heap();
     let c = class_with(64);
     let p0 = t.alloc(c);
-    let (p1, _) = h.alloc_in(s, a1, c, Tracked::assume_new(), Tracked::assume_new());
+    let (p1, _) = h.alloc_in(
+        s,
+        a1,
+        c,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(s.multi_arena());
     assert_eq!(
         (s.checked_slot(p0, h), s.checked_slot_any(p0)),

@@ -341,30 +341,38 @@ pub fn alloc(
         r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
         !bad_tcache(tcache),
 {
+    // The two caches take a slot token: its cell goes down to the tick,
+    // which may start the background thread, and the default cache
+    // borrows the heap from its loan. No cache, no token: that arm
+    // reaches the slot through `existing_heap`.
     match tcache {
-        Tcache::Default => match crate::heap::heap_for_thread(shared) {
-            Some(h) => {
-                proof {
-                    h.lemma_wf_regions();
-                }
-                match arena {
-                    Some(a) => {
-                        let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno);
-                        let ghost take = p@.addr != 0 && zero;
-                        let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
-                        (p, zero, z)
-                    },
-                    None => {
-                        let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno);
-                        let ghost take = p@.addr != 0 && zero;
-                        let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
-                        (p, zero, z)
-                    },
-                }
-            },
-            None => alloc_direct(shared, class, arena.unwrap_or(0), Tracked(blk)),
+        Tcache::Default => {
+            let tracked tls = crate::sys::tls::TlsSlot::entry();
+            match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
+                Some(h) => {
+                    proof {
+                        h.lemma_wf_regions();
+                    }
+                    match arena {
+                        Some(a) => {
+                            let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell));
+                            let ghost take = p@.addr != 0 && zero;
+                            let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
+                            (p, zero, z)
+                        },
+                        None => {
+                            let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell));
+                            let ghost take = p@.addr != 0 && zero;
+                            let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
+                            (p, zero, z)
+                        },
+                    }
+                },
+                None => alloc_direct(shared, class, arena.unwrap_or(0), Tracked(blk)),
+            }
         },
         Tcache::Explicit(t) => {
+            let tracked tls = crate::sys::tls::TlsSlot::entry();
             let Some(h) = shared.tcaches.get(t) else {
                 invalid_tcache(t)
             };
@@ -375,13 +383,13 @@ pub fn alloc(
             // shared class to it (`Heap::alloc_in`).
             match arena {
                 Some(a) => {
-                    let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno);
+                    let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell));
                     let ghost take = p@.addr != 0 && zero;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                     (p, zero, z)
                 },
                 None => {
-                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno);
+                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell));
                     let ghost take = p@.addr != 0 && zero;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                     (p, zero, z)

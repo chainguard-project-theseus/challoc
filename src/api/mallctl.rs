@@ -2811,7 +2811,10 @@ fn ctl(
                     *fx = Ghost(Change::Set { read_first: cc.written() });
                 }
                 purge::background::request(on, Tracked(&mut ord));
-                if on && !purge::background::present() && !purge::background::start(shared, Tracked(&mut ord), Tracked(errno)) {
+                // The slot token: `start` parks the slot through its cell
+                // while it creates the thread. No heap is borrowed here.
+                let tracked tls = crate::sys::tls::TlsSlot::entry();
+                if on && !purge::background::present() && !purge::background::start(shared, Tracked(&mut ord), Tracked(errno), Tracked(&mut tls.cell)) {
                     return Err(EAGAIN);
                 }
             }

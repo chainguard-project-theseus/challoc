@@ -2363,8 +2363,9 @@ pub fn purge_arena(
 /// So it needs only `valid_aborts`: the thread start, which may abort,
 /// runs only on an allocation's tick, and decay reaches only resource
 /// failures and pending checks.
-pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>)
+pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>, Tracked(cell): Tracked<Option<&mut crate::sys::tls::TlsCell>>)
     requires
+        alloc ==> cell is Some,
         crate::sys::may_abort() || (crate::sys::valid_aborts() && !alloc),
         crate::sys::may_syscall(),
         shared.wf(),
@@ -2377,12 +2378,13 @@ pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mu
     if background::present() {
         return;
     }
-    if alloc && background::requested() && background::start_requested(shared, Tracked(ord), Tracked(&mut *errno)) {
+    let tracked mut cell = cell;
+    if alloc && background::requested() && background::start_requested(shared, Tracked(ord), Tracked(&mut *errno), Tracked(crate::sys::tls::TlsCell::lend(&mut cell))) {
         return;
     }
     if decay(shared, now, Tracked(ord)).is_some() {
         // Dirty memory is still waiting: the lazy start's look.
-        background::auto_tick(shared, now, alloc, Tracked(ord), Tracked(&mut *errno));
+        background::auto_tick(shared, now, alloc, Tracked(ord), Tracked(&mut *errno), Tracked(cell));
     }
 }
 

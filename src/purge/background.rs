@@ -10,7 +10,9 @@ use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::{Lock, LockHeld, LockOrder, Padded};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{RawLock, axiom_entry, lock_inv, rank_class, rank_meta, rank_state};
+use crate::sys::tls::TlsCell;
 use crate::sys::{self, Timespec};
+use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::errno::{ThreadErrno, get_errno, set_errno};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
@@ -233,7 +235,9 @@ fn kick()
 /// preserved: this runs from an allocation's tick and from
 /// `mallctl("background_thread")`, and glibc's `pthread_create` /
 /// `pthread_join` may set it on their way.
-pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>) -> bool
+/// `cell` is the calling thread's slot cell, which [`create`] parks the
+/// slot through.
+pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -259,7 +263,7 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
         (g.stack, g.thread.take())
     };
     let saved_errno = get_errno(Tracked(&*errno));
-    let (stack, thread) = create(shared, stack, previous, Tracked(ord));
+    let (stack, thread) = create(shared, stack, previous, Tracked(ord), Tracked(cell));
     set_errno(saved_errno, Tracked(&mut *errno));
     #[cfg(test)]
     if thread.is_some() {
@@ -300,7 +304,7 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
 /// than [`AUTO_RETRY_NS`] later, up to [`AUTO_TRIES`] failures in all,
 /// after which it is off for good. An explicit request stays, and the
 /// next tick tries again.
-pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>) -> bool
+pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -310,7 +314,7 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, T
         final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
-    if start(shared, Tracked(ord), Tracked(&mut *errno)) {
+    if start(shared, Tracked(ord), Tracked(&mut *errno), Tracked(&mut *cell)) {
         return true;
     }
     let g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
@@ -343,8 +347,9 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, T
 /// rare next to it.
 #[cold]
 #[inline(never)]
-pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>)
+pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<Option<&mut TlsCell>>)
     requires
+        alloc ==> cell is Some,
         crate::sys::may_abort() || (crate::sys::valid_aborts() && !alloc),
         crate::sys::may_syscall(),
         shared.wf(),
@@ -388,7 +393,7 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
         REQUESTED.store(true, Ordering::Relaxed);
     }
     if alloc {
-        start_requested(shared, Tracked(ord), Tracked(&mut *errno));
+        start_requested(shared, Tracked(ord), Tracked(&mut *errno), Tracked(cell.tracked_unwrap()));
     }
 }
 
@@ -446,12 +451,14 @@ verus! {
 
 /// `pthread_join(t, NULL)`: 0 or an error number. Trusted: a raw libc
 /// call; nothing is claimed about the result.
+/// `cell` is the calling thread's slot cell: the join frees the exited
+/// thread's key data, which may re-enter the allocator on this thread.
 ///
 /// # Safety
 /// `t` is a joinable thread this module created and never joined.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
+unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&TlsCell>) -> i32
     requires
         crate::sys::may_syscall(),
 {
@@ -463,8 +470,8 @@ unsafe fn pthread_join(t: ::libc::pthread_t) -> i32
 /// none yet), after joining `previous`. Returns the stack (kept even
 /// when creation fails, for the next attempt) and the new thread.
 /// Trusted: the body parks the TLS slot through `sys::tls::get` and
-/// `set`, which take no slot or heap permission here, and passes
-/// placeholder tokens for `Meta::reserve`'s claim and `Meta::commit`.
+/// `set` on the caller's slot cell `cell`, and passes placeholder
+/// tokens for `Meta::reserve`'s claim and `Meta::commit`.
 // The `match` stands for `Option::filter`, which vstd does not specify.
 #[verifier::external_body]
 #[allow(clippy::manual_filter)]
@@ -473,6 +480,7 @@ fn create(
     stack: usize,
     previous: Option<::libc::pthread_t>,
     Tracked(ord): Tracked<&mut LockOrder>,
+    Tracked(cell): Tracked<&mut TlsCell>,
 ) -> (r: (usize, Option<::libc::pthread_t>))
     requires
         crate::sys::may_abort(),
@@ -489,10 +497,10 @@ fn create(
     // `pthread_create` allocates the new thread's DTV with `calloc`
     // and `pthread_join` frees an exited thread's key data, neither of
     // which may re-enter this thread's heap mid-operation.
-    let saved = crate::sys::tls::get(Tracked::assume_new());
+    let saved = crate::sys::tls::get(Tracked(&*cell));
     let park = saved as usize > TLS_EXITED;
     if park {
-        crate::sys::tls::set(TLS_CREATING as *mut c_void, Tracked::assume_new());
+        crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut *cell));
     }
     // The previous thread exited at a wake-up (`request(false)`) but
     // glibc's exit path still runs on the stack until the kernel has
@@ -501,7 +509,7 @@ fn create(
     // has a `previous`: its copy of the stack carries no thread.
     if let Some(t) = previous {
         // SAFETY: a joinable thread this module created and never joined.
-        let rc = unsafe { pthread_join(t) };
+        let rc = unsafe { pthread_join(t, Tracked(&*cell)) };
         if rc != 0 {
             sys::abort_fmt(format_args!(
                 "pthread_join of the background thread failed: {}",
@@ -541,11 +549,11 @@ fn create(
         }
     };
     let thread = match stack {
-        Some(stack) => spawn(shared, stack + page, STACK_SIZE - page),
+        Some(stack) => spawn(shared, stack + page, STACK_SIZE - page, Tracked(&*cell)),
         None => None,
     };
     if park {
-        crate::sys::tls::set(saved, Tracked::assume_new());
+        crate::sys::tls::set(saved, Tracked(&mut *cell));
     }
     (stack.unwrap_or(0), thread)
 }
@@ -558,8 +566,10 @@ fn create(
 /// Trusted: raw pthread calls, and the thread's entry is a function
 /// pointer. `shared` is well formed: the thread's [`shared_arg`] ensures
 /// it of the pointer passed here.
+/// `cell` is the calling thread's slot cell: `pthread_create` allocates
+/// the new thread's DTV, which may re-enter the allocator on this thread.
 #[verifier::external_body]
-fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t>
+fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&TlsCell>) -> Option<::libc::pthread_t>
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),

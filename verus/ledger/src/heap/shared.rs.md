@@ -86,7 +86,7 @@ Tool: none (assumption). Status: trusted.
 > `pthread_setspecific(3)`: stores `value` for the calling thread under `key` without dereferencing it; 0 on success, an error number otherwise (nothing is claimed about it).
 
 ```rust
-unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsSlot>) -> (r: i32)
+unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsCell>) -> (r: i32)
     requires
         crate::sys::may_syscall(),
         reentry_benign(old(tls).value()),

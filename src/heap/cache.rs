@@ -371,6 +371,8 @@ impl Heap {
     /// GC may flush this cache, and reloads it. `pac` is `Shared::pac()`:
     /// whether the entry is stored signed.
     #[inline(always)]
+    // The errno token and the slot cell are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     pub(super) unsafe fn pop(
         &mut self,
         cache: *mut CacheHeader,
@@ -379,6 +381,7 @@ impl Heap {
         pac: bool,
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -417,7 +420,7 @@ impl Heap {
                 Heap::lemma_poppable_same(*old(self), *self, class as int, cache);
             }
             // SAFETY: guaranteed by the caller.
-            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno)) };
+            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell)) };
         }
         proof {
             CachePerms::lemma_update(old_perms, self.perms@, cache);

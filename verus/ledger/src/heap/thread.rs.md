@@ -16,7 +16,7 @@ file.
 src/heap/thread.rs:68. Kind: external_body type. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Ghost: the permission to a thread heap, linear: the thread's TLS slot token holds it while the slot holds the heap ([`TlsSlot`](crate::sys::tls::TlsSlot), [`slot_ok`]), and [`slot_heap_ref`] lends the heap out of the token, for as long as the token is lent.
+> Ghost: the permission to a thread heap, linear: the heap loan of the thread's TLS slot token holds it while the slot holds the heap ([`HeapLoan`](crate::sys::tls::HeapLoan), [`slot_ok`]), and [`slot_heap_ref`] lends the heap out of the loan, for as long as the loan is lent.
 
 ```rust
 pub tracked struct HeapPerm
@@ -45,20 +45,17 @@ pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super:
 
 ## `slot_heap_ref`
 
-src/heap/thread.rs:146. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:147. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
-> The heap whose permission the slot token holds, at `h`, as a reference, for as long as the token is lent.
+> The heap whose permission the heap loan holds, at `h`, as a reference, for as long as the loan is lent.
 
 ```rust
-pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: &'a mut Heap)
+pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: &'a mut Heap)
     requires
-        old(tls).heap() matches Some(hp) && hp.addr() == h@.addr,
+        old(loan).heap() matches Some(hp) && hp.addr() == h@.addr,
     ensures
-        *r == old(tls).heap()->Some_0.value(),
-        final(tls).value() == old(tls).value(),
-        final(tls).creates() == old(tls).creates(),
-        final(tls).tp() == old(tls).tp(),
-        final(tls).heap() matches Some(hp) && hp.addr() == h@.addr && hp.value() == *final(r),
+        *r == old(loan).heap()->Some_0.value(),
+        final(loan).heap() matches Some(hp) && hp.addr() == h@.addr && hp.value() == *final(r),
     opens_invariants none
 ```
