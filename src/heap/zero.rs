@@ -19,7 +19,7 @@
 
 use super::CachePerms;
 #[cfg(verus_keep_ghost)]
-use super::{CacheHeader, Live, plain};
+use super::{CacheHeader, Live, PUSH_ZERO, Shared, plain};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
 use crate::vspec::zero::Zeroed;
@@ -441,6 +441,12 @@ pub(super) proof fn lemma_rebuild_entries(
         assert(crate::layout::process_regions().is_slot(c, claimed[n - 1 - i]@.addr));
         super::lemma_plain_stored(outf[i], claimed[n - 1 - i], c, base);
     }
+}
+
+/// `zero_on_free` is configured: [`Shared::zero_on_free`]'s result, the
+/// [`PUSH_ZERO`] bit of the push flags `init` wrote.
+pub open spec fn zero_on_free(s: &Shared) -> bool {
+    s.flags() & PUSH_ZERO != 0
 }
 
 /// Zero-on-free, for slots: a token `z` that the class-size bytes of
