@@ -24,6 +24,13 @@ cells=${1:?usage: ci/floor.sh CELLS}
 export CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE=${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 : "${FLOOR_SA:?the check names the floor service account}"
+# Where cb launch runs: the floor service account's project, its bench
+# bucket and its VMs' service account, named by convention (the runbook).
+project=${FLOOR_SA#*@}
+project=${project%%.*}
+export CB_PROJECT=${CB_PROJECT:-$project}
+export CB_BUCKET=${CB_BUCKET:-$project-challoc-bench}
+export CB_SERVICE_ACCOUNT=${CB_SERVICE_ACCOUNT:-cb-bench-vm@$project.iam.gserviceaccount.com}
 adc=$(mktemp)
 python3 - "$GOOGLE_APPLICATION_CREDENTIALS" "$FLOOR_SA" "$adc" <<'PY'
 import json, sys
