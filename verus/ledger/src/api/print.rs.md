@@ -8,8 +8,6 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `WriteCallback` | ext_type_spec | function pointer | Kani | trusted |
-| `Unlocked` | external_body type | C-program contract | none (assumption) | trusted |
-| `axiom_unlocked` | axiom | C-program contract | none (assumption) | trusted |
 | `emit` | external_body | FFI/syscall | none (assumption) | trusted |
 | `word` | external_body | core library | Kani | trusted |
 | `hist_line` | external_body | core library | Kani | discharged |
@@ -17,7 +15,7 @@ file.
 
 ## `WriteCallback`
 
-src/api/print.rs:63. Kind: ext_type_spec. Category: function pointer.
+src/api/print.rs:64. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Opaque: `WriteCallback` holds a function pointer type, which Verus rejects.
@@ -26,46 +24,25 @@ Tool: Kani. Status: trusted.
 pub struct ExWriteCallback(WriteCallback);
 ```
 
-## `Unlocked`
-
-src/api/print.rs:86. Kind: external_body type. Category: C-program contract.
-Tool: none (assumption). Status: trusted.
-
-> Ghost permit: the calling thread held no allocator lock when the report began.
-
-```rust
-pub(super) tracked struct Unlocked
-```
-
-## `axiom_unlocked`
-
-src/api/print.rs:97. Kind: axiom. Category: C-program contract.
-Tool: none (assumption). Status: trusted.
-
-> Trusted: the calling thread holds no allocator lock at this call.
-
-```rust
-axiom fn axiom_unlocked() -> (tracked u: Unlocked);
-```
-
 ## `emit`
 
-src/api/print.rs:112. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:89. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Hand `buf[..len]` to `target`: the report's only calls out of the allocator.
 
 ```rust
-fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(u): Tracked<&Unlocked>)
+fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(ord): Tracked<&LockOrder>)
     requires
         crate::sys::may_syscall(),
         len < 1024,
+        ord.top() == 0,
     no_unwind
 ```
 
 ## `word`
 
-src/api/print.rs:384. Kind: external_body. Category: core library.
+src/api/print.rs:401. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: api::print::kani_print::word_returns; not checked: the harness checks C strings up to 3 bytes; `core::str::from_utf8`'s word-at-a-time ASCII path (16 bytes and longer) is not reached).
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
@@ -76,7 +53,7 @@ fn word(s: &CStr) -> &str
 
 ## `hist_line`
 
-src/api/print.rs:864. Kind: external_body. Category: core library.
+src/api/print.rs:881. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
@@ -95,7 +72,7 @@ fn hist_line<W: Write>(
 
 ## `axiom_c_call`
 
-src/api/print.rs:1406. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1437. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).

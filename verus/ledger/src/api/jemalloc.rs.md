@@ -40,15 +40,16 @@ Tool: Kani. Status: trusted.
 > `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc calls it, on the C string in `buf`, which holds a NUL.
 
 ```rust
-fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(u): Tracked<&Unlocked>)
+fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
     requires
         crate::sys::may_syscall(),
+        ord.top() == 0,
         exists|i: int| 0 <= i < 512 && #[trigger] buf@[i] == 0,
 ```
 
 ## `axiom_c_call`
 
-src/api/jemalloc.rs:1166. Kind: axiom. Category: C-program contract.
+src/api/jemalloc.rs:1170. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
