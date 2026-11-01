@@ -5,24 +5,25 @@ syscalls, the TLS slot and the thread pointer, GOT loads of weak
 symbols, pointer authentication and the trap instruction.
 [Isla](https://github.com/rems-project/isla) symbolically executes
 machine code against a Sail ISA model (here the Armv8.5-A model
-translated from Arm's ASL) and prints, per instruction, every path as a
-trace of register and memory events with SMT definitions.
-`verus/isla/run.sh` finds every instance of each checked template in the
-compiled code, traces each distinct instruction, and checks each job (a
-composition of traces and the properties it must have) with
-`verus/isla/check.rs` and Z3.
+translated from Arm's ASL, and the x86-64 model translated from the ACL2
+x86isa model) and prints, per instruction, every path as a trace of
+register and memory events with SMT definitions. `verus/isla/run.sh`
+finds every instance of each checked template in the compiled code,
+traces each distinct instruction, and checks each job (a composition of
+traces and the properties it must have) with `verus/isla/check.rs` and
+Z3.
 
-[isla/seams.md](isla/seams.md) lists the 8 seams this checks (the
-aarch64 `raw::syscall0` to `syscall6` and `tls::get_tp`), the contract
-of each, what the runs establish against it and the residual
-assumptions; the other inline-assembly seams stay trusted. Their
-overrides lines under `verus/ledger/` give each tool Islaris/Isla and
-cite `Isla: verus/isla/seams.md`, and run.sh fails when the two
-disagree. None of the 8 is discharged: the runs end at the system
-call's exception, before the kernel's side of the call, and show which
-memory `get_tp` reads, not that the slot holds the cell's value, so
-each is `trusted (partly checked, Isla: verus/isla/seams.md; not
-checked: ...)` (verus/SEAMS.md, "Status").
+[isla/seams.md](isla/seams.md) lists the 15 seams this checks
+(`raw::syscall0` to `syscall6` on both architectures and
+`tls::get_tp`), the contract of each, what the runs establish against
+it and the residual assumptions; the other inline-assembly seams stay
+trusted. Their overrides lines under `verus/ledger/` give each tool
+Islaris/Isla and cite `Isla: verus/isla/seams.md`, and run.sh fails when
+the two disagree. None of the 15 is discharged: the runs end where the
+system call enters the kernel, before the kernel's side of the call,
+and show which memory `get_tp` reads, not that the slot holds the cell's
+value, so each is `trusted (partly checked, Isla: verus/isla/seams.md;
+not checked: ...)` (verus/SEAMS.md, "Status").
 
 The harness composes the per-instruction traces itself and proves
 the resulting conditions with Z3, which is weaker than an
@@ -35,18 +36,23 @@ conditions or fails the check, never passes one (The checker, below).
 ## Running
 
 ```sh
-make isla                                 # the aarch64 seams
-sh verus/isla/run.sh -a arm/libchalloc.a  # a prebuilt aarch64 library
+make isla                                 # both targets
+ISLA_TARGETS=aarch64 make isla            # one target
+sh verus/isla/run.sh -a arm/libchalloc.a  # a prebuilt aarch64 library, x86_64 built
 ```
 
 `make isla` runs `sh verus/isla/run.sh`, which needs the tools below on
-`PATH` and builds the release static library for aarch64 with `cargo
-rustc --target aarch64-unknown-linux-gnu`: natively on aarch64, on
-another host with the aarch64 standard library installed (rustup's
-`rust-std`), or from a library built elsewhere and passed with `-a`.
-Isla itself runs on either host. `ISLA_CARGO_FLAGS` passes cargo flags,
-such as `--no-default-features --features quantum8`. The header of
-`run.sh` lists its other variables.
+`PATH` and builds the release static library for each target with
+`cargo rustc --target <target>-unknown-linux-gnu`: natively on each
+architecture, or for the other one with its standard library installed
+(rustup's `rust-std`), or from a library built elsewhere and passed with
+`-a` (aarch64) or `-x` (x86_64). Isla itself runs on either host. For
+x86_64 it also fetches rems-project/sail-x86-from-acl2 at
+`0c6c023dccc7c20d8d9dbfc481f01d9bb49d62bf` and builds the x86 model
+(`verus/isla/x86/build-ir.sh`, about 15 seconds) unless `ISLA_X86_IR`
+names one. `ISLA_CARGO_FLAGS` passes cargo flags, such as
+`--no-default-features --features quantum8`. The header of `run.sh`
+lists its other variables.
 
 ## Setup
 
@@ -56,6 +62,7 @@ The Chainguard packages carry the whole toolchain:
 |---|---|
 | `isla` | rems-project/isla e9b5d945: `isla-footprint`, the configurations in `/usr/share/isla/configs` |
 | `isla-snapshots` | isla-snapshots d8b31014: `armv8p5.ir` in `/usr/share/isla-snapshots` |
+| `sail`, `isla-sail` | Sail 0.20.3 and Isla's `isla-sail` plugin (`/usr/lib/isla-sail/plugin.cmxs`), for the x86 model |
 | `z3` | the solver `isla-check` calls |
 | `rust-1.98`, `build-base` | the library build and `isla-check` |
 | `llvm-21` | `llvm-objdump` and `llvm-ar` |
@@ -68,9 +75,45 @@ Things that cost time on the first install, and that run.sh handles:
   when only opcodes are given (run.sh points them at `true`).
 - `armv8p5.ir`'s footprints are the instruction alone with its PC update.
 
+### The x86_64 model
+
+No prebuilt x86 model exists for Isla: isla-snapshots carries Arm,
+RISC-V and Morello models, and Isla's `configs/` has no x86 file.
+rems-project/sail-x86-from-acl2 (the ACL2 x86isa model machine-translated
+to Sail) builds into one with Sail and the `isla-sail` plugin.
+`x86/build-ir.sh` follows the upstream `x86.ir` recipe (`model/Makefile`):
+the same model files in the same order, with the four
+`test-generation-patches/` spliced in (`bang_memi.sail`, `lahf.sail`,
+`logcount_alt.sail` and `slices.sail`, none of which defines `rb`,
+SYSCALL, a segment accessor or an MSR accessor), plus the entry below.
+
+The model's instruction fetch reads memory byte by byte through its own
+`rb`, where Isla's Arm models take the opcode as an argument. The entry
+(`verus/isla/x86/`) gives it one: `isla_rb.sail` is spliced over `rb`
+and serves fetches (`":X"`) from a 128-bit `isla_opcode` relative to the
+`rip` the step started at (a fetch outside it is a model error);
+`isla_entry.sail` defines `isla_footprint(opcode)`, which records the
+opcode and the fetch base, emits Isla's cycle marker (where
+`isla-footprint -s` starts the trace; without it every register event is
+hidden as initialisation), runs `x86_fetch_decode_execute` and turns any
+Sail exception (the model's `x86_fault`, `x86_model_error`) into a write
+of `isla_fault`; `isla_regs.sail` declares the three registers.
+`x86.toml` sets the model's mode flags: the system view (`app_view`
+false: segmentation, paging and the SDM's SYSCALL rather than the
+application view's emulated system calls), not halted or faulted;
+everything else is symbolic. `isla-footprint -x` takes at most 8 bytes,
+so run.sh passes the 16 bytes with `--partial`, most significant first.
+It runs with `--pessimistic`: a Sail assertion that can fail is an
+error, not a path condition.
+
+CI runs the x86_64 half only after landing, in the `isla-main` check,
+which gates nothing: the presubmit `isla` check runs the aarch64 half
+alone until the x86 model is packaged (#397), so a change that breaks
+the x86_64 check shows up after it merges, not before.
+
 ## The harness
 
-`verus/isla/run.sh` takes the library (built or given), then:
+`verus/isla/run.sh` takes the libraries (built or given), then:
 
 1. checks each seam in `isla/seams.md` against the ledger: the
    overrides lines citing `Isla: verus/isla/seams.md` name exactly its
@@ -108,7 +151,19 @@ Then, in `run-aarch64.sh`:
    `svc0.job` and `svc0-vhe.job`;
 5. requires every relocation against `challoc_tls` to sit in the TLS
    load or store shape, and checks one load job per register assignment;
-6. runs the negative controls (below).
+6. runs the aarch64 negative controls (below).
+
+And in `run-x86_64.sh`:
+
+7. disassembles the x86_64 library;
+8. requires every `syscall`, `sysenter` and `int` to be `syscall` (`0f
+   05`) and checks `x86/syscall.job` on the system-view model;
+9. requires every relocation against `challoc_tls` to sit in the TLS
+   load or store shape (a `R_X86_64_GOTTPOFF` `movq (%rip), %R`, then
+   `movq %fs:(%R), %R` or `movq %V, %fs:(%R)`), with no job; its three
+   negative controls change a copy of the disassembly: the first load
+   without `%fs:` or into `%rsp`, and the first store through `%rsp`;
+10. runs the `syscall` negative controls.
 
 Last, back in run.sh, each seam's `Jobs:` line in `isla/seams.md` must
 name at least one job (`ARCH/JOB`, the name run.sh records each
@@ -128,17 +183,19 @@ line), not by not running, and for the reason it was built to cause:
 `refute` takes the text that `FAIL` line must contain (`abstract call
 of Fault not expressible` for the `stop` call that is not the last
 event), so a control that a broken checker rejects for some other
-reason fails the run. On the real traces they break one fact per
-job: a wrong syndrome or EL; a memory read where there is none; an
-exception instruction claimed to fall through; a TLS load's GOT load one
-entry off or without its relocation's constraint or the slot's
-alignment; an `add` claimed to write nothing. On synthetic traces
-(`controls/`) they check the checker itself: a read after an
-inexpressible write, a write through a field accessor, a flags write
-under `flags-preserved`, a `fallthrough` continuing at PC + 8, a write
-before a `stop` call, a `stop` call that is not the last event, a user
-register written on a `fault` exception path, an exception path with no
-`assert-exc`, a PC write without `__BranchTaken` under `pc-step`.
+reason fails the run. On the real traces they break one fact per job: a
+wrong syndrome, return address or EL; a register write left out; a
+memory read where there is none; flags claimed preserved; an exception
+instruction claimed to fall through; a precondition of the model's
+SYSCALL dropped; a TLS load's GOT load one entry off or without its
+relocation's constraint or the slot's alignment; an `add` claimed to
+write nothing. On synthetic traces (`controls/`) they check the checker
+itself: a read after an inexpressible write, a write through a field
+accessor, a flags write under `flags-preserved`, a `fallthrough`
+continuing at PC + 8, a write before a `stop` call, a `stop` call that
+is not the last event, a user register written on a `fault` exception
+path, an exception path with no `assert-exc`, a PC write without
+`__BranchTaken` under `pc-step`.
 
 ## The checker
 
@@ -176,14 +233,16 @@ names.
 
 ## Not covered
 
-- **The linked code.** run.sh reads the static library before the final
-  link. The shipped `cdylib` is a separate fat-LTO run and may choose
+- **The linked code.** run.sh reads the static libraries before the
+  final link. The shipped `cdylib` is a separate fat-LTO run and may choose
   other registers, and a static link of `libchalloc.a` into an
   executable relaxes the TLS sequences to local-exec (aarch64
   `movz`/`movk`), which need their own jobs.
 - **Islaris** in place of `check.rs`: one Islaris specification per job
   on the same traces.
 - **The other inline-assembly seams** ([isla/seams.md](isla/seams.md)):
-  the x86_64 code, the TLS store, the GOT functions, `rseq`, the trap
-  and pointer authentication stay trusted, and the empty templates
-  (`/* {0} */` register hints) have no instruction to trace.
+  the TLS store, the GOT functions, `rseq`, the trap and pointer
+  authentication stay trusted on both architectures, as does `tls::get`,
+  whose x86_64 load has no job (run.sh only holds it to its shape); the
+  empty templates (`/* {0} */` register hints) have no instruction to
+  trace.

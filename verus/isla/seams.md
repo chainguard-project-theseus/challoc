@@ -29,10 +29,9 @@ what the runs establish against those contracts and what stays assumed
 and the checker.
 
 The other inline-assembly seams stay trusted, with status `trusted` and
-no check cited: the x86_64 system calls (`syscall0#1` to `syscall6#1`),
-`sys::trap`, `tls::get` and `tls::set`, the GOT functions of `api::cxx`
-and `config`, `rseq::symbols` and `rseq::thread_pointer`, and
-`sys::pac`'s `sign`, `auth`, `strip` and `axiom_auth_sign`. So do the
+no check cited: `sys::trap`, `tls::get` and `tls::set`, the GOT functions
+of `api::cxx` and `config`, `rseq::symbols` and `rseq::thread_pointer`,
+and `sys::pac`'s `sign`, `auth`, `strip` and `axiom_auth_sign`. So do the
 four register-pinning hints with an empty template (`/* {0} */`:
 `api::shared_base`, `class::table::word_index`,
 `layout::regions::entry_barrier`, `heap::shared::ClassLine::guard_word`),
@@ -47,7 +46,8 @@ sequences to local-exec; both are residuals of every seam below until
 run.sh reads them too ([ISLA.md](../ISLA.md), "Not covered").
 
 The aarch64 runs start at Non-secure EL0 in AArch64 state with the PC
-and the vector bases symbolic.
+and the vector bases symbolic. The x86_64 `syscall` run starts from a
+symbolic state in the model's system view.
 
 ## The TLS slot
 
@@ -73,6 +73,13 @@ thread pointer), user addresses below `2^48`, the slot's 8-byte
 alignment. Its overrides line names the three facts not checked: the
 GOT entry's offset, the slot's value and the cell's tp.
 
+On x86_64, `get_tp` has no asm (it pairs `tls::get` with 0), and no job
+traces the TLS accesses, so `tls::get` and `tls::set` stay trusted.
+run.sh still holds every relocation against `challoc_tls` in the x86_64
+code to one of two shapes: `movq (%rip), %R` with `R_X86_64_GOTTPOFF`,
+then `movq %fs:(%R), %R` (`tls::get`'s load) or `movq %V, %fs:(%R)`
+(`tls::set`'s store).
+
 ## `src/sys/tls.rs` `get_tp` (aarch64)
 
 Jobs: `aarch64/tls-load`
@@ -94,6 +101,25 @@ verified callers reach them; it puts no condition on the instruction.
 `syscall3`'s `returned3` is an uninterpreted predicate only it ensures,
 which the kernel-fact axioms in `sys` give meaning.
 
+x86_64: every `syscall`, `sysenter` and `int` in the code is `syscall`
+(`0f 05`). Traced on the x86 model from a symbolic state in 64-bit mode
+with SYSCALL enabled (`x86/syscall.job`): RCX = RIP + 2, R11 = RFLAGS,
+RIP = IA32_LSTAR, RFLAGS masked by IA32_FMASK, CS and SS from IA32_STAR
+with flat 64-bit code and data descriptors, no other register the model
+has and no memory written, no model fault. Residual: Linux's user-mode
+state (EFER.SCE, 64-bit mode, code below `2^47`, a canonical LSTAR,
+IA32_STAR[47:32] below `0x7ff8`, Linux: `0x10`); the
+model lacks x87, MXCSR, AVX-512 mask, PKRU and CET state. The trace ends
+at the kernel's entry point (LSTAR), so the kernel's side of the call is
+not checked: that `sysret` comes back to the next instruction with the
+result in rax and every user register but rcx and r11 as it was, and
+that the call has the effects the Linux x86_64 syscall ABI defines.
+Each `syscallN#1` is `trusted (partly checked, Isla: verus/isla/seams.md;
+not checked: the kernel's side of the call)`, as each `syscallN#2` below.
+The x86_64 check behind these statuses runs in CI only after landing
+(`isla-main`, which gates nothing), not in the presubmit; see
+`verus/ISLA.md`, "The x86_64 model".
+
 aarch64: every `svc`, `hvc` and `smc` in the code is `svc #0`. At EL0
 for a kernel at EL1 (`svc0.job`) and at EL2 under VHE (`svc0-vhe.job`)
 it takes the SVC exception with syndrome EC 0x15, IL set, imm16 0, the
@@ -106,8 +132,96 @@ it was, and that the call has the effects the Linux arm64 syscall ABI
 defines (none of `execve`, `clone` or `rt_sigreturn` among challoc's).
 Nothing in the runs relates `syscall3`'s `r` to the call, so
 `returned3` and the kernel-fact axioms built on it rest on the kernel
-alone. Each `syscallN#2` is therefore `trusted (partly checked, Isla:
-verus/isla/seams.md; not checked: the kernel's side of the call)`.
+alone, on both architectures. Each `syscallN#2` is therefore `trusted
+(partly checked, Isla: verus/isla/seams.md; not checked: the kernel's
+side of the call)`.
+
+## `src/sys/raw.rs` `syscall0#1` (x86_64)
+
+Jobs: `x86_64/syscall`
+
+```rust
+pub unsafe fn syscall0(nr: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `src/sys/raw.rs` `syscall1#1` (x86_64)
+
+Jobs: `x86_64/syscall`
+
+```rust
+pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `src/sys/raw.rs` `syscall2#1` (x86_64)
+
+Jobs: `x86_64/syscall`
+
+```rust
+pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `src/sys/raw.rs` `syscall3#1` (x86_64)
+
+Jobs: `x86_64/syscall`
+
+```rust
+pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
+    requires
+        crate::sys::may_syscall(),
+    ensures
+        super::returned3(nr, a0, a1, a2, r),
+```
+
+## `src/sys/raw.rs` `syscall4#1` (x86_64)
+
+Jobs: `x86_64/syscall`
+
+```rust
+pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `src/sys/raw.rs` `syscall5#1` (x86_64)
+
+Jobs: `x86_64/syscall`
+
+```rust
+pub unsafe fn syscall5(
+    nr: usize,
+    a0: usize,
+    a1: usize,
+    a2: usize,
+    a3: usize,
+    a4: usize,
+) -> usize
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `src/sys/raw.rs` `syscall6#1` (x86_64)
+
+Jobs: `x86_64/syscall`
+
+```rust
+pub unsafe fn syscall6(
+    nr: usize,
+    a0: usize,
+    a1: usize,
+    a2: usize,
+    a3: usize,
+    a4: usize,
+    a5: usize,
+) -> usize
+    requires
+        crate::sys::may_syscall(),
+```
 
 ## `src/sys/raw.rs` `syscall0#2` (aarch64)
 

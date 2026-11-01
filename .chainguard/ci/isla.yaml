@@ -1,18 +1,32 @@
 # Isla over the inline-assembly seams verus/isla/seams.md lists (make
-# isla, verus/ISLA.md), natively on arm64, at quantum 16 and at quantum 8,
-# since the quantum changes what the compiler inlines around each site.
+# isla, verus/ISLA.md), each architecture natively on its own runner, at
+# quantum 16 and at quantum 8, since the quantum changes what the
+# compiler inlines around each site.
 #
 # make isla: section 1 checks the asm templates against templates.txt and
-# that seams.md matches the ledger (verus/ledger/, seams.sh --check); then
-# the aarch64 half builds the release static library for the host (so no
-# cross standard library), traces `svc #0` and every TLS slot load
-# (tls::get_tp) on the Sail Armv8.5-A model, checks each job with
-# isla-check, and must see each negative control rejected.
+# that seams.md matches the ledger (verus/ledger/, seams.sh --check);
+# ISLA_TARGETS then picks the half, which builds the release static
+# library for the host (so no cross standard library). The aarch64 half,
+# on arm64, traces `svc #0` and every TLS slot load (tls::get_tp) on the
+# Sail Armv8.5-A model. The x86_64 half, on amd64, traces `syscall` on
+# the Sail x86 model. Each half checks its jobs with isla-check and must
+# see each negative control rejected.
 #
-# isla and isla-snapshots are pinned to the builds the jobs were checked
-# with (verus/ISLA.md, "Setup"). rust-1.98 is Dockerfile.dev's stream;
-# build-base is build.rs's C++ compiler and isla-check's linker; llvm-21
-# gives llvm-objdump and llvm-ar.
+# The presubmit `isla` runs the aarch64 half only. No package carries the
+# x86 model (isla-snapshots has only the Arm models), so without
+# ISLA_X86_IR the x86_64 half fetches rems-project/sail-x86-from-acl2 at
+# a pinned commit from github.com and builds the model with sail and
+# isla-sail (verus/isla/x86/build-ir.sh). So that the presubmit
+# depends on neither github.com nor a model build at run time, the amd64
+# legs run only in the postsubmit `isla-main`, and only `isla-main`
+# installs sail, isla-sail, git and ca-certificates-bundle and allows
+# github.com (on its amd64 legs). A package carrying the x86 model would
+# bring them back to the presubmit.
+#
+# isla, isla-snapshots, sail and isla-sail are pinned to the builds the
+# jobs were checked with (verus/ISLA.md, "Setup"). rust-1.98 is
+# Dockerfile.dev's stream; build-base is build.rs's C++ compiler and
+# isla-check's linker; llvm-21 gives llvm-objdump and llvm-ar.
 version: 1
 
 environment:
@@ -29,17 +43,17 @@ environment:
 checks:
   isla:
     description: >-
-      make isla on arm64, natively, at quantum 16 and at quantum 8: the asm
-      templates and the Isla seams against the ledger, then every Isla job
-      and negative control of the aarch64 half. Runs on pull requests that
-      change the system-call or TLS code, the Isla harness, its ledger
-      overrides or the build.
+      make isla on arm64 natively, at quantum 16 and at quantum 8: the asm
+      templates and the Isla seams against the ledger, then every aarch64
+      Isla job and negative control. Runs on pull requests that change the
+      system-call or TLS code, the Isla harness, its ledger overrides or
+      the build. The x86_64 half runs only in isla-main.
     trigger: [presubmit]
     # The files holding the checked asm! blocks (src/sys/raw.rs,
-    # src/sys/tls.rs), the build inputs, the harness, the ledger it reads
-    # and this file. A change elsewhere can still move a site's registers
-    # (a TLS load inlined into new code); isla-main below catches that
-    # after the landing.
+    # src/sys/tls.rs), the build inputs, the harness (verus/isla/x86/
+    # included), the ledger it reads and this file. A change elsewhere can
+    # still move a site's registers (a TLS load inlined into new code);
+    # isla-main below catches that after the landing.
     when:
       changed:
         - "src/sys/**"
@@ -52,25 +66,59 @@ checks:
         - "verus/isla/**"
         - "verus/ledger/src/**/*.overrides"
         - ".chainguard/ci/isla.yaml"
-    foreach: &isla-legs
-      - {name: arm64-q16, vars: {ISLA_TARGETS: aarch64}}
-      - {name: arm64-q8, vars: {ISLA_TARGETS: aarch64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}}
+    foreach:
+      - name: arm64-q16
+        vars: {ISLA_TARGETS: aarch64}
+      - name: arm64-q8
+        vars: {ISLA_TARGETS: aarch64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}
     resources: &isla-resources medium-arm64
     timeout: &isla-timeout 15m
     network: &crates
       egress: [index.crates.io, static.crates.io]
     cmd: &isla-cmd [make, isla]
 
-  # Both legs after each landing on main: a change outside the presubmit
-  # list can still change the compiled sites. It gates nothing; a failure
-  # points at the commit that moved a site out of the jobs' shapes.
+  # Every leg after each landing on main: a change outside the presubmit
+  # list can still change the compiled sites, and the amd64 legs run only
+  # here. It gates nothing; a failure points at the commit that moved a
+  # site out of the jobs' shapes.
   isla-main:
     description: >-
-      make isla on main, on arm64 natively, at quantum 16 and at quantum 8,
-      after each landing.
+      make isla on main, on each architecture natively, at quantum 16 and
+      at quantum 8, after each landing. The amd64 legs fetch
+      sail-x86-from-acl2 from github.com to build the x86 model.
     trigger: [postsubmit]
-    foreach: *isla-legs
+    environment:
+      packages:
+        - isla~0.1.0_git20260923
+        - isla-snapshots~0_git20260602
+        - sail~0.20.3
+        - isla-sail~0.20.3
+        - z3~4.16
+        - rust-1.98
+        - build-base
+        - llvm-21
+        - make
+        - git
+        - busybox
+        - ca-certificates-bundle   # git's https fetch of sail-x86-from-acl2
+    # A leg can only narrow the check's egress, so the check allows
+    # github.com and the arm64 legs drop it: only the amd64 legs fetch
+    # sail-x86-from-acl2.
+    foreach:
+      - name: arm64-q16
+        vars: {ISLA_TARGETS: aarch64}
+        network: *crates
+      - name: arm64-q8
+        vars: {ISLA_TARGETS: aarch64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}
+        network: *crates
+      - name: amd64-q16
+        resources: medium-amd64
+        vars: {ISLA_TARGETS: x86_64}
+      - name: amd64-q8
+        resources: medium-amd64
+        vars: {ISLA_TARGETS: x86_64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}
     resources: *isla-resources
     timeout: *isla-timeout
-    network: *crates
+    network:
+      egress: [index.crates.io, static.crates.io, github.com]
     cmd: *isla-cmd
