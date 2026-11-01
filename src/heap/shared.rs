@@ -38,6 +38,8 @@ use crate::sys::cgroup::{CellSeen, Cgroup, Deferred};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::atom::usize_id;
 use crate::vspec::atom::usize_ptr;
+use crate::vspec::cbuf::CCall;
+use crate::vspec::ctl::Change;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::once;
 use crate::vspec::once::{Once, Step};
@@ -3432,19 +3434,27 @@ impl Shared {
     /// off. Takes effect at the next periodic tick, or at once for a
     /// background thread (each arena setter wakes it).
     /// `arena.<i>.dirty_decay_ms` goes through `Arena::set_decay_ms` instead.
-    pub fn set_decay_ms(&self, ms: i64)
+    /// The caller's record `fx` gets the setting, read first if `cc`'s
+    /// read was made ([`Change::Set`]).
+    pub fn set_decay_ms(&self, ms: i64, Tracked(cc): Tracked<&CCall>, Tracked(fx): Tracked<&mut Ghost<Change>>)
         requires
             crate::sys::may_syscall(),
+        ensures
+            final(fx)@ == (Change::Set { read_first: cc.written() }),
     {
+        proof {
+            *fx = Ghost(Change::Set { read_first: cc.written() });
+        }
         // The arenas `Arenas::iter` walks: every built index below the
         // count, in order.
         let n = self.arenas.count() as usize;
         for i in 0..n
             invariant
                 crate::sys::may_syscall(),
+                fx@ == (Change::Set { read_first: cc.written() }),
         {
             if let Some(a) = self.arenas.get_existing(i as u16) {
-                a.set_decay_ms(ms);
+                a.set_decay_ms(ms, Tracked(cc), Tracked(&mut *fx));
             }
         }
     }
