@@ -2,9 +2,12 @@
 axiom_tcaches_lock_inv	allocator invariant	none (assumption)
 # An array fill Verus cannot state; nothing is claimed of its entries.
 EMPTY_TABLE	core library	Kani
-# A raw-pointer dereference: a live heap from creation, one reference at a
-# time, is well formed and has its home headers at `p`. Nothing enforces
-# the one-reference rule: two calls (or two `Tcaches::get(id)`) hand
-# verified code two copies of the heap's permissions, from which Verus
-# could derive false (#138, G3).
+# The C caller uses an explicit cache on one thread at a time, and a
+# heap's key destructor runs once: each call that reaches an existing
+# heap through `heap_at` makes one token, before any reference it lends.
+axiom_heap_use	C-program contract	none (assumption)
+# A raw-pointer dereference: a live heap from creation is well formed and
+# has its home headers at `p`. The reference borrows the caller's
+# `HeapUse` token, so one token gives one reference at a time; two
+# tokens rest on `axiom_heap_use`'s premise.
 heap_at	allocator invariant	none (assumption)

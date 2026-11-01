@@ -4525,12 +4525,12 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
-        let th = s.tcaches.get(t as u16).unwrap();
+        let th = s.tcaches.get(t as u16, Tracked::assume_new()).unwrap();
         assert!(th.cache_in(th.arena(), c).unwrap().len() >= 1);
         assert_eq!(set("tcache.flush", t), 0);
         assert_eq!(th.cache_in(th.arena(), c).unwrap().len(), 0);
         assert_eq!(set("tcache.destroy", t), 0);
-        assert!(s.tcaches.get(t as u16).is_none());
+        assert!(s.tcaches.get(t as u16, Tracked::assume_new()).is_none());
         assert_eq!(set("tcache.destroy", t), EFAULT);
         assert_eq!(set("tcache.flush", t), EFAULT);
     }

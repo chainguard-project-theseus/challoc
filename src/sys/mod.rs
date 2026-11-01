@@ -1525,7 +1525,7 @@ mod pure_tests {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::process::Command;
     use std::{env, format, vec::Vec};
@@ -1577,7 +1577,7 @@ mod tests {
     /// Every call of `grant` under `src/`, as the `fn` item line it belongs
     /// to (the nearest one above it) and its place, skipping comments and
     /// the grant's own definition.
-    fn grant_sites(grant: &str) -> Vec<(std::string::String, std::string::String)> {
+    pub(crate) fn grant_sites(grant: &str) -> Vec<(std::string::String, std::string::String)> {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();
         walk(&src, &mut files);
