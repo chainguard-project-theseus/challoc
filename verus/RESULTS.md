@@ -66,7 +66,7 @@ All 5 proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_syscall`, `ker
 | Theorem | Statement | File | Assumes |
 | --- | --- | --- | --- |
 | `theorem_region_separation` | An allocated block lies wholly in a class region or the huge region, outside the metadata region. | [heap/mod.rs](../src/heap/mod.rs) | Region layout and a valid block. |
-| `theorem_metadata_integrity` | A returned non-null block shares no byte with the covered metadata ranges or the process’s `Shared` static. | [heap/mod.rs](../src/heap/mod.rs) | Published `Shared::wf`, 3 kernel `mmap` reservations, Meta lock axioms, and trusted descriptor-table storage and bitmap constructors; see its exclusions in [Known limits and open work](#known-limits-and-open-work). |
+| `theorem_metadata_integrity` | A returned non-null block shares no byte with the covered metadata ranges or the process’s `Shared` static. | [heap/mod.rs](../src/heap/mod.rs) | Published `Shared::wf`, 3 kernel `mmap` reservations, Meta lock axioms, the zero-entry axiom and `ZeroRaw::axiom_new` for descriptor-table storage, and trusted bitmap constructors; see its exclusions in [Known limits and open work](#known-limits-and-open-work). |
 | `theorem_guard_pages` | No allocated block lies in a guard slab. | [heap/mod.rs](../src/heap/mod.rs) | A valid block and the class-region layout. |
 | `theorem_guard_free` | No valid free target lies in a guard slab. | [heap/mod.rs](../src/heap/mod.rs) | A valid free target and the class-region layout. |
 | `theorem_free_target_aligned` | Every valid free target is quantum-aligned. | [heap/mod.rs](../src/heap/mod.rs) | A valid free target. |

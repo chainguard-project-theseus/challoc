@@ -320,8 +320,9 @@ pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
 /// `Meta`'s lock axioms (`vspec::meta::axiom_meta_lock_inv`,
 /// `axiom_meta_lock_frame`) and the `Unbacked` token for the metadata
 /// region (`Reserved::into_unbacked`, handed to `Meta::owning`);
-/// `vspec::ptr::axiom_ptr_add_addr`; the descriptor table's trusted
-/// storage (`huge::table::Table::storage`); the trusted constructors
+/// `vspec::ptr::axiom_ptr_add_addr`; the descriptor table's empty entries
+/// (`huge::table::axiom_zero_entry`, on bytes `ZeroRaw::axiom_new`
+/// pairs with their zero token); the trusted constructors
 /// `TwoLevelBitmap::from_raw` and `from_raw_chunked` (`place`).
 ///
 /// Not covered: descriptors and owner words are written

@@ -13,7 +13,7 @@ file.
 
 ## `ZeroRaw::axiom_new`
 
-src/vspec/zero.rs:143. Kind: external_body proof. Category: allocator invariant.
+src/vspec/zero.rs:149. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The bytes of `raw`, which `z` reads as zero.
@@ -29,7 +29,7 @@ pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked 
 
 ## `axiom_zero_word`
 
-src/vspec/zero.rs:196. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/zero.rs:202. Kind: external_body proof. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: kani_proofs::zero::zero_word_reads_zero).
 
 > The eight bytes of `z`, which read as zero, as the `u64` at `p` holding 0: `PointsToRaw::into_typed`, initialised with the value the bytes hold.
@@ -49,12 +49,12 @@ pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: Poi
 
 ## `zero_raw`
 
-src/vspec/zero.rs:448. Kind: external_body. Category: raw pointer (internal).
+src/vspec/zero.rs:454. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::zero_raw_fills).
 
 > `write_bytes(p, 0, n)` through `raw`, the permission to the `n` bytes at `p`, taken `&mut` so that no other view of them (a `PointsTo` held from the same bytes, a [`ZeroRaw`] or a `UserMem` lending them) is held across the fill; the token for what it wrote.
 
-Body mints Tracked at line 460.
+Body mints Tracked at line 466.
 
 ```rust
 pub unsafe fn zero_raw(p: *mut u8, n: usize, Tracked(raw): Tracked<&mut PointsToRaw>) -> (z: Tracked<Zeroed>)

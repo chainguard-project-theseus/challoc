@@ -88,7 +88,7 @@ impl Zeroed {
 /// and `from_raw_chunked`, through [`axiom_zero_word`]). Like a
 /// `PointsToRaw` it splits by byte set ([`ZeroRaw::split`]); it is linear,
 /// so a `ZeroRaw` makes each word's zero permission once. Its one source
-/// is [`ZeroRaw::axiom_new`], in `meta::Meta::reserve_table`; the
+/// is [`ZeroRaw::axiom_new`], whose doc lists its callers; the
 /// unverified callers of the bitmap constructors still take theirs on
 /// trust (`Tracked::assume_new()` outside `verus!`).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
@@ -139,6 +139,12 @@ impl ZeroRaw {
     /// same for the tables it commits at once, where the only step between
     /// the carve and the pairing is the commit itself (`Inner::flush` or
     /// `Inner::commit`), which writes none of the bytes.
+    /// `huge::table::Table::storage` pairs the permission and the token
+    /// `meta::Meta::alloc_zeroed` returns for one object, which by that
+    /// function's body were not written since the token was made: a reused
+    /// object's token comes from the `zero_raw` that cleared it, and a
+    /// fresh one's from the commit of memory above the bump pointer, which
+    /// nothing has written; `storage` writes nothing before the pairing.
     #[verifier::external_body]
     pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
         requires

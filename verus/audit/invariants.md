@@ -525,7 +525,7 @@ The `S<n>` above are the numbers of `8635213`'s `verus/SEAMS.md`. Main's ledger 
 | S155 | `heap/shared.rs` `Shared::begin` | `heap/shared.rs:1537` `Shared::begin` | trusted |
 | S156 | `heap/shared.rs` `init_tcaches` | not a seam on main (no such item in `heap/shared.rs`) | |
 | S161 | `huge/mod.rs` `axiom_run_locs` | `huge/mod.rs:1074` `axiom_run_locs` | trusted |
-| S164 | `huge/table.rs` `axiom_zero_entry` | not a seam on main (no such item in `huge/table.rs`) | |
+| S164 | `huge/table.rs:378` `axiom_zero_entry` | discharged (Kani: huge::table::kani_table::zero_entry_is_empty) | |
 | S168 | `layout/regions.rs` `axiom_process_page_at_most_64k` | not a seam on main (no such item in `layout/regions.rs`) | |
 | S170 | `layout/regions.rs` `Reserved::is_apart_from_static` | `layout/regions.rs:1945` `Reserved::is_apart_from_static` | trusted |
 | S171 | `layout/regions.rs` `Reserved::is_disjoint` | `layout/regions.rs:1962` `Reserved::is_disjoint` | trusted |

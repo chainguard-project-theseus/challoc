@@ -1,3 +1,3 @@
-# Temporary seam until a trusted fact that 16 zero bytes are an empty
-# `Entry` lets Verus build the entries' permissions from the block's.
-Table::storage	allocator invariant	Verus
+# A gap in vstd's memory model (raw permissions carry no byte values); the
+# harness reads 16 zero bytes as an Entry, as zero.rs's axiom_zero_word.
+axiom_zero_entry	raw pointer (internal)	Kani	discharged (Kani: huge::table::kani_table::zero_entry_is_empty)
