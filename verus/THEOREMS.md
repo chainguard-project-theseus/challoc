@@ -40,7 +40,10 @@ in a secure-execution process (`AT_SECURE` set) no call of `env_var`
 returns, so `config::load` reads neither `MALLOC_CONF` nor
 `CHALLOC_CONF`; that `env_var` is the only reader of the environment is
 a source test (`environment_has_one_reader`, `config.rs:3162`), not
-Verus (`verus/RESULTS.md`). Theorem 45 is not on main yet (in review as draft PR
+Verus (`verus/RESULTS.md`). Main also proves
+`heap::thread::theorem_exit_no_rebuild` (`heap/thread.rs:509`), which
+#138 lacks: its section, "Thread exit never reuses a destroyed heap",
+comes after theorem 46 and is not numbered. Theorem 45 is not on main yet (in review as draft PR
 wolfi-dev/challoc#423; tracked in wolfi-dev/challoc#397); its section
 describes #138 and claims nothing about main. Verification-only functions are
 `cfg(verus_keep_ghost)` on main (`cfg(verus_only)` in #138). As
@@ -9394,6 +9397,141 @@ where `may_read_user` appears in an `ensures` (wolfi-dev/challoc#397).
 private write bound `lemma_valid` became `lemma_raw_range`, and
 `lemma_valid_reads` takes its bound from `axiom_raw_readable` instead of
 `axiom_raw_valid`.
+
+## Thread exit never reuses a destroyed heap (main only; rests on the slot premise)
+
+Not numbered: #138 does not have it. The `file:line`s point into main
+at this section's commit. A thread's heap is freed by its thread-exit
+key destructor (`heap_destructor`); this states that the thread's TLS
+slot never names it again and that the thread never builds a second
+cache, the shape of glibc BZ 22111 and BZ 28028 (thread exit rebuilt
+the tcache after shutdown and leaked it).
+
+**Statement.** Every write of a thread's TLS slot is a step its phases
+allow (`slot_step`): `TLS_EXITED` is final, a new heap value is written
+only over `TLS_CREATING`, and the slot is emptied only from null or
+`TLS_CREATING`. In `heap_destructor` the token holds `TLS_EXITED`, with
+the heap's permission out of it, just before `Heap::destroy` (an
+assertion; that `destroy` comes after the store is read off the code,
+since it takes no part of the token). At a token whose slot holds
+`TLS_EXITED`, the fast paths' reader (`existing_heap_in`) and the slow
+paths' reader (`heap_for_thread_in`, which creates heaps) both return `None` and
+leave the token as it was: no heap handed out, no slot write, no
+`Heap::create` call; and every value `set` may store over it is
+`TLS_EXITED` again. Verus checks each write and each reader; that every
+later entry on the thread sees `TLS_EXITED` is the slot premise below.
+
+```rust
+// heap/thread.rs:57, :70, :93, :100
+pub ghost enum SlotPhase { Empty, Creating, Live, Exited }
+pub open spec fn slot_phase(v: usize) -> SlotPhase   // 0, TLS_CREATING (1), TLS_EXITED (2), above them
+pub open spec fn slot_step(old: usize, new: usize) -> bool {
+    &&& (slot_phase(old) is Exited) ==> (slot_phase(new) is Exited)
+    &&& (slot_phase(new) is Live) && new != old ==> (slot_phase(old) is Creating)
+    &&& (slot_phase(new) is Empty) ==> (slot_phase(old) is Empty) || (slot_phase(old) is Creating)
+}
+pub proof fn lemma_exited_final(old: usize, new: usize)
+    requires old == TLS_EXITED, slot_step(old, new),
+    ensures new == TLS_EXITED,
+
+// sys/tls.rs:424 (trusted asm; the requires binds its verified callers)
+pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
+    requires crate::heap::slot_step(old(slot).value(), value as usize),
+    ensures final(slot).set_to(*old(slot), value as usize),
+
+// heap/thread.rs:256, in heap_destructor after the store, before Heap::destroy
+assert(tls.value() == TLS_EXITED && tls.loan.heap() is None && slot_ok(tls.cell, tls.loan));
+
+// heap/thread.rs:509 (verification only, cfg(verus_keep_ghost))
+fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tracked<&mut TlsSlot>)
+    requires may_abort(), may_syscall(), shared.wf(), sp == Shared::storage() as *const Shared,
+        slot_ok(old(tls).cell, old(tls).loan), old(tls).value() == TLS_EXITED,
+    ensures *final(tls) == *old(tls),
+        forall|v: usize| slot_step(old(tls).value(), v) ==> v == TLS_EXITED,
+{
+    assert forall|v: usize| slot_step(old(tls).value(), v) implies v == TLS_EXITED by {
+        lemma_exited_final(old(tls).value(), v);
+    }
+    let fast = existing_heap_in(sp, Tracked(&mut *tls));
+    assert(fast is None);
+    let slow = heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan));
+    assert(slow is None);
+}
+```
+
+**Covers.** Every verified slot write: `heap_destructor` (any phase to
+`Exited`), `create_heap_for_thread` (`heap/thread.rs:370`: empty to
+`Creating` after `Heap::create`; `Creating` to the heap value, or to
+null when the thread-exit key cannot take the heap), and the background
+thread's `create` (`purge/background.rs:507`: a heap value parked on
+`Creating` across `pthread_join` and `pthread_create`, then put back).
+The readers: `existing_heap` and `tls_heap_slot` (the `malloc`, `free`,
+`free_sized` and `challoc_free_usable` fast paths), `heap_for_thread`
+and the entries that call `heap_for_thread_in` with their own token
+(`heap::paths::alloc`, `alloc_declined`, `alloc_zeroed`,
+`heap::mallocx::alloc`). `tls_heap_slot` returns `None` at a sentinel
+by its own `ensures`. `ThreadKey::set`, the only path to
+`pthread_setspecific`, is called only by `create_heap_for_thread`, at
+`Creating`, so after exit the key is not registered again and the
+destructor does not run twice for one heap.
+
+**Proof.** Each writer proves `slot_step` from the value its cell holds:
+the creation writes only after reading null (its `slot != 0` guard),
+and the background `create` parks only a value above the sentinels and
+writes it back while the cell holds `TLS_CREATING`, which the trusted
+`pthread_join` and `spawn` keep (`TlsCell::kept`: a non-empty cell is
+unchanged). The theorem follows from the readers' `ensures`: at a
+`reentry_benign` value both return `None` with the token unchanged.
+
+**Premises.**
+- The slot premise (`TlsSlot::entry`, `sys/tls.rs:310`): each top-level
+  user's token holds the slot as the last verified writer left it.
+  Ghost state does not cross from one C call to the next, so the step
+  from "`heap_destructor` left `TLS_EXITED`" to "every later entry's
+  token holds `TLS_EXITED`" is this premise plus `lemma_exited_final`
+  at every write in between; Verus checks each write, not the sequence.
+- One token per user: two `TlsSlot::entry` calls in one verified
+  function would give two tokens, and a write through a stale one would
+  be checked against a value the slot no longer holds. The source test
+  `sys::tests::tls_entries_only_in_listed_users` (`sys/mod.rs:1719`)
+  checks that only the listed users call it, once each (twice in
+  `heap::mallocx::alloc` and in `theorem_no_syscall_on_fast_paths`, one
+  per `match` arm). Not checked: that a nested user (the allocator
+  re-entered from `pthread_setspecific`, `pthread_join` or
+  `pthread_create`) is lent the outer token, and that a user is done
+  with its token before another top-level user runs (the two frees'
+  slow paths).
+- The nested-entry specs, trusted: `pthread_setspecific`
+  (`heap/shared.rs:1048`) leaves a sentinel unchanged; `pthread_join`
+  and `spawn` (`purge/background.rs:483`, `:657`) keep a non-empty cell
+  (`TlsCell::kept`).
+- The slot accessors (`get`, `get_tp`, `set`): inline asm, partly
+  checked by Isla (`verus/isla/seams.md`); that only these sequences
+  touch the slot (no exported accessor; `shared_object_uses_initial_exec_tls`
+  checks the dynamic symbols). The tests write the slot with
+  `Tracked::assume_new()`, outside the proof.
+- That glibc runs the key destructor on the exiting thread, once per
+  registered value, and nothing allocator-related runs on that thread
+  after its static TLS is gone.
+
+**Not covered.** Explicit caches (`tcache.create`/`tcache.destroy`)
+are reached through `Tcaches`, not the slot; that a destroyed one is
+not used again is `tcaches::axiom_heap_use`'s premise. The
+destructor's flush and free of the heap itself are `Heap::destroy`'s
+contract.
+
+**Mutations** (each rejected by `cargo verus focus`; the exec ones also
+run on the base tree, where they verify):
+
+| id | change | rejected by |
+|---|---|---|
+| S1 | `slot_step` without "`Exited` is final" | `lemma_exited_final` postcondition |
+| X1 | `heap_destructor` stores `p` back after `Heap::destroy` | `set` precondition |
+| X2 | `create_heap_for_thread` without its `slot != 0` guard | `set` precondition (the `Creating` store), and its `ensures` |
+| X3 | the creation publishes the heap from the empty slot, skipping `Creating` | `set` precondition (3 stores), `ThreadKey::set` precondition |
+| X4 | the background `create` parks any non-null slot, `TLS_EXITED` included | `set` precondition |
+| X5 | the background `create` writes `saved` back even when it parked nothing | `set` precondition |
+| V1 | the theorem asserts `existing_heap_in` returns `Some` at `TLS_EXITED` | assertion |
 
 ## Interface contract
 
