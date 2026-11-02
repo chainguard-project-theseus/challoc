@@ -3490,8 +3490,8 @@ spec fn prefix_addrs(t: SlabTable, slab: int, n: int) -> VSet<int> {
 /// through `SlabDesc::init` on its permission (the trusted accessor and
 /// `table::axiom_zero_desc`), on every later write of an owned slab's
 /// state byte going through `ClassState::set_state_locked`, which never
-/// writes `Fresh` (it requires so; its unverified callers pass `Active`,
-/// `Empty` and `Purged`), and on `take` moving a slab to `Active` before it
+/// writes `Fresh` (its `requires` says so, and its verified callers pass
+/// `Active`, `Empty` and `Purged`), and on `take` moving a slab to `Active` before it
 /// claims a slot. Call site: `ClassState::take`.
 axiom fn axiom_fresh_slots_zero(
     tracked ticket: StateTicket,
