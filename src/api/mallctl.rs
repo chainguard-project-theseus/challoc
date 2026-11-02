@@ -2885,6 +2885,13 @@ fn ctl(
             // The old state, before the write changes it.
             io.read(purge::background::present(), Tracked(cc))?;
             if let Some(on) = on {
+                // Inside the fork window (an atfork handler registered
+                // before challoc's) the thread neither starts nor stops,
+                // and the request is not recorded: the fork handlers'
+                // bookkeeping of it assumes nothing changes there.
+                if crate::lock::in_fork_window() {
+                    return Err(EAGAIN);
+                }
                 purge::background::request(on, Tracked(&*cc), Tracked(&mut *fx), Tracked(&mut ord));
                 // The slot token: `start` parks the slot through its cell
                 // while it creates the thread. No heap is borrowed here.

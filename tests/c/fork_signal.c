@@ -9,7 +9,9 @@
  * re-enter the prepare handler and wait forever on the first class lock.
  *
  * To land inside the window on purpose, this program registers its own
- * atfork handlers before challoc initialises (registration order decides
+ * atfork handlers before challoc initialises, from an ELF `.preinit_array`
+ * entry, which runs before every shared object's constructor (challoc's
+ * registers its handlers, design 9; registration order decides
  * the order handlers run: prepare in reverse, parent and child in order), so
  * its prepare handler runs after challoc's prepare and its parent and child
  * handlers run before challoc's release. Each of them raises SIGALRM. With
@@ -85,18 +87,29 @@ static void on_watchdog(int signum)
     _exit(2);
 }
 
+static volatile int registered;
+
+/* Before any constructor (challoc's registers its handlers), nothing has allocated, so challoc has not initialised and
+ * our handlers are registered ahead of its (the SIGALRM handler's
+ * `ran_inside` check below verifies that). glibc keeps the first 48
+ * handlers in a static buffer, so pthread_atfork itself does not
+ * allocate. */
+static void register_early(int argc, char **argv, char **envp)
+{
+    (void)argc;
+    (void)argv;
+    (void)envp;
+    registered = pthread_atfork(on_prepare, on_parent, on_child) == 0;
+}
+__attribute__((section(".preinit_array"), used)) static void (*const preinit_entry)(int, char **, char **) = register_early;
+
 int main(void)
 {
     if (!challoc_version) {
         fprintf(stderr, "not running under challoc\n");
         return 1;
     }
-    /* Nothing has allocated yet, so challoc has not initialised and our
-     * handlers are registered ahead of its (the SIGALRM handler's
-     * `ran_inside` check below verifies that). glibc keeps the first 48
-     * handlers in a static buffer, so pthread_atfork itself does not
-     * allocate. */
-    REQUIRE(pthread_atfork(on_prepare, on_parent, on_child) == 0, "pthread_atfork");
+    REQUIRE(registered, "the .preinit_array registration did not run");
     require_challoc();
 
     struct sigaction sa = {.sa_handler = on_alarm};

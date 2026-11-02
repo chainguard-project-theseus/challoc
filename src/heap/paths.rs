@@ -625,7 +625,9 @@ impl Heap {
         self.tick::<true>(shared, Tracked(&mut ord), Tracked(&mut *errno), Tracked(Some(&mut *cell)));
         let Some((a, w)) = shared.arena(arena, Tracked(&mut ord)) else {
             if arena != self.arena {
-                // An index `MALLOCX_ARENA` named that does not exist.
+                // An index `MALLOCX_ARENA` named that does not exist, or
+                // an automatic arena not built yet named in the fork
+                // window, where no arena is built (design 9).
                 return (ptr::null_mut(), false);
             }
             // The home arena could not be built (the metadata region is
