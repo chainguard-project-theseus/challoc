@@ -56,10 +56,12 @@
 /// each export the syscall and abort capabilities of a C entry point. A
 /// pair that returns a value names its result (`-> (r: T)`), and a pair
 /// may give both exports the same `ensures [..]` clauses, which state the
-/// Rust entry point's postcondition at the C boundary.
+/// Rust entry point's postcondition at the C boundary. The body is taken
+/// as tokens rather than a Rust block, so that it may hold Verus syntax
+/// (`proof { .. }`).
 #[cfg(not(test))]
 macro_rules! verified_export_pair {
-    ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> ($r:ident: $ret:ty))? $(ensures [$($ens:tt)*])? $body:block)*) => {
+    ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> ($r:ident: $ret:ty))? $(ensures [$($ens:tt)*])? { $($body:tt)* })*) => {
         ::vstd::prelude::verus! {
         $(
             $(#[$m])*
@@ -71,7 +73,7 @@ macro_rules! verified_export_pair {
                     crate::sys::grant_syscalls();
                     crate::sys::grant_aborts();
                 }
-                $body
+                $($body)*
             }
             $(#[$m])*
             #[unsafe(no_mangle)]
@@ -82,7 +84,7 @@ macro_rules! verified_export_pair {
                     crate::sys::grant_syscalls();
                     crate::sys::grant_aborts();
                 }
-                $body
+                $($body)*
             }
         )*
         } // verus!
@@ -3821,6 +3823,260 @@ mod tests {
         );
 
         unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
+    }
+
+    /// The C export modules the export-boundary checks below cover.
+    const EXPORT_FILES: [&str; 3] = ["api/libc.rs", "api/cxx.rs", "api/jemalloc.rs"];
+
+    /// Whether `t` (a trimmed line) is the first line of a C export: an
+    /// `extern "C"` function item, or one `fn name / je_name(..)` entry of
+    /// `verified_export_pair!`, whose one body serves both names.
+    fn export_head(t: &str) -> bool {
+        let pair = t.starts_with("fn ") && t.split('(').next().is_some_and(|h| h.contains(" / "));
+        !t.starts_with("//") && (pair || (t.contains("extern \"C") && t.contains(" fn ")))
+    }
+
+    /// The exports in `text` (a source file's `mod exports`), as each
+    /// one's first line and its body's statements: trimmed, with comments
+    /// and blank lines dropped, a call spread over several lines joined
+    /// into one, and the body's closing brace left out.
+    fn export_bodies(text: &str) -> Vec<(String, Vec<String>)> {
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let t = lines[i];
+            if !export_head(t) {
+                i += 1;
+                continue;
+            }
+            let head = String::from(t);
+            // The body opens at the end of the first line, the head's own
+            // included, that ends in ` {` (`{` alone, or `] {` after the
+            // pair's `ensures [..]`).
+            while lines[i] != "{" && !lines[i].ends_with(" {") {
+                i += 1;
+            }
+            i += 1;
+            let mut depth = 1i32;
+            let mut body: Vec<String> = Vec::new();
+            let mut open_call: Option<String> = None;
+            while depth > 0 {
+                let l = lines[i];
+                i += 1;
+                depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
+                if depth == 0 || l.is_empty() || l.starts_with("//") {
+                    continue;
+                }
+                let joined = match open_call.take() {
+                    Some(prev) => prev + l,
+                    None => String::from(l),
+                };
+                if joined.matches('(').count() > joined.matches(')').count() {
+                    open_call = Some(joined);
+                } else {
+                    body.push(joined);
+                }
+            }
+            out.push((head, body));
+        }
+        out
+    }
+
+    /// The lending of an export's `errno` token, spelled in parts so that
+    /// this module's own lines are not lend sites.
+    fn lend_line() -> String {
+        std::format!(
+            "let Tracked(mut errno) = crate::vspec::errno::{}();",
+            "lend"
+        )
+    }
+
+    /// The `failed` conditions an export may pass to
+    /// `axiom_errno_at_return` (`vspec::errno`'s doc), one per kind of
+    /// export: a null result, except a `realloc` (or `reallocarray`) of a
+    /// block to size 0, and `posix_memalign`'s `ENOMEM`.
+    const FAILED: [&str; 4] = [
+        "r@.addr == 0",
+        "r@.addr == 0 && !(p@.addr != 0 && size == 0)",
+        "r@.addr == 0 && !(p@.addr != 0 && n * m == 0)",
+        "r == ENOMEM",
+    ];
+
+    /// The [`FAILED`] condition of the export whose head is `head`: the
+    /// `posix_memalign` pair's, `reallocarray`'s, the `realloc` forms'
+    /// (the pair and `challoc_realloc_usable`), or a null result.
+    fn failed_for(head: &str) -> &'static str {
+        if head.contains("fn posix_memalign") {
+            FAILED[3]
+        } else if head.contains("fn reallocarray") {
+            FAILED[2]
+        } else if head.contains("realloc") {
+            FAILED[1]
+        } else {
+            FAILED[0]
+        }
+    }
+
+    /// The statement that hands a token back, with condition `failed`.
+    fn axiom_line(axiom: &str, failed: &str) -> String {
+        std::format!("crate::vspec::errno::{axiom}(errno, {failed});")
+    }
+
+    /// Checks one export's body against the one shape an export may have,
+    /// and returns whether it hands its `errno` token back
+    /// (`axiom_errno_at_return`, named in `axiom`). The body sets up its
+    /// call (the root grants, the token it lends, the C caller's
+    /// out-pointer tokens), then calls its Rust entry point once, through
+    /// `super::`, and returns what the call returned: as the body's tail,
+    /// or bound to `r`, followed by the axiom on its token, then `r`.
+    fn check_export_body(at: &str, body: &[String], axiom: &str) -> bool {
+        // The root grants spelled in parts, so that these lines are not
+        // grant sites (`sys::tests::grant_sites`).
+        let grant = |g: &str| std::format!("crate::sys::grant_{g}();");
+        let setup = [
+            String::from("proof {"),
+            grant("syscalls"),
+            grant("aborts"),
+            String::from("}"),
+            lend_line(),
+            String::from("let oout = memptr_out(out as *mut *mut u8);"),
+            String::from("let tracked uout = axiom_c_out(usable, true);"),
+            String::from("let tracked mut left = Ghost(crate::purge::Left::none());"),
+        ];
+        let call = body
+            .iter()
+            .position(|s| s.starts_with("super::") || s.starts_with("let r = super::"))
+            .unwrap_or_else(|| panic!("{at}: no `super::` call that is the result or binds `r`"));
+        for s in &body[..call] {
+            assert!(setup.contains(s), "{at}: `{s}` before the call");
+        }
+        let lends = body[..call].iter().filter(|s| **s == lend_line()).count();
+        assert!(
+            lends <= 1,
+            "{at}: got = {lends} lent tokens, want = at most 1"
+        );
+        let rest: Vec<&str> = body[call + 1..].iter().map(String::as_str).collect();
+        let s = &body[call];
+        if s.starts_with("let r = ") {
+            // One statement: the only `;` ends it.
+            assert_eq!(s.find(';'), Some(s.len() - 1), "{at}: `{s}`");
+            let back = axiom_line(axiom, failed_for(at));
+            assert_eq!(
+                rest,
+                ["proof {", back.as_str(), "}", "r"],
+                "{at}: after `{s}`: got = {rest:?}, want = the axiom on the token with this export's `failed` condition, then `r`"
+            );
+            assert_eq!(lends, 1, "{at}: hands back a token it did not lend");
+            true
+        } else {
+            assert!(!s.contains(';'), "{at}: the call `{s}` is not the result");
+            assert!(
+                rest.is_empty(),
+                "{at}: got = {rest:?} after the call, want = nothing"
+            );
+            false
+        }
+    }
+
+    /// Every C export of `api::libc`, `api::cxx` and `api::jemalloc`
+    /// returns its Rust entry point's result unchanged
+    /// (`check_export_body`), so a nullable export cannot drop a block and
+    /// return null even where its `ensures` cannot tell the two apart (the
+    /// entry point states nothing about `errno`: `operator new`'s
+    /// `nothrow_t` forms, `mallocx`, `rallocx`), and cannot write or read
+    /// its `errno` token around the call. And the `errno` premises of
+    /// `vspec::errno::axiom_errno_at_return` hold: the axiom is named only
+    /// in those exports' bodies, right after the call, on the token the
+    /// body lent, with that export's `failed` condition from [`FAILED`];
+    /// tokens are lent only by exports, one each; and no code names an
+    /// `exports` module, so nothing verified calls an export.
+    #[test]
+    fn exports_return_their_callees_result() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let axiom = std::format!("{}{}", "axiom_errno_", "at_return");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut handed_back = 0;
+        for file in EXPORT_FILES {
+            let text = std::fs::read_to_string(src.join(file)).unwrap();
+            let start = text
+                .find("\nmod exports {")
+                .unwrap_or_else(|| panic!("{file}: no `mod exports`"));
+            let end = text[start..]
+                .find("\n#[cfg(test)]")
+                .map_or(text.len(), |e| start + e);
+            let region = &text[start..end];
+            let exports = export_bodies(region);
+            // Each `extern "C"` item carries one symbol attribute, so the
+            // parser found every export the module has.
+            let attrs = region
+                .lines()
+                .map(str::trim)
+                .filter(|t| {
+                    t.starts_with("#[unsafe(no_mangle)]") || t.starts_with("#[unsafe(export_name")
+                })
+                .count();
+            let items = exports
+                .iter()
+                .filter(|(h, _)| h.contains("extern \"C"))
+                .count();
+            assert_eq!(items, attrs, "{file}: extern \"C\" items parsed");
+            assert!(!exports.is_empty(), "{file}: no exports found");
+            for (head, body) in &exports {
+                let at = std::format!("{file}: `{head}`");
+                if check_export_body(&at, body, &axiom) {
+                    handed_back += 1;
+                }
+            }
+        }
+        // 13 bodies in `api::libc` (each pair's body counted once): the
+        // exports whose entry point states `errno`.
+        assert_eq!(handed_back, 13, "exports that hand their token back");
+        let sites: Vec<_> = crate::sys::tests::grant_sites(&axiom)
+            .into_iter()
+            .filter(|(_, at)| !at.contains("axiom fn "))
+            .collect();
+        for (sig, at) in &sites {
+            assert!(
+                EXPORT_FILES
+                    .iter()
+                    .any(|f| at.starts_with(&std::format!("{f}:")))
+                    && export_head(sig)
+                    && at.ends_with(&std::format!("`{}`", axiom_line(&axiom, failed_for(sig)))),
+                "{at}: the errno axiom in `{sig}`"
+            );
+        }
+        assert_eq!(sites.len(), handed_back, "errno axiom calls");
+        let lend = lend_line();
+        for (sig, at) in crate::sys::tests::grant_sites(&std::format!("{}{}", "errno::", "lend()"))
+        {
+            assert!(
+                export_head(&sig) && at.ends_with(&std::format!("`{lend}`")),
+                "{at}: an errno token lent in `{sig}`"
+            );
+        }
+        // No code names an `exports` module (a path through one, or a
+        // `use` of one), so no verified code calls an export and no proof
+        // sees two returns (`vspec::errno::c_errno`).
+        let mut files = Vec::new();
+        crate::sys::tests::walk(&src, &mut files);
+        let name = std::format!("{}{}", "expo", "rts");
+        let path = std::format!("{name}::");
+        for f in &files {
+            let text = std::fs::read_to_string(f).unwrap();
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                let names = t.contains(path.as_str())
+                    || ((t.starts_with("use ") || t.starts_with("pub use "))
+                        && t.contains(name.as_str()));
+                assert!(
+                    t.starts_with("//") || !names,
+                    "{}:{}: `{t}`",
+                    f.display(),
+                    i + 1
+                );
+            }
+        }
     }
 }
 

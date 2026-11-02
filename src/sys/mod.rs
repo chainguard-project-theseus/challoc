@@ -1533,7 +1533,7 @@ pub(crate) mod tests {
     const PAGE: usize = 4096;
 
     /// The `.rs` files under `dir`, in path order.
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    pub(crate) fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .map(|e| e.unwrap().path())
