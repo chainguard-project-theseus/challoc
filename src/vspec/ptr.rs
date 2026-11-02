@@ -28,10 +28,10 @@ pub open spec fn ptr_sub<T>(p: *mut T, count: usize) -> *mut T {
 /// with provenance `prov` and address `addr` is derived from (negative
 /// when there is none). Uninterpreted: verified code cannot learn it on
 /// its own. The trusted function that produced a pointer states a bound on
-/// it for the offsets its callers use, or [`axiom_raw_valid`] or
-/// [`axiom_raw_readable`] derives one from a permission to the bytes, and
-/// verified code carries that bound from there. Address and provenance
-/// survive pointer casts, so the bound does too.
+/// it for the offsets its callers use, or [`axiom_raw_readable`] derives
+/// one from a permission to the bytes, and verified code carries that
+/// bound from there. Address and provenance survive pointer casts, so the
+/// bound does too.
 pub uninterp spec fn alloc_len(prov: Provenance, addr: usize) -> int;
 
 /// The `len` bytes from `p` lie inside the allocation `p` is derived from
@@ -175,45 +175,28 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 ;
 
 /// A permission to the `len` bytes from `p`, of `p`'s provenance, makes
-/// them valid for writes through `p` and, when there are some, puts them
-/// inside the allocation `p` is derived from ([`in_alloc`]). The
-/// permission is taken `&mut`, so no other view of the same bytes (a
-/// shared borrow of it, or a `vspec::zero::ZeroRaw` or `vspec::user::UserMem`
-/// lending it) is held at the step; a shared view gives only
-/// [`axiom_raw_readable`]. Trusted: what a `PointsToRaw`
-/// stands for. The permissions verified code holds start as committed memory
-/// (`vspec::unbacked::Unbacked::commit`) or as a lazily committed table
-/// (`Unbacked::into_lazy`) and are split and joined from there, all inside
-/// one mapping (the metadata region, the only `Unbacked` token's source),
-/// or as a slot's or a huge run's usable bytes (`heap::live`'s
-/// `axiom_hand_out`: a slot of a committed slab, inside the one class
-/// superblock mapping, or pages `Huge::prepare` committed, inside the one
-/// huge-region mapping), or as a committed `Fresh` slab's slots
-/// (`class::axiom_fresh_slab_mem`, inside the class superblock mapping),
-/// so one permission's range never spans two allocations. A table's bytes
-/// are writable only once its owner has committed their page, the premise
-/// of `into_lazy`, which a caller of this axiom keeps too.
-#[verifier::external_body]
-pub proof fn axiom_raw_valid(tracked raw: &mut vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
-    requires
-        old(raw).contains_range(p@.addr as int, len),
-        old(raw).provenance() == p@.provenance,
-        0 <= len,
-    ensures
-        *final(raw) == *old(raw),
-        valid_writes(p, len),
-        len > 0 ==> in_alloc(p, len),
-{
-}
-
-/// [`axiom_raw_valid`] for a shared view of the permission: the `len`
-/// bytes from `p` are valid for reads through `p` and, when there are
-/// some, inside the allocation `p` is derived from ([`in_alloc`]). It
-/// gives no write validity, so a view that may be stale (a borrow of a
-/// `vspec::zero::ZeroRaw` or `vspec::user::UserMem` whose bytes another
-/// holder writes) cannot be used to write. Trusted: what a
-/// `PointsToRaw` stands for, as for [`axiom_raw_valid`], which states
-/// more.
+/// them valid for reads through `p` and, when there are some, puts them
+/// inside the allocation `p` is derived from ([`in_alloc`]). It gives no
+/// write validity, so a view of the permission that may be stale (a
+/// borrow of a `vspec::zero::ZeroRaw` or `vspec::user::UserMem` whose
+/// bytes another holder writes) cannot be used to write. Trusted: what a
+/// `PointsToRaw` stands for. The permissions verified code holds start as
+/// committed memory (`vspec::unbacked::Unbacked::commit`) or as a lazily
+/// committed table (`Unbacked::into_lazy`) and are split and joined from
+/// there, all inside one mapping (the metadata region, the only
+/// `Unbacked` token's source), or as a slot's or a huge run's usable
+/// bytes (`heap::live`'s `axiom_hand_out`: a slot of a committed slab,
+/// inside the one class superblock mapping, or pages `Huge::prepare`
+/// committed, inside the one huge-region mapping), or as a committed
+/// `Fresh` slab's slots (`class::axiom_fresh_slab_mem`, inside the class
+/// superblock mapping), so one permission's range never spans two
+/// allocations. Each of those mappings is read-write, so the holder of
+/// the permission itself, taken `&mut`, may also write the bytes (through
+/// a typed `PointsTo` split from it, `vspec::zero::zero_raw` or
+/// `vspec::user`'s `copy_raw`, which trust this); this axiom states only
+/// the read half. A table's bytes are valid only once its owner has
+/// committed their page, the premise of `into_lazy`, which a caller of
+/// this axiom keeps too.
 #[verifier::external_body]
 pub proof fn axiom_raw_readable(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
     requires
