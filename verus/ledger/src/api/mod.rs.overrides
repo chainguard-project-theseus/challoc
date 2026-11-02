@@ -7,7 +7,7 @@ axiom_ready	allocator invariant	none (assumption)
 axiom_state	allocator invariant	none (assumption)
 axiom_statics	allocator invariant	none (assumption)
 # Passes function pointers, which Verus does not support.
-atfork_handlers	function pointer	none (assumption)
+pthread_atfork_handlers	function pointer	none (assumption)
 # The fork handler handoff: glibc runs the parent and child handlers on the
 # thread whose prepare handler returned holding the locks and the mask.
 # The handlers call axiom_fork_resumed_state only when FORK_LOCKED (verified

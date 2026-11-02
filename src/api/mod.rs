@@ -161,11 +161,6 @@ pub const READY: u32 = 2;
 
 static STATE: AtomicU32 = AtomicU32::new(UNINIT);
 
-/// The fork handlers are registered (`atfork_handlers`): by the library's
-/// constructor, or at init when that did not run first.
-static ATFORK_REGISTERED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
 /// The library's constructor registers the fork handlers, without
 /// initialising the allocator: glibc runs prepare handlers in the reverse
 /// order of registration, so every handler registered later (by the
@@ -188,6 +183,10 @@ extern "C" fn register_early() {
 }
 
 verus! {
+
+/// The fork handlers are registered (`atfork_handlers`): by the library's
+/// constructor, or at init when that did not run first.
+exec static ATFORK_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// `fork_prepare` took the allocator's locks for the `fork` under way:
 /// false when challoc was not initialised then, so the parent and child
@@ -1506,10 +1505,8 @@ unsafe fn publish_features(features: Features, Tracked(feats): Tracked<&mut Poin
 
 /// `pthread_atfork` with the three fork handlers, once per process (the
 /// library's constructor or init, whichever comes first; a failure lets
-/// the next try again): 0, or the error number. Trusted: passes function
-/// pointers, which Verus does not support. Nothing is claimed of the
+/// the next try again): 0, or the error number. Nothing is claimed of the
 /// result.
-#[verifier::external_body]
 #[inline(never)]
 fn atfork_handlers() -> i32
     requires
@@ -1518,13 +1515,21 @@ fn atfork_handlers() -> i32
     if ATFORK_REGISTERED.swap(true, Ordering::AcqRel) {
         return 0;
     }
-    // SAFETY: the three handlers are plain `extern "C"` functions that only
-    // touch allocator locks.
-    let rc = unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
+    let rc = pthread_atfork_handlers();
     if rc != 0 {
         ATFORK_REGISTERED.store(false, Ordering::Release);
     }
     rc
+}
+
+/// The `pthread_atfork` call itself. Trusted: passes function pointers,
+/// which Verus does not support.
+#[verifier::external_body]
+#[inline(always)]
+fn pthread_atfork_handlers() -> i32 {
+    // SAFETY: the three handlers are plain `extern "C"` functions that only
+    // touch allocator locks.
+    unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) }
 }
 
 /// Record whether `fork_prepare` took the locks (`FORK_LOCKED`): a
