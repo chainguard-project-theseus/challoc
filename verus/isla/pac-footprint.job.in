@@ -1,0 +1,18 @@
+# One PAC instruction at a site (pac::sign's `pacda`, auth's `autda`,
+# strip's `xpacd`; verus/isla/seams.md), in one configuration:
+# Non-secure EL0, FEAT_PAuth on, the PAC traps off (SCR_EL3.API, and
+# HCR_EL2.API or E2H+TGE), the translation control pinned to Linux's for
+# one VA size, SCTLR (EnDA among it) symbolic. run.sh prepends the insn
+# line and substitutes @D@ (the destination register). ComputePAC, the
+# PAC algorithm, is uninterpreted: what follows holds for any function of
+# its arguments. The insn kind `fallthrough` makes every path continue at
+# the next instruction (PC + 4): no trap, no fault, no branch. In the
+# Armv9.4-A configurations run.sh adds `pc-step` (the model's PC update),
+# and `autda` is of kind `stop`: a path may instead end at the FPAC fault
+# (`AArch64_PACFailException` with syndrome 0b10, data key A) having
+# written no register and no memory.
+abstract ComputePAC
+writes @D@
+no-mem-write
+mem-reads 0
+flags-preserved

@@ -1,10 +1,10 @@
-# The x86_64 half of verus/isla/run.sh (sections 7 to 10), sourced by it
+# The x86_64 half of verus/isla/run.sh (sections 8 to 11), sourced by it
 # with its variables and helpers set: `xlib` (the x86_64 library), `xir`
 # (the x86 model), `out`, `here`, `fail`, `report`, `check`, `refute`,
 # `refuted` and the tools.
 # shellcheck shell=sh disable=SC2154 # run.sh, which sources this file, sets its variables
 
-# 7. The x86_64 code, extracted as in section 2.
+# 8. The x86_64 code, extracted as in section 2.
 rm -rf "$out/xobj" && mkdir -p "$out/xobj"
 members=$("$llvm_ar" t "$xlib" | grep '^challoc-.*\.o$' || true)
 [ -n "$members" ] || { echo "isla: no challoc objects in $xlib" >&2; exit 2; }
@@ -46,7 +46,7 @@ le128() { # BYTE...: hex bytes in memory order; D32 is 4 bytes of the symbolic f
 	echo "${s% }"
 }
 
-# 8. `syscall` (sys::raw's x86_64 syscall0..syscall6): every instruction
+# 9. `syscall` (sys::raw's x86_64 syscall0..syscall6): every instruction
 # in the code that enters the kernel (syscall, sysenter, int) is
 # `syscall`, encoding 0f 05, and Isla's trace of it.
 nsys=$(grep -cE "^ +[0-9a-f]+: 0f 05 +${tab}syscall$" "$out/dis-x86.txt" || true)
@@ -62,7 +62,7 @@ xtrace syscall 0f 05
 } >"$out/syscall.job"
 check x86_64/syscall "$out/syscall.job"
 
-# 9. The TLS slot accesses (tls::get and tls::set; no job traces them):
+# 10. The TLS slot accesses (tls::get and tls::set; no job traces them):
 # every relocation against `challoc_tls` is a GOTTPOFF on a `movq
 # (%rip), %R` followed by the load `movq %fs:(%R), %R` or the store `movq
 # %V, %fs:(%R)` (V not R), as section 5 holds the aarch64 ones to their
@@ -110,7 +110,7 @@ first_x "$out/dis-x86.txt" "$xstore" '%fs:[(]%r[a-z0-9]+[)]$' '%fs:(%rsp)' >"$ou
 xtls "$out/neg-xtls-base.txt" >"$out/neg-xtls-base.log"
 refuted xtls-base "$out/neg-xtls-base.log" ', %fs:(%rsp)'
 
-# 10. x86_64 negative controls, on the real trace, each failing for its
+# 11. x86_64 negative controls, on the real trace, each failing for its
 # own reason: the return address one byte off, R11 and the SS selector (a
 # vector register's element) left out of `writes`, a memory read where
 # there is none, rflags claimed preserved, SS's descriptor attributes

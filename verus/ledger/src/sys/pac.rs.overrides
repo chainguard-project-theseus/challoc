@@ -1,4 +1,15 @@
 axiom_user_va_limit	platform/kernel fact	none (assumption)
 # Armv8.3 PAuth (the identity on x86_64): authenticating a signed plain
-# user address with the same modifier gives it back.
-axiom_auth_sign	platform/kernel fact	none (assumption)
+# user address with the same modifier gives it back. Isla checks the
+# aarch64 round trip in every configuration verus/isla/seams.md names;
+# firmware's key enables and other CPUs stay outside the runs.
+axiom_auth_sign	platform/kernel fact	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: that firmware sets SCR_EL3.API and APK and that the CPU is one of the two kinds the runs model)
+# Inline assembly checked with Isla (verus/ISLA.md): run.sh checks each
+# against the contract verus/isla/seams.md quotes. `spec_sign` and
+# `spec_auth` are one function per process only while the kernel keeps
+# the thread's data key A and EnDA as they were, which the runs take as
+# given, and an `autda` that faults returns only if the kernel resumes
+# past it.
+sign	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: that the kernel keeps the thread's data key A and EnDA fixed)
+auth	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: that the kernel keeps the thread's data key A and EnDA fixed and never resumes past an autda that faults)
+strip	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: that firmware sets SCR_EL3.API and APK and that the CPU is one of the two kinds the runs model)
