@@ -44,7 +44,7 @@ require); each file is a workflow:
   per arch (`hosted-<arch>-*` cells in `expected-skips/`).
 - `floor.yaml`: `floor` (AlmaLinux 9's 5.14, both arches, default and
   privileged containers) and the advisory `tripwire` (Debian 11's 5.10;
-  parked on request until its bench image is rebuilt, see `floor.yaml`),
+  off until its bench image is rebuilt, #463, see `floor.yaml`),
   on GCE VMs through `cb launch`; on pushes to main only (postsubmit), so
   a change that raises the floor shows up after it lands, not before.
 - `verus.yaml`: `verus` and `verus-arm64`, the seam ledger, the proofs at quantum 16 and 8, and the coverage floor; `verus-main` the same on main.

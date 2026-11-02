@@ -77,12 +77,10 @@ checks:
         vars: {ISLA_TARGETS: aarch64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}
     # The aarch64 half traces 36 PAC instructions in 36 configurations and
     # checks 2,820 PAC jobs, one process per CPU (verus/isla/run-aarch64.sh,
-    # section 6, nproc wide; verus/isla/run.sh): about 18 minutes on
-    # medium-arm64's 4 vCPUs, past 15 minutes, and about 5 on large-arm64's
-    # 8. xlarge-arm64 doubles the CPUs (16, 8 reserved) again for the PAC
-    # jobs, and 30 minutes leaves room for a guest held to its reserved
-    # cores.
-    resources: &isla-resources xlarge-arm64
+    # section 6): about 18 minutes on medium-arm64's 4 vCPUs, past
+    # 15 minutes. large-arm64 doubles the CPUs, and 30 minutes leaves room
+    # for a guest held to its 4 reserved cores.
+    resources: &isla-resources large-arm64
     timeout: &isla-timeout 30m
     network: &crates
       egress: [index.crates.io, static.crates.io]

@@ -15,6 +15,9 @@ them as "design N".
   2.44 or newer, on host kernels 5.14 (RHEL 9) and newer. Kernel 5.10 is
   kept as a CI tripwire, not a promise: it must keep working, with
   reduced features, so a regression shows up before it reaches the floor.
+  (The `tripwire` check is off until its Debian 11 bench image is
+  rebuilt, #463; `.chainguard/ci/floor.yaml` says why and how to restore it.
+  Until then nothing checks 5.10.)
   Other libcs, distributions and operating systems are not supported.
 - Built as a `no_std` Rust crate with `panic = "abort"`, producing a
   `cdylib` and a `staticlib`. The crate never allocates through anything
