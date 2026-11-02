@@ -695,14 +695,32 @@ mod linux {
             .map(|_| ())
     }
 
-    /// `madvise(2)`.
+    /// The kernel answered an `madvise(addr, len, advice)` with success:
+    /// the word `raw::syscall3` returned for it is not an error. It says
+    /// only that, of some such call.
+    pub closed spec fn madvise_ok(addr: usize, len: usize, advice: i32) -> bool {
+        exists|w: usize| #[trigger] raw::returned3(nr::MADVISE, addr, len, advice as isize as usize, w) && w <= usize::MAX - MAX_ERRNO
+    }
+
+    /// The kernel answered an `madvise(addr, len, advice)` with an error:
+    /// the word `raw::syscall3` returned for it is one. It says only that,
+    /// of some such call.
+    pub closed spec fn madvise_err(addr: usize, len: usize, advice: i32) -> bool {
+        exists|w: usize| #[trigger] raw::returned3(nr::MADVISE, addr, len, advice as isize as usize, w) && w > usize::MAX - MAX_ERRNO
+    }
+
+    /// `madvise(2)`. On `Ok` the kernel answered with success
+    /// ([`madvise_ok`]), on `Err` with an error ([`madvise_err`]).
     ///
     /// # Safety
     /// `MADV_DONTNEED`/`MADV_FREE` discard contents the caller must not need.
     #[inline]
-    pub unsafe fn madvise(addr: usize, len: usize, advice: i32) -> Result<(), Errno>
+    pub unsafe fn madvise(addr: usize, len: usize, advice: i32) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
+        ensures
+            r is Ok ==> madvise_ok(addr, len, advice),
+            r is Err ==> madvise_err(addr, len, advice),
     {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MADVISE, addr, len, advice as isize as usize) })

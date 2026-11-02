@@ -6662,18 +6662,22 @@ proof fn lemma_drop(l: Seq<*mut HugeDesc>, y: *mut HugeDesc)
 /// `usable` its usable bytes, `cap` the `retain_max` it read, `pof`
 /// `free_run`'s binding of what its `purge_on_free` read returned (read
 /// only at or below the cap, false when unread), `now` its clock reading,
-/// and `discarded` whether `purge::discard_one` of the run's pages
-/// returned true.
+/// `discarded` whether `purge::discard_one` of the run's pages returned
+/// true, and `[at, at + len)` those pages' bytes.
 ///
 /// The first conjunct checks `free_run`'s cap comparison: the run is
 /// discarded only when `usable > cap` or when the flag read returned
 /// true. The values of `cap` and the flag are unconstrained, because
 /// `retain_max` and `purge_on_free` are plain atomics with no spec view.
-/// The predicate bounds when a discard may happen; it does not say that a
-/// run above the cap is discarded, since `discard_one` exports no
-/// contract for its result. Discarded, the run's pages lie in a free
-/// extent that is `Purged` with no age, or `Empty` with the age of an
-/// `Empty` extent of `v0` touching the run. Otherwise, the extent is
+/// The next two say what the kernel answered (timelessly: some such
+/// `madvise` was answered so, `purge::discard_taken` and
+/// `purge::discard_refused`): discarded, a discard advice on the run's
+/// bytes was answered with success; not discarded when the run is above
+/// the cap or the flag read returned true, one on a range holding them
+/// was answered with an error. So a run above the cap is discarded
+/// unless some discard advice on its bytes was refused. Discarded, the
+/// run's pages lie in a free extent that is `Purged` with no age, or
+/// `Empty` with the age of an `Empty` extent of `v0` touching the run. Otherwise, the extent is
 /// `Empty`, aged `now` or such a touching extent's age.
 spec fn retain_cap(
     v0: Inner,
@@ -6685,8 +6689,12 @@ spec fn retain_cap(
     pof: bool,
     now: u64,
     discarded: bool,
+    at: int,
+    len: int,
 ) -> bool {
     &&& discarded ==> (usable > cap || pof)
+    &&& discarded ==> crate::purge::discard_taken(at, len)
+    &&& (usable > cap || pof) && !discarded ==> crate::purge::discard_refused(at, len)
     &&& exists|x: *mut HugeDesc| #[trigger] v1.descs@.contains_key(x) && {
         let e = v1.descs@[x].value();
         &&& e.start <= page && page + n <= e.start + e.pages
@@ -6731,12 +6739,16 @@ proof fn lemma_retain_cap(
     pof: bool,
     now: u64,
     discarded: bool,
+    at: int,
+    len: int,
 )
     requires
         v1.descs@.contains_key(x),
         v1.descs@[x].value().start <= page,
         page + n <= v1.descs@[x].value().start + v1.descs@[x].value().pages,
         discarded ==> (usable > cap || pof),
+        discarded ==> crate::purge::discard_taken(at, len),
+        (usable > cap || pof) && !discarded ==> crate::purge::discard_refused(at, len),
         kept ==> {
             let e = v0.descs@[x].value();
             &&& v0.descs@.contains_key(x)
@@ -6750,7 +6762,7 @@ proof fn lemma_retain_cap(
         !kept && !discarded ==> v1.descs@[x].value().state == RunState::Empty as u8
             && v1.descs@[x].value().dirty_at == now,
     ensures
-        retain_cap(v0, v1, page, n, usable, cap, pof, now, discarded),
+        retain_cap(v0, v1, page, n, usable, cap, pof, now, discarded, at, len),
 {
     if kept {
         assert(empty_nbr_at(v0, page, n, v1.descs@[x].value().dirty_at));
@@ -7242,6 +7254,8 @@ impl Huge {
                 pof,
                 now,
                 discarded,
+                addr as int,
+                (n * page_size) as int,
             );
         }
         let first = self.sync_oldest(&g);
