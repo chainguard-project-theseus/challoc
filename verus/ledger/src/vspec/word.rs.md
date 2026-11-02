@@ -27,7 +27,7 @@ pub tracked struct WordPerm
 ## `fetch_or`
 
 src/vspec/word.rs:57. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_or; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `w.fetch_or(v, ordering)`.
 
@@ -46,7 +46,7 @@ pub fn fetch_or(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracke
 ## `store`
 
 src/vspec/word.rs:75. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `w.store(v, ordering)`, which panics for an `Acquire` or `AcqRel` ordering.
 
@@ -66,7 +66,7 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
 ## `load`
 
 src/vspec/word.rs:96. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `w.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
@@ -85,7 +85,7 @@ pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>
 ## `fetch_and`
 
 src/vspec/word.rs:113. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_and; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `w.fetch_and(v, ordering)`.
 

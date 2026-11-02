@@ -1,1 +1,6 @@
 WordPerm	atomics primitive	loom/GenMC
+# Kani runs each wrapper on a real atomic, one thread (src/kani/atomic.rs).
+fetch_or	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_or; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
+store	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
+load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
+fetch_and	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_and; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))

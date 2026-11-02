@@ -1,6 +1,6 @@
 # The free fast path's route byte: each wrapper is one core atomic
 # operation (or AtomicU8::new), and `fixed` is kept because fetch_or of
 # bits within ROUTE is the only write after `new`.
-new	atomics primitive	loom/GenMC
-load	atomics primitive	loom/GenMC
-fetch_or	atomics primitive	loom/GenMC
+new	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte; not checked: concurrent interleavings, where the orderings matter; that every write after `new` is `fetch_or` within `ROUTE` (the harness makes no other); that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`))
+load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte; not checked: concurrent interleavings, where the orderings matter; that every write after `new` is `fetch_or` within `ROUTE` (the harness makes no other); that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`))
+fetch_or	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte; not checked: concurrent interleavings, where the orderings matter; that every write after `new` is `fetch_or` within `ROUTE` (the harness makes no other); that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`))

@@ -1,0 +1,4 @@
+# Kani runs each wrapper on a real atomic, one thread (src/kani/atomic.rs).
+load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
+store	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
+compare_exchange	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_compare_exchange; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
