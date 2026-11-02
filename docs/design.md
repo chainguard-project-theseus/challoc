@@ -94,8 +94,8 @@ would put gigabytes of untouched address space into core dumps and under
 ignores `MAP_NORESERVE` and would charge every forked child), under a
 finite `RLIMIT_DATA` (which since Linux 4.7 charges every private
 writable mapping: the eager tables are about 85 MiB writable from the
-first `malloc`, so a data limit under about 90 MiB refused init; with
-them on the table side a fresh process's `VmData` is under 2 MiB) and
+first `malloc`, against under 2 MiB of `VmData` with them on the table
+side) and
 under any `thp` key but `never` (`meta::eager_policy`). The reservations
 themselves are `PROT_NONE` and `MAP_NORESERVE`, which neither
 `RLIMIT_DATA` nor the overcommit heuristic charges; only commits count.

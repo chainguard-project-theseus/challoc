@@ -7,16 +7,16 @@
  * allocator starts re-executes this program under it (`run_child`), so
  * the child's first malloc is challoc's init.
  *
- *   data_init   RLIMIT_DATA of 32 MiB from the start (init used to make
- *               ~85 MiB of metadata writable and abort): a 15 MB working
- *               set runs; then the soft limit is cut to the current
+ *   data_init   RLIMIT_DATA of 32 MiB from the start, under the ~85 MiB
+ *               the eager metadata tables would take (design 2): a 15 MB
+ *               working set runs; then the soft limit is cut to the current
  *               VmData, a 64 MiB malloc returns NULL/ENOMEM, and after
  *               the limit is raised again it succeeds
  *   as_min      RLIMIT_AS just above the documented minimum layout
  *               (design 2: about 435 GiB at quantum 16, 467 at 8): 16
  *               children in a row all start (the reservation order is
- *               random per process; it used to abort about half of them
- *               anywhere from the minimum up to ~1 TiB)
+ *               random per process, so one start would not show that
+ *               every order fits)
  */
 #include "common.h"
 

@@ -4128,13 +4128,27 @@ mod tests {
     }
 
     /// The host policy: eager carving is on under the default `thp:never`
-    /// on a kernel that honours `MAP_NORESERVE`, off
-    /// under `vm.overcommit_memory=2`; the probe reads the sysctl.
+    /// on a kernel that honours `MAP_NORESERVE`, off under
+    /// `vm.overcommit_memory=2` and under a finite `RLIMIT_DATA`; the
+    /// probe reads the sysctl and the limit.
     #[test]
-    fn eager_policy_follows_overcommit_mode() {
+    fn eager_policy_follows_overcommit_mode_and_data_limit() {
         let mode = std::fs::read_to_string("/proc/sys/vm/overcommit_memory").unwrap();
-        let expect = mode.trim() != "2" && crate::thp::is_never();
-        assert_eq!(eager_policy(), expect, "overcommit_memory {mode:?}");
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `lim` is a live `rlimit` the call writes.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut lim) }, 0);
+        let limited = lim.rlim_cur != libc::RLIM_INFINITY;
+        assert_eq!(crate::sys::data_limited(), limited);
+        let expect = mode.trim() != "2" && !limited && crate::thp::is_never();
+        assert_eq!(
+            eager_policy(),
+            expect,
+            "overcommit_memory {mode:?}, RLIMIT_DATA {}",
+            lim.rlim_cur
+        );
         let b = Backing::new(1 << 20);
         let m = b.meta();
         assert_eq!(m.eager_allowed(), expect);
