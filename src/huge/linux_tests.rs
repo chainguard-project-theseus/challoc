@@ -593,3 +593,53 @@ fn guards_false_places_no_guard() {
         env.free(&h, q);
     }
 }
+
+/// Guard-install mode with every marker refused (`mlock`ed runs, #443's
+/// `mixed_guards`): the `PROT_NONE` guards that stand in for the markers
+/// are released at free like the fallback mode's, so the VMAs come back.
+#[test]
+fn refused_marker_guards_are_released_at_free() {
+    if !guard_mode() {
+        return;
+    }
+    const N: usize = 8;
+    let env = Env::new();
+    let h = env.huge();
+    let size = 3 * page_size();
+    let mut ps = Vec::new();
+    for _ in 0..N {
+        let (p, _) = env.alloc(&h, size, 1);
+        ps.push(p);
+    }
+    let lo = ps[0] as usize;
+    let hi = ps[N - 1] as usize + size + page_size();
+    for p in &ps {
+        env.free(&h, *p);
+    }
+    // The freed span is read-write; locked, it refuses guard markers.
+    if !crate::testutil::mlock_or_skip("refused_marker_guards_are_released_at_free", lo, hi - lo) {
+        return;
+    }
+    let base = env.huge_vmas();
+    for p in ps.iter_mut() {
+        let (q, _) = env.alloc(&h, size, 1);
+        assert!(q as usize >= lo && q as usize + size < hi);
+        fill(q, size, 0x77);
+        *p = q;
+    }
+    let live = env.huge_vmas();
+    assert!(
+        live >= base + N,
+        "{live} VMAs for {N} runs with refused markers (base {base})"
+    );
+    for p in &ps {
+        env.free(&h, *p);
+    }
+    let after = env.huge_vmas();
+    // SAFETY: unlocking the test's own span; no memory is touched.
+    unsafe { libc::munlock(lo as *const _, hi - lo) };
+    assert!(
+        after <= base + 2,
+        "{after} VMAs after freeing the locked runs (base {base})"
+    );
+}

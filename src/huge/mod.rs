@@ -25,8 +25,9 @@
 //! one. Otherwise (the fallback mode, kernels before 6.13) the guard page
 //! is made `PROT_NONE`, which splits the VMA, and made read-write again
 //! when the run is freed, so the free extent merges back into one VMA and
-//! the split lasts only as long as the run; every allocation also commits
-//! its own range, so a guard whose release failed is undone on reuse.
+//! the split lasts only as long as the run; if a release ever fails,
+//! `mixed_guards` makes every later allocation commit its own range, so
+//! that guard is undone on reuse.
 //! Under `guards:false` no guard is placed in either mode: the guard page
 //! is committed with the run.
 //!
@@ -5288,8 +5289,8 @@ impl Huge {
     /// as a `Purged` free extent (or folds it into the extent that touched
     /// the mark), and the run later placed in that hole must find its pages
     /// committed. Committing only `[s, end)` here left the hole `PROT_NONE`
-    /// and the first write into it faulted; the fallback mode never had
-    /// the problem because it commits `[s, s + usable)` on every call.
+    /// and the first write into it faulted; the fallback mode commits from
+    /// the mark for the same reason.
     fn prepare(&self, s: usize, usable: usize, watermark: usize) -> Result<(), Errno>
         requires
             crate::sys::may_syscall(),
@@ -7082,9 +7083,9 @@ impl Huge {
             ;
             assert(n * p == (n - 1) * p + p) by (nonlinear_arith);
         }
+        let guard_addr = addr + (n - GUARD_PAGES) * page_size;
         // Nested, not a `let` chain: Verus does not take `let` chains.
         #[allow(clippy::collapsible_if)]
-        let guard_addr = addr + (n - GUARD_PAGES) * page_size;
         if self.guard_install {
             // Not a resource failure: `MADV_GUARD_REMOVE` takes locked
             // VMAs and allocates nothing, and a `PROT_NONE` guard
