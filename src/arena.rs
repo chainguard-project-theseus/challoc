@@ -160,12 +160,6 @@ unsafe impl Send for Arena {}
 #[cfg(test)]
 pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// Automatic arenas not built yet that `arenas.create` keeps room for
-/// ([`Arenas::create`]): enough for the threads a program starts after
-/// creating its own arenas, without reserving a build for each of
-/// `narenas` (up to 4096) homes, which the arena-0 fallback serves.
-const AUTO_HEADROOM: u32 = 8;
-
 /// The most metadata (bump and reservation sides together) one arena
 /// build has taken so far ([`Arenas::build`]), per metadata allocator
 /// (keyed by its address: the process has one, the tests build many);
@@ -187,6 +181,12 @@ static BUILD_COST: [(
 ); BUILD_COSTS] = [NO_COST; BUILD_COSTS];
 
 verus! {
+
+/// Automatic arenas not built yet that `arenas.create` keeps room for
+/// ([`Arenas::create`]): enough for the threads a program starts after
+/// creating its own arenas, without reserving a build for each of
+/// `narenas` (up to 4096) homes, which the arena-0 fallback serves.
+const AUTO_HEADROOM: u32 = 8;
 
 /// Record a build over `meta` whose tables took `tables` bytes of
 /// metadata, its `Arena` storage on top ([`BUILD_COST`]). Trusted:
