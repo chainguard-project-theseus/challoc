@@ -91,7 +91,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ## `word`
 
-src/layout/regions.rs:2219. Kind: external_body. Category: core library.
+src/layout/regions.rs:2244. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: layout::regions::linux::kani_word::word_returns).
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
@@ -104,7 +104,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ## `entry_barrier`
 
-src/layout/regions.rs:2880. Kind: external_body. Category: inline asm.
+src/layout/regions.rs:2918. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.

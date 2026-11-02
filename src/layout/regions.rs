@@ -2212,6 +2212,31 @@ mod linux {
         m << LG_MAX_SLAB
     }
 
+    /// Class region `c`'s offset inside its stride before the colour,
+    /// picked by `w`: 1 to `gap / MAX_SLAB - 2` slabs, one step short of
+    /// the gap, so with the colour (below `MAX_SLAB`) the region still
+    /// ends at least `MAX_SLAB` below its stride's end, as it starts at
+    /// least `MAX_SLAB` above its start.
+    #[inline(always)]
+    fn class_offset(w: usize, gap: usize) -> (r: usize)
+        requires
+            gap >> 22 > 2,
+            (gap >> 22) <= 0x4_0000,
+            gap & 0x3f_ffff == 0,
+        ensures
+            r & 0x3f_ffff == 0,
+            0x40_0000 <= r,
+            r + 0x80_0000 <= gap,
+    {
+        let r = slab_multiple(w, (gap >> LG_MAX_SLAB) - 1);
+        proof {
+            let g = gap;
+            assert(r + 0x80_0000 <= g) by (bit_vector)
+                requires r + 0x40_0000 <= sub(g >> 22, 1) << 22, g >> 22 > 2, g & 0x3f_ffff == 0;
+        }
+        r
+    }
+
     /// Word `i` of the random bytes (`8 * i` on, the target's byte order).
     /// Trusted: `copy_from_slice` and `from_ne_bytes`; any word will do.
     #[verifier::external_body]
@@ -2318,6 +2343,9 @@ mod linux {
             requires
                 self.wf(),
         {
+            proof {
+                assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+            }
             let s = MAX_SLAB as u128;
             let rl = self.region_len() as u128;
             let sb = self.superblock_map;
@@ -2528,16 +2556,12 @@ mod linux {
                     forall|j: int| 0 <= j < c ==>
                         offset_ok(#[trigger] offsets[j], class_table()[j].lg_slab as u32, lg_page) && offsets[j] < gap,
             {
-                // One step short of the gap: with the colour below 4 MiB,
-                // the region then ends at least `MAX_SLAB` below its
-                // stride's end, as `slab_multiple` puts it at least
-                // `MAX_SLAB` above its start.
-                offsets[c] = slab_multiple(word(&rnd, c) as usize, (gap >> LG_MAX_SLAB) - 1);
+                offsets[c] = class_offset(word(&rnd, c) as usize, gap);
                 let ghost a = offsets[c as int];
                 proof {
                     let g = gap;
                     assert(a + 0x40_0000 <= (g >> 22) << 22 && a < g) by (bit_vector)
-                        requires a + 0x40_0000 <= sub(g >> 22, 1) << 22, g >> 22 > 2, g & 0x3f_ffff == 0;
+                        requires a + 0x80_0000 <= g, g & 0x3f_ffff == 0;
                 }
                 if coloured {
                     let lg_slab = CLASSES.table()[c].lg_slab as u32;
@@ -2596,6 +2620,15 @@ mod linux {
             }
             let huge_base = huge_align + huge_slide;
             let meta_base = meta_align + meta_slide;
+            proof {
+                // What `slack_ok` checks for these two: `MAX_SLAB` of the
+                // mapping below and above the region, from the slide's
+                // bounds.
+                assert(huge_map.addr + MAX_SLAB <= huge_base
+                    && huge_base + (1usize << lg_huge) + MAX_SLAB <= huge_map.addr + huge_map.len);
+                assert(meta_map.addr + MAX_SLAB <= meta_base
+                    && meta_base + (1usize << lg_meta) + MAX_SLAB <= meta_map.addr + meta_map.len);
+            }
 
             if anon_name {
                 name_mapping(sb_map, &CLASSES_NAME);
@@ -2734,7 +2767,8 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::{
-            CLASSES, LG_SLIDE, MAX_SLAB, NCLASSES, SLIDE_STEPS, align_base, colour, slab_multiple,
+            CLASSES, LG_SLIDE, MAX_SLAB, NCLASSES, SLIDE_STEPS, align_base, class_offset, colour,
+            slab_multiple,
         };
 
         /// No random word gives a zero offset: the huge and metadata
@@ -2788,24 +2822,28 @@ mod linux {
             for (lr, ls) in [(38u32, 40u32), (32, 34), (32, 33)] {
                 let (rl, stride) = (1usize << lr, 1usize << ls);
                 let gap = stride - rl;
-                let steps = (gap >> 22) - 1;
+                // The smallest and largest offsets any word draws, over a
+                // whole cycle of `w`: 1 and `gap / MAX_SLAB - 2` slabs.
+                let draws = (0..gap >> 22).map(|w| class_offset(w, gap));
+                let (lo, hi) = (draws.clone().min().unwrap(), draws.max().unwrap());
+                assert_eq!((lo, hi), (MAX_SLAB, ((gap >> 22) - 2) * MAX_SLAB));
                 for lg_page in [12u32, 14, 16] {
                     for coloured in [false, true] {
-                        let off = |c: usize, w: usize| {
+                        let off = |c: usize, o: usize| {
                             let k = if coloured {
                                 colour(c, CLASSES[c].lg_slab as u32, lg_page)
                             } else {
                                 0
                             };
-                            slab_multiple(w, steps) + k
+                            o + k
                         };
                         for addr in addrs {
                             let sb = align_base(addr);
                             let map_end = addr + (NCLASSES << ls) + MAX_SLAB;
-                            for w in [0, steps - 1] {
-                                assert!(sb + off(0, w) - addr >= MAX_SLAB);
+                            for o in [lo, hi] {
+                                assert!(sb + off(0, o) - addr >= MAX_SLAB);
                                 let last = NCLASSES - 1;
-                                let end = sb + (last << ls) + off(last, w) + rl;
+                                let end = sb + (last << ls) + off(last, o) + rl;
                                 assert!(
                                     map_end - end >= MAX_SLAB,
                                     "lr {lr} ls {ls} tail {:#x}",
@@ -2813,9 +2851,9 @@ mod linux {
                                 );
                             }
                             for c in 0..NCLASSES - 1 {
-                                for (wa, wb) in [(steps - 1, 0), (0, 0), (steps - 1, steps - 1)] {
-                                    let end = sb + (c << ls) + off(c, wa) + rl;
-                                    let next = sb + ((c + 1) << ls) + off(c + 1, wb);
+                                for (oa, ob) in [(hi, lo), (lo, lo), (hi, hi)] {
+                                    let end = sb + (c << ls) + off(c, oa) + rl;
+                                    let next = sb + ((c + 1) << ls) + off(c + 1, ob);
                                     assert!(next - end >= MAX_SLAB, "class {c}: {:#x}", next - end);
                                 }
                             }
