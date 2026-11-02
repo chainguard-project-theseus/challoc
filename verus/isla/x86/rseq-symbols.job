@@ -1,0 +1,120 @@
+# rseq::symbols on x86_64 (verus/isla/seams.md): three GOT loads
+# (as got-fn.job), then the compiler's stores of the tuple through the
+# return-area pointer the caller passes in rdi, then ret:
+#   mov rax, [rip + __rseq_offset@GOTPCREL]   (48 8b 05)
+#   mov rcx, [rip + __rseq_size@GOTPCREL]     (48 8b 0d)
+#   mov rdx, [rip + __rseq_flags@GOTPCREL]    (48 8b 15)
+#   mov [rdi], rax; mov [rdi + 8], rcx; mov [rdi + 16], rdx; ret
+arch x86_64
+fun n64_bit_modep true
+insn x86-got-rax.trace fallthrough 7
+insn x86-got-rcx.trace fallthrough 7
+insn x86-got-rdx.trace fallthrough 7
+insn x86-st-rax-rdi.trace fallthrough 3
+insn x86-st-rcx-rdi8.trace fallthrough 4
+insn x86-st-rdx-rdi16.trace fallthrough 4
+insn x86-ret.trace jump
+writes rax rcx rdx rsp
+flags-preserved
+mem-reads 32
+mem-writes 24
+# The three GOT entries, each displacement relative to its own next
+# instruction (the function's start + 7, 14, 21).
+decl got1 64
+assume (= seg.1.disp ((_ extract 31 0) (bvsub got1 (bvadd init.rip #x0000000000000007))))
+assume (= ((_ sign_extend 32) seg.1.disp) (bvsub got1 (bvadd init.rip #x0000000000000007)))
+assume (= ((_ extract 2 0) got1) #b000)
+assume (bvult got1 #x00007ffffffff000)
+decl got2 64
+assume (= seg.2.disp ((_ extract 31 0) (bvsub got2 (bvadd init.rip #x000000000000000e))))
+assume (= ((_ sign_extend 32) seg.2.disp) (bvsub got2 (bvadd init.rip #x000000000000000e)))
+assume (= ((_ extract 2 0) got2) #b000)
+assume (bvult got2 #x00007ffffffff000)
+decl got3 64
+assume (= seg.3.disp ((_ extract 31 0) (bvsub got3 (bvadd init.rip #x0000000000000015))))
+assume (= ((_ sign_extend 32) seg.3.disp) (bvsub got3 (bvadd init.rip #x0000000000000015)))
+assume (= ((_ extract 2 0) got3) #b000)
+assume (bvult got3 #x00007ffffffff000)
+# Residual (ELF, Linux, the psABI and the Rust ABI): code and stack are
+# user addresses; the return area is the 8-byte aligned 24-byte tuple the
+# caller passes in rdi; rsp is 8-byte aligned and its top holds the
+# caller's return address, a user address.
+assume (bvult init.rip #x00007ffffffff000)
+decl init.rdi 64
+decl init.rsp 64
+assume (= ((_ extract 2 0) init.rdi) #b000)
+assume (bvult init.rdi #x00007fffffffefe0)
+assume (= ((_ extract 2 0) init.rsp) #b000)
+assume (bvult init.rsp #x00007ffffffff000)
+decl mem.25.val 8
+decl mem.26.val 8
+decl mem.27.val 8
+decl mem.28.val 8
+decl mem.29.val 8
+decl mem.30.val 8
+decl mem.31.val 8
+decl mem.32.val 8
+assume (bvult (concat mem.32.val mem.31.val mem.30.val mem.29.val mem.28.val mem.27.val mem.26.val mem.25.val) #x00007ffffffff000)
+# It reads exactly the three GOT entries, in order, writes their contents
+# to the return area's three words and nothing else, and returns.
+assert (= mem.1.addr (bvadd got1 #x0000000000000000))
+assert (= mem.2.addr (bvadd got1 #x0000000000000001))
+assert (= mem.3.addr (bvadd got1 #x0000000000000002))
+assert (= mem.4.addr (bvadd got1 #x0000000000000003))
+assert (= mem.5.addr (bvadd got1 #x0000000000000004))
+assert (= mem.6.addr (bvadd got1 #x0000000000000005))
+assert (= mem.7.addr (bvadd got1 #x0000000000000006))
+assert (= mem.8.addr (bvadd got1 #x0000000000000007))
+assert (= mem.9.addr (bvadd got2 #x0000000000000000))
+assert (= mem.10.addr (bvadd got2 #x0000000000000001))
+assert (= mem.11.addr (bvadd got2 #x0000000000000002))
+assert (= mem.12.addr (bvadd got2 #x0000000000000003))
+assert (= mem.13.addr (bvadd got2 #x0000000000000004))
+assert (= mem.14.addr (bvadd got2 #x0000000000000005))
+assert (= mem.15.addr (bvadd got2 #x0000000000000006))
+assert (= mem.16.addr (bvadd got2 #x0000000000000007))
+assert (= mem.17.addr (bvadd got3 #x0000000000000000))
+assert (= mem.18.addr (bvadd got3 #x0000000000000001))
+assert (= mem.19.addr (bvadd got3 #x0000000000000002))
+assert (= mem.20.addr (bvadd got3 #x0000000000000003))
+assert (= mem.21.addr (bvadd got3 #x0000000000000004))
+assert (= mem.22.addr (bvadd got3 #x0000000000000005))
+assert (= mem.23.addr (bvadd got3 #x0000000000000006))
+assert (= mem.24.addr (bvadd got3 #x0000000000000007))
+assert (= wmem.1.addr (bvadd init.rdi #x0000000000000000))
+assert (= wmem.2.addr (bvadd init.rdi #x0000000000000001))
+assert (= wmem.3.addr (bvadd init.rdi #x0000000000000002))
+assert (= wmem.4.addr (bvadd init.rdi #x0000000000000003))
+assert (= wmem.5.addr (bvadd init.rdi #x0000000000000004))
+assert (= wmem.6.addr (bvadd init.rdi #x0000000000000005))
+assert (= wmem.7.addr (bvadd init.rdi #x0000000000000006))
+assert (= wmem.8.addr (bvadd init.rdi #x0000000000000007))
+assert (= wmem.9.addr (bvadd (bvadd init.rdi #x0000000000000008) #x0000000000000000))
+assert (= wmem.10.addr (bvadd (bvadd init.rdi #x0000000000000008) #x0000000000000001))
+assert (= wmem.11.addr (bvadd (bvadd init.rdi #x0000000000000008) #x0000000000000002))
+assert (= wmem.12.addr (bvadd (bvadd init.rdi #x0000000000000008) #x0000000000000003))
+assert (= wmem.13.addr (bvadd (bvadd init.rdi #x0000000000000008) #x0000000000000004))
+assert (= wmem.14.addr (bvadd (bvadd init.rdi #x0000000000000008) #x0000000000000005))
+assert (= wmem.15.addr (bvadd (bvadd init.rdi #x0000000000000008) #x0000000000000006))
+assert (= wmem.16.addr (bvadd (bvadd init.rdi #x0000000000000008) #x0000000000000007))
+assert (= wmem.17.addr (bvadd (bvadd init.rdi #x0000000000000010) #x0000000000000000))
+assert (= wmem.18.addr (bvadd (bvadd init.rdi #x0000000000000010) #x0000000000000001))
+assert (= wmem.19.addr (bvadd (bvadd init.rdi #x0000000000000010) #x0000000000000002))
+assert (= wmem.20.addr (bvadd (bvadd init.rdi #x0000000000000010) #x0000000000000003))
+assert (= wmem.21.addr (bvadd (bvadd init.rdi #x0000000000000010) #x0000000000000004))
+assert (= wmem.22.addr (bvadd (bvadd init.rdi #x0000000000000010) #x0000000000000005))
+assert (= wmem.23.addr (bvadd (bvadd init.rdi #x0000000000000010) #x0000000000000006))
+assert (= wmem.24.addr (bvadd (bvadd init.rdi #x0000000000000010) #x0000000000000007))
+assert (= (concat wmem.8.val wmem.7.val wmem.6.val wmem.5.val wmem.4.val wmem.3.val wmem.2.val wmem.1.val) (concat mem.8.val mem.7.val mem.6.val mem.5.val mem.4.val mem.3.val mem.2.val mem.1.val))
+assert (= (concat wmem.16.val wmem.15.val wmem.14.val wmem.13.val wmem.12.val wmem.11.val wmem.10.val wmem.9.val) (concat mem.16.val mem.15.val mem.14.val mem.13.val mem.12.val mem.11.val mem.10.val mem.9.val))
+assert (= (concat wmem.24.val wmem.23.val wmem.22.val wmem.21.val wmem.20.val wmem.19.val wmem.18.val wmem.17.val) (concat mem.24.val mem.23.val mem.22.val mem.21.val mem.20.val mem.19.val mem.18.val mem.17.val))
+assert (= mem.25.addr (bvadd init.rsp #x0000000000000000))
+assert (= mem.26.addr (bvadd init.rsp #x0000000000000001))
+assert (= mem.27.addr (bvadd init.rsp #x0000000000000002))
+assert (= mem.28.addr (bvadd init.rsp #x0000000000000003))
+assert (= mem.29.addr (bvadd init.rsp #x0000000000000004))
+assert (= mem.30.addr (bvadd init.rsp #x0000000000000005))
+assert (= mem.31.addr (bvadd init.rsp #x0000000000000006))
+assert (= mem.32.addr (bvadd init.rsp #x0000000000000007))
+assert (= final.rip (concat mem.32.val mem.31.val mem.30.val mem.29.val mem.28.val mem.27.val mem.26.val mem.25.val))
+assert (= final.rsp (bvadd init.rsp #x0000000000000008))

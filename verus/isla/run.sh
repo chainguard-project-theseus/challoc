@@ -38,7 +38,8 @@
 #                   and builds the model with verus/isla/x86/build-ir.sh
 #   Z3              the z3 binary isla-check calls (default: z3 on PATH)
 #   ISLA_CHECK_JOBS the threads each isla-check judges prefixes on (default
-#                   1, as run.sh runs the PAC jobs one isla-check per CPU)
+#                   1, as run.sh runs one isla-check per CPU; section 13
+#                   runs its x86 jobs with 4, whatever this is)
 #   CARGO, RUSTC    the build's cargo and rustc (default: on PATH)
 #   ISLA_CARGO_FLAGS extra cargo flags for the library, such as
 #                   `--no-default-features --features quantum8`
@@ -126,23 +127,24 @@ fail() {
 tab=$(printf '\t')
 
 
-# 1. Each seam seams.md lists (a `## \`FILE\` \`NAME\` (ARCH)` heading, ARCH
-# aarch64, x86_64 or both) is the one the ledger file of FILE names NAME,
-# with the contract seams.md quotes (the first ```rust block of each),
-# under the `#[cfg(target_arch = ...)]` of ARCH, or under none for both
-# (one item on both architectures, such as `sys::pac`'s). The
-# x86_64 and aarch64 `raw::syscallN` share file, name and contract, so
-# the last check is what tells `syscallN#1` from `syscallN#2`. The seams
-# are exactly those whose overrides line under verus/ledger/ cites
-# `Isla: verus/isla/seams.md` (`discharged (Isla: ...)`, or `trusted
-# (partly checked, Isla: ...; not checked: ...)` for a check that leaves
-# part of the contract to something else), each with tool Islaris/Isla, so
-# none escapes the check. The ledger must be current, and `seams.sh
-# --check` also holds each seam's asm! calls to templates.txt: every call
-# in the item listed under its file and function, every line read by such
-# a call. That ties templates to seams, not to jobs: the runners pick
-# their jobs by instruction shape, whatever seams.md lists. The last
-# section ties each seam to the jobs its `Jobs:` line names.
+# 1. Each seam seams.md lists (a `## \`FILE\` \`NAME\` (ARCH)` heading,
+# ARCH aarch64, x86_64 or both) is the one the ledger file of FILE names
+# NAME, with the contract seams.md quotes (the first ```rust block of
+# each), under the `#[cfg(target_arch = ...)]` of ARCH, or under none
+# for both (`sys::pac`'s items, and those whose body holds an `asm!`
+# call per architecture, are one item for both). The x86_64 and aarch64
+# `raw::syscallN` share file, name and contract, so the last check is
+# what tells `syscallN#1` from `syscallN#2`. The seams are exactly those
+# whose overrides line under verus/ledger/ cites `Isla:
+# verus/isla/seams.md` (`discharged (Isla: ...)`, or `trusted (partly
+# checked, Isla: ...; not checked: ...)` for a check that leaves part of
+# the contract to something else), each with tool Islaris/Isla, so none
+# escapes the check. The ledger must be current, and `seams.sh --check`
+# also holds each seam's asm! calls to templates.txt: every call in the
+# item listed under its file and function, every line read by such a
+# call. That ties templates to seams, not to jobs: the runners pick their
+# jobs by instruction shape, whatever seams.md lists. The last section
+# ties each seam to the jobs its `Jobs:` line names.
 first_rust() { # FILE HEADING: the first ```rust block after HEADING, lines joined by \001
 	awk -v h="$2" '
 		$0 == h { on = 1; next }
@@ -257,7 +259,7 @@ refute() { # NAME JOB-TEXT REASON
 		echo "negative control $1: rejected, as it should be"
 	fi
 }
-# The negative controls of a check that is not a job (sections 1 and 10
+# The negative controls of a check that is not a job (sections 1 and 11
 # and the last): each runs the check on a mutated copy of its input,
 # which must fail for the reason the mutation causes.
 refuted() { # NAME LOG REASON: LOG, a check's output on a mutated copy, has a FAIL line naming REASON

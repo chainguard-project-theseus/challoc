@@ -1,0 +1,31 @@
+# A function returning a symbol's GOT entry (the aarch64 get_new_handler_addr,
+# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr;
+# verus/isla/seams.md):
+#   adrp x0, :got:SYM            (R_AARCH64_ADR_GOT_PAGE)
+#   ldr  x0, [x0, :got_lo12:SYM] (R_AARCH64_LD64_GOT_LO12_NC)
+#   ret
+insn adrp-x0.trace fallthrough
+insn ldr-x0.trace fallthrough
+insn ret.trace ret
+writes R0
+no-mem-write
+flags-preserved
+mem-reads 1
+# `got` is G(GDAT(SYM)), the GOT entry the linker allocates for SYM. The
+# relocations as the AArch64 ELF ABI defines them: ADRP's immediate is
+# Page(got) - Page(P) >> 12 for P its own address, within 21 signed bits;
+# the LDR's scaled imm12 is got[11:3].
+decl got 64
+assume (= (concat seg.1.immhi seg.1.immlo) ((_ extract 32 12) (bvsub (bvand got #xfffffffffffff000) (bvand init._PC #xfffffffffffff000))))
+assume (= ((_ sign_extend 31) ((_ extract 32 0) (bvsub (bvand got #xfffffffffffff000) (bvand init._PC #xfffffffffffff000)))) (bvsub (bvand got #xfffffffffffff000) (bvand init._PC #xfffffffffffff000)))
+assume (= seg.2.imm12 ((_ zero_extend 3) ((_ extract 11 3) got)))
+# Residual (ELF and Linux): GOT entries are 8-byte aligned; the code and
+# the GOT are user addresses below 2^48 (the model's MMU is off).
+assume (= ((_ extract 2 0) got) #b000)
+assume (bvult init._PC #x0001000000000000)
+assume (bvult got #x0001000000000000)
+# It reads exactly the GOT entry, returns its contents in x0 and returns
+# to the link register.
+assert (= mem.1.addr got)
+assert (= final.R0 mem.1.val)
+assert (= final._PC init.R30)

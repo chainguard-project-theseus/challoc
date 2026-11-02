@@ -1,0 +1,11 @@
+# `brk #0x1` with HCR_EL2 as Linux sets it for a VHE host (E2H, TGE, RW):
+# as brk1.job with the exception taken to EL2 (TGE routes EL0's debug
+# exceptions there).
+insn brk1-vhe.trace brk
+no-mem-write
+mem-reads 0
+assert (= final.ESR_EL2 #xf2000001)
+assert (= final.ELR_EL2 init._PC)
+assert (= final._PC (concat ((_ extract 63 11) init.VBAR_EL2) #b10000000000))
+assert (= final.PSTATE.EL #b10)
+assert (= final.PSTATE.SP #b1)

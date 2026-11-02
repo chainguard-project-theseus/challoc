@@ -1,0 +1,26 @@
+# `mov @R@, qword ptr fs:[0]` (rseq::thread_pointer's x86_64 asm;
+# verus/isla/seams.md) on the x86 model in its application
+# view with the processor in 64-bit mode (run-x86_64.sh, section 13): it reads
+# the 8 bytes at the FS base (IA32_FS_BASE, the model's msrs.1) into @R@,
+# writes nothing else and falls through. Residual (Linux): the FS base is
+# a user address, 8-byte aligned (the C library's thread control block).
+# run.sh appends the insn line.
+arch x86_64
+fun n64_bit_modep true
+writes @R@
+no-mem-write
+flags-preserved
+mem-reads 8
+decl init.msrs.1 64
+assume (bvult init.rip #x00007ffffffff000)
+assume (bvult init.msrs.1 #x00007ffffffff000)
+assume (= ((_ extract 2 0) init.msrs.1) #b000)
+assert (= mem.1.addr (bvadd init.msrs.1 #x0000000000000000))
+assert (= mem.2.addr (bvadd init.msrs.1 #x0000000000000001))
+assert (= mem.3.addr (bvadd init.msrs.1 #x0000000000000002))
+assert (= mem.4.addr (bvadd init.msrs.1 #x0000000000000003))
+assert (= mem.5.addr (bvadd init.msrs.1 #x0000000000000004))
+assert (= mem.6.addr (bvadd init.msrs.1 #x0000000000000005))
+assert (= mem.7.addr (bvadd init.msrs.1 #x0000000000000006))
+assert (= mem.8.addr (bvadd init.msrs.1 #x0000000000000007))
+assert (= final.@R@ (concat mem.8.val mem.7.val mem.6.val mem.5.val mem.4.val mem.3.val mem.2.val mem.1.val))
