@@ -556,13 +556,14 @@ pub fn alloc_huge(
 /// Routing of a `MALLOCX` free (`dallocx`, `sdallocx`) on the calling
 /// thread. Aborts unless `p` is a live allocation. `blk` is the caller's
 /// token for `p` ([`Live::claims`](super::Live::claims)).
-pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<super::Live>, errno: Tracked<&mut ThreadErrno>)
+pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<super::Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
     ensures
+        final(errno).val() == old(errno).val(),
         crate::heap::free_target(p),
         blk.block(p),
         !bad_tcache(tcache),
@@ -571,9 +572,9 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
     // `tcache` names on no other thread (the `MALLOCX_TCACHE` contract).
     let tracked mut u = super::axiom_heap_use();
     match tcache {
-        Tcache::Default => crate::heap::free(shared, p, Tracked(blk), errno),
+        Tcache::Default => crate::heap::free(shared, p, Tracked(blk), Tracked(errno)),
         Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u)) {
-            Some(h) => h.free(shared, p, Tracked(blk), errno),
+            Some(h) => h.free(shared, p, Tracked(blk), Tracked(errno)),
             None => invalid_tcache(t),
         },
         Tcache::None => crate::heap::free_direct(shared, p, Tracked(blk)),

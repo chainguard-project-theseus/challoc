@@ -138,7 +138,7 @@ fn oom(
 
 ## `axiom_c_call`
 
-src/api/cxx.rs:507. Kind: axiom. Category: C-program contract.
+src/api/cxx.rs:510. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C++ call that hands over the block at `p` to an `operator delete` ([`CCall`], [`CEntry::Frees`]).
