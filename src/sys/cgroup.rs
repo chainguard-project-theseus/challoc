@@ -2050,16 +2050,30 @@ mod linux {
     impl Cgroup {
         /// Design 10 step 7: find the cgroup and read its limits once.
         /// With `enabled == false` (`cgroup:false`) nothing is opened. By
-        /// value, with its scratch on the stack: init's (under
-        /// `thp:always`; `cgroup:false` stores `Cgroup::untracked`
-        /// directly) and the tests'; the deferred discovery builds the
-        /// record in place ([`Cgroup::discover_in`]). Out of line: init
-        /// calls it only under `thp:always`.
-        #[inline(never)]
+        /// value: init's (under `thp:always`, and `cgroup:false`'s
+        /// untracked record) and the tests'; the deferred discovery builds
+        /// the record in place ([`Cgroup::discover_in`]). Only an enabled
+        /// discovery reaches [`Cgroup::discover_scanned`] and its scratch
+        /// on the stack.
         pub fn discover(enabled: bool) -> Cgroup
             requires
                 crate::sys::may_syscall(),
         {
+            if !enabled {
+                return Cgroup::untracked(State::Disabled);
+            }
+            Cgroup::discover_scanned()
+        }
+
+        /// An enabled [`Cgroup::discover`], with the scan and mount buffers
+        /// on its own stack (about 8.6 KiB). Out of line: init calls it
+        /// only under `thp:always`.
+        #[inline(never)]
+        fn discover_scanned() -> Cgroup
+            requires
+                crate::sys::may_syscall(),
+        {
+            let enabled = true;
             let mut cg = Cgroup::untracked(State::NoUnifiedPath);
             let mut scratch = Scratch::new();
             cg.discover_in(enabled, &mut scratch);

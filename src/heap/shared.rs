@@ -2300,9 +2300,7 @@ impl Shared {
                 } else if config.cgroup {
                     Deferred::later(crate::sys::now_coarse_ns())
                 } else {
-                    // `Cgroup::discover(false)`'s record, without its
-                    // 8.6 KiB frame (design 13.8).
-                    Deferred::now(Cgroup::untracked(crate::sys::cgroup::State::Disabled))
+                    Deferred::now(Cgroup::discover(false))
                 },
                 Tracked(&mut parts.cgroup),
             );

@@ -1585,17 +1585,18 @@ const KNOWN: &[(&str, usize)] = &[
     ("challoc::sys::cgroup::linux::read_in", 2304),
     // A cache flush's grouping of the slots by slab (`free`'s slow path).
     ("challoc::heap::flush::group_by_slab", 2304),
-    // Initialisation, once per process, usually from ld.so or `main`
-    // (5.3 KiB at quantum 16, 6 at quantum 8, whose class tables are
-    // longer; `/etc/challoc.conf` is read into a static,
+    // Initialisation, once per process, from ld.so's or libc's first
+    // allocation before `main`, not on a program's small thread (design
+    // 13.8): 6.7 KiB at quantum 16 and 7.3 at quantum 8, whose class
+    // tables are longer (`/etc/challoc.conf` is read into a static,
     // `config::conf_buffer`).
-    ("challoc::api::init_slow", 6144),
+    ("challoc::api::init_slow", 7680),
     // The by-value discovery: init's under `thp:always` only (and the
-    // tests'; `cgroup:false` stores the untracked record directly); the
+    // tests'; `cgroup:false` returns the untracked record before it); the
     // deferred one builds the record in place. Under `thp:always` init's
-    // peak is init_slow's frame plus this one, about 14 KiB, before
+    // peak is init_slow's frame plus this one, about 16 KiB, before
     // `main` (design 13.8).
-    ("<challoc::sys::cgroup::Cgroup>::discover", 8704),
+    ("<challoc::sys::cgroup::Cgroup>::discover_scanned", 8704),
 ];
 
 /// The statistics readers and reports, which still take the per-arena
