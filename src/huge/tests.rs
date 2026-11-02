@@ -71,6 +71,8 @@ impl Env {
     pub fn with_meta_len(meta_len: usize) -> Env {
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let reserve = |len: usize| -> usize {
+            // SAFETY: a fresh anonymous `PROT_NONE` reservation at an address the
+            // kernel picks; it replaces nothing.
             unsafe {
                 crate::sys::mmap(
                     0,
@@ -122,6 +124,7 @@ impl Env {
                 )
                 .expect("run descriptor");
             assert!(info.usable >= size.max(1));
+            // SAFETY: `r.0` is a live run with `info.usable >= 1` committed bytes.
             unsafe {
                 core::ptr::read_volatile(r.0);
                 core::ptr::read_volatile(r.0.add(info.usable - 1));
@@ -158,6 +161,8 @@ impl Env {
 impl Drop for Env {
     fn drop(&mut self) {
         for (addr, len) in self.maps {
+            // SAFETY: the reservations `with_meta_len` made; nothing uses them
+            // once the `Env` goes.
             unsafe { crate::sys::munmap(addr, len) }.unwrap();
         }
     }
@@ -663,6 +668,7 @@ fn decay_purges_the_oldest_extents_along_the_curve() {
         let g = h.inner.lock_t();
         let mut d = g.empty_head;
         while !d.is_null() {
+            // SAFETY: the Empty list links live descriptors; `g` holds the lock.
             unsafe {
                 (*d).dirty_at = t0;
                 d = (*d).next;

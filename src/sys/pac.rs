@@ -417,6 +417,7 @@ mod tests {
             // without unwinding.
             let v = unsafe { core::ptr::read_volatile(q as *const u64) };
             // Neither path may get here.
+            // SAFETY: `_exit` has no preconditions.
             unsafe { libc::_exit(if v == 42 { 3 } else { 4 }) };
         }
         let mut status = 0;

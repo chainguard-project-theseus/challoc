@@ -326,9 +326,10 @@ mod tests {
     /// The calling thread's allowed CPUs (`sched_getaffinity`: the cpuset
     /// or container mask, not the machine's), lowest first.
     fn allowed_cpus() -> Option<std::vec::Vec<usize>> {
-        // SAFETY: a zeroed `cpu_set_t` is a valid empty set; the call
-        // writes at most `size_of::<cpu_set_t>()` bytes into it.
+        // SAFETY: a zeroed `cpu_set_t` is a valid empty set.
         let mut set: ::libc::cpu_set_t = unsafe { core::mem::zeroed() };
+        // SAFETY: the call writes at most `size_of::<cpu_set_t>()` bytes
+        // into `set`.
         let rc = unsafe {
             ::libc::sched_getaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &mut set)
         };
@@ -347,11 +348,12 @@ mod tests {
     /// Pin the calling thread to `cpu` alone; `false` when the kernel
     /// refuses (the CPU left the allowed set meanwhile).
     fn pin_to(cpu: usize) -> bool {
-        // SAFETY: as above; `CPU_SET` writes one bit of the set (`cpu` came
-        // from `allowed_cpus`, so it is below `CPU_SETSIZE`), and
-        // `sched_setaffinity` only reads it.
+        // SAFETY: a zeroed `cpu_set_t` is a valid empty set.
         let mut set: ::libc::cpu_set_t = unsafe { core::mem::zeroed() };
+        // SAFETY: `CPU_SET` writes one bit of the set: `cpu` came from
+        // `allowed_cpus`, so it is below `CPU_SETSIZE`.
         unsafe { ::libc::CPU_SET(cpu, &mut set) };
+        // SAFETY: `sched_setaffinity` only reads the set.
         unsafe {
             ::libc::sched_setaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &set) == 0
         }

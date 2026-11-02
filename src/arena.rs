@@ -151,6 +151,7 @@ pub struct Arena {
 // and `Send`. Sharing or moving an `Arena` between threads therefore
 // hands out nothing but that pointer to a process-lifetime, locked table.
 unsafe impl Sync for Arena {}
+// SAFETY: as for `Sync` above.
 unsafe impl Send for Arena {}
 
 /// Makes the next [`Arena::init`] over the metadata allocator at this
@@ -2873,10 +2874,10 @@ impl Arenas {
                 }
             }
         });
-        // SAFETY: as in `get`.
         if p.is_null() {
             None
         } else {
+            // SAFETY: as in `get`.
             Some(unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) })
         }
     }
@@ -3783,10 +3784,10 @@ impl Arenas {
         let n = self.count() as usize;
         (0..n).filter_map(move |i| {
             let p = self.table[i].load(Ordering::Acquire);
-            // SAFETY: as in `get`.
             if p.is_null() {
                 None
             } else {
+                // SAFETY: as in `get`.
                 Some(unsafe { &*p })
             }
         })

@@ -1297,6 +1297,7 @@ mod tests {
                     }
                 }
                 // Dirty it, free it, and take the same shape zeroed.
+                // SAFETY: `p` is live with `usable` bytes (`sallocx`).
                 unsafe { ptr::write_bytes(p, 0xAB, usable) };
                 dallocx(
                     p,
@@ -1313,6 +1314,7 @@ mod tests {
                 let n = sallocx(z, 0);
                 for i in 0..n {
                     assert_eq!(
+                        // SAFETY: `i < sallocx(z)`, inside the live allocation `z`.
                         unsafe { *z.add(i) },
                         0,
                         "mallocx ZERO size {size} lg_align {la} byte {i}"
@@ -1394,6 +1396,7 @@ mod tests {
         );
         assert!(!p.is_null());
         for i in 0..10 {
+            // SAFETY: `p` is a live 10-byte allocation.
             unsafe { *p.add(i) = i as u8 };
         }
         assert_eq!(
@@ -1417,6 +1420,7 @@ mod tests {
         let n = sallocx(q, 0);
         for i in 0..n {
             let want = if i < 10 { i as u8 } else { 0 };
+            // SAFETY: `i < sallocx(q)`, inside the live allocation `q`.
             assert_eq!(unsafe { *q.add(i) }, want, "byte {i} after rallocx ZERO");
         }
         // Alignment forces a move even within the same size.
@@ -1428,6 +1432,7 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(r as usize % 4096, 0);
+        // SAFETY: `r` is live with at least 100 bytes.
         assert_eq!(unsafe { *r.add(9) }, 9);
         // Into and out of the huge tier.
         let h = rallocx(
@@ -1441,6 +1446,7 @@ mod tests {
             shared().regions.classify(h as usize),
             Kind::Huge { .. }
         ));
+        // SAFETY: `h` is a live huge allocation (more than 10 bytes).
         assert_eq!(unsafe { *h.add(9) }, 9);
         let page = shared().regions.page_size();
         assert_eq!(
@@ -1462,9 +1468,11 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_ne!(h2, h);
+        // SAFETY: `h2` is a live huge allocation.
         assert_eq!(unsafe { *h2.add(9) }, 9);
         let n = sallocx(h2, 0);
         for i in (MEDIUM_MAX + page)..n {
+            // SAFETY: `i < sallocx(h2)`, inside the live allocation `h2`.
             assert_eq!(unsafe { *h2.add(i) }, 0, "huge rallocx ZERO tail byte {i}");
         }
         let s = rallocx(
@@ -1475,6 +1483,7 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(sallocx(s, 0), class_size_of(24).unwrap());
+        // SAFETY: `s` is live with 24 bytes.
         assert_eq!(unsafe { *s.add(9) }, 9);
         // xallocx never moves and reports the current usable size, with
         // or without `extra` (jemalloc may grow into `size + extra`;
@@ -1487,6 +1496,7 @@ mod tests {
             xallocx(s, 1 << 20, 1 << 20, MALLOCX_ZERO as c_int),
             class_size_of(24).unwrap()
         );
+        // SAFETY: as above.
         assert_eq!(unsafe { *s.add(9) }, 9, "xallocx touched nothing");
         // A failed rallocx leaves the block intact.
         assert!(
@@ -1824,6 +1834,7 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(!p.is_null());
+        // SAFETY: `p` is a live slot of `size` bytes.
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
         assert_eq!(
             s.classify_free(p, vstd::prelude::Tracked::assume_new()),
@@ -1859,6 +1870,7 @@ mod tests {
         );
         // (Written again: this is a fresh slot of the Lua arena's cache,
         // the one freed above went to the FOREIGN cache.)
+        // SAFETY: as above.
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
         assert_eq!(
             api_libc::realloc(
@@ -1876,6 +1888,7 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_ne!(q, p);
+        // SAFETY: `q` is a live allocation of `size * 4` bytes.
         assert_eq!(unsafe { *q }, 0xa5);
         // Across classes, plain realloc lands in the caller's home arena.
         assert_eq!(
@@ -2049,6 +2062,7 @@ mod tests {
                     vstd::prelude::Tracked::assume_new(),
                 );
                 assert!(!p.is_null());
+                // SAFETY: `p` is a live, non-null slot of at least one byte.
                 unsafe { *p = i as u8 };
                 v.push(p as usize);
             }
@@ -2074,6 +2088,8 @@ mod tests {
         h.flush_all(s, vstd::prelude::Tracked::assume_new());
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;
+            // SAFETY: the other thread's slots are still allocated; nothing freed
+            // them.
             assert_eq!(unsafe { *p }, i as u8);
             let (class, arena) = s
                 .classify_free(p, vstd::prelude::Tracked::assume_new())
@@ -2144,6 +2160,7 @@ mod tests {
         static LENS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
         unsafe extern "C" fn hook(opaque: *mut c_void, s: *const c_char) {
             assert!(opaque.is_null());
+            // SAFETY: the hook is handed a NUL-terminated message.
             let s = unsafe { core::ffi::CStr::from_ptr(s) };
             GOT.lock().unwrap().extend_from_slice(s.to_bytes());
             LENS.lock().unwrap().push(s.to_bytes().len());

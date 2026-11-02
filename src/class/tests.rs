@@ -88,6 +88,8 @@ impl Env {
             "fake page must be a real page multiple"
         );
         let reserve = |len: usize| -> usize {
+            // SAFETY: a fresh anonymous `PROT_NONE` reservation at an address the
+            // kernel picks; it replaces nothing.
             unsafe {
                 crate::sys::mmap(
                     0,
@@ -221,6 +223,8 @@ fn set_scans_never_read_uncommitted_words() {
 impl Drop for Env {
     fn drop(&mut self) {
         for (addr, len) in self.maps {
+            // SAFETY: the reservations `new` made; nothing uses them once the
+            // `Env` goes.
             unsafe { crate::sys::munmap(addr, len) }.unwrap();
         }
     }
@@ -1550,6 +1554,7 @@ fn release_of_interior_pointer_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
     let (p, _) = env.claim(cs, 1);
+    // SAFETY: one byte into the live slot `p[0]`.
     cs.release(&[unsafe { p[0].add(1) }]);
 }
 
@@ -1665,6 +1670,7 @@ fn check_of_unclaimed_slot_aborts() {
     let env = Env::new();
     let cs = env.class(small_class(), 0);
     let (p, _) = env.claim(cs, 2);
+    // SAFETY: the slot after `p[1]`, inside the same slab.
     cs.check(unsafe { p[1].add(cs.class().size()) });
 }
 
@@ -2288,15 +2294,20 @@ fn guard_slab_faults_when_supported() {
         a <= env.regions.slab_addr(c, 0) && env.regions.slab_addr(c, 3) <= b
     });
     assert!(merged, "guard slab split the VMA");
+    // SAFETY: the test binary is multithreaded; the child takes no lock: it
+    // writes one byte and leaves through `_exit`.
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
     if pid == 0 {
+        // SAFETY: `guard` is a guard slab: the write faults by design (the
+        // parent expects `SIGSEGV`), in the child only.
         unsafe {
             core::ptr::write_volatile(guard as *mut u8, 1);
             libc::_exit(0);
         }
     }
     let mut status = 0;
+    // SAFETY: `pid` is this process's child; `status` is a local.
     assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
     assert!(
         libc::WIFSIGNALED(status),

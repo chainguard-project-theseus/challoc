@@ -1504,6 +1504,7 @@ mod tests {
 
     unsafe extern "C" fn capture(opaque: *mut c_void, s: *const c_char) {
         assert_eq!(opaque as usize, 0xC0FFEE);
+        // SAFETY: the hook is handed a NUL-terminated chunk.
         let s = unsafe { core::ffi::CStr::from_ptr(s) };
         CAPTURE.lock().unwrap().extend_from_slice(s.to_bytes());
     }
@@ -2017,6 +2018,7 @@ mod tests {
             HOOKED
                 .lock()
                 .unwrap()
+                // SAFETY: the hook is handed a NUL-terminated message.
                 .extend_from_slice(unsafe { core::ffi::CStr::from_ptr(s) }.to_bytes());
         }
         set_message_hook_for_tests(Some(hook));
@@ -2040,12 +2042,17 @@ mod tests {
             .map(|_| malloc(3000, vstd::prelude::Tracked::assume_new()))
             .collect();
         let big = malloc(1 << 20, vstd::prelude::Tracked::assume_new());
+        // SAFETY: `tmpfile` has no preconditions.
         let f = unsafe { libc::tmpfile() };
         assert!(!f.is_null());
         assert_eq!(malloc_info(0, f, Tracked::assume_new()), 0);
+        // SAFETY: `f` is the open stream from `tmpfile`.
         unsafe { libc::rewind(f) };
         let mut buf = std::vec![0u8; 1 << 16];
+        // SAFETY: `buf` has `buf.len()` writable bytes; `f` is open.
         let n = unsafe { libc::fread(buf.as_mut_ptr() as *mut c_void, 1, buf.len(), f) };
+        // SAFETY: `f` is open; the `malloc_info(1, f)` below rejects its
+        // options before it would touch the closed stream.
         unsafe { libc::fclose(f) };
         let xml = String::from_utf8(buf[..n].to_vec()).unwrap();
         assert!(xml.starts_with("<malloc version=\"1\">\n"), "{xml}");
@@ -2064,6 +2071,7 @@ mod tests {
             xml.matches("</heap>").count()
         );
         assert_eq!(malloc_info(1, f, Tracked::assume_new()), -1);
+        // SAFETY: `__errno_location` returns this thread's `errno`.
         assert_eq!(unsafe { *libc::__errno_location() }, 22);
         assert_eq!(
             malloc_info(0, core::ptr::null_mut(), Tracked::assume_new()),
