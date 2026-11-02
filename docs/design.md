@@ -1686,7 +1686,7 @@ Thread cancellation is not a failure either: challoc never acts on a
 Guards degrade, never vanish: a guard the kernel refuses as a
 `MADV_GUARD_INSTALL` marker (on an `mlock`ed range, `EINVAL`) is a
 `PROT_NONE` page or slab instead, put in place before the memory next to
-it is committed; if that `mprotect` fails too (a VMA split refused at
+it is handed out; if that `mprotect` fails too (a VMA split refused at
 `vm.max_map_count`) nothing next to it is handed out and the allocation
 is NULL/`ENOMEM`, retried on the next call (`SlabTable::install_guard`,
 `Huge::prepare`). Inside `free`, the huge descriptor table never needs
