@@ -7,7 +7,6 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `bad_state_byte` | external_body | panic/abort | Verus | trusted |
 | `desc_stride` | external_body | core library | Kani | discharged |
 | `SlabDesc::init` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...e_held` | external_body | atomics primitive | loom/GenMC | trusted |
@@ -16,20 +15,9 @@ file.
 | `SlabDes...a_held` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...rty_at` | external_body | atomics primitive | loom/GenMC | trusted |
 
-## `bad_state_byte`
-
-src/slab.rs:43. Kind: external_body. Category: panic/abort.
-Tool: Verus. Status: trusted.
-
-> Trusted: Verus does not model the panic's formatted message.
-
-```rust
-fn bad_state_byte(v: u8) -> !
-```
-
 ## `desc_stride`
 
-src/slab.rs:284. Kind: external_body. Category: core library.
+src/slab.rs:291. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: slab::kani_desc_stride::desc_stride_reads_the_table).
 
 > Descriptor stride for `class` in bytes.
@@ -45,7 +33,7 @@ pub fn desc_stride(class: usize) -> (r: usize)
 
 ## `SlabDesc::init`
 
-src/slab.rs:340. Kind: external_body. Category: atomics primitive.
+src/slab.rs:347. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Initialise the descriptor of a slab handed to `arena`: `Fresh`, no live slots, through `p`, the descriptor's permission (ghost).
@@ -63,7 +51,7 @@ pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabDesc::state_byte_held`
 
-src/slab.rs:382. Kind: external_body. Category: atomics primitive.
+src/slab.rs:394. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > The `state` byte, as [`state_held`](SlabDesc::state_held): the state the permission under `k` records when that is this descriptor's.
@@ -76,7 +64,7 @@ fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, De
 
 ## `SlabDesc::dirty_held`
 
-src/slab.rs:400. Kind: external_body. Category: atomics primitive.
+src/slab.rs:412. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > [`dirty_at`](SlabDesc::dirty_at) read by a holder of `m`, as [`state_held`](SlabDesc::state_held): the stamp the permission under `k` records when that is this descriptor's.
@@ -89,7 +77,7 @@ pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 
 ## `SlabDesc::set_state`
 
-src/slab.rs:415. Kind: external_body. Category: atomics primitive.
+src/slab.rs:427. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Only ever called with the class lock held, which holds `p`, the descriptor's permission (ghost), which records the new state.
@@ -107,7 +95,7 @@ pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabDesc::arena_held`
 
-src/slab.rs:453. Kind: external_body. Category: atomics primitive.
+src/slab.rs:465. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > [`arena`](SlabDesc::arena) read by a holder of `m`, the permissions a class lock value holds: the arena the permission under `k` records when that is this descriptor's.
@@ -120,7 +108,7 @@ pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 
 ## `SlabDesc::set_dirty_at`
 
-src/slab.rs:513. Kind: external_body. Category: atomics primitive.
+src/slab.rs:525. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).
