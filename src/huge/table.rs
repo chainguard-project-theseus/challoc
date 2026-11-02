@@ -392,13 +392,12 @@ impl Table {
     /// table holds of it ([`Own`]): the permission for each entry; the
     /// block's claim when it is binned; and `meta`'s identity. The storage
     /// is `meta`'s (`Meta::holds`, which `Meta::alloc_zeroed` and
-    /// `Meta::reserve_committed` ensure of what they return). Trusted:
-    /// `Meta::alloc_zeroed` hands out a binned block's permission, claim
-    /// and zero token (its contract), but `Meta::reserve_committed` hands
-    /// out no permission for a reserved block, so a variant of it that
-    /// does, and an address-to-pointer cast Verus accepts, must land
-    /// before this is verified; and an all-zero `Entry` (a `usize` and a
-    /// raw pointer) is empty.
+    /// `Meta::reserve_committed_raw` ensure of what they return). Trusted:
+    /// both hand out the block's permission and the fact that its bytes
+    /// read as zero (a binned block's permission, claim and zero token, a
+    /// reserved block's `ZeroRaw`), but nothing states that an all-zero
+    /// `Entry` (a `usize` and a raw pointer) is empty, which the entries'
+    /// permissions need.
     #[verifier::external_body]
     fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
         requires
@@ -420,15 +419,17 @@ impl Table {
     {
         let layout = Table::layout(lg_cap);
         if layout.size() <= meta::MAX_BINNED {
-            let p = meta.alloc_zeroed(layout).0;
+            let (p, Tracked(blk), Tracked(z)) = meta.alloc_zeroed(layout);
             if p.is_null() {
                 None
             } else {
                 Some((p as *mut Entry, true, Tracked::assume_new()))
             }
         } else {
-            let p = meta.reserve_committed(layout.size(), page)?;
-            Some((p as *mut Entry, false, Tracked::assume_new()))
+            let (s, Tracked(raw)) = meta.reserve_committed_raw(layout.size(), page);
+            let p = s?;
+            let e = crate::vspec::addr::addr_to_ptr(p) as *mut Entry;
+            Some((e, false, Tracked::assume_new()))
         }
     }
 
@@ -1728,7 +1729,7 @@ mod tests {
 mod kani_table {
     use super::{Entry, Layout, Meta, MetaClaim, Table, Tracked};
     use crate::meta::{MAX_ALIGN, MAX_BINNED};
-    use crate::vspec::zero::Zeroed;
+    use crate::vspec::zero::{ZeroRaw, Zeroed};
     use core::sync::atomic::{AtomicUsize, Ordering};
     use vstd::raw_ptr::PointsToRaw;
 
@@ -1776,18 +1777,22 @@ mod kani_table {
         (p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
     }
 
-    /// `Meta::reserve_committed` as its contract states: its `requires`
+    /// `Meta::reserve_committed_raw` as its contract states: its `requires`
     /// (`align` a power of two) asserted, then `None`, or a nonzero start
     /// aligned to `align` whose `len` bytes the region holds.
     #[allow(dead_code)] // As `stub_alloc_zeroed`.
-    fn stub_reserve_committed(_meta: &Meta, len: usize, align: usize) -> Option<usize> {
+    fn stub_reserve_committed_raw(
+        _meta: &Meta,
+        len: usize,
+        align: usize,
+    ) -> (Option<usize>, Tracked<ZeroRaw>) {
         assert!(align.is_power_of_two());
         let s: usize = kani::any();
         if kani::any() {
             kani::assume(s > 0 && s % align == 0 && in_region(s, len));
-            Some(s)
+            (Some(s), Tracked::assume_new())
         } else {
-            None
+            (None, Tracked::assume_new())
         }
     }
 
@@ -1795,12 +1800,12 @@ mod kani_table {
     /// region `Meta::owning` accepts with a page of `2^4` to `2^30` bytes,
     /// every power-of-two `page` argument and `lg_cap <= 58`, the table it
     /// returns lies in the region. `Meta::alloc_zeroed` and
-    /// `Meta::reserve_committed` are stubbed by their contracts (verified
-    /// by Verus), so this checks the rest of the body: that each branch
-    /// asks for `16 << lg_cap` bytes and returns that block's start.
+    /// `Meta::reserve_committed_raw` are stubbed by their contracts
+    /// (verified by Verus), so this checks the rest of the body: that each
+    /// branch asks for `16 << lg_cap` bytes and returns that block's start.
     #[kani::proof]
     #[kani::stub(Meta::alloc_zeroed, stub_alloc_zeroed)]
-    #[kani::stub(Meta::reserve_committed, stub_reserve_committed)]
+    #[kani::stub(Meta::reserve_committed_raw, stub_reserve_committed_raw)]
     fn storage_in_meta() {
         let lg_page: u32 = kani::any();
         kani::assume(4 <= lg_page && lg_page <= 30);
