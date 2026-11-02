@@ -442,7 +442,11 @@ the slab stays `PROT_NONE` and only the slabs after it are committed
 (14.1).
 Without `MADV_GUARD_INSTALL` (before 6.13) `Shared::init` forces the
 interval to 0, because a `PROT_NONE` slab every eighth slab would split
-each class region into thousands of VMAs. A guard slab inside a
+each class region into thousands of VMAs; `guards:false` sets it to 0
+too. A guard slab whose marker is refused (`mlock`) stays a `PROT_NONE`
+slab for good, as slabs are never decommitted: at most two VMAs per
+`guard_slab_interval` x 64 KiB of the class region ever committed,
+bounded by the region's peak footprint, not by live blocks (14.1). A guard slab inside a
 `thp:always` chunk is left unused but unguarded (section 17.1).
 
 ## 6. Thread heaps and caches
@@ -858,14 +862,30 @@ with page granularity (`huge/`).
   start aborts. The table's load stays at or below one half, every
   allocation also reserves a key for each live run's free (14.1), and
   `insert` aborts rather than fill the last slot.
-- Runs are followed by a guard page: `MADV_GUARD_INSTALL` when
-  available, else `PROT_NONE` (the reserved default), which costs no
-  memory, only one VMA per live huge run. The guard-install variant
-  survives a later commit of the neighbouring run. A marker the kernel
-  refuses (an `mlock`ed range) becomes a `PROT_NONE` page, and from then
-  on every allocation commits its own pages, since such a page stays
-  `PROT_NONE` in the free extent after its run's free
-  (`Huge::mixed_guards`).
+- Runs are followed by a guard page (with `guards` on, the default):
+  `MADV_GUARD_INSTALL` when available, which splits no VMA and survives a
+  later commit of the neighbouring run; else (kernels before 6.13) a
+  `PROT_NONE` page, which costs no memory but splits the VMA: a live
+  guarded run costs at most two VMAs (its pages and its guard) while it
+  lives. A free makes the `PROT_NONE` guard read-write again, so the
+  free extent merges back into its neighbours and the split ends with
+  the run: below the mark every page is read-write except the guards of
+  live runs, and the VMAs the huge tier holds are bounded by its live
+  runs. The kernel merges two anonymous VMAs only when they share an
+  `anon_vma`, which a VMA gets at its first write fault, so a run
+  reaching past the mark is committed through its guard and its first
+  page is populated for write (`MADV_POPULATE_WRITE`) before the guard
+  is split off (`split_guard`); split earlier, each half would get its
+  own on first touch and never merge again. A marker the kernel refuses
+  (an `mlock`ed range) becomes a `PROT_NONE` page, released the same way
+  at free; from then on every allocation also commits its own pages
+  (`Huge::mixed_guards`, also set if a release ever fails). Under
+  `guards:false` no guard is placed in either mode: the guard page is
+  committed with its run and nothing splits the VMA. The cost of the
+  fallback is one VMA split at allocation and one merge at free (a
+  260 KiB `malloc`, touch and `free` went from 0.8 to 1.2 us with one run
+  live and to 2.9 us with a thousand, on Linux 6.18 with the guard advice
+  filtered; glibc's `mmap` path is 3.1 us there).
 - Alignment above the page is satisfied inside a free extent, at the
   extent's start rounded up to the alignment; the pages around the run
   stay free extents.
@@ -1718,7 +1738,8 @@ Always on:
   test to the flush, 6.3). A second free
   of a slot still held in a thread cache is caught only by a flush that
   reaches the copy while the slot is unclaimed (6.3).
-- A guard after every huge run (`MADV_GUARD_INSTALL`, else `PROT_NONE`).
+- A guard after every huge run (`MADV_GUARD_INSTALL`, else `PROT_NONE`;
+  none under `guards:false`).
 - Abort, never continue, on any inconsistency: a message on stderr via
   `write(2)`, then `abort()` (`sys/abort.rs`). A resource failure is not
   an inconsistency (14.1).
@@ -1791,6 +1812,23 @@ to grow: every allocation reserves one key per live run for the frees
 still finds room, and `MADV_GUARD_REMOVE` fails only on a range the
 program unmapped or sealed, which is an inconsistency like the purge's
 `ENOMEM`/`EPERM`.
+
+Mappings (`vm.max_map_count`, 65530 by default) are a resource too, and
+the VMAs challoc creates are bounded by what is live or by a fixed or
+peak quantity, never by the history of allocations: the three
+reservations and the sealed gaps (fixed at init, section 2); one VMA per
+committed metadata table prefix (a fixed set of tables, section 2); a
+class region's committed slabs, one VMA unless a guard marker was
+refused (then at most two per guard interval of the region's peak,
+section 5); the huge region's committed pages, one VMA plus at most two
+per live guarded run in the `PROT_NONE` fallback (none in guard-install
+mode or under `guards:false`; released at free, section 7). Under
+`thp:always` a huge run of a PMD or more is `MADV_HUGEPAGE`d, a VMA flag
+the range keeps after the free, so the boundaries between advised and
+unadvised ranges are bounded by the huge region's high-water mark over
+the PMD size rather than by the live runs (`thp` defaults to `never`,
+which advises no huge run). The class regions' `thp:always` chunk advice
+covers whole committed chunks, so it merges as the region grows.
 
 The limits a process may run under are part of this. A process that
 starts under a finite `RLIMIT_DATA` has no table writable before it is

@@ -99,14 +99,37 @@ impl Env {
     }
 
     pub fn huge(&self) -> Huge {
+        self.huge_with(guard_mode(), true)
+    }
+
+    /// A huge allocator in a chosen guard mode: `guard_install` false is
+    /// the `PROT_NONE` fallback of kernels before 6.13, `guards` false
+    /// the `guards:false` key.
+    pub fn huge_with(&self, guard_install: bool, guards: bool) -> Huge {
         Huge::new(
             &self.meta,
             &self.regions,
-            guard_mode(),
+            guard_install,
+            guards,
             Tracked::assume_new(),
             Tracked::assume_new(),
         )
         .expect("huge allocator")
+    }
+
+    /// The VMAs that overlap this environment's huge reservation.
+    pub fn huge_vmas(&self) -> usize {
+        let (lo, len) = self.maps[0];
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        maps.lines()
+            .filter(|l| {
+                let range = l.split_whitespace().next().unwrap();
+                let (a, b) = range.split_once('-').unwrap();
+                let a = usize::from_str_radix(a, 16).unwrap();
+                let b = usize::from_str_radix(b, 16).unwrap();
+                a < lo + len && lo < b
+            })
+            .count()
     }
 
     /// [`Huge::alloc`] plus an audit and a check that the run's pages
@@ -984,6 +1007,7 @@ fn metadata_exhaustion_is_reported_not_fatal() {
         &env.meta,
         &env.regions,
         guard_mode(),
+        true,
         Tracked::assume_new(),
         Tracked::assume_new(),
     ) else {
@@ -1012,6 +1036,7 @@ fn metadata_exhaustion_is_reported_not_fatal() {
             &tiny.meta,
             &tiny.regions,
             guard_mode(),
+            true,
             Tracked::assume_new(),
             Tracked::assume_new(),
         )

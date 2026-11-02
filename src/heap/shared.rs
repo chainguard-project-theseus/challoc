@@ -2063,7 +2063,6 @@ impl Shared {
         } else {
             0
         };
-        let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
         // `double_free_scan`'s slot-state arrays, before any class table
         // can hand out a slab (`slotstate::commit`).
@@ -2274,7 +2273,7 @@ impl Shared {
             // keeps it for entry 0, and `axiom_shared_built` takes it.
             let tracked a0 = vstd::modes::tracked_static_ref(parts.arena0.perm.tracked_take());
             let tracked huge_once = once::take(&mut steps, Step::Huge);
-            match Huge::new(meta, regions, guard_install, Tracked(huge_once), Tracked(&mut ord)) {
+            match Huge::new(meta, regions, guard_install, config.guards, Tracked(huge_once), Tracked(&mut ord)) {
                 Some(h) => {
                     h.set_retain_max(config.huge_retain_max);
                     // `huge_dirty_decay_ms:0`: a freed run is purged at

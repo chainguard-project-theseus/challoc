@@ -511,3 +511,85 @@ fn extents_whose_discard_fails_stay_empty() {
     assert!(all(p, size, 0) && all(r, size, 0));
     env.free(&h, q);
 }
+
+/// The VMAs the huge tier holds are bounded by its live runs in every
+/// guard mode (hunt 943666c7, c-ec215453): in the `PROT_NONE` fallback a
+/// live run costs its guard's split, and freeing it merges the guard
+/// back, so after every run is freed the reservation is back to a few
+/// VMAs; under `guards:false` no guard is placed and runs never split it.
+/// Aligned runs leave no `PROT_NONE` hole below the mark either.
+#[test]
+fn guard_vmas_are_bounded_by_live_runs() {
+    const N: usize = 64;
+    for (guard_install, guards) in [
+        (false, true),
+        (false, false),
+        (guard_mode(), true),
+        (guard_mode(), false),
+    ] {
+        let env = Env::new();
+        let h = env.huge_with(guard_install, guards);
+        let base = env.huge_vmas();
+        let mut ps = Vec::new();
+        for i in 0..N {
+            // Every fourth run asks for 16-page alignment, leaving a hole.
+            let align = if i % 4 == 3 { 16 * page_size() } else { 1 };
+            let (p, _) = env.alloc(&h, 3 * page_size(), align);
+            assert!(!p.is_null());
+            ps.push(p);
+        }
+        // Touched only once all are placed, so no run has an `anon_vma`
+        // of its own when its guard is split off.
+        for p in &ps {
+            fill(*p, 3 * page_size(), 0x5A);
+        }
+        let live = env.huge_vmas();
+        if guards && !guard_install {
+            assert!(live >= N, "fallback: {live} VMAs for {N} guarded runs");
+        } else {
+            assert!(
+                live <= base + 2,
+                "mode ({guard_install}, {guards}): {live} VMAs with {N} live runs"
+            );
+        }
+        for p in &ps {
+            env.free(&h, *p);
+        }
+        let after = env.huge_vmas();
+        assert!(
+            after <= base + 2,
+            "mode ({guard_install}, {guards}): {after} VMAs after freeing every run (base {base})"
+        );
+        // Reuse puts the guards back and freeing takes them away again.
+        for p in ps.iter_mut() {
+            let (q, _) = env.alloc(&h, 3 * page_size(), 1);
+            fill(q, 3 * page_size(), 0xA5);
+            *p = q;
+        }
+        for p in &ps {
+            env.free(&h, *p);
+        }
+        let again = env.huge_vmas();
+        assert!(
+            again <= base + 2,
+            "mode ({guard_install}, {guards}): {again} VMAs after reuse"
+        );
+    }
+}
+
+/// `guards:false` places no barrier: the page after a run is writable.
+#[test]
+fn guards_false_places_no_guard() {
+    for guard_install in [false, guard_mode()] {
+        let env = Env::new();
+        let h = env.huge_with(guard_install, false);
+        let (p, _) = env.alloc(&h, 2 * page_size(), 1);
+        let (q, _) = env.alloc(&h, page_size(), 1);
+        assert_eq!(q as usize, p as usize + 3 * page_size());
+        // SAFETY: the page after `p` is the unused guard slot between two
+        // runs this test holds; under `guards:false` it is read-write.
+        unsafe { core::ptr::write_volatile((p as usize + 2 * page_size()) as *mut u8, 1) };
+        env.free(&h, p);
+        env.free(&h, q);
+    }
+}

@@ -22,10 +22,13 @@
 //! Guards. In `guard_install` mode the guard page is committed like its
 //! neighbours and gets `MADV_GUARD_INSTALL`, so runs stay in one VMA; the
 //! guard is removed when the run is freed so free extents never contain
-//! one. Otherwise the guard page is left (or put back) `PROT_NONE`, which
-//! splits the VMA but costs nothing else, and every allocation re-commits
-//! its usable range so stale `PROT_NONE` guards inside a reused extent are
-//! made writable again.
+//! one. Otherwise (the fallback mode, kernels before 6.13) the guard page
+//! is made `PROT_NONE`, which splits the VMA, and made read-write again
+//! when the run is freed, so the free extent merges back into one VMA and
+//! the split lasts only as long as the run; every allocation also commits
+//! its own range, so a guard whose release failed is undone on reuse.
+//! Under `guards:false` no guard is placed in either mode: the guard page
+//! is committed with the run.
 //!
 //! Alignment above a page is met in `find`: the start of each free extent
 //! (and finally the high-water mark) is rounded up to the alignment and the
@@ -1830,18 +1833,24 @@ pub struct Huge {
     lg_page: u32,
     npages: usize,
     guard_install: bool,
+    /// The `guards` key (design 7): false places no guard after a run at
+    /// all, in either mode (`guard_install` is then false too), so a run
+    /// and the free pages around it stay one read-write VMA.
+    guards: bool,
     retain_max: AtomicUsize,
     /// `huge_dirty_decay_ms:0` (design 7): a freed run is purged as it is
     /// freed, whatever its size, instead of waiting in the `Empty` list
     /// for a decay pass; set once at init (`Shared::init`).
     purge_on_free: AtomicBool,
-    /// Guard-install mode only: some guard was refused its marker
-    /// (`EINVAL` on an `mlock`ed range) and is a `PROT_NONE` page instead
-    /// ([`Huge::prepare`]). Such a page stays `PROT_NONE` after its run's
-    /// free (`MADV_GUARD_REMOVE` does not touch it), below the mark that
-    /// guard-install mode otherwise keeps read-write, so from then on
-    /// every allocation commits its own pages, as the fallback mode
-    /// does. Never cleared: a cost, not a failure, that sticks.
+    /// A `PROT_NONE` page may lie below the mark outside a live run's
+    /// guard, so every allocation commits its own pages ([`Huge::prepare`]).
+    /// Set in guard-install mode when some guard was refused its marker
+    /// (`EINVAL` on an `mlock`ed range) and is a `PROT_NONE` page instead:
+    /// `MADV_GUARD_REMOVE` does not touch such a page, so from then on a
+    /// free also makes its run's guard read-write again, as the fallback
+    /// mode always does; and in either mode when making a freed run's
+    /// guard read-write failed. Never cleared: a cost, not a failure, that
+    /// sticks.
     mixed_guards: AtomicBool,
     /// The decay step gate (`purge::Decayer`): `dirty_at` of the head of
     /// the `Empty` list (its oldest member), kept in step with the list
@@ -1877,6 +1886,8 @@ const PROT_NONE: i32 = 0;
 const PROT_RW: i32 = 3;
 const MADV_GUARD_INSTALL: i32 = 102;
 const MADV_GUARD_REMOVE: i32 = 103;
+/// `MADV_POPULATE_WRITE` (Linux 5.14, `include/uapi/asm-generic/mman-common.h`).
+const MADV_POPULATE_WRITE: i32 = 23;
 
 } // verus!
 
@@ -1904,6 +1915,34 @@ fn protect_none(addr: usize, len: usize) -> Result<(), Errno>
 {
     // SAFETY: the page is a guard that no caller may touch.
     unsafe { sys::mprotect(addr, len, PROT_NONE) }
+}
+
+/// Make the guard page at `guard` `PROT_NONE` for the run at `run`,
+/// whose first page and the guard are committed and in one VMA. The
+/// split VMAs must be able to merge again when the run is freed and the
+/// guard made read-write (`free_run`), and the kernel merges two anonymous
+/// VMAs only when they share an `anon_vma`, which a VMA receives at its
+/// first write fault (from a compatible neighbour when one has it, the
+/// previous run's guard here, else a new one). Split before that fault,
+/// the run and its guard would each get their own on first touch and
+/// never merge back, leaving one VMA per run ever placed after every run
+/// was freed (measured). So the run's first page is populated for write
+/// first (`MADV_POPULATE_WRITE`, kernel 5.14, the floor; it writes
+/// nothing, the page still reads as zero, and the caller is about to
+/// touch it), and both halves of the split inherit the `anon_vma`. A
+/// refused populate costs only the merge, so it is ignored. `populate`
+/// may be false for a run inside the mark in the fallback mode: every VMA
+/// there was split off one populated this way, so it has its `anon_vma`.
+fn split_guard(run: usize, guard: usize, page: usize, populate: bool) -> Result<(), Errno>
+    requires
+        crate::sys::may_syscall(),
+{
+    if populate {
+        // SAFETY: the first page of a run being placed, which nobody
+        // holds yet; populating leaves its contents alone.
+        let _ = unsafe { sys::madvise(run, page, MADV_POPULATE_WRITE) };
+    }
+    protect_none(guard, GUARD_PAGES * page)
 }
 
 fn guard_install(addr: usize, len: usize) -> Result<(), Errno>
@@ -3809,12 +3848,14 @@ verus! {
 impl Huge {
     /// Create the huge allocator for `regions`, reserving its free-page
     /// bitmap and descriptor table in `meta`. `guard_install` should be the
-    /// probed `MADV_GUARD_INSTALL` support. `None` if the metadata region
-    /// cannot hold the tables.
+    /// probed `MADV_GUARD_INSTALL` support and `guards` the `guards` key
+    /// (false: no guard page is placed at all, and `guard_install` is
+    /// ignored). `None` if the metadata region cannot hold the tables.
     pub fn new(
         meta: &Meta,
         regions: &Regions,
         guard_install: bool,
+        guards: bool,
         Tracked(once): Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<Huge>)
@@ -3884,7 +3925,8 @@ impl Huge {
             base: regions.huge_base,
             lg_page: regions.lg_page,
             npages,
-            guard_install,
+            guard_install: guard_install && guards,
+            guards,
             retain_max: AtomicUsize::new(DEFAULT_RETAIN_MAX),
             purge_on_free: AtomicBool::new(false),
             mixed_guards: AtomicBool::new(false),
@@ -5213,9 +5255,10 @@ impl Huge {
     }
 
     /// Kernel side of an allocation of `usable` pages at `s`: commit and
-    /// place the guard. Pages below `watermark` are committed already
-    /// (apart from `PROT_NONE` guards in fallback mode, and in
-    /// guard-install mode once a marker was refused, [`Huge::mixed_guards`]).
+    /// place the guard. Pages below `watermark` are committed already,
+    /// apart from the `PROT_NONE` guards of live runs (fallback mode, or
+    /// guard-install mode once a marker was refused) and, once
+    /// [`Huge::mixed_guards`] is set, possibly a guard whose release failed.
     ///
     /// In guard-install mode every page below the mark stays committed, so
     /// one `mprotect` over `[watermark, end)` is all a run past the mark
@@ -5261,14 +5304,34 @@ impl Huge {
                 // which works there, so the run is guarded all the same.
                 // If that fails too the run is not handed out (design
                 // 14.1).
-                protect_none(self.addr(guard), GUARD_PAGES * page)?;
+                split_guard(self.addr(s), self.addr(guard), page, true)?;
                 self.mixed_guards.store(true, Ordering::Relaxed);
             }
             Ok(())
         } else {
-            commit(self.addr(s), usable * page)?;
-            if guard < watermark {
-                protect_none(self.addr(guard), GUARD_PAGES * page)?;
+            // Fallback mode (no `MADV_GUARD_INSTALL`) or `guards:false`.
+            // Below the mark every page is read-write except the guards
+            // of live runs (a free makes its run's guard read-write
+            // again, `free_run`; if that ever fails, `mixed_guards` is
+            // set and every allocation commits its own range), so the
+            // VMAs stay bounded by the live runs, and a run inside the
+            // mark needs no commit. A run reaching past the mark is
+            // committed from the mark when alignment starts it above (the
+            // hole `take` records as a free extent must not be left a
+            // `PROT_NONE` island below the mark), from `s` otherwise, and
+            // through its guard page, so that under `guards:false`
+            // nothing splits the VMA and otherwise the guard is split off
+            // the run's own VMA ([`split_guard`]).
+            let fresh = watermark < end;
+            if fresh || self.mixed_guards.load(Ordering::Relaxed) {
+                let lo = if watermark < s { watermark } else { s };
+                proof {
+                    self.lemma_pages((end - lo) as usize);
+                }
+                commit(self.addr(lo), (end - lo) * page)?;
+            }
+            if self.guards {
+                split_guard(self.addr(s), self.addr(guard), page, fresh)?;
             }
             Ok(())
         };
@@ -7000,6 +7063,7 @@ impl Huge {
         }
         // Nested, not a `let` chain: Verus does not take `let` chains.
         #[allow(clippy::collapsible_if)]
+        let guard_addr = addr + (n - GUARD_PAGES) * page_size;
         if self.guard_install {
             // Not a resource failure: `MADV_GUARD_REMOVE` takes locked
             // VMAs and allocates nothing, and a `PROT_NONE` guard
@@ -7007,8 +7071,21 @@ impl Huge {
             // anonymous mapping it fails only when the program unmapped
             // (`ENOMEM`) or sealed (`EPERM`) part of the huge region: an
             // inconsistency, as for the purge (design 14.1).
-            if let Err(e) = guard_remove(addr + (n - GUARD_PAGES) * page_size, GUARD_PAGES * page_size) {
+            if let Err(e) = guard_remove(guard_addr, GUARD_PAGES * page_size) {
                 sys::abort_kernel(format_args!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}"));
+            }
+        }
+        if self.guards && (!self.guard_install || self.mixed_guards.load(Ordering::Relaxed)) {
+            // A `PROT_NONE` guard (fallback mode, or a refused marker)
+            // splits the VMA; made read-write again it merges back into
+            // the free extent, so the VMAs the huge tier holds stay
+            // bounded by its live runs (design 7). Best effort: the
+            // change only merges VMAs, and if it fails anyway the page
+            // stays `PROT_NONE`, `mixed_guards` is set, and from then on
+            // every allocation commits its own range (`prepare`), which
+            // undoes it when the page is reused.
+            if commit(guard_addr, GUARD_PAGES * page_size).is_err() {
+                self.mixed_guards.store(true, Ordering::Relaxed);
             }
         }
         let now = now_ns().max(1);

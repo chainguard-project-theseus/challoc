@@ -5,10 +5,11 @@
  * allocator must commit the hole it leaves between the old high-water mark
  * and an aligned run's start, which it records as a free extent: a hole
  * left PROT_NONE faults on the first write of the first block placed in
- * it. The PROT_NONE-guard fallback mode commits every block's own pages on
- * allocation, so only a kernel with guard regions (6.13+) exercises the
- * guard-install path. The driver in src/api/c_programs.rs runs this
- * program in the probed guard mode and again with MALLOC_CONF=guards:false.
+ * it. The PROT_NONE-guard fallback mode and guards:false commit the hole
+ * along with the run that leaves it, so only a kernel with guard regions
+ * (6.13+) exercises the guard-install path. The driver in
+ * src/api/c_programs.rs runs this program in the probed guard mode and
+ * again with MALLOC_CONF=guards:false.
  *
  * Two hole shapes, in this order so the second finds the mark it needs:
  *

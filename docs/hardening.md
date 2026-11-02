@@ -178,8 +178,9 @@ window, and a class offset is 1..(gap / 4 MiB - 2) steps plus its
 colour. A linear overflow or underflow off a region's first or last page
 therefore faults inside challoc's reservation; it never reaches a
 mapping the kernel placed next to it (a thread stack, a library's data).
-Inside the huge region each run is followed by its guard page; the run at
-the bottom of the region is preceded by that slack. `Regions::slack_ok`
+Inside the huge region each run is followed by its guard page (none
+under `guards:false`); the run at the bottom of the region is preceded by
+that slack. `Regions::slack_ok`
 checks the property once at init and aborts if a layout ever breaks it.
 
 ## Resource failures
@@ -192,6 +193,11 @@ next call tries again, and `free` keeps what it cannot safely recycle
 out of circulation.
 None of this weakens a check: a resource failure never makes challoc
 hand out a block whose metadata it could not record.
+The mappings challoc creates count against `vm.max_map_count` only for
+what is live or fixed (`docs/design.md` 14.1): a `PROT_NONE` huge guard
+(kernels before 6.13, or a marker refused under `mlock`) costs one VMA
+while its run is live and is merged back when the run is freed, so a
+program that freed its blocks gets its mappings back.
 
 ## Stricter than jemalloc
 
