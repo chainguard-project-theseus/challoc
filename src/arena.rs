@@ -160,7 +160,7 @@ unsafe impl Send for Arena {}
 #[cfg(test)]
 pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// The most metadata (bump and reservation sides together) one arena
+/// The least metadata (bump and reservation sides together) one arena
 /// build has taken so far ([`Arenas::build`]), per metadata allocator
 /// (keyed by its address: the process has one, the tests build many);
 /// what [`Arenas::create`] keeps free per automatic arena not built yet.
@@ -3844,7 +3844,8 @@ impl Arenas {
     /// `arenas.create`: a new explicit arena. `None` when the table or the
     /// metadata region is full, or when building it would leave the
     /// region without room for [`AUTO_HEADROOM`] automatic arenas not
-    /// built yet (as much as the largest build so far took for each), so
+    /// built yet (`build_cost`: the smallest build measured, plus slack,
+    /// for each), so
     /// explicit arenas never take every thread's home (design 13.3, 14.1).
     /// Homes past those are served from arena 0. The
     /// caller's record `fx` gets [`Change::Created`] when an arena is
