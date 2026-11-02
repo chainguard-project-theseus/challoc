@@ -395,8 +395,10 @@ impl<'a> LockOrder<'a> {
 ///   `batch_query` and `experimental.utilization.query` among them), one
 ///   token per reader or per `utilization` and `owner_of` call: the entry
 ///   point holds no allocator lock, `ctl` and the readers take none
-///   themselves, and each call the token is passed to releases every lock
-///   it takes before it returns;
+///   themselves (but the metadata lock `stats::Scratch` takes and releases
+///   inside `Meta::alloc_raw` and `Meta::free`, under its own order), and
+///   each call the token is passed to releases every lock it takes before
+///   it returns;
 /// - `api::libc`'s `alloc_huge` without a thread heap, reached only from the
 ///   C entry points, and the entry point `malloc_trim`: their callers hold
 ///   no allocator lock, and `malloc_trim`'s

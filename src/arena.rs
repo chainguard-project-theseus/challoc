@@ -1350,14 +1350,15 @@ impl Arena {
         ((w >> 32) as usize, (w & (Self::LARGE_RUN - 1)) as usize)
     }
 
-    /// The statistics stored by the last `epoch`: they satisfy the
+    /// The statistics stored by the last `epoch`, copied into `out` (a
+    /// `stats::Scratch`'s record, not the stack): they satisfy the
     /// accounting identities (the lock's invariant).
-    pub fn stats(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: ArenaStats)
+    pub fn stats_into(&self, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_arena_stats(0)),
         ensures
-            r.identities(),
+            final(out).identities(),
             *final(ord) == *old(ord),
     {
         broadcast use axiom_arena_stats_lock_inv;
@@ -1365,7 +1366,28 @@ impl Arena {
         proof {
             use_type_invariant(self);
         }
-        *self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()))
+        let g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        *out = *g;
+    }
+
+    /// Add the statistics stored by the last `epoch` to `out`
+    /// (`ArenaStats::add`, the `MALLCTL_ARENAS_ALL` merge), read in place
+    /// under the lock.
+    // `&*g`: Verus does not apply the guard's deref coercion.
+    #[allow(clippy::explicit_auto_deref)]
+    pub fn add_stats_to(&self, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_arena_stats(0)),
+        ensures
+            final(out).index == old(out).index,
+            *final(ord) == *old(ord),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        out.add(&*g);
     }
 
     /// Store the statistics of an `epoch`.

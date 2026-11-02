@@ -55,9 +55,12 @@ use crate::layout::{NBINS, NCLASSES};
 use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::{rank_arena_stats, rank_class, rank_stats};
-use crate::meta::MetaStats;
+use crate::meta::{Meta, MetaClaim, MetaStats};
 use crate::vspec::ctl::Change;
+use core::alloc::Layout;
 use vstd::prelude::*;
+use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
+use vstd::resource::Loc;
 
 pub mod ledger;
 
@@ -295,7 +298,11 @@ pub struct ArenaStats {
 }
 
 impl ArenaStats {
-    /// All zero, for `index`.
+    /// All zero, for `index`: what [`ArenaStats::clear`] leaves, by
+    /// value, for the tests and the arenas' records' reference value
+    /// (`Arena::put_stats`).
+    // The build collects into `Scratch` records instead.
+    #[allow(dead_code)]
     pub const fn empty(index: u16) -> (r: ArenaStats)
         ensures
             r.index == index,
@@ -330,6 +337,60 @@ impl ArenaStats {
             retained: 0,
             mapped: 0,
             bins: [BinStats::EMPTY; NCLASSES],
+        }
+    }
+
+    /// Reset to [`ArenaStats::empty`]`(index)` in place: every head field
+    /// and every bin, so a [`Scratch`]'s record (zero, or a previous
+    /// call's figures) starts from nothing, without the 6 KiB value on the
+    /// stack.
+    pub fn clear(&mut self, index: u16)
+        ensures
+            final(self).index == index,
+            final(self).small_allocated == 0,
+            final(self).large_allocated == 0,
+            final(self).large_runs == 0,
+            final(self).small_active == 0 && final(self).small_dirty == 0 && final(self).small_retained == 0,
+            final(self).large_active == 0 && final(self).large_dirty == 0 && final(self).large_retained == 0,
+            final(self).huge_dirty == 0 && final(self).huge_retained == 0 && final(self).metadata == 0,
+            final(self).pactive == 0 && final(self).pdirty == 0 && final(self).pmuzzy == 0,
+            final(self).resident == 0 && final(self).retained == 0 && final(self).mapped == 0,
+            final(self).identities(),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] final(self).bins[c] == BinStats::EMPTY,
+    {
+        self.index = index;
+        self.small_allocated = 0;
+        self.small_active = 0;
+        self.small_dirty = 0;
+        self.small_retained = 0;
+        self.large_allocated = 0;
+        self.large_active = 0;
+        self.large_dirty = 0;
+        self.large_retained = 0;
+        self.large_runs = 0;
+        self.huge_dirty = 0;
+        self.huge_retained = 0;
+        self.metadata = 0;
+        self.pactive = 0;
+        self.pdirty = 0;
+        self.pmuzzy = 0;
+        self.resident = 0;
+        self.retained = 0;
+        self.mapped = 0;
+        for c in 0..NCLASSES
+            invariant
+                self.index == index,
+                self.small_allocated == 0,
+                self.large_allocated == 0,
+                self.large_runs == 0,
+                self.small_active == 0 && self.small_dirty == 0 && self.small_retained == 0,
+                self.large_active == 0 && self.large_dirty == 0 && self.large_retained == 0,
+                self.huge_dirty == 0 && self.huge_retained == 0 && self.metadata == 0,
+                self.pactive == 0 && self.pdirty == 0 && self.pmuzzy == 0,
+                self.resident == 0 && self.retained == 0 && self.mapped == 0,
+                forall|j: int| 0 <= j < c ==> #[trigger] self.bins[j] == BinStats::EMPTY,
+        {
+            self.bins[c] = BinStats::EMPTY;
         }
     }
 
@@ -899,9 +960,10 @@ fn collect_arena_with(
     arena: &Arena,
     huge: &HugeStats,
     meta: &MetaStats,
+    out: &mut ArenaStats,
     Tracked(pg): Tracked<&mut Ghost<int>>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> (r: ArenaStats)
+)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
@@ -911,12 +973,12 @@ fn collect_arena_with(
         meta.len <= crate::meta::va_limit(),
         old(ord).allows(rank_class(0, 0)),
     ensures
-        r.pmuzzy == 0,
-        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c].size == class_table()[c].size,
-        arena_exact(r, final(pg)@),
-        r.index == arena.spec_index(),
-        r.identities(),
-        r.mapped <= arena_mapped_max(r.index),
+        final(out).pmuzzy == 0,
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] final(out).bins[c].size == class_table()[c].size,
+        arena_exact(*final(out), final(pg)@),
+        final(out).index == arena.spec_index(),
+        final(out).identities(),
+        final(out).mapped <= arena_mapped_max(final(out).index),
         *final(ord) == *old(ord),
 {
     proof { shared.lemma_wf(); }
@@ -930,12 +992,12 @@ fn collect_arena_with(
         ;
         assert(NCLASSES <= 64);
     }
-    let mut a = ArenaStats::empty(arena.index());
+    out.clear(arena.index());
     // The true small and large (bins only) sums so far.
     let ghost mut st: int = 0;
     let ghost mut lt: int = 0;
     proof {
-        lemma_class_bytes_frame(curregs_of(a), curregs_of(a), 0, 0);
+        lemma_class_bytes_frame(curregs_of(*out), curregs_of(*out), 0, 0);
     }
     for c in 0..NCLASSES
         invariant
@@ -946,35 +1008,35 @@ fn collect_arena_with(
             crate::layout::process_regions().wf(),
             page as int == page_bytes(),
             1 <= page <= 0x40_0000,
-            forall|j: int| 0 <= j < c ==> #[trigger] a.bins[j].size == class_table()[j].size,
+            forall|j: int| 0 <= j < c ==> #[trigger] out.bins[j].size == class_table()[j].size,
             st >= 0,
             lt >= 0,
-            st + lt == class_bytes(curregs_of(a), 0, c as int),
-            class_bytes(curregs_of(a), 0, c as int) <= usize::MAX ==> a.small_allocated == st && a.large_allocated == lt,
+            st + lt == class_bytes(curregs_of(*out), 0, c as int),
+            class_bytes(curregs_of(*out), 0, c as int) <= usize::MAX ==> out.small_allocated == st && out.large_allocated == lt,
             // Every figure so far is exact: allocated within active, and
             // the slab bytes within one class region per class.
-            a.index == arena.spec_index(),
-            a.huge_dirty == 0 && a.huge_retained == 0 && a.metadata == 0,
-            a.small_allocated <= a.small_active,
-            a.large_allocated <= a.large_active,
-            a.small_active + a.small_dirty + a.small_retained + a.large_active + a.large_dirty + a.large_retained
+            out.index == arena.spec_index(),
+            out.huge_dirty == 0 && out.huge_retained == 0 && out.metadata == 0,
+            out.small_allocated <= out.small_active,
+            out.large_allocated <= out.large_active,
+            out.small_active + out.small_dirty + out.small_retained + out.large_active + out.large_dirty + out.large_retained
                 <= c * 0x40_0000_0000,
     {
-        let ghost a0 = a;
-        a.bins[c] = collect_bin(arena.class_at(c), Tracked(ord));
-        let ghost t = a.bins[c as int].curregs * a.bins[c as int].size;
+        let ghost a0 = *out;
+        out.bins[c] = collect_bin(arena.class_at(c), Tracked(ord));
+        let ghost t = out.bins[c as int].curregs * out.bins[c as int].size;
         proof {
-            lemma_class_bytes_frame(curregs_of(a0), curregs_of(a), 0, c as int);
-            let (x, z) = (a.bins[c as int].curregs as int, a.bins[c as int].size as int);
+            lemma_class_bytes_frame(curregs_of(a0), curregs_of(*out), 0, c as int);
+            let (x, z) = (out.bins[c as int].curregs as int, out.bins[c as int].size as int);
             assert(x * z >= 0) by (nonlinear_arith)
                 requires
                     x >= 0,
                     z >= 0,
             ;
-            assert(class_bytes(curregs_of(a), 0, c + 1) == class_bytes(curregs_of(a), 0, c as int) + t);
-            lemma_bin_fits(a.bins[c as int]);
+            assert(class_bytes(curregs_of(*out), 0, c + 1) == class_bytes(curregs_of(*out), 0, c as int) + t);
+            lemma_bin_fits(out.bins[c as int]);
         }
-        let bin = &a.bins[c];
+        let bin = &out.bins[c];
         if c < NBINS {
             let (al, ac, di, re) = (
                 fig_mul(bin.curregs, bin.size),
@@ -982,10 +1044,10 @@ fn collect_arena_with(
                 fig_mul(bin.empty_slabs, bin.slab_size),
                 fig_mul(bin.purged_slabs, bin.slab_size),
             );
-            a.small_allocated = fig_add(a.small_allocated, al);
-            a.small_active = fig_add(a.small_active, ac);
-            a.small_dirty = fig_add(a.small_dirty, di);
-            a.small_retained = fig_add(a.small_retained, re);
+            out.small_allocated = fig_add(out.small_allocated, al);
+            out.small_active = fig_add(out.small_active, ac);
+            out.small_dirty = fig_add(out.small_dirty, di);
+            out.small_retained = fig_add(out.small_retained, re);
             proof {
                 st = st + t;
             }
@@ -997,10 +1059,10 @@ fn collect_arena_with(
                 fig_mul(bin.empty_slabs, bin.slab_size),
                 fig_mul(bin.purged_slabs, bin.slab_size),
             );
-            a.large_allocated = fig_add(a.large_allocated, al);
-            a.large_active = fig_add(a.large_active, ac);
-            a.large_dirty = fig_add(a.large_dirty, di);
-            a.large_retained = fig_add(a.large_retained, re);
+            out.large_allocated = fig_add(out.large_allocated, al);
+            out.large_active = fig_add(out.large_active, ac);
+            out.large_dirty = fig_add(out.large_dirty, di);
+            out.large_retained = fig_add(out.large_retained, re);
             proof {
                 lt = lt + t;
             }
@@ -1017,17 +1079,17 @@ fn collect_arena_with(
         ;
     }
     let huge_usable = fig_mul(usable_pages, page);
-    a.large_runs = runs;
-    a.large_allocated = fig_add(a.large_allocated, huge_usable);
-    a.large_active = fig_add(a.large_active, huge_usable);
+    out.large_runs = runs;
+    out.large_allocated = fig_add(out.large_allocated, huge_usable);
+    out.large_active = fig_add(out.large_active, huge_usable);
     proof {
         lemma_huge_bytes_nonneg(runs as int, pages as int);
         assert(huge_bytes(runs as int, pages as int) == (pages - runs * GUARD_PAGES) * page);
-        let n = curregs_of(a);
+        let n = curregs_of(*out);
         assert(true_allocated(n, runs as int, pages as int) == st + lt + huge_bytes(runs as int, pages as int));
-        assert(arena_exact(a, pages as int));
+        assert(arena_exact(*out, pages as int));
     }
-    let ghost a1 = a;
+    let ghost a1 = *out;
     if arena.index() == 0 {
         proof {
             let (e, q, p) = (huge.empty_pages as int, huge.purged_pages as int, page as int);
@@ -1039,40 +1101,40 @@ fn collect_arena_with(
                     1 <= p <= 0x40_0000,
             ;
         }
-        a.huge_dirty = fig_mul(huge.empty_pages, page);
-        a.huge_retained = fig_mul(huge.purged_pages, page);
-        a.metadata = meta.committed;
+        out.huge_dirty = fig_mul(huge.empty_pages, page);
+        out.huge_retained = fig_mul(huge.purged_pages, page);
+        out.metadata = meta.committed;
     }
-    let dirty = fig_add(fig_add(a.small_dirty, a.large_dirty), a.huge_dirty);
-    let active = fig_add(a.small_active, a.large_active);
-    a.pactive = active / page;
-    a.pdirty = dirty / page;
-    a.pmuzzy = 0;
-    a.resident = fig_add(fig_add(active, dirty), a.metadata);
-    a.retained = fig_add(fig_add(a.small_retained, a.large_retained), a.huge_retained);
-    a.mapped = fig_add(a.resident, a.retained);
+    let dirty = fig_add(fig_add(out.small_dirty, out.large_dirty), out.huge_dirty);
+    let active = fig_add(out.small_active, out.large_active);
+    out.pactive = active / page;
+    out.pdirty = dirty / page;
+    out.pmuzzy = 0;
+    out.resident = fig_add(fig_add(active, dirty), out.metadata);
+    out.retained = fig_add(fig_add(out.small_retained, out.large_retained), out.huge_retained);
+    out.mapped = fig_add(out.resident, out.retained);
     proof {
-        assert(curregs_of(a) =~= curregs_of(a1));
-        assert(arena_exact(a, pages as int));
+        assert(curregs_of(*out) =~= curregs_of(a1));
+        assert(arena_exact(*out, pages as int));
         *pg = Ghost(pages as int);
     }
-    a
 }
 
-/// The current figures of `arena`, not stored.
-pub fn collect_arena(shared: &Shared, arena: &Arena, Tracked(ord): Tracked<&mut LockOrder>) -> (r: ArenaStats)
+/// The current figures of `arena`, not stored, into `out` (a [`Scratch`]'s
+/// record: every field is written).
+pub fn collect_arena(shared: &Shared, arena: &Arena, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
     ensures
-        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c].size == class_table()[c].size,
-        r.identities(),
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] final(out).bins[c].size == class_table()[c].size,
+        final(out).identities(),
         *final(ord) == *old(ord),
 {
     let tracked mut pg = Ghost(0int);
-    collect_arena_with(shared, arena, &shared.huge.stats(Tracked(ord)), &shared.meta.stats(Tracked(ord)), Tracked(&mut pg), Tracked(ord))
+    collect_arena_with(shared, arena, &shared.huge.stats(Tracked(ord)), &shared.meta.stats(Tracked(ord)), out, Tracked(&mut pg), Tracked(ord))
 }
 
 /// The arenas' figures `reads`' `mapped` summed.
@@ -1119,7 +1181,8 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// ([`totals_exact`]). Each arena's figures satisfy their identities, and
 /// the totals theirs whenever the arenas' `mapped` sum fits, which it
 /// does for up to 256 arenas ([`Snapshot::inv`]); the snapshot stored
-/// is the one returned.
+/// is the one returned. `tmp` holds each arena's figures in turn (a
+/// [`Scratch`]'s record, so they stay off the caller's stack).
 ///
 /// The process statistics lock is held across the whole collection, so
 /// one collection is published at a time: concurrent `epoch`s never leave
@@ -1127,7 +1190,7 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// snapshot never sees the arenas of a collection whose totals are not
 /// stored yet. It nests outside the class, slab table, huge, metadata and
 /// per-arena statistics locks the collection takes (design 9).
-fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
+fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
@@ -1184,23 +1247,24 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
     {
         if let Some(arena) = arena_at(shared, i) {
             let tracked mut pg = Ghost(0int);
-            let a = collect_arena_with(shared, arena, &huge, &meta, Tracked(&mut pg), Tracked(&mut under));
+            collect_arena_with(shared, arena, &huge, &meta, tmp, Tracked(&mut pg), Tracked(&mut under));
+            let a: &ArenaStats = tmp;
             let ghost p = pg@;
             proof {
-                lemma_reads_step(reads, pages, a, p);
-                assert(reads.push(a).drop_last() =~= reads);
-                if sum_mapped(reads.push(a)) <= usize::MAX {
-                    lemma_totals_add(totals, a);
+                lemma_reads_step(reads, pages, *a, p);
+                assert(reads.push(*a).drop_last() =~= reads);
+                if sum_mapped(reads.push(*a)) <= usize::MAX {
+                    lemma_totals_add(totals, *a);
                 }
             }
-            totals.add_arena(&a);
+            totals.add_arena(a);
             proof {
-                reads = reads.push(a);
+                reads = reads.push(*a);
                 pages = pages.push(p);
             }
             narenas += 1;
             if store {
-                arena.store_stats(&a, Tracked(&mut under));
+                arena.store_stats(a, Tracked(&mut under));
             }
         }
     }
@@ -1234,9 +1298,11 @@ fn collect_into(shared: &Shared, store: bool, Tracked(rd): Tracked<&mut Ghost<(S
 }
 
 /// `epoch`: refresh every arena's stored [`ArenaStats`] and the process
-/// [`Snapshot`]. Returns the new epoch number. The caller's record `fx`
-/// gets [`Change::Refreshed`].
-pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> u64
+/// [`Snapshot`]. Returns the new epoch number, and the caller's record
+/// `fx` gets [`Change::Refreshed`]; or `None`, with nothing changed, when
+/// there is no metadata object for the [`Scratch`] the collection works
+/// in.
+pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
@@ -1244,17 +1310,25 @@ pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(
         old(ord).allows(rank_stats()),
     ensures
         *final(ord) == *old(ord),
-        final(fx)@ == Change::Refreshed,
+        r is Some ==> final(fx)@ == Change::Refreshed,
+        r is None ==> final(fx)@ == old(fx)@,
 {
+    proof {
+        shared.lemma_wf();
+    }
+    let mut tmp = Scratch::new(&shared.meta)?;
     proof {
         *fx = Ghost(Change::Refreshed);
     }
     let tracked mut rd = Ghost((Seq::<ArenaStats>::empty(), Seq::<int>::empty()));
-    collect_into(shared, true, Tracked(&mut rd), Tracked(ord)).epoch
+    let e = collect_into(shared, true, &mut tmp.record().a, Tracked(&mut rd), Tracked(ord)).epoch;
+    tmp.free(&shared.meta);
+    Some(e)
 }
 
-/// The current totals without storing them (for `malloc_stats_print`).
-pub fn collect(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
+/// The current totals without storing them (for `malloc_stats_print`);
+/// `tmp` as in [`collect_into`].
+pub fn collect(shared: &Shared, tmp: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
@@ -1265,7 +1339,7 @@ pub fn collect(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Sn
         *final(ord) == *old(ord),
 {
     let tracked mut rd = Ghost((Seq::<ArenaStats>::empty(), Seq::<int>::empty()));
-    collect_into(shared, false, Tracked(&mut rd), Tracked(ord))
+    collect_into(shared, false, tmp, Tracked(&mut rd), Tracked(ord))
 }
 
 /// The snapshot stored by the last [`epoch`] (all zero before the first).
@@ -1286,30 +1360,36 @@ pub fn snapshot(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: S
     *shared.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()))
 }
 
-/// The [`ArenaStats`] stored by the last [`epoch`] for arena `index`, or
-/// `None` if the arena does not exist. An arena created since the last
-/// epoch reports zeros.
-pub fn arena_stats(shared: &Shared, index: u16, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<ArenaStats>)
+/// The [`ArenaStats`] stored by the last [`epoch`] for arena `index`,
+/// copied into `out`; `false`, with `out` unchanged, if the arena does
+/// not exist. An arena created since the last epoch reports zeros.
+pub fn arena_stats_into(shared: &Shared, index: u16, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>) -> (r: bool)
     requires
         crate::sys::may_syscall(),
         old(ord).allows(rank_arena_stats(0)),
     ensures
-        r matches Some(a) ==> a.identities(),
+        r ==> final(out).identities(),
         *final(ord) == *old(ord),
 {
-    Some(shared.arenas.get_existing(index)?.stats(Tracked(ord)))
+    match shared.arenas.get_existing(index) {
+        Some(a) => {
+            a.stats_into(out, Tracked(ord));
+            true
+        },
+        None => false,
+    }
 }
 
 /// `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`): every existing arena's
-/// stored figures summed, all from one `epoch` (the process statistics
-/// lock keeps one from storing midway). Its `index` is 4096.
-pub fn arena_stats_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: ArenaStats)
+/// stored figures summed into `out`, all from one `epoch` (the process
+/// statistics lock keeps one from storing midway). Its `index` is 4096.
+pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_stats()),
     ensures
-        r.index == crate::arena::ARENAS_ALL as u16,
+        final(out).index == crate::arena::ARENAS_ALL as u16,
         *final(ord) == *old(ord),
 {
     proof {
@@ -1317,20 +1397,19 @@ pub fn arena_stats_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -
     }
     let tracked mut under = LockOrder::spare();
     let _published = shared.stats.lock(Tracked(ord), Tracked(&mut under));
-    let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
+    out.clear(crate::arena::ARENAS_ALL as u16);
     let n = shared.arenas.count();
     for i in 0..n as usize
         invariant
             n as usize <= MAX_ARENAS,
             crate::sys::may_syscall(),
-            all.index == crate::arena::ARENAS_ALL as u16,
+            out.index == crate::arena::ARENAS_ALL as u16,
             under.top() == rank_stats(),
     {
         if let Some(arena) = arena_at(shared, i) {
-            all.add(&arena.stats(Tracked(&mut under)));
+            arena.add_stats_to(out, Tracked(&mut under));
         }
     }
-    all
 }
 
 /// Every existing arena's *current* figures summed, not stored (for
@@ -1339,26 +1418,28 @@ pub fn arena_stats_all(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -
 /// figures it read of each arena it found, which `rd` gets in index order
 /// with the pages of each `large` word load ([`summed`]). Each arena's
 /// figures satisfy their identities, and the sum does whenever the
-/// arenas' `mapped` sum fits, which it does for up to 256 arenas.
-pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: ArenaStats)
+/// arenas' `mapped` sum fits, which it does for up to 256 arenas. The
+/// sum is written to `out` and each arena's figures to `tmp` in turn (two
+/// [`Scratch`] records; every field of `out` is written).
+pub fn collect_all(shared: &Shared, out: &mut ArenaStats, tmp: &mut ArenaStats, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
     ensures
-        r.index == crate::arena::ARENAS_ALL as u16,
-        summed(final(rd)@.0, final(rd)@.1, r),
+        final(out).index == crate::arena::ARENAS_ALL as u16,
+        summed(final(rd)@.0, final(rd)@.1, *final(out)),
         ids_ascending(final(rd)@.0),
         forall|j: int| 0 <= j < final(rd)@.0.len() ==> ((#[trigger] final(rd)@.0[j]).index as usize) < MAX_ARENAS,
         forall|j: int| 0 <= j < final(rd)@.0.len() ==> #[trigger] final(rd)@.0[j].identities(),
-        sum_mapped(final(rd)@.0) <= usize::MAX ==> r.mapped == sum_mapped(final(rd)@.0) && r.identities(),
-        final(rd)@.0.len() <= 256 ==> r.identities(),
+        sum_mapped(final(rd)@.0) <= usize::MAX ==> final(out).mapped == sum_mapped(final(rd)@.0) && final(out).identities(),
+        final(rd)@.0.len() <= 256 ==> final(out).identities(),
         *final(ord) == *old(ord),
 {
     let huge = shared.huge.stats(Tracked(ord));
     let meta = shared.meta.stats(Tracked(ord));
-    let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
+    out.clear(crate::arena::ARENAS_ALL as u16);
     let n = shared.arenas.count();
     let ghost mut reads = Seq::<ArenaStats>::empty();
     let ghost mut pages = Seq::<int>::empty();
@@ -1375,35 +1456,36 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
             huge.empty_pages + huge.purged_pages <= u32::MAX,
             meta.identities(),
             meta.len <= crate::meta::va_limit(),
-            all.index == crate::arena::ARENAS_ALL as u16,
-            summed(reads, pages, all),
+            out.index == crate::arena::ARENAS_ALL as u16,
+            summed(reads, pages, *out),
             reads.len() <= i,
             ids_ascending(reads),
             forall|j: int| 0 <= j < reads.len() ==> ((#[trigger] reads[j]).index as usize) < i,
             forall|j: int| 0 <= j < reads.len() ==> #[trigger] reads[j].identities(),
             // Arena 0, the only one above `2^55`, comes first.
             sum_mapped(reads) <= 0x400_0000_0000_0000 + reads.len() * 0x80_0000_0000_0000,
-            sum_mapped(reads) <= usize::MAX ==> all.mapped == sum_mapped(reads) && all.identities(),
+            sum_mapped(reads) <= usize::MAX ==> out.mapped == sum_mapped(reads) && out.identities(),
             ord.allows(rank_class(0, 0)),
             *ord == *old(ord),
     {
         if let Some(arena) = arena_at(shared, i) {
             let tracked mut pg = Ghost(0int);
-            let a = collect_arena_with(shared, arena, &huge, &meta, Tracked(&mut pg), Tracked(ord));
+            collect_arena_with(shared, arena, &huge, &meta, tmp, Tracked(&mut pg), Tracked(ord));
+            let a: &ArenaStats = tmp;
             let ghost p = pg@;
-            let ghost all0 = all;
+            let ghost all0 = *out;
             proof {
-                lemma_reads_step(reads, pages, a, p);
-                assert(reads.push(a).drop_last() =~= reads);
+                lemma_reads_step(reads, pages, *a, p);
+                assert(reads.push(*a).drop_last() =~= reads);
             }
-            all.add(&a);
+            out.add(a);
             proof {
-                if sum_mapped(reads.push(a)) <= usize::MAX {
-                    all0.lemma_merge_identities(a, all);
+                if sum_mapped(reads.push(*a)) <= usize::MAX {
+                    all0.lemma_merge_identities(*a, *out);
                 }
-                let (r1, p1) = (reads.push(a), pages.push(p));
+                let (r1, p1) = (reads.push(*a), pages.push(p));
                 if reads_allocated(r1, p1) <= usize::MAX {
-                    assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] all.bins[c].curregs == sum_curregs(r1, c) by {
+                    assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] out.bins[c].curregs == sum_curregs(r1, c) by {
                         assert(sum_curregs(r1, c) <= usize::MAX);
                     }
                 }
@@ -1415,7 +1497,6 @@ pub fn collect_all(shared: &Shared, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaSt
     proof {
         *rd = Ghost((reads, pages));
     }
-    all
 }
 
 } // verus!
@@ -1800,6 +1881,465 @@ pub proof fn lemma_reads_step(reads: Seq<ArenaStats>, pages: Seq<int>, a: ArenaS
 
 } // verus!
 
+verus! {
+
+// The size `Layout::new::<StatsPair>()` gives `Meta::alloc_raw`: two
+// records of the head (an index and 18 figures) and one `BinStats` per
+// class.
+#[cfg(feature = "quantum16")]
+global layout StatsPair is size == 11952, align == 8;
+#[cfg(feature = "quantum8")]
+global layout StatsPair is size == 12848, align == 8;
+
+/// The two records a statistics entry point collects into: `a` (the
+/// arena, or the sum) and `b` (each arena of a sum in turn).
+pub struct StatsPair {
+    pub a: ArenaStats,
+    pub b: ArenaStats,
+}
+
+/// A statistics entry point's records ([`StatsPair`]) in a metadata object
+/// (design 13.8): the entry points collect an arena's figures (about 6 KiB
+/// with its bins) into these rather than onto their caller's stack, so
+/// they run on a `PTHREAD_STACK_MIN` thread. Each entry point takes one
+/// before any lock and gives it back before it returns; no lock is held
+/// across a report's callback.
+///
+/// The objects are pooled ([`pool_take`]): one a call takes stays the
+/// pool's when given back, and the next call reuses it, so a call whose
+/// callback never returns (`longjmp`, `pthread_exit`) abandons a pooled
+/// object rather than leaking one per call: the thread's next call from
+/// as high on its stack takes it back, and any call takes back one whose
+/// thread has exited. A call made from inside another's callback (deeper
+/// on the same stack) takes another. No object is ever allocated outside
+/// the pool: when its `pool::POOL_SLOTS` objects are all held (concurrent
+/// or abandoned reports), a call gets none, as when the metadata is
+/// exhausted, until one is given back or reclaimed. (The unit tests,
+/// which build many `Shared`s with their own metadata, allocate and free
+/// one per call instead.)
+pub struct Scratch {
+    p: *mut StatsPair,
+    perm: Tracked<PointsTo<StatsPair>>,
+    claim: Tracked<MetaClaim>,
+    // Ghost: read only by the specs.
+    #[allow(dead_code)]
+    id: Ghost<Loc>,
+    /// The object is the pool's (given back to it, never freed).
+    pooled: bool,
+}
+
+impl Scratch {
+    /// The records are initialised, and this scratch holds the pool's
+    /// object or the metadata object it lives in, of the `Meta` whose
+    /// live-object records are [`Scratch::meta_id`].
+    pub closed spec fn wf(self) -> bool {
+        &&& self.perm@.ptr() == self.p
+        &&& self.perm@.is_init()
+        &&& (self.pooled || self.claim@.held(
+            self.id@,
+            self.p as *mut u8,
+            size_of::<StatsPair>() as int,
+            align_of::<StatsPair>() as int,
+        ))
+    }
+
+    /// The `Meta` the object came from ([`Meta::live_id`]).
+    pub closed spec fn meta_id(self) -> Loc {
+        self.id@
+    }
+
+    /// The records' value.
+    pub closed spec fn value(self) -> StatsPair {
+        self.perm@.value()
+    }
+
+    /// Records from the pool: an object it holds, or one allocated from
+    /// `meta` (zeroed) into a free slot of it; `None` when it has neither
+    /// an object nor a slot to give, or `meta` no object.
+    pub fn new(meta: &Meta) -> (r: Option<Scratch>)
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r matches Some(s) ==> s.wf() && s.meta_id() == meta.live_id(),
+    {
+        broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
+        let mark = stack_mark();
+        let tid = crate::sys::gettid() as u32;
+        if let Some((p, perm)) = pool_take(mark, tid) {
+            return Some(
+                Scratch {
+                    p,
+                    perm,
+                    claim: Tracked(MetaClaim::tracked_none()),
+                    id: Ghost(meta.live_id()),
+                    pooled: true,
+                },
+            );
+        }
+        proof {
+            assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
+            assert(8 <= crate::meta::MAX_ALIGN) by (compute_only);
+        }
+        let slot = pool_reserve(tid)?;
+        let (p8, Tracked(blk)) = meta.alloc_raw(Layout::new::<StatsPair>());
+        if p8.is_null() {
+            pool_unreserve(slot);
+            return None;
+        }
+        let p = p8 as *mut StatsPair;
+        let tracked (raw, claim) = blk;
+        proof {
+            assert((p as *mut u8)@ == p8@);
+        }
+        let tracked mut perm = raw.into_typed::<StatsPair>(p@.addr);
+        proof {
+            assert(perm.ptr()@ == p@);
+        }
+        zero_records(p, Tracked(&mut perm));
+        let pooled = pool_fill(slot, p, mark);
+        Some(Scratch { p, perm: Tracked(perm), claim: Tracked(claim), id: Ghost(meta.live_id()), pooled })
+    }
+
+    /// The records, to collect into.
+    pub fn record(&mut self) -> (r: &mut StatsPair)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            final(self).meta_id() == old(self).meta_id(),
+            *r == old(self).value(),
+            final(self).value() == *final(r),
+    {
+        ptr_mut_ref(self.p, Tracked(self.perm.borrow_mut()))
+    }
+
+    /// The records, to read.
+    pub fn get(&self) -> (r: &StatsPair)
+        requires
+            self.wf(),
+        ensures
+            *r == self.value(),
+    {
+        ptr_ref(self.p as *const StatsPair, Tracked(self.perm.borrow()))
+    }
+
+    /// Give the object back: to the pool if it is the pool's, else to
+    /// `meta`.
+    pub fn free(self, meta: &Meta)
+        requires
+            crate::sys::may_syscall(),
+            self.wf(),
+            self.meta_id() == meta.live_id(),
+    {
+        broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
+        let p = self.p;
+        if self.pooled {
+            pool_release(p);
+            return;
+        }
+        let Tracked(mut perm) = self.perm;
+        let Tracked(claim) = self.claim;
+        let tracked raw;
+        proof {
+            perm.leak_contents();
+            raw = perm.into_raw();
+            assert((p as *mut u8)@.addr == p@.addr);
+        }
+        meta.free(p as *mut u8, Layout::new::<StatsPair>(), Tracked((raw, claim)));
+    }
+}
+
+/// Zero the records at `p` in place: every field of an `ArenaStats` is an
+/// integer, for which zero is a value. Trusted, like `Arena::put_stats`:
+/// Rust has no placement construction, and `ptr_mut_write` of a value
+/// puts its 12 KiB on the stack first.
+#[verifier::external_body]
+#[inline(never)]
+fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPair>>)
+    requires
+        old(perm).ptr() == p,
+    ensures
+        final(perm).ptr() == p,
+        final(perm).is_init(),
+{
+    // SAFETY: `perm` is the permission to `p`'s `StatsPair`, writable and
+    // unaliased; all-zero bytes are a valid `StatsPair`.
+    unsafe { core::ptr::write_bytes(p, 0, 1) }
+}
+
+/// The caller's stack position, as the address of a local of this
+/// out-of-line function: [`Scratch::new`] records it with a pooled
+/// object, and a later call of the same thread from as high on the stack
+/// (not deeper, inside the holder's callback) finds the holder's frame
+/// gone ([`pool_take`]).
+#[verifier::external_body]
+#[inline(never)]
+fn stack_mark() -> usize {
+    let here = 0u8;
+    core::hint::black_box(core::ptr::addr_of!(here)) as usize
+}
+
+/// A pooled object for thread `tid` at stack position `mark`, with its
+/// permission: one no call holds, one `tid`'s call abandoned (held by
+/// `tid` at a mark at or below `mark`: that call's frame is gone, since
+/// a call made from inside it would be deeper), or one a thread that has
+/// exited held. `None` when every pooled object is held by a live call.
+/// Trusted: the pool's protocol (`pool`) hands each object to one call
+/// at a time, but for the residue that a call from a signal handler on an
+/// alternate stack or another context (`swapcontext`) above the holder's
+/// may take the holder's object, so both collect into it: wrong figures,
+/// never freed memory.
+#[verifier::external_body]
+fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)
+    ensures
+        r matches Some((p, perm)) ==> perm@.ptr() == p && perm@.is_init(),
+{
+    pool::take(mark, tid).map(|p| (p, Tracked::assume_new()))
+}
+
+/// An empty slot of the pool, held by `tid` for the object the caller
+/// allocates next; `None` when every slot has an object. Trusted, as
+/// [`pool_take`].
+#[verifier::external_body]
+fn pool_reserve(tid: u32) -> Option<usize> {
+    pool::reserve(tid)
+}
+
+/// Put `p` in the reserved `slot`, held at `mark`: `true` (the object is
+/// then the pool's, never freed; `false` only in the unit tests). Trusted,
+/// as [`pool_take`].
+#[verifier::external_body]
+fn pool_fill(slot: usize, p: *mut StatsPair, mark: usize) -> bool {
+    pool::fill(slot, p, mark)
+}
+
+/// Give back a reserved `slot` the caller could not fill. Trusted, as
+/// [`pool_take`].
+#[verifier::external_body]
+fn pool_unreserve(slot: usize) {
+    pool::unreserve(slot)
+}
+
+/// Give the pooled `p` back. Trusted, as [`pool_take`].
+#[verifier::external_body]
+fn pool_release(p: *mut StatsPair) {
+    pool::release(p)
+}
+
+/// The fork prepare handler records the forking thread for
+/// [`pool_fork_child`]. Trusted, as [`pool_take`].
+#[verifier::external_body]
+pub fn pool_fork_prepare() {
+    pool::fork_prepare(crate::sys::gettid() as u32)
+}
+
+/// The child's fork handler: the pooled objects the forking thread held
+/// (a `fork` from inside a statistics callback holds one, which the
+/// callback's caller still uses after the fork returns) are held under
+/// its ID in the child, so that no call of the child takes them as an
+/// exited thread's. Trusted, as [`pool_take`].
+#[verifier::external_body]
+pub fn pool_fork_child() {
+    pool::fork_child(crate::sys::gettid() as u32)
+}
+
+} // verus!
+
+/// The pool of [`StatsPair`] objects ([`Scratch`]): `pool::POOL_SLOTS` slots,
+/// each an object (null until a call installs one), its holder's thread
+/// ID (0 when free) and the holder's stack mark.
+mod pool {
+    // The unit tests use none of it (`take`).
+    #![cfg_attr(test, allow(dead_code))]
+    use super::StatsPair;
+    use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+
+    pub const POOL_SLOTS: usize = 64;
+
+    struct Slot {
+        rec: AtomicPtr<StatsPair>,
+        owner: AtomicU32,
+        mark: AtomicUsize,
+    }
+
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY: Slot = Slot {
+        rec: AtomicPtr::new(core::ptr::null_mut()),
+        owner: AtomicU32::new(0),
+        mark: AtomicUsize::new(FREE),
+    };
+
+    static POOL: [Slot; POOL_SLOTS] = [EMPTY; POOL_SLOTS];
+
+    // The unit tests build many `Shared`s, each with its own metadata,
+    // which a process-wide pool would mix: there every scratch is
+    // allocated and freed (the C programs run the pool).
+    #[cfg(test)]
+    pub fn take(_mark: usize, _tid: u32) -> Option<*mut StatsPair> {
+        None
+    }
+
+    #[cfg(test)]
+    pub fn reserve(_tid: u32) -> Option<usize> {
+        Some(usize::MAX)
+    }
+
+    #[cfg(test)]
+    pub fn fill(_slot: usize, _p: *mut StatsPair, _mark: usize) -> bool {
+        false
+    }
+
+    #[cfg(test)]
+    pub fn unreserve(_slot: usize) {}
+
+    /// A mark no call holds a slot at: a released slot's, so a call that
+    /// read the slot before the release (in the gap a signal handler on
+    /// its stack used and released it) fails its `compare_exchange`.
+    const FREE: usize = usize::MAX;
+
+    #[cfg(not(test))]
+    pub fn take(mark: usize, tid: u32) -> Option<*mut StatsPair> {
+        // The thread's own abandoned objects: their holders' frames are
+        // gone. The first is this call's; the rest go back to the pool.
+        let mut got = None;
+        for s in POOL.iter() {
+            let p = s.rec.load(Ordering::Acquire);
+            if p.is_null() || s.owner.load(Ordering::Relaxed) != tid {
+                continue;
+            }
+            let m = s.mark.load(Ordering::Relaxed);
+            if m == FREE || m > mark {
+                continue;
+            }
+            let to = if got.is_none() { mark } else { FREE };
+            if s.mark
+                .compare_exchange(m, to, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+            {
+                // A handler on this stack took it and gave it back.
+                continue;
+            }
+            if got.is_none() {
+                got = Some(p);
+            } else {
+                s.owner.store(0, Ordering::Release);
+            }
+        }
+        if got.is_some() {
+            return got;
+        }
+        // A free one (its mark is FREE: a release frees the mark before
+        // the owner), or one an exited thread held, whose mark is freed
+        // first. Between the owner's exchange and the mark's store a
+        // handler on this stack sees this thread's slot at FREE and
+        // leaves it.
+        for s in POOL.iter() {
+            let p = s.rec.load(Ordering::Acquire);
+            if p.is_null() {
+                continue;
+            }
+            let o = s.owner.load(Ordering::Relaxed);
+            if o != 0 {
+                if o == tid || !crate::sys::thread_gone(o) {
+                    continue;
+                }
+                let m = s.mark.load(Ordering::Relaxed);
+                if m != FREE
+                    && s.mark
+                        .compare_exchange(m, FREE, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_err()
+                {
+                    // Another thread took it since.
+                    continue;
+                }
+            }
+            if s.owner
+                .compare_exchange(o, tid, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                s.mark.store(mark, Ordering::Relaxed);
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// The forking thread's ID, recorded by the fork prepare handler.
+    static FORK_TID: AtomicU32 = AtomicU32::new(0);
+
+    #[cfg(not(test))]
+    pub fn fork_prepare(tid: u32) {
+        FORK_TID.store(tid, Ordering::Relaxed);
+    }
+
+    /// In the child: the forking thread's slots (a fork from a stats
+    /// callback holds one) are held by it under its new ID, so no call of
+    /// the child takes them as an exited thread's.
+    #[cfg(not(test))]
+    pub fn fork_child(tid: u32) {
+        let old = FORK_TID.load(Ordering::Relaxed);
+        if old == 0 || old == tid {
+            return;
+        }
+        for s in POOL.iter() {
+            if s.owner.load(Ordering::Relaxed) == old {
+                s.owner.store(tid, Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn fork_prepare(_tid: u32) {}
+
+    #[cfg(test)]
+    pub fn fork_child(_tid: u32) {}
+
+    #[cfg(not(test))]
+    pub fn reserve(tid: u32) -> Option<usize> {
+        for (i, s) in POOL.iter().enumerate() {
+            if s.rec.load(Ordering::Relaxed).is_null()
+                && s.owner
+                    .compare_exchange(0, tid, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+            {
+                if !s.rec.load(Ordering::Relaxed).is_null() {
+                    // Filled since: it was free, and is not this call's.
+                    s.owner.store(0, Ordering::Release);
+                    continue;
+                }
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    #[cfg(not(test))]
+    pub fn fill(slot: usize, p: *mut StatsPair, mark: usize) -> bool {
+        let s = &POOL[slot];
+        s.mark.store(mark, Ordering::Relaxed);
+        s.rec.store(p, Ordering::Release);
+        true
+    }
+
+    #[cfg(not(test))]
+    pub fn unreserve(slot: usize) {
+        POOL[slot].mark.store(FREE, Ordering::Relaxed);
+        POOL[slot].owner.store(0, Ordering::Release);
+    }
+
+    pub fn release(p: *mut StatsPair) {
+        for s in POOL.iter() {
+            if s.rec.load(Ordering::Relaxed) == p {
+                s.mark.store(FREE, Ordering::Relaxed);
+                s.owner.store(0, Ordering::Release);
+                return;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1807,6 +2347,28 @@ mod tests {
     use crate::layout::CLASSES;
     use crate::testutil::{page_size, shared};
     use std::vec::Vec;
+
+    // The by-value forms the tests read the figures through (on the test
+    // threads' large stacks); the build collects into `Scratch` records.
+    fn epoch(s: &Shared, fx: Tracked<&mut Ghost<Change>>, ord: Tracked<&mut LockOrder>) -> u64 {
+        super::epoch(s, fx, ord).unwrap()
+    }
+
+    fn collect(s: &Shared, ord: Tracked<&mut LockOrder>) -> Snapshot {
+        let mut tmp = ArenaStats::empty(0);
+        super::collect(s, &mut tmp, ord)
+    }
+
+    fn arena_stats(s: &Shared, index: u16, ord: Tracked<&mut LockOrder>) -> Option<ArenaStats> {
+        let mut out = ArenaStats::empty(0);
+        arena_stats_into(s, index, &mut out, ord).then_some(out)
+    }
+
+    fn stored(a: &Arena) -> ArenaStats {
+        let mut out = ArenaStats::empty(0);
+        a.stats_into(&mut out, Tracked::assume_new());
+        out
+    }
 
     fn xorshift(state: &mut u64) -> u64 {
         let mut x = *state;
@@ -1839,7 +2401,17 @@ mod tests {
         assert_eq!(first.totals.retained, 0);
         assert_eq!(first.totals.mapped, first.totals.resident);
         assert!(first.totals.identities_hold());
-        assert_eq!(first.meta, s.meta.stats(Tracked::assume_new()));
+        // The epoch read the metadata counters while it held its scratch
+        // record, which it has given back since.
+        let now = s.meta.stats(Tracked::assume_new());
+        assert_eq!(
+            MetaStats {
+                allocated: now.allocated,
+                ..first.meta
+            },
+            now
+        );
+        assert!(first.meta.allocated > now.allocated);
 
         let t = TestHeap::new(s);
         let c16 = class_with(16);
@@ -2267,7 +2839,7 @@ mod tests {
                 let snap = snapshot(s, Tracked::assume_new());
                 let mut sum = Totals::EMPTY;
                 for a in s.arenas.iter() {
-                    sum.add_arena(&a.stats(Tracked::assume_new()));
+                    sum.add_arena(&stored(a));
                 }
                 if sum != snap.totals {
                     bad = Some((round, sum, snap.totals));

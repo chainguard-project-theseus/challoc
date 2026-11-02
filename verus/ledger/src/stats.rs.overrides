@@ -6,3 +6,22 @@ fig_mul	core library	Kani	discharged (Kani: kani_proofs::stats::fig_mul_exact)
 # A lock's invariant: its writer `Shared::init` (`Snapshot::EMPTY`) is
 # not verified yet; `collect_into` asserts it.
 axiom_snapshot_lock_inv	allocator invariant	none (assumption)
+# The scratch pool hands each object to one call at a time (a slot's
+# holder thread ID, taken by compare-exchange, or the thread's own when its
+# holding frame is gone by the stack mark), the residue of a call from an
+# alternate stack or context above the holder's aside (two calls collect
+# into one object: wrong figures, no freed memory); pooled objects are
+# never freed. A release frees the mark before the owner, and a take moves
+# the mark by compare-exchange, so a call that a handler on its stack
+# interrupted between reading a slot and taking it does not take the slot
+# the handler used and gave back. A `fork` from inside a statistics
+# callback: the child's fork handler re-owns the forking thread's slots
+# under its new thread ID (pool_fork_prepare records the old one), so the
+# child's copy of the call keeps its object.
+pool_take	allocator invariant	none (assumption)
+pool_reserve	allocator invariant	none (assumption)
+pool_fill	allocator invariant	none (assumption)
+pool_unreserve	allocator invariant	none (assumption)
+pool_release	allocator invariant	none (assumption)
+pool_fork_prepare	allocator invariant	none (assumption)
+pool_fork_child	allocator invariant	none (assumption)
