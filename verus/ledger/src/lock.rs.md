@@ -17,6 +17,7 @@ file.
 | `wake` | external_body | FFI/syscall | Verus | trusted |
 | `axiom_acquired` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_held` | axiom | allocator invariant | none (assumption) | trusted |
+| `Lock::value_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `cell_ref` | external_body | UnsafeCell/volatile/transmute | Verus | trusted |
 | `cell_mut` | external_body | UnsafeCell/volatile/transmute | Verus | trusted |
 | `LockGuard::drop` | external_body | atomics primitive | loom/GenMC | trusted |
@@ -166,14 +167,25 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 ;
 ```
 
+## `Lock::value_ptr`
+
+src/lock.rs:674. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
+
+```rust
+pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
+```
+
 ## `cell_ref`
 
-src/lock.rs:950. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:960. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 958.
+Body mints Tracked at line 968.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -187,12 +199,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:965. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:975. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 975.
+Body mints Tracked at line 985.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -208,7 +220,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:985. Kind: external_body. Category: atomics primitive.
+src/lock.rs:995. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 ```rust

@@ -1930,10 +1930,12 @@ extern "C" fn fork_prepare() {
     // the C contract; and the prepare handlers that run before ours have
     // returned).
     let tracked mut ord = crate::lock::axiom_fork_entry();
-    // A deferred cgroup discovery (design 11) runs now, before the locks:
-    // a process that forks (a PostgreSQL postmaster, a server's workers)
-    // reads the files once and its children inherit the record, where
-    // each child would otherwise read them again on its own first tick.
+    // A deferred cgroup discovery (design 11) runs now, before the locks,
+    // whatever the deferral (in the record's cell, with little stack of
+    // its own): a process that forks (a PostgreSQL postmaster, a prefork
+    // server's workers) reads the files once and its children inherit the
+    // record, where each child would otherwise read them again on its own
+    // first tick.
     // It does not wait for a discovery another thread has under way (nor
     // for one this thread's own interrupted code is running, when `fork`
     // is called from a signal handler): the child then starts that one

@@ -2641,9 +2641,12 @@ impl Shared {
     }
 
     /// Discover the cgroup in `fork`'s prepare handler, so the child
-    /// inherits the record; without waiting for a discovery another
+    /// inherits the record (every child of a prefork server would otherwise
+    /// read the files itself); without waiting for a discovery another
     /// thread (or this one, under a signal handler) has under way, which
-    /// the child then starts over (`Deferred::fork_child`).
+    /// the child then starts over (`Deferred::fork_child`). The discovery
+    /// builds the record in place, so it takes little of the forking
+    /// thread's stack.
     pub fn discover_cgroup_for_fork(&self, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),

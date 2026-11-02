@@ -359,7 +359,7 @@ const PINS: &[(&str, &[&str])] = &[
         &[
             "if self.load_phase(Tracked(&mut seen)) == PHASE_DONE {",
             "match self.claim(Tracked(&mut claimed)) {",
-            "let cg = self.cell_write(cg, Tracked(&mut cell));",
+            "let cg = self.cell_discover(Tracked(&mut cell));",
             "found(cg);",
             "let Tracked(frozen) = self.publish(Tracked(cell));",
             "while wait && self.load_phase(Tracked(seen)) != PHASE_DONE {",

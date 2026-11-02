@@ -25,9 +25,9 @@
 //!   [`Deferred::discover`] is `Deferred::discover`: the exchange from
 //!   `PENDING` to `RUNNING`, `Acquire` on success and `Relaxed` on
 //!   failure (`claim`, `vspec::byte::compare_exchange`), whose winner
-//!   writes the cell (`cell_write`), calls `found` and stores `DONE`
-//!   `Release` (`publish`, `vspec::byte::store`); a loser that waits spins
-//!   on `load_phase` until `DONE`; [`Deferred::published`] is
+//!   builds the record in the cell (`cell_discover`), calls `found` and
+//!   stores `DONE` `Release` (`publish`, `vspec::byte::store`); a loser
+//!   that waits spins on `load_phase` until `DONE`; [`Deferred::published`] is
 //!   `Deferred::published`, the cell read through the permission a
 //!   waiting `discover` hands back (`Shared::cgroup_now`), with no second
 //!   load; [`Deferred::fork_child`] is
