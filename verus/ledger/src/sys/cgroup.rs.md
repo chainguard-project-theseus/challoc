@@ -62,7 +62,7 @@ pub fn untracked_in_place(slot: &mut MaybeUninit<Cgroup>, state: State)
 
 ## `axiom_cell_orphaned`
 
-src/sys/cgroup.rs:1597. Kind: axiom. Category: platform/kernel fact.
+src/sys/cgroup.rs:1602. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned cell): in the child of a `fork`, a record whose phase the child's reset found `RUNNING` (`before`, the phase's permission just before the reset, and `perm`, just after it, at `PENDING`) was being discovered by a thread of the parent, which holds the cell's permission between its winning exchange and its `DONE` store ([`Deferred::claim`], [`Deferred::publish`]).
@@ -82,7 +82,7 @@ axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &Byte
 
 ## `Deferred::discover`
 
-src/sys/cgroup.rs:1678. Kind: no_decreases. Category: termination.
+src/sys/cgroup.rs:1683. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Run discovery if it has not run: `true` when this call ran it, so the caller sets the policy up from the first figures.

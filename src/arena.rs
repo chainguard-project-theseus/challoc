@@ -3650,6 +3650,13 @@ impl Arenas {
         if index as u32 >= self.auto {
             return None;
         }
+        // Nor an automatic one (`Arenas::create`): an allocation in the fork
+        // window whose home is not built is served from arena 0, as when
+        // the metadata is full (`Heap::alloc_slow`), and the next slow path
+        // after the fork builds it.
+        if crate::lock::in_fork_window() {
+            return None;
+        }
         proof {
             use_type_invariant(self);
         }
@@ -3898,7 +3905,9 @@ impl Arenas {
     /// built yet (`build_cost`: the smallest build measured, plus slack,
     /// for each), so
     /// explicit arenas never take every thread's home (design 13.3, 14.1).
-    /// Homes past those are served from arena 0. The
+    /// Homes past those are served from arena 0. `None` also in the fork
+    /// window (`lock::in_fork_window`, design 9), where no arena is built.
+    /// The
     /// caller's record `fx` gets [`Change::Created`] when an arena is
     /// created.
     // The headroom test divides by a cost it checked is non-zero; Verus
@@ -3917,6 +3926,12 @@ impl Arenas {
     {
         proof {
             use_type_invariant(self);
+        }
+        // No arena is built in the fork window (`lock::in_fork_window`): its
+        // locks would not be among those the fork handlers hold, and the
+        // window would serve them to the forking thread as acquired.
+        if crate::lock::in_fork_window() {
+            return None;
         }
         let tracked mut under = LockOrder::spare();
         let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));

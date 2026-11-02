@@ -261,6 +261,14 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
 {
     broadcast use axiom_state_lock_inv;
 
+    // Not inside the fork window (an atfork handler registered before
+    // challoc's, on the forking thread with every lock held): the fork
+    // handlers' bookkeeping of the thread (`fork_child` forgets it,
+    // keeping its stack for a thread that cannot exist yet) assumes none
+    // starts there.
+    if crate::lock::in_fork_window() {
+        return false;
+    }
     let (stack, previous) = {
         let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         if g.present {
@@ -327,6 +335,11 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, T
         final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
+    // In the fork window `start` refuses; that is not a failed start, and
+    // the lazy request stays for a tick after the fork.
+    if crate::lock::in_fork_window() {
+        return false;
+    }
     if start(shared, Tracked(ord), Tracked(&mut *errno), Tracked(&mut *cell)) {
         return true;
     }

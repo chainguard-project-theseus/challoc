@@ -1175,6 +1175,18 @@ mod linux {
         unsafe { raw::syscall0(nr::GETTID) as i32 }
     }
 
+    /// The calling thread's `pthread_self`: the forking thread keeps it in
+    /// the child of a `fork`, where its kernel thread ID (`gettid`) is
+    /// new. Trusted: libc (glibc's thread pointer); nothing is claimed of
+    /// the value but that it tells threads of one process apart and is
+    /// never 0, 1 or 2 (a thread descriptor's address).
+    #[verifier::external_body]
+    #[inline(always)]
+    pub fn pthread_self() -> usize {
+        // SAFETY: `pthread_self` has no preconditions and cannot fail.
+        unsafe { ::libc::pthread_self() as usize }
+    }
+
     /// Whether thread `tid` of this process has exited: `tgkill` with
     /// signal 0, which only checks that the thread exists, says `ESRCH`.
     /// (In a `fork` child every thread of the parent is gone; the forking

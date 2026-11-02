@@ -14,6 +14,7 @@ file.
 | `read_full` | no_decreases | termination | none (assumption) | trusted |
 | `axiom_w..._count` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `write_all` | no_decreases | termination | none (assumption) | trusted |
+| `pthread_self` | external_body | FFI/syscall | none (assumption) | trusted |
 | `sigproc..._block` | external_body | FFI/syscall | none (assumption) | trusted |
 | `sigproc...etmask` | external_body | FFI/syscall | none (assumption) | trusted |
 | `trap` | external_body | inline asm | Islaris/Isla | trusted |
@@ -122,9 +123,20 @@ pub fn write_all(fd: i32, buf: &[u8])
         crate::sys::may_syscall(),
 ```
 
+## `pthread_self`
+
+src/sys/mod.rs:1185. Kind: external_body. Category: FFI/syscall.
+Tool: none (assumption). Status: trusted.
+
+> The calling thread's `pthread_self`: the forking thread keeps it in the child of a `fork`, where its kernel thread ID (`gettid`) is new.
+
+```rust
+pub fn pthread_self() -> usize
+```
+
 ## `sigprocmask_block`
 
-src/sys/mod.rs:1460. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1472. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the syscall's word.
@@ -145,7 +157,7 @@ unsafe fn sigprocmask_block(
 
 ## `sigprocmask_setmask`
 
-src/sys/mod.rs:1493. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1505. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the syscall's word.
@@ -160,7 +172,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 
 ## `trap`
 
-src/sys/mod.rs:1541. Kind: external_body. Category: inline asm.
+src/sys/mod.rs:1553. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on x86_64, that the code is at a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the kernel never resumes the thread past the trap).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
