@@ -4,10 +4,9 @@ Read	function pointer	Kani
 read_slot	raw pointer from C caller	Miri (evidence only)
 byte_at	raw pointer from C caller	Miri (evidence only)
 bytes_at	raw pointer from C caller	Miri (evidence only)
-env_var	raw pointer from C caller	Miri (evidence only)
 environ_array	raw pointer from C caller	Miri (evidence only)
-# Hands parse_source a `ToStderr`, whose report formats through `Issue`'s `Display`.
-parse_from	function pointer	Kani
+# Termination of the `environ` walk: the C program ends the array with a null pointer.
+env_var	C-program contract	none (assumption)
 # `CStr` literals, which Verus does not take; nothing is claimed about them.
 THP_NAMES	core library	none (assumption)
 PERCPU_ARENA_NAMES	core library	none (assumption)
@@ -16,3 +15,5 @@ KEYS	function pointer	Kani	discharged (Kani: config::kani_config::keys_are_the_t
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 Config::set_listed	function pointer	Kani	discharged (Kani: config::kani_config::set_listed_contract)
 Config::get	function pointer	Kani	trusted (partly checked, Kani: config::kani_config::get_contract; not checked: the real `Thp::name` and `PercpuArena::name`, which the harness stubs (they index the `CStr` tables `THP_NAMES` and `PERCPU_ARENA_NAMES`; Kani 0.68 has no C string literals))
+# `Issue`'s `Display` is outside `verus!`; that it needs no precondition is trusted.
+DisplaySpecImpl for Issue<'_>	core library	Kani	trusted (partly checked, Kani: config::kani_config::display_issue_malformed, config::kani_config::display_issue_unknown_key, config::kani_config::display_issue_bad_value, config::kani_config::display_issue_out_of_range, config::kani_config::display_issue_rounded, config::kani_config::display_issue_inert and config::kani_config::display_issue_cut; not checked: byte strings longer than 3 bytes)

@@ -80,18 +80,14 @@ enum Target {
 /// stderr); to the caller's stream ([`write_file`]); or with `write(2)` to
 /// stderr. The calling thread holds no allocator lock: `ord`, the report's
 /// lock-order token ([`Sink`]), has top 0 (see [`write_file`] for why that
-/// matters). Trusted: claims nothing; `Sink::flush` has stored the NUL at
-/// `buf[len]` (`len < 1024`). `no_unwind`: a C callee cannot unwind into
-/// Rust, and the `panic = "abort"` profiles abort on a panic (test builds
-/// unwind).
-#[verifier::external_body]
+/// matters).
 #[inline(always)]
 fn emit(target: &Target, buf: &[u8; 1024], len: usize, Tracked(ord): Tracked<&LockOrder>)
     requires
         crate::sys::may_syscall(),
         len < 1024,
+        buf@[len as int] == 0,
         ord.top() == 0,
-    no_unwind
 {
     match target {
         Target::Callback(cb, opaque) => {
@@ -119,6 +115,7 @@ fn call_back(
     requires
         crate::sys::may_syscall(),
         ord.top() == 0,
+        exists|i: int| 0 <= i < 1024 && #[trigger] buf@[i] == 0,
 {
     let Some(cb) = cb.0 else {
         return false;

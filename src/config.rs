@@ -999,6 +999,17 @@ pub trait Report {
     fn report(&mut self, issue: Issue<'_>);
 }
 
+// `Issue` formats under any formatter, for the `challoc: <source>:
+// <issue>` lines of `config::load`. Trusted: its `Display` (below) is
+// outside `verus!`, so nothing checks that it needs no precondition.
+// Ghost only: ordinary builds have no `std_specs`.
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Issue<'_> {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
 } // verus!
 
 /// The tests' reports are closures.
@@ -1565,9 +1576,6 @@ mod linux {
     }
 
     impl Report for ToStderr<'_> {
-        /// Trusted: formats `issue` through `Issue`'s `Display`, which is
-        /// outside `verus!`; claims nothing.
-        #[verifier::external_body]
         fn report(&mut self, issue: Issue<'_>) {
             let _ = writeln!(self.out, "challoc: {}: {}", self.source, issue);
         }
@@ -1575,8 +1583,6 @@ mod linux {
 
     /// [`Config::parse_source`] of `text` from `source`, cut or not,
     /// printing each problem as `challoc: <source>: <issue>` to `out`.
-    /// Trusted: the contract is `parse_source`'s.
-    #[verifier::external_body]
     #[inline(always)]
     fn parse_from(
         cfg: &mut Config,
@@ -1672,8 +1678,8 @@ mod linux {
     /// verified to keep `Config::wf`, not as a function of its text.
     ///
     /// Trusted: `getauxval(AT_SECURE)` returns the process's one
-    /// `AT_SECURE` word (`sys::auxv::at_secure`, in the `getauxval` seam),
-    /// and `env_var`'s contract (its body is not verified). Checked by a
+    /// `AT_SECURE` word (`sys::auxv::at_secure`, in the `getauxval` seam);
+    /// `env_var`'s body is verified against its contract. Checked by a
     /// test, not by Verus: `env_var` is the only reader of `environ`
     /// (through [`environ_array`]), and outside the tests `load` is its
     /// only caller (`config::linux_tests::environment_has_one_reader`).
@@ -1847,10 +1853,10 @@ mod linux {
     /// `environ` without `getenv`, and whether it was cut, as [`cstr`]
     /// returns it for the value alone. `None` when unset or empty.
     ///
-    /// Trusted: walks `environ` ([`environ_array`]) through raw pointers;
-    /// each entry is read through `cstr`, and when it sets `name`
-    /// (`env_sets`) its value is read through `cstr` again, which stops at
-    /// [`MAX_TEXT`] bytes.
+    /// Each entry is read through `cstr`, and when it sets `name`
+    /// ([`env_sets`]) its value is read through `cstr` again, which stops at
+    /// [`MAX_TEXT`] bytes. Termination is assumed: the walk ends at the null
+    /// pointer that ends `environ`, a fact about the C program.
     ///
     /// Requires a process that is not a secure-execution one
     /// (`sys::auxv::secure_exec`), whose environment is untrusted, so Verus
@@ -1860,13 +1866,13 @@ mod linux {
     /// postcondition, but not its `call_requires` its precondition.
     // Verus has no let-chains, so the `env_sets` test stays nested.
     #[allow(clippy::collapsible_if)]
-    #[verifier::external_body]
+    #[verifier::exec_allows_no_decreases_clause]
     pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
         requires
             !crate::sys::auxv::secure_exec(),
         ensures
             !crate::sys::auxv::secure_exec(),
-            r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
+            r matches Some((s, cut)) ==> 0 < s@.len() <= MAX_TEXT && (cut ==> s@.len() == MAX_TEXT),
     {
         // `environ` is glibc's NULL-terminated array of NUL-terminated
         // strings; it is null before libc has set it up.
@@ -1874,7 +1880,10 @@ mod linux {
         if e.is_null() {
             return None;
         }
-        loop {
+        loop
+            invariant
+                !crate::sys::auxv::secure_exec(),
+        {
             // SAFETY: `e` walks the array up to its terminating null.
             let entry = unsafe { read_slot(e) };
             if entry.is_null() {
@@ -1892,15 +1901,34 @@ mod linux {
         }
     }
 
-    } // verus!
+    /// The environment entry `text` sets `name`: `text` is `name`, `=`,
+    /// then the value.
+    spec fn entry_sets(text: Seq<u8>, name: Seq<u8>) -> bool {
+        &&& text.len() > name.len()
+        &&& text.take(name.len() as int) == name
+        &&& text[name.len() as int] == b'='
+    }
 
     /// Whether the environment entry `text` (`NAME=value`) sets `name`.
     #[inline(always)]
-    fn env_sets(text: &[u8], name: &[u8]) -> bool {
-        text.len() > name.len() && &text[..name.len()] == name && text[name.len()] == b'='
+    fn env_sets(text: &[u8], name: &[u8]) -> (r: bool)
+        ensures
+            r == entry_sets(text@, name@),
+    {
+        let r = text.len() > name.len() && &text[..name.len()] == name && text[name.len()] == b'=';
+        proof {
+            if text@.len() > name@.len() {
+                let head = text@.take(name@.len() as int);
+                if head == name@ {
+                    assert(forall|i: int| 0 <= i < name@.len() ==> head[i] == name@[i]);
+                }
+                if r {
+                    assert(head =~= name@);
+                }
+            }
+        }
+        r
     }
-
-    verus! {
 
     /// The first line of the file at NUL-terminated `path`, without its
     /// newline, read with raw syscalls into `buf`, and whether it was cut
@@ -3194,7 +3222,7 @@ mod linux_tests {
 /// Kani harnesses for this file's seams that Kani can run
 /// (`verus/ledger/src/config.rs.md`): `Config::set_listed`, `Config::get`
 /// and `KEYS`, and the `Display` of `Issue` and `Bytes` that `parse_from`
-/// prints each problem with.
+/// prints each problem with (the `DisplaySpecImpl` for `Issue`).
 #[cfg(kani)]
 mod kani_config {
     use super::*;
@@ -3364,10 +3392,10 @@ mod kani_config {
     }
 
     /// `Issue`'s `Display`, which `parse_from` prints each problem with
-    /// (`parse_from`'s body is trusted), returns without a panic for the
-    /// issue `make` builds from arbitrary byte strings up to 3 bytes. Each
-    /// `display_issue_*` harness names one variant in its closure, so that
-    /// CBMC runs only that arm of `fmt`.
+    /// (its `fmt_req` is trusted to be `true`), returns without a panic
+    /// for the issue `make` builds from arbitrary byte strings up to 3
+    /// bytes. Each `display_issue_*` harness names one variant in its
+    /// closure, so that CBMC runs only that arm of `fmt`.
     fn issue_formats<F: for<'a> Fn(&'a [u8], &'a [u8]) -> Issue<'a>>(make: F) {
         let a: [u8; 3] = kani::any();
         let b: [u8; 3] = kani::any();
