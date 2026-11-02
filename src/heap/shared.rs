@@ -226,7 +226,8 @@ impl Shared {
     /// ([`rank_stats`](crate::lock::rank_stats)); `region_hi` is the offset
     /// bits past a class region, each table is its class's and keeps its
     /// arrays in the metadata region ([`SlabTable::meta_ok`]), and each class
-    /// line is well formed over its table ([`ClassLine::wf`]); the huge
+    /// line is well formed over its table ([`ClassLine::wf`]) and has the
+    /// table's guard mask ([`SlabTable::guard_mask`]); the huge
     /// allocator covers the huge region on the regions' page, with its
     /// records from `meta`; [`PUSH_PAC`] is [`pac_mode`](super::pac_mode),
     /// set only where pointer authentication is available, and
@@ -247,6 +248,7 @@ impl Shared {
         &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.lines[c].wf(self.tables[c], self.regions, c)
+            && self.lines[c].guard_mask == crate::layout::guard_geom(c).1
         &&& self.huge.spec_npages() == self.huge_pages()
         &&& self.meta.spec_base() == self.regions.meta_base
         &&& self.meta.spec_len() == self.regions.meta_len
@@ -426,9 +428,11 @@ impl ClassLine {
     /// The line of class `c`, whose table is `t` and regions `regions`:
     /// the region base, the class's slot geometry (`class_table()[c]`,
     /// after `adopt_page_geometry`) with its 64-bit inverse, the table's
-    /// bitmap and owner bases, hand-out group and guard geometry, zero
-    /// padding, and the watermark copy's invariant over the table's slab
-    /// count, the region's.
+    /// bitmap and owner bases, hand-out group and guard geometry (a guard
+    /// mask that is the table's or 0, which makes the sized check accept
+    /// nothing; [`Shared::built`] says which), zero padding, and the
+    /// watermark copy's invariant over the table's slab count, the
+    /// region's.
     pub(super) closed spec fn wf(&self, t: SlabTable, regions: Regions, c: int) -> bool {
         let cls = class_table()[c];
         &&& self.class_base == regions.class_base[c]
@@ -444,7 +448,7 @@ impl ClassLine {
         &&& self.slab_bits == cls.slab_bits
         &&& self.tz == cls.tz
         &&& self.lg_slab == cls.lg_slab
-        &&& self.guard_mask == crate::layout::guard_geom(c).1
+        &&& (self.guard_mask == crate::layout::guard_geom(c).1 || self.guard_mask == 0)
         &&& crate::layout::guard_geom(c).0 <= 26
         &&& self.lg_guard == cls.lg_slab + crate::layout::guard_geom(c).0
         &&& self._pad[0] == 0 && self._pad[1] == 0
@@ -463,6 +467,7 @@ impl ClassLine {
             table.spec_class() == class,
         ensures
             r.0.wf(*table, *regions, class as int),
+            r.0.guard_mask == crate::layout::guard_geom(class as int).1,
             r.0.committed_inv@.constant().2 == r.1@.id(),
     {
         broadcast use crate::vspec::class::axiom_class_table_wf;
@@ -651,6 +656,13 @@ impl ClassLine {
         // `tz`, then `lg_guard` from 40, then zero.
         assert(cnt % 64 == (tz as u32) % 64 && (gw as u32) == gm && ((gw >> 40u64) as u32) == lgg as u32) by (bit_vector)
             requires gw == (gm as u64) | ((tz as u64) << 32u64) | ((lgg as u64) << 40u64), cnt == (gw >> 32u64) as u32;
+        // A zero guard mask makes the guard test match every offset, so
+        // the check accepts nothing on such a line.
+        if gm == 0 {
+            let v = (vstd::wrapping::usize_specs::wrapping_shr(rel, (gw >> 40u64) as u32) as u32).wrapping_add(1);
+            assert(v & 0u32 == 0u32) by (bit_vector);
+            assert(is_guard_spec(rel, gw));
+        }
         assert(q == crate::vspec::core_int::rotr64(y, tz as u32));
         crate::layout::lemma_slot_test64(cls, self.inv, x, q);
         // `x` is `q * size`, below `2^22`: `rel` has no bit past the
@@ -741,10 +753,11 @@ impl ClassLine {
     /// base, from a guard word: `rel >> lg_guard` is the page group
     /// (`slab >> lg_slabs_per_page`), a guard when `(group + 1) &
     /// guard_mask == 0`. With guards off the mask is all ones and only
-    /// group `u32::MAX` would match, which is past every region; an offset
-    /// past the region is rejected by the bound in [`ClassLine::sized_ok`]
-    /// whatever this says. `guard_test_agrees_with_the_tables` checks it
-    /// against the table for every class.
+    /// group `u32::MAX` would match, which is past every region; with a
+    /// zero mask every group matches; an offset past the region is
+    /// rejected by the bound in [`ClassLine::sized_ok`] whatever this says.
+    /// `guard_test_agrees_with_the_tables` checks it against the table for
+    /// every class.
     #[inline(always)]
     fn is_guard(rel: usize, gw: u64) -> (r: bool)
         ensures
@@ -2210,7 +2223,8 @@ impl Shared {
                     lines == field_ptr::<Shared, ClassLine>(this, S_LINES),
                     in_alloc(lines, NCLASSES as int * size_of::<ClassLine>()),
                     ord.allows(rank_table(0)),
-                    forall|d: int| 0 <= d < c ==> (#[trigger] line_perms[d]).value().wf(table_perms[d].value(), *regions, d),
+                    forall|d: int| 0 <= d < c ==> (#[trigger] line_perms[d]).value().wf(table_perms[d].value(), *regions, d)
+                        && line_perms[d].value().guard_mask == crate::layout::guard_geom(d).1,
             {
                 let ghost before = line_perms;
                 proof {
@@ -2227,7 +2241,8 @@ impl Shared {
                         assert(before.contains_key(d));
                     }
                     assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] line_perms[d]).is_init()
-                        && line_perms[d].value().wf(table_perms[d].value(), *regions, d) by {
+                        && line_perms[d].value().wf(table_perms[d].value(), *regions, d)
+                        && line_perms[d].value().guard_mask == crate::layout::guard_geom(d).1 by {
                         if d != c {
                             assert(before[d] == line_perms[d]);
                         }
@@ -2333,6 +2348,7 @@ impl Shared {
                 // The class lines and tables are the ones written above.
                 assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] shared_at(this).tables[d].spec_class() == d
                     && shared_at(this).lines[d].wf(shared_at(this).tables[d], shared_at(this).regions, d)
+                    && shared_at(this).lines[d].guard_mask == crate::layout::guard_geom(d).1
                     && shared_at(this).tables[d].meta_ok() by {
                     assert(table_perms.contains_key(d));
                     assert(line_perms.contains_key(d));
