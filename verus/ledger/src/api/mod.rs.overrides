@@ -20,6 +20,16 @@ axiom_fork_resumed	platform/kernel fact	none (assumption)
 # reads is the one this fork's prepare wrote; `axiom_fork_resumed_state`
 # is called only when it is true.
 set_fork_locked	platform/kernel fact	none (assumption)
+# The gate between init and fork (design 9): atomics outside STATE's
+# protocol that only delay a claim or a prepare handler. Premise: a fork
+# whose prepare found no init under way is not copied with one started
+# (init_gate_enter waits while GATE_FORKING), and one that found an init
+# under way on another thread waits for READY (fork_gate_enter). Covered
+# by tests/c/fork_init.c; no loom model.
+init_gate_enter	allocator invariant	none (assumption)
+init_gate_done	allocator invariant	none (assumption)
+fork_gate_enter	allocator invariant	none (assumption)
+fork_gate_exit	allocator invariant	none (assumption)
 fork_was_locked	platform/kernel fact	none (assumption)
 # The fork child's orphaned feature line: only the forking thread runs there.
 axiom_line_orphaned	allocator invariant	none (assumption)

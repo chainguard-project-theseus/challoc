@@ -6,7 +6,14 @@
  * exit returns its thread cache to the allocator. challoc registers its
  * own handlers from its constructor, which runs before the program's
  * (preloaded, or linked), so glibc runs the pool's prepare first, before
- * challoc's takes the allocator's locks, and the joins return. The parent
+ * challoc's takes the allocator's locks, and the joins return.
+ * Not covered, and still a deadlock (design 9, residuals): the pool in a
+ * linked library (libopenblas, libgrpc) with challoc preloaded. Under
+ * LD_PRELOAD glibc runs every DT_NEEDED library's constructor before
+ * challoc's, so the pool's handler is registered first and its prepare
+ * runs after challoc's, inside the fork window, where the workers it
+ * joins wait on challoc's locks. That is the common deployment; main
+ * hangs in it too, and in every variant here. The parent
  * and child handlers start the pool again. A watcher fails the run if a
  * fork does not return (fork blocks every signal, so a deadlock cannot
  * time itself out).

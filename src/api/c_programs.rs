@@ -1869,7 +1869,9 @@ fn every_frame_fits_the_budget() {
 /// release) allocate in the fork window, and `fork` returns
 /// (`tests/c/atfork_early.c -DLINKED_LIB` over `tests/c/atfork_lib.c`).
 /// And challoc loaded late by `dlopen` into a glibc-malloc process does
-/// not initialise (`tests/c/dlopen_late.c`, run bare).
+/// not initialise (`tests/c/dlopen_late.c`, run bare), and a `fork` while
+/// another thread initialises such a late-loaded challoc leaves a child
+/// whose first call completes (`tests/c/fork_init.c`, run bare).
 #[test]
 fn atfork_handlers_of_linked_libraries_may_allocate() {
     let root = root();
@@ -1955,6 +1957,22 @@ fn atfork_handlers_of_linked_libraries_may_allocate() {
         out.status.success() && stdout.contains("ok atfork_pool"),
         "atfork_pool linked: {:?}\nstdout: {stdout}\nstderr: {}",
         out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // A fork while another thread initialises challoc (loaded late, so
+    // its first call is the init): every child's call completes.
+    let finit = std::format!("{dir}/fork_init");
+    cc(&[&std::format!("{root}/tests/c/fork_init.c"), "-o", &finit]);
+    let out = Command::new(&finit)
+        .arg(&soname)
+        .env_remove("LD_PRELOAD")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "fork_init: {:?}\nstdout: {}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     let late = std::format!("{dir}/dlopen_late");

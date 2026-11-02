@@ -171,6 +171,26 @@ static ATFORK_REGISTERED: core::sync::atomic::AtomicBool =
 /// handlers release nothing.
 static FORK_LOCKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// The gate between init and `fork` (design 9): a `fork` never copies an
+/// init under way, whose child would wait for an initialising thread it
+/// does not have. `GATE_IDLE` until a thread starts init or a `fork`
+/// closes it; `GATE_INIT` from the first init attempt (or caller of
+/// `init_slow`) until init publishes `READY`, then `GATE_DONE` for good;
+/// `GATE_FORKING` from the prepare handler of a `fork` that found it
+/// idle (challoc not initialised, none under way) until that fork's
+/// parent and child handlers, during which no init starts, but the
+/// forking thread's own (a prepare handler registered before challoc's
+/// that allocates).
+static INIT_GATE: AtomicU32 = AtomicU32::new(GATE_IDLE);
+const GATE_IDLE: u32 = 0;
+const GATE_INIT: u32 = 1;
+const GATE_DONE: u32 = 2;
+const GATE_FORKING: u32 = 3;
+/// The forking thread while the gate is `GATE_FORKING`.
+static GATE_FORKER: AtomicU32 = AtomicU32::new(0);
+/// This `fork`'s prepare handler closed the gate.
+static FORK_GATED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// The library's constructor registers the fork handlers, without
 /// initialising the allocator: glibc runs prepare handlers in the reverse
 /// order of registration, so every handler registered later (by the
@@ -1326,6 +1346,7 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
         marks_ready(*r.1@),
 {
     let tracked mut seen = Seen { published: None, mark: None };
+    init_gate_enter();
     let (won, Tracked(parts)) = claim_init(Tracked(&mut seen));
     let tracked (steps, half) = parts;
     match won {
@@ -1333,6 +1354,7 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
             INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
             init(Tracked(steps), Tracked(&mut seen));
             let Tracked(m) = publish_ready(Tracked(seen.published.tracked_unwrap()), Tracked(half.tracked_unwrap()));
+            init_gate_done();
             proof {
                 seen.mark = Some(m);
             }
@@ -1510,6 +1532,91 @@ fn set_fork_locked(locked: bool) {
 #[inline(always)]
 fn fork_was_locked() -> bool {
     FORK_LOCKED.load(Ordering::Relaxed)
+}
+
+/// Before init's claim: wait while a `fork` holds the gate
+/// (`GATE_FORKING`, unless this thread is the forking one), then mark an
+/// init under way (`GATE_INIT`) if none was. Trusted: atomics outside
+/// `STATE`'s protocol, which this only delays; nothing is claimed.
+#[verifier::external_body]
+#[inline(never)]
+fn init_gate_enter() {
+    let me = sys::gettid() as u32;
+    loop {
+        match INIT_GATE.compare_exchange(GATE_IDLE, GATE_INIT, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(GATE_FORKING) => {
+                if GATE_FORKER.load(Ordering::Relaxed) == me {
+                    return;
+                }
+                core::hint::spin_loop();
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+/// Init published `READY`: the gate stays open for good (`GATE_DONE`),
+/// unless the forking thread initialised inside its own `fork`, whose
+/// parent and child handlers then open it. Trusted, as
+/// [`init_gate_enter`].
+#[verifier::external_body]
+#[inline(always)]
+fn init_gate_done() {
+    let _ = INIT_GATE.compare_exchange(GATE_INIT, GATE_DONE, Ordering::AcqRel, Ordering::Relaxed);
+}
+
+/// The prepare handler, before it looks at `STATE`: with challoc
+/// initialised (`GATE_DONE`) nothing; with an init under way on another
+/// thread (`GATE_INIT`), wait until it publishes, so the child gets the
+/// finished state; with none (`GATE_IDLE`), close the gate
+/// (`GATE_FORKING`) so that none starts until the parent and child
+/// handlers (`fork_gate_exit`). Initialises nothing. Trusted, as
+/// [`init_gate_enter`]; the wait ends when the other thread's init does
+/// (the forking thread holds nothing init takes: the fork handlers are
+/// registered already, so init's `pthread_atfork` call returns without
+/// glibc's atfork lock).
+#[verifier::external_body]
+#[inline(never)]
+fn fork_gate_enter() {
+    let me = sys::gettid() as u32;
+    loop {
+        match INIT_GATE.load(Ordering::Acquire) {
+            GATE_IDLE => {
+                GATE_FORKER.store(me, Ordering::Relaxed);
+                if INIT_GATE
+                    .compare_exchange(GATE_IDLE, GATE_FORKING, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    FORK_GATED.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+            GATE_INIT => {
+                // A `fork` from a signal handler that interrupted this
+                // thread's own init cannot wait for it (design 9,
+                // residuals).
+                if INIT_TID.load(Ordering::Relaxed) == me {
+                    return;
+                }
+                core::hint::spin_loop();
+            }
+            _ => return,
+        }
+    }
+}
+
+/// The parent and child handlers: open the gate this `fork`'s prepare
+/// closed, to `GATE_DONE` if the forking thread initialised meanwhile,
+/// else `GATE_IDLE`. Trusted, as [`init_gate_enter`].
+#[verifier::external_body]
+#[inline(never)]
+fn fork_gate_exit() {
+    if FORK_GATED.swap(false, Ordering::Relaxed) {
+        let open = if STATE.load(Ordering::Acquire) == READY { GATE_DONE } else { GATE_IDLE };
+        GATE_FORKER.store(0, Ordering::Relaxed);
+        INIT_GATE.store(open, Ordering::Release);
+    }
 }
 
 /// Register the fork handlers, aborting if glibc refuses.
@@ -2026,6 +2133,9 @@ extern "C" fn fork_prepare() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
+    // An init under way on another thread finishes first; with none, none
+    // starts until the parent and child handlers (the gate).
+    fork_gate_enter();
     // Registered by the library's constructor, before init: until challoc
     // is initialised there is nothing to lock (nor to initialise for a
     // `fork`).
@@ -2486,6 +2596,7 @@ extern "C" fn fork_parent() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
+    fork_gate_exit();
     if !fork_was_locked() {
         return;
     }
@@ -2501,6 +2612,7 @@ extern "C" fn fork_child() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
+    fork_gate_exit();
     if !fork_was_locked() {
         return;
     }

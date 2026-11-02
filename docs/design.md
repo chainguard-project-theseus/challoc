@@ -1072,7 +1072,14 @@ library whose constructor ran before challoc's, as LD_PRELOAD and
 DT_NEEDED order decide) run on the forking thread while challoc's hold
 every lock. One of those that waits on another thread which allocates
 still deadlocks `fork` (a residual, with `_Fork` below); one that
-allocates itself does not. Between the end of challoc's prepare handler
+allocates itself does not. That residual is the common deployment: under
+LD_PRELOAD, glibc runs every DT_NEEDED library's constructor before the
+preloaded challoc's, so a program linked against a thread-pool library
+that registers such a handler from its constructor (libopenblas,
+libgrpc) and run with challoc preloaded still deadlocks in `fork`. Only
+a challoc linked into the program (or preloaded into a program whose
+pool registers later, from its own code) runs after the pool's handler;
+on main every variant hangs. Between the end of challoc's prepare handler
 and the start of its release, that thread is the fork window's holder
 (`lock::fork_window_open`): a lock it asks for is taken as acquired and
 its release does nothing (`lock::fork_holder_is_me`, checked only in the
@@ -1103,11 +1110,21 @@ discovering or building it at the fork does not wait for work that will
 not finish: in the child's window (`lock::in_child_fork_window`, the
 holder with another process ID than the one recorded when the window
 opened) the wait resets that work as the child handler would and does it
-itself (`tests/c/fork_spin.c`). Residuals: a handler registered before
+itself (`tests/c/fork_spin.c`). A `fork` never copies an init under way
+on another thread (the gate, `api::INIT_GATE`): the prepare handler,
+before it looks at the state, waits for an init another thread has
+started to publish, so the child gets the finished state; with none
+under way it closes the gate (`GATE_FORKING`), so that no init starts
+until the parent and child handlers open it again, and a child whose
+parent was not initialised starts uninitialised. It initialises nothing
+itself, so a process that never allocates stays free of init. The
+forking thread's own init (a handler registered before challoc's that
+allocates) passes the gate (`tests/c/fork_init.c`). Residuals: a handler registered before
 challoc's (above) that waits on another thread which allocates deadlocks
-`fork`, as that thread waits on a lock challoc's prepare holds; a `fork`
-while another thread is initialising challoc finds it not initialised,
-takes no lock, and the child inherits the half-built state; and a
+`fork`, as that thread waits on a lock challoc's prepare holds (above:
+the preloaded-challoc, linked-pool case); a `fork` from a signal handler
+that interrupted its own thread's init, whose child inherits the
+half-built state; and a
 process created inside the window by `_Fork` or a raw `clone` inherits
 every lock held with its only thread as the holder, so its main thread
 proceeds but a thread it creates waits forever on its first slow path. The prepare
