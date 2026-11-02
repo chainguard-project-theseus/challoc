@@ -2,3 +2,6 @@ desc_stride	core library	Kani	discharged (Kani: slab::kani_desc_stride::desc_str
 # Temporary seam, provable in Verus: `bad_state_byte` once the abort it
 # makes is specified.
 bad_state_byte	panic/abort	Verus
+# Temporary seam, provable in Verus: `sub_live` once it requires the abort
+# capability its `abort_pending` needs.
+SlabDesc::sub_live	panic/abort	Verus

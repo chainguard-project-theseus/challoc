@@ -1378,9 +1378,9 @@ impl<'a> AtomicBitmap<'a> {
     }
 
     /// Set slot bits, padding excluded: the slab's allocated (or cached)
-    /// slots for a class with `nslots` real slots. Trusted: its `assert!`
-    /// fails on a heap inconsistency, a panic Verus treats as unreachable,
-    /// so it stays unchecked until the abort it makes is specified.
+    /// slots for a class with `nslots` real slots. A cleared padding bit
+    /// aborts through `vspec::check::check`. Trusted: it names neither the
+    /// abort capability `check` needs nor a loop invariant.
     #[verifier::external_body]
     pub fn allocated(&self, nslots: usize) -> usize
         requires
@@ -1398,10 +1398,7 @@ impl<'a> AtomicBitmap<'a> {
         let padding = self.nbits() - nslots;
         // Fewer set bits than padding bits means a padding bit was cleared:
         // a release outside the slab's real slots.
-        assert!(
-            set >= padding,
-            "bitmap: a padding bit of the slab was cleared"
-        );
+        crate::vspec::check::check(set >= padding, "bitmap: a padding bit of the slab was cleared");
         set - padding
     }
 
