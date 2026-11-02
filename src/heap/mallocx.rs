@@ -450,6 +450,7 @@ pub fn alloc(
 /// from arena 0 (design 14.1).
 fn no_arena(shared: &Shared, a: u16) -> bool
     requires
+        crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {

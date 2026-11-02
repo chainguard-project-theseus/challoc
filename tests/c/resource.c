@@ -160,6 +160,8 @@ static void parent_as_min(void)
  * only when all exist and frees them only when all have allocated, so
  * every thread is bound to an arena of its own while the others live. */
 static pthread_barrier_t start, done;
+/* Threads whose explicit MALLOCX_ARENA(home) was refused. */
+static int explicit_refused;
 
 static void *gated(void *arg)
 {
@@ -171,11 +173,22 @@ static void *gated(void *arg)
     if (b)
         CHECK(is_zero(b, 5000), "calloc not zero");
     /* The mallocx routes on the thread's own (implicit) arena too. */
-    void *d = NULL, *e = NULL;
+    void *d = NULL, *e = NULL, *f = NULL;
     if (mallocx) {
         d = mallocx(1 << 20, 0);
         e = mallocx(16, MALLOCX_TCACHE_NONE);
         CHECK(d && e, "thread: mallocx(1 MiB)=%p mallocx(16, TCACHE_NONE)=%p errno %d", d, e, errno);
+        /* Named explicitly, the home is served only if it was built:
+         * an unbuildable one is NULL/ENOMEM, never arena 0. */
+        mallctl_fn ctl = mallctl_dl();
+        unsigned home = 0;
+        size_t len = sizeof home;
+        if (ctl && ctl("thread.arena", &home, &len, NULL, 0) == 0) {
+            /* (mallocx reports failure by NULL alone, as jemalloc's.) */
+            f = mallocx(16, MALLOCX_ARENA(home));
+            if (!f)
+                __sync_fetch_and_add(&explicit_refused, 1);
+        }
     }
     pthread_barrier_wait(&done);
     free(a);
@@ -183,6 +196,7 @@ static void *gated(void *arg)
     free(c);
     free(d);
     free(e);
+    free(f);
     return NULL;
 }
 
@@ -235,6 +249,9 @@ static void parent_arenas_create(void)
 static void parent_narenas(void)
 {
     run_threads(600);
+    /* More homes than the metadata region holds: some explicit
+     * requests for an unbuilt home must have been refused. */
+    CHECK(explicit_refused > 0, "no thread's home was unbuildable (narenas too small for this host?)");
 }
 
 static void *thread_limited(void *arg)
