@@ -126,8 +126,8 @@ reserved in random order. Each shrinks until the kernel grants it, so
 while one is reserved a `PROT_NONE` placeholder holds the minimum layouts
 of the ones drawn after it (`layout::regions::hold`): under an
 address-space limit the first one drawn can never take what the others
-need at their smallest, and any limit at or above the minimum
-reserves. The huge and metadata regions slide by 1 to 255
+need at their smallest, and any limit that covers the minimum layout
+on top of the program's own mappings (436 GiB at quantum 16) reserves. The huge and metadata regions slide by 1 to 255
 steps of 4 MiB (just under 8 bits) above their mapping's 4 MiB-aligned
 start. Inside the superblock the class regions sit at
 a fixed power-of-two stride in class order, each at a random offset
@@ -1642,7 +1642,9 @@ The limits a process may run under are part of this. A process that
 starts under a finite `RLIMIT_DATA` has no table writable before it is
 used (section 2: the policy is probed once, at the first table, so a
 limit set later finds the eager tables already counted). An `RLIMIT_AS`
-at or above the minimum layout always lets init reserve.
+that covers the minimum layout on top of the program's own mappings
+(the binary, ld.so, libc, the stack: 436 GiB at quantum 16, 468 GiB at
+quantum 8) always lets init reserve.
 
 ## 15. Per-CPU mode
 
