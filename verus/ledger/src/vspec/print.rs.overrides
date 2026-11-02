@@ -1,5 +1,4 @@
-# `Cgroup`'s `Display` is outside `verus!`; that it needs no precondition is trusted.
-DisplaySpecImpl for sys::cgroup::Cgroup	allocator invariant	Verus
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
+DisplaySpecImpl for sys::cgroup::Cgroup	core library	Kani	discharged (Kani: sys::cgroup::kani_fmt::display_cgroup)
 base_slab_sizes	function pointer	Kani	discharged (Kani: kani_proofs::report::base_slab_sizes_returns)
 PartialEqSpecImpl for config::PercpuArena	core library	Kani	discharged (Kani: kani_proofs::eq::eq_percpu_arena)

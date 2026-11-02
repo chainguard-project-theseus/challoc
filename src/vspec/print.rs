@@ -39,8 +39,9 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
 }
 
 // `sys::cgroup::Cgroup` formats under any formatter, for the report's
-// `cgroup:` line. Trusted: its `Display` (in `sys/cgroup.rs`) is outside
-// `verus!`, so nothing checks that it needs no precondition.
+// `cgroup:` line. Its `Display` (in `sys/cgroup.rs`) is outside `verus!`;
+// `sys::cgroup::kani_fmt::display_cgroup` checks that it needs no
+// precondition, for directories up to the harness's `DIR_MAX` bytes.
 // Ghost only: ordinary builds have no `std_specs`.
 #[cfg(verus_keep_ghost)]
 impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {

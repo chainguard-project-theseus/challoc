@@ -9,3 +9,4 @@ core::sync::atomic::fence	core library	Kani	discharged (Kani: kani_proofs::atomi
 core::hint::assert_unchecked	core library	Kani	discharged (Kani: kani_proofs::misc::hint_assert_unchecked)
 Option::<T>::as_deref_mut	core library	Kani	discharged (Kani: kani_proofs::misc::option_as_deref_mut)
 str::as_ptr	core library	Kani	discharged (Kani: kani_proofs::misc::str_as_ptr)
+Option::<T>::or_else	core library	Kani	discharged (Kani: kani_proofs::misc::option_or_else)
