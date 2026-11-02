@@ -62,10 +62,14 @@ use vstd::resource::set::GhostSingleton;
 verus! {
 
 /// Cache modes: off (the `FOREIGN` cache), probing the class for
-/// fragmentation every [`PROBE_MASK`] + 1 pops, compacting.
+/// fragmentation every [`PROBE_MASK`] + 1 pops, compacting, and
+/// `double_free_scan`'s: every pop scheduled (mask 0), so the fast pop
+/// declines each one with the test it already makes and the slow path
+/// moves the slot's state; no compaction.
 pub const MODE_OFF: u16 = 0;
 pub const MODE_PROBE: u16 = 1;
 pub const MODE_COMPACT: u16 = 2;
+pub const MODE_STATE: u16 = 3;
 
 /// Pops between two fragmentation probes of a class (minus one).
 pub exec const PROBE_MASK: u32
@@ -145,18 +149,22 @@ impl CacheHeader {
     }
 
     /// The scheduled-pop mask `mode` implies: [`PROBE_MASK`] while
-    /// probing, [`COMPACT_MASK`] while compacting, `u32::MAX` when off (one pop in 2^32 then reaches
-    /// `pop_compact`, which pops the top). The one home of the
-    /// mode-to-mask rule; [`CacheHeader::set_mode`] applies it.
+    /// probing, [`COMPACT_MASK`] while compacting, 0 under
+    /// `double_free_scan` ([`MODE_STATE`]: every pop), `u32::MAX` when off
+    /// (one pop in 2^32 then reaches `pop_compact`, which pops the top).
+    /// The one home of the mode-to-mask rule; [`CacheHeader::set_mode`]
+    /// applies it.
     pub(super) fn mask_for(mode: u16) -> (r: u32)
         ensures
             mode == MODE_PROBE ==> r == 0xfff,
             mode == MODE_COMPACT ==> r == 7,
-            mode != MODE_PROBE && mode != MODE_COMPACT ==> r == u32::MAX,
+            mode == MODE_STATE ==> r == 0,
+            mode != MODE_PROBE && mode != MODE_COMPACT && mode != MODE_STATE ==> r == u32::MAX,
     {
         match mode {
             MODE_PROBE => PROBE_MASK,
             MODE_COMPACT => COMPACT_MASK,
+            MODE_STATE => 0,
             _ => u32::MAX,
         }
     }
@@ -168,7 +176,8 @@ impl CacheHeader {
             *final(self) == old(self).with_mode(mode, final(self).compact_mask),
             mode == MODE_PROBE ==> final(self).compact_mask == 0xfff,
             mode == MODE_COMPACT ==> final(self).compact_mask == 7,
-            mode != MODE_PROBE && mode != MODE_COMPACT ==> final(self).compact_mask == u32::MAX,
+            mode == MODE_STATE ==> final(self).compact_mask == 0,
+            mode != MODE_PROBE && mode != MODE_COMPACT && mode != MODE_STATE ==> final(self).compact_mask == u32::MAX,
     {
         self.mode = mode;
         self.compact_mask = Self::mask_for(mode);
@@ -594,6 +603,11 @@ impl Heap {
                     Heap::lemma_keeps_trans(*old(self), h1, *self);
                 }
                 return;
+            }
+            // `double_free_scan`: the claimed block goes from `FREE` to
+            // `CACHED`, before the entries move or are signed.
+            if shared.double_free_scan() {
+                super::slotstate::claim_all(shared, class, &*out, n);
             }
             shared.owner(arena).0.class(class).note_compact(n);
             out[..n].reverse();

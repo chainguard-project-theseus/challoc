@@ -1,0 +1,15 @@
+# double_free_scan's per-slot state bytes (heap/slotstate.rs): a byte
+# array outside every verified invariant. The verified wrappers (free,
+# claim, pop, release, the batch loops, check_not_cached) only turn what
+# these return into aborts (`abort_pending`); none changes what the
+# verified paths do.
+
+# The reservation and the commits: mmap and mprotect of the arrays.
+init	FFI/syscall	none (assumption)
+commit	FFI/syscall	none (assumption)
+
+# The transition (a read when `from` is `NONE`): the byte's address from the slot index
+# (below the watermark that the commit precedes), then relaxed loads and
+# stores of one AtomicU8, and for a free one compare-and-exchange
+# (tests/loom/src/slotstate.rs models that race).
+step	atomics primitive	loom/GenMC

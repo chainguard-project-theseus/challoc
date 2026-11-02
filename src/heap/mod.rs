@@ -43,6 +43,7 @@ pub mod mallocx;
 mod others;
 mod paths;
 mod shared;
+pub(crate) mod slotstate;
 mod tcaches;
 mod thread;
 mod zero;
@@ -58,7 +59,7 @@ use compact::{
     COMPACT_MASK, COMPACT_MAX_REFILL_SLABS, COMPACT_MIN_SLABS, COMPACT_SHIFT, MODE_COMPACT,
     PROBE_MASK,
 };
-pub use compact::{MODE_OFF, MODE_PROBE};
+pub use compact::{MODE_OFF, MODE_PROBE, MODE_STATE};
 pub use live::Live;
 pub use others::ArenaCaches;
 #[cfg(test)]
@@ -160,9 +161,10 @@ verus! {
 /// arena index (`arena::MAX_ARENAS` is 4096).
 pub const FOREIGN: u16 = u16::MAX;
 
-/// `Shared::push_flags` bit: `double_free_scan` (compare the pushed slot
-/// against the top four cache entries).
-pub const PUSH_SCAN: u8 = 1;
+/// `Shared::push_flags` bit: `double_free_scan` (the per-slot state of
+/// [`slotstate`]: the fast push and the fast pop decline, and the slow
+/// paths make every transition).
+pub const PUSH_STATE: u8 = 1;
 /// `Shared::push_flags` bit: `zero_on_free` (clear the block before the
 /// push or the huge release).
 pub const PUSH_ZERO: u8 = 2;
@@ -5050,7 +5052,7 @@ impl Heap {
                 }
                 // SAFETY: as above.
                 let h = unsafe { self.hdr_mut(c) };
-                h.rekey(to, refilled);
+                h.rekey(to, refilled, shared.double_free_scan());
                 proof {
                     Heap::lemma_set(hb, *self, c, *h);
                     assert(self.perms@.hdrs.dom() =~= hb.perms@.hdrs.dom());
@@ -5892,27 +5894,6 @@ impl Heap {
         decreases 1int, 0int,
     {
         let to = shared.arena_of_slot(class, p);
-        if shared.double_free_scan() {
-            let foreign = self.other_caches(shared, FOREIGN, false, Tracked(&mut LockOrder::spare()));
-            if !foreign.is_null() {
-                proof {
-                    assert(self.owns(node_hdr(foreign, class as int)));
-                }
-                // SAFETY: `foreign` is this heap's live `FOREIGN` node; a
-                // header with `cap != 0` is a real cache.
-                unsafe {
-                    let cache = Self::node_cache_ptr(foreign, class);
-                    if self.hdr_ref(cache).cap != 0 {
-                        proof {
-                            // No entry stands for `p` while `blk` holds it.
-                            assert(self.hdr_class(node_hdr(foreign, class as int)) == class);
-                            self.lemma_not_cached(blk, cache, class as int, self.hdr(cache).len as int);
-                        }
-                        self.scan_or_abort(shared, cache, p);
-                    }
-                }
-            }
-        }
         if !self.try_rehome(shared, to, Tracked(ord)) {
             return false;
         }

@@ -9,8 +9,8 @@ exact windows the defaults leave open. The design view is
 |------------------------------------------|--------------|-----------------|
 | Metadata separate from user memory       | No           | Yes             |
 | Free-list pointers in freed blocks       | Yes          | None (5)        |
-| Invalid free detected                    | No           | Partly: plain `free` aborts except on slots a thread cache holds; sized frees defer to a flush (1) |
-| Double free detected                     | Debug only   | Partly: aborts once the slot has left the caches; a cached copy only if a flush reaches it unclaimed (1) |
+| Invalid free detected                    | No           | Partly: plain `free` aborts except on slots a thread cache holds; sized frees defer to a flush; exact on every route with `double_free_scan` (1) |
+| Double free detected                     | Debug only   | Partly: aborts once the slot has left the caches; a cached copy only if a flush reaches it unclaimed; exact on every route with `double_free_scan` (1) |
 | Size classes in isolated address ranges  | No           | Yes, randomised |
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
 | Sealed reservation gaps (`mseal`)        | No           | Yes where the kernel (6.10+) and seccomp allow it |
@@ -26,30 +26,41 @@ exact windows the defaults leave open. The design view is
 Through `free`: an invalid pointer aborts at the call, unless it is a
 slot start some thread cache holds (a refill claimed it, setting its
 bit, and `malloc` has not handed it out yet: that free is accepted and
-the slot can be handed out twice; `double_free_scan` narrows this (it
-compares the slot against the four most recent entries of the cache the
-free pushes to)), and so does a second free of a slot that has already
-left the thread cache (its slot bit is clear). A second free while the
-slot is still held in a thread cache is not checked at the call. A flush
-catches it only if the slot is still unclaimed when the flush reaches
-the copy: when both copies are in one cache and released together, the
-flush groups the released half by slab, so the copies land in one slab's
-batch and the release aborts on the duplicate, and the one case where
-the split would release one copy and keep the other aborts at the split.
-A pair the split keeps together stays in the cache until a later flush
-releases it. If a `malloc` pops one copy first, or the copies are in two
-threads' caches and a refill claims the slot between the two flushes
-(the second flush then releases the slot under its new owner), the
-duplicate is not detected and the slot is live twice, unless the
-`double_free_scan` tunable is set: then every cached free (plain and
-sized) compares the slot against the four most recently cached entries
-of the cache it pushes to and aborts on a match at the call. Not checked
-even then: a copy deeper than those four, a copy in another cache
-(another thread's, an explicit `MALLOCX_TCACHE(t)` cache, a per-arena
-cache of this heap, or its foreign cache when one free is plain and the
-other sized), and a `MALLOCX_TCACHE_NONE` free, which does not look at
-the caches. It is off by default because it costs about 3..4% on larson
-and up to 14% on the Valkey model on x86_64.
+the slot can be handed out twice; `double_free_scan` catches it), and so
+does a second free of a slot that has already left the thread cache (its
+slot bit is clear). A second free while the slot is still held in a
+thread cache is not checked at the call. A flush catches it only if the
+slot is still unclaimed when the flush reaches the copy: when both
+copies are in one cache and released together, the flush groups the
+released half by slab, so the copies land in one slab's batch and the
+release aborts on the duplicate, and the one case where the split would
+release one copy and keep the other aborts at the split. A pair the
+split keeps together stays in the cache until a later flush releases it.
+If a `malloc` pops one copy first, or the copies are in two threads'
+caches and a refill claims the slot between the two flushes (the second
+flush then releases the slot under its new owner), the duplicate is not
+detected and the slot is live twice.
+
+With the `double_free_scan` tunable set, every free route checks the
+slot's state at the call: one byte per slot (free, cached or live) next
+to the bitmap, which every route moves and checks, so a free of a slot
+that is not live aborts at that free, wherever the first copy sits (this
+thread's cache, another thread's, the foreign cache, or the slab) and
+whichever route either free took (`free`, `sdallocx`, `free_sized`,
+`free_aligned_sized`, `dallocx`, `MALLOCX_TCACHE_NONE`,
+`challoc_free_usable`). A sized free of a slot start challoc has not
+handed out aborts too, and `malloc_usable_size`, `realloc` and `sallocx`
+reject a pointer freed into a cache. A free moves the byte with one
+compare-and-exchange, so of two frees of one slot on two threads at the
+same instant exactly one passes. The bytes are trusted, not verified
+(`verus/ledger/src/heap/slotstate.rs.md`): Verus proves that a valid
+free reaches none of the verified paths' aborts, but not that it never
+reaches one of these; a bookkeeping bug would show as a false abort,
+never as a missed check the default makes. With the key every free and
+every `malloc` takes the slow path, which costs 1.8..2.9x lower
+throughput on the quick rows of the GCE gate cells, `alloc-test1`
+46..68% slower (cb run `20261102t0229z-caad429-quick-m5fdy`): it is for
+debugging and high-assurance deployments, not a default.
 
 Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
 `free_aligned_sized` (what Valkey frees with): the size is checked
@@ -60,23 +71,24 @@ aborts at the call, the slot bit is not read, and any other invalid or
 double free is left to a flush. It is caught when a flush releases the
 slot to its slab while the slot is still unclaimed (a full cache or
 `MALLOCX_TCACHE_NONE` runs plain free's check at the call instead: it
-catches a slot whose bit is clear, not a copy still held in a cache).
-That is not bounded by a number of frees: a partial flush releases the
-cache's highest addresses and keeps the lowest, so a slot below the rest
-of the cache can stay cached through any number of same-class frees
-until a whole flush (thread exit, `thread.tcache.flush`, `tcache.flush`)
-or a partial one that reaches it. Between the call and that flush the
-slot can be handed out twice, which is jemalloc's behaviour for every
-free: if a `malloc` takes one copy before the flush the duplicate is not
+catches a slot whose bit is clear, not a copy still held in a cache;
+with `double_free_scan` the state byte catches that too). That is not
+bounded by a number of frees: a partial flush releases the cache's
+highest addresses and keeps the lowest, so a slot below the rest of the
+cache can stay cached through any number of same-class frees until a
+whole flush (thread exit, `thread.tcache.flush`, `tcache.flush`) or a
+partial one that reaches it. Between the call and that flush the slot
+can be handed out twice, which is jemalloc's behaviour for every free:
+if a `malloc` takes one copy before the flush the duplicate is not
 detected. A sized free of a slot start challoc has not handed out enters
 the cache too: the thread's next `malloc` of the class pops it (a slot
 the caller chose, writable at once wherever its slab's memory is
 committed, which includes the run committed ahead of the newest slab),
 and if a refill claims that slot before the flush, the flush releases it
-under its new owner and it is live twice. This trade is made for
-jemalloc parity: on Valkey's write path the exact check's bitmap load is
-a cache miss per free, most of what once separated challoc from jemalloc
-there.
+under its new owner and it is live twice. `double_free_scan` closes all
+of this at the call (above). This trade is made for jemalloc parity: on
+Valkey's write path the exact check's bitmap load is a cache miss per
+free, most of what once separated challoc from jemalloc there.
 
 ## (2) Zero on free and slot randomisation
 

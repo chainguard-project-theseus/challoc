@@ -8,7 +8,6 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `Heap::h...ptr_at` | external_body | allocator invariant | none (assumption) | trusted |
-| `Heap::c...cently` | external_body | raw pointer (internal) | Kani | discharged |
 
 ## `Heap::home_ptr_at`
 
@@ -25,32 +24,5 @@ fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
     ensures
         *final(self) == *old(self),
         r == old(self).home_ptr(class as int),
-    opens_invariants none
-```
-
-## `Heap::cached_recently`
-
-src/heap/cache.rs:740. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: discharged (Kani: heap::cache::kani_cache::cached_recently_reads_the_top_entries).
-
-> `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the entry as it would be stored (signed under `pac`), is one of the top four of the `len` entries in `slots`.
-
-```rust
-pub(super) unsafe fn cached_recently(
-    slots: *mut *mut u8,
-    len: u32,
-    e: *mut u8,
-    Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>,
-) -> (r: bool)
-    requires
-        len == 0 || slot_in(slots, len as int),
-        forall|i: int| 0 <= i < len ==> {
-            let q = #[trigger] slot_ptr(slots, i);
-            perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
-        },
-    ensures
-        // A hit is an entry among the `len` whose address is `e`'s (the
-        // compares are of addresses, as `==` on pointers is).
-        r ==> exists|i: int| 0 <= i < len && perms[#[trigger] slot_ptr(slots, i)].value()@.addr == e@.addr,
     opens_invariants none
 ```

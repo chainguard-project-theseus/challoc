@@ -44,7 +44,7 @@ const READY: u32 = 2;
 /// `flags::ROUTE` (`heap::FREE_ROUTE`).
 const ROUTE: u8 = 8;
 
-/// `push_flags` in the model: `PUSH_SCAN | PUSH_ZERO | PUSH_PAC`, every
+/// `push_flags` in the model: `PUSH_STATE | PUSH_ZERO | PUSH_PAC`, every
 /// bit `init` may set.
 const PUSH: u8 = 0b111;
 

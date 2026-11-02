@@ -60,8 +60,36 @@
  *                                 with double_free_scan
  *   negative free_usable_huge_twice free of a 1 MiB run, then
  *                                 challoc_free_usable of it
+ *   negative usable_cached        malloc_usable_size(p) after free(p) while the
+ *                                 copy is still cached (double_free_scan: the
+ *                                 state byte says cached; the bit is set)
+ *   negative realloc_cached_small realloc(p, 64) the same way (in place)
+ *   negative realloc_cached_large realloc(p, 4096) the same way (moves)
+ *   negative sallocx_cached       sallocx(p, 0) the same way
+ *   negative route_<route>_<case> the free-route matrix, run with
+ *                                 double_free_scan:true (the per-slot state:
+ *                                 every route checks at the call). <route>
+ *                                 is the second, bad free: free, sdallocx,
+ *                                 free_sized, dallocx_none (MALLOCX_TCACHE_NONE),
+ *                                 sdallocx_none or free_usable. <case>:
+ *                                   same    the route frees p twice back to back
+ *                                   mixed   free(p), then the route frees p while
+ *                                           the first copy is still cached
+ *                                   cross   another thread frees p (its copy stays
+ *                                           in that thread's cache), then the route
+ *                                           frees p on this thread
+ *                                   forged  the route frees a slot start of p's
+ *                                           slab that challoc never handed out and
+ *                                           no refill claimed (its bit is clear)
+ *                                   forged_cached
+ *                                           the route frees the slot after p, which
+ *                                           the refill that handed out p claimed
+ *                                           into the cache (its bit is set; only
+ *                                           the state byte says it is not live)
+ *                                   size    a sized route with the wrong size
  */
 #include "common.h"
+#include <pthread.h>
 #include <stdbool.h>
 
 /* Enough blocks of one class that freeing them all flushes the thread cache
@@ -163,6 +191,121 @@ static unsigned bin_of_64(void)
     return 0;
 }
 
+/* The route matrix's second free of `p` (`size` bytes). */
+static void route_free(const char *route, void *p, size_t size)
+{
+    if (strcmp(route, "free") == 0) {
+        free(p);
+    } else if (strcmp(route, "sdallocx") == 0) {
+        REQUIRE(sdallocx != NULL, "sdallocx not exported");
+        sdallocx(p, size, 0);
+    } else if (strcmp(route, "free_sized") == 0) {
+        REQUIRE(free_sized != NULL, "free_sized not exported");
+        free_sized(p, size);
+    } else if (strcmp(route, "dallocx_none") == 0) {
+        REQUIRE(dallocx != NULL, "dallocx not exported");
+        dallocx(p, MALLOCX_TCACHE_NONE);
+    } else if (strcmp(route, "sdallocx_none") == 0) {
+        REQUIRE(sdallocx != NULL, "sdallocx not exported");
+        sdallocx(p, size, MALLOCX_TCACHE_NONE);
+    } else if (strcmp(route, "free_usable") == 0) {
+        REQUIRE(challoc_free_usable != NULL, "challoc_free_usable not exported");
+        (void)challoc_free_usable(p);
+    } else {
+        REQUIRE(0, "unknown route %s", route);
+    }
+}
+
+static void *volatile cross_p;
+static pthread_mutex_t cross_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cross_cv = PTHREAD_COND_INITIALIZER;
+static int cross_stage;
+
+/* The other thread of `cross`: free p, then stay alive (its cache keeps
+ * the copy) until the process ends. */
+static void *cross_thread(void *arg)
+{
+    (void)arg;
+    free(cross_p);
+    pthread_mutex_lock(&cross_mu);
+    cross_stage = 1;
+    pthread_cond_broadcast(&cross_cv);
+    while (cross_stage != 2)
+        pthread_cond_wait(&cross_cv, &cross_mu);
+    pthread_mutex_unlock(&cross_mu);
+    return NULL;
+}
+
+static void route_matrix(const char *spec)
+{
+    char route[32];
+    /* The case is the suffix after the route: the one case name with an
+     * underscore is matched first. */
+    const char *cs = strstr(spec, "_forged_cached");
+    if (cs == NULL)
+        cs = strrchr(spec, '_');
+    REQUIRE(cs != NULL && (size_t)(cs - spec) < sizeof route, "bad route mode %s", spec);
+    memcpy(route, spec, (size_t)(cs - spec));
+    route[cs - spec] = 0;
+    const char *c = cs + 1;
+    void *volatile bad;
+    void *p = victim(64);
+    if (strcmp(c, "same") == 0) {
+        bad = p;
+        route_free(route, bad, 64);
+        route_free(route, bad, 64);
+        printf("second free of %p returned\n", bad);
+        fflush(stdout);
+    } else if (strcmp(c, "mixed") == 0) {
+        bad = p;
+        free(bad);
+        route_free(route, bad, 64);
+        printf("second free of %p returned\n", bad);
+        fflush(stdout);
+    } else if (strcmp(c, "cross") == 0) {
+        pthread_t t;
+        cross_p = p;
+        REQUIRE(pthread_create(&t, NULL, cross_thread, NULL) == 0, "pthread_create failed");
+        pthread_mutex_lock(&cross_mu);
+        while (cross_stage != 1)
+            pthread_cond_wait(&cross_cv, &cross_mu);
+        pthread_mutex_unlock(&cross_mu);
+        bad = p;
+        route_free(route, bad, 64);
+        printf("cross free of %p returned\n", bad);
+        fflush(stdout);
+        drain(); /* this thread's flushes; the other copy stays cached */
+        for (int i = 0; i < HOLD; i++)
+            hold[i] = malloc(64); /* a refill may claim p again */
+        pthread_mutex_lock(&cross_mu);
+        cross_stage = 2;
+        pthread_cond_broadcast(&cross_cv);
+        pthread_mutex_unlock(&cross_mu);
+        pthread_join(t, NULL); /* its exit flush releases the other copy */
+    } else if (strcmp(c, "forged") == 0) {
+        /* A slot of p's slab well past the refill batch that handed p
+         * out: no refill has claimed it. */
+        bad = (char *)p + 64 * 600;
+        route_free(route, bad, 64);
+        printf("forged free of %p returned\n", bad);
+        fflush(stdout);
+        drain();
+    } else if (strcmp(c, "forged_cached") == 0) {
+        bad = (char *)p + 64; /* the next entry of the refill batch, still cached */
+        route_free(route, bad, 64);
+        printf("forged free of the cached %p returned\n", bad);
+        fflush(stdout);
+    } else if (strcmp(c, "size") == 0) {
+        bad = p;
+        route_free(route, bad, 128);
+        printf("mis-sized free of %p returned\n", bad);
+        fflush(stdout);
+    } else {
+        REQUIRE(0, "unknown case %s", c);
+    }
+    drain();
+}
+
 int main(int argc, char **argv)
 {
     REQUIRE(argc == 2, "usage: negative <mode>");
@@ -176,7 +319,27 @@ int main(int argc, char **argv)
      * -Wuse-after-free are errors under -Werror). */
     void *volatile bad;
 
-    if (strcmp(mode, "double_free_stale") == 0) {
+    if (strncmp(mode, "route_", 6) == 0) {
+        route_matrix(mode + 6);
+    } else if (strcmp(mode, "usable_cached") == 0 || strcmp(mode, "realloc_cached_small") == 0
+               || strcmp(mode, "realloc_cached_large") == 0 || strcmp(mode, "sallocx_cached") == 0) {
+        void *p = victim(64);
+        bad = p;
+        free(bad); /* the copy stays in the thread cache, its bit set */
+        size_t r = 0;
+        if (strcmp(mode, "usable_cached") == 0) {
+            r = malloc_usable_size(bad);
+        } else if (strcmp(mode, "realloc_cached_small") == 0) {
+            r = (size_t)realloc(bad, 64);
+        } else if (strcmp(mode, "realloc_cached_large") == 0) {
+            r = (size_t)realloc(bad, 4096);
+        } else {
+            REQUIRE(sallocx != NULL, "sallocx not exported");
+            r = sallocx(bad, 0);
+        }
+        printf("%s of the cached %p returned %#zx\n", mode, bad, r);
+        fflush(stdout);
+    } else if (strcmp(mode, "double_free_stale") == 0) {
         void *p = victim(64);
         bad = p;
         free(bad);
