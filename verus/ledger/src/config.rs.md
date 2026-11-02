@@ -18,8 +18,8 @@ file.
 | `DisplaySpecImpl for Issue<'_>` | spec_impl | core library | Kani | trusted |
 | `conf_buffer` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `read_slot` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
-| `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
-| `je_malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
+| `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | discharged |
+| `je_mall...f_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `byte_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `bytes_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `environ_array` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
@@ -151,7 +151,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 ## `malloc_conf_addr`
 
 src/config.rs:1762. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address).
+Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
 
@@ -162,7 +162,7 @@ fn malloc_conf_addr() -> *const c_void
 ## `je_malloc_conf_addr`
 
 src/config.rs:1787. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address).
+Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
 

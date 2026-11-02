@@ -633,12 +633,13 @@ turns that into `is_huge_block(p, max(size, 1))`.
   `heap/mod.rs:761`): `spec_auth(spec_sign(p, m), m) == p` below the VA
   limit; `sign`, `auth` (`sys/pac.rs:199`, `:245`) are `external_body`
   and equal `spec_sign`/`spec_auth`, one function per process (no
-  `PR_PAC_RESET_KEYS`). Main's ledger lists the three, and `strip`, as
+  `PR_PAC_RESET_KEYS`). Main's ledger lists `sign` and `auth` as
   trusted, partly checked by Isla on the Armv8.5-A and Armv9.4-A models
-  (wolfi-dev/challoc#432; `verus/isla/seams.md`): not checked are that
-  the kernel keeps the thread's data key A and EnDA fixed, that firmware
-  sets `SCR_EL3.API` and `APK`, and that the CPU is one of the two kinds
-  the runs model. `sign`/`auth` require `pac::pac_available()`
+  (`verus/isla/seams.md`): not checked is that the kernel keeps the
+  thread's data key A and EnDA fixed (K3 there), and for `auth` that it
+  never resumes past an `autda` that faults (K2); `axiom_auth_sign` and
+  `strip` are discharged by those runs, within the firmware and CPU
+  premises (P12, P13) that file states. `sign`/`auth` require `pac::pac_available()`
   (uninterpreted; its one fact is the trusted `AT_HWCAP` reading in
   `sys::auxv`, which `pac::available` turns into its contract), and
   `auth` also requires `may_abort_corrupt() || signed(p, modifier)`.
@@ -681,8 +682,9 @@ gone because `kept` is open; the bitmap words' two axioms
 (`axiom_fresh_words`, `axiom_init_words`) are one `axiom_fresh_words`,
 which needs a `ZeroRaw` token where neither did, and which Kani partly
 checks on main (trusted with no check in #138). The PAC seams
-(`axiom_auth_sign`, `sign`, `auth`), Isla-discharged in #138, are
-trusted on main, partly checked by Isla.
+(`axiom_auth_sign`, `sign`, `auth`), Isla-discharged in #138, are on
+main: `axiom_auth_sign` discharged by Isla, `sign` and `auth` partly
+checked.
 
 ## 2. Fit and alignment
 
