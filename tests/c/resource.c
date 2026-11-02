@@ -38,7 +38,7 @@
  *   mlock_huge  a freed huge run left mlock()ed (no munlock before free),
  *               then huge mallocs placed there: every one arrives
  *               (MADV_GUARD_INSTALL refuses a locked range; the guard is a
- *               PROT_NONE page instead; they used to get ENOMEM forever)
+ *               PROT_NONE page instead)
  *   mlockall    mlockall(MCL_CURRENT|MCL_FUTURE), then small, slab-guard
  *               and huge allocations all arrive (a smoke test of the
  *               locked paths); skipped when mlockall is refused
@@ -46,8 +46,8 @@
  *   map_count   mlockall(MCL_CURRENT), then vm.max_map_count filled with
  *               mappings:
  *               4 KiB mallocs end in NULL/ENOMEM, never an abort (a guard
- *               slab that can be neither marked nor split used to abort);
- *               after the mappings are unmapped they arrive again
+ *               slab that can be neither marked nor split is not handed
+ *               out); after the mappings are unmapped they arrive again
  */
 #include "common.h"
 
