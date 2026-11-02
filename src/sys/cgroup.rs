@@ -2051,7 +2051,8 @@ mod linux {
         /// Design 10 step 7: find the cgroup and read its limits once.
         /// With `enabled == false` (`cgroup:false`) nothing is opened. By
         /// value, with its scratch on the stack: init's (under
-        /// `thp:always`) and the tests'; the deferred discovery builds the
+        /// `thp:always`; `cgroup:false` stores `Cgroup::untracked`
+        /// directly) and the tests'; the deferred discovery builds the
         /// record in place ([`Cgroup::discover_in`]). Out of line: init
         /// calls it only under `thp:always`.
         #[inline(never)]

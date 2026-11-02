@@ -1614,8 +1614,9 @@ mod linux {
     ];
 
     /// The buffer [`load`] reads `/etc/challoc.conf` into: a static, so
-    /// init's frame does not carry 4 KiB of it (design 13.8; init may run
-    /// on a `PTHREAD_STACK_MIN` thread). Trusted: `load` is called only by
+    /// init's frame does not carry 4 KiB of it (design 13.8: init's frame
+    /// is capped, though challoc initialises before `main`, so init does
+    /// not normally run on a program's small thread). Trusted: `load` is called only by
     /// `api::init`, which runs once (its exchange on `STATE` lets one
     /// thread through, and a re-entry aborts before it allocates), so no
     /// two references are live at once. The unit tests call `load`

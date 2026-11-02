@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `scan_lines` | no_decreases | termination | none (assumption) | trusted |
 | `discove...cratch` | external_body | allocator invariant | none (assumption) | trusted |
-| `untrack..._place` | external_body | atomics primitive | loom/GenMC | trusted |
+| `untrack..._place` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `axiom_c...phaned` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `Deferred::discover` | no_decreases | termination | loom/GenMC | trusted |
 
@@ -48,8 +48,8 @@ fn discovery_scratch(Tracked(won): Tracked<&CellPerm>) -> &'static mut Scratch
 
 ## `untracked_in_place`
 
-src/sys/cgroup.rs:1100. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/sys/cgroup.rs:1100. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
 
 > `slot` holds [`Cgroup::untracked`]`(state)`, written in place (the record is about 2.4 KiB; through a value it went by the stack of the thread that discovers).
 

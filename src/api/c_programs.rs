@@ -1590,8 +1590,11 @@ const KNOWN: &[(&str, usize)] = &[
     // longer; `/etc/challoc.conf` is read into a static,
     // `config::conf_buffer`).
     ("challoc::api::init_slow", 6144),
-    // The by-value discovery: init's under `thp:always` (and the tests');
-    // the deferred one builds the record in place.
+    // The by-value discovery: init's under `thp:always` only (and the
+    // tests'; `cgroup:false` stores the untracked record directly); the
+    // deferred one builds the record in place. Under `thp:always` init's
+    // peak is init_slow's frame plus this one, about 14 KiB, before
+    // `main` (design 13.8).
     ("<challoc::sys::cgroup::Cgroup>::discover", 8704),
 ];
 
@@ -1612,7 +1615,11 @@ const PENDING: &[&str] = &[
 /// Each function's frame from its prologue (x86_64): its pushes, its
 /// `sub $n, %rsp`, a realignment (`and $-a, %rsp`, up to `a - 8` bytes)
 /// and a stack-probe loop's target (`sub $n, %r11` or `lea -n(%rsp),
-/// %r11`, the loop's own 4 KiB steps not counted twice).
+/// %r11`, the loop's own 4 KiB steps not counted twice). A shrink-wrapped
+/// function lays an early exit (`ret`, `jmp`) out before its frame, so
+/// the largest `sub $n, %rsp` anywhere in it, with the pushes, counts
+/// too. (`.eh_frame`'s CFA offsets miss the realigned frames, whose CFA
+/// is `%rbp`-based.)
 #[cfg(target_arch = "x86_64")]
 fn prologue_frames(disasm: &str) -> Vec<(usize, String)> {
     fn hex(s: &str) -> Option<usize> {
@@ -1624,6 +1631,23 @@ fn prologue_frames(disasm: &str) -> Vec<(usize, String)> {
     let mut flush = |name: &Option<String>, ins: &[&str]| {
         let Some(name) = name else { return };
         let (mut total, mut probe) = (0usize, None);
+        let (mut pushes, mut deepest) = (0usize, 0usize);
+        for i in ins.iter() {
+            let mut w = i.split_whitespace();
+            match (w.next(), w.next().unwrap_or("")) {
+                (Some("push"), _) if pushes < 8 * 6 => pushes += 8,
+                (Some("sub"), arg) => {
+                    if let Some(("$", n)) = arg.split_once(",%rsp").map(|(src, _)| src.split_at(1))
+                    {
+                        let n = hex(n).unwrap_or(0);
+                        if n != 0x1000 {
+                            deepest = deepest.max(n);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         for i in ins.iter().take(40) {
             let mut w = i.split_whitespace();
             let (Some(op), arg) = (w.next(), w.next().unwrap_or("")) else {
@@ -1655,7 +1679,10 @@ fn prologue_frames(disasm: &str) -> Vec<(usize, String)> {
                 _ => {}
             }
         }
-        out.push((total + probe.unwrap_or(0), name.clone()));
+        out.push((
+            (total + probe.unwrap_or(0)).max(pushes + deepest),
+            name.clone(),
+        ));
     };
     for line in disasm.lines() {
         if let Some(n) = line

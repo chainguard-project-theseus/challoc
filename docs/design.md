@@ -1621,7 +1621,12 @@ where through a value each went by the stack of whichever thread did the
 work. The statistics readers and reports (`mallctl`'s `stats.*`,
 `malloc_stats_print`, `malloc_info`, `malloc_stats`, `mallinfo`) still
 take the per-arena record (`stats::ArenaStats`, about 6 KiB with its
-bins) by value; moving it off the stack is the next step.
+bins) by value; moving it off the stack is the next step. Init is the
+exception the frame budget caps rather than bounds: challoc initialises
+before `main` (ld.so's and libc's first allocations), not on a program's
+small thread; its frame is about 5 KiB (`/etc/challoc.conf` is read into a
+static, `config::conf_buffer`), and under `thp:always` it also runs the
+by-value discovery (8.6 KiB), about 14 KiB in all.
 
 `tests/c/small_stack.c` runs the entry points on a `PTHREAD_STACK_MIN`
 thread with 6 KiB of it already used, each in a fresh process (the
