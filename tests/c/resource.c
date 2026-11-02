@@ -38,6 +38,7 @@
  */
 #include "common.h"
 
+#include <sched.h>
 #include <sys/resource.h>
 
 #define MIB ((size_t)1 << 20)
@@ -140,12 +141,13 @@ static int child_data_init(void)
 }
 
 /* Large requests of every kind, each taking NULL as a valid answer. */
-static pthread_barrier_t big_start;
+static volatile int big_go;
 
 static void *big_requests(void *arg)
 {
     (void)arg;
-    pthread_barrier_wait(&big_start);
+    while (!big_go)
+        sched_yield();
     void *small = malloc(32);
     for (size_t sz = 5 * MIB; sz <= 2 * GIB; sz *= 4) {
         void *p = malloc(sz);
@@ -178,13 +180,17 @@ static int child_data_threads(void)
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 64 * 1024);
-    pthread_barrier_init(&big_start, NULL, 16);
+    /* glibc may refuse a thread's stack under the limit (64 KiB pages
+     * make the floor higher on aarch64): the threads that start run. */
     pthread_t t[16];
-    for (int i = 0; i < 16; i++)
-        REQUIRE(pthread_create(&t[i], &attr, big_requests, NULL) == 0, "pthread_create %d", i);
-    for (int i = 0; i < 16; i++)
+    int n = 0;
+    while (n < 16 && pthread_create(&t[n], &attr, big_requests, NULL) == 0)
+        n++;
+    big_go = 1;
+    if (n == 0)
+        big_requests(NULL);
+    for (int i = 0; i < n; i++)
         pthread_join(t[i], NULL);
-    pthread_barrier_destroy(&big_start);
     pthread_attr_destroy(&attr);
     return finish("resource child");
 }
