@@ -792,6 +792,15 @@ ctests! {
     /// under a 3 to 128 MiB `RLIMIT_DATA` from the start make large
     /// requests on every route and never abort; at least one limit must
     /// start two threads.
+    /// `mlock_huge`: huge runs placed
+    /// over a freed, still `mlock`ed extent arrive (the guard is a
+    /// `PROT_NONE` page where the kernel refuses the marker).
+    /// `mlockall`: small, slab-guard and huge allocations under
+    /// `mlockall`. `map_count`: with `vm.max_map_count` exhausted under
+    /// `mlockall`, a slab guard that can be neither marked nor split
+    /// makes `malloc` NULL/`ENOMEM`, not an abort, and allocation resumes
+    /// once the mappings go. The last two skip where `mlockall` is
+    /// refused.
     c_resource => [
         CTest { prog: "resource", args: &["data_init"], ..BASE },
         CTest { prog: "resource", args: &["as_min"], ..BASE },
@@ -800,6 +809,9 @@ ctests! {
         CTest { prog: "resource", args: &["narenas"], conf: Some("narenas:1000"), ..BASE },
         CTest { prog: "resource", args: &["data_thread"], ..BASE },
         CTest { prog: "resource", args: &["data_threads"], ..BASE },
+        CTest { prog: "resource", args: &["mlock_huge"], ..BASE },
+        CTest { prog: "resource", args: &["mlockall"], ..BASE },
+        CTest { prog: "resource", args: &["map_count"], ..BASE },
     ];
     /// `tests/c/jemalloc_api.c`: the jemalloc and glibc
     /// extras under the real `.so`, every non-standard symbol reached through

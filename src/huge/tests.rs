@@ -1236,6 +1236,41 @@ fn placement_is_the_lowest_fit() {
     assert_eq!(h.stats(Tracked::assume_new()).runs, 0);
 }
 
+/// Every allocation keeps one table key free per live run, at a load of
+/// one half (`Huge::alloc_aligned`): a free adds at most one key net and
+/// its own growth is best effort, so frees after the metadata region
+/// filled never meet a full table (`Table::insert`'s abort).
+#[test]
+fn allocations_reserve_a_table_key_for_each_live_runs_free() {
+    let env = Env::new();
+    let h = env.huge();
+    let mut ptrs = Vec::new();
+    for _ in 0..300 {
+        let (p, _) = env.alloc(&h, page_size(), 1);
+        assert!(!p.is_null());
+        ptrs.push(p);
+        let runs = h.stats(Tracked::assume_new()).runs;
+        let g = h.inner.lock_t();
+        assert!(
+            2 * (g.table.keys() + runs) <= g.table.cap(),
+            "{} keys and {runs} runs in a table of {}",
+            g.table.keys(),
+            g.table.cap()
+        );
+    }
+    // Every other run first: each free leaves a free extent with two
+    // keys and no free neighbour to merge with, the most a free adds.
+    let cap = h.inner.lock_t().table.cap();
+    for p in ptrs.iter().step_by(2) {
+        env.free(&h, *p);
+        assert!(h.inner.lock_t().table.keys() < cap);
+    }
+    for p in ptrs.iter().skip(1).step_by(2) {
+        env.free(&h, *p);
+    }
+    assert_eq!(h.stats(Tracked::assume_new()).runs, 0);
+}
+
 /// A run is keyed by its start page only, a free extent by its first
 /// and last page (`Inner::add_extent`), which is what `free_before` and
 /// `free_after` rely on; `drop_extent` takes the same keys out again and
