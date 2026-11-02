@@ -547,7 +547,14 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
                 lemma_class_fits(r.0, c as int, size);
                 lemma_class_gives(*blk, r.0, c as int, size);
             }
-            r
+            // The heap's zero flag is not trusted for a slab slot: it records that
+            // challoc wrote nothing to the slot since its slab was `Fresh` or
+            // `Purged`, but the slot is read-write memory that a linear
+            // overflow from a live slot below, or a write through a stale
+            // pointer into a purged slab, reaches without challoc seeing it
+            // (SECURITY.md, "Zeroing allocations are zero"). The slot is
+            // always cleared below.
+            (r.0, false, r.2)
         },
         None => {
             let r = alloc_huge(shared, size, 1, Tracked(blk));
@@ -2056,7 +2063,15 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
     let ghost mut cls: int = -1;
     let (p, zeroed, u, z) = match class_index(size) {
         Some(c) => {
-            let (p, zeroed, z) = heap::alloc_zeroed(shared, c, Tracked(blk), Tracked(&mut *errno));
+            let (p, _zeroed, z) = heap::alloc_zeroed(shared, c, Tracked(blk), Tracked(&mut *errno));
+            // The heap's zero flag is not trusted for a slab slot: it records that
+            // challoc wrote nothing to the slot since its slab was `Fresh` or
+            // `Purged`, but the slot is read-write memory that a linear
+            // overflow from a live slot below, or a write through a stale
+            // pointer into a purged slab, reaches without challoc seeing it
+            // (SECURITY.md, "Zeroing allocations are zero"). The slot is
+            // always cleared below.
+            let zeroed = false;
             proof {
                 cls = c as int;
                 lemma_class_fits(p, c as int, size);

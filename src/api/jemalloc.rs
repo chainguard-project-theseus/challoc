@@ -306,7 +306,15 @@ fn alloc_with(
     let ghost mut cls: int = -1;
     let (p, usable, zeroed, z) = match class_for(size, align) {
         Some(c) => {
-            let (p, zero, z) = mallocx::alloc(shared, c, f.arena, f.tcache, Tracked(blk), errno);
+            let (p, _zero, z) = mallocx::alloc(shared, c, f.arena, f.tcache, Tracked(blk), errno);
+            // The heap's zero flag is not trusted for a slab slot: it records that
+            // challoc wrote nothing to the slot since its slab was `Fresh` or
+            // `Purged`, but the slot is read-write memory that a linear
+            // overflow from a live slot below, or a write through a stale
+            // pointer into a purged slab, reaches without challoc seeing it
+            // (SECURITY.md, "Zeroing allocations are zero"). The slot is
+            // always cleared below.
+            let zero = false;
             proof {
                 cls = c as int;
                 if p@.addr != 0 {

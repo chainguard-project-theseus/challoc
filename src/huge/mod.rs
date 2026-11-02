@@ -5358,9 +5358,14 @@ impl Huge {
                 lemma_state_byte(ve.state);
                 assert(forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && x != ext ==> apart(d0[x].value(), ve));
             }
-            // `Purged` pages are zero unless a lazy purge discarded them
-            // with `MADV_FREE`; pages at or past the mark are untouched.
-            zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
+            // Only pages at or past the mark are trusted zero: no run has
+            // covered them and they sit behind the last run's guard. A free
+            // extent's pages, `Purged` included, are read-write and were
+            // handed out before, so a write through a stale pointer or an
+            // underflow from the live run above (a freed run's guard goes
+            // with it) reaches them after the discard (SECURITY.md,
+            // "Zeroing allocations are zero").
+            zeroed = s >= e_end;
             proof {
                 assert(zeroed ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
                 lemma_can_sub(*old(g), ext);

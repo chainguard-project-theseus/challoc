@@ -13,9 +13,9 @@ fn all(p: *mut u8, len: usize, v: u8) -> bool {
     s.iter().all(|&b| b == v)
 }
 
-/// `check_zero` on a healthy huge heap: fresh
-/// and purged runs read zero, dirty `Empty` reuse is not checked (it is
-/// not reported zero), and the flag stays on for the rest of the process.
+/// `check_zero` on a healthy huge heap: fresh runs read zero; dirty
+/// `Empty` and `Purged` reuse is not checked (neither is reported zero),
+/// and the flag stays on for the rest of the process.
 #[test]
 fn check_zero_passes_fresh_and_purged_runs() {
     purge::set_check_zero(true);
@@ -37,15 +37,15 @@ fn check_zero_passes_fresh_and_purged_runs() {
     );
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
-    assert!(zero && all(r, size, 0));
+    assert!(!zero && all(r, size, 0));
     env.free(&h, r);
 }
 
-/// `check_zero` fires on a purged run whose last usable page was
-/// dirtied behind the allocator's back, naming the `Purged` pages.
+/// A purged run dirtied behind the allocator's back (a write through a
+/// stale pointer) is not reported zero when it is reused, so its caller
+/// clears it and `check_zero` has nothing to check.
 #[test]
-#[should_panic(expected = "was handed out as zero from Purged pages but the word at")]
-fn check_zero_aborts_on_a_dirty_purged_run() {
+fn check_zero_does_not_trust_a_dirty_purged_run() {
     purge::set_check_zero(true);
     let env = Env::new();
     let h = env.huge();
@@ -60,7 +60,10 @@ fn check_zero_aborts_on_a_dirty_purged_run() {
     // unmapped, only discarded); dirtying it is the setup `check_zero`
     // must catch.
     unsafe { ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF) };
-    let _ = env.alloc(&h, size, 1);
+    let (q, zero) = env.alloc(&h, size, 1);
+    assert_eq!(q, p);
+    assert!(!zero);
+    env.free(&h, q);
 }
 
 #[test]
@@ -82,9 +85,11 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
         h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
         1
     );
+    // Purged: reads zero, but is not reported zero (a stale pointer can
+    // have written it since the discard).
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
-    assert!(zero && all(r, size, 0));
+    assert!(!zero && all(r, size, 0));
     env.free(&h, r);
     // Above retain_max the purge is immediate.
     h.set_retain_max(size - 1);
@@ -98,7 +103,7 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
         RunState::Purged
     );
     let (t, zero) = env.alloc(&h, size, 1);
-    assert!(zero && all(t, size, 0));
+    assert!(!zero && all(t, size, 0));
     env.free(&h, t);
 }
 
@@ -124,7 +129,7 @@ fn stale_guards_inside_a_reused_extent_are_writable_and_purgeable() {
     );
     let (big, zero) = env.alloc(&h, 15 * page_size(), 1);
     assert_eq!(big, ps[0]);
-    assert!(zero && all(big, 15 * page_size(), 0));
+    assert!(!zero && all(big, 15 * page_size(), 0));
     fill(big, 15 * page_size(), 0x22);
     assert!(all(big, 15 * page_size(), 0x22));
     env.free(&h, big);
@@ -254,7 +259,7 @@ fn alignment_holes_are_committed_and_writable() {
             env.free(&h, p);
             break;
         }
-        assert!(zero && all(p, page_size(), 0));
+        assert!(!zero && all(p, page_size(), 0));
         fill(p, page_size(), 0x33);
         held.push(p);
         fillers += 1;

@@ -15,6 +15,7 @@ exact windows the defaults leave open. The design view is
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
 | Sealed reservation gaps (`mseal`)        | No           | Yes where the kernel (6.10+) and seccomp allow it |
 | Zero on free                             | Opt-in       | Opt-in: `zero_on_free` clears a block on free (2) |
+| Zeroing allocations zero after a heap bug wrote not-yet-allocated memory | Small classes only | Yes (5) |
 | Slot order randomisation                 | No           | Opt-in: `slot_randomize` (2) |
 | Signed allocator pointers (arm64 PAC)    | No           | Opt-in where the CPU has it: `pac_pointers`, cache entries and the TLS heap pointer `pacda`-signed, authenticated on every `malloc` (3) |
 | Tagged pointers                          | No           | Planned (4)     |
@@ -152,3 +153,24 @@ the class the pointer was allocated from (for a huge run, its page count), and `
 jemalloc's behaviour is undefined. A program that leaned on that leniency
 dies with `SIGABRT` and a `challoc:` message instead of corrupting the
 heap.
+
+## (5) Zeroing allocations
+
+`calloc`, `challoc_calloc_usable` and `MALLOCX_ZERO` never skip their
+clear on the strength of allocator state that user code can falsify. A
+slab slot is cleared on every zeroing allocation, including a slot
+claimed from a `Fresh` or `Purged` slab: those slots are read-write
+memory of the committed run, which a linear overflow from a live slot
+below, or a write through a stale pointer into a purged slab, reaches
+without challoc seeing it. A huge run skips the clear only for pages past
+the huge region's high-water mark: no run has covered them, and the last
+run's guard page stops an overflow before them. A reused free extent,
+`Purged` included, is cleared, since a stale pointer or an underflow
+from the live run above (a freed run's guard goes with it) can have
+written it after the discard. jemalloc 5.3 always clears a small
+allocation from the tcache, but trusts a large extent's zeroed flag.
+The cost is the clear itself: on a `calloc` from fresh slab memory it
+moves the first-touch page faults into the call (a program that writes
+the block pays them anyway; one that leaves a large `calloc` sparse now
+has those pages resident), and a huge `calloc` that reuses a purged
+extent writes its pages, as one that reuses a dirty extent already did.

@@ -289,7 +289,9 @@ fn free_and_reuse_prefers_the_lowest_address() {
     );
     let (f, zero) = env.alloc(&h, page_size(), 1);
     assert_eq!(env.page_of(f), 8);
-    assert!(zero);
+    // A reused `Purged` extent is not reported zero (SECURITY.md, "Zeroing
+    // allocations are zero").
+    assert!(!zero);
     assert_eq!(h.stats(Tracked::assume_new()).purged, 0);
     for p in [a, c, d, e, f] {
         env.free(&h, p);
@@ -381,10 +383,11 @@ fn alignment_at_the_mark_leaves_a_clean_hole() {
         .unwrap();
     assert_eq!(hole.state, RunState::Purged);
     assert_eq!(hole.end(), env.page_of(b));
-    // The hole is reused first, and is zero.
+    // The hole is reused first. It is `Purged`, so not reported zero: an
+    // underflow from `b` reaches it.
     let (c, zero) = env.alloc(&h, page_size(), 1);
     assert_eq!(env.page_of(c), 2);
-    assert!(zero);
+    assert!(!zero);
     env.free(&h, a);
     env.free(&h, b);
     env.free(&h, c);
@@ -485,7 +488,7 @@ fn purged_and_empty_merge_to_empty() {
     );
     assert_eq!(h.stats(Tracked::assume_new()).empty, 0);
     let (p, zero) = env.alloc(&h, 8 * page_size(), 1);
-    assert!(zero);
+    assert!(!zero);
     assert_eq!(env.page_of(p), 0);
     assert_eq!(h.stats(Tracked::assume_new()).next_page, 9);
 }

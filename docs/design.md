@@ -660,16 +660,22 @@ left the cache aborts at the call. `MALLOCX_ARENA(a)` with the default
 cache pops whatever the cache holds, as jemalloc's does;
 `MALLOCX_TCACHE_NONE` releases straight to the slab with the exact check.
 
-`calloc` clears with `memset` unless the slots came fresh from the
-kernel, which is tracked as a per-cache zero prefix: `slots[..zeroed]`
-are known zero, set by a refill whose batch came from a `Fresh` or
-`Purged` slab (while `purge::purged_is_zero` holds, section 8), lowered
+`calloc` always clears a slab slot with `memset`. The heap still tracks
+which cached slots challoc has not written since the kernel zeroed them,
+as a per-cache zero prefix: `slots[..zeroed]` are known zero, set by a
+refill whose batch came from a `Fresh` or `Purged` slab (while
+`purge::purged_is_zero` holds, section 8), lowered
 with `len` by a pop that takes a zero entry and dropped by a flush.
 `zeroed <= low_water` holds throughout, so only a pop that lowers
 `low_water` can take a zero entry: the zero test and the shrink sit in
 that pop's cold branch, and the push, which stores at `len >= zeroed`,
-never touches `zeroed`. `calloc` zeroes the
-requested bytes, not the whole usable size.
+never touches `zeroed`. No zeroing entry point (`calloc`,
+`challoc_calloc_usable`, `MALLOCX_ZERO`) trusts the flag for a slab
+slot: the slot is read-write memory of the committed run, which a linear
+overflow from a live slot below or a write through a stale pointer into
+a purged slab reaches without challoc seeing it (SECURITY.md, "Zeroing
+allocations are zero"). `calloc` zeroes the requested bytes, not the
+whole usable size.
 
 `malloc_usable_size(p)` (and `sallocx`, and the size read of `realloc`
 and `rallocx`) classifies and tests the bit as `free` does, aborting on a
@@ -881,8 +887,12 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
   (`purge::purged_is_zero`), true until the first lazy batch is issued
   and false for good after it, even if the kernel refused that batch
   (published before its discard, under the class or huge lock), tells
-  `calloc` whether a reused `Purged` slab or extent needs a `memset`;
-  `Fresh` memory stays known zero.
+  the refill whether a reused `Purged` slab's batch is known zero
+  (bookkeeping that `check_zero` reads; no zeroing entry point trusts it,
+  section 6.3). A huge run is known zero only for pages past the huge
+  region's high-water mark; a reused `Purged` extent is cleared like a
+  dirty one, since a stale pointer or an underflow from the live run
+  above can have written it after the discard.
 - Purges are batched (`purge::Batch`): a walk collects up to `MAX_BATCH`
   (64) ranges, merging adjacent ones, and issues a loop of `madvise`.
   Batched `process_madvise` was prototyped and removed: it measured no

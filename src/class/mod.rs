@@ -406,7 +406,11 @@ pub struct Claim {
     /// Every returned slot came from a slab that was `Fresh` or `Purged`
     /// when this thread selected it and had its bit claimed in that same
     /// lock hold, before anything else could allocate from the slab, so
-    /// its memory reads as zero.
+    /// challoc has written nothing to it since the kernel zeroed it. A
+    /// heap bug in the program can have (an overflow from a live slot, a
+    /// stale pointer into a purged slab), so no zeroing entry point trusts
+    /// this for the bytes it returns (SECURITY.md, "Zeroing allocations
+    /// are zero").
     pub zeroed: bool,
 }
 
