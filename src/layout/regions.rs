@@ -2188,20 +2188,26 @@ mod linux {
             requires a + b <= usize::MAX, a & 0x3f_ffff == 0, b & 0x3f_ffff == 0;
     }
 
-    /// A multiple of `MAX_SLAB` below `steps` of them, picked by `w`:
-    /// `w % steps` slabs.
+    /// A multiple of `MAX_SLAB` from one to `steps - 1` of them, picked
+    /// by `w`: `1 + w % (steps - 1)` slabs. Never zero, so a region placed
+    /// at this offset from an aligned mapping base always has at least
+    /// `MAX_SLAB` of never-committed slack below it: with a zero offset
+    /// the region's first page could be the reservation's first byte, and
+    /// the kernel's next top-down `mmap` (a thread stack, say) would sit
+    /// flush against it with no fault between them.
     #[inline(always)]
     fn slab_multiple(w: usize, steps: usize) -> (r: usize)
         requires
-            0 < steps <= 0x4_0000,
+            1 < steps <= 0x4_0000,
         ensures
             r & 0x3f_ffff == 0,
+            0x40_0000 <= r,
             r + 0x40_0000 <= steps << 22,
     {
-        let m = w % steps;
+        let m = w % (steps - 1) + 1;
         proof {
-            assert((m << 22) & 0x3f_ffff == 0 && (m << 22) + 0x40_0000 <= steps << 22) by (bit_vector)
-                requires m < steps, steps <= 0x4_0000;
+            assert((m << 22) & 0x3f_ffff == 0 && 0x40_0000 <= (m << 22) && (m << 22) + 0x40_0000 <= steps << 22) by (bit_vector)
+                requires 1 <= m < steps, steps <= 0x4_0000;
         }
         m << LG_MAX_SLAB
     }
@@ -2260,6 +2266,18 @@ mod linux {
         ))
     }
 
+    /// The abort of [`Regions::reserve_owning`] when a region has less than
+    /// `MAX_SLAB` of slack on a side ([`Regions::slack_ok`]): a bug in the
+    /// draw, never a property of the host.
+    #[cold]
+    #[inline(never)]
+    fn slack_broken() -> !
+        requires
+            crate::sys::may_abort(),
+    {
+        sys::abort_fmt(format_args!("layout: a region has less than 4 MiB of guard slack"))
+    }
+
     /// `1 << k` has `k` trailing zeros.
     proof fn lemma_tz_pow2(x: usize, k: nat)
         requires
@@ -2287,6 +2305,46 @@ mod linux {
     }
 
     impl Regions {
+        /// Every region has at least `MAX_SLAB` of its own reservation, never
+        /// committed (and sealed where the kernel has `mseal`), below and
+        /// above it: class region 0 above the superblock mapping's start,
+        /// each class region below the next, the last below the mapping's
+        /// end, and the huge and metadata regions inside their mappings.
+        /// A linear overflow or underflow off a region's edge therefore
+        /// faults in challoc's own reservation instead of reaching
+        /// whatever the kernel mapped next to it. [`Regions::reserve_owning`]
+        /// checks it once at init.
+        pub fn slack_ok(&self) -> bool
+            requires
+                self.wf(),
+        {
+            let s = MAX_SLAB as u128;
+            let rl = self.region_len() as u128;
+            let sb = self.superblock_map;
+            let mut end = sb.addr as u128;
+            let mut ok = true;
+            let mut c = 0;
+            while c < NCLASSES
+                invariant
+                    0 <= c <= NCLASSES,
+                    end < 0x2_0000_0000_0000_0000u128,
+                    s == 0x40_0000,
+                    rl < 0x1_0000_0000_0000_0000u128,
+                decreases NCLASSES - c,
+            {
+                let b = self.class_base[c] as u128;
+                ok = ok && end + s <= b;
+                end = b + rl;
+                c += 1;
+            }
+            let (h, m) = (self.huge_map, self.meta_map);
+            ok && end + s <= sb.addr as u128 + sb.len as u128
+                && h.addr as u128 + s <= self.huge_base as u128
+                && self.huge_base as u128 + self.huge_len as u128 + s <= h.addr as u128 + h.len as u128
+                && m.addr as u128 + s <= self.meta_base as u128
+                && self.meta_base as u128 + self.meta_len as u128 + s <= m.addr as u128 + m.len as u128
+        }
+
         /// [`Regions::reserve_owning`] without the metadata region's address
         /// space, for the tests.
         #[cfg(test)]
@@ -2451,7 +2509,7 @@ mod linux {
             let gap = (1usize << lg_stride) - (1usize << lg_region);
             proof {
                 let (lr, ls) = (lg_region, lg_stride);
-                assert(gap >> 22 > 0 && gap & 0x3f_ffff == 0 && gap <= 0x100_0000_0000 && (gap >> 22) <= 0x4_0000) by (bit_vector)
+                assert(gap >> 22 > 2 && gap & 0x3f_ffff == 0 && gap <= 0x100_0000_0000 && (gap >> 22) <= 0x4_0000) by (bit_vector)
                     requires gap == (1usize << ls) - (1usize << lr), 32 <= lr < ls <= 40;
             }
             let mut offsets = [0usize; NCLASSES];
@@ -2460,7 +2518,7 @@ mod linux {
             let coloured = crate::thp::decision().mode != crate::thp::Mode::Chunks;
             for c in 0..NCLASSES
                 invariant
-                    gap >> 22 > 0,
+                    gap >> 22 > 2,
                     gap & 0x3f_ffff == 0,
                     gap <= 0x100_0000_0000,
                     (gap >> 22) <= 0x4_0000,
@@ -2470,12 +2528,16 @@ mod linux {
                     forall|j: int| 0 <= j < c ==>
                         offset_ok(#[trigger] offsets[j], class_table()[j].lg_slab as u32, lg_page) && offsets[j] < gap,
             {
-                offsets[c] = slab_multiple(word(&rnd, c) as usize, gap >> LG_MAX_SLAB);
+                // One step short of the gap: with the colour below 4 MiB,
+                // the region then ends at least `MAX_SLAB` below its
+                // stride's end, as `slab_multiple` puts it at least
+                // `MAX_SLAB` above its start.
+                offsets[c] = slab_multiple(word(&rnd, c) as usize, (gap >> LG_MAX_SLAB) - 1);
                 let ghost a = offsets[c as int];
                 proof {
                     let g = gap;
-                    assert(a < g) by (bit_vector)
-                        requires a + 0x40_0000 <= (g >> 22) << 22, g & 0x3f_ffff == 0;
+                    assert(a + 0x40_0000 <= (g >> 22) << 22 && a < g) by (bit_vector)
+                        requires a + 0x40_0000 <= sub(g >> 22, 1) << 22, g >> 22 > 2, g & 0x3f_ffff == 0;
                 }
                 if coloured {
                     let lg_slab = CLASSES.table()[c].lg_slab as u32;
@@ -2512,6 +2574,9 @@ mod linux {
                     }
                 }
             }
+            // Nonzero slides (`slab_multiple`): the huge region's first run
+            // has only its trailing guard, so the slack below the region is
+            // what stops an underflow off it.
             let huge_align = align_base(huge_map.addr);
             let huge_slide = slab_multiple(word(&rnd, NCLASSES) as usize, SLIDE_STEPS);
             let meta_align = align_base(meta_map.addr);
@@ -2557,6 +2622,11 @@ mod linux {
                 lg_page,
                 [sb_map, huge_map, meta_map],
             );
+            // Design 2: every region keeps `MAX_SLAB` of its reservation's
+            // never-committed slack on both sides, whatever was drawn.
+            if !r.slack_ok() {
+                slack_broken();
+            }
             // The metadata region's address space, for `Meta`, which commits
             // it as it hands it out.
             let tracked meta_space = _meta_tok.get().into_unbacked().split(meta_base - meta_map.addr).1.split((1usize << lg_meta) as int).0;
@@ -2658,6 +2728,101 @@ mod linux {
             let mut b = [0u8; 8];
             b.copy_from_slice(&rnd[8 * i..8 * i + 8]);
             assert_eq!(w, u64::from_ne_bytes(b));
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            CLASSES, LG_SLIDE, MAX_SLAB, NCLASSES, SLIDE_STEPS, align_base, colour, slab_multiple,
+        };
+
+        /// No random word gives a zero offset: the huge and metadata
+        /// slides and the class offsets always leave `MAX_SLAB` below their
+        /// region inside its reservation (hunt 943666c7, c-aa8a4f76: a zero
+        /// huge slide on a 4 MiB-aligned mapping put the first huge run at
+        /// the reservation's first byte, flush against a thread stack).
+        #[test]
+        fn slab_multiple_is_never_zero() {
+            for steps in [2, 3, SLIDE_STEPS, 1024, 196_608] {
+                for w in (0..3 * steps).chain([usize::MAX, usize::MAX - 1]) {
+                    let r = slab_multiple(w, steps);
+                    assert!(r >= MAX_SLAB, "steps {steps} w {w}: {r:#x}");
+                    assert!(
+                        r + MAX_SLAB <= steps * MAX_SLAB,
+                        "steps {steps} w {w}: {r:#x}"
+                    );
+                    assert_eq!(r % MAX_SLAB, 0);
+                }
+            }
+        }
+
+        /// The draw's extremes, composed the way `reserve_owning` composes
+        /// them, at the mapping addresses `mmap` can return (4 MiB-aligned,
+        /// just past it, just short of the next), leave `MAX_SLAB` of the
+        /// reservation on both sides of every region.
+        #[test]
+        fn extreme_draws_keep_slack_on_both_sides() {
+            let page = 0x1000;
+            let base = 0x7e00_0000_0000usize;
+            let addrs = [base, base + page, base + MAX_SLAB - page];
+            // Huge and metadata: mapping = region + 1 GiB slide + MAX_SLAB.
+            let slides = [0, SLIDE_STEPS - 2].map(|w| slab_multiple(w, SLIDE_STEPS));
+            assert_eq!(slides, [MAX_SLAB, (SLIDE_STEPS - 1) * MAX_SLAB]);
+            for len in [1usize << 30, 1 << 34, 1 << 40] {
+                for addr in addrs {
+                    for slide in slides {
+                        let lo = align_base(addr) + slide;
+                        let map_end = addr + len + (1 << LG_SLIDE) + MAX_SLAB;
+                        assert!(lo - addr >= MAX_SLAB, "head {:#x}", lo - addr);
+                        assert!(
+                            map_end - (lo + len) >= MAX_SLAB,
+                            "tail {:#x}",
+                            map_end - (lo + len)
+                        );
+                    }
+                }
+            }
+            // Classes: superblock = NCLASSES strides + MAX_SLAB, region c at
+            // stride c + offset, offset < gap.
+            for (lr, ls) in [(38u32, 40u32), (32, 34), (32, 33)] {
+                let (rl, stride) = (1usize << lr, 1usize << ls);
+                let gap = stride - rl;
+                let steps = (gap >> 22) - 1;
+                for lg_page in [12u32, 14, 16] {
+                    for coloured in [false, true] {
+                        let off = |c: usize, w: usize| {
+                            let k = if coloured {
+                                colour(c, CLASSES[c].lg_slab as u32, lg_page)
+                            } else {
+                                0
+                            };
+                            slab_multiple(w, steps) + k
+                        };
+                        for addr in addrs {
+                            let sb = align_base(addr);
+                            let map_end = addr + (NCLASSES << ls) + MAX_SLAB;
+                            for w in [0, steps - 1] {
+                                assert!(sb + off(0, w) - addr >= MAX_SLAB);
+                                let last = NCLASSES - 1;
+                                let end = sb + (last << ls) + off(last, w) + rl;
+                                assert!(
+                                    map_end - end >= MAX_SLAB,
+                                    "lr {lr} ls {ls} tail {:#x}",
+                                    map_end - end
+                                );
+                            }
+                            for c in 0..NCLASSES - 1 {
+                                for (wa, wb) in [(steps - 1, 0), (0, 0), (steps - 1, steps - 1)] {
+                                    let end = sb + (c << ls) + off(c, wa) + rl;
+                                    let next = sb + ((c + 1) << ls) + off(c + 1, wb);
+                                    assert!(next - end >= MAX_SLAB, "class {c}: {:#x}", next - end);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

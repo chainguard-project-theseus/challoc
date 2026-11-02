@@ -117,6 +117,21 @@ run), where with one commit per slab it faulted at the next slab. Those
 slabs are not guards and were never promised as such; the guard slabs
 themselves are unchanged.
 
+## Region edges
+
+Every region (each class region, the huge region and the metadata
+region) has at least 4 MiB (`MAX_SLAB`) of its own reservation, never
+committed and sealed where `mseal` is available, directly below and
+directly above it, whatever the random offsets come out as: the huge and
+metadata slides are 1..255 steps of 4 MiB inside their 1 GiB slide
+window, and a class offset is 1..(gap / 4 MiB - 2) steps plus its
+colour. A linear overflow or underflow off a region's first or last page
+therefore faults inside challoc's reservation; it never reaches a
+mapping the kernel placed next to it (a thread stack, a library's data).
+Inside the huge region each run is followed by its guard page; the run at
+the bottom of the region is preceded by that slack. `Regions::slack_ok`
+checks the property once at init and aborts if a layout ever breaks it.
+
 ## Stricter than jemalloc
 
 Two things are stricter than jemalloc: the size passed to `sdallocx`,
