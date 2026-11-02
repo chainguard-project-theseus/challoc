@@ -1126,6 +1126,24 @@ mod tests {
         );
     }
 
+    /// The period half of `theorem_pressure_never_lengthens_decay`, sampled:
+    /// rising usage under a fixed limit, including limits past the 43 bits
+    /// `usage_ppm` halves down to.
+    #[test]
+    fn rising_usage_never_lengthens_the_period() {
+        for limit in [100, L, 3 * GIB + 7, (1 << 50) + 12_345, u64::MAX - 1] {
+            for base in [0, 200 * MS, FLOOR_NS, BASE, NEVER - 1, NEVER] {
+                let mut last = u64::MAX;
+                for i in 0..=4_000u64 {
+                    let current = (limit / 4_000).saturating_mul(i).max(i);
+                    let ns = effective_decay_ns(base, band(limit, current));
+                    assert!(ns <= last, "{limit} {base} {current}: {ns} > {last}");
+                    last = ns;
+                }
+            }
+        }
+    }
+
     #[test]
     fn effective_period_follows_the_table() {
         // No limit and under 70%: the configured period.
