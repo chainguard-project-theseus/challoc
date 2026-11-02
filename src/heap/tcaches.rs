@@ -296,11 +296,12 @@ impl Tcaches {
             return None;
         }
         let p = self.table[i].load(Ordering::Acquire) as *mut Heap;
-        // SAFETY: published after `Heap::create_detached`; only `destroy`
-        // frees it, and using a destroyed id is the caller's bug.
         if p.is_null() {
             None
         } else {
+            // SAFETY: published after `Heap::create_detached`; only `destroy`
+            // frees it, and using a destroyed id is the caller's bug. `u`
+            // keeps other users off the heap while the reference lives.
             Some(unsafe { heap_at(p, Tracked(u)) })
         }
     }

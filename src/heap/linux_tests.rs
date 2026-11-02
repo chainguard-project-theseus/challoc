@@ -13,10 +13,12 @@ use super::tests::live;
 use crate::testutil::{TestShared, shared, xorshift};
 
 fn fill(p: *mut u8, n: usize, v: u8) {
+    // SAFETY: the callers pass `n` writable bytes at `p`, a live allocation.
     unsafe { core::ptr::write_bytes(p, v, n) }
 }
 
 fn check(p: *mut u8, n: usize, v: u8) {
+    // SAFETY: the callers pass `n` readable bytes at `p`, a live allocation.
     let s = unsafe { core::slice::from_raw_parts(p, n) };
     assert!(
         s.iter().all(|&b| b == v),
@@ -26,6 +28,7 @@ fn check(p: *mut u8, n: usize, v: u8) {
 }
 
 fn is_zero(p: *mut u8, n: usize) -> bool {
+    // SAFETY: as in `check`.
     unsafe { core::slice::from_raw_parts(p, n) }
         .iter()
         .all(|&b| b == 0)
@@ -52,6 +55,7 @@ fn heap_is_created_on_first_use_through_tls() {
         } else {
             assert_eq!(raw, h);
         }
+        // SAFETY: `hp` is this thread's live heap.
         let heap = unsafe { &*hp };
         assert_eq!(heap.tid(), crate::sys::gettid() as u32);
         assert!(core::ptr::eq(heap.shared(), s));
@@ -66,6 +70,7 @@ fn heap_is_created_on_first_use_through_tls() {
         free(s, p, Tracked::assume_new(), Tracked::assume_new());
         free(s, q, Tracked::assume_new(), Tracked::assume_new());
         assert_eq!(
+            // SAFETY: the heap outlives the frees; the thread is still running.
             unsafe { &*hp }.stats().deallocated,
             2 * CLASSES[c].size() as u64
         );
@@ -203,11 +208,15 @@ fn creating_and_exited_sentinels_are_served_directly() {
         // thread exit): heap gone, slot says exited, and later calls go
         // direct without creating another heap.
         let key = s.thread_key().expect("key");
+        // SAFETY: `key` is the allocator's live thread key.
         assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
         assert_eq!(
+            // SAFETY: as above.
             unsafe { libc::pthread_setspecific(key, core::ptr::null()) },
             0
         );
+        // SAFETY: `h` is this thread's heap as registered with the key, which
+        // was just cleared, so neither the key nor TLS hands it out again.
         unsafe { heap_destructor(h) };
         assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_EXITED);
         assert_eq!(
@@ -240,6 +249,8 @@ fn creating_and_exited_sentinels_are_served_directly() {
 fn heap_destructor_ignores_null() {
     let s = shared();
     std::thread::spawn(move || {
+        // SAFETY: the destructor returns on a null value before touching
+        // anything (the property under test).
         unsafe { heap_destructor(core::ptr::null_mut()) };
         assert!(tls::get(Tracked::assume_new()).is_null());
         let c = class_of(32).unwrap();
@@ -247,6 +258,7 @@ fn heap_destructor_ignores_null() {
         assert!(!p.is_null());
         let raw = tls::get(Tracked::assume_new());
         assert!(raw as usize > TLS_EXITED);
+        // SAFETY: as above.
         unsafe { heap_destructor(core::ptr::null_mut()) };
         assert_eq!(tls::get(Tracked::assume_new()), raw);
         assert!(existing_heap(s).is_some());
@@ -307,6 +319,7 @@ fn key_registration_failure_is_served_directly() {
         assert!(tls::get(Tracked::assume_new()) as usize > TLS_EXITED);
         let h = existing_heap(s).unwrap() as *mut Heap as *mut c_void;
         let key = s.thread_key().expect("key");
+        // SAFETY: `key` is the allocator's live thread key.
         assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
         free(s, q, Tracked::assume_new(), Tracked::assume_new());
     })
@@ -364,6 +377,9 @@ fn heap_off_pac_executes_no_pac_instruction() {
         (false, shared()),
     ] {
         assert_eq!(s.pac(), !forced_off && pac::available());
+        // SAFETY: the test binary is multithreaded; the child uses challoc's
+        // allocator, whose fork handlers keep it consistent, and its own
+        // thread-local output capture, and leaves through `_exit`.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
@@ -385,6 +401,7 @@ fn heap_off_pac_executes_no_pac_instruction() {
                 free(s, q, Tracked::assume_new(), Tracked::assume_new());
             }
             let h = existing_heap(s).expect("a heap") as *mut Heap;
+            // SAFETY: `h` is the calling thread's live heap.
             unsafe { (*h).flush_arena(s, 0, ptr::null_mut(), Tracked::assume_new()) };
             let ops = pac::test_ops() - before;
             let expect_some = !forced_off && pac::available();
@@ -393,11 +410,14 @@ fn heap_off_pac_executes_no_pac_instruction() {
                     "pac: forced_off={forced_off} executed {ops} PAC instructions, expected {}",
                     if expect_some { "some" } else { "none" }
                 );
+                // SAFETY: `_exit` has no preconditions; the child must not unwind.
                 unsafe { libc::_exit(1) };
             }
+            // SAFETY: as above.
             unsafe { libc::_exit(0) };
         }
         let mut status = 0;
+        // SAFETY: `pid` is this process's child; `status` is a local.
         assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
         assert!(
             libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
@@ -432,6 +452,7 @@ fn cache_entries_and_the_tls_heap_pointer_are_signed() {
             free(s, p, Tracked::assume_new(), Tracked::assume_new());
         }
         let hp = existing_heap(s).unwrap() as *mut Heap;
+        // SAFETY: `hp` is this thread's live heap.
         let k = unsafe { &*hp }.cache(c).unwrap();
         let stored = k.cached();
         assert!(stored.len() >= 8);
@@ -494,9 +515,12 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
         let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
         free(s, p, Tracked::assume_new(), Tracked::assume_new());
         let hp = existing_heap(s).unwrap() as *mut Heap;
+        // SAFETY: `hp` is this thread's live heap, used only through `cache`.
         let cache = unsafe { &mut *hp }.cache_ptr(c);
+        // SAFETY: `cache` is that heap's live header for `c`.
         let (slots, len) = unsafe { ((*cache).slots, (*cache).len as usize) };
         assert!(len >= 1);
+        // SAFETY: `len >= 1` entries live in `slots`.
         let top = unsafe { *slots.add(len - 1) } as usize;
         assert_eq!(pac::auth(top, slots as usize), p as usize);
         let (raw, tp) = tls::get_tp(Tracked::assume_new());
@@ -510,9 +534,13 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
             })
             .expect("a bit that changes both PACs");
         for target in ["entry", "tls"] {
+            // SAFETY: as in `heap_off_pac_executes_no_pac_instruction`.
             let pid = unsafe { libc::fork() };
             assert!(pid >= 0);
             if pid == 0 {
+                // SAFETY: `slots.add(len - 1)` is the live top entry; the flipped bit
+                // and the TLS overwrite are the corruption under test, and the child
+                // only allocates (expected to fault) and `_exit`s.
                 unsafe {
                     if target == "entry" {
                         let e = slots.add(len - 1);
@@ -526,6 +554,7 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
                 }
             }
             let mut status = 0;
+            // SAFETY: `pid` is this process's child; `status` is a local.
             assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
             assert!(
                 libc::WIFSIGNALED(status),
@@ -669,22 +698,29 @@ fn changed_arena_child() {
         return;
     }
     extern "C" fn on_segv(_: i32, info: *mut libc::siginfo_t, _: *mut c_void) {
+        // SAFETY: the kernel passes a valid `siginfo_t` to an `SA_SIGINFO`
+        // handler.
         let addr = unsafe { (*info).si_addr() } as usize;
         let (lo, hi) = (
             FLIP_LO.load(Ordering::Relaxed),
             FLIP_HI.load(Ordering::Relaxed),
         );
         if FLIP_DONE.swap(1, Ordering::Relaxed) != 0 || addr < lo || addr >= hi {
+            // SAFETY: `_exit` is async-signal-safe and has no preconditions.
             unsafe { libc::_exit(3) };
         }
+        // SAFETY: the test stored a `&'static Shared` before arming the handler.
         let s = unsafe { &*(FLIP_SHARED.load(Ordering::Relaxed) as *const Shared) };
         let class = FLIP_CLASS.load(Ordering::Relaxed);
         s.table(class)
             .corrupt_owner_word(&s.meta, FLIP_GROUP.load(Ordering::Relaxed), 1);
         let (base, len) = page_span(lo, hi);
+        // SAFETY: `base..base + len` covers the `ClassState` pages the test
+        // made read-only; making them writable again only lifts that.
         if unsafe { libc::mprotect(base as *mut c_void, len, libc::PROT_READ | libc::PROT_WRITE) }
             != 0
         {
+            // SAFETY: as at the first `_exit`.
             unsafe { libc::_exit(4) };
         }
     }
@@ -748,6 +784,9 @@ fn changed_arena_child() {
     FLIP_CLASS.store(c, Ordering::Relaxed);
     FLIP_GROUP.store(slab0 / t.group(), Ordering::Relaxed);
     let (base, len) = page_span(cs, hi);
+    // SAFETY: `sa` is zero-initialised (valid for `sigaction`) and installs
+    // `on_segv`, an `extern "C"` SA_SIGINFO handler; `base..base + len` are
+    // pages of the arena's `ClassState`, which the handler restores.
     unsafe {
         let mut sa: libc::sigaction = core::mem::zeroed();
         sa.sa_sigaction = on_segv as *const () as usize;
@@ -766,6 +805,7 @@ fn changed_arena_child() {
         "release_routed returned (handler ran: {})",
         FLIP_DONE.load(Ordering::Relaxed)
     );
+    // SAFETY: `_exit` has no preconditions; this child process ends here.
     unsafe { libc::_exit(5) };
 }
 

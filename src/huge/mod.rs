@@ -4885,13 +4885,13 @@ impl Huge {
                     assert(off == *o.seq()[o.index() as int]);
                 }
                 let a = base + i * page + off;
-                // SAFETY: a usable page of the run this call just took;
-                // `prepare` committed it, and `blk`'s permission covers it.
                 proof {
                     assert forall|x: int| a <= x < a + 8 implies #[trigger] blk.mem().dom().contains(x) by {
                         assert(base <= x < base + usable_pages * p);
                     }
                 }
+                // SAFETY: a usable page of the run this call just took;
+                // `prepare` committed it, and `blk`'s permission covers it.
                 let word = unsafe { self.read_run_word(a, Tracked(blk.mem_ref())) };
                 if word != 0 {
                     dirty_zero_run(base, usable_pages, s, prior, arena, a, word);
@@ -8365,6 +8365,8 @@ impl Huge {
         while p < g.next_page {
             let d = g.table.get(p);
             assert!(!d.is_null(), "page {p} has no extent");
+            // SAFETY: a non-null table entry is a live extent descriptor, and `g`
+            // holds the huge lock.
             let (start, pages, state) = unsafe { ((*d).start(), (*d).pages(), (*d).state()) };
             assert_eq!(start, p, "extent at {p} starts at {start}");
             assert!(pages > 0);
@@ -8373,6 +8375,7 @@ impl Huge {
             match state {
                 RunState::Active => {
                     assert_eq!(
+                        // SAFETY: as above.
                         unsafe { (*d).usable },
                         (pages - GUARD_PAGES) << self.lg_page
                     );
@@ -8420,6 +8423,7 @@ impl Huge {
         let mut last_dirty = 0;
         let mut prev = ptr::null_mut();
         while !d.is_null() {
+            // SAFETY: the Empty list links live descriptors; `g` holds the lock.
             unsafe {
                 assert_eq!((*d).state(), RunState::Empty);
                 assert!((*d).dirty_at >= last_dirty, "empty list out of order");
@@ -8433,6 +8437,7 @@ impl Huge {
         d = g.empty_head;
         while !d.is_null() {
             n += 1;
+            // SAFETY: as above.
             d = unsafe { (*d).next };
         }
         assert_eq!(n, st.empty);

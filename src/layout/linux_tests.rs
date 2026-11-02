@@ -308,6 +308,7 @@ fn seal_locks_the_gaps_and_leaves_the_regions_usable() {
         unsafe { libc::_exit(code) };
     }
     let mut status = 0;
+    // SAFETY: `pid` is this process's child; `status` is a local.
     assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
     assert!(
         libc::WIFEXITED(status),

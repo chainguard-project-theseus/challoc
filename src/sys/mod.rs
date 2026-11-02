@@ -1780,11 +1780,13 @@ pub(crate) mod tests {
                 // SAFETY: the kernel refuses; nothing changes.
                 assert_eq!(unsafe { munmap(addr, PAGE) }, Err(Errno::EPERM));
                 assert_eq!(
+                    // SAFETY: as above.
                     unsafe { mprotect(addr, PAGE, PROT_NONE) },
                     Err(Errno::EPERM)
                 );
                 // MADV_DONTNEED on a sealed writable anonymous mapping is
                 // allowed; discarding is only refused for read-only ranges.
+                // SAFETY: the test's own anonymous page; discarding only zeroes it.
                 unsafe { madvise(addr, PAGE, MADV_DONTNEED).unwrap() };
             }
             Err(Errno::ENOSYS) => {
@@ -1984,11 +1986,13 @@ pub(crate) mod tests {
         // only reads it.
         let mut set: libc::cpu_set_t = unsafe { core::mem::zeroed() };
         assert_eq!(
+            // SAFETY: as above.
             unsafe {
                 libc::sched_getaffinity(0, core::mem::size_of::<libc::cpu_set_t>(), &mut set)
             },
             0
         );
+        // SAFETY: as above.
         assert_eq!(n as i32, unsafe { libc::CPU_COUNT(&set) });
     }
 
@@ -2005,6 +2009,7 @@ pub(crate) mod tests {
         let size = core::mem::size_of::<libc::cpu_set_t>();
         assert_eq!(size, core::mem::size_of::<CpuSet>());
         assert_eq!(
+            // SAFETY: as above.
             unsafe { libc::sched_getaffinity(pid, size, &mut libc_set) },
             0
         );

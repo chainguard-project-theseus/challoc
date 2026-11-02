@@ -3674,6 +3674,8 @@ mod tests {
     impl Backing {
         fn new(len: usize) -> Backing {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
+            // SAFETY: a fresh anonymous `PROT_NONE` reservation at an address the
+            // kernel picks; it replaces nothing.
             let base = unsafe {
                 crate::sys::mmap(
                     0,
@@ -3696,6 +3698,8 @@ mod tests {
 
     impl Drop for Backing {
         fn drop(&mut self) {
+            // SAFETY: `base..base + len` is the reservation `new` made, and the
+            // tests bind it before the `Meta` over it, which therefore drops first.
             unsafe { crate::sys::munmap(self.base, self.len) }.unwrap();
         }
     }
@@ -3803,6 +3807,7 @@ mod tests {
         assert_eq!(s.allocated, 256, "200 rounds up to the 256 bin");
         assert_eq!(s.bumped, 256);
         // Writable and zero.
+        // SAFETY: `p` is a live 200-byte metadata object, unaliased.
         let slice = unsafe { core::slice::from_raw_parts_mut(p, 200) };
         assert!(slice.iter().all(|&x| x == 0));
         slice.fill(0xA5);
@@ -3819,6 +3824,7 @@ mod tests {
             m.stats(Tracked::assume_new()).committed,
             align_up(MAX_BINNED + 512, chunk())
         );
+        // SAFETY: `big` is a live `MAX_BINNED`-byte object, unaliased.
         unsafe { core::slice::from_raw_parts_mut(big, MAX_BINNED) }.fill(1);
     }
 
@@ -3846,17 +3852,20 @@ mod tests {
         free(&m, d, layout(1000, 8));
         assert_eq!(m.alloc(layout(1000, 8)), d);
         // alloc_zeroed scrubs a reused block but leaves fresh ones alone.
+        // SAFETY: `d` is live in the 1024-byte bin (a 1000-byte request).
         unsafe { core::slice::from_raw_parts_mut(d, 1024) }.fill(0xFF);
         free(&m, d, layout(1000, 8));
         let z = m.alloc_zeroed(layout(1000, 8)).0;
         assert_eq!(z, d);
         assert!(
+            // SAFETY: `z` is live in the 1024-byte bin.
             unsafe { core::slice::from_raw_parts(z, 1024) }
                 .iter()
                 .all(|&x| x == 0)
         );
         let fresh = m.alloc_zeroed(layout(5000, 8)).0;
         assert!(
+            // SAFETY: `fresh` is a live 5000-byte object.
             unsafe { core::slice::from_raw_parts(fresh, 5000) }
                 .iter()
                 .all(|&x| x == 0)
@@ -3936,6 +3945,7 @@ mod tests {
         // Commit part of r1, write into it.
         commit(&m, r1 + page_size(), page_size()).unwrap();
         assert_eq!(m.stats(Tracked::assume_new()).committed, page_size());
+        // SAFETY: that page of `r1` was just committed and nothing else uses it.
         unsafe { core::slice::from_raw_parts_mut((r1 + page_size()) as *mut u8, page_size()) }
             .fill(7);
         // A small reserve_committed is zero and writable, and (eager) sits
@@ -3946,6 +3956,7 @@ mod tests {
             "a small committed reservation is carved from the object side"
         );
         assert_eq!(m.top(), r2);
+        // SAFETY: `r3` is a fresh committed reservation of two pages.
         let sl = unsafe { core::slice::from_raw_parts_mut(r3 as *mut u8, 2 * page_size()) };
         assert!(sl.iter().all(|&x| x == 0));
         sl.fill(9);
@@ -4050,6 +4061,8 @@ mod tests {
         assert_eq!(after.committed, before.committed + 2 * page_size());
         // Every byte of every table is writable and zero.
         for (t, len) in [(t1, 3 * page_size()), (t2, page_size()), (t3, EAGER_MAX)] {
+            // SAFETY: each table is a live reservation of `len` bytes, committed
+            // (eager or just above), and nothing else uses it.
             let sl = unsafe { core::slice::from_raw_parts_mut(t as *mut u8, len) };
             assert!(sl.iter().all(|&x| x == 0), "table at {t:#x} not zero");
             sl[0] = 1;
@@ -4155,6 +4168,7 @@ mod tests {
         let b = Backing::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8));
+        // SAFETY: 8 bytes into the live 64-byte object `p`.
         free(&m, unsafe { p.add(8) }, layout(64, 8));
     }
 
@@ -4164,6 +4178,7 @@ mod tests {
         let b = Backing::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8));
+        // SAFETY: one past the end of the live 64-byte object `p`.
         free(&m, unsafe { p.add(64) }, layout(64, 8));
     }
 
@@ -4227,12 +4242,14 @@ mod tests {
                     assert!(a1 <= b0 || b1 <= a0, "overlap");
                 }
                 let fill = (xorshift(&mut s) as u8) | 1;
+                // SAFETY: `p` is a live object of at least `size` bytes, unaliased.
                 unsafe { core::slice::from_raw_parts_mut(p, size) }.fill(fill);
                 live.push((p, l, fill));
                 expect_allocated += bin;
             } else {
                 let i = (xorshift(&mut s) as usize) % live.len();
                 let (p, l, fill) = live.swap_remove(i);
+                // SAFETY: `p` is live with `l.size()` bytes, filled at allocation.
                 let slice = unsafe { core::slice::from_raw_parts(p, l.size()) };
                 assert!(slice.iter().all(|&x| x == fill), "contents clobbered");
                 free(&m, p, l);
@@ -4279,16 +4296,19 @@ mod tests {
                             let l = layout(size, 1 << (xorshift(&mut s) % 7));
                             let p = m.alloc(l);
                             assert!(!p.is_null());
+                            // SAFETY: `p` is a live object of `size` bytes, owned by this thread.
                             unsafe { core::slice::from_raw_parts_mut(p, size) }.fill(fill);
                             live.push((p, l));
                         } else if let Some(i) = live.len().checked_sub(1) {
                             let (p, l) = live.swap_remove((xorshift(&mut s) as usize) % (i + 1));
+                            // SAFETY: `p` is live with `l.size()` bytes, filled at allocation.
                             let sl = unsafe { core::slice::from_raw_parts(p, l.size()) };
                             assert!(sl.iter().all(|&x| x == fill), "thread {t} block clobbered");
                             free(m, p, l);
                         }
                     }
                     for (p, l) in live {
+                        // SAFETY: as above.
                         let sl = unsafe { core::slice::from_raw_parts(p, l.size()) };
                         assert!(sl.iter().all(|&x| x == fill));
                         free(m, p, l);
@@ -4362,6 +4382,8 @@ mod tests {
         );
         assert_eq!(m.stats(Tracked::assume_new()).writable, s.writable);
         for &(t, len) in &tables {
+            // SAFETY: the last byte of a carved table, inside the commit asserted
+            // above.
             unsafe { core::ptr::write_volatile((t + len - 1) as *mut u8, 1) };
         }
         // More carves, then an object past them: one commit again.
@@ -4381,6 +4403,8 @@ mod tests {
             after.writable - before.writable,
             "only a new chunk past the frontier counts"
         );
+        // SAFETY: `t` is inside the writable frontier the object's allocation
+        // moved past it (asserted above).
         unsafe { core::ptr::write_volatile(t as *mut u8, 1) };
     }
 
@@ -4425,16 +4449,22 @@ mod tests {
         // The small table's pages are writable, the large table's
         // uncommitted pages are not (a write there faults: checked in a
         // child so the test survives).
+        // SAFETY: `small` is a committed table of three pages.
         unsafe { core::ptr::write_volatile(small as *mut u8, 1) };
+        // SAFETY: the test binary is multithreaded; the child takes no lock: it
+        // writes one byte and leaves through `_exit`.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
+            // SAFETY: `big`'s first page is reserved but uncommitted: the write
+            // faults by design (the parent expects `SIGSEGV`), in the child only.
             unsafe {
                 core::ptr::write_volatile(big as *mut u8, 1);
                 libc::_exit(0);
             }
         }
         let mut status = 0;
+        // SAFETY: `pid` is this process's child; `status` is a local.
         assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
         assert!(
             libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSEGV,
@@ -4489,6 +4519,7 @@ mod tests {
             )
             .unwrap();
             commit(&m, t, page_size()).unwrap();
+            // SAFETY: the first page of table `t` was just committed.
             unsafe { core::ptr::write_volatile(t as *mut u64, i as u64 + 1) };
             tables.push((t, len));
         }

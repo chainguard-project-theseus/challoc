@@ -1283,6 +1283,7 @@ const _: () = assert!(core::mem::size_of::<TablePtr>() == core::mem::size_of::<*
 // another thread (`Send`) therefore hands out nothing but a pointer to a
 // process-lifetime, thread-safe table.
 unsafe impl Sync for ClassState {}
+// SAFETY: as for `Sync` above.
 unsafe impl Send for ClassState {}
 
 verus! {

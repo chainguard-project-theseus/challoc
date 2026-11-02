@@ -1978,9 +1978,9 @@ impl Io {
             return Ok(());
         }
         let want = size_of::<T>();
+        let ghost oldp = self.oldp as *mut u8;
         // SAFETY: `oldp`/`oldlenp` are the caller's out-pointers per the
         // `mallctl` contract; `*oldlenp` bytes are writable at `oldp`.
-        let ghost oldp = self.oldp as *mut u8;
         unsafe {
             let have = old_len(self.oldlenp, Ghost(oldp), Tracked(&*call));
             proof {
@@ -2515,8 +2515,8 @@ fn batch_query(shared: &Shared, io: &Io, Tracked(call): Tracked<&mut CCall>) -> 
     }
     let psz = size_of::<*const c_void>();
     let tsz = 3 * size_of::<usize>();
-    // SAFETY: `oldlenp` is the caller's length pointer.
     let ghost oldp = io.oldp as *mut u8;
+    // SAFETY: `oldlenp` is the caller's length pointer.
     let oldlen = unsafe { old_len(io.oldlenp, Ghost(oldp), Tracked(&*call)) };
     proof {
         call.open_writes(CArg::Sized(oldp, io.oldlenp as *const usize));
@@ -3921,6 +3921,7 @@ mod tests {
     }
 
     fn cstring_at(p: *const c_char) -> std::string::String {
+        // SAFETY: the callers pass a NUL-terminated string from `mallctl`.
         unsafe { core::ffi::CStr::from_ptr(p) }
             .to_str()
             .unwrap()
@@ -4664,12 +4665,16 @@ mod tests {
         let ap: *const u64 = get("thread.allocatedp");
         let dp: *const u64 = get("thread.deallocatedp");
         assert!(!ap.is_null() && !dp.is_null());
+        // SAFETY: `thread.allocatedp` points at this thread's counter, live
+        // while the thread runs.
         assert_eq!(unsafe { *ap }, a0);
         let p = malloc(1000, vstd::prelude::Tracked::assume_new());
         let size = crate::layout::class_size_of(1000).unwrap() as u64;
         // The pointer is stale until a counter is read again.
+        // SAFETY: as above.
         assert_eq!(unsafe { *ap }, a0);
         assert_eq!(get::<u64>("thread.allocated"), a0 + size);
+        // SAFETY: as above.
         assert_eq!(unsafe { *ap }, a0 + size, "materialised by the read");
         free(
             p,
@@ -4677,6 +4682,7 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(get::<u64>("thread.deallocated"), d0 + size);
+        // SAFETY: as above, for `thread.deallocatedp`.
         assert_eq!(unsafe { *dp }, d0 + size);
         // thread.tcache.flush empties this thread's caches.
         let many: Vec<*mut u8> = (0..64)

@@ -5,6 +5,8 @@ use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
 fn resident(addr: usize, len: usize, page: usize) -> usize {
     let n = len / page;
     let mut vec = std::vec![0u8; n];
+    // SAFETY: `vec` has one byte per page of the range; `mincore` only
+    // writes it.
     let rc = unsafe { ::libc::mincore(addr as *mut _, len, vec.as_mut_ptr()) };
     assert_eq!(rc, 0);
     vec.iter().filter(|&&b| b & 1 != 0).count()
@@ -83,6 +85,7 @@ fn a_locked_range_is_reported_and_left_alone() {
             set_headroom(lazy, false);
             assert_eq!(advice() == Advice::Lazy, lazy);
             for p in 0..4 {
+                // SAFETY: page `p < 4` of the test's own read-write mapping.
                 unsafe { *((addr + p * page) as *mut u8) = 0xA5 };
             }
             let failed0 = failed_discards();
@@ -94,8 +97,10 @@ fn a_locked_range_is_reported_and_left_alone() {
             b.push_t(locked, page, |_, _, _| unreachable!());
             b.flush_t(|a, l, done| settled.push((a, l, done)));
             assert_eq!(settled, [(addr, page, true), (locked, page, false)]);
+            // SAFETY: `locked` is a mapped, locked page of that mapping.
             assert_eq!(unsafe { *(locked as *const u8) }, 0xA5);
             if !lazy {
+                // SAFETY: `addr` is a mapped page of that mapping.
                 assert_eq!(unsafe { *(addr as *const u8) }, 0);
             }
             assert_eq!(failed_discards(), (failed0.0 + 1, failed0.1 + page as u64));
@@ -133,6 +138,7 @@ fn a_locked_range_is_reported_and_left_alone() {
             assert_eq!(failed_discards(), (failed1.0 + 1, failed1.1 + page as u64));
         }
         set_headroom(false, false);
+        // SAFETY: `addr..addr + len` is the test's own mapping, unused after.
         unsafe { sys::munmap(addr, len) }.unwrap();
     });
 }
@@ -147,6 +153,7 @@ fn an_unmapped_range_aborts() {
         super::tests::forget_other_threads_explicit_purges();
         set_headroom(false, false);
         let page = crate::sys::features::page_size();
+        // SAFETY: a fresh anonymous mapping at an address the kernel picks.
         let addr = unsafe {
             sys::mmap(
                 0,
@@ -158,6 +165,7 @@ fn an_unmapped_range_aborts() {
             )
         }
         .unwrap();
+        // SAFETY: the page just mapped, which nothing else uses.
         unsafe { sys::munmap(addr, page) }.unwrap();
         let r = std::panic::catch_unwind(|| discard_one(addr, page, Ghost::assume_new()));
         let msg = *r.unwrap_err().downcast::<std::string::String>().unwrap();
@@ -176,6 +184,7 @@ fn a_sealed_range_aborts() {
         super::tests::forget_other_threads_explicit_purges();
         set_headroom(false, false);
         let page = crate::sys::features::page_size();
+        // SAFETY: a fresh anonymous mapping at an address the kernel picks.
         let addr = unsafe {
             sys::mmap(
                 0,
@@ -187,8 +196,12 @@ fn a_sealed_range_aborts() {
             )
         }
         .unwrap();
+        // SAFETY: `addr` is that read-write page.
         unsafe { *(addr as *mut u8) = 0xA5 };
+        // SAFETY: the test's own page; only its protection changes.
         unsafe { sys::mprotect(addr, page, PROT_READ) }.unwrap();
+        // SAFETY: as above; sealing a page this child owns affects nothing
+        // else.
         if let Err(e) = unsafe { sys::mseal(addr, page, 0) } {
             crate::testutil::skip("a_sealed_range_aborts", &std::format!("mseal failed: {e}"));
             return;
@@ -197,6 +210,7 @@ fn a_sealed_range_aborts() {
         let msg = *r.unwrap_err().downcast::<std::string::String>().unwrap();
         assert!(msg.contains("purge: madvise("), "{msg}");
         assert!(msg.ends_with("EPERM"), "{msg}");
+        // SAFETY: the sealed page stays mapped and readable.
         assert_eq!(unsafe { *(addr as *const u8) }, 0xA5);
     });
 }
@@ -228,6 +242,7 @@ fn merged_flush(addr: usize, page: usize, locked: &[usize]) -> (u64, std::vec::V
     });
     let calls = DISCARD_CALLS.load(Ordering::Relaxed) - calls0;
     assert_eq!(
+        // SAFETY: unlocking the caller's mapping; no memory is touched.
         unsafe { ::libc::munlock(addr as *const _, PIECES * page) },
         0
     );
@@ -245,6 +260,7 @@ fn refused_merged_ranges_cost_few_calls() {
         super::tests::forget_other_threads_explicit_purges();
         set_headroom(false, false);
         let page = crate::sys::features::page_size();
+        // SAFETY: a fresh anonymous mapping at an address the kernel picks.
         let addr = unsafe {
             sys::mmap(
                 0,
@@ -272,6 +288,7 @@ fn refused_merged_ranges_cost_few_calls() {
         }
         assert_eq!(merged_flush(addr, page, &[0, 15]), (3, only(&all)));
         assert_eq!(merged_flush(addr, page, &[]), (1, only(&[])));
+        // SAFETY: the test's own 16-page mapping, unused after.
         unsafe { sys::munmap(addr, 16 * page) }.unwrap();
     });
 }

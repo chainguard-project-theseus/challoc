@@ -661,6 +661,7 @@ verus! {
 // symbol of `RawLock::lock_slow`, which sets its place in `.text`.
 #[verifier::external]
 unsafe impl<T: Send> Sync for Lock<T> {}
+// SAFETY: a `Lock` owns its value, so moving it moves only a `T: Send`.
 #[verifier::external]
 unsafe impl<T: Send> Send for Lock<T> {}
 

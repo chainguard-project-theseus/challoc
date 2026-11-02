@@ -432,6 +432,7 @@ impl SetTable {
 // and positions are immutable after `new` and the commit watermarks are
 // behind `tables`' lock.
 unsafe impl Sync for SetTable {}
+// SAFETY: as for `Sync` above.
 unsafe impl Send for SetTable {}
 
 verus! {
