@@ -889,10 +889,12 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
   (published before its discard, under the class or huge lock), tells
   the refill whether a reused `Purged` slab's batch is known zero
   (bookkeeping that `check_zero` reads; no zeroing entry point trusts it,
-  section 6.3). A huge run is known zero only for pages past the huge
-  region's high-water mark; a reused `Purged` extent is cleared like a
-  dirty one, since a stale pointer or an underflow from the live run
-  above can have written it after the discard.
+  section 6.3). A huge run is known zero for pages past the huge
+  region's high-water mark, and for a reused `Purged` extent only once
+  `Huge::rediscard` has `MADV_DONTNEED`ed the run's pages in it again in
+  the lock hold that places the run (16 KiB or more; smaller runs are
+  cleared): a stale pointer or an underflow from the live run above can
+  have written the extent since its purge, whatever its advice was.
 - Purges are batched (`purge::Batch`): a walk collects up to `MAX_BATCH`
   (64) ranges, merging adjacent ones, and issues a loop of `madvise`.
   Batched `process_madvise` was prototyped and removed: it measured no

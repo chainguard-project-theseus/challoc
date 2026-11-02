@@ -488,7 +488,7 @@ fn purged_and_empty_merge_to_empty() {
     );
     assert_eq!(h.stats(Tracked::assume_new()).empty, 0);
     let (p, zero) = env.alloc(&h, 8 * page_size(), 1);
-    assert!(!zero);
+    assert!(zero);
     assert_eq!(env.page_of(p), 0);
     assert_eq!(h.stats(Tracked::assume_new()).next_page, 9);
 }

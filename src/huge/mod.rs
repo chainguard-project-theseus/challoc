@@ -85,6 +85,12 @@ verus! {
 
 /// Guard pages after every run.
 pub const GUARD_PAGES: usize = 1;
+/// The fewest bytes of a `Purged` extent [`Huge::rediscard`] discards
+/// again for a run placed in it; below this the caller's `memset` is
+/// cheaper than the `madvise` call (about 1 us; a 4 KiB page's clear,
+/// fault included, is about 2 us on x86_64, so the call wins from two
+/// pages).
+pub const REDISCARD_MIN: usize = 16 << 10;
 /// Runs with more usable bytes than this are purged as soon as they are
 /// freed (`huge_retain_max`).
 pub const DEFAULT_RETAIN_MAX: usize = 64 << 20;
@@ -2029,10 +2035,10 @@ spec fn keys_inside(t: Table, d: Map<*mut HugeDesc, PointsTo<HugeDesc>>, mark: i
 /// bytes whose high-water mark was `mark`: empty unless `zeroed`, which
 /// `take` sets for a run from fresh pages (no extent, or a start at or
 /// past the extent it touches, which then ends at the mark) or from a
-/// `Purged` extent while `purge::purged_is_zero` read true under the lock
-/// (`ve` the extent). Pages at or past the mark are fresh
-/// ([`axiom_fresh_anon_zero`]: only `take` raises the mark, and
-/// no run has covered them); the pages of a `Purged` extent were
+/// `Purged` extent whose pages under the run [`Huge::rediscard`] has just
+/// discarded again under the lock (`ve` the extent). Pages at or past the
+/// mark are fresh ([`axiom_fresh_anon_zero`]: only `take` raises the mark,
+/// and no run has covered them); the pages of a `Purged` extent were
 /// discarded with `MADV_DONTNEED` ([`axiom_discarded_zero`]),
 /// and when the run runs past such an extent the extent ends at the mark
 /// and the rest is fresh.
@@ -2101,13 +2107,12 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 /// nothing has written them since. Private to this module, and
 /// [`zero_run`] is its one caller (pinned as for
 /// [`axiom_fresh_anon_zero`]), for a `Purged` extent. Not checked: that
-/// `purge::purged_is_zero` read true for it. `take` reads the flag into
-/// its `zeroed` result, but `zero_run` requires only the extent's state:
-/// no batch of the process has used `MADV_FREE` while the flag reads true
-/// (`purge::Batch::flush` clears it before it issues one), `Purged` is set
-/// only in the lock hold that flushes the extent's discard or, for the
-/// hole alignment leaves at the mark, by `take` for pages never handed
-/// out, and a `Purged` extent has no allocated run.
+/// [`Huge::rediscard`] succeeded for the run's pages in it. `take` sets
+/// its `zeroed` result from that call, made in the same lock hold before
+/// the run is handed out, but `zero_run` requires only the extent's state.
+/// The extent's own purge is not what the premise rests on: its pages are
+/// read-write after it, and a stale pointer or an underflow from the live
+/// run above can have written them since.
 axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)
     requires
         0 <= len,
@@ -4250,6 +4255,35 @@ impl Huge {
         self.base + (page << self.lg_page)
     }
 
+    /// Discard pages `s..hi` again with `MADV_DONTNEED`, for a run `take`
+    /// places in a `Purged` extent: whether they now read as zero. The
+    /// extent's earlier discard does not make them zero any more: they are
+    /// read-write and were handed out before, so a write through a stale
+    /// pointer, or an underflow from the live run above (a freed run's
+    /// guard goes with it), reaches them after it (SECURITY.md, "Zeroing
+    /// allocations are zero"). Called under the huge lock, before the run
+    /// is handed out, so nothing challoc does writes them in between.
+    /// Fewer than [`REDISCARD_MIN`] bytes are left to the caller's
+    /// `memset` (false), which is cheaper than the call; so is any range
+    /// the kernel refuses (`mlock`ed pages).
+    fn rediscard(&self, s: usize, hi: usize) -> (r: bool)
+        requires
+            crate::sys::may_syscall(),
+    {
+        if hi <= s || hi > self.npages {
+            return false;
+        }
+        let Some(len) = (hi - s).checked_mul(self.page_size()) else { return false };
+        if len < REDISCARD_MIN {
+            return false;
+        }
+        let addr = self.addr(s);
+        // SAFETY: pages `s..hi` lie in the region (`hi <= npages`) and
+        // belong to the run being placed, which nobody holds yet: their
+        // contents are not needed.
+        unsafe { sys::madvise(addr, len, sys::MADV_DONTNEED) }.is_ok()
+    }
+
     /// Usable pages for a request, or `None` if it cannot be represented.
     #[inline]
     pub fn usable_pages(&self, size: usize) -> (r: Option<usize>)
@@ -5358,14 +5392,16 @@ impl Huge {
                 lemma_state_byte(ve.state);
                 assert(forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && x != ext ==> apart(d0[x].value(), ve));
             }
-            // Only pages at or past the mark are trusted zero: no run has
-            // covered them and they sit behind the last run's guard. A free
-            // extent's pages, `Purged` included, are read-write and were
-            // handed out before, so a write through a stale pointer or an
-            // underflow from the live run above (a freed run's guard goes
-            // with it) reaches them after the discard (SECURITY.md,
-            // "Zeroing allocations are zero").
-            zeroed = s >= e_end;
+            // Pages at or past the mark are zero: no run has covered them
+            // and they sit behind the last run's guard. A `Purged`
+            // extent's pages are zero only once `rediscard` has discarded
+            // the run's share of them again (whatever the earlier advice
+            // was): its earlier discard does not survive a stale-pointer
+            // write or an underflow from the live run above. An `Empty`
+            // extent is dirty.
+            let usable_end = if end > GUARD_PAGES { end - GUARD_PAGES } else { s };
+            let hi = if usable_end < e_end { usable_end } else { e_end };
+            zeroed = s >= e_end || (st == RunState::Purged && self.rediscard(s, hi));
             proof {
                 assert(zeroed ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
                 lemma_can_sub(*old(g), ext);

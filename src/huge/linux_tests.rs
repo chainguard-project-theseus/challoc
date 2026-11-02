@@ -13,9 +13,10 @@ fn all(p: *mut u8, len: usize, v: u8) -> bool {
     s.iter().all(|&b| b == v)
 }
 
-/// `check_zero` on a healthy huge heap: fresh runs read zero; dirty
-/// `Empty` and `Purged` reuse is not checked (neither is reported zero),
-/// and the flag stays on for the rest of the process.
+/// `check_zero` on a healthy huge heap: fresh runs and purged runs (of at
+/// least `REDISCARD_MIN` bytes, discarded again when reused) read zero,
+/// dirty `Empty` reuse is not checked (it is not reported zero), and the
+/// flag stays on for the rest of the process.
 #[test]
 fn check_zero_passes_fresh_and_purged_runs() {
     purge::set_check_zero(true);
@@ -37,13 +38,14 @@ fn check_zero_passes_fresh_and_purged_runs() {
     );
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
-    assert!(!zero && all(r, size, 0));
+    assert!(zero && all(r, size, 0));
     env.free(&h, r);
 }
 
-/// A purged run dirtied behind the allocator's back (a write through a
-/// stale pointer) is not reported zero when it is reused, so its caller
-/// clears it and `check_zero` has nothing to check.
+/// A small purged run (under `REDISCARD_MIN`) dirtied behind the
+/// allocator's back (a write through a stale pointer) is not reported
+/// zero when it is reused, so its caller clears it and `check_zero` has
+/// nothing to check.
 #[test]
 fn check_zero_does_not_trust_a_dirty_purged_run() {
     purge::set_check_zero(true);
@@ -66,6 +68,36 @@ fn check_zero_does_not_trust_a_dirty_purged_run() {
     env.free(&h, q);
 }
 
+/// A purged run of at least `REDISCARD_MIN` bytes written behind the
+/// allocator's back after its purge (a write through a stale pointer, or
+/// an underflow from the run above) is discarded again when it is reused:
+/// reported zero and reading zero, with `check_zero` on.
+#[test]
+fn a_dirty_purged_run_is_discarded_again_on_reuse() {
+    purge::set_check_zero(true);
+    let env = Env::new();
+    let h = env.huge();
+    let size = 8 * page_size();
+    assert!(size >= REDISCARD_MIN);
+    let (p, _) = env.alloc(&h, size, 1);
+    fill(p, size, 0xAB);
+    env.free(&h, p);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
+    // SAFETY: the purged run stays mapped read-write (the region is never
+    // unmapped, only discarded); this is the stale write under test.
+    unsafe {
+        ptr::write_volatile(p as *mut u64, 0xDEAD_BEEF);
+        ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF);
+    }
+    let (q, zero) = env.alloc(&h, size, 1);
+    assert_eq!(q, p);
+    assert!(zero && all(q, size, 0));
+    env.free(&h, q);
+}
+
 #[test]
 fn memory_is_writable_and_the_zero_flag_is_honest() {
     let env = Env::new();
@@ -85,11 +117,10 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
         h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
         1
     );
-    // Purged: reads zero, but is not reported zero (a stale pointer can
-    // have written it since the discard).
+    // Purged: discarded again when reused, so zero.
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
-    assert!(!zero && all(r, size, 0));
+    assert!(zero && all(r, size, 0));
     env.free(&h, r);
     // Above retain_max the purge is immediate.
     h.set_retain_max(size - 1);
@@ -103,7 +134,7 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
         RunState::Purged
     );
     let (t, zero) = env.alloc(&h, size, 1);
-    assert!(!zero && all(t, size, 0));
+    assert!(zero && all(t, size, 0));
     env.free(&h, t);
 }
 
@@ -129,7 +160,7 @@ fn stale_guards_inside_a_reused_extent_are_writable_and_purgeable() {
     );
     let (big, zero) = env.alloc(&h, 15 * page_size(), 1);
     assert_eq!(big, ps[0]);
-    assert!(!zero && all(big, 15 * page_size(), 0));
+    assert!(zero && all(big, 15 * page_size(), 0));
     fill(big, 15 * page_size(), 0x22);
     assert!(all(big, 15 * page_size(), 0x22));
     env.free(&h, big);

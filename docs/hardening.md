@@ -162,15 +162,19 @@ slab slot is cleared on every zeroing allocation, including a slot
 claimed from a `Fresh` or `Purged` slab: those slots are read-write
 memory of the committed run, which a linear overflow from a live slot
 below, or a write through a stale pointer into a purged slab, reaches
-without challoc seeing it. A huge run skips the clear only for pages past
-the huge region's high-water mark: no run has covered them, and the last
-run's guard page stops an overflow before them. A reused free extent,
-`Purged` included, is cleared, since a stale pointer or an underflow
-from the live run above (a freed run's guard goes with it) can have
-written it after the discard. jemalloc 5.3 always clears a small
+without challoc seeing it. A huge run skips the clear for pages past the
+huge region's high-water mark (no run has covered them, and the last
+run's guard page stops an overflow before them) and for a reused
+`Purged` extent only after `MADV_DONTNEED`ing the run's pages again under
+the huge lock as it places the run: the extent's own purge does not
+count, since a stale pointer or an underflow from the live run above (a
+freed run's guard goes with it) can have written it since. Under 16 KiB
+(`REDISCARD_MIN`) the `madvise` costs more than the clear, and a dirty
+(`Empty`) extent is cleared. jemalloc 5.3 always clears a small
 allocation from the tcache, but trusts a large extent's zeroed flag.
 The cost is the clear itself: on a `calloc` from fresh slab memory it
 moves the first-touch page faults into the call (a program that writes
 the block pays them anyway; one that leaves a large `calloc` sparse now
-has those pages resident), and a huge `calloc` that reuses a purged
-extent writes its pages, as one that reuses a dirty extent already did.
+has those pages resident). A huge allocation that reuses a purged
+extent of 16 KiB or more pays one `madvise` call (about 1 us, under the
+huge lock), `malloc` included; the pages stay unpopulated.
