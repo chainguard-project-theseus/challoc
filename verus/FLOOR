@@ -13,7 +13,8 @@ combined-lines 93.4
 # that pull requests landing in parallel do not conflict here. A figure set
 # below the base revision's fails unless a `lowered FIGURE P REASON` line
 # here, new in that change, names that figure and value.
-functions 82.3
+functions 82.2
 lines 92.7
 lowered combined-functions 84.6 double_free_scan's Kani-discharged top-four scan (cached_recently) gives way to the trusted slot-state primitives heap/slotstate.rs (step, init, commit); the verified shares hold
 lowered combined-lines 93.4 double_free_scan's Kani-discharged top-four scan (cached_recently) gives way to the trusted slot-state primitives heap/slotstate.rs (step, init, commit); the verified shares hold
+lowered functions 82.2 huge/mod.rs write_zero, a trusted one-byte zero write that gives a fallback-mode huge run's VMA its anon_vma when a filter refuses MADV_POPULATE_WRITE, so a freed run's guard can merge back (hunt 943666c7, c-ec215453)

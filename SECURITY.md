@@ -77,7 +77,9 @@ These hold on every supported host with the default configuration:
   a randomised offset, with never-committed `PROT_NONE` gaps between
   regions, so an overflow can't walk from one class into another.
 - **Huge runs are guarded.** Every huge run is followed by a guard page
-  (`MADV_GUARD_INSTALL`, or a `PROT_NONE` page on older kernels).
+  (`MADV_GUARD_INSTALL`, or a `PROT_NONE` page on older kernels, which
+  costs at most two VMAs while its run is live and is made read-write
+  again when the run is freed), unless `guards:false` removes it.
 - **Region edges are guarded.** Every class region, the huge region and
   the metadata region has at least 4 MiB of never-committed reservation
   directly below and above it, whatever the random offsets, so a linear
