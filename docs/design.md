@@ -1057,7 +1057,58 @@ it inherited).
 
 ## 9. Fork
 
-`pthread_atfork` handlers registered at init (`api/mod.rs`): the prepare
+`pthread_atfork` handlers registered by the library's constructor
+(`api::REGISTER_EARLY`, which does not initialise the allocator: the
+handlers do nothing until it is) or, if that did not run first, at init
+(`api/mod.rs`). glibc runs prepare handlers in the reverse order of
+registration and parent and child handlers in order, as POSIX says, so a
+handler registered after challoc's (by the program's constructors or
+code, or a library initialised after challoc) runs before challoc's
+prepare takes the allocator's locks and after its release: it may
+allocate, or wait on threads that allocate (a thread pool's shutdown,
+`tests/c/atfork_pool.c`), as under glibc's malloc. The handlers
+registered before challoc's (from the program's `.preinit_array`, or by a
+library whose constructor ran before challoc's, as LD_PRELOAD and
+DT_NEEDED order decide) run on the forking thread while challoc's hold
+every lock. One of those that waits on another thread which allocates
+still deadlocks `fork` (a residual, with `_Fork` below); one that
+allocates itself does not. Between the end of challoc's prepare handler
+and the start of its release, that thread is the fork window's holder
+(`lock::fork_window_open`): a lock it asks for is taken as acquired and
+its release does nothing (`lock::fork_holder_is_me`, checked only in the
+contended acquire and in the release), so an allocation in such a
+handler proceeds instead of waiting on its own thread
+(`tests/c/atfork_early.c`). The premise, trusted: the forking thread has
+no allocator critical section open in the window, since the prepare
+handler took every lock with every signal blocked, so each lock's data is
+as its last holder left it and only that thread runs allocator code
+until the release. What the fork handlers snapshot or reset may not
+change in the window: the background thread neither starts nor stops
+there (`mallctl("background_thread")` is refused with `EAGAIN` and
+changes nothing, and the lazy start waits for a tick after the fork;
+`tests/c/fork_window.c`), since the child handler forgets a thread on
+the premise that none can exist yet; and no arena is built there
+(`arenas.create` is refused with `EAGAIN`, and an allocation whose home
+arena is not built yet is served from arena 0, the thread's next slow
+path after the fork building it), so every lock in the process is one
+the prepare handler took, the only kind the window serves, and the
+registry the release reads is the one it locked. A cgroup discovery or a feature
+line built in the window completes before the fork, and their child
+resets undo only an unfinished one. A handler in the child that reads
+the cgroup figures (`stats.cgroup.*`) or the feature line
+(`malloc_stats_print`) while another thread of the parent was
+discovering or building it at the fork does not wait for work that will
+not finish: in the child's window (`lock::in_child_fork_window`, the
+holder with another process ID than the one recorded when the window
+opened) the wait resets that work as the child handler would and does it
+itself (`tests/c/fork_spin.c`). Residuals: a handler registered before
+challoc's (above) that waits on another thread which allocates deadlocks
+`fork`, as that thread waits on a lock challoc's prepare holds; a `fork`
+while another thread is initialising challoc finds it not initialised,
+takes no lock, and the child inherits the half-built state; and a
+process created inside the window by `_Fork` or a raw `clone` inherits
+every lock held with its only thread as the holder, so its main thread
+proceeds but a thread it creates waits forever on its first slow path. The prepare
 handler blocks every signal on the forking thread, then takes every lock
 in nesting order: the explicit-cache table lock (outermost: it is held
 across heap creation and destruction), the arena creation lock, the

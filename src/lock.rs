@@ -17,9 +17,19 @@
 
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use vstd::cell::pcell::{PCell, PointsTo};
 use vstd::prelude::*;
+
+/// The thread that holds every allocator lock for a `fork`
+/// (`pthread_self`, the same for the forking thread in the child), from
+/// the end of `api::fork_prepare` until the release in `api::fork_parent`
+/// or `api::fork_child`; 0 otherwise. See [`fork_holder_is_me`].
+static FORK_HOLDER: AtomicUsize = AtomicUsize::new(0);
+
+/// The process ID when the fork window opened: the parent's. The forking
+/// thread sees another in the child ([`in_child_fork_window`]).
+static FORK_PID: AtomicU32 = AtomicU32::new(0);
 
 verus! {
 
@@ -114,6 +124,11 @@ impl RawLock {
         requires
             crate::sys::may_syscall(),
     {
+        // The forking thread inside the fork window already holds it
+        // ([`fork_holder_is_me`]): served as acquired, released as a no-op.
+        if fork_holder_is_me() {
+            return;
+        }
         for _ in 0..SPINS {
             if self.state.load(Ordering::Relaxed) == UNLOCKED && self.try_acquire() {
                 return;
@@ -143,6 +158,11 @@ impl RawLock {
         requires
             crate::sys::may_syscall(),
     {
+        // An acquire the fork window served ([`RawLock::lock_slow`]): the
+        // lock stays with the fork handlers.
+        if fork_holder_is_me() {
+            return;
+        }
         if self.state.swap(UNLOCKED, Ordering::Release) == CONTENDED {
             wake(&self.state);
         }
@@ -505,6 +525,80 @@ pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
         !o.root(),
 ;
 
+/// Whether the calling thread holds every allocator lock for a `fork`:
+/// between the end of `api::fork_prepare` and the release in
+/// `api::fork_parent` or `api::fork_child`. glibc runs the prepare handlers
+/// registered before challoc's after it, and the parent and child handlers
+/// registered before challoc's before its own, all on the forking thread
+/// with every allocator lock held: an allocation from one of them takes
+/// its locks as acquired and its releases do nothing, so it does not wait
+/// on its own thread. Premise (trusted; `verus/ledger/src/lock.rs.md`,
+/// design 9): the forking thread has no allocator critical section open
+/// in that window (the prepare handler took every lock with every signal
+/// blocked, and holds the data as the last holder left it), so the
+/// allocation sees each lock's data as a fresh acquirer would, and only
+/// that thread runs allocator code until the release. One relaxed load
+/// when no fork is under way.
+#[verifier::external_body]
+#[inline(always)]
+fn fork_holder_is_me() -> bool {
+    let h = FORK_HOLDER.load(Ordering::Relaxed);
+    h != 0 && fork_holder_slow(h)
+}
+
+/// Whether the calling thread is inside the fork window
+/// ([`fork_holder_is_me`]): what a step whose fork handling assumes it
+/// cannot happen there (starting the background thread) checks to refuse.
+#[verifier::external_body]
+#[inline(always)]
+pub(crate) fn in_fork_window() -> bool {
+    fork_holder_is_me()
+}
+
+/// `h` is the calling thread.
+#[verifier::external_body]
+#[cold]
+#[inline(never)]
+fn fork_holder_slow(h: usize) -> bool {
+    // SAFETY: `pthread_self` has no preconditions.
+    h == unsafe { libc::pthread_self() } as usize
+}
+
+/// Record the calling thread as the fork window's holder; the prepare
+/// handler's last step, with every lock taken.
+#[verifier::external_body]
+pub(crate) fn fork_window_open() {
+    // SAFETY: `getpid` and `pthread_self` have no preconditions.
+    FORK_PID.store(unsafe { libc::getpid() } as u32, Ordering::Relaxed);
+    // SAFETY: as above.
+    FORK_HOLDER.store(unsafe { libc::pthread_self() } as usize, Ordering::Relaxed);
+}
+
+/// Whether the caller is the forking thread in the child of a `fork`,
+/// inside the window: a child handler registered before challoc's, which
+/// runs before challoc's own resets the work other parent threads had
+/// under way (the feature line's build, the cgroup discovery). A wait for
+/// that work there would never end (the threads are not in the child,
+/// and every signal is blocked), so the waits reset it early, as the
+/// child handler would, and do it themselves. Trusted: the capability
+/// [`crate::sys::cgroup::in_fork_child`] stands for exactly this state
+/// (the child's single thread, before any other runs).
+#[verifier::external_body]
+pub(crate) fn in_child_fork_window() -> (r: bool)
+    ensures
+        r ==> crate::sys::cgroup::in_fork_child(),
+{
+    // SAFETY: `getpid` has no preconditions.
+    fork_holder_is_me() && FORK_PID.load(Ordering::Relaxed) != unsafe { libc::getpid() } as u32
+}
+
+/// End the fork window; the parent and child handlers' step before their
+/// release.
+#[verifier::external_body]
+pub(crate) fn fork_window_close() {
+    FORK_HOLDER.store(0, Ordering::Relaxed);
+}
+
 // The futex calls; neither returns anything the callers use. Trusted
 // until the `sys` futex wrappers they call have specifications.
 
@@ -594,7 +688,15 @@ pub uninterp spec fn lock_frame<T>(init: T, v: T) -> bool;
 /// the lock, and by [`Lock::lock_held_perm`], whose holder hands the
 /// permission back with the token to [`Lock::unlock_held_perm`]. A call
 /// while an earlier permission is alive would give two permissions to
-/// one cell, and nothing but that discipline stops such a call.
+/// one cell, and nothing but that discipline stops such a call. In the
+/// fork window ([`fork_holder_is_me`]) an acquire the window serves is
+/// also followed by this call, for a cell whose permission the fork
+/// handlers' hold (`api::ForkHeld`) already has: the second permission
+/// stands for that hold, used by the one thread that runs allocator code
+/// there until the release, on the window's premise that the hold's data
+/// is as the last holder left it. Every lock the window serves is one the
+/// prepare handler took: no arena (and so no lock) is built there
+/// (`Arenas::create`, `Arenas::materialise`).
 axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
     ensures
         p.id() == l.value.id(),

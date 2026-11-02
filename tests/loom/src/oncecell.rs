@@ -41,7 +41,12 @@
 //! at loom's branch limit); a child's reset makes the next request build
 //! (discover) again rather than wait, and leaves `LINE_READY` (`DONE`) alone.
 //!
-//! Left out: what the build and the discovery compute (the probe, the
+//! Left out: a fork child's handler in the fork window
+//! (`lock::in_child_fork_window`), whose wait resets the work and builds
+//! (discovers) itself rather than spin: the child has one thread there,
+//! so that step is the child reset below followed by a request.
+//!
+//! Also left out: what the build and the discovery compute (the probe, the
 //! formatting, the files; verified, and they touch neither state byte),
 //! here one plain write of a fixed value per cell; `found`'s policy
 //! update (a `Relaxed` store elsewhere); `Deferred::due`'s `Relaxed`

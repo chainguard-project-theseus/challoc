@@ -866,6 +866,36 @@ ctests! {
     /// fork handlers with every allocator lock held (the race in glibc's
     /// `tst-mallocfork`, made deterministic).
     c_fork_signal => [ CTest { prog: "fork_signal", ..BASE } ];
+    /// `tests/c/fork_window.c`: a child atfork handler registered before
+    /// challoc initialises asks for the background thread in the fork
+    /// window and gets EAGAIN with nothing changed; afterwards the child
+    /// turns the thread on and off and never has two.
+    c_fork_window => [ CTest { prog: "fork_window", ..BASE } ];
+    /// `tests/c/fork_spin.c`: a child atfork handler registered before
+    /// challoc's reads the feature line and the cgroup record while
+    /// another parent thread was building them at the fork: the read
+    /// resets the orphaned work and does it, rather than wait forever in
+    /// the window with every signal blocked.
+    c_fork_spin => [ CTest { prog: "fork_spin", stdout_has: &["ok fork_spin"], ..BASE } ];
+    /// `tests/c/fork_arena.c`: a prepare handler registered before
+    /// challoc's allocates on a forking thread whose home arena is not
+    /// built yet, and asks for `arenas.create`: no arena is built in the
+    /// fork window (served from arena 0; `EAGAIN`), with another thread
+    /// allocating throughout.
+    c_fork_arena => [ CTest { prog: "fork_arena", stdout_has: &["ok fork_arena"], ..BASE } ];
+    /// An atfork prepare handler that allocates in every tier, registered
+    /// by the program's first constructor before its first allocation:
+    /// challoc's constructor registered its handlers first, so the
+    /// program's prepare runs before challoc's takes the locks, and `fork`
+    /// returns.
+    c_atfork_early => [ CTest { prog: "atfork_early", ..BASE } ];
+    /// `tests/c/atfork_pool.c`: a thread pool registers, from the
+    /// program's first constructor, a prepare handler that stops and joins
+    /// its allocating workers: challoc's constructor registered its
+    /// handlers first, so the pool's prepare runs before challoc's takes
+    /// the locks, and every `fork` returns (also linked:
+    /// `atfork_handlers_of_linked_libraries_may_allocate`).
+    c_atfork_pool => [ CTest { prog: "atfork_pool", stdout_has: &["ok atfork_pool"], ..BASE } ];
     c_thread_exit => [ CTest { prog: "thread_exit", ..BASE } ];
     /// `tests/c/resource.c`: resource limits are resource failures, never
     /// aborts (design 14.1). `data_init`: a 32 MiB `RLIMIT_DATA` from the
@@ -1829,4 +1859,116 @@ fn every_frame_fits_the_budget() {
         "frames past {FRAME_BUDGET} bytes (shrink them: design 13.8):\n{}",
         over.join("\n")
     );
+}
+
+/// Atfork handlers registered by a library the program links, whose
+/// constructor runs before challoc initialises whether challoc is
+/// preloaded or linked before or after it: their prepare handler (after
+/// challoc's) and their parent and child handlers (before challoc's
+/// release) allocate in the fork window, and `fork` returns
+/// (`tests/c/atfork_early.c -DLINKED_LIB` over `tests/c/atfork_lib.c`).
+/// And challoc loaded late by `dlopen` into a glibc-malloc process does
+/// not initialise (`tests/c/dlopen_late.c`, run bare).
+#[test]
+fn atfork_handlers_of_linked_libraries_may_allocate() {
+    let root = root();
+    let so = release_so();
+    let dir = std::format!(
+        "{}/ctests/atfork-linked-{}",
+        target_dir(),
+        std::process::id()
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    // The runtime linker looks for the soname.
+    let soname = std::format!("{dir}/libchalloc.so.0");
+    let _ = std::fs::remove_file(&soname);
+    std::os::unix::fs::symlink(&so, &soname).unwrap();
+    std::fs::copy(&so, std::format!("{dir}/libchalloc.so")).unwrap();
+    let cc = |args: &[&str]| {
+        let st = Command::new("sh")
+            .arg(std::format!("{root}/scripts/ctest-cc.sh"))
+            .env("CHALLOC_LIB", &so)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(st.success(), "ctest-cc.sh {args:?} failed");
+    };
+    let lib = std::format!("{dir}/libatfork_lib.so");
+    cc(&[
+        "-shared",
+        "-fPIC",
+        &std::format!("{root}/tests/c/atfork_lib.c"),
+        "-o",
+        &lib,
+    ]);
+    let src = std::format!("{root}/tests/c/atfork_early.c");
+    let rpath = std::format!("-Wl,-rpath,{dir}");
+    let ldir = std::format!("-L{dir}");
+    let builds: [(&str, &[&str], bool); 3] = [
+        ("preloaded", &["-latfork_lib"], true),
+        ("challoc-first", &["-lchalloc", "-latfork_lib"], false),
+        ("library-first", &["-latfork_lib", "-lchalloc"], false),
+    ];
+    for (name, libs, preload) in builds {
+        let exe = std::format!("{dir}/atfork_linked_{name}");
+        let mut args = std::vec![
+            "-DLINKED_LIB",
+            src.as_str(),
+            "-o",
+            exe.as_str(),
+            ldir.as_str(),
+            rpath.as_str()
+        ];
+        args.extend_from_slice(libs);
+        cc(&args);
+        let mut cmd = Command::new(&exe);
+        if preload {
+            cmd.env("LD_PRELOAD", &so);
+        }
+        let out = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("ok atfork_early (linked library)"),
+            "{name}: {:?}\nstdout: {stdout}\nstderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // The thread pool's prepare handler, from the program's constructor,
+    // with challoc linked rather than preloaded.
+    let pool = std::format!("{dir}/atfork_pool_linked");
+    cc(&[
+        &std::format!("{root}/tests/c/atfork_pool.c"),
+        "-o",
+        &pool,
+        &ldir,
+        &rpath,
+        "-lchalloc",
+    ]);
+    let out = Command::new(&pool)
+        .env_remove("LD_PRELOAD")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("ok atfork_pool"),
+        "atfork_pool linked: {:?}\nstdout: {stdout}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let late = std::format!("{dir}/dlopen_late");
+    cc(&[&std::format!("{root}/tests/c/dlopen_late.c"), "-o", &late]);
+    let out = Command::new(&late)
+        .arg(&soname)
+        .env_remove("LD_PRELOAD")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "dlopen_late: {:?}\nstdout: {}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

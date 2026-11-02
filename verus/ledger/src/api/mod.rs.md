@@ -21,12 +21,15 @@ file.
 | `shared_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | trusted |
 | `shared_base` | external_body | inline asm | Islaris/Isla | trusted |
 | `line_ready` | no_decreases | termination | loom/GenMC | trusted |
+| `wait_line` | no_decreases | termination | loom/GenMC | trusted |
 | `init_slow` | no_decreases | termination | loom/GenMC | trusted |
 | `shared_...ge_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `features_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `line_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `axiom_statics` | axiom | allocator invariant | none (assumption) | trusted |
 | `atfork_handlers` | external_body | function pointer | none (assumption) | trusted |
+| `set_fork_locked` | external_body | atomics primitive | loom/GenMC | trusted |
+| `fork_was_locked` | external_body | atomics primitive | loom/GenMC | trusted |
 | `axiom_f..._state` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_f...ed_sig` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_l...phaned` | axiom | allocator invariant | none (assumption) | trusted |
@@ -34,7 +37,7 @@ file.
 
 ## `axiom_ready`
 
-src/api/mod.rs:230. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:262. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: a thread that holds the frozen permissions ([`Published`], which `init` builds when it freezes them and `STATE`'s invariant holds from `READY` on, [`load_state`]) may state [`ready`].
@@ -50,7 +53,7 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 
 ## `axiom_published`
 
-src/api/mod.rs:255. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:287. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the frozen permissions, for a thread that knows the allocator is published ([`ready`]): a `&'static` reference to the `Published` `init` froze, the only one there is.
@@ -66,7 +69,7 @@ pub axiom fn axiom_published() -> (tracked r: &'static Published)
 
 ## `LinePerm`
 
-src/api/mod.rs:304. Kind: external_body type. Category: atomics primitive.
+src/api/mod.rs:336. Kind: external_body type. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `LINE_STATE`: its current [`value`](LinePerm::value).
@@ -77,7 +80,7 @@ pub tracked struct LinePerm
 
 ## `StatePerm`
 
-src/api/mod.rs:395. Kind: external_body type. Category: atomics primitive.
+src/api/mod.rs:427. Kind: external_body type. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `STATE`: its current [`value`](StatePerm::value).
@@ -88,7 +91,7 @@ pub tracked struct StatePerm
 
 ## `axiom_state`
 
-src/api/mod.rs:464. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:496. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `STATE`'s invariant.
@@ -102,7 +105,7 @@ axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, Sta
 
 ## `state_load`
 
-src/api/mod.rs:550. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:582. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE.load(Acquire)`: the permission's value.
@@ -117,7 +120,7 @@ fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
 
 ## `state_claim`
 
-src/api/mod.rs:566. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:598. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)` when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value it has otherwise, left unchanged.
@@ -133,7 +136,7 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
 
 ## `state_publish`
 
-src/api/mod.rs:581. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:613. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `STATE`'s `READY` store, `Release`.
@@ -148,7 +151,7 @@ fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
 
 ## `line_load`
 
-src/api/mod.rs:639. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:671. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `LINE_STATE.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
@@ -166,7 +169,7 @@ fn line_load(ordering: Ordering, Tracked(perm): Tracked<&LinePerm>) -> (r: u8)
 
 ## `line_compare_exchange`
 
-src/api/mod.rs:660. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:692. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `LINE_STATE.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when it held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
@@ -191,7 +194,7 @@ fn line_compare_exchange(
 
 ## `line_store`
 
-src/api/mod.rs:685. Kind: external_body. Category: atomics primitive.
+src/api/mod.rs:717. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `LINE_STATE.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
@@ -209,7 +212,7 @@ fn line_store(v: u8, ordering: Ordering, Tracked(perm): Tracked<&mut LinePerm>)
 
 ## `shared_ptr`
 
-src/api/mod.rs:871. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:903. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: trusted (partly checked, Kani: api::kani_statics::shared_ptrs_agree; not checked: that it carries the provenance of `shared_storage_ptr`'s pointer, which it derives another way (the harness compares addresses)).
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
@@ -223,7 +226,7 @@ pub fn shared_ptr() -> (r: *const Shared)
 
 ## `shared_base`
 
-src/api/mod.rs:913. Kind: external_body. Category: inline asm.
+src/api/mod.rs:945. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
@@ -237,7 +240,7 @@ pub fn shared_base() -> (r: *const Shared)
 
 ## `line_ready`
 
-src/api/mod.rs:1039. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1071. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > [`feature_line_ready`] after its `shared()`, whose published permissions (`published`) have the line's invariant: build the line, or wait for the thread building it (termination is not claimed: the wait ends when the other thread's build does).
@@ -251,9 +254,24 @@ fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'
         r@.built(),
 ```
 
+## `wait_line`
+
+src/api/mod.rs:1110. Kind: no_decreases. Category: termination.
+Tool: loom/GenMC. Status: trusted.
+
+> Wait for the thread building the line: its permissions, frozen at `LINE_READY`; or `None` when the caller is a fork child's handler in the fork window (`lock::in_child_fork_window`), where that thread is not in the child and the wait would never end: the line is then reset as the child handler would ([`feature_line_fork_child`]), for the caller to build.
+
+```rust
+fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Tracked<&'static LineCell>>)
+    requires
+        published.ok(),
+    ensures
+        r matches Some(t) ==> t@.built(),
+```
+
 ## `init_slow`
 
-src/api/mod.rs:1254. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1313. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
@@ -270,7 +288,7 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
 
 ## `shared_storage_ptr`
 
-src/api/mod.rs:1309. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1368. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::shared_ptrs_agree).
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -284,7 +302,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ## `features_ptr`
 
-src/api/mod.rs:1325. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1384. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURES`].
@@ -298,7 +316,7 @@ fn features_ptr() -> (p: *mut Features)
 
 ## `line_ptr`
 
-src/api/mod.rs:1337. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1396. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURE_LINE`].
@@ -312,7 +330,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 
 ## `axiom_statics`
 
-src/api/mod.rs:1373. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:1432. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, the class table ([`layout::CLASSES`]), initialised, whose entries are well formed and sized ([`layout::table_ok`]: its initial value is [`layout::BASE_CLASSES`], `ClassTable::new`), and `LINE_STATE`'s permission, at `LINE_UNBUILT`.
@@ -340,10 +358,10 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
 
 ## `atfork_handlers`
 
-src/api/mod.rs:1414. Kind: external_body. Category: function pointer.
+src/api/mod.rs:1475. Kind: external_body. Category: function pointer.
 Tool: none (assumption). Status: trusted.
 
-> `pthread_atfork` with the three fork handlers: 0, or the error number.
+> `pthread_atfork` with the three fork handlers, once per process (the library's constructor or init, whichever comes first; a failure lets the next try again): 0, or the error number.
 
 ```rust
 fn atfork_handlers() -> i32
@@ -351,12 +369,34 @@ fn atfork_handlers() -> i32
         crate::sys::may_syscall(),
 ```
 
+## `set_fork_locked`
+
+src/api/mod.rs:1496. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> Record whether `fork_prepare` took the locks (`FORK_LOCKED`).
+
+```rust
+fn set_fork_locked(locked: bool)
+```
+
+## `fork_was_locked`
+
+src/api/mod.rs:1504. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted.
+
+> Whether `fork_prepare` took the locks for this `fork` (`FORK_LOCKED`).
+
+```rust
+fn fork_was_locked() -> bool
+```
+
 ## `axiom_fork_resumed_state`
 
-src/api/mod.rs:1827. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:1915. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
-> Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) do not take an allocator lock.
+> Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) release none: an allocation of theirs takes the held locks as acquired and its releases do nothing (`lock::fork_holder_is_me`, whose premise is that the forking thread has no allocator critical section open in the window).
 
 ```rust
 axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
@@ -367,7 +407,7 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 
 ## `axiom_fork_resumed_sig`
 
-src/api/mod.rs:1855. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:1943. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -381,7 +421,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ## `axiom_line_orphaned`
 
-src/api/mod.rs:2486. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:2593. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, `LINE_STATE`'s permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
@@ -400,7 +440,7 @@ axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm, tracked 
 
 ## `axiom_fork_resumed`
 
-src/api/mod.rs:2545. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2652. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address (the same premise as for `s`, the `Shared` the release reads); passed any other word, it would mint a second permission to it, which is why it is private to this module.

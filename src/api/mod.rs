@@ -8,7 +8,8 @@
 //! re-entering the allocator (something in init allocated) aborts with a
 //! message, because serving it would need the state that is being built.
 //! ld.so may call `malloc` before constructors run, so nothing here relies
-//! on `.init_array`.
+//! on `.init_array` for init; the library's constructor only registers the
+//! fork handlers early ([`REGISTER_EARLY`], design 9).
 //!
 //! Init never allocates. It probes the kernel, reserves the regions, builds
 //! the [`Shared`] in place inside a static, creates the thread-exit key
@@ -159,6 +160,37 @@ pub const READY: u32 = 2;
 } // verus!
 
 static STATE: AtomicU32 = AtomicU32::new(UNINIT);
+
+/// The fork handlers are registered (`atfork_handlers`): by the library's
+/// constructor, or at init when that did not run first.
+static ATFORK_REGISTERED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// `fork_prepare` took the allocator's locks for the `fork` under way:
+/// false when challoc was not initialised then, so the parent and child
+/// handlers release nothing.
+static FORK_LOCKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The library's constructor registers the fork handlers, without
+/// initialising the allocator: glibc runs prepare handlers in the reverse
+/// order of registration, so every handler registered later (by the
+/// program's constructors or code, or a library initialised after
+/// challoc) runs before challoc's prepare takes the allocator's locks,
+/// and may allocate, or wait on threads that allocate (a thread pool's
+/// shutdown), as under glibc's malloc. The handlers do nothing until
+/// challoc is initialised (`fork_prepare`), so loading the library costs
+/// one `pthread_atfork`. Out of the tests, which do not run the library
+/// as the process's allocator, and of Verus's build, which has no `#[used]`
+/// statics.
+#[cfg(all(not(test), not(verus_keep_ghost)))]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static REGISTER_EARLY: extern "C" fn() = register_early;
+
+#[cfg(all(not(test), not(verus_keep_ghost)))]
+extern "C" fn register_early() {
+    let _ = atfork_handlers();
+}
 
 verus! {
 
@@ -1044,25 +1076,59 @@ fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'
         r@.built(),
 {
     let tracked inv = published.line;
-    let tracked mut seen = LineSeen { frozen: None };
-    if load_line(Tracked(inv), Tracked(&mut seen)) == LINE_READY {
-        return Tracked(seen.frozen.tracked_unwrap());
-    }
-    let (won, Tracked(cell)) = claim_line(Tracked(inv));
-    if won.is_ok() {
-        // This thread won the exchange, so it holds the permissions to
-        // the two statics, and readers wait for `LINE_READY`.
-        let tracked mut cell = cell.tracked_unwrap();
-        build_line(Tracked(&mut cell));
-        return publish_line(Tracked(inv), Tracked(cell));
-    }
-    while load_line(Tracked(inv), Tracked(&mut seen)) != LINE_READY
+    loop
         invariant
-            inv.namespace() == line_ns(),
+            crate::sys::may_syscall(),
+            published.ok(),
+            inv == published.line,
     {
+        let tracked mut seen = LineSeen { frozen: None };
+        if load_line(Tracked(inv), Tracked(&mut seen)) == LINE_READY {
+            return Tracked(seen.frozen.tracked_unwrap());
+        }
+        let (won, Tracked(cell)) = claim_line(Tracked(inv));
+        if won.is_ok() {
+            // This thread won the exchange, so it holds the permissions to
+            // the two statics, and readers wait for `LINE_READY`.
+            let tracked mut cell = cell.tracked_unwrap();
+            build_line(Tracked(&mut cell));
+            return publish_line(Tracked(inv), Tracked(cell));
+        }
+        if let Some(r) = wait_line(Tracked(published)) {
+            return r;
+        }
+    }
+}
+
+/// Wait for the thread building the line: its permissions, frozen at
+/// `LINE_READY`; or `None` when the caller is a fork child's handler in
+/// the fork window (`lock::in_child_fork_window`), where that thread is
+/// not in the child and the wait would never end: the line is then reset
+/// as the child handler would ([`feature_line_fork_child`]), for the
+/// caller to build.
+#[verifier::exec_allows_no_decreases_clause]
+fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Tracked<&'static LineCell>>)
+    requires
+        published.ok(),
+    ensures
+        r matches Some(t) ==> t@.built(),
+{
+    let tracked inv = published.line;
+    loop
+        invariant
+            published.ok(),
+            inv == published.line,
+    {
+        let tracked mut seen = LineSeen { frozen: None };
+        if load_line(Tracked(inv), Tracked(&mut seen)) == LINE_READY {
+            return Some(Tracked(seen.frozen.tracked_unwrap()));
+        }
+        if crate::lock::in_child_fork_window() {
+            feature_line_fork_child(Tracked(published));
+            return None;
+        }
         core::hint::spin_loop();
     }
-    Tracked(seen.frozen.tracked_unwrap())
 }
 
 /// The feature line (`Features`'s `Display`, built at its first request).
@@ -1406,18 +1472,44 @@ unsafe fn publish_features(features: Features, Tracked(feats): Tracked<&mut Poin
     vstd::raw_ptr::ptr_mut_write(features_ptr(), Tracked(feats), features);
 }
 
-/// `pthread_atfork` with the three fork handlers: 0, or the error number.
-/// Trusted: passes function pointers, which Verus does not support.
-/// Nothing is claimed of the result.
+/// `pthread_atfork` with the three fork handlers, once per process (the
+/// library's constructor or init, whichever comes first; a failure lets
+/// the next try again): 0, or the error number. Trusted: passes function
+/// pointers, which Verus does not support. Nothing is claimed of the
+/// result.
 #[verifier::external_body]
-#[inline(always)]
+#[inline(never)]
 fn atfork_handlers() -> i32
     requires
         crate::sys::may_syscall(),
 {
+    if ATFORK_REGISTERED.swap(true, Ordering::AcqRel) {
+        return 0;
+    }
     // SAFETY: the three handlers are plain `extern "C"` functions that only
     // touch allocator locks.
-    unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) }
+    let rc = unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
+    if rc != 0 {
+        ATFORK_REGISTERED.store(false, Ordering::Release);
+    }
+    rc
+}
+
+/// Record whether `fork_prepare` took the locks (`FORK_LOCKED`). Trusted: a
+/// relaxed store; the parent and child handlers of the same `fork` run on
+/// the thread that ran the prepare handler.
+#[verifier::external_body]
+#[inline(always)]
+fn set_fork_locked(locked: bool) {
+    FORK_LOCKED.store(locked, Ordering::Relaxed);
+}
+
+/// Whether `fork_prepare` took the locks for this `fork` (`FORK_LOCKED`).
+/// Trusted, as [`set_fork_locked`].
+#[verifier::external_body]
+#[inline(always)]
+fn fork_was_locked() -> bool {
+    FORK_LOCKED.load(Ordering::Relaxed)
 }
 
 /// Register the fork handlers, aborting if glibc refuses.
@@ -1815,7 +1907,10 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -
 /// and nothing released a lock in between: signals are blocked from the
 /// prepare handler's first step, and the atfork handlers registered
 /// before ours (whose prepare runs after ours and whose parent and
-/// child handlers run before ours) do not take an allocator lock. Ghost
+/// child handlers run before ours) release none: an allocation of theirs
+/// takes the held locks as acquired and its releases do nothing
+/// (`lock::fork_holder_is_me`, whose premise is that the forking thread
+/// has no allocator critical section open in the window). Ghost
 /// state does not cross the C calls, so the hold is handed over here:
 /// the state lock's token, then [`resume::axiom_fork_resumed`] for the rest, at
 /// the `&Shared` the release reads (the same object: `shared` returns
@@ -1931,6 +2026,14 @@ extern "C" fn fork_prepare() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
+    // Registered by the library's constructor, before init: until challoc
+    // is initialised there is nothing to lock (nor to initialise for a
+    // `fork`).
+    if shared_if_ready().is_none() {
+        set_fork_locked(false);
+        return;
+    }
+    set_fork_locked(true);
     // Premise (lock order): the thread that calls `fork` holds no
     // allocator lock (no allocator code forks; a `fork` from a signal
     // handler that interrupted allocator code holding a lock is outside
@@ -2140,6 +2243,11 @@ extern "C" fn fork_prepare() {
     // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
     let ghost before = held;
     save_sigmask(mask, Ghost(*s), Tracked(&mut held), Tracked(&state));
+    // The fork window: the atfork handlers registered before ours run on
+    // this thread with every lock held (their prepare after this, their
+    // parent and child handlers before our release), and their allocations
+    // take the held locks as acquired (`lock::fork_holder_is_me`).
+    crate::lock::fork_window_open();
     proof {
         before.lemma_with_saved(*s, mask, held.slot_addr());
         assert(fork_holds(*s, held, state));
@@ -2222,6 +2330,8 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
         crate::sys::may_syscall(),
         state.held() == purge::background::state_lock(),
 {
+    // The window ends before the first release, which must then unlock.
+    crate::lock::fork_window_close();
     let s = shared();
     let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));
     let tracked mut sig = axiom_fork_resumed_sig();
@@ -2376,6 +2486,9 @@ extern "C" fn fork_parent() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
+    if !fork_was_locked() {
+        return;
+    }
     let tracked state = axiom_fork_resumed_state();
     fork_release(Tracked(state));
 }
@@ -2387,6 +2500,9 @@ extern "C" fn fork_child() {
     proof {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
+    }
+    if !fork_was_locked() {
+        return;
     }
     let tracked mut state = axiom_fork_resumed_state();
     purge::background::fork_child(Tracked(&mut state));
@@ -3041,9 +3157,25 @@ mod tests {
         };
         one("axiom_line_orphaned(", "src/api/mod.rs");
         one("axiom_cell_orphaned(", "src/sys/cgroup.rs");
-        one("feature_line_fork_child(", "src/api/mod.rs");
+        // The child handler's resets, and each wait's early one for a fork
+        // child's handler in the window (`lock::in_child_fork_window`).
+        let two = |name: &str, files: [&str; 2]| {
+            let mut found = calls(name);
+            found.sort();
+            assert_eq!(found.len(), 2, "calls of {name}: {found:?}");
+            for (f, file) in found.iter().zip(files) {
+                assert!(
+                    f.contains(file),
+                    "{name} called outside {files:?}: {found:?}"
+                );
+            }
+        };
+        two(
+            "feature_line_fork_child(",
+            ["src/api/mod.rs", "src/api/mod.rs"],
+        );
         one("cgroup_fork_child(", "src/api/mod.rs");
-        one(".fork_child()", "src/heap/shared.rs");
+        two(".fork_child()", ["src/heap/shared.rs", "src/sys/cgroup.rs"]);
         assert!(
             child.contains("feature_line_fork_child(")
                 && child.contains("cgroup_fork_child(")

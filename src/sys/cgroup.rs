@@ -1700,10 +1700,28 @@ impl Deferred {
                 true
             },
             Err(_) => {
-                while wait && self.load_phase(Tracked(seen)) != PHASE_DONE {
+                if !wait {
+                    return false;
+                }
+                loop
+                    invariant
+                        crate::sys::may_syscall(),
+                        wait,
+                        forall|cg: &Cgroup| #[trigger] call_requires(found, (cg,)),
+                {
+                    if self.load_phase(Tracked(seen)) == PHASE_DONE {
+                        return false;
+                    }
+                    // A fork child's handler in the fork window: the
+                    // discovering thread is not in the child, and the wait
+                    // would never end. Reset as the child handler would,
+                    // and discover here.
+                    if crate::lock::in_child_fork_window() {
+                        self.fork_child();
+                        return self.discover(wait, found, Tracked(seen));
+                    }
                     core::hint::spin_loop();
                 }
-                false
             },
         }
     }

@@ -3650,6 +3650,13 @@ impl Arenas {
         if index as u32 >= self.auto {
             return None;
         }
+        // Nor an automatic one (`Arenas::create`): an allocation in the fork
+        // window whose home is not built is served from arena 0, as when
+        // the metadata is full (`Heap::alloc_slow`), and the next slow path
+        // after the fork builds it.
+        if crate::lock::in_fork_window() {
+            return None;
+        }
         proof {
             use_type_invariant(self);
         }
@@ -3917,6 +3924,12 @@ impl Arenas {
     {
         proof {
             use_type_invariant(self);
+        }
+        // No arena is built in the fork window (`lock::in_fork_window`): its
+        // locks would not be among those the fork handlers hold, and the
+        // window would serve them to the forking thread as acquired.
+        if crate::lock::in_fork_window() {
+            return None;
         }
         let tracked mut under = LockOrder::spare();
         let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));
