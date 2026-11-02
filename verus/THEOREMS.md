@@ -1,8 +1,8 @@
 # Whole-allocator theorems: statements and premises
 
 Reference for the forty-six whole-allocator theorems as the code in
-wolfi-dev/challoc#138 (the tracking PR of the series) states them (45 of
-them also on main, some only in part:
+wolfi-dev/challoc#138 (the tracking PR of the series) states them (all 46
+also on main, some only in part:
 see each section's "Changed since #138" note): the Verus
 statement, the entry points it covers, and every trusted premise it
 rests on, with `file:line`. Line numbers are the `fn`/`axiom` line on
@@ -14,8 +14,8 @@ at a lock invariant, rests on a source test or on the C-boundary
 assumption (`axiom_c_claim`), the title or the first paragraph says so.
 The sections are numbered 1 to 46 in order (45, fast-path cost bounds,
 is a machine-level statement over the release binary that a
-disassembly checker, not Verus, checks in #138; main has no such
-checker yet); "Bad input" (the B column)
+disassembly checker, not Verus, checks: `scripts/perf-budget.sh`, the
+`perf-budget` check); "Bad input" (the B column)
 and the interface contract are not numbered.
 
 Marked **unconfirmed**: facts read from comments, not checked against
@@ -43,9 +43,9 @@ a source test (`environment_has_one_reader`, `config.rs:3162`), not
 Verus (`verus/RESULTS.md`). Main also proves
 `heap::thread::theorem_exit_no_rebuild` (`heap/thread.rs:509`), which
 #138 lacks: its section, "Thread exit never reuses a destroyed heap",
-comes after theorem 46 and is not numbered. Theorem 45 is not on main yet (in review as draft PR
-wolfi-dev/challoc#423; tracked in wolfi-dev/challoc#397); its section
-describes #138 and claims nothing about main. Verification-only functions are
+comes after theorem 46 and is not numbered. Theorem 45's table was
+measured on main at `98790244`, not `45efb38c` (its section's "Changed
+since #138" note). Verification-only functions are
 `cfg(verus_keep_ghost)` on main (`cfg(verus_only)` in #138). As
 in #138, a function that takes a lock also takes
 `Tracked<&mut LockOrder>` arguments, which the abridged signatures below
@@ -2165,7 +2165,7 @@ changed the order of two cold tail calls in `free_sized_medium` and
   `Deferred::discover` (`sys/cgroup.rs`), and the kernel retry loops
   `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`), and,
   since wolfi-dev/challoc#413, `config::linux::env_var` (`config.rs`). They
-  need a liveness model. Theorem 45 (not yet on main) checks the
+  need a liveness model. Theorem 45 checks the
   compiled fast paths for back-edges (none).
 
 **Where the statement is weaker than the code.**
@@ -2178,7 +2178,7 @@ changed the order of two cold tail calls in `free_sized_medium` and
   call to it.
 - **Step count.** Termination is proved; the step bound is not, because
   Verus has no cost model. The bound rests on the closure having no loop
-  but `cached_recently`'s. Theorem 45 (not yet on main) counts the
+  but `cached_recently`'s. Theorem 45 counts the
   steps of the compiled fast paths of the pinned release build
   (instructions, loads, stores), at machine level, outside Verus.
 - **Other waits.** The masks prove that no lock acquisition is called,
@@ -8991,14 +8991,18 @@ the slab state reads require `may_abort_pending()`, as in #138
 
 ## 45. Fast-path cost bounds (machine level, pinned build)
 
-**Not yet on main.** The checker (`scripts/perf-budget.rs`,
-`scripts/perf-budget.sh`) and its pinned tables
-(`verus/perf-budget.txt`, `verus/perf-budget-q8.txt`) are not on main
-(`45efb38c`), and the tables were measured with rustc 1.95.0 while main
-builds with the `rust-1.98` stream, so they need regenerating before
-they can pin anything. They are in review as draft PR
-wolfi-dev/challoc#423 (follow-up tracked in wolfi-dev/challoc#397).
-This section describes #138 and claims nothing about main.
+**Changed since #138.** Main's tables (`verus/perf-budget.txt`,
+`verus/perf-budget-q8.txt`) are measured with rustc 1.98.1 at
+`98790244`, #138's with rustc 1.95.0, and the `perf-budget` check
+(`.chainguard/ci/perf-budget.yaml`) runs `scripts/perf-budget.sh` at
+both quanta on every pull request. `malloc`'s row and the rows with a
+fixed cell are #138's. The "any" rows of the frees are lower, after the
+double-free scan's rewrite (wolfi-dev/challoc#447, which drops the
+top-four scan) and later changes: #138 has `free` 85/25/2/20/11 over 16
+fast paths, `free_sized` 61/16/2/15/9 over 7, `sdallocx` 63/16/2/16/9
+over 7 and `challoc_free_usable` 91/26/2/21/12 over 17 (insns, loads,
+stores, conditional branches, lines). aarch64 stays open work
+(wolfi-dev/challoc#397).
 
 On the pinned x86_64 release build, every path through the fast branch
 of `malloc`, `free`, `free_sized`, `sdallocx` and `challoc_free_usable`
@@ -9056,9 +9060,7 @@ library and fails unless every row's maxima equal its `budget` line in
   walker explores it, has no back-edge: every path is enumerated
   explicitly and a jump to an address already on the path fails the
   check. So the counts do not depend on the cache's length, the number
-  of slabs, heaps, threads or arenas: `cached_recently`'s scan
-  (`heap/cache.rs:740`) is unrolled (two 16-byte loads when `len >= 4`,
-  at most three compares otherwise).
+  of slabs, heaps, threads or arenas.
 - **P4, cache lines.** The maximum over the row's fast paths of the
   number of distinct 64-byte lines its explicit accesses touch is the
   row's `lines`. Accesses with a constant address (`rip`-relative
@@ -9079,24 +9081,24 @@ library and fails unless every row's maxima equal its `budget` line in
   `SMALL_LOOKUP`'s entries are multiples of `CLASS_STRIDE`
   (`small_entry_ok`, `layout/mod.rs:1656`, proved).
 
-**Measured table** (`verus/perf-budget.txt`; rustc 1.95.0, `quantum16`,
-`cargo build --release`, at `4f75a5b7`). `-` is every configuration (no
-cell fixed); `free_flags=8` is `FREE_ROUTE` alone (a second arena
-exists, no push option), the routed free of theorem 26.
+**Measured table** (`verus/perf-budget.txt`; rustc 1.98.1, `quantum16`,
+`cargo build --release --locked`, on main at `98790244`). `-` is every
+configuration (no cell fixed); `free_flags=8` is `FREE_ROUTE` alone (a
+second arena exists, no push option), the routed free of theorem 26.
 
 | export | configuration | insns | loads | stores | cond. branches | lines | fast paths |
 |---|---|---|---|---|---|---|---|
 | `malloc` | any | 34 | 11 | 5 | 7 | 5 | 5 |
 | `free` | `free_flags == 0` | 51 | 18 | 2 | 7 | 7 | 1 |
 | `free` | `free_flags == FREE_ROUTE` | 62 | 22 | 2 | 9 | 9 | 1 |
-| `free` | any | 85 | 25 | 2 | 20 | 11 | 16 |
+| `free` | any | 67 | 22 | 2 | 12 | 9 | 6 |
 | `free_sized` | `push_flags == 0` | 40 | 13 | 2 | 6 | 7 | 1 |
-| `free_sized` | any | 61 | 16 | 2 | 15 | 9 | 7 |
+| `free_sized` | any | 42 | 13 | 2 | 7 | 7 | 2 |
 | `sdallocx` (flags 0) | `push_flags == 0` | 42 | 13 | 2 | 7 | 7 | 1 |
-| `sdallocx` (flags 0) | any | 63 | 16 | 2 | 16 | 9 | 7 |
+| `sdallocx` (flags 0) | any | 44 | 13 | 2 | 8 | 7 | 2 |
 | `challoc_free_usable` | `free_flags == 0` | 56 | 19 | 2 | 8 | 8 | 2 |
 | `challoc_free_usable` | `free_flags == FREE_ROUTE` | 67 | 23 | 2 | 10 | 10 | 2 |
-| `challoc_free_usable` | any | 91 | 26 | 2 | 21 | 12 | 17 |
+| `challoc_free_usable` | any | 72 | 23 | 2 | 13 | 10 | 7 |
 
 `malloc`'s five paths differ only in the `low_water`, `run_end` and
 `zeroed` stores (27 to 34 instructions, 2 to 5 stores); its lines are
@@ -9105,16 +9107,13 @@ and the stack entry. `free`'s seven (`free_flags == 0`) are the GOT
 word, the TLS slot, the `Shared` tail line, the class line, the bitmap
 word, the cache header and the stack entry; `FREE_ROUTE` adds the
 heap's first line (`heap.arena`) and the owner word. The header and the
-stack are separate objects, so two lines, never one. The "any" rows
-include the `double_free_scan` push (`PUSH_SCAN`) and the routed scan.
+stack are separate objects, so two lines, never one.
 `challoc_free_usable`'s second path is `challoc_free_usable(NULL)`
 (four instructions: `test`, `je`, `xor`, `ret`). The table's `paths`
 lines list every fast path's counts; the "fast paths" column above is
 their number. The `quantum8` build (`verus/perf-budget-q8.txt`,
 `sh scripts/perf-budget.sh q8`) has the same counts; only the cells
-move (`free_flags` at `SHARED + 0xe00`, 56 class lines). rustc 1.98.1
-(the dev container's and the package's) gives the same counts at this
-commit too, but the table is pinned to 1.95.0.
+move (`free_flags` at `SHARED + 0xe00`, 56 class lines).
 
 **Premises.**
 - **Fast path.** `size <= SMALL_MAX` (1024) for `malloc`, `free_sized`
@@ -9136,15 +9135,16 @@ commit too, but the table is pinned to 1.95.0.
   page-aligned base (so static addresses' lines are exact).
 - **Alignment.** Every explicit access is naturally aligned up to 8
   bytes (Rust's alignment rule for the `u8`..`u64` and pointer fields
-  read; the scan's 16-byte loads read whole `u64` entries), the heap
+  read), the heap
   pointer in the TLS slot is 64-byte aligned (`Heap`'s alignment, on
   x86_64 without PAC; a path with a second access through `fs` fails the
   check), and `SMALL_LOOKUP`'s entries are multiples of 64 (the two
   `align-load` lines of the table). An indexed load from a static is
   attributed to the static its constant part lies in (the tables are
   indexed from their start).
-- **Toolchain.** rustc 1.95.0, `quantum16` (default features), `cargo
-  build --release` with the crate's release profile (fat LTO, one
+- **Toolchain.** rustc 1.98.1 (the `rust-1.98~1.98.1` package of
+  `.chainguard/ci/perf-budget.yaml`), `quantum16` (default features),
+  `cargo build --release --locked` with the crate's release profile (fat LTO, one
   codegen unit, `panic = "abort"`), x86_64, disassembled by GNU objdump.
   Another compiler, feature set or target is another binary: the check
   then measures it and fails with its counts.

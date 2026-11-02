@@ -1,0 +1,48 @@
+# Fast-path cost table for verus/THEOREMS.md theorem 45, checked by
+# scripts/perf-budget.sh (scripts/perf-budget.rs documents the format).
+# Pinned build: rustc 1.98.1 (rust-1.98), x86_64, default features (quantum16),
+# `cargo build --release --locked`.
+
+# Layout premises (theorem 45, P4). The TLS slot holds the heap pointer;
+# `Heap` is 64-byte aligned (`CacheHeader`, the type of its `caches`
+# entries, is `repr(C, align(64))`). SMALL_LOOKUP entries are class * CLASS_STRIDE
+# (`small_entry_ok`, src/layout/mod.rs).
+align-load fs 64
+align-load challoc::layout::SMALL_LOOKUP 64
+
+# Configuration cells: `Shared::free_flags` and `Shared::push_flags`.
+cell free_flags challoc::api::SHARED 0xd00 1
+cell push_flags challoc::api::SHARED 0xd01 1
+
+export malloc challoc::api::libc::malloc_slow challoc::api::libc::malloc_slow_class challoc::api::libc::malloc_medium
+export free challoc::api::libc::free_slow
+export free_sized challoc::api::libc::free_sized_slow challoc::api::libc::free_sized_medium
+export sdallocx challoc::api::libc::free_sized_slow challoc::api::libc::free_sized_medium challoc::api::jemalloc::sdallocx_flags
+export challoc_free_usable challoc::api::libc::free_usable_slow
+
+# One `budget` line per row: the maxima over the row's fast paths. One
+# `paths` line per row: every fast path's insns/loads/stores/branches/lines,
+# sorted, so a cost added to a path below the worst one fails too.
+#      export               config         insns loads stores branches lines
+paths  malloc               -              27/9/2/5/5 32/11/3/7/5 33/11/4/7/5 33/11/4/7/5 34/11/5/7/5
+budget malloc               -                 34    11      5        7     5
+paths  free                 free_flags=0   51/18/2/7/7
+budget free                 free_flags=0      51    18      2        7     7
+paths  free                 free_flags=8   62/22/2/9/9
+budget free                 free_flags=8      62    22      2        9     9
+paths  free                 -              51/18/2/7/7 57/18/2/10/7 60/18/2/11/7 62/22/2/9/9 64/22/2/11/9 67/22/2/12/9
+budget free                 -                 67    22      2       12     9
+paths  free_sized           push_flags=0   40/13/2/6/7
+budget free_sized           push_flags=0      40    13      2        6     7
+paths  free_sized           -              40/13/2/6/7 42/13/2/7/7
+budget free_sized           -                 42    13      2        7     7
+paths  sdallocx             push_flags=0   42/13/2/7/7
+budget sdallocx             push_flags=0      42    13      2        7     7
+paths  sdallocx             -              42/13/2/7/7 44/13/2/8/7
+budget sdallocx             -                 44    13      2        8     7
+paths  challoc_free_usable  free_flags=0   4/0/0/1/0 56/19/2/8/8
+budget challoc_free_usable  free_flags=0      56    19      2        8     8
+paths  challoc_free_usable  free_flags=8   4/0/0/1/0 67/23/2/10/10
+budget challoc_free_usable  free_flags=8      67    23      2       10    10
+paths  challoc_free_usable  -              4/0/0/1/0 56/19/2/8/8 63/19/2/11/8 65/19/2/12/8 67/23/2/10/10 70/23/2/12/10 72/23/2/13/10
+budget challoc_free_usable  -                 72    23      2       13    10
