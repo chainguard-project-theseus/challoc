@@ -997,6 +997,9 @@ impl Meta {
 
     /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
     /// Zero on return. `None` on either failure, leaving nothing reserved.
+    // Only the tests call it; `huge::table::Table::storage` calls
+    // `reserve_committed_raw` for the zero permission.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn reserve_committed(&self, len: usize, align: usize) -> (r: Option<usize>)
         requires
             crate::sys::may_syscall(),

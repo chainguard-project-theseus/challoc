@@ -1,4 +1,3 @@
-# Temporary seam until `Meta` hands out a reserved table's permission (an
-# exec change: a `reserve_committed` that returns it) and the reserved
-# address becomes a pointer Verus accepts.
+# Temporary seam until a trusted fact that 16 zero bytes are an empty
+# `Entry` lets Verus build the entries' permissions from the block's.
 Table::storage	allocator invariant	Verus
