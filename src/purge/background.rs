@@ -466,11 +466,11 @@ verus! {
 /// `pthread_join(t, NULL)`: 0 or an error number. Trusted: a raw libc
 /// call; nothing is claimed about the result.
 ///
-/// The join is a cancellation point, the only one in a state change of
-/// challoc's (every other system call is a raw `syscall`, and
-/// `pthread_create`, the attribute calls, `pthread_sigmask` and
-/// `pthread_setspecific` are not cancellation points; the stats writers'
-/// `fwrite` holds no state, design 8.1). It runs with cancellation disabled, so a
+/// The join is a cancellation point, one of the two challoc reaches
+/// (every other system call is a raw `syscall`, and `pthread_create`,
+/// the attribute calls, `pthread_sigmask` and `pthread_setspecific` are
+/// not cancellation points; the other is `malloc_info`'s `fwrite`,
+/// `api::print::write_file`, design 8.1). It runs with cancellation disabled, so a
 /// deferred `pthread_cancel` of the calling thread is acted on at the
 /// program's next cancellation point instead of unwinding out of
 /// [`start`] with its `creating` flag set (design 8.1, 14.1).
