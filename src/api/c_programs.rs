@@ -789,8 +789,9 @@ ctests! {
     /// `data_thread`: a thread whose arena cannot be built under
     /// `RLIMIT_DATA` gets NULL/`ENOMEM`, not an abort, and threads are
     /// served once the limit is raised. `data_threads`: 16 threads
-    /// under a 3 to 32 MiB `RLIMIT_DATA` from the start make large
-    /// requests on every route and never abort.
+    /// under a 3 to 128 MiB `RLIMIT_DATA` from the start make large
+    /// requests on every route and never abort; at least one limit must
+    /// start two threads.
     c_resource => [
         CTest { prog: "resource", args: &["data_init"], ..BASE },
         CTest { prog: "resource", args: &["as_min"], ..BASE },
