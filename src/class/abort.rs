@@ -44,13 +44,10 @@ verus! {
 /// A `Fresh` or `Purged` slab selected by a refill had a bit set before
 /// its slots were claimed under the lock (`claim_prefix`): `live` no longer
 /// bounds the set bits, so the bitmap or the descriptor is corrupt.
-/// Trusted (`external_body`): Verus does not model the formatted message
-/// (it prints the state with `Debug`).
 #[cold]
 #[inline(never)]
 // The abort message names every field it reports.
 #[allow(clippy::too_many_arguments)]
-#[verifier::external_body]
 pub(super) fn zero_slab_had_bits_set(
     class: usize,
     slab: usize,
@@ -121,11 +118,9 @@ pub(super) fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> !
 }
 
 /// A refill's reservation in a slab was not met after `MAX_EMPTY_PASSES`
-/// full scans: `live` no longer bounds the set bits. Trusted
-/// (`external_body`): Verus does not model the formatted message.
+/// full scans: `live` no longer bounds the set bits.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 pub(super) fn reservation_unmet(
     class: usize,
     slab: usize,
