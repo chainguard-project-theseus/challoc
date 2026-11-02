@@ -18,18 +18,21 @@ inline-asm seams with an instruction to trace, and `axiom_auth_sign`),
 the contract of each, what the runs establish against it and the
 residual assumptions. Their overrides lines under `verus/ledger/` give
 each tool Islaris/Isla and cite `Isla: verus/isla/seams.md`, and run.sh
-fails when the two disagree. All 28 are `trusted (partly checked, Isla:
-verus/isla/seams.md; not checked: ...)` (verus/SEAMS.md, "Status"),
-each with what rests on something the runs do not reach: the kernel's
-side of a system call, of the trap and of an `autda` that faults; the
-kernel keeping the PAC key and EnDA fixed; the PAC runs covering two
-kinds of CPU with the keys firmware enabled, not every PAC CPU or the
-firmware itself; the loader's GOT and TLS entries and their mapping;
-user addresses for the code, the x86_64 stack and return address, the
-FS base, the TLS slot and the return area, with the alignment each job
-assumes;
-the TLS slot model's premise; and, for the x86_64 runs other than
-`syscall`, 64-bit mode and the application view.
+fails when the two disagree. The "Platform premises" of isla/seams.md
+states, each with its source, what the runs assume about the build, the
+loader, Linux and the CPU (P1 to P13, the runs' bounds: verus/SEAMS.md,
+"Status") and what the kernel does after a trace ends (K1 to K3). 7 of
+the 28 are `discharged (Isla: verus/isla/seams.md)`: the three GOT
+functions with no `ensures`, `rseq::symbols` and `thread_pointer`,
+`strip` and `axiom_auth_sign`, whose contracts rest on nothing but their
+runs and those bounds; for the code, that is the static library's, not
+the shipped `cdylib` (P1). The other 21 are `trusted (partly checked,
+Isla: verus/isla/seams.md; not checked: ...)`, each naming what it rests
+on beyond them: the kernel's side of a system call (K1), of the trap and
+of an `autda` that faults (K2); the kernel keeping the PAC key and EnDA
+fixed (K3); the loader's fill of a GOT entry (P8), which
+`throw_bad_alloc_addr`'s `ensures` states and the TLS slot's value rests
+on; and the TLS slot model's premise and `TlsCell::tp`.
 
 The harness composes the per-instruction traces itself and proves
 the resulting conditions with Z3, which is weaker than an
@@ -144,7 +147,7 @@ From a fully symbolic state the model explores compatibility mode and
 the other modes for every data access and fault path, and in its system
 view it walks symbolic page tables, so the GOT loads, the TLS accesses,
 `mov fs:[0]` and `ud2` do not finish in ten minutes. For those jobs
-`run-x86_64.sh` (section 13) makes three changes, each a residual in
+`run-x86_64.sh` (section 13) makes three changes, each a premise in
 [isla/seams.md](isla/seams.md):
 
 - **The entry calls `reset_registers`.** Isla applies function

@@ -8,7 +8,7 @@ write_all	termination	none (assumption)
 axiom_thread_mask	platform/kernel fact	none (assumption)
 # Inline assembly checked with Isla (verus/ISLA.md) up to the exception it
 # takes: run.sh checks it against the contract verus/isla/seams.md quotes.
-trap	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: on x86_64, that the code is at a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the kernel never resumes the thread past the trap)
+trap	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: K2 (no resume past the trap))
 # glibc's thread pointer: tells threads of one process apart, kept by the
 # forking thread in a fork child (the fork window's holder, the init/fork gate).
 pthread_self	FFI/syscall	none (assumption)
