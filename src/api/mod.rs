@@ -3168,6 +3168,7 @@ mod tests {
             8 << 20,
             4096,
             0,
+            false,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -3362,6 +3363,7 @@ mod tests {
             8 << 20,
             4096,
             0,
+            false,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -3474,6 +3476,7 @@ mod tests {
             8 << 20,
             4096,
             0,
+            false,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );

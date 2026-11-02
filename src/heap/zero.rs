@@ -1,8 +1,10 @@
 //! The zero prefix of the thread caches, as ghost tokens. A cache
 //! header's `slots[..zeroed]` came from a zeroed claim and nothing has
 //! been pushed below `zeroed` since (module doc of `heap`), so a pop
-//! from inside the prefix reports its slot zero and `calloc` skips its
-//! `memset`. [`CachePerms::zero_ok`] is that
+//! from inside the prefix reports its slot zero. No zeroing entry point
+//! trusts that report for the bytes it returns (a heap bug in the program
+//! can have written the slot; SECURITY.md, "Zeroing allocations are
+//! zero"), so `calloc` clears the slot anyway. [`CachePerms::zero_ok`] is that
 //! claim as a ghost invariant: each of the first `min(len, zeroed)`
 //! entries of an owned header's stack has a [`Zeroed`] token for its
 //! slot's class-size bytes, kept in [`CachePerms::zero`] under the

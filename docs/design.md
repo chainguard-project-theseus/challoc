@@ -376,8 +376,9 @@ the same lock hold, before the slab enters the partial set
 (`claim_prefix`), and the refill reports them zero. Decided after the
 lock is dropped, a bit could be one that another thread claimed from the
 now-partial slab, handed to the program and got back dirty in between,
-and `calloc` would skip its `memset` over it. Slots of an `Active` slab
-are never reported zero. When a slab's bitmap becomes completely set,
+and the zero report (which `check_zero` reads) would be false. No
+zeroing entry point trusts the report for a slab slot (section 6.3).
+Slots of an `Active` slab are never reported zero. When a slab's bitmap becomes completely set,
 the thread that observed it clears the slab's partial bit under the
 lock; when a release clears bits in a slab that was full, the releasing
 thread sets the partial bit under the lock. The lock is taken once per
@@ -660,16 +661,24 @@ left the cache aborts at the call. `MALLOCX_ARENA(a)` with the default
 cache pops whatever the cache holds, as jemalloc's does;
 `MALLOCX_TCACHE_NONE` releases straight to the slab with the exact check.
 
-`calloc` clears with `memset` unless the slots came fresh from the
-kernel, which is tracked as a per-cache zero prefix: `slots[..zeroed]`
-are known zero, set by a refill whose batch came from a `Fresh` or
-`Purged` slab (while `purge::purged_is_zero` holds, section 8), lowered
+`calloc` always clears a slab slot with `memset`. The heap still tracks
+which cached slots challoc has not written since the kernel zeroed them,
+as a per-cache zero prefix: `slots[..zeroed]` are known zero, set by a
+refill whose batch came from a `Fresh` or `Purged` slab (while
+`purge::purged_is_zero` holds, section 8), lowered
 with `len` by a pop that takes a zero entry and dropped by a flush.
 `zeroed <= low_water` holds throughout, so only a pop that lowers
 `low_water` can take a zero entry: the zero test and the shrink sit in
 that pop's cold branch, and the push, which stores at `len >= zeroed`,
-never touches `zeroed`. `calloc` zeroes the
-requested bytes, not the whole usable size.
+never touches `zeroed`. No zeroing entry point (`calloc`,
+`challoc_calloc_usable`, `MALLOCX_ZERO`) trusts the flag for a slab
+slot: the slot is read-write memory of the committed run, which a linear
+overflow from a live slot below or a write through a stale pointer into
+a purged slab reaches without challoc seeing it (SECURITY.md, "Zeroing
+allocations are zero"; `tests/c/zero_trust.c` checks every zeroing
+entry point against overflows, underflows and stale writes into memory
+not yet handed out). `calloc` zeroes the requested bytes, not the whole
+usable size.
 
 `malloc_usable_size(p)` (and `sallocx`, and the size read of `realloc`
 and `rallocx`) classifies and tests the bit as `free` does, aborting on a
@@ -881,8 +890,18 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
   (`purge::purged_is_zero`), true until the first lazy batch is issued
   and false for good after it, even if the kernel refused that batch
   (published before its discard, under the class or huge lock), tells
-  `calloc` whether a reused `Purged` slab or extent needs a `memset`;
-  `Fresh` memory stays known zero.
+  the refill whether a reused `Purged` slab's batch is known zero
+  (bookkeeping that `check_zero` reads; no zeroing entry point trusts it,
+  section 6.3). A huge run is known zero for pages past the huge
+  region's high-water mark, and for a reused `Purged` extent only once
+  `Huge::rediscard` has `MADV_DONTNEED`ed the run's pages in it again in
+  the lock hold that places the run (for a zeroing caller only, 16 KiB
+  or more, and only while `purged_is_zero` holds; otherwise the zeroing
+  caller clears it): a stale pointer or an underflow from the live run
+  above can have written the extent since its purge. After a lazy batch
+  the extent's pages may still be resident, and discarding them would
+  fault them back. A caller that does not zero (`malloc`, `realloc`,
+  `mallocx` without `MALLOCX_ZERO`) never pays the call.
 - Purges are batched (`purge::Batch`): a walk collects up to `MAX_BATCH`
   (64) ranges, merging adjacent ones, and issues a loop of `madvise`.
   Batched `process_madvise` was prototyped and removed: it measured no
@@ -1873,7 +1892,7 @@ src/heap/cache.rs     CacheHeader: pop and push primitives, first-use setup (ens
 src/heap/paths.rs     the inlined fast paths, the cold slow paths, free_other
 src/heap/fresh.rs     a fresh heap's plain fields and the FreshHeap token that hands on their permission
 src/heap/live.rs      the live-block ghost model: a Live token per handed-out slot or huge run
-src/heap/zero.rs      the zero prefix of the thread caches as ghost tokens (calloc's skipped memset)
+src/heap/zero.rs      the zero prefix of the thread caches as ghost tokens (no zeroing entry point trusts it)
 src/heap/flush.rs     refill and flush; group_by_slab and the straddling double-free abort
 src/heap/compact.rs   the compacting cache: probe/compact modes, scheduled pop, rebuild (6.4)
 src/heap/others.rs    caches for other arenas (ArenaCaches) and the FOREIGN flush-only cache

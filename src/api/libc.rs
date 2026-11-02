@@ -272,11 +272,12 @@ pub(super) proof fn lemma_class_gives(blk: Live, p: *mut u8, c: int, size: usize
 }
 
 /// Huge allocation on the calling thread, counted in its heap when it has
-/// one. `align` is a power of two; `1` means none. `blk` gets the run's
-/// token.
+/// one. `align` is a power of two; `1` means none. `zero` is true for a
+/// caller that clears the run unless it is reported zero (`calloc`). `blk`
+/// gets the run's token.
 #[cold]
 #[inline(never)]
-fn alloc_huge(shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+fn alloc_huge(shared: &Shared, size: usize, align: usize, zero: bool, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -290,10 +291,10 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<
         r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
 {
     match heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge(shared, size, align, Tracked(blk)),
+        Some(h) => h.alloc_huge(shared, size, align, zero, Tracked(blk)),
         // Premise (lock order, `lock::axiom_entry`): the C caller holds no
         // allocator lock.
-        None => shared.alloc_huge(size, align, 0, Tracked(blk), Tracked(&mut axiom_entry())),
+        None => shared.alloc_huge(size, align, 0, zero, Tracked(blk), Tracked(&mut axiom_entry())),
     }
 }
 
@@ -486,7 +487,7 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked
             p
         },
         None => {
-            let p = alloc_huge(shared, size, 1, Tracked(blk)).0;
+            let p = alloc_huge(shared, size, 1, false, Tracked(blk)).0;
             proof {
                 lemma_huge_result(p, size, 1);
             }
@@ -496,8 +497,10 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked
     if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
-/// `calloc`. Skips the `memset` when the slot or run is known to read as
-/// zero (fresh or purged memory). The block's token goes to C with it.
+/// `calloc`. Clears a slab slot with `memset` always; skips it only for a
+/// huge run known to read as zero (pages past the region's high-water
+/// mark, or a purged extent discarded again as the run is placed). The
+/// block's token goes to C with it.
 #[inline(always)]
 pub fn calloc(n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
@@ -547,10 +550,17 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
                 lemma_class_fits(r.0, c as int, size);
                 lemma_class_gives(*blk, r.0, c as int, size);
             }
-            r
+            // The heap's zero flag is not trusted for a slab slot: it records that
+            // challoc wrote nothing to the slot since its slab was `Fresh` or
+            // `Purged`, but the slot is read-write memory that a linear
+            // overflow from a live slot below, or a write through a stale
+            // pointer into a purged slab, reaches without challoc seeing it
+            // (SECURITY.md, "Zeroing allocations are zero"). The slot is
+            // always cleared below.
+            (r.0, false, r.2)
         },
         None => {
-            let r = alloc_huge(shared, size, 1, Tracked(blk));
+            let r = alloc_huge(shared, size, 1, true, Tracked(blk));
             proof {
                 lemma_huge_result(r.0, size, 1);
             }
@@ -1950,7 +1960,7 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(uout): Tracked<&m
         crate::meta::lemma_is_pow2_one();
         shared.lemma_regions_ok();
     }
-    let (p, _, _) = alloc_huge(shared, size, 1, Tracked(blk));
+    let (p, _, _) = alloc_huge(shared, size, 1, false, Tracked(blk));
     proof {
         lemma_huge_result(p, size, 1);
     }
@@ -2056,7 +2066,15 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
     let ghost mut cls: int = -1;
     let (p, zeroed, u, z) = match class_index(size) {
         Some(c) => {
-            let (p, zeroed, z) = heap::alloc_zeroed(shared, c, Tracked(blk), Tracked(&mut *errno));
+            let (p, _zeroed, z) = heap::alloc_zeroed(shared, c, Tracked(blk), Tracked(&mut *errno));
+            // The heap's zero flag is not trusted for a slab slot: it records that
+            // challoc wrote nothing to the slot since its slab was `Fresh` or
+            // `Purged`, but the slot is read-write memory that a linear
+            // overflow from a live slot below, or a write through a stale
+            // pointer into a purged slab, reaches without challoc seeing it
+            // (SECURITY.md, "Zeroing allocations are zero"). The slot is
+            // always cleared below.
+            let zeroed = false;
             proof {
                 cls = c as int;
                 lemma_class_fits(p, c as int, size);
@@ -2076,7 +2094,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
             (p, zeroed, class_size(c), z)
         }
         None => {
-            let (p, zeroed, z) = alloc_huge(shared, size, 1, Tracked(blk));
+            let (p, zeroed, z) = alloc_huge(shared, size, 1, true, Tracked(blk));
             proof {
                 lemma_huge_result(p, size, 1);
                 if p@.addr != 0 {
@@ -2601,7 +2619,7 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
             p
         },
         None => {
-            let p = alloc_huge(shared, size, align, Tracked(blk)).0;
+            let p = alloc_huge(shared, size, align, false, Tracked(blk)).0;
             proof {
                 lemma_huge_result(p, size, align);
             }
