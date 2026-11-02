@@ -16,9 +16,9 @@ file.
 | `fork_ho..._is_me` | external_body | allocator invariant | none (assumption) | trusted |
 | `in_fork_window` | external_body | allocator invariant | none (assumption) | trusted |
 | `fork_holder_slow` | external_body | FFI/syscall | none (assumption) | trusted |
-| `fork_window_open` | external_body | atomics primitive | loom/GenMC | trusted |
-| `in_chil...window` | external_body | atomics primitive | loom/GenMC | trusted |
-| `fork_wi..._close` | external_body | atomics primitive | loom/GenMC | trusted |
+| `fork_window_open` | external_body | allocator invariant | none (assumption) | trusted |
+| `in_chil...window` | external_body | allocator invariant | none (assumption) | trusted |
+| `fork_wi..._close` | external_body | allocator invariant | none (assumption) | trusted |
 | `wait` | external_body | FFI/syscall | Verus | trusted |
 | `wake` | external_body | FFI/syscall | Verus | trusted |
 | `axiom_acquired` | axiom | allocator invariant | none (assumption) | trusted |
@@ -151,8 +151,8 @@ fn fork_holder_slow(h: usize) -> bool
 
 ## `fork_window_open`
 
-src/lock.rs:568. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/lock.rs:568. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
 > Record the calling thread as the fork window's holder; the prepare handler's last step, with every lock taken.
 
@@ -162,8 +162,8 @@ pub(crate) fn fork_window_open()
 
 ## `in_child_fork_window`
 
-src/lock.rs:585. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/lock.rs:585. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
 > Whether the caller is the forking thread in the child of a `fork`, inside the window: a child handler registered before challoc's, which runs before challoc's own resets the work other parent threads had under way (the feature line's build, the cgroup discovery).
 
@@ -175,8 +175,8 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
 
 ## `fork_window_close`
 
-src/lock.rs:596. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/lock.rs:596. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
 > End the fork window; the parent and child handlers' step before their release.
 

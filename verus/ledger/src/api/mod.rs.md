@@ -28,8 +28,8 @@ file.
 | `line_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `axiom_statics` | axiom | allocator invariant | none (assumption) | trusted |
 | `atfork_handlers` | external_body | function pointer | none (assumption) | trusted |
-| `set_fork_locked` | external_body | atomics primitive | loom/GenMC | trusted |
-| `fork_was_locked` | external_body | atomics primitive | loom/GenMC | trusted |
+| `set_fork_locked` | external_body | platform/kernel fact | none (assumption) | trusted |
+| `fork_was_locked` | external_body | platform/kernel fact | none (assumption) | trusted |
 | `axiom_f..._state` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_f...ed_sig` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_l...phaned` | axiom | allocator invariant | none (assumption) | trusted |
@@ -371,8 +371,8 @@ fn atfork_handlers() -> i32
 
 ## `set_fork_locked`
 
-src/api/mod.rs:1496. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/api/mod.rs:1496. Kind: external_body. Category: platform/kernel fact.
+Tool: none (assumption). Status: trusted.
 
 > Record whether `fork_prepare` took the locks (`FORK_LOCKED`).
 
@@ -382,8 +382,8 @@ fn set_fork_locked(locked: bool)
 
 ## `fork_was_locked`
 
-src/api/mod.rs:1504. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+src/api/mod.rs:1504. Kind: external_body. Category: platform/kernel fact.
+Tool: none (assumption). Status: trusted.
 
 > Whether `fork_prepare` took the locks for this `fork` (`FORK_LOCKED`).
 
@@ -421,7 +421,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ## `axiom_line_orphaned`
 
-src/api/mod.rs:2593. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:2596. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, `LINE_STATE`'s permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
@@ -440,7 +440,7 @@ axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm, tracked 
 
 ## `axiom_fork_resumed`
 
-src/api/mod.rs:2652. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2655. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address (the same premise as for `s`, the `Shared` the release reads); passed any other word, it would mint a second permission to it, which is why it is private to this module.

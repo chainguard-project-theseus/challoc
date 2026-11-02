@@ -13,6 +13,14 @@ atfork_handlers	function pointer	none (assumption)
 axiom_fork_resumed_state	platform/kernel fact	none (assumption)
 axiom_fork_resumed_sig	platform/kernel fact	none (assumption)
 axiom_fork_resumed	platform/kernel fact	none (assumption)
+# Whether this fork's prepare took the locks (it does nothing before
+# init): glibc serialises forks from the prepare handlers through the
+# parent and child handlers (its atfork lock), and runs those on the
+# thread that ran the prepare, so the flag the parent or child handler
+# reads is the one this fork's prepare wrote; `axiom_fork_resumed_state`
+# is called only when it is true.
+set_fork_locked	platform/kernel fact	none (assumption)
+fork_was_locked	platform/kernel fact	none (assumption)
 # The fork child's orphaned feature line: only the forking thread runs there.
 axiom_line_orphaned	allocator invariant	none (assumption)
 # Raw-pointer projections of the init-once statics: each returns one pointer,

@@ -1557,7 +1557,10 @@ pub tracked struct CellClaim {
 }
 
 /// The caller is the child of a `fork`, in the child's fork handler
-/// (`api::fork_child`), where only the forking thread runs: what
+/// (`api::fork_child`) or in the child's fork window before it
+/// (`lock::in_child_fork_window`: a wait for a discovery or a feature
+/// line another parent thread had under way, design 9), where only the
+/// forking thread runs: what
 /// [`Deferred::fork_child`] and [`axiom_cell_orphaned`] require, so that
 /// no other verified code can reset a phase and take the cell's
 /// permission. Opaque, with no meaning: a capability, as
@@ -1577,10 +1580,12 @@ pub open spec fn in_fork_child() -> bool {
 /// thread, no thread of the child holds that permission, and the reset
 /// takes it (`before` and [`in_fork_child`] are the caller's word).
 /// Called only by [`Deferred::fork_child`], right after its
-/// successful reset, which only the child's fork handler runs
-/// (`api::fork_child`, through `Shared::cgroup_fork_child`; this
-/// module's unit tests, unverified, also call it on records of their
-/// own).
+/// successful reset, which only the child runs: its fork handler
+/// (`api::fork_child`, through `Shared::cgroup_fork_child`), or
+/// [`Deferred::discover`] in the child's fork window
+/// (`lock::in_child_fork_window`), where the discoverer it would wait for
+/// is not in the child (this module's unit tests, unverified, also call
+/// it on records of their own).
 ///
 /// The residue this does not cover: when the discoverer was the forking
 /// thread itself (a signal handler that forked while its thread was

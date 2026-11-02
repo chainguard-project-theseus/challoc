@@ -883,11 +883,12 @@ ctests! {
     /// fork window (served from arena 0; `EAGAIN`), with another thread
     /// allocating throughout.
     c_fork_arena => [ CTest { prog: "fork_arena", stdout_has: &["ok fork_arena"], ..BASE } ];
-    /// An atfork prepare handler that allocates in every tier, registered
-    /// by the program's first constructor before its first allocation:
-    /// challoc's constructor registered its handlers first, so the
-    /// program's prepare runs before challoc's takes the locks, and `fork`
-    /// returns.
+    /// Atfork handlers that allocate in every tier, registered from the
+    /// program's `.preinit_array`, before challoc's constructor registers
+    /// its own: they run after challoc's prepare took the locks, inside
+    /// the fork window (design 9), and `fork` returns. (A handler
+    /// registered from a constructor runs before challoc's prepare,
+    /// outside the window: `c_atfork_pool`.)
     c_atfork_early => [ CTest { prog: "atfork_early", ..BASE } ];
     /// `tests/c/atfork_pool.c`: a thread pool registers, from the
     /// program's first constructor, a prepare handler that stops and joins

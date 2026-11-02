@@ -2535,7 +2535,10 @@ extern "C" fn fork_child() {
 
 /// The child of a `fork` has only the forking thread: a feature line
 /// another thread was building is not coming, so the child's first
-/// request builds it again rather than waiting forever. The reset puts
+/// request builds it again rather than waiting forever. Called by the
+/// child's fork handler (`fork_child`) and, in the child's fork window
+/// before it, by [`wait_line`] (`lock::in_child_fork_window`), where only
+/// the forking thread runs too. The reset puts
 /// back the permissions to the two statics, which that thread held
 /// ([`axiom_line_orphaned`]). (If the forking thread itself was building
 /// it, from a signal handler that forked, it finishes when the handler

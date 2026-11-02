@@ -3905,7 +3905,9 @@ impl Arenas {
     /// built yet (`build_cost`: the smallest build measured, plus slack,
     /// for each), so
     /// explicit arenas never take every thread's home (design 13.3, 14.1).
-    /// Homes past those are served from arena 0. The
+    /// Homes past those are served from arena 0. `None` also in the fork
+    /// window (`lock::in_fork_window`, design 9), where no arena is built.
+    /// The
     /// caller's record `fx` gets [`Change::Created`] when an arena is
     /// created.
     // The headroom test divides by a cost it checked is non-zero; Verus

@@ -1088,9 +1088,11 @@ there (`mallctl("background_thread")` is refused with `EAGAIN` and
 changes nothing, and the lazy start waits for a tick after the fork;
 `tests/c/fork_window.c`), since the child handler forgets a thread on
 the premise that none can exist yet; and no arena is built there
-(`arenas.create` is refused with `EAGAIN`, and an allocation whose home
+(`arenas.create` is refused with `EAGAIN`; an allocation whose home
 arena is not built yet is served from arena 0, the thread's next slow
-path after the fork building it), so every lock in the process is one
+path after the fork building it; and an explicit request for an
+automatic arena not built yet, `mallocx` with `MALLOCX_ARENA(i)` or a
+`thread.arena` write, fails as for an index that does not exist), so every lock in the process is one
 the prepare handler took, the only kind the window serves, and the
 registry the release reads is the one it locked. A cgroup discovery or a feature
 line built in the window completes before the fork, and their child
