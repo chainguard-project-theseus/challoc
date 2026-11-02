@@ -666,6 +666,16 @@ unsafe impl<T: Send> Sync for Lock<T> {}
 unsafe impl<T: Send> Send for Lock<T> {}
 
 impl<T> Lock<T> {
+    /// The value's address inside the lock at `p`, for building a large
+    /// value in place (`Arena::put_stats`). Trusted: the address of the
+    /// cell, whose value is its only data.
+    #[verifier::external_body]
+    #[inline(always)]
+    pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T {
+        // SAFETY: a field projection; nothing is read or written.
+        unsafe { core::ptr::addr_of_mut!((*p).value) as *mut T }
+    }
+
     /// A lock of rank `rank` (ghost) guarding `value`.
     pub const fn new(value: T, Ghost(rank): Ghost<int>) -> (l: Lock<T>)
         requires

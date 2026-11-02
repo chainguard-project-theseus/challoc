@@ -1056,6 +1056,39 @@ impl Arena {
         }
     }
 
+    /// The per-arena statistics lock, free, over [`ArenaStats::empty`],
+    /// written at `p` through its permission. Out of line, so the record
+    /// (about 6 KiB with its bins) is built in place at `p` rather than in
+    /// [`Arena::init`]'s frame and copied, on the first `malloc` of a
+    /// thread whose arena is not built yet.
+    ///
+    /// # Safety
+    /// `p` is the `stats` field of `init`'s storage.
+    /// Trusted: the bytes written are those of
+    /// `Lock::new(ArenaStats::empty(index), ..)` (an unlocked lock word
+    /// and an all-zero record but its `index`; the test
+    /// `put_stats_writes_lock_new_of_empty` compares them), which has the
+    /// arena's statistics rank. Rust has no placement construction, and
+    /// through `ptr_mut_write` the record went through a 6 KiB stack copy.
+    #[verifier::external_body]
+    #[inline(never)]
+    unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)
+        requires
+            old(perm).ptr() == p,
+        ensures
+            final(perm).ptr() == p,
+            final(perm).is_init(),
+            final(perm).value().rank() == rank_arena_stats(index as int),
+    {
+        // SAFETY: `p` is `init`'s field, writable and unaliased; every
+        // byte of a `Lock<ArenaStats>` is data (the ghost fields have none),
+        // and zero is the free lock word and an empty record.
+        unsafe {
+            core::ptr::write_bytes(p, 0, 1);
+            (*Lock::value_ptr(p)).index = index;
+        }
+    }
+
     /// `large`, `stats` and `last_exit_purge`.
     ///
     /// # Safety
@@ -1083,11 +1116,7 @@ impl Arena {
         // SAFETY: the fields of `init`'s storage, through their permissions.
         unsafe {
             ptr_mut_write(field_at(this, A_LARGE), Tracked(&mut parts.large), AtomicU64::new(0));
-            ptr_mut_write(
-                field_at(this, A_STATS),
-                Tracked(&mut parts.stats),
-                Lock::new(ArenaStats::empty(index), Ghost(rank_arena_stats(index as int))),
-            );
+            Arena::put_stats(field_at(this, A_STATS), Tracked(&mut parts.stats), index);
             ptr_mut_write(field_at(this, A_LAST_EXIT_PURGE), Tracked(&mut parts.last_exit_purge), AtomicU64::new(0));
         }
     }
@@ -4012,6 +4041,30 @@ mod kani_key_less {
         kani::cover!(a0 > b0);
         for (x, y) in [(false, false), (false, true), (true, false), (true, true)] {
             assert_eq!(key_less((a0, x), (b0, y)), key((a0, x)) < key((b0, y)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod put_stats_tests {
+    use super::*;
+
+    /// `Arena::put_stats` writes `Lock::new(ArenaStats::empty(index), ..)`
+    /// over storage that held anything before (a failed build's spare):
+    /// the record compares equal, and the lock is free (`lock_t` takes it).
+    #[test]
+    fn put_stats_writes_lock_new_of_empty() {
+        let n = core::mem::size_of::<Lock<ArenaStats>>();
+        for index in [0u16, 1, 7, 255, 4095] {
+            let want = Lock::new(ArenaStats::empty(index), Ghost::assume_new());
+            let mut got = core::mem::MaybeUninit::<Lock<ArenaStats>>::uninit();
+            // SAFETY: `n` writable bytes.
+            unsafe { core::ptr::write_bytes(got.as_mut_ptr() as *mut u8, 0xA5, n) };
+            // SAFETY: the storage is writable and unaliased.
+            unsafe { Arena::put_stats(got.as_mut_ptr(), Tracked::assume_new(), index) };
+            // SAFETY: put_stats initialised it.
+            let got = unsafe { got.assume_init_ref() };
+            assert_eq!(*want.lock_t(), *got.lock_t(), "index {index}");
         }
     }
 }

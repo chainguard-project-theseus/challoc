@@ -1112,11 +1112,16 @@ Discovery, once (section 10 step 7). Under `thp:always` it runs at init,
 which needs the limit for the 1 GiB rule below; otherwise it is deferred
 (`sys::cgroup::Deferred`) to the first periodic tick at least `DEFER_NS`
 (20 ms) after init, to the first read of the figures (`stats.cgroup.*`,
-`malloc_stats_print`) or to the first `fork` (the prepare handler, so
-the children of a forking server inherit the record rather than each
-reading the files again), whichever comes first, so a process that lives
+`malloc_stats_print`) or to the first `fork` after `DEFER_NS` (the
+prepare handler, so the children of a forking server inherit the record
+rather than each reading the files again), whichever comes first, so a
+process that lives
 less than that never reads the files (about 90 us of system time per
-exec). Until then the policy sees no record: no limit known, the policy
+exec). Whichever thread runs it, the record is built in place in its
+cell with the scan buffers in a static the discovering thread owns, so
+the discovery takes little of that thread's stack (a `malloc` on a
+`PTHREAD_STACK_MIN` thread may be the one that runs it). Until then the
+policy sees no record: no limit known, the policy
 at its defaults, the eager purge advice; a reader of the figures (the
 report, `stats.cgroup.*`) discovers first, so it never shows a pending
 record. The `memory.events` `high` count found at discovery is the
@@ -1600,6 +1605,33 @@ they are `malloc`'s pop and `free`'s check and push plus the class size:
 points' machine code is unchanged by them (`scripts/codegen-diff.sh`).
 Valkey uses them under `USE_CHALLOC`
 (`contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch`).
+
+### 13.8 Stack use
+
+The entry points work on a thread with the smallest stack glibc allows
+(`PTHREAD_STACK_MIN`, 16 KiB on x86_64, of which glibc's TCB and static
+TLS take about 4) and leave the caller at least 6 KiB of it, as glibc's
+malloc and jemalloc do. Frames are kept small where they are, rather than
+moved to another stack: the deferred cgroup discovery (section 11; the
+tick of any `malloc`, `fork`'s prepare handler or a read of the figures
+may run it) builds its record in place in its cell
+(`Deferred::cell_discover`) with its scan and mount buffers in a static
+the discovering thread owns (`sys::cgroup::discovery_scratch`), and an
+arena's build writes its statistics record in place (`Arena::put_stats`),
+where through a value each went by the stack of whichever thread did the
+work. The statistics readers and reports (`mallctl`'s `stats.*`,
+`malloc_stats_print`, `malloc_info`, `malloc_stats`, `mallinfo`) still
+take the per-arena record (`stats::ArenaStats`, about 6 KiB with its
+bins) by value; moving it off the stack is the next step.
+
+`tests/c/small_stack.c` runs the entry points on a `PTHREAD_STACK_MIN`
+thread with 6 KiB of it already used, each in a fresh process (the
+process's first allocation, a thread's first allocation building its
+arena, the discovery under the tick and under `fork`, a `fork` from an
+`SA_ONSTACK` handler). The `api::` test `every_frame_fits_the_budget`
+fails on any function of the shipped library that reserves more than
+2 KiB of stack and is neither one of a few known frames within a cap
+nor, until that step, a statistics reader.
 
 ## 14. Hardening summary
 
