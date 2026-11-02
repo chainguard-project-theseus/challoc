@@ -16,6 +16,7 @@ file.
 | `TABLE` | external_body const | function pointer | Kani | trusted |
 | `KEYS` | external_body const | function pointer | Kani | discharged |
 | `DisplaySpecImpl for Issue<'_>` | spec_impl | core library | Kani | trusted |
+| `conf_buffer` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `read_slot` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
 | `je_malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
@@ -125,9 +126,20 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for Issue<'_> {
 }
 ```
 
+## `conf_buffer`
+
+src/config.rs:1625. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> The buffer [`load`] reads `/etc/challoc.conf` into: a static, so init's frame does not carry 4 KiB of it (design 13.8: init's frame is capped, though challoc initialises before `main`, so init does not normally run on a program's small thread).
+
+```rust
+fn conf_buffer() -> (r: &'static mut [u8; MAX_TEXT + 1])
+```
+
 ## `read_slot`
 
-src/config.rs:1724. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1749. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `const char *` at `slot` (a symbol, or an `environ` entry).
@@ -138,7 +150,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ## `malloc_conf_addr`
 
-src/config.rs:1737. Kind: external_body. Category: inline asm.
+src/config.rs:1762. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -149,7 +161,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ## `je_malloc_conf_addr`
 
-src/config.rs:1762. Kind: external_body. Category: inline asm.
+src/config.rs:1787. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -160,7 +172,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ## `byte_at`
 
-src/config.rs:1823. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1848. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The byte at `p + n`.
@@ -171,7 +183,7 @@ unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ## `bytes_at`
 
-src/config.rs:1835. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1860. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -184,7 +196,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ## `environ_array`
 
-src/config.rs:1847. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1872. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > glibc's `environ`, null before libc has set it up.
@@ -195,7 +207,7 @@ fn environ_array() -> *const *const c_char
 
 ## `env_var`
 
-src/config.rs:1870. Kind: no_decreases. Category: C-program contract.
+src/config.rs:1895. Kind: no_decreases. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.

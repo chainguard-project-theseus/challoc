@@ -20,6 +20,7 @@ file.
 | `A_LAST_..._PURGE` | external_body const | core library | Kani | discharged |
 | `axiom_arena_layout` | axiom | core library | Kani | discharged |
 | `axiom_a...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `Arena::put_stats` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `key_less` | external_body | core library | Kani | discharged |
 | `AR_TABLE` | external_body const | core library | Kani | discharged |
 | `AR_BOUND` | external_body const | core library | Kani | discharged |
@@ -222,9 +223,26 @@ axiom fn axiom_arena_assemble(
 ;
 ```
 
+## `Arena::put_stats`
+
+src/arena.rs:1075. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
+
+```rust
+unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)
+    requires
+        old(perm).ptr() == p,
+    ensures
+        final(perm).ptr() == p,
+        final(perm).is_init(),
+        final(perm).value().rank() == rank_arena_stats(index as int),
+```
+
 ## `key_less`
 
-src/arena.rs:1934. Kind: external_body. Category: core library.
+src/arena.rs:1963. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: arena::kani_key_less::key_less_is_key_lt).
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
@@ -237,7 +255,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
 
 ## `AR_TABLE`
 
-src/arena.rs:1947. Kind: external_body const. Category: core library.
+src/arena.rs:1976. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -246,7 +264,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ## `AR_BOUND`
 
-src/arena.rs:1949. Kind: external_body const. Category: core library.
+src/arena.rs:1978. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -255,7 +273,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ## `AR_LOCK`
 
-src/arena.rs:1951. Kind: external_body const. Category: core library.
+src/arena.rs:1980. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -264,7 +282,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ## `AR_COUNT`
 
-src/arena.rs:1953. Kind: external_body const. Category: core library.
+src/arena.rs:1982. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -273,7 +291,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ## `AR_AUTO`
 
-src/arena.rs:1955. Kind: external_body const. Category: core library.
+src/arena.rs:1984. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -282,7 +300,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ## `AR_SPARE`
 
-src/arena.rs:1957. Kind: external_body const. Category: core library.
+src/arena.rs:1986. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -291,7 +309,7 @@ const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 
 ## `AR_INVS`
 
-src/arena.rs:1959. Kind: external_body const. Category: core library.
+src/arena.rs:1988. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -300,7 +318,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ## `AR_COUNT_INV`
 
-src/arena.rs:1961. Kind: external_body const. Category: core library.
+src/arena.rs:1990. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -309,7 +327,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ## `AR_SPARE_INV`
 
-src/arena.rs:1963. Kind: external_body const. Category: core library.
+src/arena.rs:1992. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -318,7 +336,7 @@ const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 ## `axiom_arenas_layout`
 
-src/arena.rs:1971. Kind: axiom. Category: core library.
+src/arena.rs:2000. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 > `Arenas`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`) by the size, and neither array's element empty (as for `Arena`'s class states).
@@ -349,7 +367,7 @@ axiom fn axiom_arenas_layout()
 
 ## `axiom_arenas_lock_inv`
 
-src/arena.rs:2040. Kind: axiom. Category: allocator invariant.
+src/arena.rs:2069. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The creation lock's invariant ([`Created::ok`]): `n` is at most [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`, and no published entry at or above it.
@@ -363,7 +381,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
 
 ## `axiom_arenas_assemble`
 
-src/arena.rs:2193. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:2222. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
@@ -416,7 +434,7 @@ axiom fn axiom_arenas_assemble(
 
 ## `axiom_arenas_lock_frame`
 
-src/arena.rs:3497. Kind: axiom. Category: allocator invariant.
+src/arena.rs:3526. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): what the creation lock's value keeps from the value it was created with is exactly the snapshot half's location and a count at or above the one it was created with (the automatic count, `Arenas::type_inv`).

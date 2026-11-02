@@ -8,6 +8,8 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `scan_lines` | no_decreases | termination | none (assumption) | trusted |
+| `discove...cratch` | external_body | allocator invariant | none (assumption) | trusted |
+| `untrack..._place` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `axiom_c...phaned` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `Deferred::discover` | no_decreases | termination | loom/GenMC | trusted |
 
@@ -33,9 +35,34 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
         found matches Some((lo, hi)) ==> lo <= hi <= final(buf)@.len(),
 ```
 
+## `discovery_scratch`
+
+src/sys/cgroup.rs:1081. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The deferred discovery's scratch: one static, used only by the thread that won a [`Deferred`] record's exchange from `PENDING` to `RUNNING`, until its `DONE` store (the process has one record, and the exchange lets one thread through), so no two references are live at once.
+
+```rust
+fn discovery_scratch(Tracked(won): Tracked<&CellPerm>) -> &'static mut Scratch
+```
+
+## `untracked_in_place`
+
+src/sys/cgroup.rs:1100. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> `slot` holds [`Cgroup::untracked`]`(state)`, written in place (the record is about 2.4 KiB; through a value it went by the stack of the thread that discovers).
+
+```rust
+pub fn untracked_in_place(slot: &mut MaybeUninit<Cgroup>, state: State)
+    ensures
+        final(slot).mem_contents().is_init(),
+        final(slot).mem_contents().value().layout() == (0nat, 0nat),
+```
+
 ## `axiom_cell_orphaned`
 
-src/sys/cgroup.rs:1522. Kind: axiom. Category: platform/kernel fact.
+src/sys/cgroup.rs:1597. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned cell): in the child of a `fork`, a record whose phase the child's reset found `RUNNING` (`before`, the phase's permission just before the reset, and `perm`, just after it, at `PENDING`) was being discovered by a thread of the parent, which holds the cell's permission between its winning exchange and its `DONE` store ([`Deferred::claim`], [`Deferred::publish`]).
@@ -55,7 +82,7 @@ axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &Byte
 
 ## `Deferred::discover`
 
-src/sys/cgroup.rs:1603. Kind: no_decreases. Category: termination.
+src/sys/cgroup.rs:1678. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Run discovery if it has not run: `true` when this call ran it, so the caller sets the policy up from the first figures.

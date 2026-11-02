@@ -819,6 +819,13 @@ ctests! {
         CTest { prog: "resource", args: &["bg_cancel"], ..BASE },
         CTest { prog: "resource", args: &["info_cancel"], ..BASE },
     ];
+    /// `tests/c/small_stack.c`: the allocation calls (`main`'s first
+    /// included), the jemalloc and C++ ones, a read of the cgroup figures,
+    /// `fork` (also from an `SA_ONSTACK` handler) and the deferred cgroup
+    /// discovery under the tick and `fork`, on a `PTHREAD_STACK_MIN`
+    /// thread with 6 KiB of it already used, each in a fresh process:
+    /// none overflows the stack (design 13.8).
+    c_small_stack => [ CTest { prog: "small_stack", stdout_has: &["done many_warm", "done fork_warm"], ..BASE } ];
     /// `tests/c/jemalloc_api.c`: the jemalloc and glibc
     /// extras under the real `.so`, every non-standard symbol reached through
     /// a weak reference.
@@ -1563,4 +1570,179 @@ fn ordinary_programs_run_under_ld_preload() {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+}
+
+/// The most stack one function of the shipped library may reserve
+/// (design 13.8): what an entry point needs of its caller's stack is a few
+/// such frames, and a `PTHREAD_STACK_MIN` thread has about 12 KiB left
+/// after glibc's own (`tests/c/small_stack.c`).
+#[cfg(target_arch = "x86_64")]
+const FRAME_BUDGET: usize = 2048;
+
+/// Frames past [`FRAME_BUDGET`], by exact name, each with the most it may
+/// grow to: on the tick and the cache flush, measured with the rest of
+/// their paths in `small_stack`'s 6 KiB of headroom. A new one, or one of
+/// these growing, fails.
+#[cfg(target_arch = "x86_64")]
+const KNOWN: &[(&str, usize)] = &[
+    // The decay pass of one class (the tick, `arena.<i>.decay`).
+    ("challoc::purge::decay_one", 2816),
+    // A cgroup file read into its path buffer (the tick's sample).
+    ("challoc::sys::cgroup::linux::read_in", 2304),
+    // A cache flush's grouping of the slots by slab (`free`'s slow path).
+    ("challoc::heap::flush::group_by_slab", 2304),
+    // Initialisation, once per process, from ld.so's or libc's first
+    // allocation before `main`, not on a program's small thread (design
+    // 13.8): 6.7 KiB at quantum 16 and 7.3 at quantum 8, whose class
+    // tables are longer (`/etc/challoc.conf` is read into a static,
+    // `config::conf_buffer`).
+    ("challoc::api::init_slow", 7680),
+    // The by-value discovery: init's under `thp:always` only (and the
+    // tests'; `cgroup:false` returns the untracked record before it); the
+    // deferred one builds the record in place. Under `thp:always` init's
+    // peak is init_slow's frame plus this one, about 16 KiB, before
+    // `main` (design 13.8).
+    ("<challoc::sys::cgroup::Cgroup>::discover_scanned", 8704),
+];
+
+/// The statistics readers and reports, which still take the per-arena
+/// record (`stats::ArenaStats`, about 6 KiB with its bins) by value: the
+/// next step of design 13.8 moves it off the stack, and this list goes.
+#[cfg(target_arch = "x86_64")]
+const PENDING: &[&str] = &[
+    "challoc::api::mallctl::",
+    "challoc::api::print::",
+    "challoc::stats::",
+    "malloc_info",
+    "malloc_stats",
+    "mallinfo",
+    "mallinfo2",
+];
+
+/// Each function's frame from its prologue (x86_64): its pushes, its
+/// `sub $n, %rsp`, a realignment (`and $-a, %rsp`, up to `a - 8` bytes)
+/// and a stack-probe loop's target (`sub $n, %r11` or `lea -n(%rsp),
+/// %r11`, the loop's own 4 KiB steps not counted twice). A shrink-wrapped
+/// function lays an early exit (`ret`, `jmp`) out before its frame, so
+/// the largest `sub $n, %rsp` anywhere in it, with the pushes, counts
+/// too. (`.eh_frame`'s CFA offsets miss the realigned frames, whose CFA
+/// is `%rbp`-based.)
+#[cfg(target_arch = "x86_64")]
+fn prologue_frames(disasm: &str) -> Vec<(usize, String)> {
+    fn hex(s: &str) -> Option<usize> {
+        usize::from_str_radix(s.strip_prefix("0x")?, 16).ok()
+    }
+    let mut out = Vec::new();
+    let mut name: Option<String> = None;
+    let mut ins: Vec<&str> = Vec::new();
+    let mut flush = |name: &Option<String>, ins: &[&str]| {
+        let Some(name) = name else { return };
+        let (mut total, mut probe) = (0usize, None);
+        let (mut pushes, mut deepest) = (0usize, 0usize);
+        for i in ins.iter() {
+            let mut w = i.split_whitespace();
+            match (w.next(), w.next().unwrap_or("")) {
+                (Some("push"), _) if pushes < 8 * 6 => pushes += 8,
+                (Some("sub"), arg) => {
+                    if let Some(("$", n)) = arg.split_once(",%rsp").map(|(src, _)| src.split_at(1))
+                    {
+                        let n = hex(n).unwrap_or(0);
+                        if n != 0x1000 {
+                            deepest = deepest.max(n);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for i in ins.iter().take(40) {
+            let mut w = i.split_whitespace();
+            let (Some(op), arg) = (w.next(), w.next().unwrap_or("")) else {
+                continue;
+            };
+            match op {
+                "call" | "ret" | "jmp" => break,
+                "push" => total += 8,
+                "sub" | "lea" | "and" => {
+                    let (src, dst) = arg.split_once(',').unwrap_or((arg, ""));
+                    let imm = src.strip_prefix('$').and_then(hex);
+                    match (op, dst) {
+                        ("sub", "%r11") => probe = imm,
+                        ("lea", "%r11") => {
+                            probe = src
+                                .strip_prefix('-')
+                                .and_then(|s| s.strip_suffix("(%rsp)"))
+                                .and_then(hex)
+                        }
+                        ("sub", "%rsp") if !(probe.is_some() && imm == Some(0x1000)) => {
+                            total += imm.unwrap_or(0)
+                        }
+                        ("and", "%rsp") => {
+                            total += imm.map_or(0, |m| (!m).wrapping_add(1).saturating_sub(8))
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.push((
+            (total + probe.unwrap_or(0)).max(pushes + deepest),
+            name.clone(),
+        ));
+    };
+    for line in disasm.lines() {
+        if let Some(n) = line
+            .strip_suffix(">:")
+            .and_then(|l| l.split_once(" <"))
+            .map(|(_, n)| n)
+        {
+            flush(&name, &ins);
+            name = Some(n.into());
+            ins.clear();
+        } else if let Some((_, i)) = line.split_once(":\t") {
+            ins.push(i.trim());
+        }
+    }
+    flush(&name, &ins);
+    out
+}
+
+/// Every function of the shipped library reserves at most
+/// [`FRAME_BUDGET`] bytes of stack, or is one of the [`KNOWN`] few within
+/// its cap (or still [`PENDING`]): a large array or a big by-value record
+/// on a path a `malloc`, a `free`, a `fork` or a tick can reach fails
+/// here, before it overflows a small thread's stack. The prologue parser
+/// is checked on the largest frame, so it cannot pass by reading nothing.
+/// x86_64 only: the code is the same on aarch64, where `small_stack` runs
+/// too.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn every_frame_fits_the_budget() {
+    let so = release_so();
+    let dis = Command::new("objdump")
+        .args(["-d", "--no-show-raw-insn", "-C", "-M", "att", &so])
+        .output()
+        .unwrap();
+    assert!(dis.status.success(), "objdump -d failed");
+    let frames = prologue_frames(&String::from_utf8_lossy(&dis.stdout));
+    let biggest = frames.iter().map(|(f, _)| *f).max().unwrap_or(0);
+    assert!(
+        biggest > 8192,
+        "the prologue parser read {biggest} bytes at most"
+    );
+    let over: Vec<String> = frames
+        .iter()
+        .filter(|(f, n)| {
+            *f > FRAME_BUDGET
+                && !PENDING.iter().any(|p| n.starts_with(p))
+                && !KNOWN.iter().any(|(k, cap)| n == k && f <= cap)
+        })
+        .map(|(f, n)| std::format!("{f:>6} {n}"))
+        .collect();
+    assert!(
+        over.is_empty(),
+        "frames past {FRAME_BUDGET} bytes (shrink them: design 13.8):\n{}",
+        over.join("\n")
+    );
 }

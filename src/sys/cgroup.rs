@@ -977,6 +977,10 @@ pub fn proc_cgroup_path<R: FnMut(&mut [u8]) -> Option<usize>>(scan: &mut [u8], r
 // Runtime state.
 // ---------------------------------------------------------------------------
 
+/// [`discovery_scratch`]'s storage (Verus has no `static mut`).
+#[cfg(not(test))]
+static mut DISCOVERY_SCRATCH: Scratch = Scratch::new();
+
 verus! {
 
 /// Why the cgroup is not tracked, or that it is.
@@ -1041,6 +1045,76 @@ pub struct Cgroup {
     events_oom_kill: AtomicU64,
     high_rises: AtomicU64,
     max_rises: AtomicU64,
+}
+
+/// The buffers a discovery scans `/proc/self/cgroup` and
+/// `/proc/self/mountinfo` through, and the mount point it copies out:
+/// about 6 KiB, off the stack of the thread that discovers
+/// ([`discovery_scratch`]).
+pub struct Scratch {
+    pub cgroup_scan: [u8; SCAN_BUF],
+    pub mount_scan: [u8; SCAN_BUF],
+    pub mount: [u8; PATH_CAP],
+}
+
+impl Scratch {
+    pub const fn new() -> Scratch {
+        Scratch { cgroup_scan: [0; SCAN_BUF], mount_scan: [0; SCAN_BUF], mount: [0; PATH_CAP] }
+    }
+}
+
+/// The deferred discovery's scratch: one static, used only by the thread
+/// that won a [`Deferred`] record's exchange from `PENDING` to `RUNNING`,
+/// until its `DONE` store (the process has one record, and the exchange
+/// lets one thread through), so no two references are live at once.
+/// Trusted: that exclusion is the record's protocol, which Verus checks
+/// for the cell's permission but not for this static. (A child of a `fork`
+/// from a signal handler that interrupted the discovery can run a second
+/// one when the handler allocates: the residue [`axiom_cell_orphaned`]
+/// states, now also on these buffers.) The unit tests make their own
+/// records and discover concurrently, so each call there gets fresh
+/// buffers.
+/// Private to this module, and only for a holder of the cell's permission
+/// `won` (which [`Deferred::claim`] hands only to the exchange's winner):
+/// [`Deferred::cell_discover`] is its one caller.
+#[verifier::external_body]
+fn discovery_scratch(Tracked(won): Tracked<&CellPerm>) -> &'static mut Scratch {
+    #[cfg(not(test))]
+    {
+        // SAFETY: the exclusion above.
+        unsafe { &mut *core::ptr::addr_of_mut!(DISCOVERY_SCRATCH) }
+    }
+    #[cfg(test)]
+    {
+        std::boxed::Box::leak(std::boxed::Box::new(Scratch::new()))
+    }
+}
+
+/// `slot` holds [`Cgroup::untracked`]`(state)`, written in place (the
+/// record is about 2.4 KiB; through a value it went by the stack of the
+/// thread that discovers). Trusted: the bytes are the constructor's, an
+/// all-zero record with the state and the `UNLIMITED` limits stored (the
+/// test `untracked_in_place_is_untracked` compares the fields).
+#[verifier::external_body]
+#[inline(never)]
+pub fn untracked_in_place(slot: &mut MaybeUninit<Cgroup>, state: State)
+    ensures
+        final(slot).mem_contents().is_init(),
+        final(slot).mem_contents().value().layout() == (0nat, 0nat),
+{
+    let p = slot.as_mut_ptr();
+    // SAFETY: `p` is the slot's storage, writable and unaliased; zero is a
+    // valid byte pattern for every field (integers, `false`, atomics) but
+    // `state`, written next.
+    unsafe {
+        core::ptr::write_bytes(p, 0, 1);
+        core::ptr::addr_of_mut!((*p).state).write(state);
+        (*p).limit.store(UNLIMITED, Ordering::Relaxed);
+        (*p).high.store(UNLIMITED, Ordering::Relaxed);
+        for l in (*p).level_limit.iter() {
+            l.store(UNLIMITED, Ordering::Relaxed);
+        }
+    }
 }
 
 impl Cgroup {
@@ -1389,8 +1463,9 @@ verus! {
 /// when something needs the limit then (`thp:always`, which a limit under
 /// 1 GiB forces to `never`), otherwise at the first periodic tick
 /// [`DEFER_NS`] after init ([`Deferred::due`]), at the first read of its
-/// figures or at the first `fork` (`api::fork_prepare`), whichever comes
-/// first. Until then [`Deferred::get`] is `None`: no limit known, the
+/// figures or at the first `fork` after that (`api::fork_prepare`),
+/// whichever comes first. The record is discovered in place in the cell
+/// ([`Deferred::cell_discover`]). Until then [`Deferred::get`] is `None`: no limit known, the
 /// policy at its defaults, the eager purge advice, nothing sampled, the
 /// same as a host without cgroup2.
 ///
@@ -1611,10 +1686,12 @@ impl Deferred {
         match self.claim(Tracked(&mut claimed)) {
             Ok(_) => {
                 let tracked mut cell = claimed.cell.tracked_unwrap();
-                let cg = Cgroup::discover(true);
                 // This thread won the exchange, so it holds the cell's
-                // permission; no reader looks at the cell before `DONE`.
-                let cg = self.cell_write(cg, Tracked(&mut cell));
+                // permission and the discovery scratch; no reader looks at
+                // the cell before `DONE`. The record is built in the cell,
+                // never on this thread's stack (design 11: any thread's
+                // `malloc` may run this).
+                let cg = self.cell_discover(Tracked(&mut cell));
                 found(cg);
                 let Tracked(frozen) = self.publish(Tracked(cell));
                 proof {
@@ -1749,17 +1826,26 @@ impl Deferred {
         unsafe { self.cell.borrow(Tracked(p)).assume_init_ref() }
     }
 
-    /// `cg` written into the cell, through its permission, which
-    /// [`Deferred::get`] reads once `DONE` is published.
-    #[inline(always)]
-    fn cell_write<'a>(&'a self, cg: Cgroup, Tracked(p): Tracked<&'a mut CellPerm>) -> &'a Cgroup
+    /// The record discovered into the cell, in place, through its
+    /// permission, which [`Deferred::get`] reads once `DONE` is published:
+    /// the cell first gets an untracked record ([`untracked_in_place`]),
+    /// which [`Cgroup::discover_in`] fills, with the discovery scratch
+    /// ([`discovery_scratch`]) the winner of the exchange owns.
+    #[inline(never)]
+    fn cell_discover<'a>(&'a self, Tracked(p): Tracked<&'a mut CellPerm>) -> &'a Cgroup
         requires
+            crate::sys::may_syscall(),
             old(p).id() == self.cell.id(),
         ensures
             cell_done(*final(p), self.cell.id()),
-        opens_invariants none
     {
-        self.cell.borrow_mut(Tracked(p)).write(cg)
+        let scratch = discovery_scratch(Tracked(&*p));
+        let slot = self.cell.borrow_mut(Tracked(p));
+        untracked_in_place(slot, State::NoUnifiedPath);
+        // SAFETY: `untracked_in_place` initialised it.
+        let cg = unsafe { slot.assume_init_mut() };
+        cg.discover_in(true, scratch);
+        &*cg
     }
 }
 
@@ -1927,18 +2013,17 @@ mod linux {
     /// and leaves it in the scan buffer, where it is parsed again for the
     /// copy (the line closure does not write `mount`: Verus has no
     /// closures that capture by mutable reference).
-    fn mountinfo_cgroup2(mount: &mut [u8; PATH_CAP]) -> (r: usize)
+    fn mountinfo_cgroup2(mount: &mut [u8; PATH_CAP], scan: &mut [u8; SCAN_BUF]) -> (r: usize)
         requires
             crate::sys::may_syscall(),
         ensures
             r <= PATH_CAP,
     {
-        let mut scan = [0u8; SCAN_BUF];
         let Ok(fd) = sys::open(&PROC_SELF_MOUNTINFO, O_RDONLY) else {
             return 0;
         };
         let found = scan_lines(
-            &mut scan,
+            scan,
             |b: &mut [u8]| -> (r: Option<usize>)
                 ensures
                     r matches Some(n) ==> n <= old(b)@.len(),
@@ -1964,7 +2049,12 @@ mod linux {
 
     impl Cgroup {
         /// Design 10 step 7: find the cgroup and read its limits once.
-        /// With `enabled == false` (`cgroup:false`) nothing is opened.
+        /// With `enabled == false` (`cgroup:false`) nothing is opened. By
+        /// value: init's (under `thp:always`, and `cgroup:false`'s
+        /// untracked record) and the tests'; the deferred discovery builds
+        /// the record in place ([`Cgroup::discover_in`]). Only an enabled
+        /// discovery reaches [`Cgroup::discover_scanned`] and its scratch
+        /// on the stack.
         pub fn discover(enabled: bool) -> Cgroup
             requires
                 crate::sys::may_syscall(),
@@ -1972,16 +2062,46 @@ mod linux {
             if !enabled {
                 return Cgroup::untracked(State::Disabled);
             }
+            Cgroup::discover_scanned()
+        }
+
+        /// An enabled [`Cgroup::discover`], with the scan and mount buffers
+        /// on its own stack (about 8.6 KiB). Out of line: init calls it
+        /// only under `thp:always`.
+        #[inline(never)]
+        fn discover_scanned() -> Cgroup
+            requires
+                crate::sys::may_syscall(),
+        {
+            let enabled = true;
             let mut cg = Cgroup::untracked(State::NoUnifiedPath);
-            proof {
-                use_type_invariant(&cg);
+            let mut scratch = Scratch::new();
+            cg.discover_in(enabled, &mut scratch);
+            cg
+        }
+
+        /// [`Cgroup::discover`] into `self`, an untracked record (its
+        /// lengths 0), with the scan and mount buffers in `scratch`.
+        pub fn discover_in(&mut self, enabled: bool, scratch: &mut Scratch)
+            requires
+                crate::sys::may_syscall(),
+                old(self).layout() == (0nat, 0nat),
+        {
+            let cg = self;
+            if !enabled {
+                cg.state = State::Disabled;
+                return;
             }
-            let mut scan = [0u8; SCAN_BUF];
+            cg.state = State::NoUnifiedPath;
+            proof {
+                use_type_invariant(&*cg);
+            }
+            let scan = &mut scratch.cgroup_scan;
             let Ok(fd) = sys::open(&PROC_SELF_CGROUP, O_RDONLY) else {
-                return cg;
+                return;
             };
             let path = proc_cgroup_path(
-                &mut scan,
+                scan,
                 |b: &mut [u8]| -> (r: Option<usize>)
                     ensures
                         r matches Some(n) ==> n <= old(b)@.len(),
@@ -1990,35 +2110,36 @@ mod linux {
             );
             let _ = sys::close(fd);
             let Some(path) = path else {
-                return cg;
+                return;
             };
 
-            let mut mount = [0u8; PATH_CAP];
-            let mount_len = mountinfo_cgroup2(&mut mount);
+            let mount = &mut scratch.mount;
+            let mount_len = mountinfo_cgroup2(mount, &mut scratch.mount_scan);
             if mount_len == 0 {
                 cg.state = State::NoMount;
-                return cg;
+                return;
             }
             proof {
-                use_type_invariant(&cg);
+                use_type_invariant(&*cg);
             }
             let Some((dir_len, mlen)) = join_dir(&mut cg.dir, &mount[..mount_len], path) else {
                 cg.state = State::PathTooLong;
-                return cg;
+                return;
             };
             cg.dir_len = dir_len as u16;
             cg.mount_len = mlen as u16;
             cg.state = State::Tracked;
 
             let dir = &cg.dir[..dir_len];
-            // `scan` is free again (`path` was copied into `cg.dir`).
-            cg.has_limit_files = read_in(dir, b"memory.max", &mut scan).is_some();
-            cg.has_current = read_in(dir, b"memory.current", &mut scan).is_some();
-            cg.has_events = read_in(dir, b"memory.events", &mut scan).is_some();
+            // The scan buffer is free again (`path` was copied into
+            // `cg.dir`).
+            let scan = &mut scratch.cgroup_scan;
+            cg.has_limit_files = read_in(dir, b"memory.max", scan).is_some();
+            cg.has_current = read_in(dir, b"memory.current", scan).is_some();
+            cg.has_events = read_in(dir, b"memory.events", scan).is_some();
             let now = sys::now_coarse_ns();
             cg.walk_limits(now);
             cg.sample_now(now);
-            cg
         }
 
         fn walk_limits(&self, now: u64)
@@ -2166,6 +2287,58 @@ mod linux {
 
 #[cfg(test)]
 mod tests {
+    /// `untracked_in_place` writes `Cgroup::untracked(state)` over storage
+    /// that held anything before: every field compares equal.
+    #[test]
+    fn untracked_in_place_is_untracked() {
+        for state in [State::Disabled, State::NoUnifiedPath, State::Tracked] {
+            let want = Cgroup::untracked(state);
+            let mut slot = MaybeUninit::<Cgroup>::uninit();
+            // SAFETY: the slot's bytes are writable.
+            unsafe {
+                core::ptr::write_bytes(
+                    slot.as_mut_ptr() as *mut u8,
+                    0xA5,
+                    core::mem::size_of::<Cgroup>(),
+                )
+            };
+            untracked_in_place(&mut slot, state);
+            // SAFETY: initialised just above.
+            let got = unsafe { slot.assume_init_ref() };
+            let r = Ordering::Relaxed;
+            assert_eq!(got.dir, want.dir);
+            assert_eq!(
+                (got.dir_len, got.mount_len, got.state),
+                (want.dir_len, want.mount_len, want.state)
+            );
+            assert_eq!(
+                (got.has_limit_files, got.has_current, got.has_events),
+                (want.has_limit_files, want.has_current, want.has_events)
+            );
+            let words = |c: &Cgroup| {
+                let mut v = std::vec![
+                    c.limit.load(r),
+                    c.high.load(r),
+                    c.current.load(r),
+                    c.current_stale.load(r) as u64,
+                    c.sampled_at.load(r),
+                    c.limits_at.load(r),
+                    c.events_low.load(r),
+                    c.events_high.load(r),
+                    c.events_max.load(r),
+                    c.events_oom.load(r),
+                    c.events_oom_kill.load(r),
+                    c.high_rises.load(r),
+                    c.max_rises.load(r),
+                ];
+                v.extend(c.level_limit.iter().map(|a| a.load(r)));
+                v.extend(c.level_current.iter().map(|a| a.load(r)));
+                v
+            };
+            assert_eq!(words(got), words(&want), "{state:?}");
+        }
+    }
+
     use super::*;
     use std::collections::BTreeMap;
     use std::string::String;
