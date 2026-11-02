@@ -438,11 +438,20 @@ static void parent_data_thread(void)
 
 __attribute__((weak)) const char *challoc_features(void);
 
-/* Whether the kernel installs guard markers, so classes have guard slabs. */
+/* Whether classes have guard slabs: the kernel installs guard markers
+ * and the configuration keeps a guard interval (`guards:false` or
+ * `guard_slab_interval:0` sets it to 0). */
 static int guard_slabs(void)
 {
     const char *f = challoc_features ? challoc_features() : NULL;
-    return f && strstr(f, "guard_install=yes");
+    if (!f || !strstr(f, "guard_install=yes"))
+        return 0;
+    mallctl_fn ctl = mallctl_dl();
+    bool guards = false;
+    unsigned interval = 0;
+    size_t blen = sizeof guards, ulen = sizeof interval;
+    return ctl && ctl("opt.guards", &guards, &blen, NULL, 0) == 0 && guards &&
+           ctl("opt.guard_slab_interval", &interval, &ulen, NULL, 0) == 0 && interval != 0;
 }
 
 static void parent_mlock_huge(void)

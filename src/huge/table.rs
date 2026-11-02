@@ -746,13 +746,15 @@ impl Table {
     /// at or below one half, and every allocation's `ensure` keeps a key
     /// free for the free of each live run (`Huge::alloc_aligned`), so a
     /// free after a failed growth (its own `ensure` is best effort) still
-    /// finds room: reaching this abort means the counts are corrupt. A caller that shows the room
-    /// never aborts here; one that cannot (a free after a failed growth)
-    /// needs the kernel-class capability (`sys::may_abort_kernel`).
+    /// finds room: reaching this abort means the counts are corrupt. A
+    /// caller that shows the room never aborts here; one that cannot (a
+    /// free after a failed growth, whose room the reservation argues but
+    /// no proof shows) needs the pending-check capability
+    /// (`sys::may_abort_pending`).
     pub(super) fn insert(&mut self, key: usize, desc: *mut HugeDesc)
         requires
             old(self).wf(),
-            old(self).spec_count() + 1 < old(self).spec_cap() || crate::sys::may_abort_kernel(),
+            old(self).spec_count() + 1 < old(self).spec_cap() || crate::sys::may_abort_pending(),
             old(self).lookup(key) is None,
             desc@.addr != 0,
         ensures
@@ -768,7 +770,7 @@ impl Table {
                 },
     {
         if !(self.count + 1 < self.cap()) {
-            crate::sys::abort_kernel(format_args!("huge: descriptor table full"));
+            crate::sys::abort_pending(format_args!("huge: descriptor table full"));
         }
         let ghost cap = self.spec_cap();
         let ghost v = self.view();

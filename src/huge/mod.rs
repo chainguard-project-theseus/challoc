@@ -3339,7 +3339,7 @@ impl Inner {
         requires
             old(self).table.wf(),
             old(self).table.spec_count() + weight(old(self).descs@[d].value(), 6) < old(self).table.spec_cap()
-                || crate::sys::may_abort_kernel(),
+                || crate::sys::may_abort_pending(),
             perms_ok(old(self).descs@),
             old(self).descs@.contains_key(d),
             ({
