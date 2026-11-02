@@ -3089,10 +3089,11 @@ mod linux_tests {
     }
 
     /// The environment has one reader, which `theorem_secure_conf`'s
-    /// premise names: `environ` is read only in `env_var`'s body, and
-    /// `env_var` is called only by `load` (twice, after its `AT_SECURE`
-    /// test, which Verus checks against `env_var`'s precondition) and by
-    /// the tests above. No code calls `getenv` or `secure_getenv`.
+    /// premise names: `environ` (or glibc's `_environ` or `__environ`) is
+    /// read only in `env_var`'s body, and `env_var` is called only by
+    /// `load` (twice, after its `AT_SECURE` test, which Verus checks
+    /// against `env_var`'s precondition) and by the tests above. No code
+    /// calls `getenv` or `secure_getenv`.
     #[test]
     fn environment_has_one_reader() {
         use crate::sys::tests::grant_sites;
@@ -3100,9 +3101,11 @@ mod linux_tests {
         let var = std::format!("{}{}", "envi", "ron");
         let call = std::format!("{}{}(", "env_", "var");
         let def = std::format!("pub fn {call}");
+        // A token naming `environ` or one of glibc's aliases for it
+        // (`_environ`, `__environ`), not an identifier ending in it.
         let word = |at: &str| {
             at.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .any(|w| w == var)
+                .any(|w| w.trim_start_matches('_') == var)
         };
         let reads: Vec<_> = grant_sites(&var)
             .into_iter()
