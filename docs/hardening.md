@@ -42,12 +42,16 @@ the pointer's class, or a huge run's page count, at the call (a size that
 names another class or page count aborts,
 `nallocx(size, flags) == sallocx(p)` is the contract), a slot start inside
 a guard slab aborts at the call, the slot bit is not read, and any other
-invalid or double free is caught when the thread cache flushes the slot to
-its slab: at most a cache's worth of frees later (at once when the cache is
-full or with `MALLOCX_TCACHE_NONE`). Between the call and that flush the
-slot can be handed out twice, which is jemalloc's behaviour for every free;
-if a `malloc` takes one copy before the flush the duplicate is not
-detected. This trade is made for jemalloc parity: on Valkey's write path
+invalid or double free is caught when a flush releases the slot to its
+slab (at once when the cache is full or with `MALLOCX_TCACHE_NONE`, which
+take the exact check at the call). That is not bounded by a number of
+frees: a partial flush releases the cache's highest addresses and keeps the
+lowest, so a slot below the rest of the cache can stay cached through any
+number of same-class frees until a whole flush (thread exit,
+`thread.tcache.flush`, `tcache.flush`) or a partial one that reaches it.
+Between the call and that flush the slot can be handed out twice, which
+is jemalloc's behaviour for every free; if a `malloc` takes one copy
+before the flush the duplicate is not detected. This trade is made for jemalloc parity: on Valkey's write path
 the exact check's bitmap load is a cache miss per free, most of what once
 separated challoc from jemalloc there.
 
