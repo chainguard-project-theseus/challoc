@@ -443,7 +443,7 @@ The `S<n>` above are the numbers of `8635213`'s `verus/SEAMS.md`. Main's ledger 
 | S159 | `heap/thread.rs` `fast_flags` | not a seam on main (the item is still in `heap/thread.rs`, verified or no longer a seam) | |
 | S160 | `heap/thread.rs` `heap_from_slot` | not a seam on main (the item is still in `heap/thread.rs`, verified or no longer a seam) | |
 | S162 | `huge/mod.rs` `Huge::check_zero` | not a seam on main (the item is still in `huge/mod.rs`, verified or no longer a seam) | |
-| S164 | `huge/table.rs` `axiom_zero_entry` | not a seam on main (no such item in `huge/table.rs`) | |
+| S164 | `huge/table.rs:378` `axiom_zero_entry` | discharged (Kani: huge::table::kani_table::zero_entry_is_empty) | |
 | S165 | `layout/mod.rs` `ClassTable` | `layout/mod.rs:1352` `ClassTable` | trusted |
 | S166 | `layout/mod.rs` `ClassTable::new` | `layout/mod.rs:1373` `ClassTable::new` | discharged |
 | S167 | `layout/mod.rs` `ClassTable::table` | `layout/mod.rs:1388` `ClassTable::table` | trusted (partly checked) |

@@ -2,7 +2,8 @@
 //! `vspec::zero::axiom_zero_word` (a `u64`) and `class::table`'s
 //! `axiom_zero_owner` (an `AtomicU16`), `axiom_zero_desc` (a `SlabDesc`)
 //! and `axiom_fresh_words` (`AtomicU64`s) (`verus/ledger/src/`), checked
-//! against their contracts. Each turns a `ZeroRaw`, ghost bytes that read
+//! against their contracts (`huge::table::axiom_zero_entry`, an `Entry`,
+//! is checked next to its private type, in `huge::table::kani_table`). Each turns a `ZeroRaw`, ghost bytes that read
 //! as zero, into the permissions `PointsToRaw::into_typed` would give,
 //! initialised with the value the bytes hold, which vstd's raw
 //! permissions do not track.

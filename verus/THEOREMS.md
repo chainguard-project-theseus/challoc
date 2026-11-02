@@ -973,8 +973,10 @@ the assumed `Heap::wf` and the huge lock axiom.
   fact, on its commit-before-read premise: the owner's first
   `Meta::commit` runs the deferred commit). Premise (`ZeroRaw::axiom_new`): a permission is paired only
   with the zero token made with it, whose bytes nothing has written since
-  (three pairings on main, `meta.rs:941`, `:3255`, `:3504`; `meta::zero_raw`
-  was the one pairing in #138).
+  (four pairings on main, `meta.rs:941`, `:3255`, `:3504` and
+  `huge/table.rs:552`, `Table::storage`'s binned branch, which pairs the
+  permission and token `Meta::alloc_zeroed` returns for one object;
+  `meta::zero_raw` was the one pairing in #138).
 - `CachePerms::lemma_fresh_stack` (`heap/mod.rs:1460`, proved; the
   trusted `heap::axiom_fresh_stack` in #138): a stack
   `Meta::alloc_raw` just returned is fresh (it uses up the block's permission);
@@ -985,12 +987,19 @@ the assumed `Heap::wf` and the huge lock axiom.
   (`layout/regions.rs`, trusted, the kernel's `mmap` contract): each of
   the three reservations is apart from the loaded object's data, which
   `from_parts` turns into `Regions::outside`.
-- `huge::table::Table::storage` (`huge/table.rs:403`, `external_body`
-  on main): zeroed storage for the descriptor table, every entry empty,
-  each with its permission, in the metadata region (its `ensures`,
-  trusted). In #138 `storage` was verified, over the
-  Kani-discharged axiom `huge::table::axiom_zero_entry` (all-zero bytes
-  are an empty entry), and ensured `entries_in_meta`.
+- `huge::table::Table::storage` (`huge/table.rs:520`, verified, as in
+  #138): zeroed storage for the descriptor table, every entry empty,
+  each with its permission, in the metadata region. It cuts the block's
+  zero permission (`Meta::reserve_committed_raw`'s `ZeroRaw` for a
+  reserved table; for a binned one, `Meta::alloc_zeroed`'s permission and
+  zero token paired by `ZeroRaw::axiom_new`, above) into the entries'
+  permissions (`entry_slots`, `huge/table.rs:399`), each empty by
+  `huge::table::axiom_zero_entry` (`huge/table.rs:378`: 16 zero bytes at
+  a non-null, 8-aligned pointer are an initialised entry with a null
+  descriptor), discharged by Kani
+  (`huge::table::kani_table::zero_entry_is_empty`). It requires a page
+  of at least 16 bytes, which `Huge::new` requires. In #138 it also ensured
+  `entries_in_meta`; on main `Table::new` and `ensure` prove it.
 - User-block writes: every write verified code makes to a block's bytes
   (`calloc`'s and the zeroing paths' fills, `zero_slot`, `zero_huge`,
   `realloc`'s copy) takes the block's permission (`vspec::user::UserMem`,
@@ -1025,12 +1034,11 @@ the assumed `Heap::wf` and the huge lock axiom.
   for (the writes through permissions do, the atomics above are only
   located), nor that the block's bytes are mapped writable.
 
-**Changed since #138.** The statement is unchanged, but it rests
-on more trust: `huge::table::Table::storage` is `external_body` on main
-(it hands out `Tracked::assume_new()` permissions in both branches),
-where #138 verified it over `axiom_zero_entry`, so the huge table
-slot conjunct, and theorem 29, rest on its contract. Verifying it again
-is a wolfi-dev/challoc#397 item. The class table axioms now take a `ZeroRaw`
+**Changed since #138.** The statement is unchanged. `huge::table::Table::storage`
+is verified over `axiom_zero_entry`, as in #138, where the axiom took the
+uninitialised permission and a `Zeroed` token; on main it takes a
+`ZeroRaw` and, as in #138, Kani discharges it. The binned branch adds a
+`ZeroRaw::axiom_new` pairing (premises above). The class table axioms now take a `ZeroRaw`
 (`axiom_zero_desc`, `axiom_zero_owner`, `axiom_fresh_words`, in place of
 `axiom_init_descs`, `_owners`, `_words`), which narrows them, Kani
 partly checks them (wolfi-dev/challoc#401), and
@@ -5540,10 +5548,10 @@ breaking its contract; no path sets such a bit.
   the words in memory is the bitmap module's verified model; the second
   level's summary bits are part of that model, not of this statement.
 
-**Changed since #138.** The statement is unchanged, but it rests
-on the trusted contract of `huge::table::Table::storage`
-(`huge/table.rs:403`, `external_body` on main; verified in #138),
-as theorem 4 does (wolfi-dev/challoc#397).
+**Changed since #138.** The statement is unchanged. Its table storage
+comes from `huge::table::Table::storage`, verified as in #138, over the
+Kani-discharged `axiom_zero_entry` and a `ZeroRaw::axiom_new` pairing for
+a binned table (theorem 4).
 
 ## 30. Decay deadline soundness (per gate, over the loaded values)
 
