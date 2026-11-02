@@ -377,6 +377,9 @@ pub fn alloc(
                     }
                     match arena {
                         Some(a) => {
+                            if no_arena(shared, a) {
+                                return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
+                            }
                             let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell));
                             let ghost take = p@.addr != 0 && zero;
                             let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
@@ -408,6 +411,9 @@ pub fn alloc(
             // shared class to it (`Heap::alloc_in`).
             match arena {
                 Some(a) => {
+                    if no_arena(shared, a) {
+                        return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
+                    }
                     let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell));
                     let ghost take = p@.addr != 0 && zero;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
@@ -436,6 +442,21 @@ pub fn alloc(
             (p, zero, z)
         }
     }
+}
+
+/// Whether an explicit `MALLOCX_ARENA(a)` names no arena or one that
+/// cannot be built: the request is NULL then on every route, even when
+/// `a` is the thread's own home, which an implicit request would serve
+/// from arena 0 (design 14.1).
+fn no_arena(shared: &Shared, a: u16) -> bool
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    // Premise (lock order): called from the `mallocx` entry points, which
+    // hold no lock.
+    let tracked mut ord = axiom_entry();
+    shared.arena(a, Tracked(&mut ord)).is_none()
 }
 
 /// One slot of `class` straight from `arena`'s slab bitmaps. When
