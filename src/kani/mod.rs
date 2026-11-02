@@ -13,10 +13,8 @@
 //! `.chainguard/ci/kani.yaml` runs them all, under both quanta. `kani`
 //! runs on pull requests that change `src/kani/`, `src/vspec/`, a file in
 //! its `changed:` list (the files with a `kani_*` module that proof lanes
-//! rarely touch) or `kani.yaml`, every harness but
-//! `misc::formatter_write_fmt` (about 21 minutes alone), which `kani-fmt`
-//! runs on changes to the files it checks. `kani-ignoring` runs every
-//! harness after every landing on main and covers the rest: the `kani_*`
+//! rarely touch) or `kani.yaml`. `kani-ignoring` runs every harness
+//! after every landing on main and covers the rest: the `kani_*`
 //! modules in files most proof pull requests touch (`heap/cache.rs`,
 //! `heap/flush.rs`, `heap/mod.rs`, `heap/others.rs`, `heap/paths.rs`,
 //! `arena.rs`, `purge.rs`, `api/mallctl.rs`, `api/mod.rs` and

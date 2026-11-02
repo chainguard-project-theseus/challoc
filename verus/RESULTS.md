@@ -222,7 +222,7 @@ The counter also warns about 1 function without a ledger entry: the 3-line `#[ve
 
 On main, 134 `#[kani::proof]` harnesses under `src/` check bounded seam contracts with Kani `0.68.0` and CBMC `6.11.0`. Each harness comment names its seam and bounds. The source also has 50 top-level `const _: () = assert!(..)` assertions; the compiler evaluates them on both quanta and targets. The 61 loom model tests in `tests/loom` provide evidence for atomic protocols, but no seam status cites loom yet. Isla and emptyasm are not on main.
 
-CI keeps this evidence connected to the ledger. `sh verus/seams.sh --check` fails if the ledger is stale, a seam lacks a classification, a discharged Kani citation names no proof harness, or a constant-assertion citation fails to identify exactly 1 assertion. The presubmit `kani` check runs for changes to `src/kani/`, `src/vspec/`, and listed source files. The presubmit `kani` check leaves `formatter_write_fmt` to `kani-fmt`, which runs on changes to the files it checks. The postsubmit `kani-ignoring` check runs every harness at quantum 16 and quantum 8, in 4 shards per quantum, and fails if one does not verify or CBMC prints a `warning: ignoring` line.
+CI keeps this evidence connected to the ledger. `sh verus/seams.sh --check` fails if the ledger is stale, a seam lacks a classification, a discharged Kani citation names no proof harness, or a constant-assertion citation fails to identify exactly 1 assertion. The presubmit `kani` check runs for changes to `src/kani/`, `src/vspec/`, and listed source files. The postsubmit `kani-ignoring` check runs every harness at quantum 16 and quantum 8, in 4 shards per quantum, and fails if one does not verify or CBMC prints a `warning: ignoring` line.
 
 ## Process guarantees
 

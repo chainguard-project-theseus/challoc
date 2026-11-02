@@ -30,23 +30,19 @@ fn walk(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The paths of the `kani` check's `changed:` list in `kani.yaml`'s text:
-/// the first `changed:` after its `kani:` key (`kani-fmt` has its own).
+/// The paths of the one `changed:` list in `kani.yaml`'s text.
 fn changed_list(yaml: &str) -> Vec<String> {
     let lines: Vec<&str> = yaml.lines().map(str::trim).collect();
-    let keys: Vec<usize> = (0..lines.len()).filter(|&i| lines[i] == "kani:").collect();
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i] == "changed:")
+        .collect();
     assert_eq!(
-        keys.len(),
+        starts.len(),
         1,
-        "kani.yaml: got = {} `kani:` keys, want = 1 (update this test if the check moved)",
-        keys.len()
+        "kani.yaml: got = {} `changed:` lists, want = 1 (update this test if the check's trigger moved)",
+        starts.len()
     );
-    let start = (keys[0]..lines.len())
-        .find(|&i| lines[i] == "changed:")
-        .expect(
-            "kani.yaml: got = no `changed:` list after `kani:`, want = its trigger (update this test if the check's trigger moved)",
-        );
-    let list: Vec<String> = lines[start + 1..]
+    let list: Vec<String> = lines[starts[0] + 1..]
         .iter()
         .map_while(|l| l.strip_prefix("- "))
         .map(|l| l.trim_matches('"').to_string())

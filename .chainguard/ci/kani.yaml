@@ -20,16 +20,12 @@
 # `name` methods of `config.rs`; `-Z mem-predicates` for `kani::mem`'s
 # `can_dereference` and its kin, with which harnesses check what Kani 0.68
 # does not check on a typed access: the alignment and the validity of the
-# value. `-j 4` runs four harnesses at once: CBMC peaks at 11.6 GiB on
-# `config::kani_config::display_bytes`, 10.8 GiB on
+# value. `-j 4` runs four harnesses at once, on xlarge-amd64 for its
+# 64 GiB: CBMC peaks at 11.6 GiB on `config::kani_config::display_bytes`, 10.8 GiB on
 # `kani_proofs::misc::formatter_write_fmt`, 10.1 GiB on
 # `api::print::kani_print::word_returns` and 8.8 GiB on
-# `kani_proofs::slice::slice_is_sorted` (quantum 16), and four at once can
-# pass large-amd64's 32 GiB. The `kani` check runs on xlarge-amd64 for
-# its 64 GiB and its 16 vCPUs: cargo kani's build and per-harness steps
-# outside CBMC burst past the four `-j 4` cores. On an 8 vCPU, 48 GiB
-# class the run took 27m21s and 27m37s, against 24m37s and 26m28s here
-# with one harness more (#459).
+# `kani_proofs::slice::slice_is_sorted` (quantum 16), and the first three
+# alone sum to 32.5 GiB, past large-amd64's 32 GiB.
 version: 1
 
 environment:
@@ -39,10 +35,9 @@ checks:
   kani:
     description: >-
       cargo kani over every harness (src/kani/ and the kani_* modules of
-      other files) but formatter_write_fmt, which kani-fmt runs, at
-      quantum 16 and at quantum 8: each must verify. Runs on pull requests
-      that change src/kani/, src/vspec/, a file in its changed: list, or
-      this file.
+      other files), at quantum 16 and at quantum 8: each must verify. Runs
+      on pull requests that change src/kani/, src/vspec/, a file in its
+      changed: list, or this file.
     trigger: [presubmit]
     # On pull requests that change src/kani/, a specification its harnesses
     # check, a file with an in-source kani_* module that hot proof lanes
@@ -67,15 +62,10 @@ checks:
         - "src/rseq.rs"
         - "src/slab.rs"
         - "src/sys/cgroup.rs"
-        - "ci/kani-terse.sh"
         - ".chainguard/ci/kani.yaml"
-    foreach: &kani-quanta
+    foreach:
       - {name: q16, vars: {QUANTUM: "16"}}
       - {name: q8, vars: {QUANTUM: "8"}}
-    # The harness `kani` leaves to `kani-fmt` (ci/kani-terse.sh takes a
-    # list; kani-fmt passes this one name to --harness).
-    vars: &kani-vars
-      KANI_SKIP: kani_proofs::misc::formatter_write_fmt
     resources: xlarge-amd64
     timeout: 40m
     network: &kani-net
@@ -84,53 +74,6 @@ checks:
       - name: fetch the locked dependencies
         cmd: [cargo, fetch, --locked]
       - name: harnesses
-        cmd: [sh, ci/kani-terse.sh]
-
-  # `kani_proofs::misc::formatter_write_fmt` alone, about 21 minutes per
-  # quantum (ci/kani-regular.sh's table: 1261 s), while the rest share
-  # the other `-j 4` workers: in one run it held a worker for the whole
-  # `kani` check (about 21 of its 25 minutes). It checks
-  # `core::fmt::Formatter::write_fmt` through src/kani/fmt.rs's `formats`
-  # against the contract of src/vspec/fmt.rs (ledger:
-  # verus/ledger/src/vspec/fmt.rs.*), so it runs on pull requests
-  # that change those, the module that declares it, the Kani setup (this
-  # file, the crate's features and lib.rs's cfg(kani) attributes) or the
-  # contracts src/kani/misc.rs's other harnesses share with it
-  # (src/vspec/misc.rs). Every other change still reaches it in
-  # kani-ignoring after the landing. One harness is one CBMC process
-  # (10.8 GiB peak), so medium-amd64's 16 GiB holds it.
-  kani-fmt:
-    description: >-
-      cargo kani over kani_proofs::misc::formatter_write_fmt alone, at
-      quantum 16 and at quantum 8: it must verify. Runs on pull requests
-      that change the harness, src/kani/fmt.rs, the write_fmt contract
-      (src/vspec/fmt.rs, src/vspec/misc.rs, their ledger entries), the
-      crate's features or this file.
-    trigger: [presubmit]
-    when:
-      changed:
-        - "src/kani/misc.rs"
-        - "src/kani/fmt.rs"
-        - "src/kani/mod.rs"
-        - "src/vspec/fmt.rs"
-        - "src/vspec/misc.rs"
-        - "src/vspec/mod.rs"
-        - "verus/ledger/src/vspec/fmt.rs.*"
-        - "verus/ledger/src/vspec/misc.rs.*"
-        - "src/lib.rs"
-        - "Cargo.toml"
-        - "Cargo.lock"
-        - "build.rs"
-        - ".chainguard/ci/kani.yaml"
-    foreach: *kani-quanta
-    vars: *kani-vars
-    resources: medium-amd64
-    timeout: 40m
-    network: *kani-net
-    steps:
-      - name: fetch the locked dependencies
-        cmd: [cargo, fetch, --locked]
-      - name: harness
         cmd:
           - sh
           - -c
@@ -138,13 +81,12 @@ checks:
             cargo kani -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm
             --output-format terse -j 4
             --no-default-features --features "quantum${QUANTUM:?}"
-            --exact --harness "${KANI_SKIP:?}"
 
   # Every harness, one at a time in regular format, after each landing on
-  # main: the postsubmit check that each harness verifies at both quanta
-  # (the presubmit `kani` covers only the files in its changed: list, and
-  # leaves formatter_write_fmt to `kani-fmt`). Kani 0.68.0 with CBMC
-  # 6.11.0 also leaves `<`, `<=`, `>` and
+  # main: covers the kani_* modules in files the presubmit trigger leaves
+  # out and the checked items outside any listed path, and fails when a
+  # harness does not verify (ci/kani-regular.sh exits with cargo kani's
+  # status). Kani 0.68.0 with CBMC 6.11.0 leaves `<`, `<=`, `>` and
   # `>=` on two non-constant bools unconstrained (CBMC prints
   # `warning: ignoring >=` and the harness can pass vacuously), and the
   # terse output `-j` requires hides that warning. ci/kani-regular.sh fails
@@ -154,8 +96,7 @@ checks:
   # split them by the script's table of seconds:
   # `formatter_write_fmt` alone (about 21 min) and three of about 18 min.
   # large-amd64's 32 GiB holds CBMC's 11.6 GiB peak with one harness at
-  # a time. It gates nothing; a failure points at the commit that broke a
-  # harness.
+  # a time. It gates nothing.
   kani-ignoring:
     description: >-
       Every harness on main in regular format with CBMC's verbose output,
