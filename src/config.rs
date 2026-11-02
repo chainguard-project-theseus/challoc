@@ -252,10 +252,9 @@ impl Config {
     /// is passed to `report`; the corresponding pair is skipped (or clamped,
     /// for [`Issue::OutOfRange`]) and parsing continues with the next pair.
     /// Returns the number of problems reported.
-    pub fn parse(&mut self, text: &[u8], mut report: impl FnMut(Issue<'_>)) -> (issues: usize)
+    pub fn parse(&mut self, text: &[u8], mut report: impl Report) -> (issues: usize)
         requires
             old(self).wf(),
-            forall|i: Issue| call_requires(report, (i,)),
         ensures
             issues <= text.len(),
             final(self).wf(),
@@ -265,14 +264,12 @@ impl Config {
 
     /// [`parse`](Self::parse) through a borrowed `report`, which the
     /// caller can go on using.
-    fn parse_with<F: FnMut(Issue<'_>)>(&mut self, text: &[u8], report: &mut F) -> (issues: usize)
+    fn parse_with<R: Report>(&mut self, text: &[u8], report: &mut R) -> (issues: usize)
         requires
             old(self).wf(),
-            forall|i: Issue| call_requires(*old(report), (i,)),
         ensures
             issues <= text.len(),
             final(self).wf(),
-            *final(report) == *old(report),
     {
         let mut issues = 0;
         let mut pairs = Pairs(text);
@@ -282,14 +279,12 @@ impl Config {
             invariant
                 pairs.0@.len() <= text.len(),
                 issues <= text.len() - pairs.0@.len(),
-                *report == *old(report),
-                forall|i: Issue| call_requires(*report, (i,)),
                 self.wf(),
             decreases pairs.0@.len(),
         {
             if let Err(issue) = self.apply_pair(pair) {
                 issues += 1;
-                report(issue);
+                report.report(issue);
             }
         }
         issues
@@ -305,12 +300,11 @@ impl Config {
         &mut self,
         text: &[u8],
         cut: bool,
-        mut report: impl FnMut(Issue<'_>),
+        mut report: impl Report,
     ) -> (issues: usize)
         requires
             old(self).wf(),
             text@.len() < usize::MAX,
-            forall|i: Issue| call_requires(report, (i,)),
         ensures
             issues <= text.len() + 1,
             cut ==> issues > 0,
@@ -321,7 +315,7 @@ impl Config {
         }
         let keep = before_last_pair(text);
         let issues = self.parse_with(&text[..keep], &mut report);
-        report(Issue::Cut);
+        report.report(Issue::Cut);
         issues + 1
     }
 
@@ -999,7 +993,21 @@ pub enum Issue<'a> {
     Cut,
 }
 
+/// Where [`Config::parse`] sends each problem it finds.
+pub trait Report {
+    /// Take one problem; nothing is claimed about what is done with it.
+    fn report(&mut self, issue: Issue<'_>);
+}
+
 } // verus!
+
+/// The tests' reports are closures.
+#[cfg(test)]
+impl<F: FnMut(Issue<'_>)> Report for F {
+    fn report(&mut self, issue: Issue<'_>) {
+        self(issue)
+    }
+}
 
 impl fmt::Display for Issue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1527,7 +1535,7 @@ mod linux {
     use core::ffi::{c_char, c_void};
     use core::fmt::Write as _;
 
-    use super::{Config, Issue, position_of};
+    use super::{Config, Issue, Report, position_of};
     use crate::sys;
     use vstd::prelude::*;
 
@@ -1550,10 +1558,24 @@ mod linux {
 
     verus! {
 
+    /// Prints each problem as `challoc: <source>: <issue>` to `out`.
+    struct ToStderr<'a> {
+        source: &'a str,
+        out: &'a mut sys::Stderr,
+    }
+
+    impl Report for ToStderr<'_> {
+        /// Trusted: formats `issue` through `Issue`'s `Display`, which is
+        /// outside `verus!`; claims nothing.
+        #[verifier::external_body]
+        fn report(&mut self, issue: Issue<'_>) {
+            let _ = writeln!(self.out, "challoc: {}: {}", self.source, issue);
+        }
+    }
+
     /// [`Config::parse_source`] of `text` from `source`, cut or not,
     /// printing each problem as `challoc: <source>: <issue>` to `out`.
-    /// Trusted: the report is a closure that formats into `out`, a mutable
-    /// capture Verus does not model; the contract is `parse_source`'s.
+    /// Trusted: the contract is `parse_source`'s.
     #[verifier::external_body]
     #[inline(always)]
     fn parse_from(
@@ -1571,9 +1593,7 @@ mod linux {
             cut ==> issues > 0,
             final(cfg).wf(),
     {
-        cfg.parse_source(text, cut, |i: Issue<'_>| {
-            let _ = writeln!(out, "challoc: {source}: {i}");
-        })
+        cfg.parse_source(text, cut, ToStderr { source, out })
     }
 
     /// `/etc/challoc.conf`, NUL-terminated (spelled as bytes so the
@@ -1654,9 +1674,9 @@ mod linux {
     /// Trusted: `getauxval(AT_SECURE)` returns the process's one
     /// `AT_SECURE` word (`sys::auxv::at_secure`, in the `getauxval` seam),
     /// and `env_var`'s contract (its body is not verified). Checked by a
-    /// test, not by Verus: `env_var` is the only reader of `environ`, and
-    /// outside the tests `load` is its only caller
-    /// (`config::linux_tests::environment_has_one_reader`).
+    /// test, not by Verus: `env_var` is the only reader of `environ`
+    /// (through [`environ_array`]), and outside the tests `load` is its
+    /// only caller (`config::linux_tests::environment_has_one_reader`).
     pub proof fn theorem_secure_conf(name: &[u8], r: Option<(&'static [u8], bool)>)
         requires
             crate::sys::auxv::secure_exec(),
@@ -1688,8 +1708,8 @@ mod linux {
         cstr(unsafe { read_slot(slot) })
     }
 
-    /// The `const char *` the symbol at `slot` holds. Trusted: a raw read;
-    /// nothing is claimed about the pointer.
+    /// The `const char *` at `slot` (a symbol, or an `environ` entry).
+    /// Trusted: a raw read; nothing is claimed about the pointer.
     ///
     /// # Safety
     /// `slot` is a defined `const char *` object.
@@ -1814,13 +1834,23 @@ mod linux {
         unsafe { core::slice::from_raw_parts(p, n) }
     }
 
+    /// glibc's `environ`, null before libc has set it up. Trusted: a read
+    /// of the C global; nothing is claimed about the pointer.
+    #[verifier::external_body]
+    #[inline(always)]
+    fn environ_array() -> *const *const c_char {
+        // SAFETY: a plain read of a pointer-sized global.
+        unsafe { environ }
+    }
+
     /// The value of environment variable `name` (no `=` in it), read from
     /// `environ` without `getenv`, and whether it was cut, as [`cstr`]
     /// returns it for the value alone. `None` when unset or empty.
     ///
-    /// Trusted: walks `environ` through raw pointers; each entry is read
-    /// through `cstr`, and when it sets `name` (`env_sets`) its value is
-    /// read through `cstr` again, which stops at [`MAX_TEXT`] bytes.
+    /// Trusted: walks `environ` ([`environ_array`]) through raw pointers;
+    /// each entry is read through `cstr`, and when it sets `name`
+    /// (`env_sets`) its value is read through `cstr` again, which stops at
+    /// [`MAX_TEXT`] bytes.
     ///
     /// Requires a process that is not a secure-execution one
     /// (`sys::auxv::secure_exec`), whose environment is untrusted, so Verus
@@ -1838,27 +1868,27 @@ mod linux {
             !crate::sys::auxv::secure_exec(),
             r matches Some((s, cut)) ==> s@.len() <= MAX_TEXT,
     {
-        // SAFETY: `environ` is glibc's NULL-terminated array of NUL-terminated
+        // `environ` is glibc's NULL-terminated array of NUL-terminated
         // strings; it is null before libc has set it up.
-        let mut e = unsafe { environ };
+        let mut e = environ_array();
         if e.is_null() {
             return None;
         }
         loop {
             // SAFETY: `e` walks the array up to its terminating null.
-            let entry = unsafe { e.read() };
+            let entry = unsafe { read_slot(e) };
             if entry.is_null() {
                 return None;
             }
             if let Some((text, _)) = cstr(entry) {
                 if env_sets(text, name) {
-                    // SAFETY: the value starts after `name=`, inside the
-                    // entry just read.
-                    return cstr(unsafe { entry.add(name.len() + 1) });
+                    // The value starts after `name=`, inside the entry just
+                    // read.
+                    return cstr(entry.wrapping_add(name.len() + 1));
                 }
             }
-            // SAFETY: not yet at the terminating null.
-            e = unsafe { e.add(1) };
+            // Not yet at the terminating null.
+            e = e.wrapping_add(1);
         }
     }
 
@@ -1943,7 +1973,9 @@ mod tests {
     fn parse(text: &str) -> (Config, Vec<std::string::String>) {
         let mut cfg = Config::DEFAULT;
         let mut issues = Vec::new();
-        let n = cfg.parse(text.as_bytes(), |i| issues.push(std::format!("{i}")));
+        let n = cfg.parse(text.as_bytes(), |i: Issue<'_>| {
+            issues.push(std::format!("{i}"))
+        });
         assert_eq!(n, issues.len());
         (cfg, issues)
     }
@@ -2906,7 +2938,9 @@ mod tests {
         for &(text, cut, narenas, count) in cases {
             let mut cfg = Config::DEFAULT;
             let mut issues = Vec::new();
-            let n = cfg.parse_source(text.as_bytes(), cut, |i| issues.push(std::format!("{i}")));
+            let n = cfg.parse_source(text.as_bytes(), cut, |i: Issue<'_>| {
+                issues.push(std::format!("{i}"))
+            });
             assert_eq!(n, issues.len(), "{text}");
             assert_eq!(cfg.narenas, narenas, "{text}: {issues:?}");
             assert_eq!(issues.len(), count, "{text}: {issues:?}");
@@ -2976,7 +3010,7 @@ mod linux_tests {
         assert_eq!(env_var(b"CHALLOC_CONF_TEST_MISSING"), None);
         let mut cfg = Config::DEFAULT;
         assert_eq!(
-            cfg.parse(env_var(b"CHALLOC_CONF_TEST").unwrap().0, |_| {}),
+            cfg.parse(env_var(b"CHALLOC_CONF_TEST").unwrap().0, |_: Issue<'_>| {}),
             0
         );
         assert_eq!(cfg.narenas, 3);
@@ -3046,7 +3080,7 @@ mod linux_tests {
         assert!(cut);
         let mut cfg = Config::DEFAULT;
         let mut issues = Vec::new();
-        let n = cfg.parse_source(s, cut, |i| issues.push(std::format!("{i}")));
+        let n = cfg.parse_source(s, cut, |i: Issue<'_>| issues.push(std::format!("{i}")));
         assert_eq!(n, issues.len());
         assert_eq!(cfg.narenas, Config::DEFAULT.narenas, "{issues:?}");
         assert!(cfg.abort_conf, "the pairs before the cut still apply");
@@ -3092,10 +3126,10 @@ mod linux_tests {
 
     /// The environment has one reader, which `theorem_secure_conf`'s
     /// premise names: `environ` (or glibc's `_environ` or `__environ`) is
-    /// read only in `env_var`'s body, and `env_var` is called only by
-    /// `load` (twice, after its `AT_SECURE` test, which Verus checks
-    /// against `env_var`'s precondition) and by the tests above. No code
-    /// calls `getenv` or `secure_getenv`.
+    /// read only in `environ_array`, which only `env_var`'s body calls, and
+    /// `env_var` is called only by `load` (twice, after its `AT_SECURE`
+    /// test, which Verus checks against `env_var`'s precondition) and by
+    /// the tests above. No code calls `getenv` or `secure_getenv`.
     #[test]
     fn environment_has_one_reader() {
         use crate::sys::tests::grant_sites;
@@ -3103,6 +3137,8 @@ mod linux_tests {
         let var = std::format!("{}{}", "envi", "ron");
         let call = std::format!("{}{}(", "env_", "var");
         let def = std::format!("pub fn {call}");
+        let shim = std::format!("{var}_array(");
+        let shim_def = std::format!("fn {shim}");
         // A token naming `environ` or one of glibc's aliases for it
         // (`_environ`, `__environ`), not an identifier ending in it.
         let word = |at: &str| {
@@ -3116,11 +3152,20 @@ mod linux_tests {
         for (sig, at) in &reads {
             assert!(
                 at.starts_with("config.rs:")
-                    && (sig.starts_with(&def) || at.contains("static envi")),
+                    && (sig.starts_with(&shim_def) || at.contains("static envi")),
                 "{at}: the environment read in `{sig}`"
             );
         }
         assert_eq!(reads.len(), 2, "{reads:?}");
+        let shim_calls = grant_sites(&shim);
+        for (sig, at) in &shim_calls {
+            assert!(
+                at.starts_with("config.rs:")
+                    && (sig.starts_with(&def) || sig.starts_with(&shim_def)),
+                "{at}: `environ_array` called in `{sig}`"
+            );
+        }
+        assert_eq!(shim_calls.len(), 2, "{shim_calls:?}");
         let libc_lookups = grant_sites(&std::format!("{}{}", "get", "env"));
         assert!(libc_lookups.is_empty(), "{libc_lookups:?}");
         let calls = grant_sites(&call);
