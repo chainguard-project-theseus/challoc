@@ -1378,20 +1378,33 @@ impl<'a> AtomicBitmap<'a> {
     }
 
     /// Set slot bits, padding excluded: the slab's allocated (or cached)
-    /// slots for a class with `nslots` real slots. A cleared padding bit
-    /// aborts through `vspec::check::check`. Trusted: it names neither the
-    /// abort capability `check` needs nor a loop invariant.
-    #[verifier::external_body]
+    /// slots for a class with `nslots` real slots. An integrity check
+    /// (`sys::may_abort_corrupt`): a cleared padding bit aborts.
     pub fn allocated(&self, nslots: usize) -> usize
         requires
+            crate::sys::may_abort_corrupt(),
             nslots <= self.spec_nbits(),
     {
+        proof {
+            use_type_invariant(self);
+        }
         // The `map` and `sum` of the word counts, as a loop: Verus does
-        // not specify those adapters.
+        // not specify those adapters. Each word adds at most 64, and the
+        // view has at most `usize::MAX / 64` words.
         let mut set: usize = 0;
         let mut w = 0;
-        while w < self.words.len() {
+        while w < self.words.len()
+            invariant
+                w <= self.words@.len(),
+                self.words@.len() * 64 <= usize::MAX,
+                set <= w * 64,
+            decreases self.words@.len() - w,
+        {
             let x = self.load(w);
+            proof {
+                lemma_popcount(x);
+                lemma_count_bound(x, 64);
+            }
             set += x.count_ones() as usize;
             w += 1;
         }
