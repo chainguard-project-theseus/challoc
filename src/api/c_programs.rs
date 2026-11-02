@@ -1099,7 +1099,7 @@ ctests! {
     /// file: in the probed mode, under `guards:false` (no guard at all),
     /// on an emulated kernel without `MADV_GUARD_INSTALL` (a seccomp
     /// filter; the `PROT_NONE` fallback), and with every guard marker
-    /// refused under `mlockall` (the `PROT_NONE` guards of `mixed_guards`).
+    /// refused on an `mlock`ed span (the `PROT_NONE` guards of `mixed_guards`).
     c_huge_vmas => [
         CTest { prog: "huge_vmas", args: &["free"], conf: Some("abort_conf:true"), ..BASE },
         CTest { prog: "huge_vmas", args: &["free"], conf: Some("abort_conf:true,guards:false"), ..BASE },

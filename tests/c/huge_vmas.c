@@ -17,11 +17,12 @@
  *                        filter, as on a kernel before 6.13: the program
  *                        installs it and re-executes itself in `free` mode,
  *                        and checks challoc_features() says guard_install=no
- *   mlock                mlockall(MCL_CURRENT | MCL_FUTURE), then 300 runs:
- *                        the guard marker is refused on locked VMAs and a
- *                        `PROT_NONE` guard goes in instead (`mixed_guards`),
- *                        which a free must take away as well. Skips when
- *                        the memlock limit cannot be raised to fit.
+ *   mlock                up to 24 runs placed again in a freed span the
+ *                        program mlock()s: the guard marker is refused on
+ *                        a locked VMA and a `PROT_NONE` guard goes in
+ *                        instead (`mixed_guards`), which a free must take
+ *                        away as well. Fits the default RLIMIT_MEMLOCK
+ *                        (8 MiB); skips below 10 runs' worth.
  *
  * At the limit malloc may return NULL while runs are live (a live guarded
  * run costs two VMAs in the fallback mode); that is not a failure here.
@@ -35,6 +36,7 @@
 #include <stddef.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <stdint.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 
@@ -132,26 +134,58 @@ static int noguard(char **argv)
 
 static int locked(void)
 {
-    enum { N = 300 };
-    /* The runs, their guards' neighbours and the other tiers' pages. */
-    rlim_t want = (rlim_t)N * (RUN_SIZE + 64 * 1024) + (128u << 20);
+    /* Runs inside the default RLIMIT_MEMLOCK (8 MiB): lock only the span
+     * they occupy, not the whole process. */
     struct rlimit rl;
-    if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < want) {
-        rl.rlim_cur = want;
-        if (rl.rlim_max != RLIM_INFINITY && rl.rlim_max < want)
-            rl.rlim_max = want;
-        if (setrlimit(RLIMIT_MEMLOCK, &rl) != 0) {
-            skip_note("huge_vmas", "cannot raise RLIMIT_MEMLOCK to %lu: %s", (unsigned long)want, strerror(errno));
-            printf("ok huge_vmas\n");
-            return 0;
-        }
-    }
-    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
-        skip_note("huge_vmas", "mlockall: %s", strerror(errno));
+    REQUIRE(getrlimit(RLIMIT_MEMLOCK, &rl) == 0, "getrlimit: %s", strerror(errno));
+    size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    size_t per = RUN_SIZE + page;
+    long n = 24;
+    if (rl.rlim_cur != RLIM_INFINITY && (rl.rlim_cur < (512u << 10) || (long)((rl.rlim_cur - (512u << 10)) / per) < n))
+        n = rl.rlim_cur < (512u << 10) ? 0 : (long)((rl.rlim_cur - (512u << 10)) / per);
+    if (n < 10) {
+        skip_note("huge_vmas", "RLIMIT_MEMLOCK %lu fits fewer than 10 runs", (unsigned long)rl.rlim_cur);
         printf("ok huge_vmas\n");
         return 0;
     }
-    return churn(N);
+    free(malloc(RUN_SIZE));
+    void *v[24];
+    uintptr_t lo = UINTPTR_MAX, hi = 0;
+    for (long i = 0; i < n; i++) {
+        v[i] = malloc(RUN_SIZE);
+        REQUIRE(v[i] != NULL, "malloc: %s", strerror(errno));
+        uintptr_t a = (uintptr_t)v[i];
+        lo = a < lo ? a : lo;
+        hi = a + per > hi ? a + per : hi;
+    }
+    for (long i = 0; i < n; i++)
+        free(v[i]);
+    /* The freed span is read-write and lowest-address first fit puts the
+     * same runs back in it; locked, the kernel refuses their guard markers
+     * and each guard becomes a PROT_NONE page instead. */
+    if (mlock((void *)lo, hi - lo) != 0) {
+        skip_note("huge_vmas", "mlock of %zu bytes: %s", (size_t)(hi - lo), strerror(errno));
+        printf("ok huge_vmas\n");
+        return 0;
+    }
+    long base = count_vmas();
+    for (long i = 0; i < n; i++) {
+        v[i] = malloc(RUN_SIZE);
+        REQUIRE(v[i] != NULL, "malloc: %s", strerror(errno));
+        CHECK((uintptr_t)v[i] >= lo && (uintptr_t)v[i] + RUN_SIZE <= hi, "run %ld left the locked span", i);
+        ((volatile char *)v[i])[0] = 1;
+    }
+    long live = count_vmas();
+    for (long i = 0; i < n; i++)
+        free(v[i]);
+    malloc_trim(0);
+    long after = count_vmas();
+    munlock((void *)lo, hi - lo);
+    printf("%ld runs placed in a locked span: %ld VMAs before, %ld live, %ld after freeing them all\n", n, base, live,
+           after);
+    CHECK(after <= base + 4, "%ld VMAs after freeing every locked run (baseline %ld): their PROT_NONE guards stayed",
+          after, base);
+    return finish("huge_vmas");
 }
 
 int main(int argc, char **argv)
