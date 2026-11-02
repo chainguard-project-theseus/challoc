@@ -871,6 +871,12 @@ ctests! {
     /// window and gets EAGAIN with nothing changed; afterwards the child
     /// turns the thread on and off and never has two.
     c_fork_window => [ CTest { prog: "fork_window", ..BASE } ];
+    /// `tests/c/fork_window_lazy.c`: a child atfork handler registered
+    /// before challoc's frees a 96 MiB burst and keeps allocating past the
+    /// lazy start's threshold in the fork window: no `challoc-bg` thread
+    /// starts there (`start_requested`, `start`), and the child never has
+    /// more than one afterwards.
+    c_fork_window_lazy => [ CTest { prog: "fork_window_lazy", ..BASE } ];
     /// `tests/c/fork_spin.c`: a child atfork handler registered before
     /// challoc's reads the feature line and the cgroup record while
     /// another parent thread was building them at the fork: the read
