@@ -24,37 +24,49 @@ exact windows the defaults leave open. The design view is
 ## (1) Invalid and double frees
 
 Through `free`: an invalid pointer aborts at the call, and so does a
-second free of a slot that has already left the thread cache (its slot bit
-is clear). A second free while the slot is still cached is caught when a
-flush releases the copies to the slab: the flush groups the released half
-by slab, so the copies land in one slab's batch, the release aborts on the
-duplicate, and the one case where the split would release one copy and
-keep the other aborts at the split. A pair the split keeps together stays
-in the cache until a later flush releases it; if a `malloc` pops one copy
-before then, the duplicate is not detected and the slot is live twice,
-unless the `double_free_scan` tunable is set: then every free (plain and
-sized) compares the slot against the four most recently cached entries
-and aborts on a match at the call. It is off by default because it costs
-about 3..4% on larson and up to 14% on the Valkey model on x86_64.
+second free of a slot that has already left the thread cache (its slot
+bit is clear). A second free while the slot is still held in a thread
+cache is not checked at the call. A flush catches it only if the slot is
+still unclaimed when the flush reaches the copy: when both copies are in
+one cache and released together, the flush groups the released half by
+slab, so the copies land in one slab's batch and the release aborts on
+the duplicate, and the one case where the split would release one copy
+and keep the other aborts at the split. A pair the split keeps together
+stays in the cache until a later flush releases it. If a `malloc` pops
+one copy first, or the copies are in two threads' caches and a refill
+claims the slot between the two flushes (the second flush then releases
+the slot under its new owner), the duplicate is not detected and the
+slot is live twice, unless the `double_free_scan` tunable is set: then
+every cached free (plain and sized) compares the slot against the four
+most recently cached entries of the cache it pushes to and aborts on a
+match at the call. Not checked even then: a copy in another cache
+(another thread's, or this thread's foreign cache when one free is plain
+and the other sized), and a `MALLOCX_TCACHE_NONE` free, which does not
+look at the caches. It is off by default because it costs about 3..4% on
+larson and up to 14% on the Valkey model on x86_64.
 
 Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
-`free_aligned_sized` (what Valkey frees with): the size is checked against
-the pointer's class, or a huge run's page count, at the call (a size that
-names another class or page count aborts,
-`nallocx(size, flags) == sallocx(p)` is the contract), a slot start inside
-a guard slab aborts at the call, the slot bit is not read, and any other
-invalid or double free is caught when a flush releases the slot to its
-slab (at once when the cache is full or with `MALLOCX_TCACHE_NONE`, which
-take the exact check at the call). That is not bounded by a number of
-frees: a partial flush releases the cache's highest addresses and keeps the
-lowest, so a slot below the rest of the cache can stay cached through any
-number of same-class frees until a whole flush (thread exit,
+`free_aligned_sized` (what Valkey frees with): the size is checked
+against the pointer's class, or a huge run's page count, at the call (a
+size that names another class or page count aborts, `nallocx(size,
+flags) == sallocx(p)` is the contract), a slot start inside a guard slab
+aborts at the call, the slot bit is not read, and any other invalid or
+double free is left to a flush. It is caught when a flush releases the
+slot to its slab while the slot is still unclaimed (at once when the
+cache is full or with `MALLOCX_TCACHE_NONE`, which take the exact check
+at the call). That is not bounded by a number of frees: a partial flush
+releases the cache's highest addresses and keeps the lowest, so a slot
+below the rest of the cache can stay cached through any number of
+same-class frees until a whole flush (thread exit,
 `thread.tcache.flush`, `tcache.flush`) or a partial one that reaches it.
 Between the call and that flush the slot can be handed out twice, which
-is jemalloc's behaviour for every free; if a `malloc` takes one copy
-before the flush the duplicate is not detected. This trade is made for jemalloc parity: on Valkey's write path
-the exact check's bitmap load is a cache miss per free, most of what once
-separated challoc from jemalloc there.
+is jemalloc's behaviour for every free: if a `malloc` takes one copy
+before the flush the duplicate is not detected, and a sized free of a
+slot start challoc has not handed out enters the cache, so if a refill
+claims that slot before the flush, the flush releases it under its new
+owner and it is live twice. This trade is made for jemalloc parity: on
+Valkey's write path the exact check's bitmap load is a cache miss per
+free, most of what once separated challoc from jemalloc there.
 
 ## (2) Zero on free and slot randomisation
 

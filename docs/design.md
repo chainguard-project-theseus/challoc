@@ -305,7 +305,9 @@ Operations on the bitmap are always atomic. Slabs have no owning thread.
   requested. Add the count to `live`.
 - **Release** (cache flush): group pointers by slab, `fetch_and(!mask)`
   per word, subtract from `live`. A bit that is already clear aborts (an
-  invalid or double free caught at the flush). If `live` reaches zero,
+  invalid or double free caught at the flush; a set bit is not proof
+  that the cached copy was valid: a refill may have claimed the slot
+  since the free, 6.3). If `live` reaches zero,
   transition the slab to `Empty`, stamp `dirty_at`, and put it on the
   arena's empty set for the class.
 - **Check** (free): load the bitmap word, verify the bit is set, else
@@ -651,14 +653,19 @@ price of exact invalid-free detection and also what makes cross-thread
 frees free of coordination; neither touches the slab descriptor.
 
 The sized path skips that load, and with it the check: an invalid or
-double free through it is caught when the cache flushes the slot (the
-release aborts on a clear bit, and on a guard slab, a `Fresh` slab or a
-slab past the table's watermark by name, `SlabTable::owner`), whenever a
-flush reaches it: a partial flush keeps the lowest addresses (6.4), so
-that is not bounded by a number of frees; until then the slot can be
-handed out twice, as under jemalloc. Because the arena is not read
-either, the home cache holds slots of any arena on this path, and the
-flush releases each run of slabs through the arena the owner array names (`release_owned`).
+double free through it is caught when a flush releases the slot while
+it is still unclaimed (the release aborts on a clear bit, and on a guard
+slab, a `Fresh` slab or a slab past the table's watermark by name,
+`SlabTable::owner`), whenever a flush reaches it: a partial flush keeps
+the lowest addresses (6.4), so that is not bounded by a number of frees.
+Until then the slot can be handed out twice, as under jemalloc, and a
+slot that was not allocated at the call (a slot start challoc has not
+handed out) can be claimed by a refill before the flush, which then
+releases it under its new owner: the flush tests the slot's state at the
+flush, not at the call. Because the arena is not
+read either, the home cache holds slots of any arena on this path, and
+the flush releases each run of slabs through the arena the owner array
+names (`release_owned`).
 Plain `free` keeps step 2's load, so a double `free` of a slot that has
 left the cache aborts at the call. `MALLOCX_ARENA(a)` with the default
 cache pops whatever the cache holds, as jemalloc's does;
@@ -1360,8 +1367,9 @@ run takes any size whose page count is the run's (any size with the run's
 `nallocx`, and the small size of a run an alignment made huge), and
 another size aborts the same way; the slot
 bit is not read, so an invalid or double free through `sdallocx` is
-detected at the cache flush (6.3); a slot start in a guard slab is
-rejected at the call. `dallocx` is `free` with flags. C23 `free_sized` and
+left to the cache flush, which catches it only if the slot is still
+unclaimed then (6.3); a slot start in a guard slab is rejected at the
+call. `dallocx` is `free` with flags. C23 `free_sized` and
 `free_aligned_sized` follow the same rule; `free_sized` on memory from
 `aligned_alloc`/`memalign` is undefined in C23 and aborts here when the
 alignment put the block in a larger class.
@@ -1612,7 +1620,9 @@ Always on:
   memory.
 - Size-class isolation in separate randomised regions with unmapped gaps.
 - Invalid-free and stale double-free detection on every plain `free`
-  (the sized path defers the bit test to the flush, 6.3).
+  (the sized path defers the bit test to the flush, 6.3). A second free
+  of a slot still held in a thread cache is caught only by a flush that
+  reaches the copy while the slot is unclaimed (6.3).
 - A guard after every huge run (`MADV_GUARD_INSTALL`, else `PROT_NONE`).
 - Abort, never continue, on any inconsistency: a message on stderr via
   `write(2)`, then `abort()` (`sys/abort.rs`). A resource failure is not
@@ -1626,8 +1636,8 @@ filters it; sections 2 and 10).
 Off by default, tunable (each is over the budget a default-on hardening
 must meet; the prices are in 6.3 and [tuning.md](tuning.md)):
 
-- `double_free_scan`: compare each pushed slot against the top four cache
-  entries (6.3).
+- `double_free_scan`: compare each pushed slot against the top four
+  entries of the cache it is pushed to (6.3).
 - `guard_slab_interval` below the default of 8, for denser guard slabs.
 - `zero_on_free`: clear a slot's class-size bytes, or a huge run's usable
   bytes, on free (6.3).

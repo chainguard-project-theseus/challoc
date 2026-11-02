@@ -94,18 +94,22 @@ These hold on every supported host with the default configuration:
 
 ## Best-effort and probabilistic protections
 
-- **Double frees still in the thread cache.** A second free of a slot
-  that is still cached is caught when the cache flushes. If a `malloc`
-  takes one copy before that, the duplicate isn't detected and the slot
-  is live twice. `double_free_scan:true` closes most of this window at
-  the call, at a measured cost.
+- **Double frees still in a thread cache.** A second free of a slot
+  still held in any thread's cache is not checked at the call. A flush
+  catches it only if the slot is still unclaimed when the flush reaches
+  the copy: if a `malloc` or another thread's refill takes the slot
+  first, it is live twice. `double_free_scan:true` narrows this window
+  at the call, at a measured cost.
 - **Freed pointers still in the thread cache.** A slot keeps its live
   bit until a flush releases it, so `malloc_usable_size`, `realloc` or
   `sallocx` on a pointer freed into the cache (and not yet flushed) is
   not detected: it reports the class's usable size, or reallocates.
 - **The sized path defers its slot check.** `sdallocx` and `free_sized`
-  check the size at the call but leave the double-free check to the
-  flush, which is jemalloc's behaviour for every free.
+  check the size at the call but leave the invalid- and double-free
+  check to a flush, with no bound on when. A sized free of a slot start
+  challoc has not handed out can enter a cache and, if a refill claims
+  the slot first, make it live twice. That deferral is jemalloc's
+  behaviour for every free.
 - **Randomisation is probabilistic.** Class region addresses are
   randomised. Slot order within a class is predictable unless
   `slot_randomize:true` is set.
