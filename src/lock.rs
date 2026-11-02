@@ -555,8 +555,9 @@ pub struct Lock<T> {
 ///
 /// Verified code that takes a lock relies on it: [`Lock::new`] requires it
 /// of the initial value, and [`Lock::lock`] hands the value out with it.
-/// Nothing checks that a guard is dropped with the invariant restored, so
-/// this is an assumption about every holder of the lock: a verified holder
+/// A holder that ends with [`LockGuard::unlock`] is checked, since the
+/// unlock requires it. Nothing checks a guard that drops instead, so for
+/// those this is an assumption about the holder: a verified holder
 /// ends with the value satisfying it, through the postcondition of the
 /// last call that changes the value or an explicit `assert` before the
 /// guard goes out of scope, unless the owner of the type names a premise
@@ -698,6 +699,7 @@ impl<T> Lock<T> {
         ensures
             lock_inv(g@),
             lock_frame(lock_init(*self), g@),
+            g.spec_lock() == *self,
             *final(ord) == *old(ord),
             final(under).top() == self.rank(),
             !final(under).root(),
@@ -724,7 +726,7 @@ impl<T> Lock<T> {
     #[cfg(test)]
     pub fn try_lock(&self) -> (r: Option<LockGuard<'_, T>>)
         ensures
-            r matches Some(g) ==> lock_inv(g@) && lock_frame(lock_init(*self), g@),
+            r matches Some(g) ==> lock_inv(g@) && lock_frame(lock_init(*self), g@) && g.spec_lock() == *self,
     {
         if self.raw.try_lock() {
             let tracked perm = axiom_acquired(*self);
@@ -867,6 +869,25 @@ impl<'a, T> LockGuard<'a, T> {
     closed spec fn wf(&self) -> bool {
         self.perm@.id() == self.lock.value.id()
     }
+
+    /// The lock this guard holds.
+    pub closed spec fn spec_lock(&self) -> Lock<T> {
+        *self.lock
+    }
+
+    /// Release the lock, handing the value back with the lock's invariant
+    /// and frame restored ([`lock_inv`], [`lock_frame`]): the explicit
+    /// unlock a verified holder ends with, which checks what the free
+    /// lock's invariant takes back at the next [`axiom_acquired`]. The
+    /// release is the guard's drop, at the end of the body.
+    #[inline(always)]
+    pub fn unlock(self)
+        requires
+            crate::sys::may_syscall(),
+            lock_inv(self@),
+            lock_frame(lock_init(self.spec_lock()), self@),
+    {
+    }
 }
 
 impl<'a, T> View for LockGuard<'a, T> {
@@ -898,6 +919,7 @@ impl<T> DerefMut for LockGuard<'_, T> {
         ensures
             *r == old(self)@,
             *final(r) == final(self)@,
+            final(self).spec_lock() == old(self).spec_lock(),
     {
         proof {
             use_type_invariant(&*self);

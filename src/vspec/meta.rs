@@ -12,20 +12,21 @@ verus! {
 /// the real state always has a ghost witness (free lists, the permissions
 /// to free blocks and to the committed bytes above the bump pointer, the
 /// uncommitted address space, and the records of live objects and of
-/// unclaimed reserved bytes) that makes `wf` true. Verus does not check
-/// what a holder does before it drops a guard; each verified holder ends
-/// with the value satisfying `wf`, as the postcondition of the last
-/// `Inner` method it calls.
+/// unclaimed reserved bytes) that makes `wf` true. Each holder outside
+/// the tests (`Meta::alloc`, `alloc_raw`, `alloc_zeroed`, `free`,
+/// `reserve`, `reserve_table`, `commit`, `reserve_committed_raw` and
+/// `stats`) ends with `LockGuard::unlock`, which requires `wf` (this
+/// axiom) and the frame ([`axiom_meta_lock_frame`]), on every path to a
+/// return (`meta::tests::meta_guards_end_in_unlock`); a guard dropped
+/// without it would release unchecked. A panic aborts (`panic = "abort"`)
+/// outside the tests, so it never releases.
 ///
-/// The writers of the locked value: `Meta::owning` builds it (verified:
-/// `Lock::new` requires the invariant); `Meta::alloc`, `alloc_zeroed`,
-/// `free`, `reserve`, `reserve_table`, `commit`, `reserve_committed` and
-/// `stats` are verified to keep it. The only writers not verified are the
-/// test-only `set_eager_for_test` and `eager_allowed`, which touch only
-/// `eager`, which `wf` does not mention. The fork handlers take and
-/// release the raw lock without touching the value, and nothing calls
-/// `get_unlocked` on it. What is left is the claim that the lock protects
-/// `wf`.
+/// Holders not verified: the test-only `set_eager_for_test` and
+/// `eager_allowed`, which touch only `eager`, which `wf` does not
+/// mention, and `base` and `top`, which only read. The fork handlers take
+/// and release the raw lock without touching the value, and nothing
+/// calls `get_unlocked` on it. What is
+/// left is the claim that the lock protects `wf`.
 pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
     ensures
         #[trigger] lock_inv(v) == v.wf(),
@@ -34,17 +35,10 @@ pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
 /// Assumption: what every value the metadata lock holds keeps from the
 /// one `Meta::owning` created it with is exactly the page size, the
 /// region's bounds and the identities of the ghost records (live objects,
-/// unclaimed reserved bytes). Each `Inner` method the lock's holders call
-/// to change the value (`eager_ok`, `reserve_eager`, `alloc`, `free`,
-/// `reserve`, `commit`, `reserve_committed`) ensures
-/// `lock_frame(*old(self), *final(self))`. The holders that keep their
-/// guard (`Meta::alloc_zeroed`, and `Meta::reserve_table` on both its
-/// paths) assert the frame before it drops; the others change the value
-/// only through one of those methods on a temporary guard, which is not
-/// checked beyond the method (Verus checks nothing at a guard's drop).
-/// Nothing replaces the value (`Inner::new` is called only by
-/// `Meta::owning`), and the test-only `set_eager_for_test` writes only
-/// `eager`.
+/// unclaimed reserved bytes). Each holder outside the tests checks it at
+/// its `LockGuard::unlock`, as for [`axiom_meta_lock_inv`]. Nothing
+/// replaces the value (`Inner::new` is called only by `Meta::owning`),
+/// and the test-only `set_eager_for_test` writes only `eager`.
 pub(crate) broadcast axiom fn axiom_meta_lock_frame(a: crate::meta::Inner, b: crate::meta::Inner)
     ensures
         #[trigger] lock_frame(a, b) == (a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
