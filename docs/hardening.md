@@ -9,8 +9,8 @@ exact windows the defaults leave open. The design view is
 |------------------------------------------|--------------|-----------------|
 | Metadata separate from user memory       | No           | Yes             |
 | Free-list pointers in freed blocks       | Yes          | None (5)        |
-| Invalid free detected                    | No           | Yes, aborts (1) |
-| Double free detected                     | Debug only   | Yes, aborts (1) |
+| Invalid free detected                    | No           | Yes, aborts, except slots held in a thread cache (1) |
+| Double free detected                     | Debug only   | Yes once the slot leaves the caches; a cached copy only by a flush (1) |
 | Size classes in isolated address ranges  | No           | Yes, randomised |
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
 | Sealed reservation gaps (`mseal`)        | No           | Yes where the kernel (6.10+) and seccomp allow it |
@@ -23,26 +23,29 @@ exact windows the defaults leave open. The design view is
 
 ## (1) Invalid and double frees
 
-Through `free`: an invalid pointer aborts at the call, and so does a
-second free of a slot that has already left the thread cache (its slot
-bit is clear). A second free while the slot is still held in a thread
-cache is not checked at the call. A flush catches it only if the slot is
-still unclaimed when the flush reaches the copy: when both copies are in
-one cache and released together, the flush groups the released half by
-slab, so the copies land in one slab's batch and the release aborts on
-the duplicate, and the one case where the split would release one copy
-and keep the other aborts at the split. A pair the split keeps together
-stays in the cache until a later flush releases it. If a `malloc` pops
-one copy first, or the copies are in two threads' caches and a refill
-claims the slot between the two flushes (the second flush then releases
-the slot under its new owner), the duplicate is not detected and the
-slot is live twice, unless the `double_free_scan` tunable is set: then
-every cached free (plain and sized) compares the slot against the four
-most recently cached entries of the cache it pushes to and aborts on a
-match at the call. Not checked even then: a copy deeper than those four,
-a copy in another cache (another thread's, an explicit
-`MALLOCX_TCACHE(t)` cache, a per-arena cache of this heap, or its
-foreign cache when one free is plain and the other sized), and a
+Through `free`: an invalid pointer aborts at the call, unless it is a
+slot start some thread cache holds (a refill claimed it, setting its
+bit, and `malloc` has not handed it out yet: that free is accepted and
+the slot can be handed out twice; `double_free_scan` catches it), and so
+does a second free of a slot that has already left the thread cache (its
+slot bit is clear). A second free while the slot is still held in a
+thread cache is not checked at the call. A flush catches it only if the
+slot is still unclaimed when the flush reaches the copy: when both
+copies are in one cache and released together, the flush groups the
+released half by slab, so the copies land in one slab's batch and the
+release aborts on the duplicate, and the one case where the split would
+release one copy and keep the other aborts at the split. A pair the
+split keeps together stays in the cache until a later flush releases it.
+If a `malloc` pops one copy first, or the copies are in two threads'
+caches and a refill claims the slot between the two flushes (the second
+flush then releases the slot under its new owner), the duplicate is not
+detected and the slot is live twice, unless the `double_free_scan`
+tunable is set: then every cached free (plain and sized) compares the
+slot against the four most recently cached entries of the cache it
+pushes to and aborts on a match at the call. Not checked even then: a
+copy deeper than those four, a copy in another cache (another thread's,
+an explicit `MALLOCX_TCACHE(t)` cache, a per-arena cache of this heap,
+or its foreign cache when one free is plain and the other sized), and a
 `MALLOCX_TCACHE_NONE` free, which does not look at the caches. It is off
 by default because it costs about 3..4% on larson and up to 14% on the
 Valkey model on x86_64.

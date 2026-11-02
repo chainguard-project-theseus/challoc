@@ -59,7 +59,8 @@ allocator can contain (see "Out of scope").
 These hold on every supported host with the default configuration:
 
 - **Invalid free aborts.** A plain `free` of a pointer challoc didn't
-  return aborts at the call.
+  return aborts at the call, unless it is a slot start some thread cache
+  holds (see "Frees of slots a refill claimed" below).
 - **Stale double free aborts.** A second `free` of a slot whose slot
   bit is clear (released to its slab and not handed out again) aborts
   at the call.
@@ -93,6 +94,12 @@ These hold on every supported host with the default configuration:
   else is cleared.
 
 ## Best-effort and probabilistic protections
+
+- **Frees of slots a refill claimed.** A refill claims a batch of slots
+  into a thread cache and sets their bits before `malloc` hands them out.
+  A plain `free` of such a slot start, one challoc has not returned yet,
+  passes the bit test: it is accepted, cached, and the slot can then be
+  handed out twice. `double_free_scan:true` catches it at the call.
 
 - **Double frees still in a thread cache.** A second free of a slot
   still held in any thread's cache is not checked at the call. A flush

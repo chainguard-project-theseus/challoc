@@ -649,7 +649,10 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 
 Neither path performs an atomic read-modify-write or takes a lock.
 `free`'s one bitmap load (and owner load with several arenas) is the
-price of exact invalid-free detection and also what makes cross-thread
+price of invalid-free detection (exact for a slot no cache holds: a slot
+a refill claimed into a cache has its bit set before `malloc` hands it
+out, so a free of it passes; `double_free_scan` catches that) and also
+what makes cross-thread
 frees free of coordination; neither touches the slab descriptor.
 
 The sized path skips that load, and with it the check: an invalid or
@@ -1620,7 +1623,9 @@ Always on:
   memory.
 - Size-class isolation in separate randomised regions with unmapped gaps.
 - Invalid-free and stale double-free detection on every plain `free`
-  (the sized path defers the bit test to the flush, 6.3). A second free
+  for slots no thread cache holds (a slot a refill claimed and `malloc`
+  has not handed out passes the bit test; the sized path defers the bit
+  test to the flush, 6.3). A second free
   of a slot still held in a thread cache is caught only by a flush that
   reaches the copy while the slot is unclaimed (6.3).
 - A guard after every huge run (`MADV_GUARD_INSTALL`, else `PROT_NONE`).
