@@ -1835,6 +1835,14 @@ pub struct Huge {
     /// freed, whatever its size, instead of waiting in the `Empty` list
     /// for a decay pass; set once at init (`Shared::init`).
     purge_on_free: AtomicBool,
+    /// Guard-install mode only: some guard was refused its marker
+    /// (`EINVAL` on an `mlock`ed range) and is a `PROT_NONE` page instead
+    /// ([`Huge::prepare`]). Such a page stays `PROT_NONE` after its run's
+    /// free (`MADV_GUARD_REMOVE` does not touch it), below the mark that
+    /// guard-install mode otherwise keeps read-write, so from then on
+    /// every allocation commits its own pages, as the fallback mode
+    /// does. Never cleared: a cost, not a failure, that sticks.
+    mixed_guards: AtomicBool,
     /// The decay step gate (`purge::Decayer`): `dirty_at` of the head of
     /// the `Empty` list (its oldest member), kept in step with the list
     /// under the lock by `sync_oldest` and read without it by the decay
@@ -3879,6 +3887,7 @@ impl Huge {
             guard_install,
             retain_max: AtomicUsize::new(DEFAULT_RETAIN_MAX),
             purge_on_free: AtomicBool::new(false),
+            mixed_guards: AtomicBool::new(false),
             gate: Decayer::new(),
             inner: Lock::new(
                 Inner {
@@ -4741,7 +4750,16 @@ impl Huge {
             assert(stat(g@.stats, 1) == tally(g@.all@, g@.descs@, 1));
             assert(stat(g@.stats, 2) == tally(g@.all@, g@.descs@, 2));
         }
-        let ok = g.table.ensure(meta, page, 3).is_ok()
+        // Room for this allocation's keys (3) and one more per live run,
+        // this one included: a run's free adds at most one key net (its
+        // start key goes, a free extent's two come, the neighbours' merge
+        // away), and its own `ensure` is best effort, so with this
+        // reservation a free never finds the table full however the
+        // metadata region fares (design 14.1). Capped where no process
+        // gets.
+        let runs = g.stats.runs;
+        let extra = if g.table.keys() <= 0xFFFF_FFFF && runs <= 0xFFFF_FFFF { 4 + runs } else { 3 };
+        let ok = g.table.ensure(meta, page, extra).is_ok()
             && (end <= g.next_page || g.free.ensure(meta, page, end - 1, Tracked(&mut under)).is_ok())
             && self.prepare(s, usable_pages, g.next_page).is_ok();
         if !ok {
@@ -5196,7 +5214,8 @@ impl Huge {
 
     /// Kernel side of an allocation of `usable` pages at `s`: commit and
     /// place the guard. Pages below `watermark` are committed already
-    /// (apart from `PROT_NONE` guards in fallback mode).
+    /// (apart from `PROT_NONE` guards in fallback mode, and in
+    /// guard-install mode once a marker was refused, [`Huge::mixed_guards`]).
     ///
     /// In guard-install mode every page below the mark stays committed, so
     /// one `mprotect` over `[watermark, end)` is all a run past the mark
@@ -5229,10 +5248,23 @@ impl Huge {
         let guard = s + usable;
         let end = guard + GUARD_PAGES;
         let r = if self.guard_install {
+            if self.mixed_guards.load(Ordering::Relaxed) {
+                // A `PROT_NONE` guard may lie below the mark.
+                commit(self.addr(s), usable * page)?;
+            }
             if watermark < end {
                 commit(self.addr(watermark), (end - watermark) * page)?;
             }
-            guard_install(self.addr(guard), GUARD_PAGES * page)
+            if guard_install(self.addr(guard), GUARD_PAGES * page).is_err() {
+                // Refused (`EINVAL` on an `mlock`ed range: the marker
+                // cannot go on a locked VMA): a `PROT_NONE` guard instead,
+                // which works there, so the run is guarded all the same.
+                // If that fails too the run is not handed out (design
+                // 14.1).
+                protect_none(self.addr(guard), GUARD_PAGES * page)?;
+                self.mixed_guards.store(true, Ordering::Relaxed);
+            }
+            Ok(())
         } else {
             commit(self.addr(s), usable * page)?;
             if guard < watermark {
@@ -6969,6 +7001,12 @@ impl Huge {
         // Nested, not a `let` chain: Verus does not take `let` chains.
         #[allow(clippy::collapsible_if)]
         if self.guard_install {
+            // Not a resource failure: `MADV_GUARD_REMOVE` takes locked
+            // VMAs and allocates nothing, and a `PROT_NONE` guard
+            // (`mixed_guards`) has no marker to remove, so on our own
+            // anonymous mapping it fails only when the program unmapped
+            // (`ENOMEM`) or sealed (`EPERM`) part of the huge region: an
+            // inconsistency, as for the purge (design 14.1).
             if let Err(e) = guard_remove(addr + (n - GUARD_PAGES) * page_size, GUARD_PAGES * page_size) {
                 sys::abort_kernel(format_args!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}"));
             }

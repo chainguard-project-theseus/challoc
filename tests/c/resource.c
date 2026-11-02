@@ -35,10 +35,24 @@
  *               cannot be built allocates 16 B and 1 MiB: NULL/ENOMEM or
  *               a block, never an abort; after the limit is raised a new
  *               thread allocates normally
+ *   mlock_huge  a freed huge run left mlock()ed (no munlock before free),
+ *               then huge mallocs placed there: every one arrives
+ *               (MADV_GUARD_INSTALL refuses a locked range; the guard is a
+ *               PROT_NONE page instead; they used to get ENOMEM forever)
+ *   mlockall    mlockall(MCL_CURRENT|MCL_FUTURE), then small, slab-guard
+ *               and huge allocations all arrive (a smoke test of the
+ *               locked paths); skipped when mlockall is refused
+ *               (RLIMIT_MEMLOCK)
+ *   map_count   mlockall(MCL_CURRENT), then vm.max_map_count filled with
+ *               mappings:
+ *               4 KiB mallocs end in NULL/ENOMEM, never an abort (a guard
+ *               slab that can be neither marked nor split used to abort);
+ *               after the mappings are unmapped they arrive again
  */
 #include "common.h"
 
 #include <sched.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 
 #define MIB ((size_t)1 << 20)
@@ -422,6 +436,129 @@ static void parent_data_thread(void)
     run_threads(8);
 }
 
+static void parent_mlock_huge(void)
+{
+    void *p = malloc(1 << 20);
+    REQUIRE(p, "malloc(1 MiB)");
+    if (mlock(p, malloc_usable_size(p)) != 0) {
+        skip_note("resource/mlock_huge", "mlock(1 MiB) refused: %s", strerror(errno));
+        free(p);
+        return;
+    }
+    /* Freed while locked: the next huge runs are placed in that range. */
+    free(p);
+    for (int i = 0; i < 8; i++) {
+        errno = 0;
+        void *q = malloc(307200);
+        CHECK(q, "malloc(307200) #%d over a locked extent: errno %d", i, errno);
+        if (q)
+            fill(q, 307200, (uint32_t)i);
+        free(q);
+    }
+}
+
+static int lock_all(const char *mode, int flags)
+{
+    if (mlockall(flags) == 0)
+        return 1;
+    skip_note(mode, "mlockall refused: %s", strerror(errno));
+    return 0;
+}
+
+static void parent_mlockall(void)
+{
+    if (!lock_all("resource/mlockall", MCL_CURRENT | MCL_FUTURE))
+        return;
+    /* Enough 4 KiB blocks to cross guard slabs, and huge runs. */
+    enum { N = 2048 };
+    static void *small[N];
+    for (int i = 0; i < N; i++) {
+        small[i] = malloc(4096);
+        CHECK(small[i], "malloc(4096) #%d under mlockall: errno %d", i, errno);
+    }
+    for (int i = 0; i < 8; i++) {
+        void *q = malloc(307200);
+        CHECK(q, "malloc(307200) #%d under mlockall: errno %d", i, errno);
+        free(q);
+    }
+    for (int i = 0; i < N; i++)
+        free(small[i]);
+    munlockall();
+}
+
+static size_t count_maps(void)
+{
+    FILE *f = fopen("/proc/self/maps", "r");
+    REQUIRE(f, "open /proc/self/maps");
+    size_t n = 0;
+    int c;
+    while ((c = fgetc(f)) != EOF)
+        n += c == '\n';
+    fclose(f);
+    return n;
+}
+
+static void parent_map_count(void)
+{
+    size_t limit = 65530;
+    FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
+    if (f) {
+        if (fscanf(f, "%zu", &limit) != 1)
+            limit = 65530;
+        fclose(f);
+    }
+    if (limit > 1000000) {
+        skip_note("resource/map_count", "vm.max_map_count %zu too large to fill", limit);
+        return;
+    }
+    size_t cap = limit + 16, n = 0;
+    void **fill_maps = calloc(cap, sizeof *fill_maps);
+    void **blocks = calloc(8192, sizeof *blocks);
+    REQUIRE(fill_maps && blocks, "calloc");
+    /* MCL_CURRENT: the class regions' VMAs are locked, so a guard slab
+     * gets no marker and needs a VMA split to be PROT_NONE. */
+    if (!lock_all("resource/map_count", MCL_CURRENT)) {
+        free(blocks);
+        free(fill_maps);
+        return;
+    }
+    for (int i = 0; i < 4; i++) {
+        blocks[i] = malloc(4096);
+        REQUIRE(blocks[i], "malloc(4096) before the fill");
+    }
+    /* Alternate protections so neighbouring fillers never merge. */
+    for (size_t before = count_maps(); n < cap && before + n < limit; n++) {
+        void *m = mmap(NULL, 4096, (n & 1) ? PROT_READ : PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (m == MAP_FAILED)
+            break;
+        fill_maps[n] = m;
+    }
+    int got = 4, refused = 0;
+    for (int i = 4; i < 8192; i++) {
+        errno = 0;
+        blocks[i] = malloc(4096);
+        if (!blocks[i]) {
+            CHECK(errno == ENOMEM, "malloc(4096) NULL with errno %d", errno);
+            refused = 1;
+            break;
+        }
+        got++;
+    }
+    CHECK(refused, "the map count never ran out (%d blocks)", got);
+    /* The pressure lifts: allocation works again. */
+    for (size_t i = 0; i < n; i++)
+        munmap(fill_maps[i], 4096);
+    for (int i = got; i < 8192 && i < got + 512; i++) {
+        blocks[i] = malloc(4096);
+        CHECK(blocks[i], "malloc(4096) after the mappings went: errno %d", errno);
+    }
+    for (int i = 0; i < 8192; i++)
+        free(blocks[i]);
+    free(blocks);
+    free(fill_maps);
+    munlockall();
+}
+
 int main(int argc, char **argv)
 {
     self_path = "/proc/self/exe";
@@ -459,6 +596,12 @@ int main(int argc, char **argv)
         parent_narenas();
     else if (!strcmp(mode, "data_thread"))
         parent_data_thread();
+    else if (!strcmp(mode, "mlock_huge"))
+        parent_mlock_huge();
+    else if (!strcmp(mode, "mlockall"))
+        parent_mlockall();
+    else if (!strcmp(mode, "map_count"))
+        parent_map_count();
     else
         REQUIRE(0, "unknown mode '%s'", mode);
     return finish("resource");

@@ -429,9 +429,12 @@ Guard slabs: with `guards` on, every `guard_slab_interval`-th 64 KiB of
 slabs is a *guard slab* that is never handed out
 (`SlabTable::is_guard_slab`: a shift, an add and a mask; the interval is
 a power of two so the sized fast path's test needs no division). A guard
-slab is committed read-write like its neighbours, so the VMA merges, and
-`MADV_GUARD_INSTALL` on its first page makes a write running off the
-previous slab fault; if the install fails the slab stays `PROT_NONE`.
+slab gets `MADV_GUARD_INSTALL` on its first page while still
+`PROT_NONE`, then is committed read-write with the slabs after it (the
+marker survives the `mprotect`), so the VMA merges and a write running
+off the previous slab faults; if the install fails (an `mlock`ed range)
+the slab stays `PROT_NONE` and only the slabs after it are committed
+(14.1).
 Without `MADV_GUARD_INSTALL` (before 6.13) `Shared::init` forces the
 interval to 0, because a `PROT_NONE` slab every eighth slab would split
 each class region into thousands of VMAs. A guard slab inside a
@@ -827,12 +830,17 @@ with page granularity (`huge/`).
   next }`: a run is keyed by its start page, a free extent by its first
   and last page, so a free finds both neighbours and free extents are
   always coalesced. `free` of a huge-region pointer that is not a run
-  start aborts. The table's load stays at or below one half, and `insert`
-  aborts rather than fill the last slot.
+  start aborts. The table's load stays at or below one half, every
+  allocation also reserves a key for each live run's free (14.1), and
+  `insert` aborts rather than fill the last slot.
 - Runs are followed by a guard page: `MADV_GUARD_INSTALL` when
   available, else `PROT_NONE` (the reserved default), which costs no
   memory, only one VMA per live huge run. The guard-install variant
-  survives a later commit of the neighbouring run.
+  survives a later commit of the neighbouring run. A marker the kernel
+  refuses (an `mlock`ed range) becomes a `PROT_NONE` page, and from then
+  on every allocation commits its own pages, since such a page stays
+  `PROT_NONE` in the free extent after its run's free
+  (`Huge::mixed_guards`).
 - Alignment above the page is satisfied inside a free extent, at the
   extent's start rounded up to the alignment; the pages around the run
   stay free extents.
@@ -1663,12 +1671,18 @@ aborts:
   in doubt is kept out of circulation (leaked and counted), never
   recycled and never an abort.
 
-Exceptions the code still has, each a resource failure that aborts or
-sticks: a refused
-`MADV_GUARD_INSTALL` (an `mlock`ed range) fails every huge allocation
-placed there, and a slab guard that neither `MADV_GUARD_INSTALL` nor
-`mprotect` can install aborts; inside `free`, a huge descriptor table
-that could not grow, or a refused `MADV_GUARD_REMOVE`, aborts.
+Guards degrade, never vanish: a guard the kernel refuses as a
+`MADV_GUARD_INSTALL` marker (on an `mlock`ed range, `EINVAL`) is a
+`PROT_NONE` page or slab instead, put in place before the memory next to
+it is committed; if that `mprotect` fails too (a VMA split refused at
+`vm.max_map_count`) nothing next to it is handed out and the allocation
+is NULL/`ENOMEM`, retried on the next call (`SlabTable::install_guard`,
+`Huge::prepare`). Inside `free`, the huge descriptor table never needs
+to grow: every allocation reserves one key per live run for the frees
+(`Huge::alloc_aligned`), so a free after the metadata region filled
+still finds room, and `MADV_GUARD_REMOVE` fails only on a range the
+program unmapped or sealed, which is an inconsistency like the purge's
+`ENOMEM`/`EPERM`.
 
 The limits a process may run under are part of this. A process that
 starts under a finite `RLIMIT_DATA` has no table writable before it is
