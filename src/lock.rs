@@ -564,7 +564,7 @@ fn fork_holder_slow(h: usize) -> bool {
 /// for the forking thread. Trusted: FFI; nothing is claimed of the value.
 #[verifier::external_body]
 #[inline(always)]
-fn thread_self() -> usize {
+pub(crate) fn thread_self() -> usize {
     // SAFETY: `pthread_self` has no preconditions.
     unsafe { libc::pthread_self() as usize }
 }

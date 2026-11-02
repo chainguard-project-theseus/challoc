@@ -120,7 +120,7 @@ Tool: none (assumption). Status: trusted.
 > The calling thread's `pthread_self`, which the child of a `fork` keeps for the forking thread.
 
 ```rust
-fn thread_self() -> usize
+pub(crate) fn thread_self() -> usize
 ```
 
 ## `in_child_fork_window`

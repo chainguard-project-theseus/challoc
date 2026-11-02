@@ -110,7 +110,7 @@ mod restated;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arena::Arena;
 use crate::config;
@@ -195,22 +195,30 @@ verus! {
 exec static FORK_LOCKED: AtomicBool = AtomicBool::new(false);
 
 /// The gate between init and `fork` (design 9): a `fork` never copies an
-/// init under way, whose child would wait for an initialising thread it
-/// does not have. `GATE_IDLE` until a thread starts init or a `fork`
-/// closes it; `GATE_INIT` from the first init attempt (or caller of
-/// `init_slow`) until init publishes `READY`, then `GATE_DONE` for good;
-/// `GATE_FORKING` from the prepare handler of a `fork` that found it
-/// idle (challoc not initialised, none under way) until that fork's
-/// parent and child handlers, during which no init starts, but the
-/// forking thread's own (a prepare handler registered before challoc's
-/// that allocates).
-exec static INIT_GATE: AtomicU32 = AtomicU32::new(GATE_IDLE);
-const GATE_IDLE: u32 = 0;
-const GATE_INIT: u32 = 1;
-const GATE_DONE: u32 = 2;
-const GATE_FORKING: u32 = 3;
-/// The forking thread while the gate is `GATE_FORKING`.
-exec static GATE_FORKER: AtomicU32 = AtomicU32::new(0);
+/// init under way on another thread, whose child would wait for an
+/// initialising thread it does not have. `GATE_IDLE` until a thread
+/// starts init or a `fork` closes it; while an init is under way, the
+/// initialising thread's `pthread_self` (`lock::thread_self`: never 0, 1
+/// or 2, and kept by the forking thread in a `fork` child), which only
+/// that thread's claim follows, until it publishes `READY`; then
+/// `GATE_DONE` for good. `GATE_FORKING` from the prepare handler of a
+/// `fork` that found it idle (challoc not initialised, none under way)
+/// until that fork's parent and child handlers, during which no init
+/// starts but the forking thread's own (a handler registered before
+/// challoc's that allocates). Recording the initialiser in the gate word
+/// itself, by the exchange that opens the init, lets a `fork` from a
+/// signal handler that interrupted that thread's own init tell so at any
+/// point of it.
+exec static INIT_GATE: AtomicUsize = AtomicUsize::new(GATE_IDLE);
+const GATE_IDLE: usize = 0;
+const GATE_DONE: usize = 1;
+const GATE_FORKING: usize = 2;
+/// The forking thread while the gate is `GATE_FORKING`, as
+/// `pthread_self` (`lock::thread_self`), which the forking thread keeps in
+/// the child, where its kernel thread ID is new: a child handler
+/// registered before challoc's runs before `fork_gate_exit` and may
+/// initialise.
+exec static GATE_FORKER: AtomicUsize = AtomicUsize::new(0);
 /// This `fork`'s prepare handler closed the gate.
 exec static FORK_GATED: AtomicBool = AtomicBool::new(false);
 
@@ -1533,24 +1541,26 @@ fn fork_was_locked() -> bool {
     FORK_LOCKED.load(Ordering::Relaxed)
 }
 
-/// Before init's claim: wait while a `fork` holds the gate
-/// (`GATE_FORKING`, unless this thread is the forking one), then mark an
-/// init under way (`GATE_INIT`) if none was: atomics outside `STATE`'s
-/// protocol, which this only delays; nothing is claimed (termination
-/// neither: the wait ends when the fork's parent handler runs).
+/// Before init's claim: open an init under way as this thread's
+/// (`GATE_IDLE` to its `thread_self`), or go on to the claim when challoc
+/// is initialised (`GATE_DONE`), when this thread already holds the gate
+/// (a re-entrant call: the claim finds `INITIALISING` and aborts), or when
+/// a `fork` holds it and this is the forking thread; wait while another
+/// thread's init or another thread's `fork` holds it. So the claim's
+/// winner is the gate's holder (or the forking thread inside its fork):
+/// atomics outside `STATE`'s protocol, which this only orders; nothing is
+/// claimed (termination neither: the wait ends when the other thread's
+/// init or the fork's parent handler does).
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause]
-fn init_gate_enter()
-    requires
-        crate::sys::may_syscall(),
-{
-    let me = sys::gettid() as u32;
+fn init_gate_enter() {
+    let me = crate::lock::thread_self();
     loop {
-        let g = match INIT_GATE.compare_exchange(GATE_IDLE, GATE_INIT, Ordering::AcqRel, Ordering::Acquire) {
+        let g = match INIT_GATE.compare_exchange(GATE_IDLE, me, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => return,
             Err(g) => g,
         };
-        if g != GATE_FORKING || GATE_FORKER.load(Ordering::Relaxed) == me {
+        if g == GATE_DONE || g == me || (g == GATE_FORKING && GATE_FORKER.load(Ordering::Relaxed) == me) {
             return;
         }
         core::hint::spin_loop();
@@ -1558,29 +1568,29 @@ fn init_gate_enter()
 }
 
 /// Init published `READY`: the gate stays open for good (`GATE_DONE`),
-/// unless the forking thread initialised inside its own `fork`, whose
-/// parent and child handlers then open it.
+/// unless the forking thread initialised inside its own `fork`
+/// (`GATE_FORKING`), whose parent and child handlers then open it.
 #[inline(always)]
 fn init_gate_done() {
-    let _ = INIT_GATE.compare_exchange(GATE_INIT, GATE_DONE, Ordering::AcqRel, Ordering::Relaxed);
+    let me = crate::lock::thread_self();
+    let _ = INIT_GATE.compare_exchange(me, GATE_DONE, Ordering::AcqRel, Ordering::Relaxed);
 }
 
 /// The prepare handler, before it looks at `STATE`: with challoc
 /// initialised (`GATE_DONE`) nothing; with an init under way on another
-/// thread (`GATE_INIT`), wait until it publishes, so the child gets the
-/// finished state; with none (`GATE_IDLE`), close the gate
-/// (`GATE_FORKING`) so that none starts until the parent and child
-/// handlers (`fork_gate_exit`). Initialises nothing. The wait ends when
-/// the other thread's init does (not claimed: the forking thread holds
-/// nothing init takes, since the fork handlers are registered already, so
-/// init's `pthread_atfork` call returns without glibc's atfork lock).
+/// thread, wait until it publishes, so the child gets the finished state;
+/// with this thread's own init under way (a `fork` from a signal handler
+/// that interrupted it), nothing (design 9, residuals); with none
+/// (`GATE_IDLE`), close the gate (`GATE_FORKING`) so that none starts
+/// until the parent and child handlers (`fork_gate_exit`). Initialises
+/// nothing. The wait ends when the other thread's init does (not claimed:
+/// the forking thread holds nothing init takes, since the fork handlers
+/// are registered already, so init's `pthread_atfork` call returns without
+/// glibc's atfork lock).
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause]
-fn fork_gate_enter()
-    requires
-        crate::sys::may_syscall(),
-{
-    let me = sys::gettid() as u32;
+fn fork_gate_enter() {
+    let me = crate::lock::thread_self();
     loop {
         let g = INIT_GATE.load(Ordering::Acquire);
         if g == GATE_IDLE {
@@ -1589,15 +1599,10 @@ fn fork_gate_enter()
                 FORK_GATED.store(true, Ordering::Relaxed);
                 return;
             }
-        } else if g == GATE_INIT {
-            // A `fork` from a signal handler that interrupted this
-            // thread's own init cannot wait for it (design 9, residuals).
-            if INIT_TID.load(Ordering::Relaxed) == me {
-                return;
-            }
-            core::hint::spin_loop();
-        } else {
+        } else if g == GATE_DONE || g == GATE_FORKING || g == me {
             return;
+        } else {
+            core::hint::spin_loop();
         }
     }
 }
@@ -2006,7 +2011,11 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -
 /// run on the thread whose prepare handler returned holding
 /// [`fork_holds`] (glibc runs them on the forking thread, after
 /// `_Fork`; in the child that thread is the copy of the forking one),
-/// and nothing released a lock in between: signals are blocked from the
+/// and nothing released a lock in between (the handlers call this only
+/// when `FORK_LOCKED` says this fork's prepare took the locks: glibc
+/// serialises one fork's handlers under its atfork lock and runs them on
+/// the forking thread, so a `true` read there is this fork's; a stale
+/// `true` would mint a hold that does not exist): signals are blocked from the
 /// prepare handler's first step, and the atfork handlers registered
 /// before ours (whose prepare runs after ours and whose parent and
 /// child handlers run before ours) release none: an allocation of theirs

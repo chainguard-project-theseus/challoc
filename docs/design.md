@@ -1111,20 +1111,37 @@ not finish: in the child's window (`lock::in_child_fork_window`, the
 holder with another process ID than the one recorded when the window
 opened) the wait resets that work as the child handler would and does it
 itself (`tests/c/fork_spin.c`). A `fork` never copies an init under way
-on another thread (the gate, `api::INIT_GATE`): the prepare handler,
-before it looks at the state, waits for an init another thread has
-started to publish, so the child gets the finished state; with none
-under way it closes the gate (`GATE_FORKING`), so that no init starts
-until the parent and child handlers open it again, and a child whose
-parent was not initialised starts uninitialised. It initialises nothing
+on another thread (the gate, `api::INIT_GATE`): an init opens by an
+exchange that writes its thread's `pthread_self` into the gate, and only
+that thread goes on to claim `STATE` (others wait for `GATE_DONE`); the
+prepare handler, before it looks at the state, waits for an init another
+thread has under way to publish, so the child gets the finished state;
+with none under way it closes the gate (`GATE_FORKING`), so that no init
+starts until the parent and child handlers open it again, and a child
+whose parent was not initialised starts uninitialised. It initialises nothing
 itself, so a process that never allocates stays free of init. The
 forking thread's own init (a handler registered before challoc's that
-allocates) passes the gate (`tests/c/fork_init.c`). Residuals: a handler registered before
+allocates, in the parent's prepare or the child's handlers, which run
+before challoc's opens the gate) passes it: the gate knows that thread
+by `pthread_self`, which it keeps in the child (`tests/c/fork_init.c`,
+`tests/c/fork_first.c`). Residuals: a handler registered before
 challoc's (above) that waits on another thread which allocates deadlocks
 `fork`, as that thread waits on a lock challoc's prepare holds (above:
 the preloaded-challoc, linked-pool case); a `fork` from a signal handler
-that interrupted its own thread's init, whose child inherits the
-half-built state; and a
+that interrupted its own thread's init (the gate word names that thread,
+so the parent's prepare does not wait and the parent finishes its init
+when the handler returns), whose child inherits the half-built state;
+in a process where challoc is loaded but not initialised and threads
+already run (loaded late by `dlopen`, or never allocated through), a
+prepare handler registered before challoc's that takes a lock L while a
+thread Y holds L and makes its first allocation: Y waits at the closed
+gate and the forking thread waits for L (introduced by the gate, and only
+while challoc is uninitialised with threads running); a `fork` whose forking thread initialises challoc from
+a prepare handler registered before challoc's: `STATE` is `READY` from
+then on while challoc's prepare took no lock, so another thread's first
+call (which no longer reaches the gate) may hold an allocator lock that
+the child inherits held, and the child's handler, which released
+nothing, leaves it so; and a
 process created inside the window by `_Fork` or a raw `clone` inherits
 every lock held with its only thread as the holder, so its main thread
 proceeds but a thread it creates waits forever on its first slow path. The prepare

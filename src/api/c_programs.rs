@@ -890,6 +890,13 @@ ctests! {
     /// registered from a constructor runs before challoc's prepare,
     /// outside the window: `c_atfork_pool`.)
     c_atfork_early => [ CTest { prog: "atfork_early", ..BASE } ];
+    /// A fork before the program's first allocation, with `.preinit_array`
+    /// atfork handlers that allocate: the forking thread's own init passes
+    /// the init/fork gate, from its prepare handler in the parent and from
+    /// its child handler in the child (where its kernel thread ID is new;
+    /// the gate knows it by `pthread_self`).
+    c_fork_first_prepare => [ CTest { prog: "fork_first", args: &["prepare"], stdout_has: &["fork_first: prepare handler"], ..BASE } ];
+    c_fork_first_child => [ CTest { prog: "fork_first", args: &["child"], stdout_has: &["fork_first: child handler"], ..BASE } ];
     /// `tests/c/atfork_pool.c`: a thread pool registers, from the
     /// program's first constructor, a prepare handler that stops and joins
     /// its allocating workers: challoc's constructor registered its

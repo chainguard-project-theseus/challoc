@@ -9,7 +9,12 @@
  * handler waits for an init under way, or keeps one from starting until
  * the fork is done, and every child's call completes (a SIGALRM watchdog
  * kills a child that hangs). Each run is a fresh process, since init
- * happens once per process. Run bare, with the library's path as the
+ * happens once per process. A second pass forks with challoc loaded but
+ * not initialised and no other thread, where the only allocating code is
+ * an atfork child handler registered before challoc's (before the
+ * `dlopen`): it runs in the child before challoc's child handler opens
+ * the gate, as the forking thread under a new kernel thread ID, and its
+ * `mallocx` (challoc's init) must pass the gate. Run bare, with the library's path as the
  * argument, by the `api::` test
  * `atfork_handlers_of_linked_libraries_may_allocate`.
  */
@@ -87,6 +92,40 @@ static int one_run(const char *lib, long delay_us)
     return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : 4;
 }
 
+static void child_first(void)
+{
+    alarm(10);
+    void *p = xmalloc(64, 0);
+    if (!p)
+        _exit(4);
+    xfree(p, 64, 0);
+}
+
+/* The second pass, in a fresh process: 0 when the child completed. */
+static int child_handler_run(const char *lib)
+{
+    if (pthread_atfork(NULL, NULL, child_first) != 0)
+        return 2;
+    void *h = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
+    if (!h)
+        return 2;
+    xmalloc = (mallocx_fn)dlsym(h, "mallocx");
+    xfree = (sdallocx_fn)dlsym(h, "sdallocx");
+    if (!xmalloc || !xfree)
+        return 2;
+    pid_t pid = fork();
+    if (pid < 0)
+        return 2;
+    if (pid == 0)
+        _exit(0);
+    int st = 0;
+    while (waitpid(pid, &st, 0) != pid)
+        ;
+    if (WIFSIGNALED(st) && WTERMSIG(st) == SIGALRM)
+        return 3;
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : 4;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -116,10 +155,27 @@ int main(int argc, char **argv)
             fprintf(stderr, "run %d (delay %ld us): status %d\n", run, delay_us, rc);
         }
     }
+    for (int run = 0; run < 5; run++) {
+        pid_t pid = fork();
+        if (pid < 0)
+            return 2;
+        if (pid == 0)
+            _exit(child_handler_run(argv[1]));
+        int st = 0;
+        while (waitpid(pid, &st, 0) != pid)
+            ;
+        int rc = WIFEXITED(st) ? WEXITSTATUS(st) : 100;
+        if (rc == 3)
+            hung++;
+        else if (rc != 0) {
+            failed++;
+            fprintf(stderr, "child-handler run %d: status %d\n", run, rc);
+        }
+    }
     if (hung || failed) {
-        fprintf(stderr, "fork during init: %d of %d children hung, %d failed\n", hung, RUNS, failed);
+        fprintf(stderr, "fork during init: %d of %d children hung, %d failed\n", hung, RUNS + 5, failed);
         return 1;
     }
-    printf("ok fork_init (%d runs)\n", RUNS);
+    printf("ok fork_init (%d runs, %d with a child handler)\n", RUNS, 5);
     return 0;
 }
