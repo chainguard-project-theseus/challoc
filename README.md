@@ -12,9 +12,10 @@ meant to be the allocator Wolfi packages such as Valkey and Ruby link
 instead of jemalloc. Three things set it apart:
 
 - **Hardening.** No allocator metadata lives in user memory, every plain
-  free is validated against the slot bitmap (frees of slots still held in
-  a thread cache are checked exactly only with `double_free_scan:true`,
-  and sized frees defer their check to a flush), size classes live in
+  free is validated against the slot bitmap (a free of a slot still held
+  in a thread cache is not checked exactly, `double_free_scan:true`
+  narrows this, and sized frees defer their check to a flush), size
+  classes live in
   separate randomised address ranges, and guard slabs and sealed gaps are
   used where the kernel has them (`docs/hardening.md`).
 - **cgroup awareness.** challoc reads its memory cgroup's effective limit
