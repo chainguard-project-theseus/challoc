@@ -186,6 +186,11 @@ impl Heap {
             proof {
                 assert(toks.owns(cs.spec_table(), claimed, 0, 0, claim.n as int));
             }
+            // `double_free_scan`: the claimed slots go from `FREE` to
+            // `CACHED`, before the entries are signed.
+            if shared.double_free_scan() {
+                super::slotstate::claim_all(shared, class, &*out, claim.n);
+            }
             arena.class(class).note_refill(claim.n);
             out[..claim.n].reverse();
             let ghost reversed = out@;
@@ -617,6 +622,11 @@ impl Heap {
             }
             if low == kept_max_plain {
                 straddling_double_free(low, class);
+            }
+            // `double_free_scan`: every released copy goes from `CACHED` to
+            // `FREE`; a copy of a slot that is live or free aborts.
+            if shared.double_free_scan() {
+                super::slotstate::release_all(shared, class, &*high);
             }
             // The `FOREIGN` cache's batch starts wherever its first slab
             // belongs; `release_routed` follows the owner words from there.

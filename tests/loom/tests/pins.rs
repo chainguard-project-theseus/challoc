@@ -293,6 +293,17 @@ const PINS: &[(&str, &[&str])] = &[
             "crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)",
         ],
     ),
+    // `double_free_scan`'s state values and `free`'s compare-and-exchange
+    // (tests/loom/src/slotstate.rs).
+    (
+        "src/heap/slotstate.rs",
+        &[
+            "pub const FREE: u8 = 0;",
+            "pub const CACHED: u8 = 1;",
+            "pub const LIVE: u8 = 2;",
+            "match b.compare_exchange(from, to, Ordering::Relaxed, Ordering::Relaxed) {",
+        ],
+    ),
     // `RouteByte`'s new, load, fetch_or (tests/loom/src/flags.rs).
     (
         "src/vspec/flags.rs",
@@ -412,6 +423,18 @@ const PINS: &[(&str, &[&str])] = &[
 /// futex call and are deliberately not pinned:
 /// `(file, enclosing fn, line, reason)`.
 const WAIVED: &[(&str, &str, &str, &str)] = &[
+    (
+        "src/heap/slotstate.rs",
+        "step",
+        "let v = b.load(Ordering::Relaxed);",
+        "step without exchange: the claims, pops and releases, made only by the thread that holds the slot; slotstate.rs models the free's compare-and-exchange, the one racing step",
+    ),
+    (
+        "src/heap/slotstate.rs",
+        "step",
+        "b.store(to, Ordering::Relaxed);",
+        "step without exchange, as above",
+    ),
     (
         "src/arena.rs",
         "get_existing_published",

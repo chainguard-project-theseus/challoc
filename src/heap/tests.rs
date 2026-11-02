@@ -605,11 +605,10 @@ fn cached_pair_flush_message(lower_of: impl Fn(usize) -> usize) -> std::string::
     msg
 }
 
-/// With `double_free_scan` a second free of a
-/// slot that is one of the top four cache entries aborts at the push;
-/// deeper than that it is left to the flush as before.
+/// With `double_free_scan` a second free of a cached slot aborts at the
+/// call however deep the first copy sits, and nothing is stored.
 #[test]
-fn double_free_scan_compares_the_top_four_entries() {
+fn double_free_scan_catches_a_cached_copy_at_any_depth() {
     let s = TestShared::with(Config {
         narenas: 1,
         double_free_scan: true,
@@ -619,8 +618,8 @@ fn double_free_scan_compares_the_top_four_entries() {
     assert!(s.double_free_scan());
     let t = TestHeap::new(s);
     let c = class_with(64);
-    for between in 0..=4usize {
-        let p: Vec<*mut u8> = (0..6).map(|_| t.alloc(c)).collect();
+    for between in [0usize, 1, 3, 4, 5, 64] {
+        let p: Vec<*mut u8> = (0..between + 2).map(|_| t.alloc(c)).collect();
         let before = t.cache(c).len();
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             t.free(p[0]);
@@ -629,40 +628,28 @@ fn double_free_scan_compares_the_top_four_entries() {
             }
             t.free(p[0]);
         }));
-        if between < 4 {
-            let m = panic_message(r.expect_err("the push let a double free through"));
-            assert!(
-                m.contains(&std::format!(
-                    "double free of {:#x}: the slot is already in the thread cache",
-                    p[0] as usize
-                )),
-                "{between}: {m}"
-            );
-            // The abort came before the second copy was stored.
-            assert_eq!(t.cache(c).len(), before + between + 1);
-            for &q in &p[between + 1..] {
-                t.free(q);
-            }
-            t.flush_all();
-        } else {
-            r.expect("the fifth entry down is not compared");
-            // Both copies are cached; the flush catches them.
-            let m = panic_message(
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.flush_all()))
-                    .expect_err("flush"),
-            );
-            assert!(m.contains("double free of"), "{m}");
-        }
+        let m = panic_message(r.expect_err("a cached double free went through"));
+        assert!(
+            m.contains(&std::format!(
+                "double free of {:#x}: the slot is already in a thread cache",
+                p[0] as usize
+            )),
+            "{between}: {m}"
+        );
+        // The abort came before the second copy was stored.
+        assert_eq!(t.cache(c).len(), before + between + 1);
+        t.free(p[between + 1]);
+        t.flush_all();
     }
 }
 
-/// The fast paths carry no call: a `double_free_scan` hit makes
-/// `push_fast` decline (`false`, nothing stored) instead of aborting from
-/// the inlined body, and the slow path that a decline reaches
-/// (`Heap::free`) aborts by name; a due scheduled pop makes `pop_fast`
-/// decline (`None`, `allocs` not counted) and `Heap::alloc` serves it.
+/// The fast paths carry no call: with `double_free_scan` the fast push
+/// and the fast pop decline (`false`, `None`; nothing stored, nothing
+/// counted) and the slow paths move the slot's state, so a double free
+/// that reaches the slow path aborts by name; a due scheduled pop makes
+/// `pop_fast` decline the same way and `Heap::alloc` serves it.
 #[test]
-fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
+fn fast_paths_decline_under_the_state_and_the_scheduled_pop() {
     let s = TestShared::with(Config {
         narenas: 1,
         double_free_scan: true,
@@ -672,33 +659,35 @@ fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
     let t = TestHeap::new(s);
     let c = class_with(64);
     let flags = s.push_flags();
-    assert!(flags & PUSH_SCAN != 0);
+    assert!(flags & PUSH_STATE != 0);
     let p = t.alloc(c);
     let q = t.alloc(c);
     t.free(p);
     let len = t.cache(c).len();
-    // The fast push of `p` again: a hit among the top entries, declined.
-    assert!(
-        !t.heap().push_fast(c, p, flags, Tracked::assume_new()),
-        "a scan hit declines the fast push"
-    );
+    // Every fast push declines, a cached slot's and a live one's.
+    assert!(!t.heap().push_fast(c, p, flags, Tracked::assume_new()));
+    assert!(!t.heap().push_fast(c, q, flags, Tracked::assume_new()));
     assert_eq!(t.cache(c).len(), len, "nothing was stored");
-    // A slot that is not cached pushes as before.
-    assert!(t.heap().push_fast(c, q, flags, Tracked::assume_new()));
-    assert_eq!(t.cache(c).len(), len + 1);
-    // The slow path a decline reaches aborts with the scan's message.
+    // So does every fast pop.
+    assert!(t.heap().pop_fast(c, flags, Tracked::assume_new()).is_none());
+    assert_eq!(t.cache(c).len(), len, "nothing was popped");
+    // The slow path a decline reaches aborts on the cached copy.
     let m = panic_message(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.free(p)))
             .expect_err("the slow path let the double free through"),
     );
     assert!(
         m.contains(&std::format!(
-            "double free of {:#x}: the slot is already in the thread cache",
+            "double free of {:#x}: the slot is already in a thread cache",
             p as usize
         )),
         "{m}"
     );
-    assert_eq!(t.cache(c).len(), len + 1, "the abort came before any store");
+    assert_eq!(t.cache(c).len(), len, "the abort came before any store");
+    // A live slot frees and comes back through the slow paths.
+    t.free(q);
+    assert_eq!(t.cache(c).len(), len + 1);
+    assert_eq!(t.alloc(c), q);
 
     // The scheduled pop: force the schedule due and pop through the fast
     // path alone, then through `alloc`.
@@ -3070,13 +3059,12 @@ fn a_double_free_across_the_move_aborts() {
 
 /// The double free itself can be the free that moves the heap: with
 /// `double_free_scan` the second free of a slot on the `FOREIGN` cache
-/// takes the slow path (the push declines on the hit), which is where a
-/// young heap moves, and the move's flush would release the first copy.
-/// The compare runs against the `FOREIGN` cache before the move, so it
-/// aborts by name and the heap stays where it is.
+/// takes the slow path (every push declines), which is where a young heap
+/// would move; under the key it does not move, and the state check finds
+/// the first copy cached and aborts by name.
 #[test]
-#[should_panic(expected = "the slot is already in the thread cache")]
-fn a_double_free_that_would_move_the_heap_aborts_with_the_scan() {
+#[should_panic(expected = "the slot is already in a thread cache")]
+fn a_double_free_that_would_move_the_heap_aborts_with_the_state() {
     let s = TestShared::with(Config {
         narenas: 4,
         double_free_scan: true,
@@ -3646,7 +3634,7 @@ fn push_flags_encode_zero_on_free_and_double_free_scan() {
         ..Config::DEFAULT
     })
     .build();
-    assert_eq!(s.push_flags(), PUSH_ZERO | PUSH_SCAN | pac);
+    assert_eq!(s.push_flags(), PUSH_ZERO | PUSH_STATE | pac);
     assert!(s.zero_on_free() && s.double_free_scan());
     assert_eq!(
         core::mem::offset_of!(Shared, push_flags) / 128,

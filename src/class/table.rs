@@ -4122,6 +4122,9 @@ impl SlabTable {
         proof {
             use_type_invariant(&*self);
         }
+        // `double_free_scan`'s state bytes for the group, before the
+        // watermark that lets a free read them (nothing without the key).
+        crate::heap::slotstate::commit(class, self.base, s, end);
         // The watermark becomes `end`, the new `next_slab`, with both
         // halves of the ghost variable that ties the two.
         vstd::open_atomic_invariant!(self.committed_inv.borrow() => v => {

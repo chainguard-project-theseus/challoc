@@ -587,18 +587,28 @@ entry points in `api/` are built from them.
    loaded), zero by default on every host with one arena (`pac_pointers`
    defaults to false, so a CPU with pointer authentication is no
    exception), tested once; `FREE_ROUTE` alone is the second compare.
-   `PUSH_SCAN`
-   (`double_free_scan`): compare `p` against the top four entries of the
-   cache this free pushes to and abort on a match, a double free whose first copy is still cached
-   (the sized push does the same). `PUSH_ZERO` (`zero_on_free`): `memset`
-   the slot's class-size bytes (a huge free clears the run's usable
-   bytes). `PUSH_PAC` (`pac_pointers:true` on an arm64 host with PAC):
-   sign the entry (6.2); arm64 compares the byte against `PUSH_PAC` alone
-   first, and off arm64 that compare is compiled out, so the dispatch is
-   the one test against zero. `double_free_scan` costs
-   about 3..4% on `larson1` and up to 14% on the Valkey model;
-   `zero_on_free`'s `memset` per free is far over a 3% budget on Valkey's
-   1 KiB values.
+   `PUSH_STATE` (`double_free_scan`): the push declines, and every cache
+   is in `MODE_STATE`, whose scheduled-pop mask is 0, so the fast pop
+   declines with the test it already makes (no flag in `malloc`); every
+   free and every pop takes its slow path, where the slot's state byte
+   (`heap/slotstate.rs`: one byte per slot next to the bitmap, `FREE`,
+   `CACHED` or `LIVE`) is checked and moved (a free with one
+   compare-and-exchange): a free of a slot that is not `LIVE` aborts at
+   the call on every route (the cached slow path, which the plain,
+   foreign and sized frees reach, and the direct free), a refill's claim
+   takes `FREE` to `CACHED`, a pop `CACHED` to `LIVE`, a flush's release
+   `CACHED` to `FREE`. The bytes of a group are committed when the group
+   is handed to an arena, before the watermark a free compares first.
+   `PUSH_ZERO` (`zero_on_free`): `memset` the slot's class-size bytes (a
+   huge free clears the run's usable bytes). `PUSH_PAC`
+   (`pac_pointers:true` on an arm64 host with PAC): sign the entry
+   (6.2); arm64 compares the byte against `PUSH_PAC` alone first, and
+   off arm64 that compare is compiled out, so the dispatch is the one
+   test against zero. `double_free_scan` costs 1.8..2.9x throughput on
+   the quick rows (`alloc-test1` 46..68%; cb run
+   `20261102t0229z-caad429-quick-m5fdy`), every operation being a slow
+   path; `zero_on_free`'s `memset` per free is far over a 3% budget on
+   Valkey's 1 KiB values.
 4. `heap = tls()`; with several arenas (`FREE_ROUTE`, set when a second
    arena is built) load `owner[slab / group]` and,
    if it is not the heap's home arena, take the cold path (`free_other`,
@@ -650,13 +660,15 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
    (jemalloc's contract, `nallocx(n, flags) == sallocx(p)`); otherwise
    the exact `free` above.
 
-Neither path performs an atomic read-modify-write or takes a lock.
+Neither path performs an atomic read-modify-write or takes a lock in the
+default configuration (under `double_free_scan` every free takes the slow
+path, whose state check is one compare-and-exchange).
 `free`'s one bitmap load (and owner load with several arenas) is the
 price of invalid-free detection (exact for a slot no cache holds: a slot
 a refill claimed into a cache has its bit set before `malloc` hands it
-out, so a free of it passes; `double_free_scan` narrows that, comparing
-the slot against the four most recent entries of the cache the free
-pushes to) and also what makes cross-thread frees free of coordination; neither touches the slab descriptor.
+out, so a free of it passes; `double_free_scan`'s state byte catches
+that) and also what makes cross-thread frees free of coordination;
+neither touches the slab descriptor.
 
 The sized path skips that load, and with it the check: an invalid or
 double free through it is caught when a flush releases the slot while
@@ -820,13 +832,13 @@ keep a successor on the data's arena:
   across it and a stale free of a slot cached before it aborts as
   before, and re-keys the home headers to the new arena. The free that
   triggers the move can itself be a double free of a slot on the
-  `FOREIGN` cache (a full cache sends the second free to the slow path,
-  as does a `double_free_scan` hit), and the move's flush releases the
-  first copy; so with `double_free_scan` the compare runs against the
-  `FOREIGN` cache before the move, and after it the exact bit test runs
+  `FOREIGN` cache (a full cache sends the second free to the slow path),
+  and the move's flush releases the first copy; after it the exact bit
+  test runs
   again on the slot before the home push, which aborts as `invalid or
   double free` instead of caching a slot a refill could hand out too. At
-  most once per heap; a `thread.arena` write and an explicit cache never
+  most once per heap, and never under `double_free_scan`, whose state
+  check must come first; a `thread.arena` write and an explicit cache never
   move. A young thread's `thread.arena` therefore reads back a different
   arena after a move it did not ask for.
 
@@ -1719,8 +1731,8 @@ filters it; sections 2 and 10).
 Off by default, tunable (each is over the budget a default-on hardening
 must meet; the prices are in 6.3 and [tuning.md](tuning.md)):
 
-- `double_free_scan`: compare each pushed slot against the top four
-  entries of the cache it is pushed to (6.3).
+- `double_free_scan`: a state byte per slot, checked and moved by every
+  free route, so a double or invalid free aborts at the call (6.3).
 - `guard_slab_interval` below the default of 8, for denser guard slabs.
 - `zero_on_free`: clear a slot's class-size bytes, or a huge run's usable
   bytes, on free (6.3).
