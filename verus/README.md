@@ -234,3 +234,65 @@ runs it, with the `isla`, `isla-snapshots`, `sail`, `isla-sail`, `z3` and
   `#[cfg(verus_keep_ghost)]`: ordinary builds do not have them.
 - A specification change gets a mutation check: break the code the way the
   specification is meant to catch and confirm that Verus rejects it.
+
+## Export boundary
+
+Each `extern "C"` export in `src/api/libc.rs`, `cxx.rs` and `jemalloc.rs`
+is a wrapper: it lends the call's `errno` token and the C caller's
+tokens, calls its Rust entry point, and returns that call's result. Its
+`ensures` restate the entry point's in the export's own arguments and
+result, so what a C caller is promised is what the entry point proves.
+
+An entry point's claims about `errno` name the token the wrapper lent,
+which the export's `ensures` cannot name. One trusted axiom carries
+them across: `vspec::errno::axiom_errno_at_return` uses the token up
+after the call and states that, under a `failed` condition the export
+passes, its value is the `errno` the C caller reads on return
+(`vspec::errno::c_errno`). With it, `malloc` ensures
+`r@.addr == 0 ==> c_errno() == ENOMEM`, and so do `calloc`,
+`aligned_alloc`, `memalign`, `valloc`, `pvalloc`, their `je_` twins,
+`challoc_malloc_usable` and `challoc_calloc_usable` (with `EINVAL` for
+a bad alignment). `realloc`, `reallocarray` and `challoc_realloc_usable`
+ensure it for every null result except a size-0 `realloc` of a block,
+and `posix_memalign` ensures `r == ENOMEM ==> c_errno() == ENOMEM`.
+The claim is true only when no write to `errno` follows challoc's last
+write in the call, so `failed` names the results the entry points return
+right after that write: a null result other than a `realloc` of a block
+to size 0, and `posix_memalign`'s `ENOMEM`. A `realloc` to size 0 frees
+the block, and the free may create the thread's heap, where a failing
+`pthread_setspecific` writes `errno`. Verus proves a `c_errno()` clause
+only where `failed` holds, so it rejects a clause about a success path.
+It does not check `failed` itself (`true` would pass); the shape test
+requires each export's own condition. The ledger lists the axiom as a
+C-program contract.
+
+Verus then rejects a `malloc` export that drops its entry point's block
+and returns null, as long as the export does not also write or read the
+token itself; the shape test below rules that out. For `operator new`'s
+`nothrow_t` forms, `mallocx` and `rallocx`, Verus cannot tell a null
+result from a dropped block at all: their contracts allow null at any
+size and say nothing about `errno` (the C++ `new_handler` may write it;
+jemalloc's `*allocx` leave it alone). Two tests cover every export:
+
+- `api::tests::exports_return_their_callees_result` reads the export
+  modules' source and fails unless each export's body is the setup lines,
+  one call of a `super::` entry point, and that call's result (as the
+  tail, or as `r` after the axiom on the lent token with the export's own
+  `failed` condition); unless the axiom is named only there, and tokens
+  are lent only by exports, one each; and unless no code names an
+  `exports` module, so no verified code calls an export.
+- `c_export_results` (`tests/c/export_results.c`) calls the C exports
+  under the preload: an impossible size returns null with the entry
+  point's `errno`, and a small one returns a block. `cxx_new`
+  (`tests/c/cxx_new.cpp`) checks that each of the four `nothrow_t` `new`
+  forms returns a block for a small size.
+
+Reviewer checklist: an export returns its callee's result; the `errno`
+axiom is called only at the export boundary, after the call, on the
+export's own token; and each export's `failed` condition (`FAILED` and
+`failed_for` in `src/api/mod.rs`) holds only on a result that challoc's
+own `errno` write precedes. `exports_return_their_callees_result` and
+`c_export_results` enforce the first two. For the third, Verus proves a
+`c_errno()` clause only under the export's `failed`, and the shape test
+rejects a `failed` other than the one `failed_for` gives that export, so
+what is left to review is the 4 conditions and which exports get each.

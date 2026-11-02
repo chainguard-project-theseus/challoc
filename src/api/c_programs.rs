@@ -748,6 +748,12 @@ ctests! {
         CTest { prog: "usable_api", cflags: &["-Iinclude"],
             conf: Some("abort_conf:true,zero_on_free:true,double_free_scan:true,pac_pointers:true"), ..BASE },
     ];
+    /// Every nullable C export returns its Rust entry point's result
+    /// (`tests/c/export_results.c`): NULL with the entry point's `errno`
+    /// for a request nothing can serve, a block for a small one, across
+    /// the libc names, their `je_` twins, challoc's size-returning names,
+    /// `mallocx` and `rallocx` (verus/README.md, "Export boundary").
+    c_export_results => [ CTest { prog: "export_results", ..BASE } ];
     c_random_ops_one_million_across_eight_threads => [ CTest { prog: "random_ops", args: &["1000000", "8"], ..BASE } ];
     /// Same driver, one thread: no cross-thread traffic, so a failure here
     /// is in the per-thread paths alone.
