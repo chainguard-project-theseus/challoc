@@ -613,11 +613,12 @@ frees free of coordination; neither touches the slab descriptor.
 The sized path skips that load, and with it the check: an invalid or
 double free through it is caught when the cache flushes the slot (the
 release aborts on a clear bit, and on a guard slab, a `Fresh` slab or a
-slab past the table's watermark by name, `SlabTable::owner`), up to a
-cache's worth of frees later; until then the slot can be handed out
-twice, as under jemalloc. Because the arena is not read either, the home
-cache holds slots of any arena on this path, and the flush releases each
-run of slabs through the arena the owner array names (`release_owned`).
+slab past the table's watermark by name, `SlabTable::owner`), whenever a
+flush reaches it: a partial flush keeps the lowest addresses (6.4), so
+that is not bounded by a number of frees; until then the slot can be
+handed out twice, as under jemalloc. Because the arena is not read
+either, the home cache holds slots of any arena on this path, and the
+flush releases each run of slabs through the arena the owner array names (`release_owned`).
 Plain `free` keeps step 2's load, so a double `free` of a slot that has
 left the cache aborts at the call. `MALLOCX_ARENA(a)` with the default
 cache pops whatever the cache holds, as jemalloc's does;
