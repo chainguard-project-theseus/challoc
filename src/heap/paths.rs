@@ -12,24 +12,22 @@ use vstd::raw_ptr::ptr_mut_ref;
 use vstd::resource::set::GhostSingleton;
 
 use crate::layout::{CLASSES, NCLASSES};
+#[cfg(any(verus_keep_ghost, test))]
 use crate::sys::pac;
 use crate::sys::tls::TlsSlot;
-use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::errno::ThreadErrno;
 use crate::vspec::zero::Zeroed;
 
 use super::thread::heap_from_slot;
 #[cfg(verus_keep_ghost)]
 use super::zero::zero_on_free;
-use super::{
-    CacheHeader, FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread,
-};
 #[cfg(verus_keep_ghost)]
 use super::{
     CachePerms, PUSH_ZERO, TLS_EXITED, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok,
     lemma_hint_ok, lemma_plain_stored, pac_mode, regions_ok, slot_ok, slot_ptr, slot_start,
     slot_token,
 };
+use super::{FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
 #[cfg(verus_keep_ghost)]
@@ -118,8 +116,8 @@ impl Heap {
     /// [`Heap::alloc_slow`], the one place every caller's `None` lands:
     /// `pop_compact` would be the one call inside the inlined pop, and a
     /// call in the body costs `malloc` a frame it needs for nothing else
-    /// (the same move as the scan's `cached_twice` in
-    /// [`Heap::push_cache`]). With the cached slots holding their tokens,
+    /// (the same move as the push's decline under `zero_on_free` in
+    /// [`Heap::push_cache_flags`]). With the cached slots holding their tokens,
     /// `out[0]` is the popped slot's.
     #[inline(always)]
     pub(super) fn pop_fast(
@@ -345,7 +343,7 @@ impl Heap {
         let len = unsafe { self.hdr_ref(cache) }.len;
         if len != 0 {
             // SAFETY: a real cache with `len` entries.
-            return unsafe { self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell)) };
+            return unsafe { self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell)) };
         }
         // Not `alloc_slow`: an explicit arena is kept even for a shared
         // class (design 13.3).
@@ -512,6 +510,12 @@ impl Heap {
         proof {
             self.lemma_routes_home(class as int);
         }
+        // `double_free_scan`: `pop_fast` declined every pop, scheduled or
+        // not; a cold path of its own serves it, so this one keeps its
+        // size with the key off.
+        if shared.double_free_scan() {
+            return self.alloc_slow_state(shared, class, Tracked(blk), Tracked(errno), Tracked(cell));
+        }
         let ghost old_perms = self.perms@;
         proof {
             assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
@@ -541,6 +545,46 @@ impl Heap {
             CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
             CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
             CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+        }
+        self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
+    }
+
+    /// [`Heap::alloc_slow`] under `double_free_scan`, where `pop_fast`
+    /// declines every pop: the ordinary pop of the home cache (which
+    /// schedules its own compacting pops and moves the slot's state to
+    /// `LIVE`), or a refill when the cache is empty.
+    #[cold]
+    #[inline(never)]
+    fn alloc_slow_state(
+        &mut self,
+        shared: &Shared,
+        class: usize,
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(cell).kept(*old(cell)),
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
+        let cache = self.cache_ptr(class);
+        proof {
+            self.lemma_routes_home(class as int);
+        }
+        // SAFETY: this thread's own header, unused or with `len` entries.
+        let len = unsafe { self.hdr_ref(cache) }.len;
+        if len != 0 {
+            // SAFETY: a real cache with `len` entries.
+            return unsafe { self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell)) };
         }
         self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
     }
@@ -618,7 +662,7 @@ impl Heap {
             if len == 0 {
                 return (ptr::null_mut(), false);
             }
-            self.pop(cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell))
+            self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell))
         }
     }
 
@@ -661,52 +705,6 @@ impl Heap {
         self.free_slow_in(shared, arena, class, p, Tracked(blk), Tracked(errno))
     }
 
-    /// `double_free_scan`'s slow-path compare: abort by name when `p` is
-    /// among the top four entries of `cache` (signed as the push signs it).
-    /// When no entry stands for `p` (the second disjunct of the
-    /// precondition, which [`Heap::lemma_not_cached`] gives a free that
-    /// holds `p`'s slot token) the abort is unreachable.
-    ///
-    /// # Safety
-    /// `cache` is one of this heap's real caches.
-    #[inline(always)]
-    pub(super) unsafe fn scan_or_abort(
-        &self,
-        shared: &Shared,
-        cache: *mut CacheHeader,
-        p: *mut u8,
-    )
-        requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && process_regions().is_slot(self.hdr_class(cache), p@.addr) && forall|i: int| 0 <= i < self.hdr(cache).len ==> #[trigger] self.cached_addr(cache, i) != p@.addr as int),
-            shared.wf(),
-            self.wf(),
-            self.owns(cache),
-    {
-        // SAFETY: guaranteed by the caller.
-        let slots = unsafe { self.hdr_ref(cache) }.slots;
-        let e = if shared.pac() {
-            addr_to_ptr(pac::sign(p as usize, slots as usize))
-        } else {
-            p
-        };
-        // SAFETY: guaranteed by the caller.
-        if unsafe {
-            Self::cached_recently(slots, self.hdr_ref(cache).len, e, Tracked(&self.perms.borrow().slots))
-        } {
-            proof {
-                // The hit's entry stands for `p` (`e` is `p` as stored).
-                shared.lemma_regions_ok();
-                let i = choose|i: int| 0 <= i < self.hdr(cache).len && self.perms@.slots[#[trigger] slot_ptr(slots, i)].value()@.addr == e@.addr;
-                assert(self.perms@.ent(cache, i) == slot_ptr(slots, i));
-                if process_regions().is_slot(self.hdr_class(cache), p@.addr) {
-                    lemma_plain_stored(e, p, self.hdr_class(cache), slots);
-                    assert(self.cached_addr(cache, i) == p@.addr as int);
-                }
-            }
-            cached_twice(p);
-        }
-    }
-
     /// The slow free path for any arena. With `zero_on_free` every cached
     /// free arrives here (the fast push declines, see
     /// [`Heap::push_cache_flags`]) and the slot is cleared first: the
@@ -743,11 +741,24 @@ impl Heap {
         // Premise (lock order): the slow free path is entered from a fast
         // path or an entry point, none of which holds a lock.
         let tracked mut ord = axiom_entry();
+        // Under `double_free_scan` a heap never moves on a free: the move's
+        // flush and re-test would run before the state check below, and a
+        // refill on another thread between them could make a double free
+        // look like a free of a live slot.
         if arena == FOREIGN
             && self.rehome
+            && !shared.double_free_scan()
             && self.rehome_on_free(shared, class, p, Tracked(&mut blk), Tracked(&mut ord), Tracked(&mut *errno))
         {
             return;
+        }
+        // `double_free_scan`: every cached free arrives here (the fast
+        // pushes decline), so this is the one check of the slot's state
+        // for the plain, foreign and sized routes: `LIVE` becomes
+        // `CACHED`, anything else aborts. Before anything else touches
+        // the slot or the cache.
+        if shared.double_free_scan() {
+            super::slotstate::free(shared, class, p, super::slotstate::CACHED);
         }
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check),
@@ -773,34 +784,24 @@ impl Heap {
             ptr::null_mut()
         };
         // The slot's token, for the cache or the bitmap; the permission
-        // to its bytes is dropped with it. No entry of the cache stands
-        // for `p` while `blk` holds it (the scan below).
+        // to its bytes is dropped with it.
         proof {
-            if cache@.addr != 0 {
-                self.lemma_not_cached(&mut blk, cache, class as int, self.hdr(cache).len as int);
-            }
             blk.lemma_mem();
         }
         let tracked tok = blk.take_slot(class as int);
         if cache.is_null() {
             self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(None));
             // No cache for this class here: straight to the slab, through
-            // the arena its slab belongs to.
+            // the arena its slab belongs to (the state goes on to `FREE`).
+            if shared.double_free_scan() {
+                super::slotstate::release(shared, class, p);
+            }
             shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut ord));
             self.count_direct_free(class);
             return;
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
-            // `double_free_scan`: the fast push declined on a hit among the
-            // top four (or the cache was full, or `zero_on_free` sent every
-            // push here); repeat the compare before anything can move an
-            // entry (the tick's GC or the flush release the highest
-            // addresses, the first copy possibly among them) and abort by
-            // name, as the push did when the call was inline.
-            if shared.double_free_scan() {
-                self.scan_or_abort(shared, cache, p);
-            }
             self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(None));
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
@@ -818,12 +819,11 @@ impl Heap {
                     }
                 }
             }
-            // The scan ran above; a flush only removes entries.
             let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
             proof {
                 tk.tracked_insert(0, tok);
             }
-            if !Self::push_cache(cache, p, false, shared.pac(), Tracked(self.perms.borrow_mut()), Tracked(&mut tk)) {
+            if !Self::push_cache(cache, p, shared.pac(), Tracked(self.perms.borrow_mut()), Tracked(&mut tk)) {
                 unreachable!("heap: cache still full after a flush");
             }
         }
@@ -1213,6 +1213,11 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
                 blk.lemma_claimed_block(p);
                 blk.lemma_claims_slot(p, class as int);
             }
+            // `double_free_scan`: the direct free's state check, `LIVE` to
+            // `FREE` (a copy still in a cache is `CACHED` and aborts).
+            if shared.double_free_scan() {
+                super::slotstate::free(shared, class, p, super::slotstate::FREE);
+            }
             let tracked mut blk = blk;
             if shared.zero_on_free() {
                 // SAFETY: `classify_free` verified `p` as an allocated slot
@@ -1500,23 +1505,6 @@ pub(super) unsafe fn zero_slot(
         blk.put_mem(mem, orig);
     }
     z
-}
-
-/// `double_free_scan`: the slot being pushed is one of the top four cache
-/// entries, so it was freed a moment ago and never handed out since.
-/// Called from the slow path only ([`Heap::free_slow_in`]): the fast push
-/// declines instead of calling, so the entry points that inline it keep no
-/// frame for this call.
-#[cold]
-#[inline(never)]
-pub(super) fn cached_twice(p: *mut u8) -> !
-    requires
-        crate::sys::may_abort(),
-{
-    crate::sys::abort_fmt(format_args!(
-        "double free of {:#x}: the slot is already in the thread cache",
-        p as usize
-    ))
 }
 
 /// `CLASSES[class].size()` without the bounds check: every `class` on the

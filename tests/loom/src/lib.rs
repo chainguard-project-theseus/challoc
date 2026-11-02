@@ -57,6 +57,8 @@ mod publish;
 #[cfg(test)]
 mod slab;
 #[cfg(test)]
+mod slotstate;
+#[cfg(test)]
 mod watermark;
 
 /// Run `f` under every interleaving loom reaches (exhaustive: no

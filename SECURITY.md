@@ -99,19 +99,21 @@ These hold on every supported host with the default configuration:
   into a thread cache and sets their bits before `malloc` hands them out.
   A plain `free` of such a slot start, one challoc has not returned yet,
   passes the bit test: it is accepted, cached, and the slot can then be
-  handed out twice. `double_free_scan:true` narrows this at the call
-  (it compares the slot against the four most recent entries of the
-  cache the free pushes to).
+  handed out twice. `double_free_scan:true` catches it at the call (the
+  slot's state byte says it is cached, not live).
 - **Double frees still in a thread cache.** A second free of a slot
   still held in any thread's cache is not checked at the call. A flush
   catches it only if the slot is still unclaimed when the flush reaches
   the copy: if a `malloc` or any refill takes the slot
-  first, it is live twice. `double_free_scan:true` narrows this window
-  at the call, at a measured cost.
+  first, it is live twice. `double_free_scan:true` makes the check exact
+  at the call on every free route (plain, sized, cross-thread,
+  `MALLOCX_TCACHE_NONE`), simultaneous frees included, at a large
+  measured cost.
 - **Freed pointers still in the thread cache.** A slot keeps its live
   bit until a flush releases it, so `malloc_usable_size`, `realloc` or
   `sallocx` on a pointer freed into the cache (and not yet flushed) is
   not detected: it reports the class's usable size, or reallocates.
+  `double_free_scan:true` rejects it.
 - **The sized path defers its slot check.** `sdallocx` and `free_sized`
   check the size at the call but leave the invalid- and double-free
   check to a flush, with no bound on when. A sized free of any slot start
@@ -142,7 +144,12 @@ These hold on every supported host with the default configuration:
   to the verified share of functions and lines in `verus/FLOOR`, and
   `verus/ledger/` lists every item Verus takes on trust
   (`verus/README.md` has the current coverage). That is a reduction in
-  risk, not a proof of the whole allocator.
+  risk, not a proof of the whole allocator. One trust to name:
+  `double_free_scan`'s state bytes (`src/heap/slotstate.rs`) are
+  unverified bookkeeping. With the key off they are never read. With it
+  on, their checks only add aborts, so a bug there can make a valid free
+  abort (availability), but cannot make an invalid one pass a check the
+  verified paths make.
 
 ## Out of scope
 

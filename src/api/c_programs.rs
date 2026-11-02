@@ -531,10 +531,9 @@ ctests! {
     c_negative_huge_overflow => [
         negative!("huge_overflow", SIGSEGV, &[]),
     ];
-    /// With `double_free_scan` the second free is
-    /// caught at the call, while the first copy is one of the top four cache
-    /// entries, on plain `free` and on the sized path (which otherwise defers
-    /// every check to the flush).
+    /// With `double_free_scan` the second free is caught at the call by
+    /// the slot's state byte, on plain `free` and on the sized path (which
+    /// otherwise defers every check to the flush).
     /// The same cached double free with
     /// `pac_pointers:true`, so the C-level detection at the flush split runs
     /// over signed entries (the straddle compare is signed against signed;
@@ -545,11 +544,11 @@ ctests! {
             conf: Some("pac_pointers:true,abort_conf:true")),
     ];
     c_negative_double_free_cached_with_scan => [
-        negative!("double_free_cached", SIGABRT, &["double free of 0x", "already in the thread cache"],
+        negative!("double_free_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
             conf: Some("double_free_scan:true")),
     ];
     c_negative_sized_double_free_with_scan => [
-        negative!("sized_double_free", SIGABRT, &["double free of 0x", "already in the thread cache"],
+        negative!("sized_double_free", SIGABRT, &["double free of 0x", "already in a thread cache"],
             conf: Some("double_free_scan:true"),
             stdout_lacks: &["returned"]),
     ];
@@ -633,8 +632,7 @@ ctests! {
     /// call: an interior pointer, a stale (flushed) slot, a huge run that is
     /// no longer live; a cached double free is left to a flush by default
     /// (caught only if the slot is still unclaimed then) and caught at the
-    /// call with `double_free_scan` while the first copy is among the
-    /// cache's four most recent entries.
+    /// call with `double_free_scan` (the slot's state byte).
     c_negative_free_usable_interior => [
         negative!("free_usable_interior", SIGABRT, &["invalid free of 0x", "not an allocation"],
             stdout_lacks: &["returned"]),
@@ -646,7 +644,98 @@ ctests! {
     c_negative_free_usable_cached => [
         negative!("free_usable_cached", SIGABRT, &["double free of 0x"],
             stdout_has: &["returned 64"]),
-        negative!("free_usable_cached", SIGABRT, &["double free of 0x", "already in the thread cache"],
+        negative!("free_usable_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+    ];
+    /// The free-route matrix under `double_free_scan` (the per-slot
+    /// state, design 6.3 step 3): every route aborts at the bad free
+    /// itself, before the program goes on, whichever cache holds the
+    /// first copy (this thread's, another thread's) and whichever route
+    /// the first free took. The cases are `cross`; `mixed` through
+    /// the sized routes; `mixed` through `MALLOCX_TCACHE_NONE`;
+    /// `forged` through the sized routes; and `same` through the
+    /// sized routes.
+    /// `forged_cached` frees a slot a refill claimed
+    /// into the cache and never handed out (its bit set): only the state
+    /// byte tells it from a live slot.
+    /// `double_free_scan`: `malloc_usable_size`, `realloc` and `sallocx` on a
+    /// pointer freed into the cache (bit still set) abort on its state byte.
+    c_negative_cached_lookups_with_state => [
+        negative!("usable_cached", SIGABRT, &["use of 0x", "after free: the slot is in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("realloc_cached_small", SIGABRT, &["use of 0x", "after free: the slot is in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("realloc_cached_large", SIGABRT, &["use of 0x", "after free: the slot is in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("sallocx_cached", SIGABRT, &["use of 0x", "after free: the slot is in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+    ];
+    c_negative_route_matrix_with_state => [
+        negative!("route_free_same", SIGABRT, &["double free of 0x"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_mixed", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_cross", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_forged", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_same", SIGABRT, &["double free of 0x"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_mixed", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_cross", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_forged", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_size", SIGABRT, &["does not match the allocation"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_sized_same", SIGABRT, &["double free of 0x"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_sized_mixed", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_sized_cross", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_sized_forged", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_sized_size", SIGABRT, &["does not match the allocation"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_dallocx_none_same", SIGABRT, &["double free of 0x"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_dallocx_none_mixed", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_dallocx_none_cross", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_dallocx_none_forged", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_none_same", SIGABRT, &["double free of 0x"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_none_mixed", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_none_cross", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_none_forged", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_none_size", SIGABRT, &["does not match the allocation"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_usable_same", SIGABRT, &["double free of 0x"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_usable_mixed", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_usable_cross", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_usable_forged", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_forged_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_forged_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_sized_forged_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_dallocx_none_forged_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_none_forged_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
+        negative!("route_free_usable_forged_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
             conf: Some("double_free_scan:true"), stdout_lacks: &["returned"]),
     ];
     c_negative_free_usable_huge_twice => [

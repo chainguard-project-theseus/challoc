@@ -1086,6 +1086,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>) ->
                 }
             }
             shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
+            shared.check_not_cached(class, p);
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
@@ -1475,6 +1476,7 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                 }
             }
             shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
+            shared.check_not_cached(class, p);
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
@@ -2326,6 +2328,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
                 }
             }
             shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
+            shared.check_not_cached(class, p);
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);

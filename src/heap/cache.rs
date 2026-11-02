@@ -19,8 +19,8 @@ use super::{
     lemma_stack_shrink, node_hdr, pac_mode, plain, popped, regions_ok, slot_in, slot_ptr,
     slot_start, slot_token, stack_ok,
 };
-use super::{CachePerms, FOREIGN, Heap, Live, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
-use super::{MODE_OFF, MODE_PROBE, assert_rekey_flushed};
+use super::{CachePerms, FOREIGN, Heap, Live, MIN_CAP, PUSH_PAC, PUSH_STATE, PUSH_ZERO, Shared};
+use super::{MODE_OFF, MODE_PROBE, MODE_STATE, assert_rekey_flushed};
 #[cfg(verus_keep_ghost)]
 use crate::lock::rank_meta;
 use vstd::map::Map;
@@ -28,7 +28,7 @@ use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Tracked, int};
-use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_mut_write, ptr_ref};
+use vstd::raw_ptr::{ptr_mut_ref, ptr_mut_write, ptr_ref};
 use vstd::resource::set::GhostSingleton;
 
 verus! {
@@ -79,7 +79,7 @@ pub struct CacheHeader {
     pub(super) probe_refilled: u32,
     /// The arena this cache belongs to (a rebuild's claim needs it).
     pub(super) arena: u16,
-    /// [`MODE_OFF`], [`MODE_PROBE`] or [`MODE_COMPACT`](super::MODE_COMPACT).
+    /// [`MODE_OFF`], [`MODE_PROBE`], [`MODE_COMPACT`](super::MODE_COMPACT) or [`MODE_STATE`].
     pub(super) mode: u16,
     /// Consecutive flushes whose slot array was not already in address
     /// order (wrapping); zeroed by a flush that found it sorted. Drives the
@@ -170,7 +170,7 @@ impl CacheHeader {
     /// Re-key a flushed (empty) header with a stack to `arena` for
     /// [`Heap::try_rehome`]: the probe restarts from the new arena's
     /// refill counter, and the stack, `cap` and the counters stay.
-    pub(super) fn rekey(&mut self, arena: u16, refilled: u32)
+    pub(super) fn rekey(&mut self, arena: u16, refilled: u32, state: bool)
         requires
             crate::sys::may_abort() || old(self).len == 0,
             old(self).inv(),
@@ -181,7 +181,7 @@ impl CacheHeader {
             final(self).slots == old(self).slots,
             final(self).zeroed == 0,
             final(self).arena == arena,
-            final(self).mode == MODE_PROBE,
+            final(self).mode == (if state { MODE_STATE } else { MODE_PROBE }),
             final(self).probe_refilled == refilled,
     {
         assert_rekey_flushed(&self.len);
@@ -191,7 +191,7 @@ impl CacheHeader {
         self.unsorted_flushes = 0;
         self.probe_refilled = refilled;
         self.arena = arena;
-        self.set_mode(MODE_PROBE);
+        self.set_mode(if state { MODE_STATE } else { MODE_PROBE });
     }
 
     /// A header that has never been used: both fast paths fall through to
@@ -357,7 +357,103 @@ impl Heap {
         r
     }
 
-    /// Pop the top entry of a non-empty cache. Touches only the header
+    /// Pop the top entry of a non-empty cache ([`Heap::pop_plain`]); with
+    /// `double_free_scan` the cold [`Heap::pop_state`] does it and moves
+    /// the slot's state from `CACHED` to `LIVE`, so the pop the slow paths
+    /// inline keeps its size with the key off. `shared` is read only for
+    /// the key.
+    ///
+    /// # Safety
+    /// As for [`Heap::pop_plain`].
+    #[inline(always)]
+    // The errno token and the slot cell are part of the signature.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn pop(
+        &mut self,
+        shared: &Shared,
+        cache: *mut CacheHeader,
+        class: usize,
+        len: u32,
+        pac: bool,
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+            old(self).poppable(class as int, cache),
+            len == old(self).hdr(cache).len,
+            len > 0,
+            pac ==> pac::pac_available(),
+        ensures
+            final(cell).kept(*old(cell)),
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 && pac == pac_mode() ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 && pac == pac_mode() ==> final(blk).slot_block(r.0, class as int),
+    {
+        if shared.double_free_scan() {
+            // SAFETY: guaranteed by the caller.
+            return unsafe { self.pop_state(shared, cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell)) };
+        }
+        // SAFETY: guaranteed by the caller.
+        unsafe { self.pop_plain(cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell)) }
+    }
+
+    /// [`Heap::pop`] under `double_free_scan`: the pop, scheduled or not
+    /// (the compacting pop included), then the popped slot's state from
+    /// `CACHED` to `LIVE` ([`slotstate::pop`](super::slotstate::pop)).
+    ///
+    /// # Safety
+    /// As for [`Heap::pop_plain`].
+    #[cold]
+    #[inline(never)]
+    // The errno token and the slot cell are part of the signature.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn pop_state(
+        &mut self,
+        shared: &Shared,
+        cache: *mut CacheHeader,
+        class: usize,
+        len: u32,
+        pac: bool,
+        Tracked(blk): Tracked<&mut Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+            old(self).poppable(class as int, cache),
+            len == old(self).hdr(cache).len,
+            len > 0,
+            pac ==> pac::pac_available(),
+        ensures
+            final(cell).kept(*old(cell)),
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 && pac == pac_mode() ==> final(self).handed_ok(r.0, class as int),
+            r.0@.addr != 0 && pac == pac_mode() ==> final(blk).slot_block(r.0, class as int),
+    {
+        // SAFETY: guaranteed by the caller.
+        let r = unsafe { self.pop_plain(cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell)) };
+        if !r.0.is_null() {
+            super::slotstate::pop(shared, class, r.0);
+        }
+        r
+    }
+
+    /// [`Heap::pop`] without `double_free_scan`'s state: pop the top entry
+    /// of a non-empty cache. Touches only the header
     /// line and the slot: `allocs` is the only counter, `low_water` is
     /// written only when it actually drops (and the run clipped with it),
     /// and the class size is never looked up. Every `compact_mask + 1`
@@ -373,7 +469,7 @@ impl Heap {
     #[inline(always)]
     // The errno token and the slot cell are part of the signature.
     #[allow(clippy::too_many_arguments)]
-    pub(super) unsafe fn pop(
+    unsafe fn pop_plain(
         &mut self,
         cache: *mut CacheHeader,
         class: usize,
@@ -649,8 +745,9 @@ impl Heap {
     /// must not be a call from here, since a call inside the inlined fast
     /// path costs every default `free` a callee-saved register spill in
     /// its prologue (on aarch64 a `memset` call here grows the `sdallocx`
-    /// frame and saves `x19`). With `double_free_scan` alone it is the
-    /// scanning push.
+    /// frame and saves `x19`). With `double_free_scan` it declines the
+    /// same way, so that path checks and moves the slot's state
+    /// ([`slotstate`](super::slotstate)) before it pushes.
     ///
     /// # Safety
     /// As for [`Heap::push_cache`].
@@ -675,6 +772,7 @@ impl Heap {
             old(tk).contains_key(0) ==> slot_token(*old(tk), old(perms).cls[cache], true, p),
         ensures
             flags & PUSH_ZERO != 0 ==> !r,
+            flags & PUSH_STATE != 0 ==> !r,
             final(perms).keeps(*old(perms)),
             old(perms).claimed() ==> final(perms).claimed(),
             final(perms).follows(*old(perms)),
@@ -685,6 +783,7 @@ impl Heap {
     {
         proof {
             assert((flags == 0 || flags == 4) ==> flags & 2 == 0) by (bit_vector);
+            assert((flags == 0 || flags == 4) ==> flags & 1 == 0) by (bit_vector);
             assert(flags == 4 ==> flags & 4 != 0) by (bit_vector);
             assert(flags == 0 ==> flags & 4 == 0) by (bit_vector);
         }
@@ -694,13 +793,13 @@ impl Heap {
         // hardening (the default on every host, PAC or not).
         if cfg!(target_arch = "aarch64") && flags == PUSH_PAC {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false, true, Tracked(perms), Tracked(tk)) };
+            return unsafe { Self::push_cache(cache, p, true, Tracked(perms), Tracked(tk)) };
         }
         if flags == 0 {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false, false, Tracked(perms), Tracked(tk)) };
+            return unsafe { Self::push_cache(cache, p, false, Tracked(perms), Tracked(tk)) };
         }
-        if flags & PUSH_ZERO != 0 {
+        if flags & PUSH_ZERO != 0 || flags & PUSH_STATE != 0 {
             proof {
                 CachePerms::lemma_keeps_refl(*perms);
                 CachePerms::lemma_tracks_same(*perms);
@@ -709,126 +808,14 @@ impl Heap {
         }
         // SAFETY: guaranteed by the caller.
         unsafe {
-            Self::push_cache(
-                cache,
-                p,
-                flags & PUSH_SCAN != 0,
-                flags & PUSH_PAC != 0,
-                Tracked(perms),
-                Tracked(tk),
-            )
+            Self::push_cache(cache, p, flags & PUSH_PAC != 0, Tracked(perms), Tracked(tk))
         }
     }
 
-    /// `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the
-    /// entry as it would be stored (signed under `pac`), is one of the top
-    /// four of the `len` entries in `slots`. Shared by the fast push, which
-    /// declines on a hit, and by [`Heap::free_slow_in`], which aborts on
-    /// one; no call in the body.
-    ///
-    /// # Safety
-    /// `slots` has `len` entries (`perms` owns them, written), in one
-    /// allocation (`slot_in`: `slots.add(len)` is in bounds).
-    ///
-    /// Trusted: the short-cache case is an iterator, which Verus does not
-    /// verify. The body reads only the top `min(len, 4)` entries and
-    /// returns whether one of them is `e`: a bounded fact about plain
-    /// loads, for a model checker (Kani) over every `len` up to the four
-    /// compares' boundary and past it.
-    #[inline(always)]
-    #[verifier::external_body]
-    pub(super) unsafe fn cached_recently(
-        slots: *mut *mut u8,
-        len: u32,
-        e: *mut u8,
-        Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>,
-    ) -> (r: bool)
-        requires
-            len == 0 || slot_in(slots, len as int),
-            forall|i: int| 0 <= i < len ==> {
-                let q = #[trigger] slot_ptr(slots, i);
-                perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
-            },
-        ensures
-            // A hit is an entry among the `len` whose address is `e`'s (the
-            // compares are of addresses, as `==` on pointers is).
-            r ==> exists|i: int| 0 <= i < len && perms[#[trigger] slot_ptr(slots, i)].value()@.addr == e@.addr,
-        opens_invariants none
-    {
-        if len == 0 {
-            return false;
-        }
-        // SAFETY: guaranteed by the caller.
-        unsafe {
-            let top = slots.add(len as usize);
-            if len >= 4 {
-                (*top.sub(1) == e) | (*top.sub(2) == e) | (*top.sub(3) == e) | (*top.sub(4) == e)
-            } else {
-                (1..=len as usize).any(|i| *top.sub(i) == e)
-            }
-        }
-    }
-
-    /// The address entry `i` of owned header `cache` stands for
-    /// ([`plain`](super::plain)).
-    pub(super) open spec fn cached_addr(&self, cache: *mut CacheHeader, i: int) -> int {
-        plain(self.perms@.slots[self.perms@.ent(cache, i)].value(), self.hdr(cache).slots) as int
-    }
-
-    /// No cached entry of `cache` (its first `n`) stands for the live slot
-    /// whose token `blk` holds: each holds its own slot's token
-    /// ([`CachePerms::tokened`]), of the same authority, so of another slot
-    /// (`Live::lemma_slot_apart`). This is the second disjunct of
-    /// [`Heap::scan_or_abort`]'s precondition, under which its
-    /// `double_free_scan` abort is unreachable, for a free that holds the
-    /// slot's token and only `valid_aborts` (`free_slow_in`'s scan).
-    /// It restates [`Heap::theorem_uniqueness_live`]'s per-entry step rather
-    /// than calling it: that theorem states the fact over the closed
-    /// `Heap::cached`, while `scan_or_abort`'s precondition names the open
-    /// [`cached_addr`](Heap::cached_addr), and this lemma also frames
-    /// `blk`'s `mem()` and `claims`.
-    pub(super) proof fn lemma_not_cached(tracked &self, tracked blk: &mut Live, cache: *mut CacheHeader, c: int, n: int)
-        requires
-            self.wf(),
-            self.owns(cache),
-            self.hdr_class(cache) == c,
-            old(blk).slot_of(c),
-            0 <= n <= self.hdr(cache).len,
-        ensures
-            final(blk).slot_of(c),
-            final(blk).addr() == old(blk).addr(),
-            final(blk).len() == old(blk).len(),
-            final(blk).mem() == old(blk).mem(),
-            final(blk).wf() == old(blk).wf(),
-            forall|p: *mut u8| #[trigger] old(blk).claims(p) ==> final(blk).claims(p),
-            forall|i: int| 0 <= i < n ==> #[trigger] self.cached_addr(cache, i) != old(blk).addr() as int,
-        decreases n,
-    {
-        if n > 0 {
-            self.lemma_not_cached(blk, cache, c, n - 1);
-            self.perms@.lemma_tok_get(cache, n - 1);
-            let q = self.perms@.ent(cache, n - 1);
-            blk.lemma_slot_apart(self.perms.borrow().toks.tracked_borrow(q), c);
-        }
-    }
-
-    /// Push onto `cache` unless it is full. With `scan`, compare `p`
-    /// against the top four entries first (design 6.3 step 3): a match is
-    /// a double free whose first copy is still
-    /// cached, which the bit test cannot see, and the push declines
-    /// (`false`) without storing the second copy; the caller's slow path
-    /// ([`Heap::free_slow_in`]) repeats the compare and aborts by name. Not
-    /// an abort from here: `cached_twice` would be the one call inside the
-    /// inlined push, and a call in the body costs every `free` and
-    /// `sdallocx` a frame (7 instructions per call on x86_64, the
-    /// `stp`/`ldp` pair on aarch64). Four unconditional compares from the
-    /// line the push writes to; a cache holding fewer than four takes the
-    /// loop.
+    /// Push onto `cache` unless it is full.
     ///
     /// With `pac` the entry is stored signed with the stack's base address
-    /// as the modifier (`pacda`, [`PUSH_PAC`]); the scan compares signed
-    /// against signed, which is the same test (one key, one modifier, so
-    /// equal addresses give equal words).
+    /// as the modifier (`pacda`, [`PUSH_PAC`]).
     ///
     /// # Safety
     /// `cache` is a header owned by this heap, unused or with a stack.
@@ -836,7 +823,6 @@ impl Heap {
     pub(super) unsafe fn push_cache(
         cache: *mut CacheHeader,
         p: *mut u8,
-        scan: bool,
         pac: bool,
         Tracked(perms): Tracked<&mut CachePerms>,
         Tracked(tk): Tracked<&mut Map<int, GhostSingleton<int>>>,
@@ -856,7 +842,7 @@ impl Heap {
             final(perms).keeps(*old(perms)),
             old(perms).claimed() ==> final(perms).claimed(),
             final(perms).follows(*old(perms)),
-            !scan && old(perms).hdr(cache).len < old(perms).hdr(cache).cap ==> r,
+            old(perms).hdr(cache).len < old(perms).hdr(cache).cap ==> r,
             r ==> final(perms).hdr(cache).len == old(perms).hdr(cache).len + 1,
             old(perms).tokened() && old(tk).contains_key(0) ==> final(perms).tokened(),
             !r ==> *final(tk) == *old(tk),
@@ -893,20 +879,6 @@ impl Heap {
             } else {
                 p
             };
-            if scan && Self::cached_recently(slots, len, e, Tracked(&perms.slots)) {
-                proof {
-                    CachePerms::lemma_update(old_perms, *perms, cache);
-                    CachePerms::lemma_tracks_hdr(old_perms, *perms, cache);
-                    if old_perms.tokened() {
-                        CachePerms::lemma_tokened_hdr(old_perms, *perms, cache);
-                    }
-                    if old_perms.claimed() {
-                        CachePerms::lemma_claimed_hdr(old_perms, *perms, cache);
-                    }
-                    CachePerms::lemma_zero_hdr(old_perms, *perms, cache);
-                }
-                return false;
-            }
             proof {
                 assert(slot_ptr(slots, len as int) == crate::vspec::ptr::ptr_add(slots, len as usize));
                 assert(perms.slots.contains_key(slot_ptr(slots, len as int)));
@@ -1077,9 +1049,12 @@ impl Heap {
                 unsorted_flushes: 0,
             },
         );
-        // The `FOREIGN` cache is never popped, so it never probes.
+        // The `FOREIGN` cache is never popped, so it never probes; under
+        // `double_free_scan` every pop is scheduled instead (`MODE_STATE`).
         let mode = if arena == FOREIGN {
             MODE_OFF
+        } else if shared.double_free_scan() {
+            MODE_STATE
         } else {
             MODE_PROBE
         };
@@ -1152,58 +1127,3 @@ impl CacheHeader {
 }
 
 } // verus!
-
-/// Kani check of `Heap::cached_recently` (`verus/ledger/src/heap/cache.rs.md`;
-/// `cfg(kani)` only, see `verus/README.md`, "Kani").
-#[cfg(kani)]
-mod kani_cache {
-    use super::Heap;
-    use vstd::prelude::Tracked;
-
-    /// The call on a stack of exactly `N` entries (an array, the one
-    /// allocation the pointers come from), each entry and `e` any
-    /// address: it reads only inside the stack and returns whether `e`
-    /// is one of the top `min(4, N)` entries.
-    fn on<const N: usize>() {
-        let vals: [usize; N] = kani::any();
-        let mut a = vals.map(core::ptr::without_provenance_mut::<u8>);
-        let e = core::ptr::without_provenance_mut::<u8>(kani::any());
-        // SAFETY: the contract's precondition: `a` holds the `N` entries
-        // from its start, written.
-        let r =
-            unsafe { Heap::cached_recently(a.as_mut_ptr(), N as u32, e, Tracked::assume_new()) };
-        let mut hit = false;
-        for i in 1..=N.min(4) {
-            hit |= a[N - i] == e;
-        }
-        assert_eq!(r, hit);
-    }
-
-    /// `Heap::cached_recently`, `requires` the `len` entries from `slots`
-    /// permitted and written and, unless `len` is 0, in one allocation
-    /// (`slot_in`), `ensures` a hit is an entry among the `len` with `e`'s
-    /// address. The harness checks more: the result is exactly whether one
-    /// of the top `min(len, 4)` entries is `e`, and the call reads only
-    /// inside the stack, for every `len` from 0 to 8 (both branches, the short
-    /// stack's iterator and the four compares, and their boundary at 4),
-    /// every entry and every `e`; and with `len == 0` (no entry or range
-    /// required) on any pointer, even null or dangling.
-    #[kani::proof]
-    #[kani::unwind(9)]
-    fn cached_recently_reads_the_top_entries() {
-        on::<0>();
-        on::<1>();
-        on::<2>();
-        on::<3>();
-        on::<4>();
-        on::<5>();
-        on::<6>();
-        on::<7>();
-        on::<8>();
-        let p = core::ptr::without_provenance_mut::<*mut u8>(kani::any());
-        let e = core::ptr::without_provenance_mut::<u8>(kani::any());
-        // SAFETY: `len == 0`: the precondition names no entry.
-        let r = unsafe { Heap::cached_recently(p, 0, e, Tracked::assume_new()) };
-        assert!(!r);
-    }
-}

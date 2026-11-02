@@ -53,7 +53,7 @@ use super::live::Live;
 use super::tcaches::Tcaches;
 #[cfg(verus_keep_ghost)]
 use super::thread::reentry_benign;
-use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_STATE, PUSH_ZERO, invalid_free};
 use crate::arena::Published;
 use crate::sys::tls::TlsCell;
 use crate::vspec::flags::RouteByte;
@@ -111,9 +111,9 @@ pub struct Shared {
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
     pub(crate) free_flags: RouteByte,
-    /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
-    /// (`double_free_scan`, design 6.3 step 3: every push compares the
-    /// slot against the top four cache entries and aborts on a match) and
+    /// The opt-in hardening a push applies, as [`PUSH_STATE`]
+    /// (`double_free_scan`, design 6.3 step 3: the fast push and pop
+    /// decline and the slow paths keep each slot's state, `slotstate`) and
     /// [`PUSH_ZERO`] (`zero_on_free`: the slot's class-size bytes are
     /// cleared before the push, and a huge run's usable bytes before its
     /// release), [`PUSH_PAC`] (`pac_pointers`: signed cache and heap
@@ -2065,6 +2065,11 @@ impl Shared {
         };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
+        // `double_free_scan`'s slot-state arrays, before any class table
+        // can hand out a slab (`slotstate::commit`).
+        if config.double_free_scan {
+            super::slotstate::init(&regions);
+        }
         let ghost steps0 = steps;
         let tracked mut steps = steps;
         let tracked shared_once = once::take(&mut steps, Step::Shared);
@@ -2110,7 +2115,7 @@ impl Shared {
             let regions = Shared::put_flags(
                 this,
                 (if config.double_free_scan {
-                    PUSH_SCAN
+                    PUSH_STATE
                 } else {
                     0
                 }) | (if config.zero_on_free { PUSH_ZERO } else { 0 })
@@ -2128,7 +2133,7 @@ impl Shared {
             proof {
                 // The `PUSH_PAC` bit is set only from `pac` (the probe).
                 let f = parts.push_flags.value();
-                let x: u8 = if config.double_free_scan { PUSH_SCAN } else { 0 };
+                let x: u8 = if config.double_free_scan { PUSH_STATE } else { 0 };
                 let y: u8 = if config.zero_on_free { PUSH_ZERO } else { 0 };
                 let z: u8 = if pac && config.pac_pointers { PUSH_PAC } else { 0 };
                 assert(f == x | y | z);
@@ -2903,6 +2908,59 @@ impl Shared {
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
             r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
     {
+        if self.double_free_scan() {
+            return self.alloc_direct_state(arena, pubw, class, Tracked(blk), Tracked(ord));
+        }
+        self.alloc_direct_plain(arena, pubw, class, Tracked(blk), Tracked(ord))
+    }
+
+    /// [`Shared::alloc_direct`] under `double_free_scan`: the claim, then
+    /// the slot's state from `FREE` to `LIVE` (it goes straight to the
+    /// program). Cold, so the inlined `alloc_direct` keeps its size.
+    /// Bypassing every cache. Null when the region is exhausted. The flag
+    /// says the memory is known zero; `blk` gets the slot's token.
+    #[cold]
+    #[inline(never)]
+    fn alloc_direct_state(&self, arena: &Arena, pubw: Tracked<&'static Published>, class: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            published(*pubw@, *arena),
+            class < NCLASSES,
+            self.wf(),
+        ensures
+            *final(ord) == *old(ord),
+            r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
+        let r = self.alloc_direct_plain(arena, pubw, class, Tracked(blk), Tracked(ord));
+        if !r.0.is_null() {
+            super::slotstate::claim(self, class, r.0, super::slotstate::LIVE);
+        }
+        r
+    }
+
+    /// [`Shared::alloc_direct`] without `double_free_scan`'s state: claim one
+    /// slot of `class` in `arena` straight from the slab bitmaps,
+    /// bypassing every cache. Null when the region is exhausted. The flag
+    /// says the memory is known zero; `blk` gets the slot's token.
+    #[inline(always)]
+    fn alloc_direct_plain(&self, arena: &Arena, pubw: Tracked<&'static Published>, class: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            published(*pubw@, *arena),
+            class < NCLASSES,
+            self.wf(),
+        ensures
+            *final(ord) == *old(ord),
+            r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
+            r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+    {
         let mut out = [ptr::null_mut()];
         let cs = arena.class(class);
         cs.slot_tokens_are_the_class_s();
@@ -3534,7 +3592,7 @@ impl Shared {
         assert(f & !8u8 == pf & !8u8 ==> (f & 4u8 == pf & 4u8 && f & 2u8 == pf & 2u8)) by (bit_vector);
     }
 
-    /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
+    /// The flag byte both fast paths load: [`PUSH_STATE`], [`PUSH_ZERO`]
     /// and [`PUSH_PAC`]; 0 in the default configuration, PAC host or not.
     #[inline(always)]
     pub fn push_flags(&self) -> (r: u8)
@@ -3547,15 +3605,28 @@ impl Shared {
         self.push_flags
     }
 
-    /// Whether pushes compare against the top four cache entries
-    /// (`double_free_scan`).
+    /// Whether every free checks and moves the slot's state
+    /// (`double_free_scan`, [`slotstate`](super::slotstate)).
     #[inline(always)]
     pub fn double_free_scan(&self) -> (r: bool)
         ensures
-            r == (self.flags() & PUSH_SCAN != 0),
+            r == (self.flags() & PUSH_STATE != 0),
         opens_invariants none
     {
-        self.push_flags & PUSH_SCAN != 0
+        self.push_flags & PUSH_STATE != 0
+    }
+
+    /// `double_free_scan`: abort when slot `p` of `class` sits in a
+    /// cache, freed ([`slotstate::check_not_cached`](super::slotstate::check_not_cached)):
+    /// `malloc_usable_size`, `realloc` and `sallocx` after their bit test.
+    #[inline(always)]
+    pub fn check_not_cached(&self, class: usize, p: *mut u8)
+        requires
+            crate::sys::may_abort_pending(),
+    {
+        if self.double_free_scan() {
+            super::slotstate::check_not_cached(self, class, p);
+        }
     }
 
     /// Whether a freed block is cleared before it is cached or released

@@ -5,8 +5,8 @@
 # verifies; `combined-functions` and `combined-lines` also count the
 # trusted functions whose seams the ledger marks discharged
 # (verus/SEAMS.md, "Status"). Leaving out a combined figure sets it to 0.0.
-combined-functions 84.8
-combined-lines 93.6
+combined-functions 84.6
+combined-lines 93.4
 #
 # A change keeps the share at or above these figures. They rise in their
 # own pull requests between merges, to the figures the check names, so
@@ -15,3 +15,5 @@ combined-lines 93.6
 # here, new in that change, names that figure and value.
 functions 82.3
 lines 92.7
+lowered combined-functions 84.6 double_free_scan's Kani-discharged top-four scan (cached_recently) gives way to the trusted slot-state primitives heap/slotstate.rs (step, init, commit); the verified shares hold
+lowered combined-lines 93.4 double_free_scan's Kani-discharged top-four scan (cached_recently) gives way to the trusted slot-state primitives heap/slotstate.rs (step, init, commit); the verified shares hold
