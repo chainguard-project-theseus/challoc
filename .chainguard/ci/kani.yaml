@@ -25,9 +25,11 @@
 # `kani_proofs::misc::formatter_write_fmt`, 10.1 GiB on
 # `api::print::kani_print::word_returns` and 8.8 GiB on
 # `kani_proofs::slice::slice_is_sorted` (quantum 16), and four at once can
-# pass large-amd64's 32 GiB. The `kani` check therefore runs on the
-# repository class `kani-amd64` (resources/kani-amd64.yaml): 48 GiB, and
-# 8 vCPUs, of which a check reserves half, the four `-j 4` uses.
+# pass large-amd64's 32 GiB. The `kani` check runs on xlarge-amd64 for
+# its 64 GiB and its 16 vCPUs: cargo kani's build and per-harness steps
+# outside CBMC burst past the four `-j 4` cores. On an 8 vCPU, 48 GiB
+# class the run took 27m21s and 27m37s, against 24m37s and 26m28s here
+# with one harness more (#459).
 version: 1
 
 environment:
@@ -74,7 +76,7 @@ checks:
     # list; kani-fmt passes this one name to --harness).
     vars: &kani-vars
       KANI_SKIP: kani_proofs::misc::formatter_write_fmt
-    resources: kani-amd64
+    resources: xlarge-amd64
     timeout: 40m
     network: &kani-net
       egress: [index.crates.io, static.crates.io]
