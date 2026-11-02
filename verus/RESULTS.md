@@ -30,7 +30,7 @@ Every theorem is conditional on the [trust base](#trust-base) and the caller obe
 
 ## Theorems
 
-The 56 `theorem_*` functions comprise 43 proof functions and 13 verification-only executable functions. The count takes every function definition under `src/` whose name starts with `theorem_`, including methods such as `Live::theorem_apart`; it leaves out the 4 `fn theorem_` strings that the restated-body tests in `src/api/restated.rs` search for. The “Assumes” column names the main premises for each result; it is not a substitute for the function’s full `requires` contract. In particular, C entry points rely on the caller’s contract, and proofs about allocator state rely on the state invariants and trusted seams they use.
+The 58 `theorem_*` functions comprise 44 proof functions and 14 verification-only executable functions. The count takes every function definition under `src/` whose name starts with `theorem_`, including methods such as `Live::theorem_apart`; it leaves out the 4 `fn theorem_` strings that the restated-body tests in `src/api/restated.rs` search for. The “Assumes” column names the main premises for each result; it is not a substitute for the function’s full `requires` contract. In particular, C entry points rely on the caller’s contract, and proofs about allocator state rely on the state invariants and trusted seams they use.
 
 ### API and C boundary
 
@@ -87,6 +87,7 @@ All 5 proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_syscall`, `ker
 | `Heap::theorem_uniqueness_live` | A cached slot is not a live block. | [heap/mod.rs](../src/heap/mod.rs) | A well-formed heap and live-block authority. |
 | `Heap::theorem_uniqueness_apart` | 2 heaps never cache the same slot. | [heap/mod.rs](../src/heap/mod.rs) | Well-formed heaps and cache authorities. |
 | `Heap::theorem_cache_routing` | Cache routing keys are distinct, a header routes to at most 1 arena, and pops do not take from the `FOREIGN` node. | [heap/mod.rs](../src/heap/mod.rs) | A well-formed heap and its routing state. |
+| `theorem_exit_no_rebuild` | At a TLS slot holding `TLS_EXITED`, which the thread’s heap destructor stores before freeing the heap, the slot readers hand out no heap and create none, and every value a slot write may store over it (`slot_step`, required by `tls::set`) is `TLS_EXITED`. Verification only. | [heap/thread.rs](../src/heap/thread.rs) | The slot premise of `TlsSlot::entry`, whose call sites a source test checks; trusted nested-entry specs. |
 
 ### Zero and usable size
 
@@ -156,6 +157,7 @@ These heap-exploitation techniques have no CVE of their own. Each turns an appli
 | Free-list poisoning through a freed block: tcache poisoning, House of Lore, unsorted bin attack | These techniques write a forged next or bk link into a freed block’s bytes and rely on `malloc` reading it. `theorem_no_user_reads` proves the covered allocation and free cores read no user block bytes, except opt-in debug zero checks, so those cores never read the forged link ([api/libc.rs](../src/api/libc.rs)). `theorem_metadata_integrity` proves cache stack entries and the metadata allocator’s free-list link words share no byte with a returned block ([heap/mod.rs](../src/heap/mod.rs)). | `malloc`, `calloc`, `aligned_alloc`, `mallocx`, `free`, `free_sized`, `challoc_free_usable`, `dallocx`, `sdallocx`, `malloc_usable_size` | [tcache poisoning](https://github.com/shellphish/how2heap/blob/master/glibc_2.35/tcache_poisoning.c), [House of Lore](https://github.com/shellphish/how2heap/blob/master/glibc_2.35/house_of_lore.c), [unsorted bin attack](https://github.com/shellphish/how2heap/blob/master/glibc_2.27/unsorted_bin_attack.c), and [Safe-Linking](https://research.checkpoint.com/2020/safe-linking-eliminating-a-20-year-old-malloc-exploit-primitive/) (which masks the link but can be bypassed with a heap leak). |
 | Overlapping chunks: a forged chunk size makes `malloc` return a block that overlaps a live one | `Live::theorem_apart` proves that the usable bytes of 2 live blocks are disjoint ([heap/live.rs](../src/heap/live.rs)). `theorem_region_separation` proves an allocated block lies wholly in 1 class region or the huge region, outside the metadata region ([heap/mod.rs](../src/heap/mod.rs)). Both rely on callers freeing only live blocks. A slot’s size comes from its class region, not from bytes next to it, and `theorem_no_user_reads` proves the covered cores read no block bytes, so a size written into a neighboring block is never read ([api/libc.rs](../src/api/libc.rs)). | All allocations, for any 2 live blocks; region separation for results satisfying `heap::fits`. | [Overlapping chunks](https://github.com/shellphish/how2heap/blob/master/glibc_2.27/overlapping_chunks.c) (an overflow overwrites a freed chunk’s size). |
 | Corrupting allocator metadata stored among user blocks: inline chunk headers, in-slot free-list pointers | `theorem_metadata_integrity` proves a returned block’s bytes share no byte with the metadata ranges its contract names: metadata region ranges, the metadata allocator’s link words, the `Shared` static, class-table descriptors, owner and bitmap words, cache headers and stack entries, huge descriptors, descriptor-table slots, and free-page bitmap words. Its [exclusions](#known-limits-and-open-work) remain. [heap/mod.rs](../src/heap/mod.rs) | Results satisfying `heap::fits` (the allocation entry points in the CVE table). | [PartitionAlloc](https://chromium.googlesource.com/chromium/src/+/main/base/allocator/partition_allocator/PartitionAlloc.md) (free-list pointers are the only inline metadata and are encoded and shadowed because overruns can reach them); [musl mallocng design notes](https://openwall.com/lists/musl/2020/05/13/1) (oldmalloc’s in-band headers versus mallocng’s out-of-band metadata). |
+| Use of a thread’s heap after thread-exit teardown: a cache rebuilt after the thread’s destructor ran, or the freed heap reached again through TLS | `heap_destructor` stores `TLS_EXITED` in the thread’s TLS slot before `Heap::destroy` frees the heap (the order is read off the code). Every slot write requires `slot_step`, under which `TLS_EXITED` is final, and `theorem_exit_no_rebuild` proves that at `TLS_EXITED` the fast and slow slot readers hand out no heap and make no `Heap::create` call ([heap/thread.rs](../src/heap/thread.rs)). A signal handler or another key’s destructor that allocates on the exiting thread is served without the thread’s cache. Trusted: the slot premise (a top-level user’s token holds the slot as the last write left it; a source test checks which functions make tokens and how many, not that a nested user is lent the outer token), the specs of the `pthread_*` calls that can re-enter the allocator, and the slot’s asm accessors (partly checked by Isla). Not covered: explicit caches (`tcache.destroy`), which are not reached through the slot. | Every entry that reads the slot: the `malloc`, `free`, `free_sized`, and `challoc_free_usable` fast paths, and every path through `heap_for_thread` | glibc [BZ 22111](https://sourceware.org/bugzilla/show_bug.cgi?id=22111) and [BZ 28028](https://sourceware.org/bugzilla/show_bug.cgi?id=28028) (thread exit rebuilt the tcache after shutdown and leaked it). |
 
 ### Not ruled out yet
 
@@ -164,7 +166,7 @@ These stated limits and open work remain on main. [Issue #397](https://github.co
 - Double and invalid frees — stated limit: the proofs assume the C contract. [hardening.md](../docs/hardening.md#1-invalid-and-double-frees) documents that a second free of a slot still in the thread cache goes undetected if a `malloc` pops one copy before the flush; `double_free_scan` narrows that window by checking a freed slot against the four most recently cached entries.
 - Use after free with same-class reuse — stated limit: challoc has no quarantine or type isolation, by design.
 - A linear overflow off a block — open work, #397’s “Overflow reach”: separation from metadata and other blocks is proved, but no theorem says an overflow faults before reaching them.
-- Allocator state after `fork` and at thread exit — open work: lock state after `fork` rests on `axiom_fork_entry`, tracked under #397’s “Theorem 33”; thread exit is #397’s “Thread exit.”
+- Allocator state after `fork` — open work: lock state after `fork` rests on `axiom_fork_entry`, tracked under #397’s “Theorem 33”. Thread exit is covered by `theorem_exit_no_rebuild` (exploit techniques above) up to the slot premise, which a source test checks only in part.
 
 ## Coverage
 
@@ -277,7 +279,7 @@ Isla I2 (x86_64), I3 (trap, TLS, GOT, and rseq), I4 (pointer authentication), em
 
 - 92.8% of executable lines and 82.5% of executable functions are Verus-verified.
 - 93.6% of lines and 84.9% of functions count when fully discharged Kani and constant-assertion seams are included.
-- 56 theorems cover metadata integrity, live-block separation, guard pages, zeroing, free paths, and accounting.
+- 58 theorems cover metadata integrity, live-block separation, guard pages, zeroing, free paths, thread exit, and accounting.
 - `theorem_metadata_integrity` separates returned blocks from the metadata ranges named in its contract, subject to stated trust assumptions and exclusions.
 - The covered fast paths make no syscall except an integrity abort’s write and `SIGABRT`; valid frees avoid invalid-free and double-free checks.
 - 134 Kani harnesses check bounded contracts; 61 loom tests model atomic protocols.
@@ -288,7 +290,7 @@ Isla I2 (x86_64), I3 (trap, TLS, GOT, and rseq), I4 (pointer authentication), em
 | --- | ---: |
 | Verus-verified executable lines / functions | 38906 of 41901 (92.8%) / 1272 of 1541 (82.5%) |
 | Verified plus discharged lines / functions | 39252 of 41901 (93.6%) / 1309 of 1541 (84.9%) |
-| Theorems | 56: 43 proof, 13 verification-only executable |
+| Theorems | 58: 44 proof, 14 verification-only executable |
 | Seams | 408: 129 discharged, 34 partly checked, 245 trusted |
 | Kani proof harnesses | 134 |
 | Trusted functions with no check | 193 functions, 2194 lines |

@@ -1710,6 +1710,54 @@ pub(crate) mod tests {
         }
     }
 
+    /// `TlsSlot::entry` is called only in the top-level slot users
+    /// `TlsSlot`'s doc lists, and once in each, but for the two that
+    /// call it in two arms of one `match` (`heap::mallocx::alloc`, and the restated
+    /// fast paths of `api::libc::theorem_no_syscall_on_fast_paths`): no
+    /// verified function holds two tokens of the slot (the slot premise).
+    #[test]
+    fn tls_entries_only_in_listed_users() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let sites = grant_sites(&format!("{}{}", "TlsSlot::", "entry()"));
+        let users = [
+            (
+                "heap/thread.rs:",
+                "pub unsafe extern \"C\" fn heap_destructor(",
+                1,
+            ),
+            ("heap/thread.rs:", "pub fn heap_for_thread(", 1),
+            ("heap/thread.rs:", "pub fn existing_heap(", 1),
+            ("api/libc.rs:", "pub fn free_block(", 1),
+            ("api/libc.rs:", "pub fn free_usable_block(", 1),
+            // Split, so that the count of `fn theorem_` strings stays put.
+            (
+                "api/libc.rs:",
+                concat!("fn theorem_", "no_syscall_on_fast_paths("),
+                2,
+            ),
+            ("heap/paths.rs:", "pub fn alloc(", 1),
+            ("heap/paths.rs:", "pub fn alloc_declined(", 1),
+            ("heap/paths.rs:", "pub fn alloc_zeroed(", 1),
+            ("heap/mallocx.rs:", "pub fn alloc(", 2),
+            ("api/mallctl.rs:", "fn ctl(", 1),
+        ];
+        for (sig, at) in &sites {
+            assert!(
+                users
+                    .iter()
+                    .any(|(file, f, _)| at.starts_with(file) && sig.starts_with(f)),
+                "{at}: a slot token made in `{sig}`"
+            );
+        }
+        for (file, f, want) in users {
+            let n = sites
+                .iter()
+                .filter(|(sig, at)| at.starts_with(file) && sig.starts_with(f))
+                .count();
+            assert_eq!(n, want, "{file} `{f}`: got = {n} tokens, want = {want}");
+        }
+    }
+
     /// A fresh read/write private anonymous mapping of `len` bytes, for
     /// this module's tests and `features::linux_tests`.
     pub(super) fn map_anon(len: usize) -> usize {
