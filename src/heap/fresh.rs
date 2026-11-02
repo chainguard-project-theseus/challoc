@@ -197,7 +197,7 @@ pub(super) unsafe fn init_fields(
     let tracked (mut raw, _) = head;
     let ghost base = h@.addr as int;
     proof {
-        crate::vspec::ptr::axiom_raw_valid(&mut raw, h as *mut u8, 128);
+        crate::vspec::ptr::axiom_raw_readable(&raw, h as *mut u8, 128);
         super::others::lemma_field_aligned::<*const Shared>(base, H_SHARED as int);
         super::others::lemma_field_aligned::<u32>(base, H_TID as int);
         super::others::lemma_field_aligned::<u16>(base, H_ARENA as int);
@@ -253,7 +253,7 @@ pub(super) unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap
     broadcast use vstd::layout::layout_of_primitives;
 
     proof {
-        crate::vspec::ptr::axiom_raw_valid(&mut s.head, h as *mut u8, 128);
+        crate::vspec::ptr::axiom_raw_readable(&s.head, h as *mut u8, 128);
         super::others::lemma_field_aligned::<bool>(h@.addr as int, H_BOUND as int);
     }
     // SAFETY: guaranteed by the caller.
@@ -290,7 +290,7 @@ pub(super) unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHea
     broadcast use vstd::layout::layout_of_primitives;
 
     proof {
-        crate::vspec::ptr::axiom_raw_valid(&mut s.head, h as *mut u8, 128);
+        crate::vspec::ptr::axiom_raw_readable(&s.head, h as *mut u8, 128);
         super::others::lemma_field_aligned::<bool>(h@.addr as int, H_REHOME as int);
     }
     // SAFETY: guaranteed by the caller.

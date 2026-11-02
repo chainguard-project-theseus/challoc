@@ -268,9 +268,10 @@ pub unsafe fn zero_user(p: *mut u8, n: usize, Tracked(m): Tracked<&mut UserMem>)
 /// other view of them is held across it (as for
 /// [`zero_raw`](crate::vspec::zero::zero_raw)). Trusted: the `core`
 /// contract of `copy_nonoverlapping` (`src` valid for reads of `n` bytes,
-/// `dst` valid for writes of them, which `d`'s raw permission stands for,
-/// as for `vspec::ptr::axiom_raw_valid`, and the two ranges apart), and
-/// its effect, which nothing in vstd states. The apartness premise
+/// `dst` valid for writes of them, which `d`'s raw permission, held
+/// `&mut`, stands for: the read-write memory
+/// `vspec::ptr::axiom_raw_readable` describes; and the two ranges apart),
+/// and its effect, which nothing in vstd states. The apartness premise
 /// follows from the others and is kept as `core` states it. `s` and `d`
 /// share no byte, so the copy leaves `s`'s bytes as they were. Private:
 /// its caller is [`copy_user`].

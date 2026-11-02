@@ -44,7 +44,7 @@ use crate::vspec::ctl::Change;
 use crate::vspec::once;
 use crate::vspec::once::{Once, Step};
 #[cfg(verus_keep_ghost)]
-use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_valid, in_alloc, ptr_add};
+use crate::vspec::ptr::{axiom_ptr_add_addr, axiom_raw_readable, in_alloc, ptr_add};
 use crate::vspec::unbacked::Unbacked;
 use vstd::prelude::{Ghost, int};
 
@@ -1588,8 +1588,8 @@ impl Shared {
         let p = perm.ptr();
         perm.is_nonnull();
         perm.is_aligned();
-        let tracked mut raw = perm.into_raw();
-        axiom_raw_valid(&mut raw, p as *mut u8, size_of::<Shared>() as int);
+        let tracked raw = perm.into_raw();
+        axiom_raw_readable(&raw, p as *mut u8, size_of::<Shared>() as int);
         let tracked (lines, raw) = take_field::<Shared, [ClassLine; NCLASSES]>(raw, p, S_LINES, S_FREE_FLAGS as int);
         let tracked (free_flags, raw) = take_field::<Shared, RouteByte>(raw, p, S_FREE_FLAGS, S_PUSH_FLAGS as int);
         let tracked (push_flags, raw) = take_field::<Shared, u8>(raw, p, S_PUSH_FLAGS, S_REGION_HI as int);

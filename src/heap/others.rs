@@ -864,8 +864,8 @@ impl Heap {
         proof {
             // The block's bound for the pointer arithmetic below (`in_alloc`);
             // every write to the block goes through a typed permission split
-            // from `raw`, never through this fact's `valid_writes`.
-            crate::vspec::ptr::axiom_raw_valid(&mut raw, block, size as int);
+            // from `raw`.
+            crate::vspec::ptr::axiom_raw_readable(&raw, block, size as int);
             crate::vspec::ptr::axiom_ptr_add_addr(block, (64 * pad) as usize);
             assert(size == 64 + 64 * NCLASSES + 64 * 15);
         }
@@ -882,15 +882,15 @@ impl Heap {
                 assert(block@.addr as int % 64 == 0);
             }
         }
-        let tracked (mut head, mut rest) = raw.split(Set::range(base, base + 64));
+        let tracked (head, mut rest) = raw.split(Set::range(base, base + 64));
         proof {
             // Bounds only (`node_placed`'s `in_alloc`), as for the block above.
-            crate::vspec::ptr::axiom_raw_valid(&mut head, node as *mut u8, 64);
+            crate::vspec::ptr::axiom_raw_readable(&head, node as *mut u8, 64);
             assert(rest.dom() =~= Set::range(block@.addr as int, block@.addr + size).difference(Set::range(base, base + 64)));
             assert(claim.held(crate::meta::process_live_id(), block, size as int, 64));
             assert(node@.provenance == block@.provenance);
             assert(Set::range(base + 64, base + 64 + 64 * NCLASSES) <= rest.dom());
-            crate::vspec::ptr::axiom_raw_valid(&mut rest, node_hdr(node, 0) as *mut u8, 64 * NCLASSES);
+            crate::vspec::ptr::axiom_raw_readable(&rest, node_hdr(node, 0) as *mut u8, 64 * NCLASSES);
             assert(node_placed(node));
         }
         let ghost h0 = *self;
