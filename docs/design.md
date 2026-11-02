@@ -1007,7 +1007,16 @@ sleeps on a futex until the next decay deadline, is woken when a class's
 first slab goes `Empty`, and samples the cgroup (section 11) before each
 decay pass. Its stack is one metadata reservation, made by the first
 start and never freed: a stopped thread exits at its next wake-up, and
-the next start joins it before reusing the stack. After `fork` the child
+the next start joins it before reusing the stack. Every system call
+challoc makes is a raw `syscall`, never a cancellation point; the two
+libc calls it makes that are, that `pthread_join` and the `fwrite` of
+`malloc_info` to a `FILE *`, run with cancellation disabled: a deferred
+`pthread_cancel` of the thread inside `mallctl`, `malloc_info` or an
+allocation is acted on at the program's next cancellation point, never
+midway through a start and never by unwinding through challoc's frames
+(14.1). Asynchronous cancellation inside challoc is undefined behaviour
+(POSIX allows it only around async-cancel-safe calls) and is not
+covered. After `fork` the child
 forgets the parent's thread and does not recreate it until asked or,
 under the lazy start, until it holds enough dirty memory of its own: the
 dirty bytes at the fork are its baseline, lowered as the inherited set
@@ -1671,10 +1680,13 @@ aborts:
   in doubt is kept out of circulation (leaked and counted), never
   recycled and never an abort.
 
+Thread cancellation is not a failure either: challoc never acts on a
+(deferred) cancellation request (8.1), so none leaves its state half set.
+
 Guards degrade, never vanish: a guard the kernel refuses as a
 `MADV_GUARD_INSTALL` marker (on an `mlock`ed range, `EINVAL`) is a
 `PROT_NONE` page or slab instead, put in place before the memory next to
-it is committed; if that `mprotect` fails too (a VMA split refused at
+it is handed out; if that `mprotect` fails too (a VMA split refused at
 `vm.max_map_count`) nothing next to it is handed out and the allocation
 is NULL/`ENOMEM`, retried on the next call (`SlabTable::install_guard`,
 `Huge::prepare`). Inside `free`, the huge descriptor table never needs

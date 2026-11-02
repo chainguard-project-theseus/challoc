@@ -800,7 +800,11 @@ ctests! {
     /// `mlockall`, a slab guard that can be neither marked nor split
     /// makes `malloc` NULL/`ENOMEM`, not an abort, and allocation resumes
     /// once the mappings go. The last two skip where `mlockall` is
-    /// refused.
+    /// refused. `bg_cancel`: a deferred `pthread_cancel` acted on while
+    /// a thread restarts the background thread never leaves the start
+    /// refused (`EAGAIN`) for good. `info_cancel`: `malloc_info` with a
+    /// deferred cancellation pending, on an unbuffered stream, returns 0
+    /// with the whole report; the thread is cancelled only after it.
     c_resource => [
         CTest { prog: "resource", args: &["data_init"], ..BASE },
         CTest { prog: "resource", args: &["as_min"], ..BASE },
@@ -812,6 +816,8 @@ ctests! {
         CTest { prog: "resource", args: &["mlock_huge"], ..BASE },
         CTest { prog: "resource", args: &["mlockall"], ..BASE },
         CTest { prog: "resource", args: &["map_count"], ..BASE },
+        CTest { prog: "resource", args: &["bg_cancel"], ..BASE },
+        CTest { prog: "resource", args: &["info_cancel"], ..BASE },
     ];
     /// `tests/c/jemalloc_api.c`: the jemalloc and glibc
     /// extras under the real `.so`, every non-standard symbol reached through

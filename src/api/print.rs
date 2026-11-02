@@ -134,6 +134,10 @@ fn call_back(
 /// before they are formatted, and the arena scan reads the registry
 /// without a lock) and the report's own state is the sink's stack buffer.
 /// `ord`, the report's lock-order token, has top 0, as for [`emit`].
+/// `fwrite` is a cancellation point; it runs with cancellation disabled,
+/// so a deferred `pthread_cancel` never unwinds through challoc's
+/// (non-unwinding) frames and is acted on at the program's next
+/// cancellation point instead (design 8.1).
 #[verifier::external_body]
 #[inline(always)]
 fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
@@ -141,8 +145,20 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
         crate::sys::may_syscall(),
         ord.top() == 0,
 {
-    // SAFETY: `f` is the caller's open stream; `s` is readable.
-    unsafe { libc::fwrite(s.as_ptr() as *const c_void, 1, s.len(), f) };
+    // glibc's, which the `libc` crate does not bind; the same on both
+    // targets.
+    const PTHREAD_CANCEL_DISABLE: i32 = 1;
+    unsafe extern "C" {
+        fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
+    }
+    // SAFETY: `f` is the caller's open stream; `s` is readable; `old` is
+    // a live int the cancel-state calls write.
+    unsafe {
+        let mut old = 0;
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &mut old);
+        libc::fwrite(s.as_ptr() as *const c_void, 1, s.len(), f);
+        pthread_setcancelstate(old, &mut old);
+    }
 }
 
 /// A `fmt::Write` that buffers up to 1023 bytes and forwards them,
