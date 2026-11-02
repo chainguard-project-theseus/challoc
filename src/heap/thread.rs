@@ -48,6 +48,64 @@ pub open spec fn reentry_benign(v: usize) -> bool {
     v == TLS_CREATING || v == TLS_EXITED
 }
 
+/// The phase of a thread's TLS slot value: no heap yet (null), creation
+/// in progress ([`TLS_CREATING`]), a heap (any value above the
+/// sentinels: the heap pointer, signed under PAC), or the destructor
+/// has run ([`TLS_EXITED`]).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost enum SlotPhase {
+    /// Null: no heap yet.
+    Empty,
+    /// [`TLS_CREATING`]: a creation, or the background thread's `create`,
+    /// has parked the slot.
+    Creating,
+    /// A heap pointer (signed under PAC).
+    Live,
+    /// [`TLS_EXITED`]: the thread-exit destructor has run.
+    Exited,
+}
+
+/// The [`SlotPhase`] of slot value `v`.
+pub open spec fn slot_phase(v: usize) -> SlotPhase {
+    if v == 0 {
+        SlotPhase::Empty
+    } else if v == TLS_CREATING {
+        SlotPhase::Creating
+    } else if v == TLS_EXITED {
+        SlotPhase::Exited
+    } else {
+        SlotPhase::Live
+    }
+}
+
+/// Writing `new` to a slot that holds `old` is a step the phases allow,
+/// which `sys::tls::set`, the slot's one writer, requires: `Exited` is
+/// final; a new heap value is written only over `Creating` (a creation
+/// publishing its heap, or the background thread's `create` putting back
+/// the heap it parked), so a heap never directly replaces another heap,
+/// an empty slot or `Exited`; and an empty slot is written only over an
+/// empty slot or `Creating` (a creation whose heap the thread-exit key
+/// could not take). Any phase may go to `Exited` (`heap_destructor`).
+/// The phases do not say which heap value a write from `Creating` puts
+/// in the slot (`create` puts back the value it parked, read off its
+/// code).
+pub open spec fn slot_step(old: usize, new: usize) -> bool {
+    &&& (slot_phase(old) is Exited) ==> (slot_phase(new) is Exited)
+    &&& (slot_phase(new) is Live) && new != old ==> (slot_phase(old) is Creating)
+    &&& (slot_phase(new) is Empty) ==> (slot_phase(old) is Empty) || (slot_phase(old) is Creating)
+}
+
+/// `Exited` is final: the only step from [`TLS_EXITED`] writes it again.
+pub proof fn lemma_exited_final(old: usize, new: usize)
+    requires
+        old == TLS_EXITED,
+        slot_step(old, new),
+    ensures
+        new == TLS_EXITED,
+{
+}
+
 /// Ghost: the permission to a thread heap, linear: the heap loan of the
 /// thread's TLS slot token holds it while the slot holds the heap
 /// ([`HeapLoan`](crate::sys::tls::HeapLoan), [`slot_ok`]), and
@@ -162,7 +220,11 @@ pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(loan): Tracked<&'a 
 /// and free its heap. The sentinel goes first so that anything allocating
 /// on this thread from here on (a signal handler landing in the middle of
 /// `Heap::destroy`, another key's destructor afterwards) is served without
-/// a heap instead of reaching the one being freed through `existing_heap`
+/// a heap instead of reaching the one being freed through `existing_heap`.
+/// Every slot write requires [`slot_step`], under which `Exited` is
+/// final ([`lemma_exited_final`]), and at `Exited` the slot readers hand
+/// out no heap and create none (`theorem_exit_no_rebuild`); that later
+/// entries see `Exited` is `TlsSlot::entry`'s slot premise.
 ///
 /// # Safety
 /// `p` is the heap pointer registered with `pthread_setspecific` by
@@ -188,6 +250,11 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
         let tracked _heap = tls.loan.take();
     }
     crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void, Tracked(&mut tls.cell));
+    proof {
+        // The slot is `Exited`, with no heap permission in the token:
+        // `Heap::destroy` below takes neither part of it.
+        assert(tls.value() == TLS_EXITED && tls.loan.heap() is None && slot_ok(tls.cell, tls.loan));
+    }
     // Premise (`axiom_heap_use`): a thread's heap reaches its key
     // destructor once, at thread exit, and nothing else uses it then.
     let tracked mut u = axiom_heap_use();
@@ -420,6 +487,44 @@ pub fn existing_heap_in<'a>(shared: *const Shared, Tracked(tls): Tracked<&'a mut
     let flags = unsafe { fast_flags(shared) };
     // SAFETY: `t` is this thread's slot value above the sentinels.
     Some(unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked(&tls.cell), Tracked(&mut tls.loan)) })
+}
+
+/// Thread exit never reuses a destroyed heap: at a token whose
+/// slot is [`TLS_EXITED`], as `heap_destructor` leaves it before
+/// `Heap::destroy` frees the heap, [`existing_heap_in`] (the fast paths'
+/// reader) and [`heap_for_thread_in`] (the slow paths' reader, the one
+/// that creates heaps) both return `None` and leave the token as it was:
+/// no heap is handed out, the slot is not written, and no `Heap::create`
+/// call is made (the cell's count is unchanged). And every value a
+/// slot write may store over it, the step `sys::tls::set` requires
+/// ([`slot_step`]), is `TLS_EXITED` again ([`lemma_exited_final`]).
+/// Verus checks each write and each reader; that every later entry on
+/// the thread sees `TLS_EXITED`, so that its allocations and frees are
+/// served without the thread's heap, also needs each later entry's token
+/// to hold the slot as the last write left it: `TlsSlot::entry`'s slot
+/// premise, the link from one call to the next that Verus does not check.
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tracked<&mut TlsSlot>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        sp == Shared::storage() as *const Shared,
+        slot_ok(old(tls).cell, old(tls).loan),
+        old(tls).value() == TLS_EXITED,
+    ensures
+        *final(tls) == *old(tls),
+        forall|v: usize| slot_step(old(tls).value(), v) ==> v == TLS_EXITED,
+{
+    assert forall|v: usize| slot_step(old(tls).value(), v) implies v == TLS_EXITED by {
+        lemma_exited_final(old(tls).value(), v);
+    }
+    let fast = existing_heap_in(sp, Tracked(&mut *tls));
+    assert(fast is None);
+    let slow = heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan));
+    assert(slow is None);
 }
 
 /// The calling thread's TLS slot value and thread pointer when the slot

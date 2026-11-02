@@ -79,7 +79,7 @@ pub(crate) use tcaches::axiom_heap_use;
 pub use thread::{HeapPerm, TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 #[cfg(verus_keep_ghost)]
-pub use thread::{reentry_benign, slot_ok};
+pub use thread::{reentry_benign, slot_ok, slot_step};
 
 use core::alloc::Layout;
 use core::ptr;

@@ -378,9 +378,14 @@ Jobs: `aarch64/tls-store` `x86_64/tls-store`
 
 ```rust
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
+    requires
+        crate::heap::slot_step(old(slot).value(), value as usize),
     ensures
         final(slot).set_to(*old(slot), value as usize),
 ```
+
+`requires slot_step(..)` is a condition on the verified callers (the
+slot's phase order); it puts no condition on the instruction.
 
 ## The system calls
 

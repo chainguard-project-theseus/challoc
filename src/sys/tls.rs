@@ -175,7 +175,8 @@ impl TlsCell {
     /// heap, never a sentinel ([`reentry_benign`](crate::heap::reentry_benign)):
     /// a heap `create` parked on `TLS_CREATING` is put back. The spec does
     /// not say which: emptying a slot a nested entry filled, and so losing
-    /// that heap, also satisfies `kept`.
+    /// that heap, also satisfies `kept`, though no verified writer can
+    /// store null over a heap ([`slot_step`](crate::heap::slot_step)).
     pub open spec fn kept(self, old: TlsCell) -> bool {
         &&& old.value() != 0 ==> self == old
         &&& old.value() == 0 ==> !crate::heap::reentry_benign(self.value())
@@ -289,11 +290,21 @@ impl TlsSlot {
     /// ([`HeapLoan::take`]). Also not checked: that
     /// `heap_destructor` stores `TLS_EXITED` before `Heap::destroy` frees
     /// the heap, so a nested user that allocates during the destroy (a
-    /// signal handler) finds a sentinel, not the heap being freed. Called
-    /// only at the top-level users above, once each: a verified
+    /// signal handler) finds a sentinel, not the heap being freed: an
+    /// assertion records the token at `TLS_EXITED` just before the call,
+    /// but `Heap::destroy` takes no part of the token, so nothing verified
+    /// ties its frees to the slot's value; the order is read off the
+    /// code. Called only at the top-level users above, once each: a verified
     /// function that used two tokens would hold two copies of the heap's
     /// ghost state (the two frees are done with their token before their
-    /// slow path makes the next one).
+    /// slow path makes the next one), and a stale one would read and
+    /// write the slot as it no longer is, so `set`'s
+    /// [`slot_step`](crate::heap::slot_step) would be checked against a
+    /// value the slot does not hold. The test
+    /// `sys::tests::tls_entries_only_in_listed_users` checks the source
+    /// for the callers and the count; that a nested user is lent the
+    /// outer token, and that a user is done with its token before
+    /// another user runs, are not checked.
     ///
     /// [`heap::thread::slot_ok`]: crate::heap::slot_ok
     pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
@@ -404,10 +415,15 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
     (out, tp)
 }
 
-/// Write the calling thread's slot.
+/// Write the calling thread's slot. The write is a step the slot's
+/// phases allow ([`heap::thread::slot_step`](crate::heap::slot_step)):
+/// every verified writer proves it of the value it writes and the value
+/// its cell holds, so the slot never leaves `TLS_EXITED`.
 #[inline(always)]
 #[verifier::external_body]
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
+    requires
+        crate::heap::slot_step(old(slot).value(), value as usize),
     ensures
         final(slot).set_to(*old(slot), value as usize),
 {
