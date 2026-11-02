@@ -1544,7 +1544,7 @@ fn fork_was_locked() -> bool {
 }
 
 /// Before init's claim: open an init under way as this thread's
-/// (`GATE_IDLE` to its `thread_self`), or go on to the claim when challoc
+/// (`GATE_IDLE` to its `sys::pthread_self`), or go on to the claim when challoc
 /// is initialised (`GATE_DONE`), when this thread already holds the gate
 /// (a re-entrant call: the claim finds `INITIALISING` and aborts), or when
 /// a `fork` holds it and this is the forking thread; wait while another
