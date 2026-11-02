@@ -606,16 +606,17 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
 /// C holds the token of the block it frees ([`heap::live::axiom_c_claim`],
 /// the one trusted step of the C contract).
 #[inline(always)]
-pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    free_block(p, Tracked(blk), errno)
+    free_block(p, Tracked(blk), Tracked(errno))
 }
 
 /// [`free`] with the caller's token for `p` ([`Live::claims`]), which the
@@ -819,18 +820,19 @@ fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8
 /// ([`heap::hint_ok`] of every non-null `p` it returns for). C holds the
 /// token of the block it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         hint matches Some(c) ==> c < NCLASSES,
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, hint),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    free_sized_block(p, size, hint, Tracked(blk), errno)
+    free_sized_block(p, size, hint, Tracked(blk), Tracked(errno))
 }
 
 /// [`free_sized_hint`] with the caller's token for `p` ([`Live::claims`]),
@@ -839,13 +841,14 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>, Tracked(c):
 /// `api::restated::fast_path_restatements_match_their_bodies` checks
 /// that the two make the same calls.
 #[inline(always)]
-pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
+pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         hint matches Some(c) ==> c < NCLASSES,
         blk.claims(p),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, hint),
         p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
@@ -855,7 +858,7 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
     // A huge size (no hint) has no fast path: straight to the slow one,
     // so the fast path carries a plain class and no test of the hint.
     let Some(c) = hint else {
-        return free_sized_unhinted(p, size, Tracked(blk), errno);
+        return free_sized_unhinted(p, size, Tracked(blk), Tracked(errno));
     };
     // On x86_64 there is no null test here: null is below every class
     // region, so its offset from the hint's region base wraps to a value
@@ -877,26 +880,27 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
             return;
         }
     }
-    free_sized_slow(p, size, hint, Tracked(blk), errno)
+    free_sized_slow(p, size, hint, Tracked(blk), Tracked(errno))
 }
 
 /// The sized free of a size no class holds (a huge run, or nothing): the
 /// exact `free` behind the null test.
 #[cold]
 #[inline(never)]
-fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
+fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, None),
         p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
         p@.addr != 0 ==> blk.block(p),
 {
     if !p.is_null() {
-        free_sized_slow(p, size, None, Tracked(blk), errno)
+        free_sized_slow(p, size, None, Tracked(blk), Tracked(errno))
     }
 }
 
@@ -907,12 +911,13 @@ fn free_sized_unhinted(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, err
 /// message).
 #[cold]
 #[inline(never)]
-fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
+fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, hint),
         p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
@@ -925,7 +930,7 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint, Tracked(&blk));
-            heap::free(shared, p, Tracked(blk), errno)
+            heap::free(shared, p, Tracked(blk), Tracked(errno))
         }
         None => free_before_init(p),
     }
@@ -937,29 +942,31 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
 /// the size of another class, or with a huge size, aborts; so does a huge
 /// run freed with a size of another page count.
 #[inline(always)]
-pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+pub fn free_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    free_sized_with(p, size, Tracked(blk), errno)
+    free_sized_with(p, size, Tracked(blk), Tracked(errno))
 }
 
 /// [`free_sized`] with the caller's token for `p` ([`Live::claims`]),
 /// which the free takes back (`free_sized_block`'s); also `sdallocx`'s
 /// with no flags.
 #[inline(always)]
-pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
+pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         blk.claims(p),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
         p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
@@ -971,41 +978,43 @@ pub fn free_sized_with(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, err
     // the sized path within its registers, with no spill (a `push` and a
     // `pop` here cost `valkey1` 8% on Genoa).
     if size > SMALL_MAX {
-        return free_sized_medium(p, size, Tracked(blk), errno);
+        return free_sized_medium(p, size, Tracked(blk), Tracked(errno));
     }
-    free_sized_block(p, size, Some(class_index_small(size)), Tracked(blk), errno)
+    free_sized_block(p, size, Some(class_index_small(size)), Tracked(blk), Tracked(errno))
 }
 
 /// `free_sized` of a size above the small table.
 #[inline(never)]
-fn free_sized_medium(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>)
+fn free_sized_medium(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         blk.claims(p),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
         p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
         p@.addr != 0 ==> blk.block(p),
 {
-    free_sized_block(p, size, class_index(size), Tracked(blk), errno)
+    free_sized_block(p, size, class_index(size), Tracked(blk), Tracked(errno))
 }
 
 /// C23 `free_aligned_sized(p, align, size)`: the arguments given to
 /// `aligned_alloc`. An alignment that is not a power of two matches no
 /// class and aborts on a slab pointer.
-pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> heap::hint_ok(p, if is_pow2(align) { spec_class_for(size, align) } else { None }),
 {
     let hint = if align.is_power_of_two() { class_for(size, align) } else { None };
-    free_sized_hint(p, size, hint, Tracked(c), errno)
+    free_sized_hint(p, size, hint, Tracked(c), Tracked(errno))
 }
 
 /// Everything `free` does off its fast path: heap creation, a full cache,
@@ -2405,19 +2414,20 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
 /// bad pointer dies with `free`'s message. C holds the token of the block
 /// it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>) -> (r: usize)
+pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: usize)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr == 0 ==> r == 0,
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> usable_of(p, r as int),
         p@.addr != 0 ==> 0 < r,
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    free_usable_block(p, Tracked(blk), errno)
+    free_usable_block(p, Tracked(blk), Tracked(errno))
 }
 
 /// [`free_usable`] with the caller's token for `p` ([`Live::claims`]),
@@ -2427,12 +2437,13 @@ pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut T
 /// `api::restated::fast_path_restatements_match_their_bodies` checks
 /// that the two make the same calls.
 #[inline(always)]
-pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>) -> (r: usize)
+pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         blk.claims(p),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr == 0 ==> r == 0,
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> usable_of(p, r as int),
@@ -2459,7 +2470,7 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked
             return class_size(class);
         }
     }
-    free_usable_slow(p, Tracked(blk), errno)
+    free_usable_slow(p, Tracked(blk), Tracked(errno))
 }
 
 /// Everything `free_usable` does off its fast path: the size first, from
@@ -2469,12 +2480,13 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked
 /// release). The size is the usable size of the caller's token for `p`.
 #[cold]
 #[inline(never)]
-fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut ThreadErrno>) -> (r: usize)
+fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         heap::free_target(p),
         usable_of(p, r as int),
         r == blk.len(),
@@ -2511,7 +2523,7 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, errno: Tracked<&mut
     proof {
         blk.lemma_nonnull();
     }
-    heap::free(shared, p, Tracked(blk), errno);
+    heap::free(shared, p, Tracked(blk), Tracked(errno));
     usable
 }
 

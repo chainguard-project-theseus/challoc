@@ -440,47 +440,50 @@ pub fn new_aligned_block(
 /// C++ holds the token of the block it frees
 /// ([`crate::heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> crate::heap::free_target(p),
 {
-    libc::free(p, Tracked(c), errno)
+    libc::free(p, Tracked(c), Tracked(errno))
 }
 
 /// `operator delete(void*, size_t)` and its array form: `free_sized`. The
 /// size is the one the matching `operator new(size)` was called with, so
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
-pub fn delete_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+pub fn delete_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> crate::heap::hint_ok(p, libc::spec_class_for(size, 1)),
 {
-    libc::free_sized(p, size, Tracked(c), errno)
+    libc::free_sized(p, size, Tracked(c), Tracked(errno))
 }
 
 /// `operator delete(void*, size_t, std::align_val_t)` and its array form:
 /// `free_aligned_sized` with the arguments the matching aligned `new`
 /// passed to `aligned_alloc`.
 #[inline(always)]
-pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>)
+pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
+        final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> crate::heap::hint_ok(p, if is_pow2(align) { libc::spec_class_for(size, align) } else { None }),
 {
-    libc::free_aligned_sized(p, align, size, Tracked(c), errno)
+    libc::free_aligned_sized(p, align, size, Tracked(c), Tracked(errno))
 }
 
 } // verus!

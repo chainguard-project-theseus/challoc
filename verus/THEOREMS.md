@@ -763,7 +763,7 @@ guard slabs, so a call with a pointer into one does not return either
 | `rallocx` (`api/jemalloc.rs:448`) | non-null |
 | `xallocx`, `sallocx` (`api/jemalloc.rs:585`, `:600`) | always |
 | `cxx::delete`, `delete_sized` (`api/cxx.rs:443`, `:458`) | non-null |
-| `cxx::delete_sized_aligned` (`api/cxx.rs:474`) | non-null |
+| `cxx::delete_sized_aligned` (`api/cxx.rs:476`) | non-null |
 
 Below them, `heap::free` and `free_direct` (`heap/paths.rs:1151`, `:1172`),
 `Heap::free` (`:239`), and the fast paths `free_fast_slot` and
@@ -9643,7 +9643,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 8  | `pvalloc`                                   | p | P | . | . | P | . | . |
 | 9  | `malloc_usable_size`                        | . | . | . | . | P | p | p |
 | 10 | `free`                                      | . | . | . | . | P | p | . |
-| 11 | `free_sized`, `free_aligned_sized`          | . | . | . | . | p | p | . |
+| 11 | `free_sized`, `free_aligned_sized`          | . | . | . | . | P | p | . |
 | 12 | `challoc_malloc_usable`                     | P | P | . | . | P | . | P |
 | 13 | `challoc_calloc_usable`                     | P | P | P | . | P | . | P |
 | 14 | `challoc_realloc_usable`                    | P | P | . | - | P | p | P |
@@ -9692,10 +9692,11 @@ Notes that recur below:
   `ensures final(errno).val() == e`), which takes it `&mut`; the copy in
   `api/print.rs` is gone. Every Rust function between a wrapper and a
   `set_errno` takes `Tracked<&mut ThreadErrno>`. The allocating libc
-  entry points state the final value. The `operator new` paths (rows
-  23-25) only pass the token on, as do the sized frees,
-  `challoc_free_usable`, the `*allocx` family and the C++ deletes (rows
-  11, 15-21 and 26-28), which state nothing about it: `enomem` and `einval` ensure `ENOMEM` and `EINVAL`, and
+  entry points state the final value. Every free states it unchanged:
+  `free`, the sized frees, `challoc_free_usable`, `dallocx`, `sdallocx`
+  and the C++ deletes (rows 10, 11, 15, 20, 21 and 26-28). The
+  `operator new` paths (rows 23-25), `mallocx` and `rallocx` (rows 16
+  and 17) only pass the token on and state nothing about it: `enomem` and `einval` ensure `ENOMEM` and `EINVAL`, and
   each allocating entry point ensures `r@.addr == 0 ==>
   final(errno).val() == ENOMEM` (rows 1, 2, 7, 8, 12, 13), with the
   documented exceptions stated: `EINVAL` for a bad alignment (row 5),
@@ -9904,10 +9905,13 @@ alone):
     ensures `huge_hint_ok` of C's token). The slow path checks it
     (`Shared::check_size_hint`, which ensures `hint_ok`); the fast
     path (`free_sized_fast`) pushes only a slot of the hinted class, and
-    its liveness is checked when the cache flushes. F: not stated. The
-    sized frees take the `errno` token and state nothing about it, so
-    `errno` preservation rests on reading the code: the slow path ends in
-    `heap::free`, which keeps it.
+    its liveness is checked when the cache flushes. F: `errno`
+    preservation, as `free`: `free_sized`, `free_aligned_sized` and the
+    cores they call (`free_sized_with`, `free_sized_hint`,
+    `free_sized_block`) ensure `final(errno).val() == old(errno).val()`,
+    proved over `free_sized_slow`, `heap::free` and `background::start`
+    (a fast-path push takes no token); the export states nothing about
+    `errno`, and the premises are row 10's.
 12. `challoc_malloc_usable` (`api/libc.rs:1819`, `.0` of
     `malloc_usable_stored`, `:1838`). R, D, F: as `malloc`. U: the `Stored` token
     of the last store through `usable` has `ptr() == usable` and, for a
@@ -9948,6 +9952,9 @@ alone):
     is the core's; at the export `blk` is the token `axiom_c_claim` gives
     for C's `p`, so for a huge run it holds under the `free` contract
     (the `usable_of` half needs no token).
+    `errno` is preserved as by `free`: `free_usable` and
+    `free_usable_block` ensure `final(errno).val() == old(errno).val()`
+    (over `free_usable_slow` and `heap::free`).
 16. `mallocx` (`api/jemalloc.rs:399`, `.0` of `mallocx_zeroed`, `:417`).
     R: `fits(r, size, 1 << (flags & 0x3f))`. With no `MALLOCX_LG_ALIGN`
     this is alignment 1, weaker than the quantum the code gives. Z: with
@@ -9999,6 +10006,8 @@ alone):
     immediately (**unconfirmed**, from the doc comment). An explicit
     cache id of `MAX_TCACHES` or more aborts (`!bad_tcache`, "Bad
     input").
+    `dallocx` and `dallocx_block` ensure `errno` unchanged (through
+    `heap::mallocx::free`, which ensures it for every cache choice).
 21. `sdallocx` (`api/jemalloc.rs:673`). B: `p != 0 ==> free_target(p)`,
     *(live)*. jemalloc's `nallocx(size, flags) == sallocx(p)` contract
     is checked as in row 11, for slots: `p != 0 ==> hint_ok(p,
@@ -10008,6 +10017,10 @@ alone):
     to the run's pages (`sdallocx_block` ensures `p != 0 ==>
     huge_hint_ok(blk, p, size)` of C's token, "Bad input"). An
     explicit cache id of `MAX_TCACHES` or more aborts (`!bad_tcache`).
+    `sdallocx` and `sdallocx_block` ensure `errno` unchanged, as row 11:
+    `flags == 0` through `free_sized_with`, other flags through
+    `sdallocx_flags` (`free_sized_block`, or `sdallocx_routed` and
+    `heap::mallocx::free`).
 22. `nallocx` (`api/jemalloc.rs:811`). F, U: `r == 0 || size <= r` and
     `r == nalloc_usable(size, flags & 0x3f)` (`api/jemalloc.rs`), the
     size of `spec_class_for(size, 1 << (flags & 0x3f))`, or
@@ -10062,11 +10075,12 @@ alone):
     `bad_alloc` for the others).
 26. Unsized `delete` forms, with or without `align_val_t` or `nothrow_t`
     (`cxx::delete`, `api/cxx.rs:443`). B: as `free`; the alignment is
-    ignored.
-27. Sized `delete` (`cxx::delete_sized`, `api/cxx.rs:458`). B: as
-    `free_sized`, `hint_ok` included.
+    ignored. `errno` unchanged, as `free`.
+27. Sized `delete` (`cxx::delete_sized`, `api/cxx.rs:459`). B: as
+    `free_sized`, `hint_ok` included. `errno` unchanged, as `free_sized`.
 28. Sized aligned `delete` (`cxx::delete_sized_aligned`,
     `api/cxx.rs:474`). B: as `free_aligned_sized`, `hint_ok` included.
+    `errno` unchanged, as `free_aligned_sized`.
 29. `malloc_trim` (`api/libc.rs:2884`). F: `r == 0 || r == 1`. Not stated:
     whether anything was purged.
 30. `mallopt` (`api/glibc.rs:82`). F: `r == 1` (accepted and ignored).
@@ -10153,9 +10167,10 @@ cores' `fits` in their own `ensures`; the copy's byte-state effect is
 `axiom_copied_bytes`; `write_zero` is `zero_raw`; and `lemma_kept_fits`
 is gone because `kept` is open. The `errno` model changed:
 - The frees, the `*allocx` family and the C++ deletes take the caller's
-  token (#368, #371, #375). `free_block` ensures it unchanged, while the
-  sized frees and the `*allocx` family state nothing (row 11's F is
-  `p`).
+  token (#368, #371, #375). Every free ensures it unchanged (`free_block`,
+  the sized frees, `challoc_free_usable`, `dallocx`, `sdallocx` and the
+  C++ deletes; row 11's F is `P`, as in #138), while `mallocx` and
+  `rallocx` state nothing.
 - `background::start` uses the caller's token in place of its own
   `lend`.
 - `get_errno` ensures it reads the token's value (a new trusted claim).
@@ -10247,7 +10262,7 @@ exports are verified, as in #138). Row 6's D is
    and `axiom_owned_run` are gone, and `axiom_moved_block` no longer
    states the disjointness, which its callers prove (it was unsound for
    `p == q`).
-2. **`errno` as ghost state**: done for rows 1-5, 7, 8, 10, 12-14 and 32
+2. **`errno` as ghost state**: done for rows 1-5, 7, 8, 10-15 and 32
    (F to `P`), *(errno)*. `set_errno` ensures the value it writes to
    the `ThreadErrno` token the export wrapper lends (`lend`); the
    allocating entry points ensure `r@.addr == 0 ==> final(errno).val() ==
@@ -10257,11 +10272,11 @@ exports are verified, as in #138). Row 6's D is
    `axiom_errno_at_return`, *(errno)*). The hot set's machine code is unchanged (the
    token is ghost). Rows 3, 4 and 14 are `P` with gap 1: their cores
    also give the caller back the old block's token on a failed move.
-   Left: `posix_memalign`'s `*out` (row 6, gap 4); the sized frees
-   (row 11) and rows 16 and 17 take the token but state nothing about
-   it; row 10's frame rests on the premise that no libc call in trusted
-   code on its path leaves `errno` changed (init's, for the `*allocx`
-   family's first call).
+   Left: `posix_memalign`'s `*out` (row 6, gap 4); rows 16 and 17 take
+   the token but state nothing about it (their first call runs init's
+   libc calls); the frees' frame (rows 10, 11, 15, 20, 21, 26-28) rests
+   on the premise that no libc call in trusted code on their paths
+   leaves `errno` changed.
 3. **Usable-size contract**: done for rows 12, 13, 14 and 22 (U to `P`)
    and row 13's Z, *(U)*; row 15's U is `P` from gap 1 (the freed
    block's token, under the `free` contract for a huge run).
