@@ -1,0 +1,48 @@
+# The fast-path cost table (theorem 45): scripts/perf-budget.sh builds the
+# release library on x86_64 at each quantum, runs the checker's self-test,
+# and fails unless every fast path of malloc, free, free_sized, sdallocx
+# and challoc_free_usable has the counts verus/perf-budget.txt (q16) and
+# verus/perf-budget-q8.txt (q8) pin. A change that moves a hot export's
+# machine code updates those tables in the same pull request (`--print`
+# gives the lines; the script's header says how). The tables are pinned to
+# rustc 1.98.1, so the stream is pinned here too; bump the pin and the
+# tables together. The checker reads x86_64 code only, so there is no
+# arm64 check.
+version: 1
+
+environment:
+  packages:
+    - rust-1.98~1.98.1 # the tables' compiler; Dockerfile.dev's stream
+    - build-base       # cc and g++ for build.rs
+    - binutils         # objdump
+    - busybox
+
+checks:
+  perf-budget:
+    description: >-
+      scripts/perf-budget.sh q16 and q8: the hot exports' fast-path
+      instruction, load, store, branch and cache-line counts against
+      verus/perf-budget.txt and verus/perf-budget-q8.txt, plus P2 (no
+      atomic RMW, fence, call, syscall or indirect jump) and P3 (no
+      back-edge), on x86_64 release builds.
+    trigger: [presubmit]
+    resources: medium-amd64
+    timeout: 30m
+    network: &crates
+      egress: [index.crates.io, static.crates.io]
+    steps: &steps
+      - name: fast-path cost table, quantum 16
+        cmd: [sh, scripts/perf-budget.sh, q16]
+      - name: fast-path cost table, quantum 8
+        cmd: [sh, scripts/perf-budget.sh, q8]
+
+  # The same on main after every landing: two pull requests that each
+  # match their own base can land tables that no longer match main.
+  perf-budget-main:
+    description: >-
+      scripts/perf-budget.sh q16 and q8 on main, after every landing.
+    trigger: [postsubmit]
+    resources: medium-amd64
+    timeout: 30m
+    network: *crates
+    steps: *steps
