@@ -866,17 +866,26 @@ with page granularity (`huge/`).
   `MADV_GUARD_INSTALL` when available, which splits no VMA and survives a
   later commit of the neighbouring run; else (kernels before 6.13) a
   `PROT_NONE` page, which costs no memory but splits the VMA: a live
-  guarded run costs at most two VMAs (its pages and its guard) while it
-  lives. A free makes the `PROT_NONE` guard read-write again, so the
+  guarded run costs at most two more VMAs (the guard, and the split
+  that separates the run's pages from the free memory after it) while
+  it lives. A free makes the `PROT_NONE` guard read-write again, so the
   free extent merges back into its neighbours and the split ends with
   the run: below the mark every page is read-write except the guards of
   live runs, and the VMAs the huge tier holds are bounded by its live
   runs. The kernel merges two anonymous VMAs only when they share an
   `anon_vma`, which a VMA gets at its first write fault, so a run
   reaching past the mark is committed through its guard and its first
-  page is populated for write (`MADV_POPULATE_WRITE`) before the guard
-  is split off (`split_guard`); split earlier, each half would get its
-  own on first touch and never merge again. A marker the kernel refuses
+  page is populated for write (`MADV_POPULATE_WRITE`, or a zero written
+  to its first byte where a filter refuses that) before the guard is
+  split off (`split_guard`); split earlier, each half would get its own
+  on first touch and never merge again. So in the fallback mode every
+  run placed past the mark has its first page resident from the start
+  (a whole 2 MiB page for a PMD-aligned run when the host's THP mode is
+  `always`), memory the caller would fault in on first touch anyway.
+  A `fork` child inherits the splits of the runs live at the fork, and
+  the kernel gives each inherited VMA its own `anon_vma` in the child,
+  so those may stay split after the child frees the runs: at most two
+  VMAs per run live at the fork, never growing with later allocation. A marker the kernel refuses
   (an `mlock`ed range) becomes a `PROT_NONE` page, released the same way
   at free; from then on every allocation also commits its own pages
   (`Huge::mixed_guards`, also set if a release ever fails). Under
@@ -1822,7 +1831,10 @@ class region's committed slabs, one VMA unless a guard marker was
 refused (then at most two per guard interval of the region's peak,
 section 5); the huge region's committed pages, one VMA plus at most two
 per live guarded run in the `PROT_NONE` fallback (none in guard-install
-mode or under `guards:false`; released at free, section 7). Under
+mode or under `guards:false`; released at free, section 7; in a `fork`
+child, at most two per run live at the fork may stay, a kernel
+`anon_vma` matter; the fallback keeps each new run's first page
+resident to make the merge possible). Under
 `thp:always` a huge run of a PMD or more is `MADV_HUGEPAGE`d, a VMA flag
 the range keeps after the free, so the boundaries between advised and
 unadvised ranges are bounded by the huge region's high-water mark over

@@ -195,8 +195,8 @@ None of this weakens a check: a resource failure never makes challoc
 hand out a block whose metadata it could not record.
 The mappings challoc creates count against `vm.max_map_count` only for
 what is live or fixed (`docs/design.md` 14.1): a `PROT_NONE` huge guard
-(kernels before 6.13, or a marker refused under `mlock`) costs one VMA
-while its run is live and is merged back when the run is freed, so a
+(kernels before 6.13, or a marker refused under `mlock`) costs at most
+two VMAs while its run is live and is merged back when the run is freed, so a
 program that freed its blocks gets its mappings back.
 
 ## Stricter than jemalloc

@@ -1929,8 +1929,11 @@ fn protect_none(addr: usize, len: usize) -> Result<(), Errno>
 /// was freed (measured). So the run's first page is populated for write
 /// first (`MADV_POPULATE_WRITE`, kernel 5.14, the floor; it writes
 /// nothing, the page still reads as zero, and the caller is about to
-/// touch it), and both halves of the split inherit the `anon_vma`. A
-/// refused populate costs only the merge, so it is ignored. `populate`
+/// touch it), and both halves of the split inherit the `anon_vma`. If
+/// the kernel refuses the populate (a seccomp filter), a zero written to
+/// the run's first byte faults the page in the same way ([`write_zero`]).
+/// The cost is the run's first page resident from the start (a whole
+/// 2 MiB page for a PMD-aligned run under host THP `always`). `populate`
 /// may be false for a run inside the mark in the fallback mode: every VMA
 /// there was split off one populated this way, so it has its `anon_vma`.
 fn split_guard(run: usize, guard: usize, page: usize, populate: bool) -> Result<(), Errno>
@@ -1940,9 +1943,27 @@ fn split_guard(run: usize, guard: usize, page: usize, populate: bool) -> Result<
     if populate {
         // SAFETY: the first page of a run being placed, which nobody
         // holds yet; populating leaves its contents alone.
-        let _ = unsafe { sys::madvise(run, page, MADV_POPULATE_WRITE) };
+        if unsafe { sys::madvise(run, page, MADV_POPULATE_WRITE) }.is_err() {
+            write_zero(run);
+        }
     }
     protect_none(guard, GUARD_PAGES * page)
+}
+
+/// Write a zero to the byte at `addr`, the first byte of a run being
+/// placed (`split_guard`), to give its VMA an `anon_vma` by a write fault
+/// when `MADV_POPULATE_WRITE` is refused.
+///
+/// Trusted: `addr` is committed read-write (the callers place the guard
+/// only after committing the run, or inside the mark where every page but
+/// a live run's guard is read-write) and belongs to a run nobody holds
+/// yet. A zero leaves a page that read as zero reading as zero, so the
+/// zero tokens (`axiom_fresh_anon_zero`, `axiom_discarded_zero`) stay
+/// true, and a dirty `Empty` page's contents are not needed.
+#[verifier::external_body]
+fn write_zero(addr: usize) {
+    // SAFETY: as above.
+    unsafe { core::ptr::write_volatile(addr as *mut u8, 0) };
 }
 
 fn guard_install(addr: usize, len: usize) -> Result<(), Errno>

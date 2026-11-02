@@ -17,6 +17,8 @@
  *                        filter, as on a kernel before 6.13: the program
  *                        installs it and re-executes itself in `free` mode,
  *                        and checks challoc_features() says guard_install=no
+ *   nopopulate           the same with MADV_POPULATE_WRITE refused as well,
+ *                        so the run's first page is faulted in by a write
  *   mlock                up to 24 runs placed again in a freed span the
  *                        program mlock()s: the guard marker is refused on
  *                        a locked VMA and a `PROT_NONE` guard goes in
@@ -103,22 +105,26 @@ static int churn(int nr)
 #define NATIVE_ARCH AUDIT_ARCH_AARCH64
 #endif
 
-static int noguard(char **argv)
+static int noguard(char **argv, int nopopulate)
 {
 #ifndef NATIVE_ARCH
     skip_note("huge_vmas", "no seccomp arch for this target");
     printf("ok huge_vmas\n");
     return 0;
 #else
-    /* madvise(.., MADV_GUARD_INSTALL=102 | MADV_GUARD_REMOVE=103) -> EINVAL. */
+    /* madvise(.., MADV_GUARD_INSTALL=102 | MADV_GUARD_REMOVE=103), and
+     * with `nopopulate` MADV_POPULATE_WRITE=23 too (otherwise 102 again),
+     * -> EINVAL. */
+    unsigned third = nopopulate ? 23 : 102;
     struct sock_filter prog[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NATIVE_ARCH, 0, 6),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NATIVE_ARCH, 0, 7),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_madvise, 0, 4),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_madvise, 0, 5),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2])),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 102, 1, 0),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 103, 0, 1),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 102, 2, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 103, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, third, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EINVAL),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
@@ -202,7 +208,9 @@ int main(int argc, char **argv)
         return churn(40000);
     }
     if (!strcmp(mode, "noguard"))
-        return noguard(argv);
+        return noguard(argv, 0);
+    if (!strcmp(mode, "nopopulate"))
+        return noguard(argv, 1);
     if (!strcmp(mode, "mlock"))
         return locked();
     fprintf(stderr, "unknown mode %s\n", mode);
