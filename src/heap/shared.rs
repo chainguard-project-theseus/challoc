@@ -3035,9 +3035,12 @@ impl Shared {
 
     /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:
     /// an automatic arena not built yet (a thread whose first allocation
-    /// is huge) is built here, an index that does not exist aborts. Null
-    /// on exhaustion; the flag says the memory is known zero. `zero`: the
-    /// caller clears the run unless it is reported zero
+    /// is huge) is built here. An arena that cannot be built (the
+    /// metadata region is full, a resource failure, design 14.1) or does
+    /// not exist leaves the run to arena 0, which only counts it (the
+    /// callers that take an explicit index, `mallocx`, check it exists
+    /// first). Null on exhaustion; the flag says the memory is known
+    /// zero. `zero`: the caller clears the run unless it is reported zero
     /// ([`crate::huge::Huge::alloc_run`]).
     pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, zero: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
@@ -3062,7 +3065,10 @@ impl Shared {
             self.lemma_huge_aligned();
             self.lemma_huge_process();
         }
-        let Some((a, _)) = self.arena(arena, Tracked(ord)) else { no_such_arena(arena) };
+        let (a, arena) = match self.arena(arena, Tracked(ord)) {
+            Some((a, _)) => (a, arena),
+            None => (&self.arena0, 0u16),
+        };
         let tracked mut tok = vstd::map::Map::<int, crate::huge::RunToken>::tracked_empty();
         let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, zero, Tracked(&mut tok), Tracked(ord));
         proof {
@@ -3818,11 +3824,10 @@ impl Shared {
 
 verus! {
 
-/// An arena index no arena was built for. From an owner word or a
-/// descriptor ([`Shared::owner`]) a check not yet proved not to fire
+/// An arena index no arena was built for, from an owner word or a
+/// descriptor ([`Shared::owner`]): a check not yet proved not to fire
 /// (`crate::sys::may_abort_pending`): the word names the arena that claimed the
-/// slab, but no verified invariant says it was built. The other caller,
-/// `alloc_huge` (of its caller's index), holds [`crate::sys::may_abort`].
+/// slab, but no verified invariant says it was built.
 #[cold]
 #[inline(never)]
 fn no_such_arena(index: u16) -> !

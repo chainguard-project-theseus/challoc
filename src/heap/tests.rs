@@ -4376,10 +4376,91 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     unsafe { Heap::destroy(hp, s, Tracked::assume_new(), Tracked::assume_new()) };
 }
 
+/// A heap whose home arena cannot be built (the metadata region refuses
+/// it: a resource failure, design 14.1) is served by arena 0, huge and
+/// small, without an abort, and the next allocation after the pressure
+/// lifts builds the home arena (nothing remembers the failure).
 #[test]
-#[should_panic(expected = "arena 77 does not exist")]
-fn a_huge_allocation_in_an_arena_that_does_not_exist_aborts() {
-    shared().alloc_huge(
+fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
+    use core::sync::atomic::Ordering::Relaxed;
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    let (hp, _, _) = Heap::create_detached(s, 2, Tracked::assume_new());
+    assert!(!hp.is_null());
+    // SAFETY: `hp` is a live heap from `create_detached`, used only here.
+    let h = unsafe { &mut *hp };
+    let runs0 = s.arena0.large().0;
+    crate::arena::FAIL_INIT.store(&s.meta as *const _ as usize, Relaxed);
+    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
+    assert!(!p.is_null(), "served by arena 0");
+    assert_eq!(
+        crate::arena::FAIL_INIT.load(Relaxed),
+        0,
+        "the build ran and failed"
+    );
+    assert!(s.arenas.get_existing(2).is_none());
+    assert_eq!(s.arena0.large().0, runs0 + 1);
+    h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
+    // The pressure lifted: the next allocation builds arena 2.
+    let (q, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
+    assert!(!q.is_null());
+    assert!(s.arenas.get_existing(2).is_some(), "built on retry");
+    h.free(s, q, Tracked::assume_new(), Tracked::assume_new());
+    // SAFETY: `hp` came from `Heap::create_detached` on `s` and is not
+    // used again.
+    unsafe { Heap::destroy(hp, s, Tracked::assume_new(), Tracked::assume_new()) };
+}
+
+/// The small-class slow path of a heap whose home arena cannot be built
+/// serves the block uncached from arena 0, and the next slow path, with
+/// the pressure gone, builds the home arena and serves from it.
+#[test]
+fn an_unbuildable_home_arena_serves_small_blocks_from_arena_0_then_recovers() {
+    use core::sync::atomic::Ordering::Relaxed;
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    // The main thread's heap holds arena 0, so the next lands on 1.
+    let _main = TestHeap::new(s);
+    let w = TestHeap::new(s);
+    assert_eq!(w.heap().arena(), 1);
+    assert!(
+        s.arenas.get_existing(1).is_none(),
+        "not built until the first refill"
+    );
+    let c = class_with(64);
+    crate::arena::FAIL_INIT.store(&s.meta as *const _ as usize, Relaxed);
+    let p = w.alloc(c);
+    assert_eq!(
+        crate::arena::FAIL_INIT.load(Relaxed),
+        0,
+        "the build ran and failed"
+    );
+    assert!(s.arenas.get_existing(1).is_none());
+    assert_eq!(
+        s.classify_free(p, Tracked::assume_new()),
+        Ok((c, 0)),
+        "from arena 0"
+    );
+    w.free(p);
+    let q = w.alloc(c);
+    assert!(s.arenas.get_existing(1).is_some(), "built on retry");
+    assert_eq!(s.classify_free(q, Tracked::assume_new()), Ok((c, 1)));
+    w.free(q);
+}
+
+/// The huge path on an index no arena exists for leaves the run to
+/// arena 0 instead of aborting (the `mallocx` callers check an explicit
+/// index first).
+#[test]
+fn a_huge_allocation_in_an_arena_that_does_not_exist_goes_to_arena_0() {
+    let s = shared();
+    let (p, _, _) = s.alloc_huge(
         300 * 1024,
         16,
         77,
@@ -4387,6 +4468,12 @@ fn a_huge_allocation_in_an_arena_that_does_not_exist_aborts() {
         Tracked::assume_new(),
         Tracked::assume_new(),
     );
+    assert!(!p.is_null());
+    let page = match s.regions.classify(p as usize) {
+        Kind::Huge { page } => page,
+        other => panic!("{other:?}"),
+    };
+    s.free_huge(page, Tracked::assume_new(), Tracked::assume_new());
 }
 
 /// `pop_fast` is the one body behind `alloc_fast` and `alloc_zeroed`:
