@@ -475,6 +475,7 @@ pub fn alloc_huge(
     align: usize,
     arena: Option<u16>,
     tcache: Tcache,
+    zero: bool,
     Tracked(blk): Tracked<&mut super::Live>,
 ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
@@ -511,8 +512,8 @@ pub fn alloc_huge(
         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
     }
     match crate::heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge_in(shared, size, align, a, Tracked(blk)),
-        None => shared.alloc_huge(size, align, a, Tracked(blk), Tracked(&mut ord)),
+        Some(h) => h.alloc_huge_in(shared, size, align, a, zero, Tracked(blk)),
+        None => shared.alloc_huge(size, align, a, zero, Tracked(blk), Tracked(&mut ord)),
     }
 }
 

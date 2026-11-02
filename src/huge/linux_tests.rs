@@ -104,6 +104,34 @@ fn a_dirty_purged_run_is_discarded_again_on_reuse() {
     env.free(&h, q);
 }
 
+/// A caller that does not zero (`malloc`, `mallocx` without
+/// `MALLOCX_ZERO`) reusing a purged run gets no re-discard: the run is not
+/// reported zero, and a byte written behind the allocator's back after
+/// the purge is still there, so no `MADV_DONTNEED` ran for it.
+#[test]
+fn a_plain_reuse_of_a_purged_run_issues_no_rediscard() {
+    let env = Env::new();
+    let h = env.huge();
+    let size = 8 * page_size();
+    assert!(size >= REDISCARD_MIN);
+    let (p, _) = env.alloc(&h, size, 1);
+    fill(p, size, 0xAB);
+    env.free(&h, p);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
+    // SAFETY: the purged run stays mapped read-write (the region is never
+    // unmapped, only discarded); the write is the probe for a discard.
+    unsafe { ptr::write_volatile(p as *mut u64, 0xDEAD_BEEF) };
+    let (q, zero) = h.alloc_wanting(&env.meta, size, 1, 0, false);
+    assert_eq!(q, p);
+    assert!(!zero);
+    // SAFETY: `q` is the live run just allocated, at least 8 bytes.
+    assert_eq!(unsafe { ptr::read_volatile(q as *const u64) }, 0xDEAD_BEEF);
+    env.free(&h, q);
+}
+
 #[test]
 fn memory_is_writable_and_the_zero_flag_is_honest() {
     let env = Env::new();

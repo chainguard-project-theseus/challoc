@@ -338,6 +338,7 @@ fn alloc_with(
                 align,
                 f.arena,
                 f.tcache,
+                f.zero,
                 Tracked(blk),
             );
             proof {
@@ -1967,6 +1968,7 @@ mod tests {
                 1,
                 Some(4000),
                 Tcache::Default,
+                false,
                 vstd::prelude::Tracked::assume_new()
             )
             .0
@@ -1980,6 +1982,7 @@ mod tests {
             1,
             Some(lua),
             Tcache::Default,
+            false,
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(!hp.is_null());

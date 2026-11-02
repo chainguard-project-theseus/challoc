@@ -281,7 +281,7 @@ impl Heap {
     /// lock, counted in the thread's statistics. `blk` gets the run's token.
     #[cold]
     #[inline(never)]
-    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, zero: bool, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -298,7 +298,7 @@ impl Heap {
             r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
     {
         let arena = self.arena;
-        self.alloc_huge_in(shared, size, align, arena, Tracked(blk))
+        self.alloc_huge_in(shared, size, align, arena, zero, Tracked(blk))
     }
 
     /// Allocation of `class` from `arena` through this heap's cache for
@@ -359,6 +359,7 @@ impl Heap {
         size: usize,
         align: usize,
         arena: u16,
+        zero: bool,
         Tracked(blk): Tracked<&mut Live>,
     ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
@@ -379,7 +380,7 @@ impl Heap {
     {
         // Premise (lock order): huge allocations come from the entry points
         // and the slow paths, which hold no lock.
-        let (p, zero, z) = shared.alloc_huge(size, align, arena, Tracked(blk), Tracked(&mut axiom_entry()));
+        let (p, zero, z) = shared.alloc_huge(size, align, arena, zero, Tracked(blk), Tracked(&mut axiom_entry()));
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
         }

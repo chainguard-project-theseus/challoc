@@ -892,12 +892,13 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
   section 6.3). A huge run is known zero for pages past the huge
   region's high-water mark, and for a reused `Purged` extent only once
   `Huge::rediscard` has `MADV_DONTNEED`ed the run's pages in it again in
-  the lock hold that places the run (16 KiB or more, and only while
-  `purged_is_zero` holds; otherwise the zeroing caller clears it): a
-  stale pointer or an underflow from the live run above can have written
-  the extent since its purge. After a lazy batch the extent's pages may
-  still be resident, and discarding them would make every reuse, a plain
-  `malloc` too, fault them back.
+  the lock hold that places the run (for a zeroing caller only, 16 KiB
+  or more, and only while `purged_is_zero` holds; otherwise the zeroing
+  caller clears it): a stale pointer or an underflow from the live run
+  above can have written the extent since its purge. After a lazy batch
+  the extent's pages may still be resident, and discarding them would
+  fault them back. A caller that does not zero (`malloc`, `realloc`,
+  `mallocx` without `MALLOCX_ZERO`) never pays the call.
 - Purges are batched (`purge::Batch`): a walk collects up to `MAX_BATCH`
   (64) ranges, merging adjacent ones, and issues a loop of `madvise`.
   Batched `process_madvise` was prototyped and removed: it measured no

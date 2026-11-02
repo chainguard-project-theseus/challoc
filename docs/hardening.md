@@ -178,9 +178,10 @@ allocation from the tcache.
 The cost is the clear itself: on a `calloc` from fresh slab memory it
 moves the first-touch page faults into the call (a program that writes
 the block pays them anyway; one that leaves a large `calloc` sparse now
-has those pages resident). A huge allocation that reuses a purged
-extent of 16 KiB or more pays one `madvise` call (about 1 us, under the
-huge lock), `malloc` included. It drops only the pages a stale write
-faulted back in since the eager purge, so the run stays unpopulated; in
-lazy mode there is no call and a zeroing caller clears the run, as
-before this rule.
+has those pages resident). A zeroing huge allocation (`calloc`,
+`MALLOCX_ZERO`) that reuses a purged extent of 16 KiB or more pays one
+`madvise` call (about 1 us, under the huge lock) in place of the clear.
+It drops only the pages a stale write faulted back in since the eager
+purge, so the run stays unpopulated. In lazy mode there is no call and
+the caller clears the run, as before this rule. `malloc`, `realloc` and
+`mallocx` without `MALLOCX_ZERO` never make the call.

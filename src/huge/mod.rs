@@ -4588,15 +4588,31 @@ impl Huge {
 } // verus!
 
 impl Huge {
-    /// [`Huge::alloc_run`] as the pointer and the zero flag alone.
+    /// [`Huge::alloc_run`] for a zeroing caller, as the pointer and the
+    /// zero flag alone.
     #[cfg(test)]
     pub fn alloc(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
+        self.alloc_wanting(meta, size, align, arena, true)
+    }
+
+    /// [`Huge::alloc_run`] with its `zero` argument, as the pointer and the
+    /// zero flag alone.
+    #[cfg(test)]
+    pub fn alloc_wanting(
+        &self,
+        meta: &Meta,
+        size: usize,
+        align: usize,
+        arena: u16,
+        zero: bool,
+    ) -> (*mut u8, bool) {
         let r = self
             .alloc_run(
                 meta,
                 size,
                 align,
                 arena,
+                zero,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
             )
@@ -4614,13 +4630,18 @@ impl Huge {
     /// records them (the guard included; what [`Huge::free_run`] will
     /// report as `pages`, so the caller's per-arena page count never
     /// drifts from what the free subtracts); [`Placed::NONE`] when the
-    /// region, the metadata region or the kernel refuses.
+    /// region, the metadata region or the kernel refuses. `zero` says the
+    /// caller will clear the run unless it is reported zero (`calloc`,
+    /// `MALLOCX_ZERO`): only then may a run reusing a `Purged` extent be
+    /// discarded again to report it zero ([`Huge::rediscard`]); any other
+    /// caller never pays that call.
     /// Ghost: the run's token goes to `tok`, and the second result is the
     /// token that the run's usable bytes read as zero when `zeroed`.
     // Cold: out of line in `Shared::alloc_huge`, so the ghost arguments that
     // verified code erases cannot change whether it is inlined.
     #[inline(never)]
-    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
+    #[allow(clippy::too_many_arguments)]
+    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -4642,13 +4663,14 @@ impl Huge {
             r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
     {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        self.alloc_aligned(meta, size, align, arena, Tracked(tok), Tracked(ord))
+        self.alloc_aligned(meta, size, align, arena, zero, Tracked(tok), Tracked(ord))
     }
 
     /// [`Huge::alloc_run`] for an `align` already known to be a power of
     /// two.
     #[inline(always)]
-    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -4736,7 +4758,7 @@ impl Huge {
         // `check_zero` needs the extent's state before `take` may free it.
         let _gi: &Inner = &g;
         let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
-        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, run_perm, spare_perm, Tracked(tok));
+        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, zero, run_perm, spare_perm, Tracked(tok));
         // `take` wrote the run's descriptor; the lock is still held.
         let pages = g.desc(run).pages();
         self.sync_oldest(&g);
@@ -5254,6 +5276,7 @@ impl Huge {
         run: *mut HugeDesc,
         spare: *mut HugeDesc,
         arena: u16,
+        zero: bool,
         Tracked(run_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
         Tracked(spare_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
         Tracked(tok): Tracked<&mut Map<int, RunToken>>,
@@ -5399,16 +5422,17 @@ impl Huge {
             // extent's pages are zero only once `rediscard` has discarded
             // the run's share of them again: its earlier discard does not
             // survive a stale-pointer write or an underflow from the live
-            // run above. Only while every purge so far was `MADV_DONTNEED`
-            // (`purge::purged_is_zero`): then the extra call drops just the
-            // pages such a write faulted in. After a lazy `MADV_FREE` purge
-            // the pages may still be resident, and dropping them would make
-            // every reuse (a plain `malloc` too) fault them back, so the
-            // run is reported dirty and only a zeroing caller clears it. An
-            // `Empty` extent is dirty.
+            // run above. Only for a zeroing caller (`zero`; any other caller
+            // never pays the call) and only while every purge so far was
+            // `MADV_DONTNEED` (`purge::purged_is_zero`): then the call drops
+            // just the pages such a write faulted in. After a lazy
+            // `MADV_FREE` purge the pages may still be resident, and
+            // dropping them would refault them, so the run is reported
+            // dirty and the zeroing caller clears it. An `Empty` extent is
+            // dirty.
             let usable_end = if end > GUARD_PAGES { end - GUARD_PAGES } else { s };
             let hi = if usable_end < e_end { usable_end } else { e_end };
-            zeroed = s >= e_end || (st == RunState::Purged && purge::purged_is_zero() && self.rediscard(s, hi));
+            zeroed = s >= e_end || (zero && st == RunState::Purged && purge::purged_is_zero() && self.rediscard(s, hi));
             proof {
                 assert(zeroed ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
                 lemma_can_sub(*old(g), ext);
