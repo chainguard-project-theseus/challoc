@@ -64,6 +64,7 @@ pub(crate) struct TestShared {
     config: Config,
     guards: bool,
     pac: bool,
+    gc_interval_ns: Option<u64>,
 }
 
 impl TestShared {
@@ -86,6 +87,7 @@ impl TestShared {
             config,
             guards: false,
             pac: pac::available(),
+            gc_interval_ns: None,
         }
     }
 
@@ -101,6 +103,13 @@ impl TestShared {
     /// take.
     pub(crate) fn pac(mut self, available: bool) -> TestShared {
         self.pac = available;
+        self
+    }
+
+    /// Replace the GC interval `Shared::init` stores
+    /// (`Shared::gc_interval_ns`).
+    pub(crate) fn gc_interval_ns(mut self, ns: u64) -> TestShared {
+        self.gc_interval_ns = Some(ns);
         self
     }
 
@@ -133,8 +142,10 @@ impl TestShared {
             (align_up(mb, page_size()), META_LEN),
             hb,
         );
-        // One raw pointer for `init` and the returned `&Shared`, as in
-        // `api::init`: `init` keeps pointers derived from it.
+        // One raw pointer for `init`, the field edit and the returned
+        // `&Shared`, as in `api::init`: `init` keeps pointers derived from
+        // it, which a reborrow through a `&mut` in between would
+        // invalidate.
         let p = Box::into_raw(Box::new(MaybeUninit::<Shared>::uninit())).cast::<Shared>();
         // SAFETY: `p` is a leaked, never-moved allocation for a `Shared`
         // that nothing reads before `init` returns, and the regions are
@@ -151,6 +162,11 @@ impl TestShared {
                 vstd::prelude::Tracked::assume_new(),
             )
         });
+        if let Some(ns) = self.gc_interval_ns {
+            // SAFETY: `*p` is initialised, and no reference to it exists
+            // yet; the field is plain data.
+            unsafe { (*p).gc_interval_ns = ns };
+        }
         // SAFETY: `init` returned `true`, so `*p` is initialised; it is
         // leaked, so the reference is valid for `'static`.
         unsafe { &*p }

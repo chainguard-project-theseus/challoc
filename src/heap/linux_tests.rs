@@ -70,8 +70,7 @@ fn heap_is_created_on_first_use_through_tls() {
         free(s, p, Tracked::assume_new(), Tracked::assume_new());
         free(s, q, Tracked::assume_new(), Tracked::assume_new());
         assert_eq!(
-            // SAFETY: the heap outlives the frees; the thread is still running.
-            unsafe { &*hp }.stats().deallocated,
+            existing_heap(s).expect("heap").stats().deallocated,
             2 * CLASSES[c].size() as u64
         );
     })
@@ -209,15 +208,19 @@ fn creating_and_exited_sentinels_are_served_directly() {
         // direct without creating another heap.
         let key = s.thread_key().expect("key");
         // SAFETY: `key` is the allocator's live thread key.
-        assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
+        let kv = unsafe { libc::pthread_getspecific(key) };
+        assert_eq!(kv, h);
         assert_eq!(
             // SAFETY: as above.
             unsafe { libc::pthread_setspecific(key, core::ptr::null()) },
             0
         );
-        // SAFETY: `h` is this thread's heap as registered with the key, which
-        // was just cleared, so neither the key nor TLS hands it out again.
-        unsafe { heap_destructor(h) };
+        // The destructor gets the key's value, as from glibc, not `h`: the
+        // `free` above reborrowed the heap after `h` was taken.
+        // SAFETY: `kv` is this thread's heap as registered with the key,
+        // which was just cleared, so neither the key nor TLS hands it out
+        // again.
+        unsafe { heap_destructor(kv) };
         assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_EXITED);
         assert_eq!(
             s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
