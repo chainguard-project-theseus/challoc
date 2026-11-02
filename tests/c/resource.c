@@ -170,10 +170,19 @@ static void *gated(void *arg)
           errno);
     if (b)
         CHECK(is_zero(b, 5000), "calloc not zero");
+    /* The mallocx routes on the thread's own (implicit) arena too. */
+    void *d = NULL, *e = NULL;
+    if (mallocx) {
+        d = mallocx(1 << 20, 0);
+        e = mallocx(16, MALLOCX_TCACHE_NONE);
+        CHECK(d && e, "thread: mallocx(1 MiB)=%p mallocx(16, TCACHE_NONE)=%p errno %d", d, e, errno);
+    }
     pthread_barrier_wait(&done);
     free(a);
     free(b);
     free(c);
+    free(d);
+    free(e);
     return NULL;
 }
 
@@ -200,23 +209,25 @@ static void parent_arenas_create(void)
 {
     mallctl_fn ctl = mallctl_dl();
     REQUIRE(ctl, "no mallctl");
-    unsigned idx;
-    size_t len = sizeof idx;
+    /* The automatic arenas: `arenas.narenas` before any create. */
+    unsigned autos = 0, idx;
+    size_t len = sizeof autos;
+    REQUIRE(ctl("arenas.narenas", &autos, &len, NULL, 0) == 0, "arenas.narenas");
+    len = sizeof idx;
     int n = 0, rc;
     while ((rc = ctl("arenas.create", &idx, &len, NULL, 0)) == 0)
         n++;
     CHECK(rc == EAGAIN, "arenas.create refused with %d, not EAGAIN", rc);
     CHECK(n > 0, "no explicit arena created");
-    /* The automatic arenas still fit: the last one can be built (mallocx
-     * names it explicitly, so no fallback can serve it). */
-    unsigned narenas = 0;
-    len = sizeof narenas;
-    REQUIRE(ctl("opt.narenas", &narenas, &len, NULL, 0) == 0, "opt.narenas");
-    if (narenas > 1 && mallocx) {
-        void *p = mallocx(16, MALLOCX_ARENA(narenas - 1));
-        CHECK(p, "mallocx(16, MALLOCX_ARENA(%u)): automatic arena not buildable", narenas - 1);
+    /* The automatic arenas still fit: the last one can be built
+     * (mallocx names it explicitly, so no fallback can serve it). */
+    if (autos > 1 && mallocx) {
+        void *p = mallocx(16, MALLOCX_ARENA(autos - 1));
+        CHECK(p, "mallocx(16, MALLOCX_ARENA(%u)): automatic arena not buildable", autos - 1);
         if (p)
             free(p);
+    } else {
+        skip_note("resource/arenas_create", "one automatic arena (%u): no headroom to check", autos);
     }
     run_threads(32);
 }

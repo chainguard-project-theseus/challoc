@@ -390,7 +390,7 @@ pub fn alloc(
                         },
                     }
                 },
-                None => alloc_direct(shared, class, arena.unwrap_or(0), Tracked(blk)),
+                None => alloc_direct(shared, class, arena.unwrap_or(0), arena.is_none(), Tracked(blk)),
             }
         },
         Tcache::Explicit(t) => {
@@ -427,7 +427,7 @@ pub fn alloc(
                     crate::heap::existing_heap(crate::heap::shared_ptr(shared)).map(|h| h.arena())
                 })
                 .unwrap_or(0);
-            let (p, zero, z) = alloc_direct(shared, class, a, Tracked(blk));
+            let (p, zero, z) = alloc_direct(shared, class, a, arena.is_none(), Tracked(blk));
             if !p.is_null() {
                 if let Some(h) = crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {
                     h.count_direct_alloc(class);
@@ -438,11 +438,16 @@ pub fn alloc(
     }
 }
 
-/// One slot of `class` straight from `arena`'s slab bitmaps.
+/// One slot of `class` straight from `arena`'s slab bitmaps. When
+/// `arena` is the thread's own home (`implicit`) and cannot be built (the
+/// metadata region is full, design 14.1), from arena 0 instead, as the
+/// `malloc` slow path does; an explicit `MALLOCX_ARENA` that does not
+/// exist is NULL.
 fn alloc_direct(
     shared: &Shared,
     class: usize,
     arena: u16,
+    implicit: bool,
     Tracked(blk): Tracked<&mut super::Live>,
 ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
@@ -461,6 +466,12 @@ fn alloc_direct(
     match shared.arena(arena, Tracked(&mut ord)) {
         Some((a, w)) => {
             shared.alloc_direct(a, w, class, Tracked(blk), Tracked(&mut ord))
+        }
+        None if implicit => {
+            proof {
+                shared.lemma_wf_slow();
+            }
+            shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut ord))
         }
         None => (ptr::null_mut(), false, Tracked(Zeroed::empty(0))),
     }
@@ -508,7 +519,10 @@ pub fn alloc_huge(
     // Premise (lock order): called from the `mallocx` entry points, which
     // hold no lock.
     let tracked mut ord = axiom_entry();
-    if shared.arena(a, Tracked(&mut ord)).is_none() {
+    // An explicit `MALLOCX_ARENA` that does not exist is NULL; the
+    // thread's own home that cannot be built leaves the run to arena 0
+    // (`Shared::alloc_huge`, design 14.1).
+    if arena.is_some() && shared.arena(a, Tracked(&mut ord)).is_none() {
         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
     }
     match crate::heap::heap_for_thread(shared) {

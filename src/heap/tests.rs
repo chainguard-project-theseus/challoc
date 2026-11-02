@@ -4414,6 +4414,46 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
     unsafe { Heap::destroy(hp, s, Tracked::assume_new(), Tracked::assume_new()) };
 }
 
+/// The small-class slow path of a heap whose home arena cannot be built
+/// serves the block uncached from arena 0, and the next slow path, with
+/// the pressure gone, builds the home arena and serves from it.
+#[test]
+fn an_unbuildable_home_arena_serves_small_blocks_from_arena_0_then_recovers() {
+    use core::sync::atomic::Ordering::Relaxed;
+    let s = TestShared::with(Config {
+        narenas: 4,
+        ..Config::DEFAULT
+    })
+    .build();
+    // The main thread's heap holds arena 0, so the next lands on 1.
+    let _main = TestHeap::new(s);
+    let w = TestHeap::new(s);
+    assert_eq!(w.heap().arena(), 1);
+    assert!(
+        s.arenas.get_existing(1).is_none(),
+        "not built until the first refill"
+    );
+    let c = class_with(64);
+    crate::arena::FAIL_INIT.store(&s.meta as *const _ as usize, Relaxed);
+    let p = w.alloc(c);
+    assert_eq!(
+        crate::arena::FAIL_INIT.load(Relaxed),
+        0,
+        "the build ran and failed"
+    );
+    assert!(s.arenas.get_existing(1).is_none());
+    assert_eq!(
+        s.classify_free(p, Tracked::assume_new()),
+        Ok((c, 0)),
+        "from arena 0"
+    );
+    w.free(p);
+    let q = w.alloc(c);
+    assert!(s.arenas.get_existing(1).is_some(), "built on retry");
+    assert_eq!(s.classify_free(q, Tracked::assume_new()), Ok((c, 1)));
+    w.free(q);
+}
+
 /// The huge path on an index no arena exists for leaves the run to
 /// arena 0 instead of aborting (the `mallocx` callers check an explicit
 /// index first).
