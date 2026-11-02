@@ -56,8 +56,10 @@ void *challoc_calloc_usable(size_t n, size_t size, size_t *usable);
  * when it is NULL, realloc(ptr, 0) included). */
 void *challoc_realloc_usable(void *ptr, size_t size, size_t *usable);
 
-/* free(ptr); returns the usable size ptr had, 0 for NULL. The exact check of
- * free (a stale, interior or foreign pointer aborts at the call). */
+/* free(ptr); returns the usable size ptr had, 0 for NULL. free's check (a
+ * stale, interior or foreign pointer aborts at the call; a slot still held
+ * in a thread cache is not checked exactly, double_free_scan:true narrows
+ * this). */
 size_t challoc_free_usable(void *ptr);
 
 #ifdef __cplusplus

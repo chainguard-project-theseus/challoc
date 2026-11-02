@@ -3598,13 +3598,19 @@ impl Shared {
     /// slot-start test, and the guard test. Neither the slab
     /// descriptor nor the class table line is touched: the bit test that
     /// makes plain `free` exact is left to the flush, and so is the
-    /// watermark. A slot start in a slab no arena has been handed, or in
-    /// a handed-out slab its arena has not committed (the cursor sits
-    /// under the class lock), is caught at the flush, which aborts by name
-    /// (`SlabTable::owner` on a slab past the watermark, `release_owned`
-    /// on a `Fresh` one); until then the slot can be popped by `malloc`,
-    /// and a program that writes to it faults on the reserved `PROT_NONE`
-    /// page instead of aborting by name (the trade design 6.3 records).
+    /// watermark. A slot start no refill has claimed (most often an
+    /// unclaimed slot of an open, committed slab, writable in every class;
+    /// also one in a slab no arena has been handed, or in a handed-out slab
+    /// its arena has not committed, the cursor sitting under the class
+    /// lock) is caught only if a flush reaches it while
+    /// the slot is still unclaimed (`SlabTable::owner` on a slab past the
+    /// watermark, `release_owned` on a `Fresh` one); until then the slot
+    /// can be popped by `malloc` (the trade design 6.3 records). Whether
+    /// the program can then write to it depends on the memory under it,
+    /// not on this check: a slab no arena has committed is `PROT_NONE`
+    /// and faults, but the slabs an arena commits ahead of its cursor in
+    /// one run (`SlabTable::commit_run`, up to `RUN_BYTES`; design 4) are
+    /// ordinary writable memory.
     /// `None` for anything else; the slow path repeats the checks with
     /// aborts ([`check_size_hint`], then [`classify_free`]). The arena is
     /// not read either (it is on the descriptor line): the home cache

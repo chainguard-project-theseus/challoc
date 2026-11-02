@@ -631,8 +631,10 @@ ctests! {
     /// Design 13.7: `challoc_free_usable` is the exact `free` reporting the
     /// class it verified, so a bad pointer dies with `free`'s message at the
     /// call: an interior pointer, a stale (flushed) slot, a huge run that is
-    /// no longer live; a cached double free is caught at the flush by default
-    /// and at the call with `double_free_scan`.
+    /// no longer live; a cached double free is left to a flush by default
+    /// (caught only if the slot is still unclaimed then) and caught at the
+    /// call with `double_free_scan` while the first copy is among the
+    /// cache's four most recent entries.
     c_negative_free_usable_interior => [
         negative!("free_usable_interior", SIGABRT, &["invalid free of 0x", "not an allocation"],
             stdout_lacks: &["returned"]),
