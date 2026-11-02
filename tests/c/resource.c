@@ -25,7 +25,7 @@
  *               served (an unbuildable home falls back to arena 0), and
  *               the main thread then holds 20000 huge blocks (no failed
  *               build stranded the region's room)
- *   data_threads  RLIMIT_DATA of 3 to 32 MiB from the start; 16 threads at
+ *   data_threads  RLIMIT_DATA of 3 to 128 MiB from the start; 16 threads at
  *               once each allocate 32 B, then 5 MiB to 2 GiB through
  *               malloc, calloc, posix_memalign, aligned_alloc, mallocx
  *               and realloc, taking NULL where the limit refuses: no
@@ -192,6 +192,10 @@ static int child_data_threads(void)
     for (int i = 0; i < n; i++)
         pthread_join(t[i], NULL);
     pthread_attr_destroy(&attr);
+    /* Fewer than two threads reach no unbuilt automatic arena: say so
+     * (exit 3), so the parent knows this run covered nothing. */
+    if (failures == 0 && n < 2)
+        return 3;
     return finish("resource child");
 }
 
@@ -434,13 +438,20 @@ int main(int argc, char **argv)
     else if (!strcmp(mode, "as_min"))
         parent_as_min();
     else if (!strcmp(mode, "data_threads")) {
-        static const size_t limits[] = {3, 4, 8, 16, 32};
+        /* glibc refuses thread stacks under the tighter limits (64 KiB
+         * pages raise the floor on aarch64): a run that started fewer
+         * than two threads exits 3 and covers nothing, and at least one
+         * run must start them. */
+        static const size_t limits[] = {3, 4, 8, 16, 32, 64, 128};
+        int threaded = 0;
         for (size_t l = 0; l < sizeof limits / sizeof limits[0]; l++)
             for (int i = 0; i < 4; i++) {
                 int rc = run_child("child_data_threads", RLIMIT_DATA, limits[l] * MIB);
-                CHECK(rc == 0, "16 threads under RLIMIT_DATA = %zu MiB: %s %d", limits[l],
+                CHECK(rc == 0 || rc == 3, "16 threads under RLIMIT_DATA = %zu MiB: %s %d", limits[l],
                       rc < 0 ? "signal" : "exit", rc < 0 ? -rc : rc);
+                threaded += rc == 0;
             }
+        CHECK(threaded > 0, "no run under a data limit started two threads");
     }
     else if (!strcmp(mode, "arenas_create"))
         parent_arenas_create();

@@ -207,9 +207,13 @@ fn note_build_cost(meta: &Meta, tables: usize) {
             Err(cur) => cur == key,
         };
         if found {
-            let _ = c.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                (cur == 0 || tables < cur).then_some(tables)
-            });
+            let mut cur = c.load(Ordering::Relaxed);
+            while cur == 0 || tables < cur {
+                match c.compare_exchange_weak(cur, tables, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(now) => cur = now,
+                }
+            }
             return;
         }
     }
