@@ -2606,7 +2606,7 @@ impl Shared {
             *final(ord) == *old(ord),
     {
         let tracked mut seen = CellSeen { frozen: None };
-        self.discover_cgroup(true, Tracked(ord), Tracked(&mut seen));
+        self.discover_cgroup_cold(true, Tracked(ord), Tracked(&mut seen));
         self.cgroup.published(Tracked(seen))
     }
 
@@ -2621,7 +2621,7 @@ impl Shared {
             *final(ord) == *old(ord),
     {
         let tracked mut seen = CellSeen { frozen: None };
-        self.cgroup.due(now) && self.discover_cgroup(false, Tracked(ord), Tracked(&mut seen))
+        self.cgroup.due(now) && self.discover_cgroup_cold(false, Tracked(ord), Tracked(&mut seen))
     }
 
     /// Discover the cgroup in `fork`'s prepare handler, so the child
@@ -2636,7 +2636,25 @@ impl Shared {
             *final(ord) == *old(ord),
     {
         let tracked mut seen = CellSeen { frozen: None };
-        self.discover_cgroup(false, Tracked(ord), Tracked(&mut seen));
+        self.discover_cgroup_cold(false, Tracked(ord), Tracked(&mut seen));
+    }
+
+    /// [`Shared::discover_cgroup`] on a cold stack (`sys::cold`): the
+    /// cgroup scanner's buffers and the record take about 11 KiB of
+    /// stack, more than whichever thread ticks first, forks or reads the
+    /// figures may have (a `PTHREAD_STACK_MIN` thread). Trusted: the body
+    /// is the call, on another stack; the contract is `discover_cgroup`'s.
+    #[verifier::external_body]
+    #[inline(never)]
+    fn discover_cgroup_cold(&self, wait: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(seen): Tracked<&mut CellSeen>) -> (r: bool)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+            wait ==> self.cgroup.seen_done(*final(seen)),
+    {
+        crate::sys::cold::run(move || self.discover_cgroup(wait, Tracked(ord), Tracked(seen)))
     }
 
     /// Run the deferred discovery (`Deferred::discover`): `true` when this

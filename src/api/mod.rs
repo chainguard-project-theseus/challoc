@@ -1235,14 +1235,37 @@ fn publish_ready(Tracked(published): Tracked<&'static Published>, Tracked(half):
     Tracked(out.tracked_unwrap())
 }
 
+/// [`init_here`] on a cold stack (`sys::cold`): initialisation takes
+/// about 8 KiB of stack, and the first allocation of a process may come
+/// from a thread with a small one (a `PTHREAD_STACK_MIN` thread `main`
+/// started before allocating). Trusted: the body is the call, on another
+/// stack; the contract is `init_here`'s.
+#[cold]
+#[inline(never)]
+#[verifier::external_body]
+fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+    ensures
+        r.0.wf(),
+        marks_ready(*r.1@),
+{
+    let (_, mark) = crate::sys::cold::run(init_here);
+    // The same reference `init_here` returns, `SHARED`'s, formed here so
+    // the compiler still sees a constant at the callers (`shared` is
+    // inlined into the fast paths, whose code is unchanged by this).
+    // SAFETY: `init_here` returned, so `READY` is published.
+    (unsafe { &*shared_storage_ptr() }, mark)
+}
+
 /// The first caller runs `init` and publishes `READY`; a concurrent one
 /// waits for it (termination is not claimed: the wait ends when the other
 /// thread's `init` does); the initialising thread re-entering aborts. With
 /// the [`ReadyMark`] of the `READY` it published or loaded.
-#[cold]
-#[inline(never)]
+#[inline(always)]
 #[verifier::exec_allows_no_decreases_clause]
-fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
+fn init_here() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -2377,6 +2400,8 @@ extern "C" fn fork_child() {
         crate::sys::grant_aborts();
     }
     let tracked mut state = axiom_fork_resumed_state();
+    // The cold stacks other threads held are free in the child.
+    crate::sys::cold::fork_child();
     purge::background::fork_child(Tracked(&mut state));
     let s = shared();
     proof {

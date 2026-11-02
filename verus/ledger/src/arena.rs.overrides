@@ -35,3 +35,6 @@ axiom_arenas_lock_inv	allocator invariant	none (assumption)
 # The creation lock's frame (lock_frame is uninterpreted), stated with ==
 # as the class lock's; its writers are verified against it.
 axiom_arenas_lock_frame	allocator invariant	none (assumption)
+# The callee on a cold stack (sys::cold::run): Verus cannot see the
+# stack switch; the contract is the callee's.
+Arenas::materialise_cold	inline asm	Islaris/Isla

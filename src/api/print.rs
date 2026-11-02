@@ -1442,15 +1442,25 @@ mod exports {
     ;
 
     /// The body of the `malloc_stats_print` exports: the call's token for
-    /// `opts`, and the Rust entry point.
+    /// `opts`, and the Rust entry point, on a cold stack.
     #[inline(always)]
     fn stats_print_entry(write_cb: super::WriteCallback, cbopaque: *mut c_void, opts: *const c_char)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
     {
-        let tracked cc = axiom_c_call(CEntry::StatsPrint { opts: opts as *const u8 });
-        super::malloc_stats_print(write_cb, cbopaque, opts, Tracked(cc))
+        // On a cold stack (`sys::cold`): the report needs far more stack
+        // than a small thread has.
+        crate::sys::cold::run(
+            move ||
+                requires
+                    crate::sys::may_abort(),
+                    crate::sys::may_syscall(),
+                {
+                    let tracked cc = axiom_c_call(CEntry::StatsPrint { opts: opts as *const u8 });
+                    super::malloc_stats_print(write_cb, cbopaque, opts, Tracked(cc))
+                },
+        )
     }
 
     verified_export_pair! {
@@ -1465,8 +1475,17 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::malloc_info(options, stream, Tracked(&mut errno))
+        // On a cold stack, as `malloc_stats_print`.
+        crate::sys::cold::run(
+            move || -> (r: c_int)
+                requires
+                    crate::sys::may_abort(),
+                    crate::sys::may_syscall(),
+                {
+                    let Tracked(mut errno) = crate::vspec::errno::lend();
+                    super::malloc_info(options, stream, Tracked(&mut errno))
+                },
+        )
     }
 
     #[unsafe(no_mangle)]
@@ -1475,7 +1494,14 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::malloc_stats()
+        // On a cold stack, as `malloc_stats_print`.
+        crate::sys::cold::run(
+            ||
+                requires
+                    crate::sys::may_abort(),
+                    crate::sys::may_syscall(),
+                { super::malloc_stats() },
+        )
     }
 
     } // verus!

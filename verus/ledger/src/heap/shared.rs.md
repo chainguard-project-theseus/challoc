@@ -33,6 +33,7 @@ file.
 | `axiom_s...egions` | axiom | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_s...d_meta` | axiom | raw pointer (internal) | none (assumption) | trusted |
 | `Shared::begin` | external_body | raw pointer from C caller | none (assumption) | trusted |
+| `Shared::...oup_cold` | external_body | inline asm | Islaris/Isla | trusted |
 
 ## `axiom_process_shared`
 
@@ -386,4 +387,21 @@ fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsT
         r@.ptr() == this,
         r@.is_uninit(),
         this@.addr + size_of::<Shared>() <= usize::MAX,
+```
+
+## `Shared::discover_cgroup_cold`
+
+src/heap/shared.rs:2649. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
+
+> [`Shared::discover_cgroup`] on a cold stack (`sys::cold`): the cgroup scanner's buffers and the record take about 11 KiB of stack, more than whichever thread ticks first, forks or reads the figures may have (a `PTHREAD_STACK_MIN` thread).
+
+```rust
+fn discover_cgroup_cold(&self, wait: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(seen): Tracked<&mut CellSeen>) -> (r: bool)
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+        wait ==> self.cgroup.seen_done(*final(seen)),
 ```

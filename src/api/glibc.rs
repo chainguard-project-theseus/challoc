@@ -209,7 +209,15 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::mallinfo()
+        // On a cold stack (`sys::cold`): the per-arena figures with their
+        // bins need more stack than a small thread has.
+        crate::sys::cold::run(
+            || -> (r: super::MallInfo)
+                requires
+                    crate::sys::may_abort(),
+                    crate::sys::may_syscall(),
+                { super::mallinfo() },
+        )
     }
 
     #[unsafe(no_mangle)]
@@ -218,8 +226,17 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        let tracked mut rd: super::Reads = Ghost(arbitrary());
-        super::mallinfo2(Tracked(&mut rd))
+        // On a cold stack, as `mallinfo`.
+        crate::sys::cold::run(
+            || -> (r: super::MallInfo2)
+                requires
+                    crate::sys::may_abort(),
+                    crate::sys::may_syscall(),
+                {
+                    let tracked mut rd: super::Reads = Ghost(arbitrary());
+                    super::mallinfo2(Tracked(&mut rd))
+                },
+        )
     }
 
     } // verus!

@@ -21,3 +21,6 @@ shared_ptr	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: api
 shared_storage_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::shared_ptrs_agree)
 features_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)
 line_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)
+# The callee on a cold stack (sys::cold::run): Verus cannot see the
+# stack switch; the contract is the callee's.
+init_slow	inline asm	Islaris/Isla

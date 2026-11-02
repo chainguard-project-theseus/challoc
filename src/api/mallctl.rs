@@ -3456,6 +3456,83 @@ mod exports {
         Tracked(cc)
     }
 
+    /// The body of the `mallctl` exports: the call's token and `errno`,
+    /// and the Rust entry point, on a cold stack (`sys::cold`): the
+    /// statistics reads need more stack than a small thread has.
+    #[inline(always)]
+    fn mallctl_entry(name: *const c_char, oldp: *mut c_void, oldlenp: *mut usize, newp: *const c_void, newlen: usize) -> c_int
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+    {
+        crate::sys::cold::run(
+            move || -> (r: c_int)
+                requires
+                    crate::sys::may_abort(),
+                    crate::sys::may_syscall(),
+                {
+                    let Tracked(mut errno) = crate::vspec::errno::lend();
+                    super::mallctl(
+                        name,
+                        oldp,
+                        oldlenp,
+                        newp,
+                        newlen,
+                        Tracked(axiom_c_call(CEntry::Mallctl {
+                            name: name as *const u8,
+                            oldp: oldp as *mut u8,
+                            oldlenp: oldlenp as *const usize,
+                            newp: newp as *mut u8,
+                            newlen,
+                        })),
+                        Tracked(&mut errno),
+                    )
+                },
+        )
+    }
+
+    /// The body of the `mallctlbymib` exports, as [`mallctl_entry`].
+    #[inline(always)]
+    fn bymib_entry(
+        mib: *const usize,
+        miblen: usize,
+        oldp: *mut c_void,
+        oldlenp: *mut usize,
+        newp: *const c_void,
+        newlen: usize,
+    ) -> c_int
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+    {
+        crate::sys::cold::run(
+            move || -> (r: c_int)
+                requires
+                    crate::sys::may_abort(),
+                    crate::sys::may_syscall(),
+                {
+                    let Tracked(mut errno) = crate::vspec::errno::lend();
+                    super::mallctlbymib(
+                        mib,
+                        miblen,
+                        oldp,
+                        oldlenp,
+                        newp,
+                        newlen,
+                        Tracked(axiom_c_call(CEntry::ByMib {
+                            mib,
+                            miblen,
+                            oldp: oldp as *mut u8,
+                            oldlenp: oldlenp as *const usize,
+                            newp: newp as *mut u8,
+                            newlen,
+                        })),
+                        Tracked(&mut errno),
+                    )
+                },
+        )
+    }
+
     verified_export_pair! {
         fn mallctl / je_mallctl(
             name: *const c_char,
@@ -3464,22 +3541,7 @@ mod exports {
             newp: *const c_void,
             newlen: usize
         ) -> (r: c_int) {
-            let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::mallctl(
-                name,
-                oldp,
-                oldlenp,
-                newp,
-                newlen,
-                Tracked(axiom_c_call(CEntry::Mallctl {
-                    name: name as *const u8,
-                    oldp: oldp as *mut u8,
-                    oldlenp: oldlenp as *const usize,
-                    newp: newp as *mut u8,
-                    newlen,
-                })),
-                Tracked(&mut errno),
-            )
+            mallctl_entry(name, oldp, oldlenp, newp, newlen)
         }
         fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> (r: c_int) {
             let Tracked(mut cc) = nametomib_call(name, mibp, miblenp);
@@ -3493,24 +3555,7 @@ mod exports {
             newp: *const c_void,
             newlen: usize
         ) -> (r: c_int) {
-            let Tracked(mut errno) = crate::vspec::errno::lend();
-            super::mallctlbymib(
-                mib,
-                miblen,
-                oldp,
-                oldlenp,
-                newp,
-                newlen,
-                Tracked(axiom_c_call(CEntry::ByMib {
-                    mib,
-                    miblen,
-                    oldp: oldp as *mut u8,
-                    oldlenp: oldlenp as *const usize,
-                    newp: newp as *mut u8,
-                    newlen,
-                })),
-                Tracked(&mut errno),
-            )
+            bymib_entry(mib, miblen, oldp, oldlenp, newp, newlen)
         }
     }
 

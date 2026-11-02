@@ -1,0 +1,3 @@
+# The stack switch (`switch`, naked asm) and the closure call through a
+# function pointer: the result is the closure's, whichever stack it ran on.
+run	inline asm	Islaris/Isla

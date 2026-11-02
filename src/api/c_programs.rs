@@ -763,6 +763,15 @@ ctests! {
     /// `tst-mallocfork`, made deterministic).
     c_fork_signal => [ CTest { prog: "fork_signal", ..BASE } ];
     c_thread_exit => [ CTest { prog: "thread_exit", ..BASE } ];
+    /// `tests/c/small_stack.c`: every entry point (the allocation calls,
+    /// the jemalloc and C++ ones, `mallctl` reads and writes, every
+    /// `malloc_stats_print` option, `malloc_info`, `malloc_stats`,
+    /// `mallinfo`, `fork`, the process's first allocation, the deferred
+    /// cgroup discovery under the tick and `fork`) on a `PTHREAD_STACK_MIN`
+    /// thread with 6 KiB of it already used, each in a fresh process: none
+    /// overflows the stack (hunt 943666c7; the heavy work is on cold
+    /// stacks, `sys::cold`).
+    c_small_stack => [ CTest { prog: "small_stack", stdout_has: &["done stats_print", "done fork_warm"], ..BASE } ];
     /// `tests/c/jemalloc_api.c`: the jemalloc and glibc
     /// extras under the real `.so`, every non-standard symbol reached through
     /// a weak reference.
@@ -1507,4 +1516,159 @@ fn ordinary_programs_run_under_ld_preload() {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+}
+
+/// The most stack one function of the shipped library may reserve unless
+/// it runs only on a cold stack (`sys::cold`) or is one of [`KNOWN`]:
+/// what every entry point needs of its caller's stack is a few such
+/// frames, and a `PTHREAD_STACK_MIN` thread has about 12 KiB left after
+/// glibc's own (`tests/c/small_stack.c` runs every entry point there).
+const FRAME_BUDGET: usize = 2048;
+
+/// The frames past [`FRAME_BUDGET`] on the caller's stack, by exact name,
+/// each with the most it may grow to: on the tick and the cache flush,
+/// measured with the rest of their paths in `small_stack`'s 6 KiB of
+/// headroom. A new one, or one of these growing, fails.
+const KNOWN: &[(&str, usize)] = &[
+    // The decay pass of one class (the tick, `arena.<i>.decay`).
+    ("challoc::purge::decay_one", 2816),
+    // A cgroup file read into its path buffer (the tick's sample).
+    ("challoc::sys::cgroup::linux::read_in", 2304),
+    // A cache flush's grouping of the slots by slab (`free`'s slow path).
+    ("challoc::heap::flush::group_by_slab", 2304),
+];
+
+/// The functions allowed past [`FRAME_BUDGET`], by name prefix: each runs
+/// only on a cold stack, because every path to it goes through a
+/// `sys::cold::run` (the exports of `mallctl`, `mallctlbymib`, the
+/// reports and `mallinfo`; `Shared::discover_cgroup_cold`,
+/// `Arenas::materialise_cold`, `init_slow`).
+const COLD_ONLY: &[&str] = &[
+    // The statistics readers and reports: the `mallctl` and report
+    // exports' closures.
+    "challoc::api::mallctl::",
+    "challoc::api::print::",
+    "challoc::stats::",
+    // The cgroup discovery, under `Shared::discover_cgroup_cold` (or
+    // `init_slow`).
+    "<challoc::sys::cgroup::Cgroup>::discover",
+    // An arena's build, under `Arenas::materialise_cold` (arena 0's, under
+    // `init_slow`).
+    "<challoc::arena::Arena>::init",
+    // Initialisation, under `init_slow`.
+    "<challoc::api::init_here as core::ops::function::FnOnce<()>>::call_once",
+    // What `sys::cold::run` calls on the cold stack.
+    "challoc::sys::cold::call::",
+    // `sys::cold::run`'s fallback when every cold stack is taken or none
+    // can be mapped: the work on the caller's stack, as before cold stacks.
+    "challoc::sys::cold::in_place::",
+];
+
+/// Each function's frame from its prologue (x86_64): its pushes, its
+/// `sub $n, %rsp`, a realignment (`and $-a, %rsp`, up to `a - 8` bytes)
+/// and a stack-probe loop's target (`sub $n, %r11` or `lea -n(%rsp),
+/// %r11`, the loop's own 4 KiB steps not counted twice).
+#[cfg(target_arch = "x86_64")]
+fn prologue_frames(disasm: &str) -> Vec<(usize, String)> {
+    fn hex(s: &str) -> Option<usize> {
+        usize::from_str_radix(s.strip_prefix("0x")?, 16).ok()
+    }
+    let mut out = Vec::new();
+    let mut name: Option<String> = None;
+    let mut ins: Vec<&str> = Vec::new();
+    let mut flush = |name: &Option<String>, ins: &[&str]| {
+        let Some(name) = name else { return };
+        let (mut total, mut probe) = (0usize, None);
+        for i in ins.iter().take(40) {
+            let mut w = i.split_whitespace();
+            let (Some(op), arg) = (w.next(), w.next().unwrap_or("")) else {
+                continue;
+            };
+            match op {
+                "call" | "ret" | "jmp" => break,
+                "push" => total += 8,
+                "sub" | "lea" | "and" => {
+                    let (src, dst) = arg.split_once(',').unwrap_or((arg, ""));
+                    let imm = src.strip_prefix('$').and_then(hex);
+                    match (op, dst) {
+                        ("sub", "%r11") => probe = imm,
+                        ("lea", "%r11") => {
+                            probe = src
+                                .strip_prefix('-')
+                                .and_then(|s| s.strip_suffix("(%rsp)"))
+                                .and_then(hex)
+                        }
+                        ("sub", "%rsp") if !(probe.is_some() && imm == Some(0x1000)) => {
+                            total += imm.unwrap_or(0)
+                        }
+                        ("and", "%rsp") => {
+                            total += imm.map_or(0, |m| (!m).wrapping_add(1).saturating_sub(8))
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.push((total + probe.unwrap_or(0), name.clone()));
+    };
+    for line in disasm.lines() {
+        if let Some(n) = line
+            .strip_suffix(">:")
+            .and_then(|l| l.split_once(" <"))
+            .map(|(_, n)| n)
+        {
+            flush(&name, &ins);
+            name = Some(n.into());
+            ins.clear();
+        } else if let Some((_, i)) = line.split_once(":\t") {
+            ins.push(i.trim());
+        }
+    }
+    flush(&name, &ins);
+    out
+}
+
+/// Every function of the shipped library reserves at most
+/// [`FRAME_BUDGET`] bytes of stack, runs only on a cold stack
+/// ([`COLD_ONLY`]) or is one of the [`KNOWN`] few within its cap: a large array or a big by-value statistics record on
+/// a path a `malloc`, a `free`, a `fork` or a tick can reach fails here,
+/// before it overflows a small thread's stack (hunt 943666c7). The
+/// prologue parser is checked on the largest cold frame, so it cannot
+/// pass by reading nothing. x86_64 only: the code is the same on aarch64,
+/// where `small_stack` runs too.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn every_frame_fits_the_budget_or_runs_on_a_cold_stack() {
+    let so = release_so();
+    let dis = Command::new("objdump")
+        .args(["-d", "--no-show-raw-insn", "-C", "-M", "att", &so])
+        .output()
+        .unwrap();
+    assert!(dis.status.success(), "objdump -d failed");
+    let frames = prologue_frames(&String::from_utf8_lossy(&dis.stdout));
+    let biggest = frames
+        .iter()
+        .filter(|(_, n)| n.starts_with("challoc::api::mallctl::arena_stats"))
+        .map(|(f, _)| *f)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        biggest > 8192,
+        "the prologue parser read {biggest} bytes for mallctl::arena_stats"
+    );
+    let over: Vec<String> = frames
+        .iter()
+        .filter(|(f, n)| {
+            *f > FRAME_BUDGET
+                && !COLD_ONLY.iter().any(|p| n.starts_with(p))
+                && !KNOWN.iter().any(|(k, cap)| n == k && f <= cap)
+        })
+        .map(|(f, n)| std::format!("{f:>6} {n}"))
+        .collect();
+    assert!(
+        over.is_empty(),
+        "frames past {FRAME_BUDGET} bytes outside a cold stack (move the work under sys::cold::run, or shrink it):\n{}",
+        over.join("\n")
+    );
 }

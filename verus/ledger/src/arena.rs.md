@@ -32,6 +32,7 @@ file.
 | `axiom_a...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_a...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_a..._frame` | axiom | allocator invariant | none (assumption) | trusted |
+| `Arenas::...ise_cold` | external_body | inline asm | Islaris/Isla | trusted |
 
 ## `axiom_array_layout`
 
@@ -402,4 +403,30 @@ broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
     ensures
         #[trigger] lock_frame(init, v) == (v.n >= init.n && v.half@.id() == init.half@.id()),
 ;
+```
+
+## `Arenas::materialise_cold`
+
+src/arena.rs:3478. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: trusted.
+
+> [`Arenas::materialise`] on a cold stack (`sys::cold`): building an arena takes about 8 KiB of stack (its class states), more than the first `malloc` of a thread with a small stack has left.
+
+```rust
+fn materialise_cold<'a>(
+    &'a self,
+    shared: &'a Shared,
+    index: u16,
+    Tracked(ord): Tracked<&mut LockOrder>,
+) -> (r: Option<(&'a Arena, Tracked<&'static Published>)>)
+    requires
+        crate::sys::may_syscall(),
+        (index as usize) < MAX_ARENAS,
+        shared.wf(),
+        old(ord).allows(rank_arenas()),
+    ensures
+        r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc()
+            && (self.is_process() ==> w@.id() == process_pub_loc()) && w@.key() == index as int
+            && w@.value() == a.spec_olocs(),
+        *final(ord) == *old(ord),
 ```

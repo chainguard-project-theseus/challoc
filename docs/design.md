@@ -1520,6 +1520,45 @@ points' machine code is unchanged by them (`scripts/codegen-diff.sh`).
 Valkey uses them under `USE_CHALLOC`
 (`contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch`).
 
+### 13.8 Stack use
+
+Every entry point works on a thread with the smallest stack glibc allows
+(`PTHREAD_STACK_MIN`, 16 KiB on x86_64, of which glibc's TCB and static
+TLS take about 4) and leaves the caller at least 6 KiB of it, as glibc's
+malloc and jemalloc do. The allocator's heavy, rare work runs on a stack
+of its own, a *cold stack* (`sys/cold.rs`): the `mallctl` family, the
+reports (`malloc_stats_print`, `malloc_info`, `malloc_stats`),
+`mallinfo` and `mallinfo2` (the per-arena figures with their bins, about
+6 KiB each, and the report buffers, up to about 36 KiB in all), the
+deferred cgroup discovery wherever it runs (the tick of any `malloc`,
+`fork`'s prepare handler, a read of the figures; about 11 KiB), the build
+of an automatic arena on a thread's first allocation (about 8 KiB) and
+initialisation (about 8 KiB). Everything else keeps its frames small.
+
+The cold stacks are a pool of 16 slots of 64 KiB, each mapped on its
+first use with a `PROT_NONE` guard page below and named
+`challoc:cold-stack`, kept for the life of the process (initialisation
+maps the first). A call claims a free slot with one compare-exchange and
+frees it with a store, so nothing waits: concurrent calls, a signal
+handler's and a `malloc_stats_print` callback's each take another slot,
+and the callback, which runs on the cold stack, may block on other
+threads that use one. With every slot taken, or when the mapping fails,
+the work runs on the caller's stack. The child of a `fork` frees the
+slots other threads held. A `pthread_cancel` acted on in a callback
+unwinds through the cold stack and keeps its slot taken (the library has
+no unwind cleanups); nothing waits on a slot, so nothing deadlocks. The
+mappings are not counted in the statistics' `mapped`. The stack switch
+(`sys::cold::switch`, a naked function with CFI so debuggers and the
+unwinder cross it) and the wrappers that run a verified function on a
+cold stack are trusted seams in `verus/ledger/`.
+
+`tests/c/small_stack.c` runs every entry point on a `PTHREAD_STACK_MIN`
+thread with 6 KiB of it already used, each in a fresh process; the
+`api::` test `every_frame_fits_the_budget_or_runs_on_a_cold_stack` fails
+on any function of the shipped library that reserves more than 2 KiB of
+stack and is neither on its list of cold-only functions nor one of the
+three known slow-path frames within its cap.
+
 ## 14. Hardening summary
 
 [hardening.md](hardening.md) compares these properties with jemalloc's and
@@ -1766,6 +1805,7 @@ src/sys/errno.rs      kernel error decoding
 src/sys/features.rs   kernel feature probing; the feature line as a key table (words)
 src/sys/thp_host.rs   the THP sysfs table (enabled, hpage_pmd_size, hugepages-<n>kB) and its thp=/mthp= words
 src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, memory.events)
+src/sys/cold.rs       cold stacks: the heavy, rare work off the caller's stack (13.8)
 src/sys/pac.rs        pointer authentication (arm64 FEAT_PAuth): probe, sign, authenticate
 src/sys/tls.rs        the initial-exec TLS accessor (6.1)
 src/rseq.rs           glibc's rseq registration, read for the feature line's rseq= words

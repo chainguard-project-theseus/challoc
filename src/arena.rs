@@ -3463,7 +3463,36 @@ impl Arenas {
                 Tracked(pw.tracked_unwrap()),
             ));
         }
-        self.materialise(shared, index, Tracked(ord))
+        self.materialise_cold(shared, index, Tracked(ord))
+    }
+
+    /// [`Arenas::materialise`] on a cold stack (`sys::cold`): building an
+    /// arena takes about 8 KiB of stack (its class states), more than the
+    /// first `malloc` of a thread with a small stack has left. Trusted:
+    /// the body is the call, on another stack; the contract is
+    /// `materialise`'s.
+    #[allow(clippy::type_complexity)]
+    #[verifier::external_body]
+    #[cold]
+    #[inline(never)]
+    fn materialise_cold<'a>(
+        &'a self,
+        shared: &'a Shared,
+        index: u16,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<(&'a Arena, Tracked<&'static Published>)>)
+        requires
+            crate::sys::may_syscall(),
+            (index as usize) < MAX_ARENAS,
+            shared.wf(),
+            old(ord).allows(rank_arenas()),
+        ensures
+            r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc()
+                && (self.is_process() ==> w@.id() == process_pub_loc()) && w@.key() == index as int
+                && w@.value() == a.spec_olocs(),
+            *final(ord) == *old(ord),
+    {
+        crate::sys::cold::run(move || self.materialise(shared, index, Tracked(ord)))
     }
 
     #[allow(clippy::type_complexity)]

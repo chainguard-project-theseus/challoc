@@ -31,3 +31,6 @@ Shared::begin	raw pointer from C caller	none (assumption)
 # An FFI call that may re-enter the allocator: the nested entries leave
 # the token as they found it (the slot premise).
 pthread_setspecific	FFI/syscall	none (assumption)
+# The callee on a cold stack (sys::cold::run): Verus cannot see the
+# stack switch; the contract is the callee's.
+Shared::discover_cgroup_cold	inline asm	Islaris/Isla
