@@ -1378,13 +1378,18 @@ style. The default is `min(4 * ncpus, 64)` (`Config::effective_narenas`;
 automatic arena with the fewest bound heaps (jemalloc's
 `arena_choose_hard`); the binding is released when the heap is destroyed
 and moves with `thread.arena`. The arena is built at the heap's first
-slow path; while it cannot be built (each arena takes
-about 150 MiB of reservations, so about 437 fit the preferred 64 GiB
-region at quantum 16) the thread's blocks come uncached from arena 0 and
-every later slow path retries the build (14.1). `arenas.create` keeps
-room for the automatic arenas not built yet (as much as the largest
-build so far took, per arena) and refuses with `EAGAIN` before it would
-use it, so explicit arenas never starve the threads' homes. So `t` live
+slow path; while it cannot be built (the metadata region is full: each
+arena takes about 150 MiB of reservations, so about 437 fit the
+preferred 64 GiB region at quantum 16; or `RLIMIT_DATA` refuses its
+commits) the thread's blocks come uncached from arena 0 and
+every later slow path retries the build (14.1). A build is not started
+when the free metadata is below the largest build so far: an arena's
+tables are reserved one after another and never given back, so a build
+that ran out partway would strand them, leaving the huge allocator no
+room for its tables. `arenas.create` keeps room for up to eight
+automatic arenas not built yet (`AUTO_HEADROOM`, at that cost each) and
+refuses with `EAGAIN` before it would use it, so explicit arenas never
+take every thread's home; homes past those share arena 0. So `t` live
 threads use `min(t, narenas)` arenas, a single-threaded program stays on arena 0 and never pays the
 `free` routing (`FREE_ROUTE` is set only when a second arena is built),
 and thread churn reuses the arena an exited thread left. Arenas are not

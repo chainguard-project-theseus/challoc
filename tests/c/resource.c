@@ -22,7 +22,15 @@
  *               arrives (create keeps room for the automatic arenas)
  *   narenas     (narenas:1000) 600 concurrent threads, more automatic
  *               arenas than the metadata region holds: every thread is
- *               served (an unbuildable home falls back to arena 0)
+ *               served (an unbuildable home falls back to arena 0), and
+ *               the main thread then holds 20000 huge blocks (no failed
+ *               build stranded the region's room)
+ *   data_threads  RLIMIT_DATA of 3 to 32 MiB from the start; 16 threads at
+ *               once each allocate 32 B, then 5 MiB to 2 GiB through
+ *               malloc, calloc, posix_memalign, aligned_alloc, mallocx
+ *               and realloc, taking NULL where the limit refuses: no
+ *               abort (a thread whose arena the limit refuses is served
+ *               from arena 0, or gets NULL)
  *   data_thread RLIMIT_DATA cut to VmData, then a new thread whose arena
  *               cannot be built allocates 16 B and 1 MiB: NULL/ENOMEM or
  *               a block, never an abort; after the limit is raised a new
@@ -131,6 +139,56 @@ static int child_data_init(void)
     return finish("resource child");
 }
 
+/* Large requests of every kind, each taking NULL as a valid answer. */
+static pthread_barrier_t big_start;
+
+static void *big_requests(void *arg)
+{
+    (void)arg;
+    pthread_barrier_wait(&big_start);
+    void *small = malloc(32);
+    for (size_t sz = 5 * MIB; sz <= 2 * GIB; sz *= 4) {
+        void *p = malloc(sz);
+        free(p);
+        p = calloc(1, sz);
+        free(p);
+        p = NULL;
+        if (posix_memalign(&p, 1 << 16, sz) == 0)
+            free(p);
+        p = aligned_alloc(1 << 12, sz);
+        free(p);
+        if (mallocx) {
+            p = mallocx(sz, 0);
+            if (p)
+                sdallocx(p, sz, 0);
+        }
+        void *r = malloc(64);
+        void *q = r ? realloc(r, sz) : NULL;
+        free(q ? q : r);
+    }
+    free(small);
+    return NULL;
+}
+
+static int child_data_threads(void)
+{
+    require_challoc();
+    /* Small stacks: a thread's stack is a private writable mapping the
+     * data limit counts too. */
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 64 * 1024);
+    pthread_barrier_init(&big_start, NULL, 16);
+    pthread_t t[16];
+    for (int i = 0; i < 16; i++)
+        REQUIRE(pthread_create(&t[i], &attr, big_requests, NULL) == 0, "pthread_create %d", i);
+    for (int i = 0; i < 16; i++)
+        pthread_join(t[i], NULL);
+    pthread_barrier_destroy(&big_start);
+    pthread_attr_destroy(&attr);
+    return finish("resource child");
+}
+
 static int child_as_min(void)
 {
     require_challoc();
@@ -190,6 +248,18 @@ static void *gated(void *arg)
                 __sync_fetch_and_add(&explicit_refused, 1);
         }
     }
+    /* Many size classes: each first use is a slow path, which on a
+     * thread served from arena 0 tries its home's build again. */
+    mallctl_fn fctl = mallctl_dl();
+    for (int it = 0; it < 100; it++) {
+        for (size_t sz = 16; sz <= 64 * 1024; sz += sz / 2 + 16) {
+            void *q = malloc(sz);
+            CHECK(q, "thread: malloc(%zu) errno %d", sz, errno);
+            free(q);
+        }
+        if (fctl)
+            fctl("thread.tcache.flush", NULL, NULL, NULL, 0);
+    }
     pthread_barrier_wait(&done);
     free(a);
     free(b);
@@ -232,7 +302,10 @@ static void parent_arenas_create(void)
     while ((rc = ctl("arenas.create", &idx, &len, NULL, 0)) == 0)
         n++;
     CHECK(rc == EAGAIN, "arenas.create refused with %d, not EAGAIN", rc);
-    CHECK(n > 0, "no explicit arena created");
+    /* The headroom is a handful of builds, not one per automatic arena:
+     * explicit arenas still get most of the region (about 429 at
+     * quantum 16), whatever narenas is (below the 4096-arena table). */
+    CHECK(autos >= 4096 || n >= 300, "only %d explicit arenas with %u automatic ones", n, autos);
     /* The automatic arenas still fit: the last one can be built
      * (mallocx names it explicitly, so no fallback can serve it). */
     if (autos > 1 && mallocx) {
@@ -252,6 +325,19 @@ static void parent_narenas(void)
     /* More homes than the metadata region holds: some explicit
      * requests for an unbuilt home must have been refused. */
     CHECK(explicit_refused > 0, "no thread's home was unbuildable (narenas too small for this host?)");
+    /* The homes that did not fit stranded no metadata: the huge
+     * allocator still has room for its tables. */
+    enum { HUGE_N = 20000 };
+    static void *held[HUGE_N];
+    int got = 0;
+    for (int i = 0; i < HUGE_N; i++) {
+        held[i] = malloc(300 * 1024);
+        got += held[i] != NULL;
+    }
+    CHECK(got == HUGE_N, "main held %d of %d 300 KB blocks after the fallback threads (errno %d)", got, HUGE_N,
+          errno);
+    for (int i = 0; i < HUGE_N; i++)
+        free(held[i]);
 }
 
 static void *thread_limited(void *arg)
@@ -334,11 +420,22 @@ int main(int argc, char **argv)
         return child_data_init();
     if (!strcmp(mode, "child_as_min"))
         return child_as_min();
+    if (!strcmp(mode, "child_data_threads"))
+        return child_data_threads();
     require_challoc();
     if (!strcmp(mode, "data_init"))
         parent_data_init();
     else if (!strcmp(mode, "as_min"))
         parent_as_min();
+    else if (!strcmp(mode, "data_threads")) {
+        static const size_t limits[] = {3, 4, 8, 16, 32};
+        for (size_t l = 0; l < sizeof limits / sizeof limits[0]; l++)
+            for (int i = 0; i < 4; i++) {
+                int rc = run_child("child_data_threads", RLIMIT_DATA, limits[l] * MIB);
+                CHECK(rc == 0, "16 threads under RLIMIT_DATA = %zu MiB: %s %d", limits[l],
+                      rc < 0 ? "signal" : "exit", rc < 0 ? -rc : rc);
+            }
+    }
     else if (!strcmp(mode, "arenas_create"))
         parent_arenas_create();
     else if (!strcmp(mode, "narenas"))

@@ -788,13 +788,17 @@ ctests! {
     /// homes than the metadata region holds, are all served.
     /// `data_thread`: a thread whose arena cannot be built under
     /// `RLIMIT_DATA` gets NULL/`ENOMEM`, not an abort, and threads are
-    /// served once the limit is raised.
+    /// served once the limit is raised. `data_threads`: 16 threads
+    /// under a 3 to 32 MiB `RLIMIT_DATA` from the start make large
+    /// requests on every route and never abort.
     c_resource => [
         CTest { prog: "resource", args: &["data_init"], ..BASE },
         CTest { prog: "resource", args: &["as_min"], ..BASE },
         CTest { prog: "resource", args: &["arenas_create"], ..BASE },
+        CTest { prog: "resource", args: &["arenas_create"], conf: Some("narenas:1000"), ..BASE },
         CTest { prog: "resource", args: &["narenas"], conf: Some("narenas:1000"), ..BASE },
         CTest { prog: "resource", args: &["data_thread"], ..BASE },
+        CTest { prog: "resource", args: &["data_threads"], ..BASE },
     ];
     /// `tests/c/jemalloc_api.c`: the jemalloc and glibc
     /// extras under the real `.so`, every non-standard symbol reached through

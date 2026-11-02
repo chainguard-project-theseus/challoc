@@ -160,6 +160,12 @@ unsafe impl Send for Arena {}
 #[cfg(test)]
 pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+/// Automatic arenas not built yet that `arenas.create` keeps room for
+/// ([`Arenas::create`]): enough for the threads a program starts after
+/// creating its own arenas, without reserving a build for each of
+/// `narenas` (up to 4096) homes, which the arena-0 fallback serves.
+const AUTO_HEADROOM: u32 = 8;
+
 /// The most metadata (bump and reservation sides together) one arena
 /// build has taken so far ([`Arenas::build`]), per metadata allocator
 /// (keyed by its address: the process has one, the tests build many);
@@ -3667,6 +3673,20 @@ impl Arenas {
         proof {
             use_type_invariant(self);
         }
+        // No build the metadata region cannot finish: an arena's tables
+        // are reserved one after another and a reservation is never
+        // given back, so a build that ran out partway would strand the
+        // ones before, and a thread served from arena 0 would retry it
+        // on every slow path, draining what the huge allocator's tables
+        // need. Once a build has measured the cost, one that would not
+        // fit is not started (design 13.3, 14.1).
+        let cost = build_cost(&shared.meta);
+        if cost > 0 {
+            let (_, free) = meta_used_free(shared.meta.stats(Tracked(&mut *ord)));
+            if free < cost {
+                return None;
+            }
+        }
         let tracked mut slot = Held::<Arena> { perm: None };
         let mut p;
         let null = ptr::null_mut();
@@ -3801,9 +3821,10 @@ impl Arenas {
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
     /// metadata region is full, or when building it would leave the
-    /// region without room for the automatic arenas not built yet (as
-    /// much as the largest build so far took for each), so explicit
-    /// arenas never starve the threads' homes (design 13.3, 14.1). The
+    /// region without room for [`AUTO_HEADROOM`] automatic arenas not
+    /// built yet (as much as the largest build so far took for each), so
+    /// explicit arenas never take every thread's home (design 13.3, 14.1).
+    /// Homes past those are served from arena 0. The
     /// caller's record `fx` gets [`Change::Created`] when an arena is
     /// created.
     // The headroom test divides by a cost it checked is non-zero; Verus
@@ -3840,8 +3861,11 @@ impl Arenas {
         let cost = build_cost(&shared.meta);
         if cost > 0 {
             let (_, free) = meta_used_free(shared.meta.stats(Tracked(&mut under)));
-            // Room for this arena and every automatic one not built yet.
-            if free / cost <= self.unbuilt_auto() as usize {
+            // Room for this arena and for up to `AUTO_HEADROOM` automatic
+            // ones not built yet; homes past those share arena 0.
+            let unbuilt = self.unbuilt_auto();
+            let keep = if unbuilt < AUTO_HEADROOM { unbuilt } else { AUTO_HEADROOM };
+            if free / cost <= keep as usize {
                 return None;
             }
         }
