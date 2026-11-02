@@ -674,8 +674,10 @@ never touches `zeroed`. No zeroing entry point (`calloc`,
 slot: the slot is read-write memory of the committed run, which a linear
 overflow from a live slot below or a write through a stale pointer into
 a purged slab reaches without challoc seeing it (SECURITY.md, "Zeroing
-allocations are zero"). `calloc` zeroes the requested bytes, not the
-whole usable size.
+allocations are zero"; `tests/c/zero_trust.c` checks every zeroing
+entry point against overflows, underflows and stale writes into memory
+not yet handed out). `calloc` zeroes the requested bytes, not the whole
+usable size.
 
 `malloc_usable_size(p)` (and `sallocx`, and the size read of `realloc`
 and `rallocx`) classifies and tests the bit as `free` does, aborting on a
