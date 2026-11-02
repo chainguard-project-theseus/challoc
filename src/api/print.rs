@@ -2122,6 +2122,162 @@ mod tests {
         // glibc's malloc_stats just has to run and stay on stderr.
         malloc_stats();
     }
+
+    /// How long a report that re-enters the allocator may take; one that
+    /// has not finished by then is deadlocked.
+    const REENTRY_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// What a report's external call does in the re-entry tests: allocate
+    /// and free a small bin (16), a larger bin (3000), a slab-allocated
+    /// large class (64 KiB) and a huge run (4 MiB), collect the live
+    /// statistics (the locks a report's collection takes; `epoch` would
+    /// also take them, but it moves the process-wide epoch other tests
+    /// read), and print a nested report, which takes every lock the outer
+    /// one takes. The nested report's callback discards its text and does
+    /// not re-enter. A lock held only over a stretch in which no chunk is
+    /// flushed is not caught.
+    fn reenter() {
+        let live: Vec<*mut u8> = [16usize, 3000, 64 << 10, 4 << 20]
+            .iter()
+            .map(|&n| malloc(n, vstd::prelude::Tracked::assume_new()))
+            .collect();
+        for p in live {
+            assert!(!p.is_null());
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
+        }
+        let _ = stats::collect(crate::api::shared(), Tracked::assume_new());
+        unsafe extern "C" fn discard(_: *mut c_void, _: *const c_char) {}
+        malloc_stats_print(
+            WriteCallback(Some(discard)),
+            core::ptr::null_mut(),
+            core::ptr::null(),
+        );
+    }
+
+    /// A `write_cb` that counts its calls in the `AtomicUsize` behind
+    /// `opaque` and re-enters the allocator.
+    unsafe extern "C" fn reentering_cb(opaque: *mut c_void, _s: *const c_char) {
+        // SAFETY: every caller passes a live `AtomicUsize` as `opaque`.
+        let calls = unsafe { &*(opaque as *const core::sync::atomic::AtomicUsize) };
+        calls.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        reenter();
+    }
+
+    /// Run `report` on its own thread and fail unless it finishes within
+    /// [`REENTRY_BOUND`]. A deadlocked report keeps the lock it waits
+    /// behind, so every later test that needs that lock would hang too:
+    /// on a timeout the process aborts after saying why.
+    fn finishes(what: &str, report: impl FnOnce() + Send + 'static) {
+        use std::sync::mpsc::RecvTimeoutError;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            report();
+            let _ = tx.send(());
+        });
+        match rx.recv_timeout(REENTRY_BOUND) {
+            Ok(()) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                std::eprintln!(
+                    "{what} did not finish within {REENTRY_BOUND:?}: \
+                     an allocator lock held across its external call?"
+                );
+                std::process::abort();
+            }
+            Err(RecvTimeoutError::Disconnected) => panic!("{what} panicked"),
+        }
+    }
+
+    /// The run-time evidence for `call_back`'s premise that the calling
+    /// thread holds no allocator lock (`ord.top() == 0`): every call of a
+    /// text and a JSON report re-enters the allocator ([`reenter`]). A
+    /// lock a report takes, held across a call, would deadlock the call's
+    /// collection or nested report.
+    #[test]
+    fn a_report_callback_may_reenter_the_allocator() {
+        for opts in ["", "J"] {
+            finishes(&std::format!("malloc_stats_print({opts:?})"), move || {
+                let calls = core::sync::atomic::AtomicUsize::new(0);
+                let c = std::ffi::CString::new(opts).unwrap();
+                malloc_stats_print(
+                    WriteCallback(Some(reentering_cb)),
+                    &calls as *const _ as *mut c_void,
+                    c.as_ptr(),
+                );
+                assert!(
+                    calls.load(core::sync::atomic::Ordering::Relaxed) > 1,
+                    "the report fits one chunk: nothing was called mid-report"
+                );
+            });
+        }
+    }
+
+    /// As [`a_report_callback_may_reenter_the_allocator`], for
+    /// `write_file`'s `fwrite`: an unbuffered `fopencookie` stream whose
+    /// write function re-enters the allocator, so every `fwrite` the sink
+    /// makes calls it before returning. A block live in every bin class
+    /// gives the XML a `<size>` row per bin, so it outgrows the sink's
+    /// 1023-byte buffer and at least one write lands mid-report.
+    #[test]
+    fn a_malloc_info_stream_may_reenter_the_allocator() {
+        /// glibc's `cookie_io_functions_t`.
+        #[repr(C)]
+        struct CookieIo {
+            read: Option<unsafe extern "C" fn(*mut c_void, *mut c_char, usize) -> isize>,
+            write: Option<unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> isize>,
+            seek: Option<unsafe extern "C" fn(*mut c_void, *mut i64, c_int) -> c_int>,
+            close: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+        }
+        unsafe extern "C" {
+            fn fopencookie(
+                cookie: *mut c_void,
+                mode: *const c_char,
+                io: CookieIo,
+            ) -> *mut libc::FILE;
+        }
+        unsafe extern "C" fn write(cookie: *mut c_void, _buf: *const c_char, n: usize) -> isize {
+            // SAFETY: the cookie is the test's `AtomicUsize`.
+            unsafe { reentering_cb(cookie, core::ptr::null()) };
+            n as isize
+        }
+        finishes("malloc_info", || {
+            let live: Vec<*mut u8> = (0..NBINS)
+                .map(|c| malloc(CLASSES[c].size(), vstd::prelude::Tracked::assume_new()))
+                .collect();
+            let calls = core::sync::atomic::AtomicUsize::new(0);
+            let io = CookieIo {
+                read: None,
+                write: Some(write),
+                seek: None,
+                close: None,
+            };
+            // SAFETY: `calls` outlives the stream, which is closed below;
+            // the mode is a C string.
+            let f = unsafe { fopencookie(&calls as *const _ as *mut c_void, c"w".as_ptr(), io) };
+            assert!(!f.is_null());
+            // SAFETY: `f` is open and has not been written to.
+            let unbuffered = unsafe { libc::setvbuf(f, core::ptr::null_mut(), libc::_IONBF, 0) };
+            assert_eq!(unbuffered, 0);
+            assert_eq!(malloc_info(0, f, Tracked::assume_new()), 0);
+            let during = calls.load(core::sync::atomic::Ordering::Relaxed);
+            // SAFETY: `f` is the open stream from `fopencookie`.
+            unsafe { libc::fclose(f) };
+            for p in live {
+                free(
+                    p,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
+            }
+            assert!(
+                during > 1,
+                "the XML fits one chunk: nothing was written mid-report"
+            );
+        });
+    }
 }
 
 /// Kani harnesses for this file's seams that Kani can run
