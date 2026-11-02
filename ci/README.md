@@ -34,23 +34,26 @@ require); each file is a workflow:
 
 - `lint.yaml`: rustfmt, clippy (`-D warnings`, the release library and
   every target, quantum 16 and 8), the `ctest-cc.sh` quantum-cache race
-  test (`tests/ctest-cc-race.sh`), the loom models, shellcheck, the
-  codegen-fncmp fixtures, the Kani bool-comparison lint
+  test (`tests/ctest-cc-race.sh`), the loom models (the slow count model
+  in `loom-count`, on changes to `tests/loom/` or the code it copies),
+  shellcheck, the codegen-fncmp fixtures, the Kani bool-comparison lint
   (`ci/kani-boolcmp-test.sh`), the bench harness's unit tests (`make
   bench-unit`), msrv-build (1.94).
 - `test.yaml`: `linux` {x86_64, aarch64} x quantum {16, 8}, `privileged`
   per arch (`hosted-<arch>-*` cells in `expected-skips/`).
 - `floor.yaml`: `floor` (AlmaLinux 9's 5.14, both arches, default and
-  privileged containers) and the advisory `tripwire` (Debian 11's 5.10),
+  privileged containers) and the advisory `tripwire` (Debian 11's 5.10;
+  off until its bench image is rebuilt, #463, see `floor.yaml`),
   on GCE VMs through `cb launch`; on pushes to main only (postsubmit), so
   a change that raises the floor shows up after it lands, not before.
 - `verus.yaml`: `verus` and `verus-arm64`, the seam ledger, the proofs at quantum 16 and 8, and the coverage floor; `verus-main` the same on main.
 - `isla.yaml`: `isla` (`arm64-q16`, `arm64-q8`), `make isla` (`verus/ISLA.md`) natively on arm64 at each quantum: the asm templates and the Isla seams against the ledger, then the aarch64 Isla jobs and negative controls; on pull requests that change `src/sys/**`, `src/api/cxx.rs`, `src/config.rs`, `src/rseq.rs`, the build, the Isla harness, the ledger overrides or `isla.yaml` itself. `isla-main` (`arm64-q16`, `arm64-q8`, `amd64-q16`, `amd64-q8`) runs `make isla` on both architectures after every landing on main and gates nothing; only its amd64 legs run the x86_64 half, which fetches sail-x86-from-acl2 from github.com to build the x86 model, so the presubmit `isla` needs no github.com.
 - `codegen.yaml`: the advisory `codegen` and `codegen-arm64`, the machine-code diff from the merge base (`ci/codegen.sh`).
-- `kani.yaml`: `kani` (`q16`, `q8`), `cargo kani` over every harness (`src/kani/` and the `kani_*` modules of other files; `verus/README.md`, "Kani") at each quantum, on x86_64; on pull requests that change `src/kani/**`, `src/vspec/**`, a file in its `changed:` list or `kani.yaml` itself; `kani-main` (`q16`, `q8`), the same run after every landing on main, which covers the `kani_*` modules in hot files (`heap/cache.rs`, `purge.rs`); and `kani-ignoring` (`q16-1` to `q8-4`), the same harnesses after every landing, one at a time in regular format in 4 shards per quantum (`ci/kani-regular.sh`), failing on CBMC's `warning: ignoring`.
+- `kani.yaml`: `kani` (`q16`, `q8`), `cargo kani` over every harness (`src/kani/` and the `kani_*` modules of other files; `verus/README.md`, "Kani") at each quantum, on x86_64; on pull requests that change `src/kani/**`, `src/vspec/**`, a file in its `changed:` list or `kani.yaml` itself; and `kani-ignoring` (`q16-1` to `q8-4`), every harness after every landing on main, which covers the `kani_*` modules in hot files (`heap/cache.rs`, `purge.rs`), one at a time in regular format in 4 shards per quantum (`ci/kani-regular.sh`), failing on a harness that does not verify or on CBMC's `warning: ignoring`.
 
 On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
---check <check>` for any pushed commit), until Checks has a schedule:
+--check <check>` for any pushed commit), until Checks schedules this
+repository (`extended.yaml`'s header says why it does not yet):
 
 - `extended.yaml`: `fuzz` (50M operations: default, hardened, q8),
   `oscillate` (the 600 s soak), `check-needed`, `consumers` (the Valkey and

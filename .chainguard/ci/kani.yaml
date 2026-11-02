@@ -44,11 +44,11 @@ checks:
     # rarely touch, or this file; other pull requests do not plan the check.
     # The files most proof pull requests touch (src/heap/cache.rs,
     # src/purge.rs, and any later kani_* module in a hot file) are covered by
-    # kani-main below instead, after each landing, so presubmit doesn't pay
-    # for Kani on every proof round. Items outside both (src/stats.rs,
+    # kani-ignoring below instead, after each landing, so presubmit doesn't
+    # pay for Kani on every proof round. Items outside both (src/stats.rs,
     # src/sys/abort.rs, the zero axioms of src/class/table.rs, the class
     # table in src/layout/, the enums src/kani/eq.rs matches) are checked
-    # by kani-main too.
+    # by kani-ignoring too.
     when:
       changed:
         - "src/kani/**"
@@ -63,14 +63,14 @@ checks:
         - "src/slab.rs"
         - "src/sys/cgroup.rs"
         - ".chainguard/ci/kani.yaml"
-    foreach: &kani-quanta
+    foreach:
       - {name: q16, vars: {QUANTUM: "16"}}
       - {name: q8, vars: {QUANTUM: "8"}}
     resources: xlarge-amd64
     timeout: 40m
     network: &kani-net
       egress: [index.crates.io, static.crates.io]
-    steps: &kani-steps
+    steps:
       - name: fetch the locked dependencies
         cmd: [cargo, fetch, --locked]
       - name: harnesses
@@ -82,23 +82,11 @@ checks:
             --output-format terse -j 4
             --no-default-features --features "quantum${QUANTUM:?}"
 
-  # Every harness, after each landing on main: covers the kani_* modules in
-  # files the presubmit trigger leaves out, and the checked items outside
-  # any listed path. It gates nothing; a failure here points at the commit
-  # that broke a harness.
-  kani-main:
-    description: >-
-      cargo kani over every harness on main, at quantum 16 and at quantum 8,
-      after each landing.
-    trigger: [postsubmit]
-    foreach: *kani-quanta
-    resources: xlarge-amd64
-    timeout: 40m
-    network: *kani-net
-    steps: *kani-steps
-
-  # Every harness again, one at a time in regular format, after each
-  # landing on main: Kani 0.68.0 with CBMC 6.11.0 leaves `<`, `<=`, `>` and
+  # Every harness, one at a time in regular format, after each landing on
+  # main: covers the kani_* modules in files the presubmit trigger leaves
+  # out and the checked items outside any listed path, and fails when a
+  # harness does not verify (ci/kani-regular.sh exits with cargo kani's
+  # status). Kani 0.68.0 with CBMC 6.11.0 leaves `<`, `<=`, `>` and
   # `>=` on two non-constant bools unconstrained (CBMC prints
   # `warning: ignoring >=` and the harness can pass vacuously), and the
   # terse output `-j` requires hides that warning. ci/kani-regular.sh fails

@@ -354,7 +354,9 @@ tags = ["exp-floor"]
 # The 5.10 tripwire below the 5.14 floor (the `tripwire` check of
 # .chainguard/ci/floor.yaml): Debian 11's 5.10, default container. Debian
 # 11 is past its end of life and GCE has removed the debian-11 family, so
-# the cell pins the last image (deprecated, still bootable).
+# the cell pins the last image (deprecated, still bootable). The image
+# is stale (it cannot reach crates.io), so the `tripwire` check is off
+# until it is rebuilt (#463, floor.yaml).
 [cell.fl-deb11-x86]
 shape = "floor-amd64"
 host = { image = "debian-11-bullseye-v20260831", project = "debian-cloud" }

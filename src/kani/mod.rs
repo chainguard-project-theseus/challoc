@@ -10,20 +10,20 @@
 //! "Status"). A few harnesses (`misc::option_copied`,
 //! `slice::slice_reverse`) cross-check a vstd specification that verified
 //! code relies on and the ledger does not list; no status cites them.
-//! `.chainguard/ci/kani.yaml` runs them all, under both quanta, in two
-//! checks. `kani` runs on pull requests that change `src/kani/`,
-//! `src/vspec/`, a file in its `changed:` list (the files with a `kani_*`
-//! module that proof lanes rarely touch) or `kani.yaml`. `kani-main` runs
-//! after every landing on main and covers the rest: the `kani_*` modules in
-//! files most proof pull requests touch (`heap/cache.rs`, `heap/flush.rs`,
-//! `heap/mod.rs`, `heap/others.rs`, `heap/paths.rs`, `arena.rs`, `purge.rs`,
-//! `api/mallctl.rs`, `api/mod.rs` and `layout/mod.rs`), and the checked items
-//! outside any listed path
+//! `.chainguard/ci/kani.yaml` runs them all, under both quanta. `kani`
+//! runs on pull requests that change `src/kani/`, `src/vspec/`, a file in
+//! its `changed:` list (the files with a `kani_*` module that proof lanes
+//! rarely touch) or `kani.yaml`. `kani-ignoring` runs every harness
+//! after every landing on main and covers the rest: the `kani_*`
+//! modules in files most proof pull requests touch (`heap/cache.rs`,
+//! `heap/flush.rs`, `heap/mod.rs`, `heap/others.rs`, `heap/paths.rs`,
+//! `arena.rs`, `purge.rs`, `api/mallctl.rs`, `api/mod.rs` and
+//! `layout/mod.rs`), and the checked items outside any listed path
 //! (`stats.rs`'s `fig_*`, `sys/abort.rs`, the zero axioms of
 //! `class/table.rs`, the class table, the enums `eq.rs` matches). The list is
 //! kept by hand: a `kani_*` module added to a rarely changed file belongs in
 //! `changed:`; one added to a hot file, one most proof pull requests
-//! touch (today the ten files above), is left to `kani-main`, so
+//! touch (today the ten files above), is left to `kani-ignoring`, so
 //! a change that breaks it is caught after it lands, not before.
 //!
 //! The harnesses of items with private parts sit next to them, in a

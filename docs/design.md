@@ -15,6 +15,9 @@ them as "design N".
   2.44 or newer, on host kernels 5.14 (RHEL 9) and newer. Kernel 5.10 is
   kept as a CI tripwire, not a promise: it must keep working, with
   reduced features, so a regression shows up before it reaches the floor.
+  (The `tripwire` check is off until its Debian 11 bench image is
+  rebuilt, #463; `.chainguard/ci/floor.yaml` says why and how to restore it.
+  Until then nothing checks 5.10.)
   Other libcs, distributions and operating systems are not supported.
 - Built as a `no_std` Rust crate with `panic = "abort"`, producing a
   `cdylib` and a `staticlib`. The crate never allocates through anything
@@ -1784,7 +1787,9 @@ table is decided at build time.
 | Model-checked protocol (`cargo test model::`, `src/model/`) | the unit test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero` and purge steps of `class/`, memoised on the whole state, with the invariants of sections 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol; replaying the pre-fix step order finds the `calloc` race of section 5 | none needed |
 
 Below the floor nothing is promised, but kernel 5.10 is exercised in CI
-as a tripwire: every row above degrades to its fallback there.
+as a tripwire: every row above degrades to its fallback there. (The
+`tripwire` check is off until its Debian 11 bench image is rebuilt,
+#463; until then nothing checks 5.10.)
 
 ### 17.1 Transparent huge pages
 

@@ -3,10 +3,13 @@
 # (Valkey and Ruby with their suites). Each task is ci/extended.sh TASK in
 # the dev container, on both architectures.
 #
-# Checks has no scheduled trigger yet, so these run only on request: the
-# label ci/run:<check> on a pull request, or `chainctl checks run . --check
-# <check>` for any pushed commit (main included). When Checks gains a
-# schedule they go back to nightly.
+# These run only on request: the label ci/run:<check> on a pull request,
+# or `chainctl checks run . --check <check>` for any pushed commit (main
+# included). Checks has a scheduled trigger (`trigger: cron` with
+# `schedule:`), but it fires only for repositories on the
+# schedule_repositories list in mono's Checks IaC
+# (ai-cicd/sandbox/iac/github), and this one is not on it. Once it is,
+# these go back to nightly.
 #
 # A Checks run is limited to 50 minutes, so no check here may take longer.
 #
