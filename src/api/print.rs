@@ -1159,7 +1159,13 @@ fn json_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts) -> fmt
     writeln!(out, "{{")?;
     writeln!(out, "\t\"jemalloc\": {{")?;
     writeln!(out, "\t\t\"version\": \"{}\",", super::mallctl::VERSION)?;
-    writeln!(out, "\t\t\"implementation\": \"challoc\",")?;
+    // The comma only when a member follows: `g` and `a` together leave
+    // `implementation` the object's last member.
+    writeln!(
+        out,
+        "\t\t\"implementation\": \"challoc\"{}",
+        if o.no_general && o.no_arenas { "" } else { "," }
+    )?;
     if !o.no_general {
         json_general(out, shared, &snap, !o.no_arenas)?;
     }
@@ -2100,6 +2106,9 @@ mod tests {
             xml.matches("<heap nr=").count(),
             xml.matches("</heap>").count()
         );
+        if let Err(e) = xml_check(&xml) {
+            panic!("malloc_info is not well-formed XML: {e}\n{xml}");
+        }
         assert_eq!(malloc_info(1, f, Tracked::assume_new()), -1);
         // SAFETY: `__errno_location` returns this thread's `errno`.
         assert_eq!(unsafe { *libc::__errno_location() }, 22);
@@ -2277,6 +2286,316 @@ mod tests {
                 "the XML fits one chunk: nothing was written mid-report"
             );
         });
+    }
+
+    /// A strict JSON (RFC 8259) parser that only validates: `Err` names
+    /// the byte offset of the first error. Enough for the reports, which
+    /// a consumer (tikv-jemalloc-ctl's users, `jq`) parses as JSON.
+    fn json_check(text: &str) -> Result<(), String> {
+        struct P<'a> {
+            b: &'a [u8],
+            i: usize,
+        }
+        impl P<'_> {
+            fn err<T>(&self, what: &str) -> Result<T, String> {
+                let ctx = &self.b[self.i.saturating_sub(40)..self.b.len().min(self.i + 20)];
+                Err(std::format!(
+                    "{what} at byte {}: ...{}...",
+                    self.i,
+                    String::from_utf8_lossy(ctx)
+                ))
+            }
+            fn ws(&mut self) {
+                while self.i < self.b.len() && b" \t\n\r".contains(&self.b[self.i]) {
+                    self.i += 1;
+                }
+            }
+            fn eat(&mut self, c: u8) -> bool {
+                self.ws();
+                if self.b.get(self.i) == Some(&c) {
+                    self.i += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            fn value(&mut self) -> Result<(), String> {
+                self.ws();
+                match self.b.get(self.i) {
+                    Some(b'{') => {
+                        self.i += 1;
+                        if self.eat(b'}') {
+                            return Ok(());
+                        }
+                        loop {
+                            self.ws();
+                            if self.b.get(self.i) != Some(&b'"') {
+                                return self.err("expected a key");
+                            }
+                            self.string()?;
+                            if !self.eat(b':') {
+                                return self.err("expected ':'");
+                            }
+                            self.value()?;
+                            if self.eat(b'}') {
+                                return Ok(());
+                            }
+                            if !self.eat(b',') {
+                                return self.err("expected ',' or '}'");
+                            }
+                        }
+                    }
+                    Some(b'[') => {
+                        self.i += 1;
+                        if self.eat(b']') {
+                            return Ok(());
+                        }
+                        loop {
+                            self.value()?;
+                            if self.eat(b']') {
+                                return Ok(());
+                            }
+                            if !self.eat(b',') {
+                                return self.err("expected ',' or ']'");
+                            }
+                        }
+                    }
+                    Some(b'"') => self.string(),
+                    Some(b't') => self.word("true"),
+                    Some(b'f') => self.word("false"),
+                    Some(b'n') => self.word("null"),
+                    Some(b'-' | b'0'..=b'9') => self.number(),
+                    _ => self.err("expected a value"),
+                }
+            }
+            fn word(&mut self, w: &str) -> Result<(), String> {
+                if self.b[self.i..].starts_with(w.as_bytes()) {
+                    self.i += w.len();
+                    Ok(())
+                } else {
+                    self.err("bad literal")
+                }
+            }
+            fn string(&mut self) -> Result<(), String> {
+                self.i += 1;
+                while let Some(&c) = self.b.get(self.i) {
+                    self.i += 1;
+                    match c {
+                        b'"' => return Ok(()),
+                        b'\\' => match self.b.get(self.i) {
+                            Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => {
+                                self.i += 1
+                            }
+                            Some(b'u') => {
+                                let hex = self.b.get(self.i + 1..self.i + 5);
+                                if !hex.is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit)) {
+                                    return self.err("bad \\u escape");
+                                }
+                                self.i += 5;
+                            }
+                            _ => return self.err("bad escape"),
+                        },
+                        0..=0x1f => return self.err("control character in a string"),
+                        _ => {}
+                    }
+                }
+                self.err("unterminated string")
+            }
+            fn number(&mut self) -> Result<(), String> {
+                let digits = |p: &mut Self| {
+                    let s = p.i;
+                    while p.b.get(p.i).is_some_and(u8::is_ascii_digit) {
+                        p.i += 1;
+                    }
+                    p.i > s
+                };
+                if self.b[self.i] == b'-' {
+                    self.i += 1;
+                }
+                if self.b.get(self.i) == Some(&b'0') {
+                    self.i += 1;
+                } else if !digits(self) {
+                    return self.err("bad number");
+                }
+                if self.b.get(self.i) == Some(&b'.') {
+                    self.i += 1;
+                    if !digits(self) {
+                        return self.err("bad fraction");
+                    }
+                }
+                if matches!(self.b.get(self.i), Some(b'e' | b'E')) {
+                    self.i += 1;
+                    if matches!(self.b.get(self.i), Some(b'+' | b'-')) {
+                        self.i += 1;
+                    }
+                    if !digits(self) {
+                        return self.err("bad exponent");
+                    }
+                }
+                Ok(())
+            }
+        }
+        let mut p = P {
+            b: text.as_bytes(),
+            i: 0,
+        };
+        p.value()?;
+        p.ws();
+        if p.i != p.b.len() {
+            return p.err("trailing bytes after the document");
+        }
+        Ok(())
+    }
+
+    /// A minimal XML well-formedness check for `malloc_info`'s output:
+    /// one root element, every tag closed in order, attributes
+    /// `name="value"` with no `<` or `&` in a value, no stray text.
+    fn xml_check(text: &str) -> Result<(), String> {
+        let mut stack: Vec<&str> = Vec::new();
+        let mut rest = text;
+        let mut roots = 0;
+        loop {
+            let t = rest.trim_start();
+            if t.is_empty() {
+                break;
+            }
+            if !t.starts_with('<') {
+                return Err(std::format!("text outside a tag: {:.40}", t));
+            }
+            let end = t.find('>').ok_or("unterminated tag")?;
+            let tag = &t[1..end];
+            rest = &t[end + 1..];
+            if let Some(name) = tag.strip_prefix('/') {
+                match stack.pop() {
+                    Some(open) if open == name => {}
+                    other => return Err(std::format!("</{name}> closes {other:?}")),
+                }
+                continue;
+            }
+            let (body, empty) = match tag.strip_suffix('/') {
+                Some(b) => (b, true),
+                None => (tag, false),
+            };
+            let (name, mut attrs) = body.split_once(' ').unwrap_or((body, ""));
+            if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+                return Err(std::format!("bad element name in <{tag}>"));
+            }
+            loop {
+                attrs = attrs.trim_start();
+                if attrs.is_empty() {
+                    break;
+                }
+                let (key, v) = attrs
+                    .split_once("=\"")
+                    .ok_or(std::format!("bad attribute in <{tag}>"))?;
+                if key.is_empty() || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+                    return Err(std::format!("bad attribute name in <{tag}>"));
+                }
+                let close = v
+                    .find('"')
+                    .ok_or(std::format!("unterminated attribute in <{tag}>"))?;
+                if v[..close].contains(['<', '&']) {
+                    return Err(std::format!("unescaped character in <{tag}>"));
+                }
+                attrs = &v[close + 1..];
+                if !attrs.is_empty() && !attrs.starts_with(' ') {
+                    return Err(std::format!("attributes not separated in <{tag}>"));
+                }
+            }
+            if stack.is_empty() {
+                roots += 1;
+            }
+            if !empty {
+                stack.push(name);
+            } else if stack.is_empty() {
+                return Err("empty root element".into());
+            }
+        }
+        if !stack.is_empty() {
+            return Err(std::format!("unclosed {stack:?}"));
+        }
+        if roots != 1 {
+            return Err(std::format!("{roots} root elements"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn json_and_xml_checkers_reject_what_they_should() {
+        assert!(json_check("{\"a\": [1, -2.5e3, true, null, \"x\\n\"], \"b\": {}}").is_ok());
+        for bad in [
+            "{\"a\": 1,}",
+            "[1,]",
+            "{\"a\" 1}",
+            "{\"a\": 01}",
+            "{} {}",
+            "{\"a\": \"\t\"}",
+            "{",
+        ] {
+            assert!(json_check(bad).is_err(), "{bad}");
+        }
+        assert!(xml_check("<m v=\"1\">\n<a x=\"2\"/>\n</m>\n").is_ok());
+        for bad in [
+            "<m><a></m></a>",
+            "<m>",
+            "<m/>",
+            "<m x=1></m>",
+            "<m></m><n></n>",
+            "<m>t</m>",
+        ] {
+            assert!(xml_check(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Every option string jemalloc's `malloc_stats_print` defines, with
+    /// and without `J`: the letters challoc honours (`g`, `a`, `b`) in
+    /// every combination, each with none, each one and all of the letters
+    /// it accepts without effect (`m`, `d`, `l`, `x`, `e`, `h`). Every
+    /// `J` report parses as JSON (`g` with `a` once left a trailing comma
+    /// after `implementation`); every text report ends with the end line
+    /// and starts with the begin line exactly when `g` is absent.
+    #[test]
+    fn every_option_string_gives_a_well_formed_report() {
+        let live: Vec<*mut u8> = (0..20)
+            .map(|i| malloc(64 << (i % 8), vstd::prelude::Tracked::assume_new()))
+            .collect();
+        let inert = ["", "m", "d", "l", "x", "e", "h", "mdlxeh"];
+        for mask in 0..8u32 {
+            let mut honoured = String::new();
+            for (bit, c) in ['g', 'a', 'b'].into_iter().enumerate() {
+                if mask & (1 << bit) != 0 {
+                    honoured.push(c);
+                }
+            }
+            for extra in inert {
+                for json in [true, false] {
+                    let opts = std::format!("{}{honoured}{extra}", if json { "J" } else { "" });
+                    let text = report(&opts);
+                    if json {
+                        if let Err(e) = json_check(&text) {
+                            panic!("malloc_stats_print({opts:?}) is not JSON: {e}\n{text}");
+                        }
+                    } else {
+                        assert!(
+                            text.ends_with("--- End jemalloc statistics ---\n"),
+                            "{opts:?}: {text}"
+                        );
+                        assert_eq!(
+                            text.starts_with("___ Begin jemalloc statistics ___\n"),
+                            !honoured.contains('g'),
+                            "{opts:?}: {text}"
+                        );
+                    }
+                }
+            }
+        }
+        for p in live {
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
+        }
     }
 }
 
