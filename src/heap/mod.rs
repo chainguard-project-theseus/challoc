@@ -493,7 +493,8 @@ pub open spec fn slot_start(p: *mut u8) -> bool {
 /// aborts on the exact paths (`SlabTable::check_located` and
 /// `check_live` test the bit at run time); the sized fast path
 /// (`sdallocx`, `free_sized`) pushes a slot start of the hinted class
-/// without the bit test, and the flush catches a stale one. A page start
+/// without the bit test, and leaves a stale one to a flush, which catches
+/// it only if the slot is still unclaimed then. A page start
 /// that is not a live run start aborts in `Huge::free_run`. That a slot
 /// start the program passes was allocated to it and not freed since is
 /// the C caller's contract.

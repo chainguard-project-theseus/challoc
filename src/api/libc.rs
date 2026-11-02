@@ -813,8 +813,9 @@ fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8
 /// (and alignment) name, `class_for(size, align)`, or `None` for a huge
 /// size. On the fast path the hint replaces the slab descriptor's bit test
 /// (design 6.3): a slot whose class matches is pushed at once, so an
-/// invalid or double free through this path is caught when the cache
-/// flushes it, not at the call; a hint that does not match aborts
+/// invalid or double free through this path is left to a flush, which
+/// catches it only if the slot is still unclaimed then, not at the call;
+/// a hint that does not match aborts
 /// ([`heap::hint_ok`] of every non-null `p` it returns for). C holds the
 /// token of the block it frees ([`heap::live::axiom_c_claim`]).
 #[inline(always)]

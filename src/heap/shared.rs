@@ -3595,9 +3595,11 @@ impl Shared {
     /// slot-start test, and the guard test. Neither the slab
     /// descriptor nor the class table line is touched: the bit test that
     /// makes plain `free` exact is left to the flush, and so is the
-    /// watermark. A slot start in a slab no arena has been handed, or in
-    /// a handed-out slab its arena has not committed (the cursor sits
-    /// under the class lock), is caught only if a flush reaches it while
+    /// watermark. A slot start no refill has claimed (most often an
+    /// unclaimed slot of an open, committed slab, writable in every class;
+    /// also one in a slab no arena has been handed, or in a handed-out slab
+    /// its arena has not committed, the cursor sitting under the class
+    /// lock) is caught only if a flush reaches it while
     /// the slot is still unclaimed (`SlabTable::owner` on a slab past the
     /// watermark, `release_owned` on a `Fresh` one); until then the slot
     /// can be popped by `malloc` (the trade design 6.3 records). Whether

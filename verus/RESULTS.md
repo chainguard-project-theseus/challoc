@@ -161,7 +161,7 @@ These heap-exploitation techniques have no CVE of their own. Each turns an appli
 
 These stated limits and open work remain on main. [Issue #397](https://github.com/wolfi-dev/challoc/issues/397) tracks the open work.
 
-- Double and invalid frees — stated limit: the proofs assume the C contract. [hardening.md](../docs/hardening.md#1-invalid-and-double-frees) documents that a second free of a slot still in the thread cache goes undetected if a `malloc` pops one copy before the flush; `double_free_scan` narrows that window by checking a freed slot against the four most recently cached entries.
+- Double and invalid frees — stated limit: the proofs assume the C contract. [hardening.md](../docs/hardening.md#1-invalid-and-double-frees) documents that a second free of a slot still held in a thread cache is left to a flush, which catches it only if the slot is still unclaimed then (a `malloc` pop or any refill in between makes it live twice); `double_free_scan` narrows that window by checking a freed slot against the four most recent entries of the cache it is pushed to.
 - Use after free with same-class reuse — stated limit: challoc has no quarantine or type isolation, by design.
 - A linear overflow off a block — open work, #397’s “Overflow reach”: separation from metadata and other blocks is proved, but no theorem says an overflow faults before reaching them.
 - Allocator state after `fork` and at thread exit — open work: lock state after `fork` rests on `axiom_fork_entry`, tracked under #397’s “Theorem 33”; thread exit is #397’s “Thread exit.”

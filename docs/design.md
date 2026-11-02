@@ -585,8 +585,8 @@ entry points in `api/` are built from them.
    defaults to false, so a CPU with pointer authentication is no
    exception), tested once; `FREE_ROUTE` alone is the second compare.
    `PUSH_SCAN`
-   (`double_free_scan`): compare `p` against the top four cache entries
-   and abort on a match, a double free whose first copy is still cached
+   (`double_free_scan`): compare `p` against the top four entries of the
+   cache this free pushes to and abort on a match, a double free whose first copy is still cached
    (the sized push does the same). `PUSH_ZERO` (`zero_on_free`): `memset`
    the slot's class-size bytes (a huge free clears the run's usable
    bytes). `PUSH_PAC` (`pac_pointers:true` on an arm64 host with PAC):

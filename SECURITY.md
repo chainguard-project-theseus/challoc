@@ -97,7 +97,7 @@ These hold on every supported host with the default configuration:
 - **Double frees still in a thread cache.** A second free of a slot
   still held in any thread's cache is not checked at the call. A flush
   catches it only if the slot is still unclaimed when the flush reaches
-  the copy: if a `malloc` or another thread's refill takes the slot
+  the copy: if a `malloc` or any refill takes the slot
   first, it is live twice. `double_free_scan:true` narrows this window
   at the call, at a measured cost.
 - **Freed pointers still in the thread cache.** A slot keeps its live
