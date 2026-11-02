@@ -75,7 +75,7 @@ when the item's body cannot change it (a token it does not touch,
 an invariant it cannot open, the contents of an immutable static);
 one about a real pointer's provenance, which Kani cannot observe, does
 not. `discharged (Kani: <harness path>)` names the Kani harnesses that
-do so, which `.chainguard/ci/kani.yaml` runs at both quanta (`kani-main`
+do so, which `.chainguard/ci/kani.yaml` runs at both quanta (`kani-ignoring`
 runs those in the hot files `src/kani/mod.rs` lists, after a change
 lands; `seams.sh --check` fails when a path names no `#[kani::proof]`
 fn). `discharged (const assert: <label> in <file>)` names a top-level

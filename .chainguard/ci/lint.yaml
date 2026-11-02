@@ -3,6 +3,8 @@
 # test, the loom models, shellcheck, the codegen-fncmp fixtures, the Kani
 # bool-comparison lint and the bench harness's unit tests all block.
 # msrv-build builds the shipped cdylib with the rust-version toolchain.
+# loom-count, the slow loom count model, blocks too but runs only on pull
+# requests that change what it models.
 # The toolchains run in the guest directly, no container.
 version: 1
 
@@ -59,8 +61,9 @@ checks:
       The loom models of the atomics protocols (tests/loom, its own crate):
       cargo fmt --check, then tests/loom/run.sh, which checks Cargo.lock
       and runs cargo test --release under loom 0.7.2 with the DPOR patch
-      (tests/loom/loom-0.7.2-dpor.patch). Worth a look on any change to
-      the atomics a model copies (tests/loom/tests/pins.rs).
+      (tests/loom/loom-0.7.2-dpor.patch); the slow count model is ignored
+      here and runs in loom-count. Worth a look on any change to the
+      atomics a model copies (tests/loom/tests/pins.rs).
     resources: medium
     timeout: 20m
     network: *crates
@@ -69,6 +72,35 @@ checks:
         cmd: [cargo, fmt, --check, --manifest-path, tests/loom/Cargo.toml]
       - name: loom models
         cmd: [sh, tests/loom/run.sh]
+
+  # count::loom_count_bind_assign_unbind took about 6 of the loom check's
+  # 7 minutes, so it is #[ignore]d there and runs here, on pull requests
+  # that change the loom crate or the code the count model copies: the
+  # Arenas counts of src/arena.rs, vspec/count.rs's wrappers, the RawLock
+  # of src/lock.rs (tests/loom/src/lock.rs), and src/heap/mod.rs, whose
+  # try_rehome calls try_bind_idle without a lock (tests/loom/src/count.rs,
+  # tests/loom/tests/pins.rs). The pins in `loom` still fail on every pull
+  # request that changes a copied line. `--ignored` runs every ignored
+  # model, so a later slow one belongs in this list's paths too.
+  loom-count:
+    description: >-
+      The loom count model with the shipped orderings
+      (count::loom_count_bind_assign_unbind, ignored in the loom check):
+      tests/loom/run.sh -- --ignored, under loom 0.7.2 with the DPOR patch.
+      Runs on pull requests that change tests/loom/ or the arena counts,
+      lock and wrappers the model copies.
+    when:
+      changed:
+        - "tests/loom/**"
+        - "src/arena.rs"
+        - "src/lock.rs"
+        - "src/vspec/count.rs"
+        - "src/heap/mod.rs"
+        - ".chainguard/ci/lint.yaml"
+    resources: medium
+    timeout: 20m
+    network: *crates
+    cmd: [sh, tests/loom/run.sh, --, --ignored]
 
   shellcheck:
     description: >-

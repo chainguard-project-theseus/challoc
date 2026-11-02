@@ -47,12 +47,21 @@ checks:
         - "*.googleapis.com"
     cmd: [bash, ci/floor.sh, "fl-alma9-x86,fl-alma9-x86-p,fl-alma9-arm,fl-alma9-arm-p"]
 
+  # Off: it failed on every landing (68 of 68; the Checks log ends at "cb
+  # launch: no samples came back") because the Debian 11 bench image it
+  # boots is stale and cannot reach crates.io, so it said nothing about
+  # the 5.10 kernel. `when: {requested: true}` on a postsubmit-only check
+  # turns it off outright: a postsubmit run carries no requested set, and
+  # `chainctl checks run` plans presubmit checks only. Once the image is
+  # rebuilt (#463), delete the `when:` line below to turn it back on.
   tripwire:
+    when: {requested: true}
     advisory: true
     description: >-
       make test and make fuzz on Debian 11's 5.10 kernel, below the
       supported floor, on a GCE VM launched by cb. Informational: a break
-      here is noticed, not a promise.
+      here is noticed, not a promise. Off until its bench image is rebuilt
+      (#463; see the comment above it in floor.yaml).
     trigger: [postsubmit]
     identity: challoc-gce
     vars: *floor-vars

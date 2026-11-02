@@ -1,7 +1,7 @@
 //! The `kani` presubmit check (`.chainguard/ci/kani.yaml`) runs only on
-//! pull requests that change a path in its `changed:` list; `kani-main`
+//! pull requests that change a path in its `changed:` list; `kani-ignoring`
 //! runs every harness after each landing. `src/kani/mod.rs` documents the
-//! files left to `kani-main` alone (the hot files most proof pull requests
+//! files left to `kani-ignoring` alone (the hot files most proof pull requests
 //! touch, and the checked items outside any listed path). Both lists are
 //! kept by hand, so a `kani_*` module added to a file in neither, or a
 //! seam a ledger discharges with Kani in such a file, would break unseen
@@ -54,8 +54,8 @@ fn changed_list(yaml: &str) -> Vec<String> {
     list
 }
 
-/// The files `src/kani/mod.rs`'s doc leaves to `kani-main`: every
-/// backquoted `*.rs` between "`kani-main` runs" and "The list is kept by
+/// The files `src/kani/mod.rs`'s doc leaves to `kani-ignoring`: every
+/// backquoted `*.rs` between "`kani-ignoring` runs" and "The list is kept by
 /// hand", under `src/`.
 fn hot_list(doc: &str) -> Vec<String> {
     let text: String = doc
@@ -64,9 +64,9 @@ fn hot_list(doc: &str) -> Vec<String> {
         .flat_map(str::split_whitespace)
         .collect::<Vec<_>>()
         .join(" ");
-    let start = text
-        .find("`kani-main` runs")
-        .expect("src/kani/mod.rs: got = no \"`kani-main` runs\", want = the hot-file paragraph");
+    let start = text.find("`kani-ignoring` runs").expect(
+        "src/kani/mod.rs: got = no \"`kani-ignoring` runs\", want = the hot-file paragraph",
+    );
     let end = start
         + text[start..].find("The list is kept by hand").expect(
             "src/kani/mod.rs: got = no \"The list is kept by hand\", want = the hot-file paragraph",
@@ -80,7 +80,7 @@ fn hot_list(doc: &str) -> Vec<String> {
         .collect();
     assert!(
         !list.is_empty(),
-        "src/kani/mod.rs: got = no hot files, want = the files left to kani-main"
+        "src/kani/mod.rs: got = no hot files, want = the files left to kani-ignoring"
     );
     list
 }
@@ -152,9 +152,9 @@ fn kani_trigger_covers_kani_modules() {
         .collect();
     assert!(
         missing.is_empty(),
-        "got = files outside kani.yaml's `changed:` and src/kani/mod.rs's kani-main list:\n  {}\n\
+        "got = files outside kani.yaml's `changed:` and src/kani/mod.rs's kani-ignoring list:\n  {}\n\
          want = each in `changed:` (a file proof lanes rarely touch) or named in src/kani/mod.rs's \
-         list of files left to kani-main (a hot file)",
+         list of files left to kani-ignoring (a hot file)",
         missing.join("\n  ")
     );
 }

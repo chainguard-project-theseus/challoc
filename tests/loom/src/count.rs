@@ -155,7 +155,12 @@ fn run(split: bool) {
 }
 
 /// The shipped orderings: every count stays the number of tickets out.
+/// About six minutes in release, most of a full loom run, so it is
+/// ignored here and the `loom-count` check (`.chainguard/ci/lint.yaml`)
+/// runs it with `--ignored` on changes to this model or the code it
+/// copies: `sh tests/loom/run.sh -- --ignored`.
 #[test]
+#[ignore = "slow: the loom-count check runs it (sh tests/loom/run.sh -- --ignored)"]
 fn loom_count_bind_assign_unbind() {
     run(false);
 }
