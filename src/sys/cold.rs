@@ -53,7 +53,11 @@ pub const SLOTS: usize = 16;
 /// cgroup discovery). An unoptimised build's frames are several times
 /// larger, so it gets 1 MiB (`MAP_NORESERVE`: untouched pages cost
 /// nothing).
-pub const STACK_BYTES: usize = if cfg!(debug_assertions) { 1024 * 1024 } else { 64 * 1024 };
+pub const STACK_BYTES: usize = if cfg!(debug_assertions) {
+    1024 * 1024
+} else {
+    64 * 1024
+};
 
 /// Slot `i`'s owner: 0 when free, else the owning thread's thread pointer.
 static OWNER: [AtomicUsize; SLOTS] = [const { AtomicUsize::new(0) }; SLOTS];

@@ -12,7 +12,7 @@ file.
 
 ## `run`
 
-src/sys/cold.rs:69. Kind: external_body. Category: inline asm.
+src/sys/cold.rs:76. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > `f()`, on a cold stack when one is free (module doc).
@@ -27,7 +27,7 @@ pub fn run<R, F: FnOnce() -> R>(f: F) -> (r: R)
 
 ## `fork_child`
 
-src/sys/cold.rs:82. Kind: external_body. Category: atomics primitive.
+src/sys/cold.rs:89. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > The child's side of `fork` (module doc): every slot the forking thread does not own is free again.
