@@ -3986,25 +3986,49 @@ mod tests {
         std::format!("crate::vspec::errno::{axiom}(errno, {failed});")
     }
 
+    /// The out-pointer tokens an export body may mint (`axiom_c_out`,
+    /// directly or through `memptr_out`), each with the statement that
+    /// hands it back (`axiom_out_at_return`), spelled in parts so that this
+    /// module's own lines are neither mint nor hand-back sites.
+    fn out_tokens() -> [(String, String); 2] {
+        let back = std::format!("{}{}", "axiom_out_", "at_return");
+        [
+            (
+                std::format!(
+                    "let Tracked(mut oout) = {}(out as *mut *mut u8);",
+                    "memptr_out"
+                ),
+                std::format!("{back}(oout, out as *mut *mut u8);"),
+            ),
+            (
+                std::format!("let tracked mut uout = {}(usable, true);", "axiom_c_out"),
+                std::format!("{back}(uout, usable);"),
+            ),
+        ]
+    }
+
     /// Checks one export's body against the one shape an export may have,
     /// and returns whether it hands its `errno` token back
-    /// (`axiom_errno_at_return`, named in `axiom`). The body sets up its
-    /// call (the root grants, the token it lends, the C caller's
-    /// out-pointer tokens), then calls its Rust entry point once, through
-    /// `super::`, and returns what the call returned: as the body's tail,
-    /// or bound to `r`, followed by the axiom on its token, then `r`.
-    fn check_export_body(at: &str, body: &[String], axiom: &str) -> bool {
+    /// (`axiom_errno_at_return`, named in `axiom`) and whether it hands an
+    /// out-pointer token back ([`out_tokens`]). The body sets up its call
+    /// (the root grants, the token it lends, the C caller's out-pointer
+    /// token), then calls its Rust entry point once, through `super::`,
+    /// and returns what the call returned: as the body's tail, or bound to
+    /// `r`, followed by the axiom on its `errno` token and the hand-back of
+    /// the out-pointer token it minted, then `r`.
+    fn check_export_body(at: &str, body: &[String], axiom: &str) -> (bool, bool) {
         // The root grants spelled in parts, so that these lines are not
         // grant sites (`sys::tests::grant_sites`).
         let grant = |g: &str| std::format!("crate::sys::grant_{g}();");
+        let outs = out_tokens();
         let setup = [
             String::from("proof {"),
             grant("syscalls"),
             grant("aborts"),
             String::from("}"),
             lend_line(),
-            String::from("let oout = memptr_out(out as *mut *mut u8);"),
-            String::from("let tracked uout = axiom_c_out(usable, true);"),
+            outs[0].0.clone(),
+            outs[1].0.clone(),
             String::from("let tracked mut left = Ghost(crate::purge::Left::none());"),
         ];
         let call = body
@@ -4019,26 +4043,44 @@ mod tests {
             lends <= 1,
             "{at}: got = {lends} lent tokens, want = at most 1"
         );
+        let minted: Vec<&String> = outs
+            .iter()
+            .filter(|(mint, _)| body[..call].contains(mint))
+            .map(|(_, back)| back)
+            .collect();
+        assert!(
+            minted.len() <= 1
+                && outs
+                    .iter()
+                    .all(|(mint, _)| body[..call].iter().filter(|s| *s == mint).count() <= 1),
+            "{at}: more than 1 out-pointer token minted, want = at most 1"
+        );
         let rest: Vec<&str> = body[call + 1..].iter().map(String::as_str).collect();
         let s = &body[call];
         if s.starts_with("let r = ") {
             // One statement: the only `;` ends it.
             assert_eq!(s.find(';'), Some(s.len() - 1), "{at}: `{s}`");
             let back = axiom_line(axiom, failed_for(at));
+            let mut want = Vec::from(["proof {", back.as_str()]);
+            want.extend(minted.iter().map(|b| b.as_str()));
+            want.extend(["}", "r"]);
             assert_eq!(
-                rest,
-                ["proof {", back.as_str(), "}", "r"],
-                "{at}: after `{s}`: got = {rest:?}, want = the axiom on the token with this export's `failed` condition, then `r`"
+                rest, want,
+                "{at}: after `{s}`: got = {rest:?}, want = the axiom on the token with this export's `failed` condition, the hand-back of its out-pointer token, then `r`"
             );
             assert_eq!(lends, 1, "{at}: hands back a token it did not lend");
-            true
+            (true, !minted.is_empty())
         } else {
             assert!(!s.contains(';'), "{at}: the call `{s}` is not the result");
             assert!(
                 rest.is_empty(),
                 "{at}: got = {rest:?} after the call, want = nothing"
             );
-            false
+            assert!(
+                minted.is_empty(),
+                "{at}: mints an out-pointer token it does not hand back"
+            );
+            (false, false)
         }
     }
 
@@ -4052,14 +4094,17 @@ mod tests {
     /// `vspec::errno::axiom_errno_at_return` hold: the axiom is named only
     /// in those exports' bodies, right after the call, on the token the
     /// body lent, with that export's `failed` condition from [`FAILED`];
-    /// tokens are lent only by exports, one each; and no code names an
-    /// `exports` module, so nothing verified calls an export.
+    /// tokens are lent only by exports, one each; out-pointer tokens are
+    /// minted only by exports, at most one each, and go back through
+    /// `axiom_out_at_return`, named only there, right after the call; and no code names an `exports` module,
+    /// so nothing verified calls an export.
     #[test]
     fn exports_return_their_callees_result() {
         // Spelled in parts, so that this test's own lines match nothing.
         let axiom = std::format!("{}{}", "axiom_errno_", "at_return");
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut handed_back = 0;
+        let mut outs_back = 0;
         for file in EXPORT_FILES {
             let text = std::fs::read_to_string(src.join(file)).unwrap();
             let start = text
@@ -4087,9 +4132,9 @@ mod tests {
             assert!(!exports.is_empty(), "{file}: no exports found");
             for (head, body) in &exports {
                 let at = std::format!("{file}: `{head}`");
-                if check_export_body(&at, body, &axiom) {
-                    handed_back += 1;
-                }
+                let (errno_back, out_back) = check_export_body(&at, body, &axiom);
+                handed_back += usize::from(errno_back);
+                outs_back += usize::from(out_back);
             }
         }
         // 13 bodies in `api::libc` (each pair's body counted once): the
@@ -4110,6 +4155,61 @@ mod tests {
             );
         }
         assert_eq!(sites.len(), handed_back, "errno axiom calls");
+        // 4 bodies in `api::libc` (the `posix_memalign` pair counted once,
+        // and the three allocating `challoc_*_usable` exports) hand an
+        // out-pointer token back, each only there, right after the call.
+        assert_eq!(outs_back, 4, "exports that hand an out-pointer token back");
+        let outs = out_tokens();
+        let out_axiom = std::format!("{}{}", "axiom_out_", "at_return");
+        let out_sites: Vec<_> = crate::sys::tests::grant_sites(&out_axiom)
+            .into_iter()
+            .filter(|(_, at)| !at.contains("axiom fn "))
+            .collect();
+        for (sig, at) in &out_sites {
+            assert!(
+                at.starts_with("api/libc.rs:")
+                    && export_head(sig)
+                    && outs
+                        .iter()
+                        .any(|(_, back)| at.ends_with(&std::format!("`{back}`"))),
+                "{at}: the out-pointer axiom in `{sig}`"
+            );
+        }
+        assert_eq!(out_sites.len(), outs_back, "out-pointer axiom calls");
+        // Out-pointer tokens are minted only by those exports: `axiom_c_out`
+        // directly in the `_usable` exports and through `memptr_out` in the
+        // `posix_memalign` pair, so each export's `c_out_entry` and `c_out`
+        // name its one call.
+        let mint = std::format!("{}{}", "axiom_c_", "out(");
+        let memptr = std::format!("{}{}", "memptr_", "out(");
+        let mints: Vec<_> = crate::sys::tests::grant_sites(&mint)
+            .into_iter()
+            .filter(|(_, at)| !at.contains("axiom fn "))
+            .collect();
+        for (sig, at) in &mints {
+            assert!(
+                at.starts_with("api/libc.rs:")
+                    && ((export_head(sig) && at.ends_with(&std::format!("`{}`", outs[1].0)))
+                        || (sig.starts_with(&std::format!("fn {memptr}"))
+                            && at
+                                .ends_with(&std::format!("`let tracked o = {mint}out, false);`")))),
+                "{at}: an out-pointer token minted in `{sig}`"
+            );
+        }
+        assert_eq!(mints.len(), 4, "out-pointer token mints");
+        let memptrs: Vec<_> = crate::sys::tests::grant_sites(&memptr)
+            .into_iter()
+            .filter(|(sig, _)| !sig.starts_with(&std::format!("fn {memptr}")))
+            .collect();
+        for (sig, at) in &memptrs {
+            assert!(
+                at.starts_with("api/libc.rs:")
+                    && export_head(sig)
+                    && at.ends_with(&std::format!("`{}`", outs[0].0)),
+                "{at}: a `posix_memalign` token minted in `{sig}`"
+            );
+        }
+        assert_eq!(memptrs.len(), 1, "`memptr_out` calls");
         let lend = lend_line();
         for (sig, at) in crate::sys::tests::grant_sites(&std::format!("{}{}", "errno::", "lend()"))
         {

@@ -8,7 +8,11 @@
  *     count times a size that overflows) returns NULL, with errno ENOMEM
  *     for the libc and challoc names (posix_memalign returns ENOMEM) and
  *     errno untouched for the *allocx names, as jemalloc's;
- *   - a 64-byte request returns a block.
+ *   - a 64-byte request returns a block;
+ *   - posix_memalign leaves *out as the caller left it on EINVAL and
+ *     ENOMEM, and challoc's size-returning names store 0 through
+ *     `usable` with a NULL result and the block's malloc_usable_size with
+ *     a block, as their ensures say (through axiom_out_at_return).
  *
  * An export that dropped its entry point's block and returned NULL fails
  * the second check. For the libc and challoc names Verus rejects it too
@@ -108,11 +112,15 @@ static void test_libc(void)
     BLOCK(pvalloc(64));
     BLOCK(je_pvalloc(64));
 
-    void *q = NULL;
+    /* On EINVAL and ENOMEM, *out keeps what the caller left there. */
+    void *const mark = (void *)&mark;
+    void *q = mark;
     errno = 0;
-    CHECK(posix_memalign(&q, 64, big) == ENOMEM && errno == ENOMEM, "posix_memalign(64, big): errno %d", errno);
+    CHECK(posix_memalign(&q, 64, big) == ENOMEM && errno == ENOMEM && q == mark, "posix_memalign(64, big): errno %d, out %p", errno, q);
     errno = 0;
-    CHECK(je_posix_memalign(&q, 64, big) == ENOMEM && errno == ENOMEM, "je_posix_memalign(64, big): errno %d", errno);
+    CHECK(je_posix_memalign(&q, 64, big) == ENOMEM && errno == ENOMEM && q == mark, "je_posix_memalign(64, big): errno %d, out %p", errno, q);
+    CHECK(posix_memalign(&q, 3, 64) == EINVAL && q == mark, "posix_memalign(3, 64): out %p", q);
+    CHECK(je_posix_memalign(&q, 4, 64) == EINVAL && q == mark, "je_posix_memalign(4, 64): out %p", q);
     CHECK(posix_memalign(&q, 64, 64) == 0 && q != NULL, "posix_memalign(64, 64) = %p", q);
     free(q);
     q = NULL;
@@ -124,13 +132,27 @@ static void test_usable(void)
 {
     size_t big = huge_n / 2, n = huge_n / 2 + 1, u = 0;
 
+    /* *usable holds 0 after a NULL result and the usable size after a
+     * block. */
+    u = 1;
     NULL_ERRNO(challoc_malloc_usable(big, &u), ENOMEM);
+    CHECK(u == 0, "challoc_malloc_usable(big): usable %zu, want = 0", u);
+    u = 1;
     NULL_ERRNO(challoc_calloc_usable(n, 2, &u), ENOMEM);
+    CHECK(u == 0, "challoc_calloc_usable(n, 2): usable %zu, want = 0", u);
     void *p = block();
+    u = 1;
     NULL_ERRNO(challoc_realloc_usable(p, big, &u), ENOMEM);
-    BLOCK(challoc_malloc_usable(64, &u));
-    BLOCK(challoc_calloc_usable(4, 16, &u));
-    BLOCK(challoc_realloc_usable(p, 128, &u));
+    CHECK(u == 0, "challoc_realloc_usable(p, big): usable %zu, want = 0", u);
+    sink = challoc_malloc_usable(64, &u);
+    CHECK(sink != NULL && u >= 64 && u == malloc_usable_size(sink), "challoc_malloc_usable(64): usable %zu", u);
+    free(sink);
+    sink = challoc_calloc_usable(4, 16, &u);
+    CHECK(sink != NULL && u >= 64 && u == malloc_usable_size(sink), "challoc_calloc_usable(4, 16): usable %zu", u);
+    free(sink);
+    sink = challoc_realloc_usable(p, 128, &u);
+    CHECK(sink != NULL && u >= 128 && u == malloc_usable_size(sink), "challoc_realloc_usable(p, 128): usable %zu", u);
+    free(sink);
 }
 
 static void test_allocx(void)
