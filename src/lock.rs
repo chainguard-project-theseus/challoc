@@ -21,17 +21,17 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use vstd::cell::pcell::{PCell, PointsTo};
 use vstd::prelude::*;
 
+verus! {
+
 /// The thread that holds every allocator lock for a `fork`
 /// (`pthread_self`, the same for the forking thread in the child), from
 /// the end of `api::fork_prepare` until the release in `api::fork_parent`
 /// or `api::fork_child`; 0 otherwise. See [`fork_holder_is_me`].
-static FORK_HOLDER: AtomicUsize = AtomicUsize::new(0);
+exec static FORK_HOLDER: AtomicUsize = AtomicUsize::new(0);
 
 /// The process ID when the fork window opened: the parent's. The forking
 /// thread sees another in the child ([`in_child_fork_window`]).
-static FORK_PID: AtomicU32 = AtomicU32::new(0);
-
-verus! {
+exec static FORK_PID: AtomicU32 = AtomicU32::new(0);
 
 const UNLOCKED: u32 = 0;
 const LOCKED: u32 = 1;
@@ -539,7 +539,6 @@ pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
 /// allocation sees each lock's data as a fresh acquirer would, and only
 /// that thread runs allocator code until the release. One relaxed load
 /// when no fork is under way.
-#[verifier::external_body]
 #[inline(always)]
 fn fork_holder_is_me() -> bool {
     let h = FORK_HOLDER.load(Ordering::Relaxed);
@@ -549,29 +548,35 @@ fn fork_holder_is_me() -> bool {
 /// Whether the calling thread is inside the fork window
 /// ([`fork_holder_is_me`]): what a step whose fork handling assumes it
 /// cannot happen there (starting the background thread) checks to refuse.
-#[verifier::external_body]
 #[inline(always)]
 pub(crate) fn in_fork_window() -> bool {
     fork_holder_is_me()
 }
 
 /// `h` is the calling thread.
-#[verifier::external_body]
 #[cold]
 #[inline(never)]
 fn fork_holder_slow(h: usize) -> bool {
+    h == thread_self()
+}
+
+/// The calling thread's `pthread_self`, which the child of a `fork` keeps
+/// for the forking thread. Trusted: FFI; nothing is claimed of the value.
+#[verifier::external_body]
+#[inline(always)]
+fn thread_self() -> usize {
     // SAFETY: `pthread_self` has no preconditions.
-    h == unsafe { libc::pthread_self() } as usize
+    unsafe { libc::pthread_self() as usize }
 }
 
 /// Record the calling thread as the fork window's holder; the prepare
 /// handler's last step, with every lock taken.
-#[verifier::external_body]
-pub(crate) fn fork_window_open() {
-    // SAFETY: `getpid` and `pthread_self` have no preconditions.
-    FORK_PID.store(unsafe { libc::getpid() } as u32, Ordering::Relaxed);
-    // SAFETY: as above.
-    FORK_HOLDER.store(unsafe { libc::pthread_self() } as usize, Ordering::Relaxed);
+pub(crate) fn fork_window_open()
+    requires
+        crate::sys::may_syscall(),
+{
+    FORK_PID.store(crate::sys::getpid() as u32, Ordering::Relaxed);
+    FORK_HOLDER.store(thread_self(), Ordering::Relaxed);
 }
 
 /// Whether the caller is the forking thread in the child of a `fork`,
@@ -594,7 +599,6 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
 
 /// End the fork window; the parent and child handlers' step before their
 /// release.
-#[verifier::external_body]
 pub(crate) fn fork_window_close() {
     FORK_HOLDER.store(0, Ordering::Relaxed);
 }

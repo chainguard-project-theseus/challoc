@@ -42,11 +42,10 @@ axiom_fork_entry	allocator invariant	none (assumption)
 # built is served from arena 0): every lock is one prepare took, the
 # window serves only those, and the registry the release reads
 # (`count_frozen`, `get_frozen`) is the one prepare locked.
-fork_holder_is_me	allocator invariant	none (assumption)
-fork_holder_slow	FFI/syscall	none (assumption)
-in_fork_window	allocator invariant	none (assumption)
-fork_window_open	allocator invariant	none (assumption)
-fork_window_close	allocator invariant	none (assumption)
+# The window's record is verified code over two atomics (fork_holder_is_me,
+# in_fork_window, fork_window_open, fork_window_close); the premise above
+# rests on axiom_acquired, and the thread's identity on thread_self (FFI).
+thread_self	FFI/syscall	none (assumption)
 # The child's single thread before challoc's child handler: what
 # `in_fork_child` stands for (no loom model covers the in-window reset).
 in_child_fork_window	allocator invariant	none (assumption)

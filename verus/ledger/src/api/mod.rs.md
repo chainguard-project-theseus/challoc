@@ -28,12 +28,8 @@ file.
 | `line_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `axiom_statics` | axiom | allocator invariant | none (assumption) | trusted |
 | `atfork_handlers` | external_body | function pointer | none (assumption) | trusted |
-| `set_fork_locked` | external_body | platform/kernel fact | none (assumption) | trusted |
-| `fork_was_locked` | external_body | platform/kernel fact | none (assumption) | trusted |
-| `init_gate_enter` | external_body | allocator invariant | none (assumption) | trusted |
-| `init_gate_done` | external_body | allocator invariant | none (assumption) | trusted |
-| `fork_gate_enter` | external_body | allocator invariant | none (assumption) | trusted |
-| `fork_gate_exit` | external_body | allocator invariant | none (assumption) | trusted |
+| `init_gate_enter` | no_decreases | termination | loom/GenMC | trusted |
+| `fork_gate_enter` | no_decreases | termination | loom/GenMC | trusted |
 | `axiom_f..._state` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_f...ed_sig` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_l...phaned` | axiom | allocator invariant | none (assumption) | trusted |
@@ -275,7 +271,7 @@ fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Trac
 
 ## `init_slow`
 
-src/api/mod.rs:1333. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1340. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
@@ -292,7 +288,7 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
 
 ## `shared_storage_ptr`
 
-src/api/mod.rs:1390. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1397. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::shared_ptrs_agree).
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -306,7 +302,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ## `features_ptr`
 
-src/api/mod.rs:1406. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1413. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURES`].
@@ -320,7 +316,7 @@ fn features_ptr() -> (p: *mut Features)
 
 ## `line_ptr`
 
-src/api/mod.rs:1418. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1425. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURE_LINE`].
@@ -334,7 +330,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 
 ## `axiom_statics`
 
-src/api/mod.rs:1454. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:1461. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, the class table ([`layout::CLASSES`]), initialised, whose entries are well formed and sized ([`layout::table_ok`]: its initial value is [`layout::BASE_CLASSES`], `ClassTable::new`), and `LINE_STATE`'s permission, at `LINE_UNBUILT`.
@@ -362,7 +358,7 @@ axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
 
 ## `atfork_handlers`
 
-src/api/mod.rs:1497. Kind: external_body. Category: function pointer.
+src/api/mod.rs:1504. Kind: external_body. Category: function pointer.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_atfork` with the three fork handlers, once per process (the library's constructor or init, whichever comes first; a failure lets the next try again): 0, or the error number.
@@ -373,75 +369,35 @@ fn atfork_handlers() -> i32
         crate::sys::may_syscall(),
 ```
 
-## `set_fork_locked`
-
-src/api/mod.rs:1518. Kind: external_body. Category: platform/kernel fact.
-Tool: none (assumption). Status: trusted.
-
-> Record whether `fork_prepare` took the locks (`FORK_LOCKED`).
-
-```rust
-fn set_fork_locked(locked: bool)
-```
-
-## `fork_was_locked`
-
-src/api/mod.rs:1526. Kind: external_body. Category: platform/kernel fact.
-Tool: none (assumption). Status: trusted.
-
-> Whether `fork_prepare` took the locks for this `fork` (`FORK_LOCKED`).
-
-```rust
-fn fork_was_locked() -> bool
-```
-
 ## `init_gate_enter`
 
-src/api/mod.rs:1536. Kind: external_body. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+src/api/mod.rs:1543. Kind: no_decreases. Category: termination.
+Tool: loom/GenMC. Status: trusted.
 
-> Before init's claim: wait while a `fork` holds the gate (`GATE_FORKING`, unless this thread is the forking one), then mark an init under way (`GATE_INIT`) if none was.
+> Before init's claim: wait while a `fork` holds the gate (`GATE_FORKING`, unless this thread is the forking one), then mark an init under way (`GATE_INIT`) if none was: atomics outside `STATE`'s protocol, which this only delays; nothing is claimed (termination neither: the wait ends when the fork's parent handler runs).
 
 ```rust
 fn init_gate_enter()
-```
-
-## `init_gate_done`
-
-src/api/mod.rs:1558. Kind: external_body. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> Init published `READY`: the gate stays open for good (`GATE_DONE`), unless the forking thread initialised inside its own `fork`, whose parent and child handlers then open it.
-
-```rust
-fn init_gate_done()
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ## `fork_gate_enter`
 
-src/api/mod.rs:1574. Kind: external_body. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+src/api/mod.rs:1579. Kind: no_decreases. Category: termination.
+Tool: loom/GenMC. Status: trusted.
 
 > The prepare handler, before it looks at `STATE`: with challoc initialised (`GATE_DONE`) nothing; with an init under way on another thread (`GATE_INIT`), wait until it publishes, so the child gets the finished state; with none (`GATE_IDLE`), close the gate (`GATE_FORKING`) so that none starts until the parent and child handlers (`fork_gate_exit`).
 
 ```rust
 fn fork_gate_enter()
-```
-
-## `fork_gate_exit`
-
-src/api/mod.rs:1607. Kind: external_body. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> The parent and child handlers: open the gate this `fork`'s prepare closed, to `GATE_DONE` if the forking thread initialised meanwhile, else `GATE_IDLE`.
-
-```rust
-fn fork_gate_exit()
+    requires
+        crate::sys::may_syscall(),
 ```
 
 ## `axiom_fork_resumed_state`
 
-src/api/mod.rs:2022. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2024. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between: signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) release none: an allocation of theirs takes the held locks as acquired and its releases do nothing (`lock::fork_holder_is_me`, whose premise is that the forking thread has no allocator critical section open in the window).
@@ -455,7 +411,7 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
 
 ## `axiom_fork_resumed_sig`
 
-src/api/mod.rs:2050. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2052. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -469,7 +425,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ## `axiom_line_orphaned`
 
-src/api/mod.rs:2708. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:2712. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, `LINE_STATE`'s permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
@@ -488,7 +444,7 @@ axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm, tracked 
 
 ## `axiom_fork_resumed`
 
-src/api/mod.rs:2767. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2771. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address (the same premise as for `s`, the `Shared` the release reads); passed any other word, it would mint a second permission to it, which is why it is private to this module.
