@@ -4394,7 +4394,7 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
     let h = unsafe { &mut *hp };
     let runs0 = s.arena0.large().0;
     crate::arena::FAIL_INIT.store(&s.meta as *const _ as usize, Relaxed);
-    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, Tracked::assume_new());
+    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
     assert!(!p.is_null(), "served by arena 0");
     assert_eq!(
         crate::arena::FAIL_INIT.load(Relaxed),
@@ -4405,7 +4405,7 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
     assert_eq!(s.arena0.large().0, runs0 + 1);
     h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
     // The pressure lifted: the next allocation builds arena 2.
-    let (q, _, _) = h.alloc_huge(s, 300 * 1024, 16, Tracked::assume_new());
+    let (q, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
     assert!(!q.is_null());
     assert!(s.arenas.get_existing(2).is_some(), "built on retry");
     h.free(s, q, Tracked::assume_new(), Tracked::assume_new());
