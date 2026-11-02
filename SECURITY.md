@@ -77,6 +77,11 @@ These hold on every supported host with the default configuration:
   regions, so an overflow can't walk from one class into another.
 - **Huge runs are guarded.** Every huge run is followed by a guard page
   (`MADV_GUARD_INSTALL`, or a `PROT_NONE` page on older kernels).
+- **Region edges are guarded.** Every class region, the huge region and
+  the metadata region has at least 4 MiB of never-committed reservation
+  directly below and above it, whatever the random offsets, so a linear
+  overflow or underflow off a region's edge faults before it can reach
+  another mapping.
 
 ## Best-effort and probabilistic protections
 

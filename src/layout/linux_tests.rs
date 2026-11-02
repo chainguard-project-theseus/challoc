@@ -71,6 +71,30 @@ fn reserve_lays_out_regions_and_commits_a_slab() {
         r.meta_base >= r.meta_map.addr
             && r.meta_base + r.meta_len <= r.meta_map.addr + r.meta_map.len
     );
+    // Every region has at least `MAX_SLAB` of never-committed slack below
+    // it inside its own reservation, whatever the random offsets: a
+    // backward overflow off a region's first page faults in that slack
+    // instead of running into whatever the kernel mapped just below.
+    assert!(r.huge_base >= r.huge_map.addr + MAX_SLAB);
+    assert!(r.meta_base >= r.meta_map.addr + MAX_SLAB);
+    assert!(r.class_base[0] >= r.superblock_map.addr + MAX_SLAB);
+    // The init check sees it, and would see a region flush with an edge.
+    assert!(r.slack_ok());
+    let flush: [fn(&mut Regions); 5] = [
+        |r| r.huge_base = r.huge_map.addr,
+        |r| r.meta_base = r.meta_map.addr + r.meta_map.len - r.meta_len,
+        |r| r.class_base[0] = r.superblock_map.addr,
+        |r| r.class_base[1] = r.class_base[0] + r.region_len(),
+        |r| {
+            r.class_base[NCLASSES - 1] =
+                r.superblock_map.addr + r.superblock_map.len - r.region_len()
+        },
+    ];
+    for (i, f) in flush.iter().enumerate() {
+        let mut bad = r;
+        f(&mut bad);
+        assert!(!bad.slack_ok(), "flush case {i} passed slack_ok");
+    }
     assert_eq!(r.superblock & (MAX_SLAB - 1), 0);
     assert_eq!(r.huge_base & (MAX_SLAB - 1), 0);
     assert_eq!(r.meta_base & (MAX_SLAB - 1), 0);
