@@ -135,7 +135,7 @@ so a broken preload cannot pass.
 | Group | Programs |
 |---|---|
 | Entry points | `libc_api.c` (the libc functions), `jemalloc_api.c` (the jemalloc and glibc extras, declared weak), `cxx_new.cpp` (every `operator new`/`delete` resolves into challoc), `usable_api.c` (the `challoc_*_usable` functions), `export_results.c` (every nullable export returns its entry point's result: NULL with its `errno` for an impossible request, a block for a small one), `positive.c` (C23 `free_sized`, `free_aligned_sized` and other paths no other program reaches), `jemalloc_link.c` (a link-only `-ljemalloc` consumer of the jemalloc-compat stage) |
-| Correctness under load | `align.c`, `calloc_zero.c`, `realloc_tiers.c`, `random_ops.c` (1M random operations on 8 threads), `producer_consumer.c` (pure cross-thread frees), `thread_exit.c`, `tls_threads.c`, `huge_hole.c` |
+| Correctness under load | `align.c`, `calloc_zero.c`, `zero_trust.c` (every zeroing entry point after a heap bug wrote memory not yet handed out), `realloc_tiers.c`, `random_ops.c` (1M random operations on 8 threads), `producer_consumer.c` (pure cross-thread frees), `thread_exit.c`, `tls_threads.c`, `huge_hole.c` |
 | Resource limits | `resource.c` (`RLIMIT_DATA` and `RLIMIT_AS` from the start: NULL/`ENOMEM` past a limit, never an abort, and recovery once it is raised; design 14.1) |
 | Fork | `fork_alloc.c` (allocation in parent, child and grandchild), `fork_signal.c` (fork from a signal handler while the fork handlers hold every lock) |
 | Abort conditions | `negative.c`: one invalid operation per mode (invalid, double and mis-sized frees, guard faults); the driver checks the signal and the `challoc:` line on stderr |

@@ -264,8 +264,8 @@ pub open spec fn tcache_checked(size: usize, flags: c_int) -> bool {
 }
 
 /// `mallocx`'s core: allocate `size` bytes per `f`, zeroing the whole
-/// usable size when `MALLOCX_ZERO` is set and the memory is not already
-/// known to be zero. Null on exhaustion or for an arena that does not
+/// usable size when `MALLOCX_ZERO` is set, unless it is a huge run known
+/// to be zero (a slab slot always is cleared). Null on exhaustion or for an arena that does not
 /// exist (`errno` untouched); an explicit cache that does not exist
 /// aborts (`invalid_tcache`), except on the huge path with an explicit
 /// arena, which never looks the cache up. With `MALLOCX_ZERO`, a
@@ -306,7 +306,15 @@ fn alloc_with(
     let ghost mut cls: int = -1;
     let (p, usable, zeroed, z) = match class_for(size, align) {
         Some(c) => {
-            let (p, zero, z) = mallocx::alloc(shared, c, f.arena, f.tcache, Tracked(blk), errno);
+            let (p, _zero, z) = mallocx::alloc(shared, c, f.arena, f.tcache, Tracked(blk), errno);
+            // The heap's zero flag is not trusted for a slab slot: it records that
+            // challoc wrote nothing to the slot since its slab was `Fresh` or
+            // `Purged`, but the slot is read-write memory that a linear
+            // overflow from a live slot below, or a write through a stale
+            // pointer into a purged slab, reaches without challoc seeing it
+            // (SECURITY.md, "Zeroing allocations are zero"). The slot is
+            // always cleared below.
+            let zero = false;
             proof {
                 cls = c as int;
                 if p@.addr != 0 {
@@ -330,6 +338,7 @@ fn alloc_with(
                 align,
                 f.arena,
                 f.tcache,
+                f.zero,
                 Tracked(blk),
             );
             proof {
@@ -1959,6 +1968,7 @@ mod tests {
                 1,
                 Some(4000),
                 Tcache::Default,
+                false,
                 vstd::prelude::Tracked::assume_new()
             )
             .0
@@ -1972,6 +1982,7 @@ mod tests {
             1,
             Some(lua),
             Tcache::Default,
+            false,
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(!hp.is_null());

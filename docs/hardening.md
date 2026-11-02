@@ -15,6 +15,7 @@ exact windows the defaults leave open. The design view is
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
 | Sealed reservation gaps (`mseal`)        | No           | Yes where the kernel (6.10+) and seccomp allow it |
 | Zero on free                             | Opt-in       | Opt-in: `zero_on_free` clears a block on free (2) |
+| Zeroing allocations zero after a heap bug wrote not-yet-allocated memory | Small tcache allocations | Yes (5) |
 | Slot order randomisation                 | No           | Opt-in: `slot_randomize` (2) |
 | Signed allocator pointers (arm64 PAC)    | No           | Opt-in where the CPU has it: `pac_pointers`, cache entries and the TLS heap pointer `pacda`-signed, authenticated on every `malloc` (3) |
 | Tagged pointers                          | No           | Planned (4)     |
@@ -167,3 +168,35 @@ the class the pointer was allocated from (for a huge run, its page count), and `
 jemalloc's behaviour is undefined. A program that leaned on that leniency
 dies with `SIGABRT` and a `challoc:` message instead of corrupting the
 heap.
+
+## (5) Zeroing allocations
+
+`calloc`, `challoc_calloc_usable` and `MALLOCX_ZERO` never skip their
+clear on the strength of allocator state that user code can falsify. A
+slab slot is cleared on every zeroing allocation, including a slot
+claimed from a `Fresh` or `Purged` slab: those slots are read-write
+memory of the committed run, which a linear overflow from a live slot
+below, or a write through a stale pointer into a purged slab, reaches
+without challoc seeing it. A huge run skips the clear for pages past the
+huge region's high-water mark (no run has covered them, and the last
+run's guard page stops an overflow before them) and for a reused
+`Purged` extent only after `MADV_DONTNEED`ing the run's pages again under
+the huge lock as it places the run: the extent's own purge does not
+count, since a stale pointer or an underflow from the live run above (a
+freed run's guard goes with it) can have written it since. The caller
+clears instead under 16 KiB (`REDISCARD_MIN`, where the `madvise` costs
+more than the clear), when the kernel refuses the call (`mlock`ed
+pages), after any lazy `MADV_FREE` purge (the extent may still be
+resident, and discarding it would make every reuse fault it back), and
+for a dirty (`Empty`) extent. jemalloc 5.3 always clears a small
+allocation from the tcache.
+The cost is the clear itself: on a `calloc` from fresh slab memory it
+moves the first-touch page faults into the call (a program that writes
+the block pays them anyway; one that leaves a large `calloc` sparse now
+has those pages resident). A zeroing huge allocation (`calloc`,
+`MALLOCX_ZERO`) that reuses a purged extent of 16 KiB or more pays one
+`madvise` call (about 1 us, under the huge lock) in place of the clear.
+It drops only the pages a stale write faulted back in since the eager
+purge, so the run stays unpopulated. In lazy mode there is no call and
+the caller clears the run, as before this rule. `malloc`, `realloc` and
+`mallocx` without `MALLOCX_ZERO` never make the call.

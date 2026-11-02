@@ -2153,7 +2153,7 @@ mod tests {
         let size = 400 * 1024;
         let (h1, _, _) = t
             .heap()
-            .alloc_huge_in(s, size, 16, a1, Tracked::assume_new());
+            .alloc_huge_in(s, size, 16, a1, false, Tracked::assume_new());
         assert!(!h1.is_null());
         let usable = s.huge.usable_for(size).unwrap();
 

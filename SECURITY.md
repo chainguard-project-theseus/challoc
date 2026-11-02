@@ -82,6 +82,15 @@ These hold on every supported host with the default configuration:
   directly below and above it, whatever the random offsets, so a linear
   overflow or underflow off a region's edge faults before it can reach
   another mapping.
+- **Zeroing allocations are zero.** `calloc`, `challoc_calloc_usable`
+  and `MALLOCX_ZERO` (in `mallocx` and `rallocx`) return zeroed bytes
+  even when an overflow, an underflow or a write through a stale pointer
+  has already written memory challoc has not handed out yet. challoc
+  clears every slab slot itself. A huge run is trusted zero only for
+  pages no run has ever covered (past the huge region's high-water mark,
+  behind the last run's guard) and for the pages of a purged extent it
+  discards again with `MADV_DONTNEED` as it hands the run out; anything
+  else is cleared.
 
 ## Best-effort and probabilistic protections
 

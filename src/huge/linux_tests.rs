@@ -13,9 +13,10 @@ fn all(p: *mut u8, len: usize, v: u8) -> bool {
     s.iter().all(|&b| b == v)
 }
 
-/// `check_zero` on a healthy huge heap: fresh
-/// and purged runs read zero, dirty `Empty` reuse is not checked (it is
-/// not reported zero), and the flag stays on for the rest of the process.
+/// `check_zero` on a healthy huge heap: fresh runs and purged runs (of at
+/// least `REDISCARD_MIN` bytes, discarded again when reused) read zero,
+/// dirty `Empty` reuse is not checked (it is not reported zero), and the
+/// flag stays on for the rest of the process.
 #[test]
 fn check_zero_passes_fresh_and_purged_runs() {
     purge::set_check_zero(true);
@@ -41,11 +42,13 @@ fn check_zero_passes_fresh_and_purged_runs() {
     env.free(&h, r);
 }
 
-/// `check_zero` fires on a purged run whose last usable page was
-/// dirtied behind the allocator's back, naming the `Purged` pages.
+/// A purged run dirtied behind the allocator's back (a write through a
+/// stale pointer) is never handed out as zero with the write in it:
+/// under `REDISCARD_MIN` it is not reported zero (its caller clears it,
+/// and `check_zero` has nothing to check); at or over it, `rediscard`
+/// discards the write first.
 #[test]
-#[should_panic(expected = "was handed out as zero from Purged pages but the word at")]
-fn check_zero_aborts_on_a_dirty_purged_run() {
+fn check_zero_does_not_trust_a_dirty_purged_run() {
     purge::set_check_zero(true);
     let env = Env::new();
     let h = env.huge();
@@ -60,7 +63,73 @@ fn check_zero_aborts_on_a_dirty_purged_run() {
     // unmapped, only discarded); dirtying it is the setup `check_zero`
     // must catch.
     unsafe { ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF) };
-    let _ = env.alloc(&h, size, 1);
+    let (q, zero) = env.alloc(&h, size, 1);
+    assert_eq!(q, p);
+    // Under `REDISCARD_MIN` (4 KiB pages) the run is not reported zero and
+    // the caller clears it; at or over it, `rediscard` wiped the write.
+    assert_eq!(zero, size >= REDISCARD_MIN);
+    if zero {
+        assert!(all(q, size, 0));
+    }
+    env.free(&h, q);
+}
+
+/// A purged run of at least `REDISCARD_MIN` bytes written behind the
+/// allocator's back after its purge (a write through a stale pointer, or
+/// an underflow from the run above) is discarded again when it is reused:
+/// reported zero and reading zero, with `check_zero` on.
+#[test]
+fn a_dirty_purged_run_is_discarded_again_on_reuse() {
+    purge::set_check_zero(true);
+    let env = Env::new();
+    let h = env.huge();
+    let size = 8 * page_size();
+    assert!(size >= REDISCARD_MIN);
+    let (p, _) = env.alloc(&h, size, 1);
+    fill(p, size, 0xAB);
+    env.free(&h, p);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
+    // SAFETY: the purged run stays mapped read-write (the region is never
+    // unmapped, only discarded); this is the stale write under test.
+    unsafe {
+        ptr::write_volatile(p as *mut u64, 0xDEAD_BEEF);
+        ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF);
+    }
+    let (q, zero) = env.alloc(&h, size, 1);
+    assert_eq!(q, p);
+    assert!(zero && all(q, size, 0));
+    env.free(&h, q);
+}
+
+/// A caller that does not zero (`malloc`, `mallocx` without
+/// `MALLOCX_ZERO`) reusing a purged run gets no re-discard: the run is not
+/// reported zero, and a byte written behind the allocator's back after
+/// the purge is still there, so no `MADV_DONTNEED` ran for it.
+#[test]
+fn a_plain_reuse_of_a_purged_run_issues_no_rediscard() {
+    let env = Env::new();
+    let h = env.huge();
+    let size = 8 * page_size();
+    assert!(size >= REDISCARD_MIN);
+    let (p, _) = env.alloc(&h, size, 1);
+    fill(p, size, 0xAB);
+    env.free(&h, p);
+    assert_eq!(
+        h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
+    // SAFETY: the purged run stays mapped read-write (the region is never
+    // unmapped, only discarded); the write is the probe for a discard.
+    unsafe { ptr::write_volatile(p as *mut u64, 0xDEAD_BEEF) };
+    let (q, zero) = h.alloc_wanting(&env.meta, size, 1, 0, false);
+    assert_eq!(q, p);
+    assert!(!zero);
+    // SAFETY: `q` is the live run just allocated, at least 8 bytes.
+    assert_eq!(unsafe { ptr::read_volatile(q as *const u64) }, 0xDEAD_BEEF);
+    env.free(&h, q);
 }
 
 #[test]
@@ -82,6 +151,7 @@ fn memory_is_writable_and_the_zero_flag_is_honest() {
         h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
         1
     );
+    // Purged: discarded again when reused, so zero.
     let (r, zero) = env.alloc(&h, size, 1);
     assert_eq!(r, p);
     assert!(zero && all(r, size, 0));
@@ -254,7 +324,7 @@ fn alignment_holes_are_committed_and_writable() {
             env.free(&h, p);
             break;
         }
-        assert!(zero && all(p, page_size(), 0));
+        assert!(zero == (page_size() >= REDISCARD_MIN) && all(p, page_size(), 0));
         fill(p, page_size(), 0x33);
         held.push(p);
         fillers += 1;

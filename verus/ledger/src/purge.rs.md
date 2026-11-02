@@ -12,7 +12,7 @@ file.
 
 ## `Explicit::drop`
 
-src/purge.rs:191. Kind: external_body. Category: atomics primitive.
+src/purge.rs:194. Kind: external_body. Category: atomics primitive.
 Tool: Kani. Status: discharged (Kani: purge::kani_explicit::explicit_drop_returns).
 
 ```rust
@@ -23,12 +23,12 @@ fn drop(&mut self)
 
 ## `purged_zero`
 
-src/purge.rs:266. Kind: external_body. Category: atomics primitive.
+src/purge.rs:269. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > [`purged_is_zero`], with the witness of a true read (`Some` exactly when it returns true).
 
-Body mints Tracked at line 270.
+Body mints Tracked at line 273.
 
 ```rust
 pub fn purged_zero() -> (r: (bool, Tracked<Option<PurgedZero>>))

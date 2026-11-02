@@ -3816,6 +3816,7 @@ mod tests {
                     300 * 1024,
                     16,
                     0,
+                    false,
                     vstd::prelude::Tracked::assume_new(),
                     vstd::prelude::Tracked::assume_new(),
                 )

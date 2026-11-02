@@ -85,6 +85,12 @@ verus! {
 
 /// Guard pages after every run.
 pub const GUARD_PAGES: usize = 1;
+/// The fewest bytes of a `Purged` extent [`Huge::rediscard`] discards
+/// again for a run placed in it; below this the caller's `memset` is
+/// cheaper than the `madvise` call (about 1 us; a 4 KiB page's clear,
+/// fault included, is about 2 us on x86_64, so the call wins from two
+/// pages).
+pub const REDISCARD_MIN: usize = 16 << 10;
 /// Runs with more usable bytes than this are purged as soon as they are
 /// freed (`huge_retain_max`).
 pub const DEFAULT_RETAIN_MAX: usize = 64 << 20;
@@ -2029,10 +2035,10 @@ spec fn keys_inside(t: Table, d: Map<*mut HugeDesc, PointsTo<HugeDesc>>, mark: i
 /// bytes whose high-water mark was `mark`: empty unless `zeroed`, which
 /// `take` sets for a run from fresh pages (no extent, or a start at or
 /// past the extent it touches, which then ends at the mark) or from a
-/// `Purged` extent while `purge::purged_is_zero` read true under the lock
-/// (`ve` the extent). Pages at or past the mark are fresh
-/// ([`axiom_fresh_anon_zero`]: only `take` raises the mark, and
-/// no run has covered them); the pages of a `Purged` extent were
+/// `Purged` extent whose pages under the run [`Huge::rediscard`] has just
+/// discarded again under the lock (`ve` the extent). Pages at or past the
+/// mark are fresh ([`axiom_fresh_anon_zero`]: only `take` raises the mark,
+/// and no run has covered them); the pages of a `Purged` extent were
 /// discarded with `MADV_DONTNEED` ([`axiom_discarded_zero`]),
 /// and when the run runs past such an extent the extent ends at the mark
 /// and the rest is fresh.
@@ -2101,13 +2107,12 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 /// nothing has written them since. Private to this module, and
 /// [`zero_run`] is its one caller (pinned as for
 /// [`axiom_fresh_anon_zero`]), for a `Purged` extent. Not checked: that
-/// `purge::purged_is_zero` read true for it. `take` reads the flag into
-/// its `zeroed` result, but `zero_run` requires only the extent's state:
-/// no batch of the process has used `MADV_FREE` while the flag reads true
-/// (`purge::Batch::flush` clears it before it issues one), `Purged` is set
-/// only in the lock hold that flushes the extent's discard or, for the
-/// hole alignment leaves at the mark, by `take` for pages never handed
-/// out, and a `Purged` extent has no allocated run.
+/// [`Huge::rediscard`] succeeded for the run's pages in it. `take` sets
+/// its `zeroed` result from that call, made in the same lock hold before
+/// the run is handed out, but `zero_run` requires only the extent's state.
+/// The extent's own purge is not what the premise rests on: its pages are
+/// read-write after it, and a stale pointer or an underflow from the live
+/// run above can have written them since.
 axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)
     requires
         0 <= len,
@@ -4250,6 +4255,37 @@ impl Huge {
         self.base + (page << self.lg_page)
     }
 
+    /// Discard pages `s..hi` again with `MADV_DONTNEED`, for a run `take`
+    /// places in a `Purged` extent: whether they now read as zero. The
+    /// extent's earlier discard does not make them zero any more: they are
+    /// read-write and were handed out before, so a write through a stale
+    /// pointer, or an underflow from the live run above (a freed run's
+    /// guard goes with it), reaches them after it (SECURITY.md, "Zeroing
+    /// allocations are zero"). Called under the huge lock, before the run
+    /// is handed out, so nothing challoc does writes them in between.
+    /// Fewer than [`REDISCARD_MIN`] bytes are left to the caller's
+    /// `memset` (false), which is cheaper than the call; so is any range
+    /// the kernel refuses (`mlock`ed pages). `take` calls it only while
+    /// `purge::purged_is_zero` holds, so the pages it drops are just the
+    /// ones a stale write faulted in.
+    fn rediscard(&self, s: usize, hi: usize) -> (r: bool)
+        requires
+            crate::sys::may_syscall(),
+    {
+        if hi <= s || hi > self.npages {
+            return false;
+        }
+        let Some(len) = (hi - s).checked_mul(self.page_size()) else { return false };
+        if len < REDISCARD_MIN {
+            return false;
+        }
+        let addr = self.addr(s);
+        // SAFETY: pages `s..hi` lie in the region (`hi <= npages`) and
+        // belong to the run being placed, which nobody holds yet: their
+        // contents are not needed.
+        unsafe { sys::madvise(addr, len, sys::MADV_DONTNEED) }.is_ok()
+    }
+
     /// Usable pages for a request, or `None` if it cannot be represented.
     #[inline]
     pub fn usable_pages(&self, size: usize) -> (r: Option<usize>)
@@ -4552,15 +4588,31 @@ impl Huge {
 } // verus!
 
 impl Huge {
-    /// [`Huge::alloc_run`] as the pointer and the zero flag alone.
+    /// [`Huge::alloc_run`] for a zeroing caller, as the pointer and the
+    /// zero flag alone.
     #[cfg(test)]
     pub fn alloc(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
+        self.alloc_wanting(meta, size, align, arena, true)
+    }
+
+    /// [`Huge::alloc_run`] with its `zero` argument, as the pointer and the
+    /// zero flag alone.
+    #[cfg(test)]
+    pub fn alloc_wanting(
+        &self,
+        meta: &Meta,
+        size: usize,
+        align: usize,
+        arena: u16,
+        zero: bool,
+    ) -> (*mut u8, bool) {
         let r = self
             .alloc_run(
                 meta,
                 size,
                 align,
                 arena,
+                zero,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
             )
@@ -4578,13 +4630,18 @@ impl Huge {
     /// records them (the guard included; what [`Huge::free_run`] will
     /// report as `pages`, so the caller's per-arena page count never
     /// drifts from what the free subtracts); [`Placed::NONE`] when the
-    /// region, the metadata region or the kernel refuses.
+    /// region, the metadata region or the kernel refuses. `zero` says the
+    /// caller will clear the run unless it is reported zero (`calloc`,
+    /// `MALLOCX_ZERO`): only then may a run reusing a `Purged` extent be
+    /// discarded again to report it zero ([`Huge::rediscard`]); any other
+    /// caller never pays that call.
     /// Ghost: the run's token goes to `tok`, and the second result is the
     /// token that the run's usable bytes read as zero when `zeroed`.
     // Cold: out of line in `Shared::alloc_huge`, so the ghost arguments that
     // verified code erases cannot change whether it is inlined.
     #[inline(never)]
-    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
+    #[allow(clippy::too_many_arguments)]
+    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -4606,13 +4663,14 @@ impl Huge {
             r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
     {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        self.alloc_aligned(meta, size, align, arena, Tracked(tok), Tracked(ord))
+        self.alloc_aligned(meta, size, align, arena, zero, Tracked(tok), Tracked(ord))
     }
 
     /// [`Huge::alloc_run`] for an `align` already known to be a power of
     /// two.
     #[inline(always)]
-    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -4700,7 +4758,7 @@ impl Huge {
         // `check_zero` needs the extent's state before `take` may free it.
         let _gi: &Inner = &g;
         let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
-        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, run_perm, spare_perm, Tracked(tok));
+        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, zero, run_perm, spare_perm, Tracked(tok));
         // `take` wrote the run's descriptor; the lock is still held.
         let pages = g.desc(run).pages();
         self.sync_oldest(&g);
@@ -5218,6 +5276,7 @@ impl Huge {
         run: *mut HugeDesc,
         spare: *mut HugeDesc,
         arena: u16,
+        zero: bool,
         Tracked(run_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
         Tracked(spare_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
         Tracked(tok): Tracked<&mut Map<int, RunToken>>,
@@ -5358,9 +5417,22 @@ impl Huge {
                 lemma_state_byte(ve.state);
                 assert(forall|x: *mut HugeDesc| #[trigger] d0.contains_key(x) && x != ext ==> apart(d0[x].value(), ve));
             }
-            // `Purged` pages are zero unless a lazy purge discarded them
-            // with `MADV_FREE`; pages at or past the mark are untouched.
-            zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
+            // Pages at or past the mark are zero: no run has covered them
+            // and they sit behind the last run's guard. A `Purged`
+            // extent's pages are zero only once `rediscard` has discarded
+            // the run's share of them again: its earlier discard does not
+            // survive a stale-pointer write or an underflow from the live
+            // run above. Only for a zeroing caller (`zero`; any other caller
+            // never pays the call) and only while every purge so far was
+            // `MADV_DONTNEED` (`purge::purged_is_zero`): then the call drops
+            // just the pages such a write faulted in. After a lazy
+            // `MADV_FREE` purge the pages may still be resident, and
+            // dropping them would refault them, so the run is reported
+            // dirty and the zeroing caller clears it. An `Empty` extent is
+            // dirty.
+            let usable_end = if end > GUARD_PAGES { end - GUARD_PAGES } else { s };
+            let hi = if usable_end < e_end { usable_end } else { e_end };
+            zeroed = s >= e_end || (zero && st == RunState::Purged && purge::purged_is_zero() && self.rediscard(s, hi));
             proof {
                 assert(zeroed ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
                 lemma_can_sub(*old(g), ext);

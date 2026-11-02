@@ -3036,8 +3036,10 @@ impl Shared {
     /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:
     /// an automatic arena not built yet (a thread whose first allocation
     /// is huge) is built here, an index that does not exist aborts. Null
-    /// on exhaustion; the flag says the memory is known zero.
-    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    /// on exhaustion; the flag says the memory is known zero. `zero`: the
+    /// caller clears the run unless it is reported zero
+    /// ([`crate::huge::Huge::alloc_run`]).
+    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, zero: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -3062,7 +3064,7 @@ impl Shared {
         }
         let Some((a, _)) = self.arena(arena, Tracked(ord)) else { no_such_arena(arena) };
         let tracked mut tok = vstd::map::Map::<int, crate::huge::RunToken>::tracked_empty();
-        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, Tracked(&mut tok), Tracked(ord));
+        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, zero, Tracked(&mut tok), Tracked(ord));
         proof {
             self.lemma_huge_placeable(size, align);
             if r.ptr@.addr != 0 {

@@ -76,7 +76,14 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
         .set_decay_ms(10_000, Tracked::assume_new(), Tracked::assume_new());
     // A freed run is still `Empty` two seconds in on the 10 s window.
     let p = s
-        .alloc_huge(size, 16, 0, Tracked::assume_new(), Tracked::assume_new())
+        .alloc_huge(
+            size,
+            16,
+            0,
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
         .0;
     assert!(!p.is_null());
     let t0 = free_at(s, p);
@@ -123,7 +130,14 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     s.arena0
         .set_decay_ms(10_000, Tracked::assume_new(), Tracked::assume_new());
     let p = s
-        .alloc_huge(size, 16, 0, Tracked::assume_new(), Tracked::assume_new())
+        .alloc_huge(
+            size,
+            16,
+            0,
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
         .0;
     let t0 = free_at(s, p);
     assert_eq!(
@@ -170,7 +184,14 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert!(s.huge.purge_on_free());
     assert_eq!(s.huge_decay_ns(), 0);
     let p = s
-        .alloc_huge(size, 16, 0, Tracked::assume_new(), Tracked::assume_new())
+        .alloc_huge(
+            size,
+            16,
+            0,
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
         .0;
     s.free_huge(page_of(s, p), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(s.huge.oldest_empty(), 0);
@@ -204,7 +225,14 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert_eq!(s.huge_decay_ns(), crate::purge::NEVER);
     assert_eq!(s.decay_ns(), 10 * S);
     let p = s
-        .alloc_huge(size, 16, 0, Tracked::assume_new(), Tracked::assume_new())
+        .alloc_huge(
+            size,
+            16,
+            0,
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
         .0;
     let t0 = free_at(s, p);
     assert_eq!(
@@ -301,7 +329,7 @@ impl TestHeap {
     pub(crate) fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
         let (p, zero, _) = self
             .heap()
-            .alloc_huge(self.s, size, align, Tracked::assume_new());
+            .alloc_huge(self.s, size, align, true, Tracked::assume_new());
         (p, zero)
     }
 
@@ -2451,6 +2479,7 @@ fn huge_runs_go_through_the_heap_without_caches() {
             usize::MAX,
             1,
             0,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new()
         )
@@ -4233,6 +4262,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
             5 * page_size() + 1,
             1,
             0,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
         )
@@ -4268,6 +4298,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
                 usize::MAX,
                 1,
                 0,
+                false,
                 Tracked::assume_new(),
                 Tracked::assume_new()
             )
@@ -4324,7 +4355,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     // SAFETY: `hp` is a live heap from `create_detached`, used only here.
     let h = unsafe { &mut *hp };
     assert!(s.arenas.get_existing(2).is_none());
-    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, Tracked::assume_new());
+    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
     assert!(!p.is_null());
     let a2 = s
         .arenas
@@ -4352,6 +4383,7 @@ fn a_huge_allocation_in_an_arena_that_does_not_exist_aborts() {
         300 * 1024,
         16,
         77,
+        false,
         Tracked::assume_new(),
         Tracked::assume_new(),
     );
