@@ -88,8 +88,12 @@ challoc supports Chainguard OS and Wolfi containers with glibc 2.44 or
 newer, on host kernels 5.14 and newer, on x86_64 and on aarch64 with 4,
 16 or 64 KiB pages. Newer kernels and CPUs turn features on at run time (the
 table below); they are never required, and a missing feature changes
-cost, memory or detection, never allocation results. Other distributions,
-libcs and operating systems are not supported.
+cost, memory or detection, never allocation results. A process needs
+about 435 GiB of address space (`RLIMIT_AS`) at quantum 16, the minimum
+layout of `docs/design.md` section 2; under a data limit
+(`RLIMIT_DATA`) in force from the start, challoc makes no metadata
+writable before it uses it. Other distributions, libcs and
+operating systems are not supported.
 
 ## Building
 
