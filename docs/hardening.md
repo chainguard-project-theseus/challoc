@@ -61,12 +61,15 @@ same-class frees until a whole flush (thread exit,
 `thread.tcache.flush`, `tcache.flush`) or a partial one that reaches it.
 Between the call and that flush the slot can be handed out twice, which
 is jemalloc's behaviour for every free: if a `malloc` takes one copy
-before the flush the duplicate is not detected, and a sized free of a
-slot start challoc has not handed out enters the cache, so if a refill
-claims that slot before the flush, the flush releases it under its new
-owner and it is live twice. This trade is made for jemalloc parity: on
-Valkey's write path the exact check's bitmap load is a cache miss per
-free, most of what once separated challoc from jemalloc there.
+before the flush the duplicate is not detected. A sized free of a slot
+start challoc has not handed out enters the cache too: the thread's next
+`malloc` of the class pops it (a slot the caller chose, writable at once
+wherever its slab's memory is committed, which includes the run
+committed ahead of the newest slab), and if a refill claims that slot
+before the flush, the flush releases it under its new owner and it is
+live twice. This trade is made for jemalloc parity: on Valkey's write
+path the exact check's bitmap load is a cache miss per free, most of
+what once separated challoc from jemalloc there.
 
 ## (2) Zero on free and slot randomisation
 

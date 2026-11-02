@@ -106,10 +106,12 @@ These hold on every supported host with the default configuration:
   not detected: it reports the class's usable size, or reallocates.
 - **The sized path defers its slot check.** `sdallocx` and `free_sized`
   check the size at the call but leave the invalid- and double-free
-  check to a flush, with no bound on when. A sized free of a slot start
-  challoc has not handed out can enter a cache and, if a refill claims
-  the slot first, make it live twice. That deferral is jemalloc's
-  behaviour for every free.
+  check to a flush, with no bound on when. A sized free of any slot start
+  of the named class, including one challoc never returned, enters the
+  thread cache: the thread's next `malloc` of that class returns it (a
+  slot the caller chose, writable at once if its slab's memory is
+  committed), and if a refill claims the slot before a flush, the slot is
+  live twice. That deferral is jemalloc's behaviour for every free.
 - **Randomisation is probabilistic.** Class region addresses are
   randomised. Slot order within a class is predictable unless
   `slot_randomize:true` is set.
