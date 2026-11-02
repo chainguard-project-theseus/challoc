@@ -13,7 +13,7 @@ file.
 ## `store`
 
 src/vspec/entry.rs:75. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers); the pointers' provenance (the harness compares addresses); `T = Arena`, the instance challoc uses (checked at `T = u64`)).
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -33,7 +33,7 @@ pub fn store<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): 
 ## `load`
 
 src/vspec/entry.rs:94. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers); the pointers' provenance (the harness compares addresses); `T = Arena`, the instance challoc uses (checked at `T = u64`)).
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 

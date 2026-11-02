@@ -14,7 +14,7 @@ file.
 ## `load`
 
 src/vspec/byte.rs:92. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::byte_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `b.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
@@ -33,7 +33,7 @@ pub fn load(b: &AtomicU8, ordering: Ordering, Tracked(perm): Tracked<&BytePerm>)
 ## `store`
 
 src/vspec/byte.rs:110. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::byte_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `b.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -53,7 +53,7 @@ pub fn store(b: &AtomicU8, v: u8, ordering: Ordering, Tracked(perm): Tracked<&mu
 ## `compare_exchange`
 
 src/vspec/byte.rs:132. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::byte_compare_exchange; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `b.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the byte held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
 

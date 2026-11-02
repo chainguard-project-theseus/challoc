@@ -17,7 +17,7 @@ file.
 ## `store_usize`
 
 src/vspec/atom.rs:109. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -37,7 +37,7 @@ pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm):
 ## `load_usize`
 
 src/vspec/atom.rs:134. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_load_usize; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
@@ -72,7 +72,7 @@ pub(crate) fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
 ## `store_usize_at`
 
 src/vspec/atom.rs:178. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize_at; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
 
 > `(*p).store(v, ordering)` through a pointer to an atomic, with the permission of the atomic it names (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -117,7 +117,7 @@ pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(
 ## `load_u16_at`
 
 src/vspec/atom.rs:260. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_load_u16_at; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write to the owner word goes through `class::table::store_owner`, itself trusted, or vstd's `AtomicU16::store` spec, apart from the test helper `SlabTable::corrupt_owner_word`)).
 
 > `(*p).load(ordering)` through `perm`, the permission to the atomic at `p`: the value the permission holds ([`u16_value`]).
 
