@@ -1140,13 +1140,20 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
     let f = crate::heap::mallocx::Flags::decode(flags as u32);
     let _ = jemalloc::usable_for(shared, size, &f).unwrap_or(0);
     // `mallinfo2` after its `shared()`: its calls that carry a contract.
-    let tracked mut sd = Ghost((Seq::<crate::stats::ArenaStats>::empty(), Seq::<int>::empty()));
-    // Premise (lock order), as at an entry point: it holds no allocator
-    // lock.
-    let tracked mut ord = axiom_entry();
-    let all = crate::stats::collect_all(shared, Tracked(&mut sd), Tracked(&mut ord));
-    let page = shared.regions.page_size();
-    let _ = crate::stats::fig_mul(all.pdirty, page);
+    let first = crate::stats::Scratch::new(&shared.meta);
+    let _ = glibc::zero_info();
+    if let Some(mut sc) = first {
+        let tracked mut sd = Ghost((Seq::<crate::stats::ArenaStats>::empty(), Seq::<int>::empty()));
+        // Premise (lock order), as at an entry point: it holds no
+        // allocator lock.
+        let tracked mut ord = axiom_entry();
+        let pair = sc.record();
+        crate::stats::collect_all(shared, &mut pair.a, &mut pair.b, Tracked(&mut sd), Tracked(&mut ord));
+        let all = &sc.get().a;
+        let page = shared.regions.page_size();
+        let _ = crate::stats::fig_mul(all.pdirty, page);
+        sc.free(&shared.meta);
+    }
     // `challoc_features` after its `shared()`: the line's build on the
     // first request, or the wait for it.
     let tracked published;
@@ -1930,6 +1937,7 @@ extern "C" fn fork_prepare() {
     // the C contract; and the prepare handlers that run before ours have
     // returned).
     let tracked mut ord = crate::lock::axiom_fork_entry();
+    crate::stats::pool_fork_prepare();
     // A deferred cgroup discovery (design 11) runs now, before the locks,
     // whatever the deferral (in the record's cell, with little stack of
     // its own): a process that forks (a PostgreSQL postmaster, a prefork
@@ -2389,6 +2397,7 @@ extern "C" fn fork_child() {
         reveal(crate::sys::cgroup::in_fork_child);
     }
     s.cgroup_fork_child();
+    crate::stats::pool_fork_child();
     let tracked published;
     proof {
         s.lemma_wf_ready();

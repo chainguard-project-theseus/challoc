@@ -4,7 +4,12 @@
 //! Everything is formatted with `core::fmt` into a small stack buffer and
 //! handed on in chunks: to the caller's `write_cb`, to the `malloc_message`
 //! hook, to a `FILE *` through `fwrite`, or to stderr with `write(2)`.
-//! Nothing allocates. The figures are *live* (`stats::collect`, not the
+//! Nothing allocates from the heap: the per-arena figures are collected
+//! into one or two `stats::Scratch` records, metadata objects taken at the
+//! entry point before any lock and given back before it returns, so a
+//! report runs on a `PTHREAD_STACK_MIN` thread; without them it writes
+//! `(no memory)`. No lock is held across a write, so a callback may
+//! allocate or report. The figures are *live* (`stats::collect`, not the
 //! `epoch` snapshot), as jemalloc's report and glibc's `malloc_info` are.
 //!
 //! `malloc_stats_print(write_cb, cbopaque, opts)` follows jemalloc's general
@@ -467,10 +472,33 @@ fn decay_ms(ns: u64) -> (r: i64)
 // Text report.
 // ---------------------------------------------------------------------------
 
+/// The text report's general section: [`text_settings`], then the
+/// cgroup (whose sample reads its files, the deepest call of a report),
+/// policy, advice and `thp:` lines, each from a frame of its own (design
+/// 13.8).
+#[inline(never)]
+fn text_general<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapshot, features: &str) -> fmt::Result
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    text_settings(out, shared, snap, features)?;
+    cgroup_line(out, shared)?;
+    policy_line(out, shared)?;
+    advice_line(out)?;
+    thp_line(out)
+}
+
+/// The general section's banner, options, features (the feature line,
+/// `features`) and totals.
 // The indexed loops stand for `for key in KEYS`: Verus does not specify a
 // slice's `IntoIterator`.
 #[allow(clippy::needless_range_loop)]
-fn text_general<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result
+// Out of line: the report's sections' formatting frames do not add up
+// in one (design 13.8).
+#[inline(never)]
+fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapshot, features: &str) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -519,7 +547,7 @@ fn text_general<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapshot
         let key = &inert[k];
         writeln!(out, "  opt.{}: accepted, no effect", key)?;
     }
-    writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
+    writeln!(out, "Kernel and CPU features: {}", features)?;
     writeln!(
         out,
         "Sealed ranges: {} of {}",
@@ -589,17 +617,22 @@ fn text_general<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapshot
         out,
         "Metadata: reserved {}, committed {}, writable {}, allocated {}, bumped {}, tables {}, small tables {}",
         m.len, m.committed, m.writable, m.allocated, m.bumped, m.reserved, m.eager
-    )?;
-    // Design 11: the figures as last sampled (a sample is taken here if the
-    // 10 ms window allows), or why nothing is tracked.
+    )
+}
+
+/// The cgroup line (design 11): the figures as last sampled (by
+/// [`sample_cgroup`], at the entry point), or why nothing is tracked.
+// Out of line, as `text_settings`.
+#[inline(never)]
+fn cgroup_line<W: Write + Report>(out: &mut W, shared: &Shared) -> fmt::Result
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
     let tracked mut lent = out.lend();
     let cgroup = shared.cgroup_now(Tracked(&mut lent));
-    cgroup.sample(crate::sys::now_coarse_ns());
     // The `Cgroup` itself, not the reference to it.
-    writeln!(out, "{}", *cgroup)?;
-    policy_line(out, shared)?;
-    advice_line(out)?;
-    thp_line(out)
+    writeln!(out, "{}", *cgroup)
 }
 
 /// The `thp:` line (design 7, 10 and 17): the key,
@@ -656,6 +689,9 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
 /// what it gives arena 0.
+// Out of line: the report's sections' formatting frames do not add up
+// in one (design 13.8).
+#[inline(never)]
 fn policy_line<W: Write + Report>(out: &mut W, shared: &Shared) -> fmt::Result
     requires
         crate::sys::may_syscall(),
@@ -744,6 +780,9 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
     )
 }
 
+// Out of line: the report's sections' formatting frames do not add up
+// in one (design 13.8).
+#[inline(never)]
 fn text_arena<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result
     requires
         crate::sys::may_abort(),
@@ -838,6 +877,9 @@ fn text_arena<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats, bin
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
 #[allow(clippy::while_let_loop)]
+// Out of line: the report's sections' formatting frames do not add up
+// in one (design 13.8).
+#[inline(never)]
 fn slab_histogram<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result
     requires
         crate::sys::may_abort(),
@@ -940,16 +982,18 @@ fn hist_line<W: Write>(
     )
 }
 
-fn text_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
+/// The text report; `tmp` is the [`stats::Scratch`] record each arena's
+/// figures are collected into in turn, and `features` the feature line.
+fn text_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts, tmp: &mut ArenaStats, features: &str) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
     let tracked mut lent = out.lend();
-    let snap = stats::collect(shared, Tracked(&mut lent));
+    let snap = stats::collect(shared, tmp, Tracked(&mut lent));
     if !o.no_general {
-        text_general(out, shared, &snap)?;
+        text_general(out, shared, &snap, features)?;
     }
     if !o.no_arenas {
         // Every arena with its live figures: a scan of every index below
@@ -964,8 +1008,8 @@ fn text_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts) -> fmt
         {
             if let Some(a) = stats::arena_at(shared, i) {
                 let tracked mut lent = out.lend();
-                let s = stats::collect_arena(shared, a, Tracked(&mut lent));
-                text_arena(out, a, &s, !o.no_bins)?;
+                stats::collect_arena(shared, a, tmp, Tracked(&mut lent));
+                text_arena(out, a, tmp, !o.no_bins)?;
             }
         }
     }
@@ -982,6 +1026,9 @@ fn text_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts) -> fmt
 /// follows (the `stats` line then ends with a comma).
 // As in `text_general`.
 #[allow(clippy::needless_range_loop)]
+// Out of line: the report's sections' formatting frames do not add up
+// in one (design 13.8).
+#[inline(never)]
 fn json_general<W: Write + Report>(
     out: &mut W,
     shared: &Shared,
@@ -1054,8 +1101,8 @@ fn json_general<W: Write + Report>(
         }
     )?;
     let tracked mut lent = out.lend();
+    // As last sampled, by `sample_cgroup` at the entry point.
     let cg = shared.cgroup_now(Tracked(&mut lent));
-    cg.sample(crate::sys::now_coarse_ns());
     // Out of the `writeln!`, as in `policy_line`.
     let tracked mut lent = out.lend();
     let empty_bytes = crate::policy::empty_bytes(shared, Tracked(&mut lent));
@@ -1097,6 +1144,9 @@ fn json_general<W: Write + Report>(
 
 /// One arena's object of the JSON report's `stats.arenas`, without the
 /// separating comma (the caller joins the arenas) or a trailing newline.
+// Out of line: the report's sections' formatting frames do not add up
+// in one (design 13.8).
+#[inline(never)]
 fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
     writeln!(out, "\t\t\t\"{}\": {{", arena.index())?;
     writeln!(
@@ -1163,15 +1213,16 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 
 /// The JSON report (`J`): the `jemalloc` object with `version` and
 /// `implementation`, then [`json_general`] and the `stats.arenas` object of
-/// [`json_arena`]s, each under its option letter as in [`text_report`].
-fn json_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
+/// [`json_arena`]s, each under its option letter as in [`text_report`]
+/// (`tmp` as there).
+fn json_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts, tmp: &mut ArenaStats) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
 {
     let tracked mut lent = out.lend();
-    let snap = stats::collect(shared, Tracked(&mut lent));
+    let snap = stats::collect(shared, tmp, Tracked(&mut lent));
     writeln!(out, "{{")?;
     writeln!(out, "\t\"jemalloc\": {{")?;
     writeln!(out, "\t\t\"version\": \"{}\",", super::mallctl::VERSION)?;
@@ -1199,12 +1250,12 @@ fn json_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts) -> fmt
         {
             if let Some(a) = stats::arena_at(shared, i) {
                 let tracked mut lent = out.lend();
-                let s = stats::collect_arena(shared, a, Tracked(&mut lent));
+                stats::collect_arena(shared, a, tmp, Tracked(&mut lent));
                 if !first {
                     writeln!(out, ",")?;
                 }
                 first = false;
-                json_arena(out, a, &s, !o.no_bins)?;
+                json_arena(out, a, tmp, !o.no_bins)?;
             }
         }
         writeln!(out)?;
@@ -1246,14 +1297,72 @@ fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cb
     }
     // Premise (lock order): the report's C caller holds no allocator
     // lock, and `shared` releases every lock it takes before it returns.
-    let tracked ord = axiom_entry();
+    let tracked mut ord = axiom_entry();
+    // The general section's two deep calls, made here rather than below
+    // the report's frames (design 13.8): the cgroup sample and the
+    // feature line (built at its first request).
+    let mut features = "";
+    if !o.no_general {
+        sample_cgroup(shared, Tracked(&mut ord));
+        if !o.json {
+            features = super::feature_line();
+        }
+    }
+    stats_report(target, shared, &o, features, Tracked(ord));
+}
+
+/// The general section's cgroup sample (design 11; taken if the 10 ms
+/// window allows), from the entry point's frame rather than below the
+/// report's: the sample reads the cgroup's files, the deepest call a
+/// report makes (design 13.8). [`cgroup_line`] and [`json_general`] print
+/// it.
+#[inline(never)]
+fn sample_cgroup(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(crate::lock::rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
+    shared.cgroup_now(Tracked(ord)).sample(crate::sys::now_coarse_ns());
+}
+
+/// The report of [`stats_print`] into `target` with the lock order token
+/// `ord` and the feature line `features`, out of line so its sink and
+/// frames are below the entry point's.
+#[inline(never)]
+fn stats_report(target: Target, shared: &Shared, o: &Opts, features: &str, Tracked(ord): Tracked<LockOrder<'static>>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        ord.top() == 0,
+{
+    // The record each arena's figures are collected into (about 6 KiB
+    // with its bins), taken before any lock rather than on the caller's
+    // stack, and given back before the report's last write.
+    let scratch = stats::Scratch::new(&shared.meta);
     let mut sink = Sink::new(target, Tracked(ord));
-    let _ = if o.json {
-        json_report(&mut sink, shared, &o)
-    } else {
-        text_report(&mut sink, shared, &o)
-    };
+    match scratch {
+        Some(mut sc) => {
+            let _ = if o.json {
+                json_report(&mut sink, shared, o, &mut sc.record().a)
+            } else {
+                text_report(&mut sink, shared, o, &mut sc.record().a, features)
+            };
+            sc.free(&shared.meta);
+        },
+        None => {
+            let _ = no_memory(&mut sink);
+        },
+    }
     sink.flush();
+}
+
+/// A report's one line when there is no metadata object for its scratch
+/// records.
+fn no_memory<W: Write>(out: &mut W) -> fmt::Result {
+    writeln!(out, "(no memory)")
 }
 
 /// `malloc_stats_print(write_cb, cbopaque, opts)`. The C entry points
@@ -1313,7 +1422,9 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
     writeln!(out, "</heap>")
 }
 
-fn xml_report<W: Write + Report>(out: &mut W, shared: &Shared) -> fmt::Result
+/// The `malloc_info` document; `sum` and `tmp` are the [`stats::Scratch`]
+/// records of the totals and of each arena's figures in turn.
+fn xml_report<W: Write + Report>(out: &mut W, shared: &Shared, sum: &mut ArenaStats, tmp: &mut ArenaStats) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1331,13 +1442,14 @@ fn xml_report<W: Write + Report>(out: &mut W, shared: &Shared) -> fmt::Result
     {
         if let Some(a) = stats::arena_at(shared, i) {
             let tracked mut lent = out.lend();
-            let s = stats::collect_arena(shared, a, Tracked(&mut lent));
-            xml_heap(out, a.index() as usize, &s)?;
+            stats::collect_arena(shared, a, tmp, Tracked(&mut lent));
+            xml_heap(out, a.index() as usize, tmp)?;
         }
     }
     let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
     let tracked mut lent = out.lend();
-    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut lent));
+    stats::collect_all(shared, sum, tmp, Tracked(&mut rd), Tracked(&mut lent));
+    let all: &ArenaStats = sum;
     // The two `iter().map(..).sum()`s over `bins[..NBINS]` and
     // `bins[NBINS..]`, as one indexed loop.
     let (mut count, mut large) = (0usize, 0usize);
@@ -1387,8 +1499,10 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Trac
     // Premise (lock order): the report's C caller holds no allocator
     // lock, and `shared` releases every lock it takes before it returns.
     let tracked ord = axiom_entry();
+    // The totals' and each arena's records, as in `stats_print`.
+    let scratch = stats::Scratch::new(&shared.meta);
     let mut sink = Sink::new(file_target(stream), Tracked(ord));
-    let _ = xml_report(&mut sink, shared);
+    pair_report(&mut sink, shared, scratch, true);
     sink.flush();
     0
 }
@@ -1404,14 +1518,42 @@ pub fn malloc_stats()
     // Premise (lock order): the report's C caller holds no allocator
     // lock, and `shared` releases every lock it takes before it returns.
     let tracked ord = axiom_entry();
+    // The totals' and each arena's records, as in `stats_print`.
+    let scratch = stats::Scratch::new(&shared.meta);
     let mut sink = Sink::new(stderr_target(), Tracked(ord));
-    let _ = glibc_stats(&mut sink, shared);
+    pair_report(&mut sink, shared, scratch, false);
     sink.flush();
+}
+
+/// [`xml_report`] (`xml`) or [`glibc_stats`] into `sink` with the
+/// scratch's two records, which it gives back; a [`no_memory`] line when
+/// there is none.
+fn pair_report<W: Write + Report>(sink: &mut W, shared: &Shared, scratch: Option<stats::Scratch>, xml: bool)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        scratch matches Some(s) ==> s.wf() && s.meta_id() == shared.meta.live_id(),
+{
+    match scratch {
+        Some(mut sc) => {
+            let pair = sc.record();
+            let _ = if xml {
+                xml_report(sink, shared, &mut pair.a, &mut pair.b)
+            } else {
+                glibc_stats(sink, shared, &mut pair.a, &mut pair.b)
+            };
+            sc.free(&shared.meta);
+        },
+        None => {
+            let _ = no_memory(sink);
+        },
+    }
 }
 
 /// The lines of [`malloc_stats`]: the immediately called closure, as a
 /// function.
-fn glibc_stats<W: Write + Report>(sink: &mut W, shared: &Shared) -> fmt::Result
+fn glibc_stats<W: Write + Report>(sink: &mut W, shared: &Shared, sum: &mut ArenaStats, tmp: &mut ArenaStats) -> fmt::Result
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1427,7 +1569,8 @@ fn glibc_stats<W: Write + Report>(sink: &mut W, shared: &Shared) -> fmt::Result
     {
         if let Some(a) = stats::arena_at(shared, i) {
             let tracked mut lent = sink.lend();
-            let s = stats::collect_arena(shared, a, Tracked(&mut lent));
+            stats::collect_arena(shared, a, tmp, Tracked(&mut lent));
+            let s: &ArenaStats = tmp;
             writeln!(sink, "Arena {}:", a.index())?;
             writeln!(
                 sink,
@@ -1439,7 +1582,8 @@ fn glibc_stats<W: Write + Report>(sink: &mut W, shared: &Shared) -> fmt::Result
     }
     let tracked mut rd: Ghost<(Seq<stats::ArenaStats>, Seq<int>)> = Ghost(arbitrary());
     let tracked mut lent = sink.lend();
-    let all = stats::collect_all(shared, Tracked(&mut rd), Tracked(&mut lent));
+    stats::collect_all(shared, sum, tmp, Tracked(&mut rd), Tracked(&mut lent));
+    let all: &ArenaStats = sum;
     writeln!(sink, "Total (incl. mmap):")?;
     writeln!(sink, "system bytes     = {:>10}", all.resident)?;
     writeln!(sink, "in use bytes     = {:>10}", fig_add(all.small_allocated, all.large_allocated))?;
@@ -2174,7 +2318,8 @@ mod tests {
                 vstd::prelude::Tracked::assume_new(),
             );
         }
-        let _ = stats::collect(crate::api::shared(), Tracked::assume_new());
+        let mut tmp = stats::ArenaStats::empty(0);
+        let _ = stats::collect(crate::api::shared(), &mut tmp, Tracked::assume_new());
         unsafe extern "C" fn discard(_: *mut c_void, _: *const c_char) {}
         malloc_stats_print(
             WriteCallback(Some(discard)),

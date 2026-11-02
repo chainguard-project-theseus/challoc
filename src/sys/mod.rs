@@ -1175,6 +1175,23 @@ mod linux {
         unsafe { raw::syscall0(nr::GETTID) as i32 }
     }
 
+    /// Whether thread `tid` of this process has exited: `tgkill` with
+    /// signal 0, which only checks that the thread exists, says `ESRCH`.
+    /// (In a `fork` child every thread of the parent is gone; the forking
+    /// one has a new ID.)
+    // The unit tests have no scratch pool, its one caller.
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn thread_gone(tid: u32) -> bool
+        requires
+            crate::sys::may_syscall(),
+    {
+        let pid = getpid() as usize;
+        // SAFETY: signal 0 delivers nothing.
+        let r = unsafe { raw::syscall3(nr::TGKILL, pid, tid as usize, 0) };
+        // `ESRCH` (3 on both targets).
+        r as isize == -3
+    }
+
     /// `RLIMIT_DATA` in `<sys/resource.h>`, the same on both targets.
     const RLIMIT_DATA: usize = 2;
 

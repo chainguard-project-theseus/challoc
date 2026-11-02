@@ -11,10 +11,19 @@ file.
 | `fig_mul` | external_body | core library | Kani | discharged |
 | `fig_add64` | external_body | core library | Kani | discharged |
 | `axiom_s...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
+| `zero_records` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `stack_mark` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `pool_take` | external_body | allocator invariant | none (assumption) | trusted |
+| `pool_reserve` | external_body | allocator invariant | none (assumption) | trusted |
+| `pool_fill` | external_body | allocator invariant | none (assumption) | trusted |
+| `pool_unreserve` | external_body | allocator invariant | none (assumption) | trusted |
+| `pool_release` | external_body | allocator invariant | none (assumption) | trusted |
+| `pool_fo...repare` | external_body | allocator invariant | none (assumption) | trusted |
+| `pool_fork_child` | external_body | allocator invariant | none (assumption) | trusted |
 
 ## `fig_add`
 
-src/stats.rs:484. Kind: external_body. Category: core library.
+src/stats.rs:545. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_add_exact).
 
 > `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
@@ -27,7 +36,7 @@ pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
 
 ## `fig_mul`
 
-src/stats.rs:495. Kind: external_body. Category: core library.
+src/stats.rs:556. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_mul_exact).
 
 > `a * b` for a statistics figure; see [`fig_add`].
@@ -40,7 +49,7 @@ pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
 
 ## `fig_add64`
 
-src/stats.rs:506. Kind: external_body. Category: core library.
+src/stats.rs:567. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_add64_exact).
 
 > `a + b` for a statistics counter; see [`fig_add`].
@@ -53,7 +62,7 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 
 ## `axiom_snapshot_lock_inv`
 
-src/stats.rs:605. Kind: axiom. Category: allocator invariant.
+src/stats.rs:666. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The snapshot an `epoch` stores satisfies [`Snapshot::inv`].
@@ -63,4 +72,112 @@ pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
     ensures
         #[trigger] crate::lock::lock_inv(v) == v.inv(),
 ;
+```
+
+## `zero_records`
+
+src/stats.rs:2060. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> Zero the records at `p` in place: every field of an `ArenaStats` is an integer, for which zero is a value.
+
+```rust
+fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPair>>)
+    requires
+        old(perm).ptr() == p,
+    ensures
+        final(perm).ptr() == p,
+        final(perm).is_init(),
+```
+
+## `stack_mark`
+
+src/stats.rs:2079. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
+
+> The caller's stack position, as the address of a local of this out-of-line function: [`Scratch::new`] records it with a pooled object, and a later call of the same thread from as high on the stack (not deeper, inside the holder's callback) finds the holder's frame gone ([`pool_take`]).
+
+```rust
+fn stack_mark() -> usize
+```
+
+## `pool_take`
+
+src/stats.rs:2095. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> A pooled object for thread `tid` at stack position `mark`, with its permission: one no call holds, one `tid`'s call abandoned (held by `tid` at a mark at or below `mark`: that call's frame is gone, since a call made from inside it would be deeper), or one a thread that has exited held.
+
+Body mints Tracked at line 2099.
+
+```rust
+fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)
+    ensures
+        r matches Some((p, perm)) ==> perm@.ptr() == p && perm@.is_init(),
+```
+
+## `pool_reserve`
+
+src/stats.rs:2106. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> An empty slot of the pool, held by `tid` for the object the caller allocates next; `None` when every slot has an object.
+
+```rust
+fn pool_reserve(tid: u32) -> Option<usize>
+```
+
+## `pool_fill`
+
+src/stats.rs:2114. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Put `p` in the reserved `slot`, held at `mark`: `true` (the object is then the pool's, never freed; `false` only in the unit tests).
+
+```rust
+fn pool_fill(slot: usize, p: *mut StatsPair, mark: usize) -> bool
+```
+
+## `pool_unreserve`
+
+src/stats.rs:2121. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Give back a reserved `slot` the caller could not fill.
+
+```rust
+fn pool_unreserve(slot: usize)
+```
+
+## `pool_release`
+
+src/stats.rs:2127. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Give the pooled `p` back.
+
+```rust
+fn pool_release(p: *mut StatsPair)
+```
+
+## `pool_fork_prepare`
+
+src/stats.rs:2134. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The fork prepare handler records the forking thread for [`pool_fork_child`].
+
+```rust
+pub fn pool_fork_prepare()
+```
+
+## `pool_fork_child`
+
+src/stats.rs:2144. Kind: external_body. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> The child's fork handler: the pooled objects the forking thread held (a `fork` from inside a statistics callback holds one, which the callback's caller still uses after the fork returns) are held under its ID in the child, so that no call of the child takes them as an exited thread's.
+
+```rust
+pub fn pool_fork_child()
 ```

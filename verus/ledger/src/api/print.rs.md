@@ -16,7 +16,7 @@ file.
 
 ## `WriteCallback`
 
-src/api/print.rs:64. Kind: ext_type_spec. Category: function pointer.
+src/api/print.rs:69. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Opaque: `WriteCallback` holds a function pointer type, which Verus rejects.
@@ -27,7 +27,7 @@ pub struct ExWriteCallback(WriteCallback);
 
 ## `call_back`
 
-src/api/print.rs:109. Kind: external_body. Category: function pointer.
+src/api/print.rs:114. Kind: external_body. Category: function pointer.
 Tool: none (assumption). Status: trusted.
 
 > Call the caller's callback `cb`, when it gave one, with `opaque` and the C string in `buf`, which holds a NUL; whether it did.
@@ -47,7 +47,7 @@ fn call_back(
 
 ## `write_file`
 
-src/api/print.rs:143. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:148. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `fwrite` of `s` to the caller's stream `f`.
@@ -61,7 +61,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 
 ## `word`
 
-src/api/print.rs:447. Kind: external_body. Category: core library.
+src/api/print.rs:452. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: api::print::kani_print::word_returns; not checked: the harness checks C strings up to 3 bytes; `core::str::from_utf8`'s word-at-a-time ASCII path (16 bytes and longer) is not reached).
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
@@ -72,7 +72,7 @@ fn word(s: &CStr) -> &str
 
 ## `hist_line`
 
-src/api/print.rs:927. Kind: external_body. Category: core library.
+src/api/print.rs:969. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
@@ -91,7 +91,7 @@ fn hist_line<W: Write>(
 
 ## `axiom_c_call`
 
-src/api/print.rs:1489. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1633. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
