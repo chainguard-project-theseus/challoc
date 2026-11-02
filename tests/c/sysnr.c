@@ -131,6 +131,11 @@
 #else
 #define PV_setpriority printf("-")
 #endif
+#ifdef __NR_prlimit64
+#define PV_prlimit64 printf("%d", __NR_prlimit64)
+#else
+#define PV_prlimit64 printf("-")
+#endif
 
 int main(void) {
     P(read); P(write); P(close); P(mmap); P(mprotect); P(munmap);
@@ -138,6 +143,6 @@ int main(void) {
     P(gettid); P(futex); P(clock_gettime); P(exit_group); P(tgkill);
     P(openat); P(getrandom); P(mseal);
     P(sched_getaffinity); P(sched_setaffinity); P(sched_setscheduler);
-    P(getpriority); P(setpriority);
+    P(getpriority); P(setpriority); P(prlimit64);
     return 0;
 }

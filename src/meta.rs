@@ -34,9 +34,12 @@
 //! reservation side: making them
 //! writable whole would put never-touched address space into core dumps,
 //! `mlockall` and `RLIMIT_DATA`. Eager carving is off when the kernel
-//! charges writable bytes against its commit limit (`vm.overcommit_memory=2`)
-//! or when the region can take PMD-sized pages (any `thp` key but `never`);
-//! both are probed on the first table.
+//! charges writable bytes against its commit limit (`vm.overcommit_memory=2`),
+//! when the process runs under a finite `RLIMIT_DATA` (which charges them
+//! too: the eager tables are ~85 MiB writable at init, enough to make a
+//! data limit under ~90 MiB refuse the allocator's start), or when the
+//! region can take PMD-sized pages (any `thp` key but `never`); all three
+//! are probed on the first table.
 //!
 //! All state sits behind one [`Lock`], the metadata lock of design section
 //! 9. None of this is on the `malloc`/`free` fast path.
@@ -3353,13 +3356,15 @@ proof fn lemma_free_bytes_zero(lists: Seq<Seq<*mut FreeNode>>, n: nat)
 
 /// Whether tables may be carved eagerly on this host (the module doc):
 /// the `thp` key is `never` (the region is `MADV_NOHUGEPAGE`d, or the
-/// kernel has no THP, so a table's first touch costs one page) and the
-/// is charged again). Read once, on the first table.
+/// kernel has no THP, so a table's first touch costs one page), no finite
+/// `RLIMIT_DATA` charges the writable bytes, and the kernel's overcommit
+/// mode is not `2` (where they are charged again). Read once, on the
+/// first table.
 fn eager_policy() -> bool
     requires
         crate::sys::may_syscall(),
 {
-    if !crate::thp::is_never() {
+    if !crate::thp::is_never() || crate::sys::data_limited() {
         return false;
     }
     // Spelled as bytes so the verifier sees the NUL `sys::open` requires.

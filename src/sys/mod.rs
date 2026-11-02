@@ -1175,6 +1175,30 @@ mod linux {
         unsafe { raw::syscall0(nr::GETTID) as i32 }
     }
 
+    /// `RLIMIT_DATA` in `<sys/resource.h>`, the same on both targets.
+    const RLIMIT_DATA: usize = 2;
+
+    /// Whether the process runs under a finite `RLIMIT_DATA` (the soft
+    /// limit of `prlimit64(0, RLIMIT_DATA)`). Since Linux 4.7 the limit
+    /// charges every private writable mapping, committed metadata
+    /// included, so the metadata allocator keeps never-touched tables off
+    /// the writable side under one (`meta.rs`). A refused call (a seccomp
+    /// filter) reads as limited: the safe side.
+    pub fn data_limited() -> bool
+        requires
+            crate::sys::may_syscall(),
+    {
+        // `struct rlimit64`: the soft and the hard limit.
+        let mut lim = [0u64; 2];
+        // SAFETY: `lim` is a writable `rlimit64` for the whole call; no
+        // new limit is passed.
+        let r = unsafe { raw::syscall4(nr::PRLIMIT64, 0, RLIMIT_DATA, 0, lim.as_mut_ptr() as usize) };
+        match decode(r) {
+            Ok(_) => lim[0] != u64::MAX,
+            Err(_) => true,
+        }
+    }
+
     /// A word below `2^k` has at most `k` bits set.
     proof fn lemma_popcount_bound(x: u64, k: nat)
         requires
