@@ -1091,7 +1091,10 @@ as its last holder left it and only that thread runs allocator code
 until the release. What the fork handlers snapshot or reset may not
 change in the window: the background thread neither starts nor stops
 there (`mallctl("background_thread")` is refused with `EAGAIN` and
-changes nothing, and the lazy start waits for a tick after the fork;
+changes nothing, and the lazy start waits for a tick after the fork,
+though no test drives that path: `start_requested` and `start` refuse
+in the window, reached only by an auto-mode tick past the burst from a
+handler, which no test makes deterministic;
 `tests/c/fork_window.c`), since the child handler forgets a thread on
 the premise that none can exist yet; and no arena is built there
 (`arenas.create` is refused with `EAGAIN`; an allocation whose home
