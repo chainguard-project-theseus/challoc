@@ -168,13 +168,19 @@ run's guard page stops an overflow before them) and for a reused
 `Purged` extent only after `MADV_DONTNEED`ing the run's pages again under
 the huge lock as it places the run: the extent's own purge does not
 count, since a stale pointer or an underflow from the live run above (a
-freed run's guard goes with it) can have written it since. Under 16 KiB
-(`REDISCARD_MIN`) the `madvise` costs more than the clear, and a dirty
-(`Empty`) extent is cleared. jemalloc 5.3 always clears a small
+freed run's guard goes with it) can have written it since. The caller
+clears instead under 16 KiB (`REDISCARD_MIN`, where the `madvise` costs
+more than the clear), when the kernel refuses the call (`mlock`ed
+pages), after any lazy `MADV_FREE` purge (the extent may still be
+resident, and discarding it would make every reuse fault it back), and
+for a dirty (`Empty`) extent. jemalloc 5.3 always clears a small
 allocation from the tcache.
 The cost is the clear itself: on a `calloc` from fresh slab memory it
 moves the first-touch page faults into the call (a program that writes
 the block pays them anyway; one that leaves a large `calloc` sparse now
 has those pages resident). A huge allocation that reuses a purged
 extent of 16 KiB or more pays one `madvise` call (about 1 us, under the
-huge lock), `malloc` included; the pages stay unpopulated.
+huge lock), `malloc` included. It drops only the pages a stale write
+faulted back in since the eager purge, so the run stays unpopulated; in
+lazy mode there is no call and a zeroing caller clears the run, as
+before this rule.

@@ -13,8 +13,14 @@
  *   huge-uaf stale write to a purged huge run    mallocx(MALLOCX_ZERO | TCACHE_NONE)
  *   huge-under underflow from a live huge run    rallocx(MALLOCX_ZERO), the tail
  *              into a purged huge neighbour
+ *   huge-small stale write to a purged huge run under 16 KiB (REDISCARD_MIN:
+ *              no re-discard, the caller clears; mallocx/rallocx only, an
+ *              alignment makes the small run huge)
+ *   huge-locked stale write to a purged huge run, then mlock (the re-discard
+ *              is refused, the caller clears)
  */
 #include "common.h"
+#include <sys/mman.h>
 
 #define H (1u << 20)    /* a huge size (over MEDIUM_MAX) */
 #define PURGED_S 4096   /* 16 slots to a 64 KiB slab */
@@ -22,6 +28,8 @@
 #define RUN_SPAN 65536  /* how far the `run` overflow writes */
 
 enum entry { E_CALLOC, E_CALLOC_USABLE, E_MALLOCX, E_MALLOCX_DIRECT, E_RALLOCX, NENTRY };
+/* Extra MALLOCX_* flags for the mallocx and rallocx entries. */
+static int extra_flags;
 static const char *const entry_name[NENTRY] = {"calloc", "calloc_usable", "mallocx_zero", "mallocx_zero_direct",
                                                 "rallocx_zero"};
 
@@ -41,18 +49,18 @@ static unsigned char *zero_alloc(enum entry e, size_t n, size_t *from, size_t *t
         p = challoc_calloc_usable(1, n, &u);
         break;
     case E_MALLOCX:
-        p = mallocx(n, MALLOCX_ZERO);
+        p = mallocx(n, MALLOCX_ZERO | extra_flags);
         u = p ? sallocx(p, 0) : 0;
         break;
     case E_MALLOCX_DIRECT:
-        p = mallocx(n, MALLOCX_ZERO | MALLOCX_TCACHE_NONE);
+        p = mallocx(n, MALLOCX_ZERO | MALLOCX_TCACHE_NONE | extra_flags);
         u = p ? sallocx(p, 0) : 0;
         break;
     case E_RALLOCX: {
         unsigned char *q = mallocx(16, 0);
         REQUIRE(q != NULL, "mallocx(16)");
         memset(q, 0x5A, 16);
-        p = rallocx(q, n, MALLOCX_ZERO);
+        p = rallocx(q, n, MALLOCX_ZERO | extra_flags);
         if (p) {
             u = sallocx(p, 0);
             for (int i = 0; i < 16; i++)
@@ -238,6 +246,43 @@ static int huge_under_cell(struct cell *c)
 
 /* 0 or 1, never the failure count: `fork_and_wait` keeps only the low
  * byte of the exit status, so 256 failures would read as success. */
+/* A huge run under REDISCARD_MIN (8 KiB at 1 MiB alignment), freed,
+ * purged, then written through the stale pointer. */
+static int huge_small_cell(struct cell *c)
+{
+    enum { SMALL = 8192 };
+    extra_flags = MALLOCX_LG_ALIGN(20);
+    unsigned char *volatile p = mallocx(SMALL, extra_flags);
+    REQUIRE(p != NULL, "mallocx(%d, align 1 MiB)", SMALL);
+    memset(p, 0x11, SMALL);
+    dallocx(p, extra_flags);
+    flush_and_purge();
+    bug_write(p, 0, 0xA5, 1);
+    bug_write(p, SMALL - 1, 0xA5, 1);
+    take_zeroed(c->e, SMALL, 2, c->scenario);
+    return failures;
+}
+
+/* A huge run freed and purged, its pages locked (so `MADV_DONTNEED` on
+ * them fails), then written through the stale pointer. */
+static int huge_locked_cell(struct cell *c)
+{
+    unsigned char *volatile p = malloc(H);
+    REQUIRE(p != NULL, "malloc(H)");
+    memset(p, 0x11, H);
+    free(p);
+    flush_and_purge();
+    if (mlock(p, H) != 0) {
+        skip_note("zero_trust/huge-locked", "mlock: %s", strerror(errno));
+        return 0;
+    }
+    bug_write(p, 0, 0xA5, 1);
+    bug_write(p, H - 1, 0xA5, 1);
+    take_zeroed(c->e, H, 1, c->scenario);
+    munlock(p, H);
+    return failures;
+}
+
 static int run_one(void *arg)
 {
     struct cell *c = arg;
@@ -250,6 +295,10 @@ static int run_one(void *arg)
         purged_cell(c);
     else if (!strcmp(c->scenario, "huge-uaf"))
         huge_uaf_cell(c);
+    else if (!strcmp(c->scenario, "huge-small"))
+        huge_small_cell(c);
+    else if (!strcmp(c->scenario, "huge-locked"))
+        huge_locked_cell(c);
     else
         huge_under_cell(c);
     return failures != 0;
@@ -258,7 +307,8 @@ static int run_one(void *arg)
 int main(void)
 {
     require_challoc();
-    static const char *const scenarios[] = {"next", "run", "purged", "huge-uaf", "huge-under"};
+    static const char *const scenarios[] = {"next",       "run",        "purged",     "huge-uaf",
+                                            "huge-under", "huge-small", "huge-locked"};
     int gi = guard_install();
     for (size_t s = 0; s < sizeof scenarios / sizeof scenarios[0]; s++) {
         if (!strcmp(scenarios[s], "huge-under") && !gi) {
@@ -268,6 +318,9 @@ int main(void)
             continue;
         }
         for (int e = 0; e < NENTRY; e++) {
+            /* calloc cannot ask for the alignment that makes 8 KiB huge. */
+            if (!strcmp(scenarios[s], "huge-small") && (e == E_CALLOC || e == E_CALLOC_USABLE))
+                continue;
             struct cell c = {scenarios[s], (enum entry)e};
             int r = fork_and_wait(run_one, &c);
             CHECK(r == 0, "%s/%s: child %s %d", scenarios[s], entry_name[e], r < 0 ? "died of signal" : "exited",

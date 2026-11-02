@@ -289,9 +289,11 @@ fn free_and_reuse_prefers_the_lowest_address() {
     );
     let (f, zero) = env.alloc(&h, page_size(), 1);
     assert_eq!(env.page_of(f), 8);
-    // A reused `Purged` extent is not reported zero (SECURITY.md, "Zeroing
-    // allocations are zero").
-    assert!(!zero);
+    // A reused `Purged` extent is reported zero only once `rediscard` has
+    // discarded the run's pages again, which it skips under
+    // `REDISCARD_MIN` (one page is under it on 4 KiB pages, not on 16 or
+    // 64 KiB ones).
+    assert_eq!(zero, page_size() >= REDISCARD_MIN);
     assert_eq!(h.stats(Tracked::assume_new()).purged, 0);
     for p in [a, c, d, e, f] {
         env.free(&h, p);
@@ -383,11 +385,12 @@ fn alignment_at_the_mark_leaves_a_clean_hole() {
         .unwrap();
     assert_eq!(hole.state, RunState::Purged);
     assert_eq!(hole.end(), env.page_of(b));
-    // The hole is reused first. It is `Purged`, so not reported zero: an
-    // underflow from `b` reaches it.
+    // The hole is reused first. It is `Purged` (an underflow from `b`
+    // reaches it), so it is reported zero only once rediscarded, which
+    // needs `REDISCARD_MIN` bytes.
     let (c, zero) = env.alloc(&h, page_size(), 1);
     assert_eq!(env.page_of(c), 2);
-    assert!(!zero);
+    assert_eq!(zero, page_size() >= REDISCARD_MIN);
     env.free(&h, a);
     env.free(&h, b);
     env.free(&h, c);

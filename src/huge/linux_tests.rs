@@ -42,10 +42,11 @@ fn check_zero_passes_fresh_and_purged_runs() {
     env.free(&h, r);
 }
 
-/// A small purged run (under `REDISCARD_MIN`) dirtied behind the
-/// allocator's back (a write through a stale pointer) is not reported
-/// zero when it is reused, so its caller clears it and `check_zero` has
-/// nothing to check.
+/// A purged run dirtied behind the allocator's back (a write through a
+/// stale pointer) is never handed out as zero with the write in it:
+/// under `REDISCARD_MIN` it is not reported zero (its caller clears it,
+/// and `check_zero` has nothing to check); at or over it, `rediscard`
+/// discards the write first.
 #[test]
 fn check_zero_does_not_trust_a_dirty_purged_run() {
     purge::set_check_zero(true);
@@ -64,7 +65,12 @@ fn check_zero_does_not_trust_a_dirty_purged_run() {
     unsafe { ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF) };
     let (q, zero) = env.alloc(&h, size, 1);
     assert_eq!(q, p);
-    assert!(!zero);
+    // Under `REDISCARD_MIN` (4 KiB pages) the run is not reported zero and
+    // the caller clears it; at or over it, `rediscard` wiped the write.
+    assert_eq!(zero, size >= REDISCARD_MIN);
+    if zero {
+        assert!(all(q, size, 0));
+    }
     env.free(&h, q);
 }
 
@@ -290,7 +296,7 @@ fn alignment_holes_are_committed_and_writable() {
             env.free(&h, p);
             break;
         }
-        assert!(!zero && all(p, page_size(), 0));
+        assert!(zero == (page_size() >= REDISCARD_MIN) && all(p, page_size(), 0));
         fill(p, page_size(), 0x33);
         held.push(p);
         fillers += 1;

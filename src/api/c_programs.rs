@@ -733,7 +733,7 @@ ctests! {
     /// after an overflow, underflow or stale-pointer write reached memory not
     /// yet handed out: a fresh neighbour slot, the rest of the committed run,
     /// a `Purged` slab, a purged huge extent (SECURITY.md, "Zeroing
-    /// allocations are zero"; hunt 943666c7 c-28210739, c-ca3b07e9).
+    /// allocations are zero"; hunt 943666c7 c-28210739, c-ca3b07e9, c-44cb9899).
     c_zero_trust => [ CTest { prog: "zero_trust", ..BASE } ];
     /// 64 pthreads each see their own heap (`thread.allocatedp` distinct per
     /// thread, per-thread counters moved only by that thread).

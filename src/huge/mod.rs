@@ -4265,7 +4265,9 @@ impl Huge {
     /// is handed out, so nothing challoc does writes them in between.
     /// Fewer than [`REDISCARD_MIN`] bytes are left to the caller's
     /// `memset` (false), which is cheaper than the call; so is any range
-    /// the kernel refuses (`mlock`ed pages).
+    /// the kernel refuses (`mlock`ed pages). `take` calls it only while
+    /// `purge::purged_is_zero` holds, so the pages it drops are just the
+    /// ones a stale write faulted in.
     fn rediscard(&self, s: usize, hi: usize) -> (r: bool)
         requires
             crate::sys::may_syscall(),
@@ -5395,13 +5397,18 @@ impl Huge {
             // Pages at or past the mark are zero: no run has covered them
             // and they sit behind the last run's guard. A `Purged`
             // extent's pages are zero only once `rediscard` has discarded
-            // the run's share of them again (whatever the earlier advice
-            // was): its earlier discard does not survive a stale-pointer
-            // write or an underflow from the live run above. An `Empty`
-            // extent is dirty.
+            // the run's share of them again: its earlier discard does not
+            // survive a stale-pointer write or an underflow from the live
+            // run above. Only while every purge so far was `MADV_DONTNEED`
+            // (`purge::purged_is_zero`): then the extra call drops just the
+            // pages such a write faulted in. After a lazy `MADV_FREE` purge
+            // the pages may still be resident, and dropping them would make
+            // every reuse (a plain `malloc` too) fault them back, so the
+            // run is reported dirty and only a zeroing caller clears it. An
+            // `Empty` extent is dirty.
             let usable_end = if end > GUARD_PAGES { end - GUARD_PAGES } else { s };
             let hi = if usable_end < e_end { usable_end } else { e_end };
-            zeroed = s >= e_end || (st == RunState::Purged && self.rediscard(s, hi));
+            zeroed = s >= e_end || (st == RunState::Purged && purge::purged_is_zero() && self.rediscard(s, hi));
             proof {
                 assert(zeroed ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
                 lemma_can_sub(*old(g), ext);
