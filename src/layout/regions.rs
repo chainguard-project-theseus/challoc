@@ -1902,10 +1902,10 @@ fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usi
 mod linux {
     use super::{
         LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED, LG_REGION_MIN,
-        LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions, colour,
+        LG_REGION_PREFERRED, LG_SLIDE, MAX_SEALED, MAX_SLAB, Mapping, NCLASSES, Regions, colour,
     };
     #[cfg(verus_keep_ghost)]
-    use super::{MAX_SEALED, disjoint, offset_ok, shared_static_addr, shared_static_len};
+    use super::{disjoint, offset_ok, shared_static_addr, shared_static_len};
     use crate::layout::CLASSES;
     #[cfg(verus_keep_ghost)]
     use crate::layout::class_table;
@@ -2338,39 +2338,29 @@ mod linux {
         /// A linear overflow or underflow off a region's edge therefore
         /// faults in challoc's own reservation instead of reaching
         /// whatever the kernel mapped next to it. [`Regions::reserve_owning`]
-        /// checks it once at init.
+        /// checks it once at init, on [`Regions::never_committed`], which
+        /// lists exactly those slack ranges in that order and drops an empty
+        /// one: every range present and each at least `MAX_SLAB` long.
         pub fn slack_ok(&self) -> bool
             requires
                 self.wf(),
         {
-            proof {
-                assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+            let (ranges, n) = self.never_committed();
+            if n != MAX_SEALED {
+                return false;
             }
-            let s = MAX_SLAB as u128;
-            let rl = self.region_len() as u128;
-            let sb = self.superblock_map;
-            let mut end = sb.addr as u128;
-            let mut ok = true;
-            let mut c = 0;
-            while c < NCLASSES
+            let mut i = 0;
+            while i < MAX_SEALED
                 invariant
-                    0 <= c <= NCLASSES,
-                    end < 0x2_0000_0000_0000_0000u128,
-                    s == 0x40_0000,
-                    rl < 0x1_0000_0000_0000_0000u128,
-                decreases NCLASSES - c,
+                    0 <= i <= MAX_SEALED,
+                decreases MAX_SEALED - i,
             {
-                let b = self.class_base[c] as u128;
-                ok = ok && end + s <= b;
-                end = b + rl;
-                c += 1;
+                if ranges[i].len < MAX_SLAB {
+                    return false;
+                }
+                i += 1;
             }
-            let (h, m) = (self.huge_map, self.meta_map);
-            ok && end + s <= sb.addr as u128 + sb.len as u128
-                && h.addr as u128 + s <= self.huge_base as u128
-                && self.huge_base as u128 + self.huge_len as u128 + s <= h.addr as u128 + h.len as u128
-                && m.addr as u128 + s <= self.meta_base as u128
-                && self.meta_base as u128 + self.meta_len as u128 + s <= m.addr as u128 + m.len as u128
+            true
         }
 
         /// [`Regions::reserve_owning`] without the metadata region's address
