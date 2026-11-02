@@ -835,7 +835,8 @@ pub trait Settle {
 
     /// The flush's report on `[addr, addr + len)`, made of the pieces
     /// `piece` bytes long pushed and not yet settled: `done`, `madvise`
-    /// took the range.
+    /// took the range ([`discard_taken`]); otherwise it refused the range
+    /// or one holding it ([`discard_refused`]).
     #[allow(clippy::too_many_arguments)]
     fn settle(
         &mut self,
@@ -855,6 +856,8 @@ pub trait Settle {
             len as int % piece@ == 0,
             addr + len <= usize::MAX,
             forall|x: (int, int)| #[trigger] in_run(addr as int, len as int, piece@, x) ==> (pend@)(x),
+            done ==> discard_taken(addr as int, len as int),
+            !done ==> discard_refused(addr as int, len as int),
         ensures
             final(self).inv(o, *final(c), minus(pend@, addr as int, len as int, piece@)),
             final(self).conf() == old(self).conf(),
@@ -872,6 +875,9 @@ struct One {
     /// Ghost: the bytes reported discarded.
     #[allow(dead_code)]
     bytes: Ghost<int>,
+    /// Ghost: the one range pushed, `(addr, len)`.
+    #[allow(dead_code)]
+    at: Ghost<(int, int)>,
 }
 
 impl Settle for One {
@@ -879,18 +885,23 @@ impl Settle for One {
 
     type Ctx = ();
 
-    type Conf = ();
+    /// The range pushed.
+    type Conf = (int, int);
 
+    /// The range is pending and alone, or settled, and then `discarded`
+    /// is the kernel's answer on it.
     closed spec fn inv(&self, o: &(), c: (), pend: spec_fn((int, int)) -> bool) -> bool {
-        true
+        ||| pend(self.at@) && forall|x: (int, int)| #[trigger] pend(x) ==> x == self.at@
+        ||| (forall|x: (int, int)| !#[trigger] pend(x)) && (self.discarded ==> discard_taken(self.at@.0, self.at@.1))
+            && (!self.discarded ==> discard_refused(self.at@.0, self.at@.1))
     }
 
     closed spec fn bytes(&self) -> int {
         self.bytes@
     }
 
-    closed spec fn conf(&self) -> () {
-        ()
+    closed spec fn conf(&self) -> (int, int) {
+        self.at@
     }
 
     // Only `done` is kept; `len` is read by ghost code alone.
@@ -905,6 +916,22 @@ impl Settle for One {
         _piece: Ghost<int>,
         _pend: Ghost<Pieces>,
     ) {
+        proof {
+            // The pending range is the one pushed: its first piece is
+            // it, and it has no second.
+            let (a, p) = (_addr as int, _piece@);
+            vstd::arithmetic::div_mod::lemma_small_mod(0, p as nat);
+            assert(in_run(a, len as int, p, (a, p)));
+            if p < len {
+                vstd::arithmetic::div_mod::lemma_mod_self_0(p);
+                assert(in_run(a, len as int, p, (a + p, p)));
+            }
+            assert forall|x: (int, int)| !#[trigger] (minus(_pend@, a, len as int, p))(x) by {
+                if (_pend@)(x) {
+                    assert(x == self.at@);
+                }
+            }
+        }
         self.discarded = done;
         self.bytes = Ghost(self.bytes@ + if done {
             len as int
@@ -1605,6 +1632,12 @@ impl Batch {
                         false
                     };
                     let ghost pend = at_on(at as int, (addr + len) as int, piece as int, rest);
+                    proof {
+                        // The whole range was refused, so each of its
+                        // pieces was.
+                        lemma_run_inside(addr as int, len as int, piece as int, (at as int, piece as int));
+                        lemma_refused_inside(addr as int, len as int, at as int, piece as int);
+                    }
                     if done {
                         bytes += piece as u64;
                         self.sent = Ghost(self.sent@ + piece);
@@ -1668,19 +1701,33 @@ proof fn lemma_apart_range(r: Seq<(usize, usize, usize)>, n: int, addr: int, len
 
 /// Discard `[addr, addr + len)` alone, free per the [`Batch`] invariant
 /// (bytes `free` admits), as a batch of one: whether it was discarded
-/// (`Huge::free_run`'s purge at free time).
-pub fn discard_one(addr: usize, len: usize, Ghost(free): Ghost<Bytes>) -> bool
+/// (`Huge::free_run`'s purge at free time). True: the kernel took the
+/// discard advice on the range ([`discard_taken`]); false: it answered one
+/// on a range holding it with an error ([`discard_refused`]).
+pub fn discard_one(addr: usize, len: usize, Ghost(free): Ghost<Bytes>) -> (r: bool)
     requires
         crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         addr + len <= usize::MAX,
         frees(free, addr as int, len as int),
         well_formed(addr as int, len as int),
+    ensures
+        r ==> discard_taken(addr as int, len as int),
+        !r ==> discard_refused(addr as int, len as int),
 {
-    let mut discarded = One { discarded: false, bytes: Ghost(0) };
+    let mut discarded = One { discarded: false, bytes: Ghost(0), at: Ghost((addr as int, len as int)) };
     let mut batch = Batch::new(Ghost(free));
+    proof {
+        let at = (addr as int, len as int);
+        assert forall|x: (int, int)| #[trigger] (either(batch.pieces(), one(at)))(x) implies x == at by {}
+        assert((either(batch.pieces(), one(at)))(at));
+    }
     batch.push(addr, len, &mut discarded, &(), &mut ());
     batch.flush(&mut discarded, &(), &mut ());
+    proof {
+        assert(discarded.at@ == (addr as int, len as int));
+        assert(!(none())(discarded.at@));
+    }
     discarded.discarded
 }
 
@@ -2435,6 +2482,72 @@ pub fn note_decay_changed()
     background::wake();
 }
 
+/// The kernel answered a discard advice (`MADV_DONTNEED` or `MADV_FREE`)
+/// on `[addr, addr + len)` with success (`sys::madvise_ok`): what
+/// [`discard`] returning true says. Timeless: it says that some such call
+/// was answered so, not that the last one was.
+pub closed spec fn discard_taken(addr: int, len: int) -> bool {
+    &&& 0 <= addr <= usize::MAX
+    &&& 0 <= len <= usize::MAX
+    &&& exists|a: i32|
+        (a == crate::sys::MADV_DONTNEED || a == crate::sys::MADV_FREE) && #[trigger] crate::sys::madvise_ok(
+            addr as usize,
+            len as usize,
+            a,
+        )
+}
+
+/// The kernel answered a discard advice on a range holding
+/// `[addr, addr + len)` with an error (`sys::madvise_err`): what a
+/// [`discard`] returning false says of the range, and of each of its
+/// pieces. A refused call may still have discarded some of the pages
+/// (the doc of [`discard`]). Timeless, as [`discard_taken`] is: a range
+/// can be both, and an earlier refusal keeps it refused.
+pub closed spec fn discard_refused(addr: int, len: int) -> bool {
+    exists|a: usize, l: usize, adv: i32|
+        a <= addr && addr + len <= a + l && (adv == crate::sys::MADV_DONTNEED || adv == crate::sys::MADV_FREE)
+            && #[trigger] crate::sys::madvise_err(a, l, adv)
+}
+
+/// An `madvise` success with a discard advice is [`discard_taken`] of its
+/// range.
+broadcast proof fn lemma_madvise_taken(addr: usize, len: usize, a: i32)
+    ensures
+        #[trigger] crate::sys::madvise_ok(addr, len, a) && (a == crate::sys::MADV_DONTNEED || a == crate::sys::MADV_FREE)
+            ==> discard_taken(addr as int, len as int),
+{
+    if crate::sys::madvise_ok(addr, len, a) {
+        assert(crate::sys::madvise_ok((addr as int) as usize, (len as int) as usize, a));
+    }
+}
+
+/// An `madvise` error with a discard advice is [`discard_refused`] of its
+/// range.
+broadcast proof fn lemma_madvise_refused(addr: usize, len: usize, a: i32)
+    ensures
+        #[trigger] crate::sys::madvise_err(addr, len, a) && (a == crate::sys::MADV_DONTNEED || a == crate::sys::MADV_FREE)
+            ==> discard_refused(addr as int, len as int),
+{
+    if crate::sys::madvise_err(addr, len, a) {
+        assert(addr <= addr as int && addr + len <= addr + len as int);
+    }
+}
+
+/// A refusal of a range is one of each range inside it.
+proof fn lemma_refused_inside(addr: int, len: int, at: int, l: int)
+    requires
+        discard_refused(addr, len),
+        addr <= at,
+        at + l <= addr + len,
+    ensures
+        discard_refused(at, l),
+{
+    let (a, k, adv) = choose|a: usize, k: usize, adv: i32|
+        a <= addr && addr + len <= a + k && (adv == crate::sys::MADV_DONTNEED || adv == crate::sys::MADV_FREE)
+            && #[trigger] crate::sys::madvise_err(a, k, adv);
+    assert(crate::sys::madvise_err(a, k, adv));
+}
+
 /// Issue `advice` on `[addr, addr + len)`, which is free (the [`Batch`]
 /// invariant; this is the one place the batch's ranges reach the
 /// kernel): every byte of it is one the batch's `free` admits. It is
@@ -2452,14 +2565,18 @@ pub fn note_decay_changed()
 /// unexplained.
 // `%` rather than `is_multiple_of`: the purge proofs reason about `%`.
 #[allow(clippy::manual_is_multiple_of)]
-fn discard(addr: usize, len: usize, advice: Advice, Ghost(free): Ghost<Bytes>) -> bool
+fn discard(addr: usize, len: usize, advice: Advice, Ghost(free): Ghost<Bytes>) -> (r: bool)
     requires
         crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
         frees(free, addr as int, len as int),
         well_formed(addr as int, len as int),
+    ensures
+        r ==> discard_taken(addr as int, len as int),
+        !r ==> discard_refused(addr as int, len as int),
 {
     broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+    broadcast use lemma_madvise_taken, lemma_madvise_refused;
 
     // The range must be whole pages (checked against the page size here):
     // the check never fails, by the precondition, so only the `madvise`
