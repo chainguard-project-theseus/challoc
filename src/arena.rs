@@ -160,6 +160,71 @@ unsafe impl Send for Arena {}
 #[cfg(test)]
 pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+/// The most metadata (bump and reservation sides together) one arena
+/// build has taken so far ([`Arenas::build`]), per metadata allocator
+/// (keyed by its address: the process has one, the tests build many);
+/// what [`Arenas::create`] keeps free per automatic arena not built yet.
+/// A key that finds no slot (more than `BUILD_COSTS` allocators, tests
+/// only) records nothing and reads 0: no headroom.
+const BUILD_COSTS: usize = 64;
+#[allow(clippy::declare_interior_mutable_const)]
+const NO_COST: (
+    core::sync::atomic::AtomicUsize,
+    core::sync::atomic::AtomicUsize,
+) = (
+    core::sync::atomic::AtomicUsize::new(0),
+    core::sync::atomic::AtomicUsize::new(0),
+);
+static BUILD_COST: [(
+    core::sync::atomic::AtomicUsize,
+    core::sync::atomic::AtomicUsize,
+); BUILD_COSTS] = [NO_COST; BUILD_COSTS];
+
+verus! {
+
+/// Record a build over `meta` whose tables took `tables` bytes of
+/// metadata, its `Arena` storage on top ([`BUILD_COST`]). Trusted:
+/// atomics on a plain statistic no proof reads.
+#[verifier::external_body]
+fn note_build_cost(meta: &Meta, tables: usize) {
+    let cost = tables.saturating_add(core::mem::size_of::<Arena>());
+    let key = meta as *const Meta as usize;
+    for (k, c) in &BUILD_COST {
+        let found = match k.compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => true,
+            Err(cur) => cur == key,
+        };
+        if found {
+            c.fetch_max(cost, Ordering::Relaxed);
+            return;
+        }
+    }
+}
+
+/// [`BUILD_COST`] for `meta`, 0 when none is recorded. Trusted: loads of
+/// a plain statistic; any value is sound (it only decides whether
+/// `arenas.create` refuses).
+#[verifier::external_body]
+fn build_cost(meta: &Meta) -> usize {
+    let key = meta as *const Meta as usize;
+    BUILD_COST
+        .iter()
+        .find(|(k, _)| k.load(Ordering::Relaxed) == key)
+        .map_or(0, |(_, c)| c.load(Ordering::Relaxed))
+}
+
+/// Metadata in use (`MetaStats` `bumped + reserved`) and free (`len`
+/// less that).
+fn meta_used_free(s: crate::meta::MetaStats) -> (r: (usize, usize))
+    requires
+        s.identities(),
+{
+    let used = s.bumped + s.reserved;
+    (used, s.len - used)
+}
+
+} // verus!
+
 verus! {
 
 // Field and element pointers for the in-place builds (`Arena::init`,
@@ -3163,6 +3228,29 @@ impl Arenas {
         (best as u16, t, Ghost(snap))
     }
 
+    /// Automatic arenas not built yet: the threads' homes
+    /// [`Arenas::create`] keeps room for.
+    fn unbuilt_auto(&self) -> (r: u32)
+        requires
+            self.wf(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let mut n = 0u32;
+        for i in 0..self.auto as usize
+            invariant
+                self.wf(),
+                self.auto <= MAX_ARENAS,
+                n <= i,
+        {
+            if self.table[i].load(Ordering::Relaxed).is_null() {
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// `bound[i]`, read inside its invariant: the number of tickets out for
     /// arena `i` at the read, as a `u32` wraps it ([`BoundPred`]), which the
     /// proof asserts there (no `ensures` can name that instant).
@@ -3638,6 +3726,7 @@ impl Arenas {
             shared.lemma_wf();
             use_type_invariant(&shared.arena0);
         }
+        let (used0, _) = meta_used_free(shared.meta.stats(Tracked(&mut *ord)));
         let (tables, Tracked(tperms)) = shared.arena0.classes[0].tables();
         // SAFETY: exclusively owned storage of the right size and
         // alignment, fresh or left by a failed build (never published;
@@ -3670,6 +3759,13 @@ impl Arenas {
         }
         proof {
             slot.perm.tracked_borrow().is_nonnull();
+        }
+        // Its storage, from a reservation now or by an earlier failed
+        // build, is size_of::<Arena>() whichever; the tables are what
+        // `init` reserved now.
+        let (used1, _) = meta_used_free(shared.meta.stats(Tracked(&mut *ord)));
+        if used1 >= used0 {
+            note_build_cost(&shared.meta, used1 - used0);
         }
         // The arena's permission, frozen: the registry's invariant keeps a
         // copy for every reader of the entry ([`entry_ok`]).
@@ -3710,8 +3806,15 @@ impl Arenas {
     }
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
-    /// metadata region is full. The caller's record `fx` gets
-    /// [`Change::Created`] when an arena is created.
+    /// metadata region is full, or when building it would leave the
+    /// region without room for the automatic arenas not built yet (as
+    /// much as the largest build so far took for each), so explicit
+    /// arenas never starve the threads' homes (design 13.3, 14.1). The
+    /// caller's record `fx` gets [`Change::Created`] when an arena is
+    /// created.
+    // The headroom test divides by a cost it checked is non-zero; Verus
+    // specifies `/`, not `checked_div`.
+    #[allow(clippy::manual_checked_ops)]
     pub fn create(&self, shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)
         requires
             crate::sys::may_syscall(),
@@ -3739,6 +3842,14 @@ impl Arenas {
             broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
 
             assert(c.ok());
+        }
+        let cost = build_cost(&shared.meta);
+        if cost > 0 {
+            let (_, free) = meta_used_free(shared.meta.stats(Tracked(&mut under)));
+            // Room for this arena and every automatic one not built yet.
+            if free / cost <= self.unbuilt_auto() as usize {
+                return None;
+            }
         }
         self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under))?;
         c.n = index + 1;

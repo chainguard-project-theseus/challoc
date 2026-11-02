@@ -1377,8 +1377,15 @@ style. The default is `min(4 * ncpus, 64)` (`Config::effective_narenas`;
 `ncpus` from the affinity mask). A new thread heap is bound to the
 automatic arena with the fewest bound heaps (jemalloc's
 `arena_choose_hard`); the binding is released when the heap is destroyed
-and moves with `thread.arena`. So `t` live threads use `min(t, narenas)`
-arenas, a single-threaded program stays on arena 0 and never pays the
+and moves with `thread.arena`. The arena is built at the heap's first
+slow path; while it cannot be built (each arena takes
+about 150 MiB of reservations, so about 437 fit the preferred 64 GiB
+region at quantum 16) the thread's blocks come uncached from arena 0 and
+every later slow path retries the build (14.1). `arenas.create` keeps
+room for the automatic arenas not built yet (as much as the largest
+build so far took, per arena) and refuses with `EAGAIN` before it would
+use it, so explicit arenas never starve the threads' homes. So `t` live
+threads use `min(t, narenas)` arenas, a single-threaded program stays on arena 0 and never pays the
 `free` routing (`FREE_ROUTE` is set only when a second arena is built),
 and thread churn reuses the arena an exited thread left. Arenas are not
 needed for correctness or lock scalability (slabs are not thread-owned)
@@ -1648,10 +1655,7 @@ aborts:
   recycled and never an abort.
 
 Exceptions the code still has, each a resource failure that aborts or
-sticks: a thread whose automatic arena cannot be built (the metadata
-region is full, or `RLIMIT_DATA` refuses the arena's commit) gets NULL
-from the small classes for its life and an `arena N does not exist`
-abort from the huge path; a refused
+sticks: a refused
 `MADV_GUARD_INSTALL` (an `mlock`ed range) fails every huge allocation
 placed there, and a slab guard that neither `MADV_GUARD_INSTALL` nor
 `mprotect` can install aborts; inside `free`, a huge descriptor table

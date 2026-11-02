@@ -580,7 +580,22 @@ impl Heap {
         let tracked mut ord = axiom_entry();
         self.tick::<true>(shared, Tracked(&mut ord), Tracked(&mut *errno), Tracked(Some(&mut *cell)));
         let Some((a, w)) = shared.arena(arena, Tracked(&mut ord)) else {
-            return (ptr::null_mut(), false);
+            if arena != self.arena {
+                // An index `MALLOCX_ARENA` named that does not exist.
+                return (ptr::null_mut(), false);
+            }
+            // The home arena could not be built (the metadata region is
+            // full: a resource failure, design 14.1). Serve this block
+            // uncached from arena 0; the next slow path tries the build
+            // again, so the thread is back on its own arena once there is
+            // room.
+            let (p, zero, t) = shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut ord));
+            if !p.is_null() {
+                self.count_direct_alloc(class);
+            }
+            let ghost put = p@.addr != 0 && zero;
+            self.put_handed(t, Ghost(put), Ghost(p), Ghost(class as int));
+            return (p, zero);
         };
         let cache = self.ensure_cache(shared, arena, class, Tracked(&mut ord));
         let ghost s1 = *self;
