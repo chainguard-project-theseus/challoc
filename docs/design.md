@@ -1112,10 +1112,9 @@ Discovery, once (section 10 step 7). Under `thp:always` it runs at init,
 which needs the limit for the 1 GiB rule below; otherwise it is deferred
 (`sys::cgroup::Deferred`) to the first periodic tick at least `DEFER_NS`
 (20 ms) after init, to the first read of the figures (`stats.cgroup.*`,
-`malloc_stats_print`) or to the first `fork` after `DEFER_NS` (the
-prepare handler, so the children of a forking server inherit the record
-rather than each reading the files again), whichever comes first, so a
-process that lives
+`malloc_stats_print`) or to the first `fork` (the prepare handler, so
+the children of a forking server inherit the record rather than each
+reading the files again), whichever comes first, so a process that lives
 less than that never reads the files (about 90 us of system time per
 exec). Whichever thread runs it, the record is built in place in its
 cell with the scan buffers in a static the discovering thread owns, so
@@ -1626,7 +1625,7 @@ bins) by value; moving it off the stack is the next step.
 
 `tests/c/small_stack.c` runs the entry points on a `PTHREAD_STACK_MIN`
 thread with 6 KiB of it already used, each in a fresh process (the
-process's first allocation, a thread's first allocation building its
+first allocation of `main`, a thread's first allocation building its
 arena, the discovery under the tick and under `fork`, a `fork` from an
 `SA_ONSTACK` handler). The `api::` test `every_frame_fits_the_budget`
 fails on any function of the shipped library that reserves more than

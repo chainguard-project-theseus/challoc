@@ -37,18 +37,18 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
 
 ## `discovery_scratch`
 
-src/sys/cgroup.rs:1078. Kind: external_body. Category: allocator invariant.
+src/sys/cgroup.rs:1081. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The deferred discovery's scratch: one static, used only by the thread that won a [`Deferred`] record's exchange from `PENDING` to `RUNNING`, until its `DONE` store (the process has one record, and the exchange lets one thread through), so no two references are live at once.
 
 ```rust
-pub fn discovery_scratch() -> &'static mut Scratch
+fn discovery_scratch(Tracked(won): Tracked<&CellPerm>) -> &'static mut Scratch
 ```
 
 ## `untracked_in_place`
 
-src/sys/cgroup.rs:1097. Kind: external_body. Category: atomics primitive.
+src/sys/cgroup.rs:1100. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > `slot` holds [`Cgroup::untracked`]`(state)`, written in place (the record is about 2.4 KiB; through a value it went by the stack of the thread that discovers).
@@ -62,7 +62,7 @@ pub fn untracked_in_place(slot: &mut MaybeUninit<Cgroup>, state: State)
 
 ## `axiom_cell_orphaned`
 
-src/sys/cgroup.rs:1594. Kind: axiom. Category: platform/kernel fact.
+src/sys/cgroup.rs:1597. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned cell): in the child of a `fork`, a record whose phase the child's reset found `RUNNING` (`before`, the phase's permission just before the reset, and `perm`, just after it, at `PENDING`) was being discovered by a thread of the parent, which holds the cell's permission between its winning exchange and its `DONE` store ([`Deferred::claim`], [`Deferred::publish`]).
@@ -82,7 +82,7 @@ axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &Byte
 
 ## `Deferred::discover`
 
-src/sys/cgroup.rs:1675. Kind: no_decreases. Category: termination.
+src/sys/cgroup.rs:1678. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Run discovery if it has not run: `true` when this call ran it, so the caller sets the policy up from the first figures.

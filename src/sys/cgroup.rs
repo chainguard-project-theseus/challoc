@@ -1074,8 +1074,11 @@ impl Scratch {
 /// states, now also on these buffers.) The unit tests make their own
 /// records and discover concurrently, so each call there gets fresh
 /// buffers.
+/// Private to this module, and only for a holder of the cell's permission
+/// `won` (which [`Deferred::claim`] hands only to the exchange's winner):
+/// [`Deferred::cell_discover`] is its one caller.
 #[verifier::external_body]
-pub fn discovery_scratch() -> &'static mut Scratch {
+fn discovery_scratch(Tracked(won): Tracked<&CellPerm>) -> &'static mut Scratch {
     #[cfg(not(test))]
     {
         // SAFETY: the exclusion above.
@@ -1836,11 +1839,12 @@ impl Deferred {
         ensures
             cell_done(*final(p), self.cell.id()),
     {
+        let scratch = discovery_scratch(Tracked(&*p));
         let slot = self.cell.borrow_mut(Tracked(p));
         untracked_in_place(slot, State::NoUnifiedPath);
         // SAFETY: `untracked_in_place` initialised it.
         let cg = unsafe { slot.assume_init_mut() };
-        cg.discover_in(true, discovery_scratch());
+        cg.discover_in(true, scratch);
         &*cg
     }
 }

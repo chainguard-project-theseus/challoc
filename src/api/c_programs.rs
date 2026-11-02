@@ -813,7 +813,7 @@ ctests! {
         CTest { prog: "resource", args: &["mlockall"], ..BASE },
         CTest { prog: "resource", args: &["map_count"], ..BASE },
     ];
-    /// `tests/c/small_stack.c`: the allocation calls (the process's first
+    /// `tests/c/small_stack.c`: the allocation calls (`main`'s first
     /// included), the jemalloc and C++ ones, a read of the cgroup figures,
     /// `fork` (also from an `SA_ONSTACK` handler) and the deferred cgroup
     /// discovery under the tick and `fork`, on a `PTHREAD_STACK_MIN`
@@ -1585,8 +1585,11 @@ const KNOWN: &[(&str, usize)] = &[
     ("challoc::sys::cgroup::linux::read_in", 2304),
     // A cache flush's grouping of the slots by slab (`free`'s slow path).
     ("challoc::heap::flush::group_by_slab", 2304),
-    // Initialisation, once per process, usually from ld.so or `main`.
-    ("challoc::api::init_slow", 7168),
+    // Initialisation, once per process, usually from ld.so or `main`
+    // (5.3 KiB at quantum 16, 6 at quantum 8, whose class tables are
+    // longer; `/etc/challoc.conf` is read into a static,
+    // `config::conf_buffer`).
+    ("challoc::api::init_slow", 6144),
     // The by-value discovery: init's under `thp:always` (and the tests');
     // the deferred one builds the record in place.
     ("<challoc::sys::cgroup::Cgroup>::discover", 8704),

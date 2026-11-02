@@ -175,9 +175,12 @@ static void op_fork_altstack(void)
     }
 }
 
-static void op_init(void)
+/* The first allocation call of `main` (main has not allocated). Not
+ * challoc's init: the library initialises before `main` (ld.so's and
+ * libc's own allocations), so init never runs on a thread like this one;
+ * every_frame_fits_the_budget caps its frame instead. */
+static void op_first_call(void)
 {
-    /* The process's first allocation (main has not allocated). */
     require_challoc();
     op_malloc_family();
 }
@@ -187,7 +190,7 @@ static const struct row {
     void (*fn)(void);
     bool warm;
 } rows[] = {
-    {"init", op_init, false},
+    {"first_call", op_first_call, false},
     {"malloc_family", op_malloc_family, false},
     {"many", op_many, false},
     {"many_warm", op_many, true},
@@ -240,7 +243,7 @@ static int run_one(const struct row *r)
 
 int main(int argc, char **argv)
 {
-    if (argc > 1 && strcmp(argv[1], "init") != 0)
+    if (argc > 1 && strcmp(argv[1], "first_call") != 0)
         require_challoc();
     if (argc > 1) {
         for (size_t i = 0; i < NROWS; i++)

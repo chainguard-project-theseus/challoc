@@ -2640,12 +2640,13 @@ impl Shared {
         self.cgroup.due(now) && self.discover_cgroup(false, Tracked(ord), Tracked(&mut seen))
     }
 
-    /// Discover the cgroup in `fork`'s prepare handler if the deferral has
-    /// run out (as a tick would), so the child inherits the record;
-    /// without waiting for a discovery another thread (or this one, under
-    /// a signal handler) has under way, which the child then starts over
-    /// (`Deferred::fork_child`). A fork before then leaves it to the
-    /// child's own first tick.
+    /// Discover the cgroup in `fork`'s prepare handler, so the child
+    /// inherits the record (every child of a prefork server would otherwise
+    /// read the files itself); without waiting for a discovery another
+    /// thread (or this one, under a signal handler) has under way, which
+    /// the child then starts over (`Deferred::fork_child`). The discovery
+    /// builds the record in place, so it takes little of the forking
+    /// thread's stack.
     pub fn discover_cgroup_for_fork(&self, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
@@ -2653,7 +2654,8 @@ impl Shared {
         ensures
             *final(ord) == *old(ord),
     {
-        self.discover_cgroup_if_due(crate::sys::now_coarse_ns(), Tracked(ord));
+        let tracked mut seen = CellSeen { frozen: None };
+        self.discover_cgroup(false, Tracked(ord), Tracked(&mut seen));
     }
 
     /// Run the deferred discovery (`Deferred::discover`): `true` when this

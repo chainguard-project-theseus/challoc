@@ -1559,6 +1559,10 @@ mod linux {
 
     } // verus!
 
+    /// [`conf_buffer`]'s storage (Verus has no `static mut`).
+    #[cfg(not(test))]
+    static mut CONF_BUF: [u8; MAX_TEXT + 1] = [0; MAX_TEXT + 1];
+
     use crate::sys::auxv::{AT_SECURE, getauxval};
 
     unsafe extern "C" {
@@ -1609,12 +1613,32 @@ mod linux {
         b'n', b'f', 0,
     ];
 
+    /// The buffer [`load`] reads `/etc/challoc.conf` into: a static, so
+    /// init's frame does not carry 4 KiB of it (design 13.8; init may run
+    /// on a `PTHREAD_STACK_MIN` thread). Trusted: `load` is called only by
+    /// `api::init`, which runs once (its exchange on `STATE` lets one
+    /// thread through, and a re-entry aborts before it allocates), so no
+    /// two references are live at once. The unit tests call `load`
+    /// concurrently, so each call there gets its own buffer.
+    #[verifier::external_body]
+    fn conf_buffer() -> (r: &'static mut [u8; MAX_TEXT + 1]) {
+        #[cfg(not(test))]
+        {
+            // SAFETY: the exclusion above.
+            unsafe { &mut *core::ptr::addr_of_mut!(CONF_BUF) }
+        }
+        #[cfg(test)]
+        {
+            std::boxed::Box::leak(std::boxed::Box::new([0u8; MAX_TEXT + 1]))
+        }
+    }
+
     /// Read every source in priority order into a `Config`, printing each
     /// problem as `challoc: <source>: <issue>` on stderr. Aborts when
     /// `abort_conf` is set by the time all sources are read and anything was
     /// reported, an inert key or a cut source included. Never allocates: the
-    /// file goes through a stack buffer and the environment is walked in
-    /// place. The result is well formed: the defaults are
+    /// file goes through a static buffer ([`conf_buffer`]) and the
+    /// environment is walked in place. The result is well formed: the defaults are
     /// (`Config::lemma_default_wf`) and every source goes through
     /// `Config::parse_source`, which keeps it.
     pub fn load() -> (r: Config)
@@ -1640,8 +1664,8 @@ mod linux {
         if let Some((text, cut)) = je_sym {
             issues += parse_from(&mut cfg, text, cut, "je_malloc_conf", &mut out);
         }
-        let mut buf = [0u8; MAX_TEXT + 1];
-        if let Some((line, cut)) = first_line_of(&CHALLOC_CONF, &mut buf) {
+        let buf = conf_buffer();
+        if let Some((line, cut)) = first_line_of(&CHALLOC_CONF, buf) {
             issues += parse_from(&mut cfg, line, cut, "/etc/challoc.conf", &mut out);
         }
         if getauxval(AT_SECURE) == 0 {
