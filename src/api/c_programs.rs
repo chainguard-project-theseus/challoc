@@ -1087,10 +1087,27 @@ ctests! {
     c_pagemap_guard_off => [ CTest { prog: "pagemap_guard", args: &["off"], conf: Some("abort_conf:true,guards:false"), ..BASE } ];
     /// `tests/c/huge_hole.c`: the alignment holes the huge allocator leaves
     /// below an aligned run are committed memory. Once in the probed guard mode
-    /// (guard-install on kernels with `MADV_GUARD_INSTALL`) and once forced
-    /// onto the `PROT_NONE` fallback.
+    /// (guard-install on kernels with `MADV_GUARD_INSTALL`) and once under
+    /// `guards:false` (no guard at all); the `PROT_NONE` fallback's holes
+    /// are `huge::linux_tests::guard_vmas_are_bounded_by_live_runs`.
     c_huge_hole => [ CTest { prog: "huge_hole", ..BASE } ];
     c_huge_hole_no_guards => [ CTest { prog: "huge_hole", conf: Some("abort_conf:true,guards:false"), ..BASE } ];
+    /// `tests/c/huge_vmas.c`: the VMAs the huge tier holds are bounded by
+    /// its live runs (design 7). 40000 runs of
+    /// 260 KiB placed, all freed and trimmed leave `/proc/self/maps` near
+    /// its baseline and the process able to create a thread and open a
+    /// file: in the probed mode, under `guards:false` (no guard at all),
+    /// on an emulated kernel without `MADV_GUARD_INSTALL` (a seccomp
+    /// filter; the `PROT_NONE` fallback), the same with `MADV_POPULATE_WRITE`
+    /// refused too, and with every guard marker
+    /// refused on an `mlock`ed span (the `PROT_NONE` guards of `mixed_guards`).
+    c_huge_vmas => [
+        CTest { prog: "huge_vmas", args: &["free"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "huge_vmas", args: &["free"], conf: Some("abort_conf:true,guards:false"), ..BASE },
+        CTest { prog: "huge_vmas", args: &["noguard"], conf: Some("abort_conf:true"), stdout_has: &["guard_install=no"], ..BASE },
+        CTest { prog: "huge_vmas", args: &["nopopulate"], conf: Some("abort_conf:true"), stdout_has: &["guard_install=no"], ..BASE },
+        CTest { prog: "huge_vmas", args: &["mlock"], conf: Some("abort_conf:true"), ..BASE },
+    ];
     /// The fuzz driver at a fraction of `make fuzz` (10M ops,
     /// 4 threads) so every `make test` runs it. Same seed as `make fuzz`.
     c_fuzz_short => [ CTest { dir: "fuzz", prog: "fuzz", args: &["400000", "4"], ..BASE } ];
