@@ -171,9 +171,14 @@ impl TlsCell {
     /// background thread (`purge::background::create`): the same cell,
     /// unless `old` is an empty slot, which a nested free in
     /// `pthread_join` or a nested allocation in `pthread_create` may fill
-    /// with the thread's new heap.
+    /// with the thread's new heap. An empty slot ends empty or holding a
+    /// heap, never a sentinel ([`reentry_benign`](crate::heap::reentry_benign)):
+    /// a heap `create` parked on `TLS_CREATING` is put back. The spec does
+    /// not say which: emptying a slot a nested entry filled, and so losing
+    /// that heap, also satisfies `kept`.
     pub open spec fn kept(self, old: TlsCell) -> bool {
-        old.value() != 0 ==> self == old
+        &&& old.value() != 0 ==> self == old
+        &&& old.value() == 0 ==> !crate::heap::reentry_benign(self.value())
     }
 
     /// Cells with the same value, `Heap::create` count and thread pointer
