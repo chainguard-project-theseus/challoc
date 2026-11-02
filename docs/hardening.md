@@ -155,7 +155,7 @@ inconsistent heap, or init below the minimum layout. When the kernel or
 a limit (`RLIMIT_DATA`, `RLIMIT_AS`, `vm.max_map_count`, `mlock`)
 refuses memory after init, `malloc` returns NULL with `ENOMEM` and the
 next call tries again, and `free` keeps what it cannot safely recycle
-out of circulation. The exceptions the code still has are listed there.
+out of circulation.
 None of this weakens a check: a resource failure never makes challoc
 hand out a block whose metadata it could not record.
 

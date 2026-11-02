@@ -11,3 +11,5 @@ c_thp_auto
 cgroup_policy/bands
 lazy_bg/unshare
 thp/auto
+# resource/{mlockall,map_count} skip where mlockall is refused (no CAP_IPC_LOCK).
+c_resource

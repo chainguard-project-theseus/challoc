@@ -1067,20 +1067,6 @@ fn watermark_aligned(s: usize, lg_group: u8)
 
 verus! {
 
-/// [`SlabTable::install_guard`]'s abort: the guard slab of `class` at `s`
-/// could be neither guarded nor re-protected.
-#[inline(always)]
-fn guard_unprotectable(class: &u16, s: &usize) -> !
-    requires
-        crate::sys::may_abort_kernel(),
-{
-    sys::abort_kernel(format_args!("class {}: cannot re-protect guard slab {}", *class, *s))
-}
-
-} // verus!
-
-verus! {
-
 /// The process's regions are well formed and separated
 /// ([`regions_ok`](crate::heap::regions_ok)), as the `regions`
 /// preconditions of [`SlabTable::new`] give. Opaque
@@ -4526,7 +4512,6 @@ impl SlabTable {
     /// [`run_slabs`]: SlabTable::run_slabs
     pub(super) fn commit_run(&self, s: usize, limit: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
-            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             s < limit <= self.spec_nslabs(),
             old(ord).allows(rank_table(0)),
@@ -4544,10 +4529,17 @@ impl SlabTable {
         let cls = self.class();
         let guard = self.is_guard_slab(s);
         let end = self.run_end(s, limit);
-        commit(self.slab_addr(s), (end - s) << cls.lg_slab).ok()?;
         if guard {
             let page = 1usize << self.lg_page;
-            self.install_guard(s, self.slab_addr(s), page, cls.slab_size());
+            // The guard first, on the slab the cursor finds `PROT_NONE`:
+            // a marker survives the run's commit, so the run is one
+            // `mprotect` as before; without one the slab stays
+            // `PROT_NONE` and only the slabs after it are committed.
+            if self.install_guard(self.slab_addr(s), page, cls.slab_size())? {
+                commit(self.slab_addr(s), (end - s) << cls.lg_slab).ok()?;
+            } else if end > s + 1 {
+                commit(self.slab_addr(s + 1), (end - s - 1) << cls.lg_slab).ok()?;
+            }
             proof {
                 assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
             }
@@ -4556,6 +4548,7 @@ impl SlabTable {
             self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).guards += 1;
             return Some(false);
         }
+        commit(self.slab_addr(s), (end - s) << cls.lg_slab).ok()?;
         Some(true)
     }
 
@@ -4614,7 +4607,6 @@ impl SlabTable {
     #[allow(clippy::manual_is_multiple_of)]
     pub(super) fn commit_slab(&self, s: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
-            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             s < self.spec_nslabs(),
             old(ord).allows(rank_table(0)),
@@ -4645,19 +4637,26 @@ impl SlabTable {
             assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
         }
         let first_of_page_group = s % spp == 0;
+        let is_guard = self.is_guard_slab(s);
+        // Under `thp:always` with PMD chunks the marker is not installed:
+        // a guard marker (or a `PROT_NONE` page) inside a 2 MiB page
+        // splits it back into small pages the moment the arena reaches
+        // the guard slab (measured: every chunk's huge page was gone by
+        // the time the slab was in use), so the slab is left unused and
+        // unguarded; design 17 records the trade. Otherwise the guard
+        // goes on first, while the slab is still `PROT_NONE` (as in
+        // `commit_run`): a marker survives the commit, and without one
+        // the page group stays `PROT_NONE`.
         if first_of_page_group {
-            self.commit_page_group(addr, len, mode)?;
-        }
-        if self.is_guard_slab(s) {
-            // Under `thp:always` with PMD chunks the marker is not
-            // installed: a guard marker (or a `PROT_NONE` page) inside a
-            // 2 MiB page splits it back into small pages the moment the
-            // arena reaches the guard slab (measured: every chunk's huge
-            // page was gone by the time the slab was in use), so the slab
-            // is left unused and unguarded; design 17 records the trade.
-            if first_of_page_group && mode != crate::thp::Mode::Chunks {
-                self.install_guard(s, addr, page, len);
+            if is_guard && mode != crate::thp::Mode::Chunks {
+                if self.install_guard(addr, page, len)? {
+                    self.commit_page_group(addr, len, mode)?;
+                }
+            } else {
+                self.commit_page_group(addr, len, mode)?;
             }
+        }
+        if is_guard {
             // As in `commit_run`: `guards <= next_slab` afterwards rests on
             // the cross-arena premise `axiom_table_lock_inv` names.
             g.guards += 1;
@@ -4707,23 +4706,26 @@ impl SlabTable {
         commit(addr, len).ok()
     }
 
-    /// Guard slab `s`, just committed read-write at `addr` (so the VMA
-    /// merges with its neighbours): a guard region on its first page, so
-    /// a stray write past the previous slab faults. If the install
-    /// fails, fall back to leaving the whole slab (or page group, `len`)
-    /// `PROT_NONE`: a hard guard at the cost of a VMA split. A slab that
-    /// can be neither guarded nor re-protected aborts.
-    fn install_guard(&self, s: usize, addr: usize, page: usize, len: usize)
+    /// Guard the slab (or page group, `len` bytes) at `addr`, before
+    /// its commit: a guard region on its first page, so a stray write
+    /// past the previous slab faults, `Some(true)`; the marker survives
+    /// the `mprotect` that commits the rest. If the kernel refuses the
+    /// marker (`EINVAL` on an `mlock`ed range), the whole slab is left
+    /// `PROT_NONE`, a hard guard, `Some(false)`: already so when the
+    /// cursor first reaches it, made so when a failed earlier attempt
+    /// left it read-write. `None` when that `mprotect` fails too (a VMA
+    /// split refused at `vm.max_map_count`): a resource failure (design
+    /// 14.1), so the caller hands nothing out and the cursor stays, for
+    /// a retry. Never memory next to a missing guard.
+    fn install_guard(&self, addr: usize, page: usize, len: usize) -> (r: Option<bool>)
         requires
-            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
     {
         if guard(addr, page).is_ok() {
-            return;
+            return Some(true);
         }
-        if decommit(addr, len).is_err() {
-            guard_unprotectable(&self.class, &s);
-        }
+        decommit(addr, len).ok()?;
+        Some(false)
     }
 }
 
