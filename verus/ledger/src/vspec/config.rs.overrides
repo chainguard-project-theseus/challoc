@@ -2,3 +2,5 @@
 core::ffi::CStr::as_ptr	core library	Kani	discharged (Kani: kani_proofs::misc::cstr_as_ptr)
 char::to_digit	core library	Kani	discharged (Kani: kani_proofs::core_int::char_to_digit)
 <*const T>::cast::<U>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_cast)
+# Claims nothing about the result.
+<*const T>::wrapping_add	core library	none (assumption)

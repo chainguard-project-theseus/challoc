@@ -8,7 +8,6 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `WriteCallback` | ext_type_spec | function pointer | Kani | trusted |
-| `emit` | external_body | FFI/syscall | none (assumption) | trusted |
 | `call_back` | external_body | function pointer | none (assumption) | trusted |
 | `write_file` | external_body | FFI/syscall | none (assumption) | trusted |
 | `word` | external_body | core library | Kani | trusted |
@@ -26,25 +25,9 @@ Tool: Kani. Status: trusted.
 pub struct ExWriteCallback(WriteCallback);
 ```
 
-## `emit`
-
-src/api/print.rs:89. Kind: external_body. Category: FFI/syscall.
-Tool: none (assumption). Status: trusted.
-
-> Hand `buf[..len]` to `target`: the report's only calls out of the allocator.
-
-```rust
-fn emit(target: &Target, buf: &[u8; 1024], len: usize, Tracked(ord): Tracked<&LockOrder>)
-    requires
-        crate::sys::may_syscall(),
-        len < 1024,
-        ord.top() == 0,
-    no_unwind
-```
-
 ## `call_back`
 
-src/api/print.rs:113. Kind: external_body. Category: function pointer.
+src/api/print.rs:109. Kind: external_body. Category: function pointer.
 Tool: none (assumption). Status: trusted.
 
 > Call the caller's callback `cb`, when it gave one, with `opaque` and the C string in `buf`, which holds a NUL; whether it did.
@@ -59,11 +42,12 @@ fn call_back(
     requires
         crate::sys::may_syscall(),
         ord.top() == 0,
+        exists|i: int| 0 <= i < 1024 && #[trigger] buf@[i] == 0,
 ```
 
 ## `write_file`
 
-src/api/print.rs:142. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:139. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `fwrite` of `s` to the caller's stream `f`.
@@ -77,7 +61,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 
 ## `word`
 
-src/api/print.rs:434. Kind: external_body. Category: core library.
+src/api/print.rs:431. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: api::print::kani_print::word_returns; not checked: the harness checks C strings up to 3 bytes; `core::str::from_utf8`'s word-at-a-time ASCII path (16 bytes and longer) is not reached).
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
@@ -88,7 +72,7 @@ fn word(s: &CStr) -> &str
 
 ## `hist_line`
 
-src/api/print.rs:914. Kind: external_body. Category: core library.
+src/api/print.rs:911. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
@@ -107,7 +91,7 @@ fn hist_line<W: Write>(
 
 ## `axiom_c_call`
 
-src/api/print.rs:1470. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1467. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
