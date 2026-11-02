@@ -1630,24 +1630,54 @@ may run it) builds its record in place in its cell
 the discovering thread owns (`sys::cgroup::discovery_scratch`), and an
 arena's build writes its statistics record in place (`Arena::put_stats`),
 where through a value each went by the stack of whichever thread did the
-work. The statistics readers and reports (`mallctl`'s `stats.*`,
-`malloc_stats_print`, `malloc_info`, `malloc_stats`, `mallinfo`) still
-take the per-arena record (`stats::ArenaStats`, about 6 KiB with its
-bins) by value; moving it off the stack is the next step. Init is the
-exception the frame budget caps rather than bounds: challoc initialises
-before `main` (ld.so's and libc's first allocations), not on a program's
-small thread; its frame is about 7 KiB (`/etc/challoc.conf` is read into a
-static, `config::conf_buffer`), and under `thp:always` it also runs the
-by-value discovery (8.6 KiB), about 16 KiB in all.
+work. The statistics readers and reports (`epoch`, `mallctl`'s
+`stats.arenas.*`, `malloc_stats_print`, `malloc_info`, `malloc_stats`,
+`mallinfo`) collect the per-arena record (`stats::ArenaStats`, about
+6 KiB with its bins) into a scratch object of two such records
+(`stats::Scratch`), which the entry point takes before any lock and
+gives back before it returns, never holding a lock across a report's
+callback, which runs on the caller's stack and may itself allocate or
+report. The objects come only from a pool of 64 metadata objects, kept
+once allocated: a call whose callback never returns (`longjmp`,
+`pthread_exit`) abandons its object to the pool, and the thread's next
+call from as high on its stack (every such object it finds, keeping one),
+or any call once the thread has exited, takes it back. A slot's stack
+mark moves by compare-exchange and a release frees the mark before the
+owner, so a call interrupted by a signal handler that reports on the same
+stack never takes the object the handler used and gave back. A `fork` from
+inside a report's callback: the child's fork handler re-owns the forking
+thread's objects under its new thread ID, so the child's copy of the
+report keeps its object rather than having it taken as an exited
+thread's. With no object free or reclaimable (64 reports held at
+once, or abandoned and not yet reclaimed), or no metadata to allocate
+one, `mallctl` returns `EAGAIN`, `mallinfo` zeros and a report the line
+`(no memory)` until one is given back. The pooled objects count in the
+metadata figures (`stats.metadata`, and so `resident` and `mapped`;
+`malloc_info`'s system and aspace sizes, `mallinfo`'s `arena`): up to
+64 objects of `stats::StatsPair` (11,952 B at q16, 12,848 B at q8), each
+in the smallest metadata bin that fits it (12 KiB at q16, 16 KiB at q8,
+the whole bin counted in `allocated`): 768 KiB at q16 and 1 MiB at q8 at
+most, and as many as the most concurrent reports
+the process has made. A text
+`malloc_stats_print` leaves its caller about 1 KiB less of the stack than
+`malloc` does (its sink's 1 KiB buffer; on x86_64 it runs with 7.5 KiB of
+a `PTHREAD_STACK_MIN` thread already used, `malloc` with 8.5); glibc's
+`malloc_info` needs more than either. Init is the exception the frame
+budget caps rather than bounds: challoc initialises before `main` (ld.so's
+and libc's first allocations), not on a program's small thread; its frame
+is about 7 KiB (`/etc/challoc.conf` is read into a static,
+`config::conf_buffer`), and under `thp:always` it also runs the by-value
+discovery (8.6 KiB), about 16 KiB in all.
 
 `tests/c/small_stack.c` runs the entry points on a `PTHREAD_STACK_MIN`
 thread with 6 KiB of it already used, each in a fresh process (the
 first allocation of `main`, a thread's first allocation building its
 arena, the discovery under the tick and under `fork`, a `fork` from an
-`SA_ONSTACK` handler). The `api::` test `every_frame_fits_the_budget`
+`SA_ONSTACK` handler, every statistics entry point, alone and from eight
+such threads at once). The `api::` test `every_frame_fits_the_budget`
 fails on any function of the shipped library that reserves more than
-2 KiB of stack and is neither one of a few known frames within a cap
-nor, until that step, a statistics reader.
+2 KiB of stack and is not one of a few known frames on cold paths
+within a cap.
 
 ## 14. Hardening summary
 

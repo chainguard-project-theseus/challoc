@@ -72,7 +72,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::{axiom_entry, rank_class};
 use crate::purge;
-use crate::stats::{self, ArenaStats, BinStats};
+use crate::stats::{self, ArenaStats};
 use crate::sys;
 use crate::sys::Errno;
 use crate::sys::bytes_is;
@@ -530,7 +530,7 @@ fn bin_curregs(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Resul
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(bin_stats(m, Tracked(mark))?.curregs))
+    arena_figure(m, Fig::Curregs, Tracked(mark))
 }
 
 fn bin_curslabs(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -538,7 +538,7 @@ fn bin_curslabs(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Resu
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(bin_stats(m, Tracked(mark))?.curslabs))
+    arena_figure(m, Fig::Curslabs, Tracked(mark))
 }
 
 fn bin_nonfull_slabs(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -546,7 +546,7 @@ fn bin_nonfull_slabs(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) ->
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(bin_stats(m, Tracked(mark))?.nonfull_slabs))
+    arena_figure(m, Fig::NonfullSlabs, Tracked(mark))
 }
 
 fn small_allocated(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -554,7 +554,7 @@ fn small_allocated(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> R
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.small_allocated))
+    arena_figure(m, Fig::SmallAllocated, Tracked(mark))
 }
 
 fn small_resident(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -562,9 +562,7 @@ fn small_resident(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Re
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    let a = arena_stats(shared(Tracked(mark)), at(m, 2))?;
-    // `+` as the build computes it ([`stats::fig_add`]).
-    Ok(Size(stats::fig_add(a.small_active, a.small_dirty)))
+    arena_figure(m, Fig::SmallResident, Tracked(mark))
 }
 
 fn large_allocated(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -572,7 +570,7 @@ fn large_allocated(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> R
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.large_allocated))
+    arena_figure(m, Fig::LargeAllocated, Tracked(mark))
 }
 
 fn arena_pactive(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -580,7 +578,7 @@ fn arena_pactive(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Res
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.pactive))
+    arena_figure(m, Fig::Pactive, Tracked(mark))
 }
 
 fn arena_pdirty(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -588,7 +586,7 @@ fn arena_pdirty(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Resu
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.pdirty))
+    arena_figure(m, Fig::Pdirty, Tracked(mark))
 }
 
 fn arena_pmuzzy(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -596,7 +594,7 @@ fn arena_pmuzzy(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Resu
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.pmuzzy))
+    arena_figure(m, Fig::Pmuzzy, Tracked(mark))
 }
 
 fn arena_resident(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -604,7 +602,7 @@ fn arena_resident(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Re
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.resident))
+    arena_figure(m, Fig::Resident, Tracked(mark))
 }
 
 fn arena_mapped(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -612,7 +610,7 @@ fn arena_mapped(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Resu
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.mapped))
+    arena_figure(m, Fig::Mapped, Tracked(mark))
 }
 
 fn arena_retained(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -620,7 +618,7 @@ fn arena_retained(m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Re
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
 {
-    Ok(Size(arena_stats(shared(Tracked(mark)), at(m, 2))?.retained))
+    arena_figure(m, Fig::Retained, Tracked(mark))
 }
 
 fn cgroup_limit(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -2621,23 +2619,6 @@ fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
     }
 }
 
-/// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures. (`bins[..NBINS]
-/// .get(j)`, spelled out as in `bin_class`.)
-#[allow(clippy::redundant_comparisons)]
-fn bin_stats(mib: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<BinStats, c_int>
-    requires
-        crate::api::marks_ready(*mark),
-        crate::sys::may_syscall(),
-{
-    let a = arena_stats(shared(Tracked(mark)), at(mib, 2))?;
-    let j = at(mib, 4);
-    if j < NBINS && j < NCLASSES {
-        Ok(a.bins[j])
-    } else {
-        Err(ENOENT)
-    }
-}
-
 /// The tracked cgroup, or `ENOENT`: like jemalloc's keys behind a disabled
 /// build option, the name resolves and the read says the facility is off.
 fn tracked(Tracked(mark): Tracked<&'static ReadyMark>) -> (r: Result<&'static crate::sys::cgroup::Cgroup, c_int>)
@@ -2676,10 +2657,83 @@ fn ms_of(ns: u64) -> (r: isize)
     }
 }
 
+/// The figure of an arena's stored statistics a `stats.arenas.<i>.*`
+/// reader returns ([`arena_figure`]).
+enum Fig {
+    SmallAllocated,
+    SmallResident,
+    LargeAllocated,
+    Pactive,
+    Pdirty,
+    Pmuzzy,
+    Resident,
+    Mapped,
+    Retained,
+    /// `bins.<j>.curregs`, `j` the MIB's fifth component.
+    Curregs,
+    Curslabs,
+    NonfullSlabs,
+}
+
+/// `fig` of arena `m[2]`'s stored statistics ([`arena_stats_into`]),
+/// read from a [`stats::Scratch`] taken before any lock and given back
+/// before the return, so the 6 KiB record is not on the caller's stack;
+/// `EAGAIN` when there is none to take. A bin figure is `ENOENT` past
+/// `arenas.nbins` (`bins[..NBINS].get(j)`, spelled out as in
+/// `bin_class`).
+// `j < NCLASSES` is redundant for the compiler, not for the verifier.
+#[allow(clippy::redundant_comparisons)]
+fn arena_figure(m: &[usize], fig: Fig, Tracked(mark): Tracked<&'static ReadyMark>) -> (r: Result<Reading, c_int>)
+    requires
+        crate::api::marks_ready(*mark),
+        crate::sys::may_syscall(),
+    ensures
+        r matches Err(e) ==> e == ENOENT || e == EAGAIN,
+{
+    let shared = shared(Tracked(mark));
+    let Some(mut sc) = stats::Scratch::new(&shared.meta) else {
+        return Err(EAGAIN);
+    };
+    let r = match arena_stats_into(shared, at(m, 2), &mut sc.record().a) {
+        Err(e) => Err(e),
+        Ok(()) => {
+            let a = &sc.get().a;
+            let j = at(m, 4);
+            let bin = if j < NBINS && j < NCLASSES { Some(&a.bins[j]) } else { None };
+            match fig {
+                Fig::SmallAllocated => Ok(Size(a.small_allocated)),
+                // `+` as the build computes it ([`stats::fig_add`]).
+                Fig::SmallResident => Ok(Size(stats::fig_add(a.small_active, a.small_dirty))),
+                Fig::LargeAllocated => Ok(Size(a.large_allocated)),
+                Fig::Pactive => Ok(Size(a.pactive)),
+                Fig::Pdirty => Ok(Size(a.pdirty)),
+                Fig::Pmuzzy => Ok(Size(a.pmuzzy)),
+                Fig::Resident => Ok(Size(a.resident)),
+                Fig::Mapped => Ok(Size(a.mapped)),
+                Fig::Retained => Ok(Size(a.retained)),
+                Fig::Curregs => match bin {
+                    Some(b) => Ok(Size(b.curregs)),
+                    None => Err(ENOENT),
+                },
+                Fig::Curslabs => match bin {
+                    Some(b) => Ok(Size(b.curslabs)),
+                    None => Err(ENOENT),
+                },
+                Fig::NonfullSlabs => match bin {
+                    Some(b) => Ok(Size(b.nonfull_slabs)),
+                    None => Err(ENOENT),
+                },
+            }
+        },
+    };
+    sc.free(&shared.meta);
+    r
+}
+
 /// The stored statistics of arena `i`, the `MALLCTL_ARENAS_ALL` merge, or
 /// the zeros of `MALLCTL_ARENAS_DESTROYED` (both recognised before the
-/// range check, which they fail).
-fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
+/// range check, which they fail), into `out`.
+fn arena_stats_into(shared: &Shared, i: usize, out: &mut ArenaStats) -> (r: Result<(), c_int>)
     requires
         crate::sys::may_syscall(),
         shared.wf(),
@@ -2687,12 +2741,18 @@ fn arena_stats(shared: &Shared, i: usize) -> (r: Result<ArenaStats, c_int>)
         r matches Err(e) ==> e == ENOENT,
 {
     if i == ARENAS_ALL as usize {
-        return Ok(stats::arena_stats_all(shared, Tracked(&mut axiom_entry())));
+        stats::arena_stats_all_into(shared, out, Tracked(&mut axiom_entry()));
+        return Ok(());
     }
     if i == ARENAS_DESTROYED {
-        return Ok(ArenaStats::empty(ARENAS_DESTROYED as u16));
+        out.clear(ARENAS_DESTROYED as u16);
+        return Ok(());
     }
-    stats::arena_stats(shared, arena_index(i)?, Tracked(&mut axiom_entry())).ok_or(ENOENT)
+    if stats::arena_stats_into(shared, arena_index(i)?, out, Tracked(&mut axiom_entry())) {
+        Ok(())
+    } else {
+        Err(ENOENT)
+    }
 }
 
 /// Return the calling thread's cached slots before a purge so the purge
@@ -2813,7 +2873,9 @@ fn ctl(
             // A write reads back the number its own refresh stored, not a
             // later writer's.
             let e = match io.write::<u64>()? {
-                Some(_) => stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut ord)),
+                // `EAGAIN`, with nothing refreshed, when there is no
+                // metadata object for the collection's scratch record.
+                Some(_) => stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut ord)).ok_or(EAGAIN)?,
                 None => stats::snapshot(shared, Tracked(&mut ord)).epoch,
             };
             io.read(e, Tracked(cc))

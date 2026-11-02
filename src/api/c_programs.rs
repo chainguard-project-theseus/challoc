@@ -821,11 +821,19 @@ ctests! {
     ];
     /// `tests/c/small_stack.c`: the allocation calls (`main`'s first
     /// included), the jemalloc and C++ ones, a read of the cgroup figures,
-    /// `fork` (also from an `SA_ONSTACK` handler) and the deferred cgroup
-    /// discovery under the tick and `fork`, on a `PTHREAD_STACK_MIN`
-    /// thread with 6 KiB of it already used, each in a fresh process:
-    /// none overflows the stack (design 13.8).
-    c_small_stack => [ CTest { prog: "small_stack", stdout_has: &["done many_warm", "done fork_warm"], ..BASE } ];
+    /// `fork` (also from an `SA_ONSTACK` handler), the deferred cgroup
+    /// discovery under the tick and `fork`, and the statistics (`mallinfo`,
+    /// `malloc_info`, `malloc_stats`, `malloc_stats_print`, `epoch` and the
+    /// `stats.arenas` reads, also from eight such threads at once), on a
+    /// `PTHREAD_STACK_MIN` thread with 6 KiB of it already used, each in a
+    /// fresh process: none overflows the stack (design 13.8). A report's
+    /// callback runs on the caller's stack (one that needs 512 KiB) and may
+    /// take a signal whose handler reads the statistics.
+    c_small_stack => [ CTest {
+        prog: "small_stack",
+        stdout_has: &["done many_warm", "done fork_warm", "done stats_contend", "done big_callback"],
+        ..BASE
+    } ];
     /// `tests/c/jemalloc_api.c`: the jemalloc and glibc
     /// extras under the real `.so`, every non-standard symbol reached through
     /// a weak reference.
@@ -1580,9 +1588,11 @@ fn ordinary_programs_run_under_ld_preload() {
 const FRAME_BUDGET: usize = 2048;
 
 /// Frames past [`FRAME_BUDGET`], by exact name, each with the most it may
-/// grow to: on the tick and the cache flush, measured with the rest of
-/// their paths in `small_stack`'s 6 KiB of headroom. A new one, or one of
-/// these growing, fails.
+/// grow to: on cold paths (the tick, the cache flush, initialisation),
+/// measured with the rest of their paths in `small_stack`'s 6 KiB of
+/// headroom. A new one, or one of these growing, fails; every other
+/// frame a `malloc`, a `free`, a `fork`, a tick or a statistics call can
+/// reach fits the budget.
 #[cfg(target_arch = "x86_64")]
 const KNOWN: &[(&str, usize)] = &[
     // The decay pass of one class (the tick, `arena.<i>.decay`).
@@ -1603,20 +1613,6 @@ const KNOWN: &[(&str, usize)] = &[
     // peak is init_slow's frame plus this one, about 16 KiB, before
     // `main` (design 13.8).
     ("<challoc::sys::cgroup::Cgroup>::discover_scanned", 8704),
-];
-
-/// The statistics readers and reports, which still take the per-arena
-/// record (`stats::ArenaStats`, about 6 KiB with its bins) by value: the
-/// next step of design 13.8 moves it off the stack, and this list goes.
-#[cfg(target_arch = "x86_64")]
-const PENDING: &[&str] = &[
-    "challoc::api::mallctl::",
-    "challoc::api::print::",
-    "challoc::stats::",
-    "malloc_info",
-    "malloc_stats",
-    "mallinfo",
-    "mallinfo2",
 ];
 
 /// Each function's frame from its prologue (x86_64): its pushes, its
@@ -1710,7 +1706,8 @@ fn prologue_frames(disasm: &str) -> Vec<(usize, String)> {
 
 /// Every function of the shipped library reserves at most
 /// [`FRAME_BUDGET`] bytes of stack, or is one of the [`KNOWN`] few within
-/// its cap (or still [`PENDING`]): a large array or a big by-value record
+/// its cap: a large array or a big by-value record (an `ArenaStats`, which
+/// the statistics collect into a `stats::Scratch` instead)
 /// on a path a `malloc`, a `free`, a `fork` or a tick can reach fails
 /// here, before it overflows a small thread's stack. The prologue parser
 /// is checked on the largest frame, so it cannot pass by reading nothing.
@@ -1733,11 +1730,7 @@ fn every_frame_fits_the_budget() {
     );
     let over: Vec<String> = frames
         .iter()
-        .filter(|(f, n)| {
-            *f > FRAME_BUDGET
-                && !PENDING.iter().any(|p| n.starts_with(p))
-                && !KNOWN.iter().any(|(k, cap)| n == k && f <= cap)
-        })
+        .filter(|(f, n)| *f > FRAME_BUDGET && !KNOWN.iter().any(|(k, cap)| n == k && f <= cap))
         .map(|(f, n)| std::format!("{f:>6} {n}"))
         .collect();
     assert!(

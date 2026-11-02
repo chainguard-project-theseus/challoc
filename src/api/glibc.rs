@@ -87,8 +87,28 @@ pub fn mallopt(_param: c_int, _value: c_int) -> (r: c_int)
 }
 
 /// What [`mallinfo2`] read: [`stats::collect_all`]'s per-arena reads, their
-/// huge pages, and their sum.
-pub type Reads = Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)>;
+/// huge pages, and their sum; and whether it collected them at all (it
+/// does unless no metadata object is left for its scratch records).
+pub type Reads = Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats, bool)>;
+
+/// A `mallinfo2` of zeros, for a call with nothing collected.
+pub(crate) fn zero_info() -> (r: MallInfo2)
+    ensures
+        r == zero_info_spec(),
+{
+    MallInfo2 {
+        arena: 0,
+        ordblks: 0,
+        smblks: 0,
+        hblks: 0,
+        hblkhd: 0,
+        usmblks: 0,
+        fsmblks: 0,
+        uordblks: 0,
+        fordblks: 0,
+        keepcost: 0,
+    }
+}
 
 /// `mallinfo2()`. `rd` gets what [`stats::collect_all`] read and summed:
 /// `uordblks` and `hblkhd` are that sum's `small_allocated` and
@@ -102,6 +122,10 @@ pub type Reads = Ghost<(Seq<stats::ArenaStats>, Seq<int>, stats::ArenaStats)>;
 /// ([`stats::ids_ascending`]). This contract leaves out
 /// `ordblks` and `keepcost`: their figure arithmetic (`stats::fig_add`,
 /// `fig_mul`) is exact only when it fits and wraps in the shipped library.
+/// The sum and each arena's figures (about 6 KiB each with their bins)
+/// are collected into a [`stats::Scratch`]'s two records, not onto the
+/// caller's stack; with no object for them every figure is 0 and `rd`'s
+/// flag is clear.
 /// `theorem_read_only_never_aborts` restates its calls that carry a
 /// contract; `api::restated::read_only_restatements_match_their_bodies`
 /// checks that the two make the same calls.
@@ -110,29 +134,40 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
     ensures
-        r.arena == if final(rd)@.2.resident >= final(rd)@.2.large_allocated { final(rd)@.2.resident - final(rd)@.2.large_allocated } else { 0 },
-        r.fordblks == if r.arena >= r.uordblks { r.arena - r.uordblks } else { 0 },
-        r.fordblks <= r.arena,
-        stats::sum_mapped(final(rd)@.0) <= usize::MAX ==> r.arena >= r.uordblks && r.fordblks == r.arena - r.uordblks,
         r.smblks == 0 && r.usmblks == 0 && r.fsmblks == 0,
-        stats::summed(final(rd)@.0, final(rd)@.1, final(rd)@.2),
-        stats::ids_ascending(final(rd)@.0),
-        forall|j: int| 0 <= j < final(rd)@.0.len() ==> ((#[trigger] final(rd)@.0[j]).index as usize) < crate::arena::MAX_ARENAS,
-        r.uordblks == final(rd)@.2.small_allocated,
-        r.hblkhd == final(rd)@.2.large_allocated,
-        r.hblks == final(rd)@.2.large_runs,
+        !final(rd)@.3 ==> r == zero_info_spec(),
+        final(rd)@.3 ==> {
+            &&& r.arena == if final(rd)@.2.resident >= final(rd)@.2.large_allocated { final(rd)@.2.resident - final(rd)@.2.large_allocated } else { 0 }
+            &&& r.fordblks == if r.arena >= r.uordblks { r.arena - r.uordblks } else { 0 }
+            &&& r.fordblks <= r.arena
+            &&& stats::sum_mapped(final(rd)@.0) <= usize::MAX ==> r.arena >= r.uordblks && r.fordblks == r.arena - r.uordblks
+            &&& stats::summed(final(rd)@.0, final(rd)@.1, final(rd)@.2)
+            &&& stats::ids_ascending(final(rd)@.0)
+            &&& forall|j: int| 0 <= j < final(rd)@.0.len() ==> ((#[trigger] final(rd)@.0[j]).index as usize) < crate::arena::MAX_ARENAS
+            &&& r.uordblks == final(rd)@.2.small_allocated
+            &&& r.hblkhd == final(rd)@.2.large_allocated
+            &&& r.hblks == final(rd)@.2.large_runs
+        },
 {
     let shared = super::shared();
     proof {
         shared.lemma_wf();
     }
+    let Some(mut sc) = stats::Scratch::new(&shared.meta) else {
+        proof {
+            *rd = Ghost((rd@.0, rd@.1, rd@.2, false));
+        }
+        return zero_info();
+    };
     let tracked mut sd = Ghost((Seq::<stats::ArenaStats>::empty(), Seq::<int>::empty()));
     // Premise (lock order): `mallinfo2`'s callers (the C exports and the
     // tests) hold no allocator lock.
     let tracked mut ord = axiom_entry();
-    let all = stats::collect_all(shared, Tracked(&mut sd), Tracked(&mut ord));
+    let pair = sc.record();
+    stats::collect_all(shared, &mut pair.a, &mut pair.b, Tracked(&mut sd), Tracked(&mut ord));
+    let all = &sc.get().a;
     proof {
-        *rd = Ghost((sd@.0, sd@.1, all));
+        *rd = Ghost((sd@.0, sd@.1, *all, true));
     }
     let page = shared.regions.page_size();
     let arena = all.resident.saturating_sub(all.large_allocated);
@@ -148,7 +183,7 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
             fig_mul(b.curslabs, b.nregs).saturating_sub(b.curregs),
         );
     }
-    MallInfo2 {
+    let r = MallInfo2 {
         arena,
         ordblks: free_slots,
         smblks: 0,
@@ -159,6 +194,24 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
         uordblks,
         fordblks: arena.saturating_sub(uordblks),
         keepcost: fig_mul(all.pdirty, page),
+    };
+    sc.free(&shared.meta);
+    r
+}
+
+/// [`zero_info`]'s value.
+pub open spec fn zero_info_spec() -> MallInfo2 {
+    MallInfo2 {
+        arena: 0,
+        ordblks: 0,
+        smblks: 0,
+        hblks: 0,
+        hblkhd: 0,
+        usmblks: 0,
+        fsmblks: 0,
+        uordblks: 0,
+        fordblks: 0,
+        keepcost: 0,
     }
 }
 
