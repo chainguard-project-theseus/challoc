@@ -38,6 +38,8 @@ use crate::layout::{disjoint, process_regions, shared_static_addr, shared_static
 use crate::vspec::ptr::{alloc_len, in_alloc, r_len, rw_len};
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
+use vstd::raw_ptr::MemContents;
+#[cfg(verus_keep_ghost)]
 use vstd::raw_ptr::PointsTo;
 use vstd::raw_ptr::Provenance;
 
@@ -555,8 +557,9 @@ impl CCall {
 /// The permission to the `T` a C caller's out-pointer names, if it is not
 /// null ([`COut::of`]): the token of the call for that argument, minted by
 /// the export wrapper with the private `axiom_c_out` of `api/libc.rs`'s
-/// `exports` module and handed to the Rust entry point; its writes take
-/// it out and put it back.
+/// `exports` module and lent to the Rust entry point, whose writes take
+/// it out and put it back; the wrapper hands it back at return
+/// (`axiom_out_at_return`, [`c_out`]).
 ///
 /// The same shape as `arena::Held` (a tracked `Option` of a permission,
 /// so that a `&mut` to it is ghost) but not the same thing, and not to be
@@ -601,6 +604,24 @@ impl<T> COut<T> {
     {
         self.perm = Some(q)
     }
+
+    /// The token for out-pointer `p` holds `v`: `*p` reads `v` through
+    /// its permission, unless `p` is null.
+    pub open spec fn holds(self, p: *mut T, v: T) -> bool {
+        p@.addr != 0 ==> (self.opt() matches Some(q) && q.is_init() && q.value() == v)
+    }
 }
+
+/// The `T` at a C caller's out-pointer `p` as the caller left it when it
+/// called the export being verified (it may be uninitialized): what the
+/// export's token for `p` starts with (`api/libc.rs`'s `axiom_c_out`).
+/// Like `vspec::errno::c_errno`, it names one call, the one of the export
+/// whose `ensures` mention it.
+pub uninterp spec fn c_out_entry<T>(p: *mut T) -> MemContents<T>;
+
+/// The `T` at a C caller's out-pointer `p` as the C program reads it once
+/// the export being verified has returned: what the export's token for
+/// `p` holds after its last use (`api/libc.rs`'s `axiom_out_at_return`).
+pub uninterp spec fn c_out<T>(p: *mut T) -> MemContents<T>;
 
 } // verus!

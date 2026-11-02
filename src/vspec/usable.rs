@@ -278,7 +278,8 @@ pub proof fn theorem_stored_zero_iff_null(p: *mut u8, size: int, align: int, n: 
 /// writer of a `COut<usize>`); it is not a permission to access `*ptr`, and nothing ties it
 /// to later writes. The entry points return the token of their last
 /// store, and their postconditions state its value at the moment of
-/// return.
+/// return; the `COut` they were lent ends holding that value
+/// (`COut::holds`), which is what ties it to `*ptr`.
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub tracked struct Stored {

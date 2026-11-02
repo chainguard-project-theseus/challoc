@@ -271,20 +271,39 @@ It does not check `failed` itself (`true` would pass); the shape test
 requires each export's own condition. The ledger lists the axiom as a
 C-program contract.
 
-Verus then rejects a `malloc` export that drops its entry point's block
-and returns null, as long as the export does not also write or read the
-token itself; the shape test below rules that out. For `operator new`'s
-`nothrow_t` forms, `mallocx` and `rallocx`, Verus cannot tell a null
-result from a dropped block at all: their contracts allow null at any
-size and say nothing about `errno` (the C++ `new_handler` may write it;
-jemalloc's `*allocx` leave it alone). Two tests cover every export:
+Out-pointer results cross the same way. An export that takes an
+out-pointer mints the call's token for it (`axiom_c_out` in
+`src/api/libc.rs`), which holds what the caller left there
+(`vspec::cbuf::c_out_entry`), and lends it `&mut` to its entry point;
+after the call, `axiom_out_at_return` uses the token up and states that
+what it holds is what the C caller reads (`vspec::cbuf::c_out`). With
+it, `posix_memalign` ensures that on a 0 return `*out` holds a non-null
+block that fits the request, and that on `EINVAL` or `ENOMEM` `*out` is
+what the caller left there, as in glibc. `challoc_malloc_usable`,
+`challoc_calloc_usable` and `challoc_realloc_usable` ensure that a
+non-null `usable` holds the block's usable size, or 0 for a null result
+(`api::libc::reports_usable`). This axiom takes no `failed` condition:
+the token holds the only permission to `*out` for the call, and the C
+contract keeps `out` apart from challoc's memory, libc's, and the blocks
+the call frees or hands out, so nothing else writes it. The ledger
+lists it as a C-program contract.
+
+With the `errno` axiom, Verus rejects a `malloc` export that drops its
+entry point's block and returns null, as long as the export does not
+also write or read the `errno` token itself; the shape test below rules
+that out. For `operator new`'s `nothrow_t` forms, `mallocx` and
+`rallocx`, Verus cannot tell a null result from a dropped block at all:
+their contracts allow null at any size and say nothing about `errno`
+(the C++ `new_handler` may write it; jemalloc's `*allocx` leave it
+alone). Two tests cover every export:
 
 - `api::tests::exports_return_their_callees_result` reads the export
   modules' source and fails unless each export's body is the setup lines,
   one call of a `super::` entry point, and that call's result (as the
   tail, or as `r` after the axiom on the lent token with the export's own
-  `failed` condition); unless the axiom is named only there, and tokens
-  are lent only by exports, one each; and unless no code names an
+  `failed` condition, and the hand-back of the out-pointer token the
+  body minted, if any); unless the axioms are named only there, and
+  tokens are lent only by exports, one each; and unless no code names an
   `exports` module, so no verified code calls an export.
 - `c_export_results` (`tests/c/export_results.c`) calls the C exports
   under the preload: an impossible size returns null with the entry
@@ -293,11 +312,12 @@ jemalloc's `*allocx` leave it alone). Two tests cover every export:
   forms returns a block for a small size.
 
 Reviewer checklist: an export returns its callee's result; the `errno`
-axiom is called only at the export boundary, after the call, on the
-export's own token; and each export's `failed` condition (`FAILED` and
-`failed_for` in `src/api/mod.rs`) holds only on a result that challoc's
-own `errno` write precedes. `exports_return_their_callees_result` and
-`c_export_results` enforce the first two. For the third, Verus proves a
-`c_errno()` clause only under the export's `failed`, and the shape test
-rejects a `failed` other than the one `failed_for` gives that export, so
-what is left to review is the 4 conditions and which exports get each.
+and out-pointer axioms are called only at the export boundary, after
+the call, on the export's own tokens; and each export's `failed`
+condition (`FAILED` and `failed_for` in `src/api/mod.rs`) holds only on
+a result that challoc's own `errno` write precedes.
+`exports_return_their_callees_result` and `c_export_results` enforce
+the first two. For the third, Verus proves a `c_errno()` clause only
+under the export's `failed`, and the shape test rejects a `failed` other
+than the one `failed_for` gives that export, so what is left to review
+is the 4 conditions and which exports get each.
