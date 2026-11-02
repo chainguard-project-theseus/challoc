@@ -100,7 +100,6 @@ These hold on every supported host with the default configuration:
   A plain `free` of such a slot start, one challoc has not returned yet,
   passes the bit test: it is accepted, cached, and the slot can then be
   handed out twice. `double_free_scan:true` catches it at the call.
-
 - **Double frees still in a thread cache.** A second free of a slot
   still held in any thread's cache is not checked at the call. A flush
   catches it only if the slot is still unclaimed when the flush reaches
