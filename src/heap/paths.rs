@@ -190,8 +190,10 @@ impl Heap {
         Some(unsafe { Self::pop_top(cache, len, flags & PUSH_PAC != 0, Tracked(self.perms.borrow_mut()), Tracked(out)) })
     }
 
-    /// Fast path of `calloc`: the flag is true when the memory is known to
-    /// read as zero, so the caller can skip its `memset`. `blk` gets the
+    /// Fast path of `calloc`: the flag is true when challoc has written
+    /// nothing to the slot since its slab was `Fresh` or `Purged`. Callers
+    /// do not trust it for the bytes they return (a heap bug can have
+    /// written the slot) and clear the slot anyway. `blk` gets the
     /// block's token.
     #[inline(always)]
     pub fn alloc_zeroed(

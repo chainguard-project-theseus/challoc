@@ -264,8 +264,8 @@ pub open spec fn tcache_checked(size: usize, flags: c_int) -> bool {
 }
 
 /// `mallocx`'s core: allocate `size` bytes per `f`, zeroing the whole
-/// usable size when `MALLOCX_ZERO` is set and the memory is not already
-/// known to be zero. Null on exhaustion or for an arena that does not
+/// usable size when `MALLOCX_ZERO` is set, unless it is a huge run known
+/// to be zero (a slab slot always is cleared). Null on exhaustion or for an arena that does not
 /// exist (`errno` untouched); an explicit cache that does not exist
 /// aborts (`invalid_tcache`), except on the huge path with an explicit
 /// arena, which never looks the cache up. With `MALLOCX_ZERO`, a

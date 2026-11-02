@@ -37,8 +37,11 @@
 //!
 //! `MADV_FREE`d memory keeps its contents until the kernel reclaims it, so
 //! [`purged_is_zero`] is true until the first lazy batch of the process and
-//! false from then on: `calloc` clears `Purged` memory it reuses after that,
-//! and `Fresh` memory stays known zero.
+//! false from then on: a refill no longer reports a `Purged` slab's batch
+//! zero after that. That report is bookkeeping (`check_zero` reads it); no
+//! zeroing entry point trusts it for a slab slot, and a huge run reusing a
+//! `Purged` extent is discarded again before it is reported zero
+//! (`Huge::rediscard`).
 //!
 //! The curve's tests sit in `purge/curve.rs`, the other pure tests and the
 //! `serial` lock the class tests share in `purge/tests.rs`, and the ones that

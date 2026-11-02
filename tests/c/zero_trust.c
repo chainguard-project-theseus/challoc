@@ -236,19 +236,23 @@ static int huge_under_cell(struct cell *c)
     return failures;
 }
 
+/* 0 or 1, never the failure count: `fork_and_wait` keeps only the low
+ * byte of the exit status, so 256 failures would read as success. */
 static int run_one(void *arg)
 {
     struct cell *c = arg;
     failures = 0;
     if (!strcmp(c->scenario, "next"))
-        return next_cell(c);
-    if (!strcmp(c->scenario, "run"))
-        return run_cell(c);
-    if (!strcmp(c->scenario, "purged"))
-        return purged_cell(c);
-    if (!strcmp(c->scenario, "huge-uaf"))
-        return huge_uaf_cell(c);
-    return huge_under_cell(c);
+        next_cell(c);
+    else if (!strcmp(c->scenario, "run"))
+        run_cell(c);
+    else if (!strcmp(c->scenario, "purged"))
+        purged_cell(c);
+    else if (!strcmp(c->scenario, "huge-uaf"))
+        huge_uaf_cell(c);
+    else
+        huge_under_cell(c);
+    return failures != 0;
 }
 
 int main(void)
@@ -266,7 +270,7 @@ int main(void)
         for (int e = 0; e < NENTRY; e++) {
             struct cell c = {scenarios[s], (enum entry)e};
             int r = fork_and_wait(run_one, &c);
-            CHECK(r == 0, "%s/%s: child %s %d", scenarios[s], entry_name[e], r < 0 ? "died of signal" : "failures",
+            CHECK(r == 0, "%s/%s: child %s %d", scenarios[s], entry_name[e], r < 0 ? "died of signal" : "exited",
                   r < 0 ? -r : r);
         }
     }

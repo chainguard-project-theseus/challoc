@@ -54,8 +54,9 @@
 //! claimed in the same lock hold, before the slab enters the partial set.
 //! That is what makes the refill's zero report sound: a bit decided after
 //! the lock is dropped could be one that another thread claimed from the
-//! now-partial slab, handed to the program and got back dirty in between,
-//! and `calloc` would skip its memset over it (the calloc race).
+//! now-partial slab, handed to the program and got back dirty in between
+//! (the calloc race, from when `calloc` trusted the report; it no longer
+//! does, SECURITY.md "Zeroing allocations are zero").
 //!
 //! A release clears bits with `fetch_and` and then subtracts from `live`.
 //! If a word was full before the clear the releaser sets the partial bit

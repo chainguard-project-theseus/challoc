@@ -496,8 +496,10 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked
     if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
-/// `calloc`. Skips the `memset` when the slot or run is known to read as
-/// zero (fresh or purged memory). The block's token goes to C with it.
+/// `calloc`. Clears a slab slot with `memset` always; skips it only for a
+/// huge run known to read as zero (pages past the region's high-water
+/// mark, or a purged extent discarded again as the run is placed). The
+/// block's token goes to C with it.
 #[inline(always)]
 pub fn calloc(n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires

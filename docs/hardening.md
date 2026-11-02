@@ -15,7 +15,7 @@ exact windows the defaults leave open. The design view is
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
 | Sealed reservation gaps (`mseal`)        | No           | Yes where the kernel (6.10+) and seccomp allow it |
 | Zero on free                             | Opt-in       | Opt-in: `zero_on_free` clears a block on free (2) |
-| Zeroing allocations zero after a heap bug wrote not-yet-allocated memory | Small classes only | Yes (5) |
+| Zeroing allocations zero after a heap bug wrote not-yet-allocated memory | Small tcache allocations | Yes (5) |
 | Slot order randomisation                 | No           | Opt-in: `slot_randomize` (2) |
 | Signed allocator pointers (arm64 PAC)    | No           | Opt-in where the CPU has it: `pac_pointers`, cache entries and the TLS heap pointer `pacda`-signed, authenticated on every `malloc` (3) |
 | Tagged pointers                          | No           | Planned (4)     |
@@ -171,7 +171,7 @@ count, since a stale pointer or an underflow from the live run above (a
 freed run's guard goes with it) can have written it since. Under 16 KiB
 (`REDISCARD_MIN`) the `madvise` costs more than the clear, and a dirty
 (`Empty`) extent is cleared. jemalloc 5.3 always clears a small
-allocation from the tcache, but trusts a large extent's zeroed flag.
+allocation from the tcache.
 The cost is the clear itself: on a `calloc` from fresh slab memory it
 moves the first-touch page faults into the call (a program that writes
 the block pays them anyway; one that leaves a large `calloc` sparse now

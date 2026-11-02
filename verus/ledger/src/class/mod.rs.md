@@ -16,7 +16,7 @@ file.
 
 ## `axiom_class_lock_inv`
 
-src/class/mod.rs:2171. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:2172. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
@@ -30,7 +30,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 ## `axiom_class_lock`
 
-src/class/mod.rs:2182. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:2183. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with, and the value's arena, table and owned-slab record's location are the ones `new` set.
