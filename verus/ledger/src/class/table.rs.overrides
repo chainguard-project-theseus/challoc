@@ -3,7 +3,7 @@ axiom_table_lock_inv	allocator invariant	none (assumption)
 axiom_table_lock_frame	allocator invariant	none (assumption)
 # One table per class per process: each uses up its class's one-shot token.
 axiom_slot_loc	allocator invariant	none (assumption)
-axiom_fresh_words	allocator invariant	none (assumption)
+axiom_fresh_words	allocator invariant	Kani	trusted (partly checked, Kani: kani_proofs::zero::fresh_words_load_zero; not checked: the provenance clause of `perm_at` in `words_perms_ok` (`cast_provenance()`), which Kani cannot observe, the one-shot token `once` (one table per class per process), and the location identities `WordPerm::addr` and `word_addr`, ghost)
 # Zero bytes as plain atomics, valid for every bit pattern.
-axiom_zero_desc	raw pointer (internal)	none (assumption)
-axiom_zero_owner	raw pointer (internal)	none (assumption)
+axiom_zero_desc	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::zero::zero_desc_reads_fresh; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe, and `desc_id` and the `DescPerm`'s `id`, ghost identities)
+axiom_zero_owner	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::zero::zero_owner_loads_zero; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe: the harness reads through a pointer to its own buffer)

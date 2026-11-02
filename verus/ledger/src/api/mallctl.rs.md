@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `VERSION` | external_body const | core library | Kani | discharged |
-| `root` | external_body | allocator invariant | Verus | trusted |
+| `root` | external_body | allocator invariant | Kani | discharged |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
 ## `VERSION`
@@ -25,7 +25,7 @@ pub(crate) const VERSION: &'static str = VERSION_STR;
 ## `root`
 
 src/api/mallctl.rs:1173. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+Tool: Kani. Status: discharged (Kani: api::mallctl::kani_root::root_returns).
 
 > [`ROOT`].
 

@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `ZeroRaw...om_new` | external_body proof | allocator invariant | none (assumption) | trusted |
-| `axiom_zero_word` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
+| `axiom_zero_word` | external_body proof | raw pointer (internal) | Kani | discharged |
 | `zero_raw` | external_body | raw pointer (internal) | Kani | discharged |
 
 ## `ZeroRaw::axiom_new`
@@ -30,7 +30,7 @@ pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked 
 ## `axiom_zero_word`
 
 src/vspec/zero.rs:196. Kind: external_body proof. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::zero::zero_word_reads_zero).
 
 > The eight bytes of `z`, which read as zero, as the `u64` at `p` holding 0: `PointsToRaw::into_typed`, initialised with the value the bytes hold.
 
