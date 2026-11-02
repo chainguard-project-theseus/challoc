@@ -85,7 +85,8 @@ pass. There are three sources:
   `thp/{always,auto}` where the sysfs knobs are missing,
   `thp/never-huge-run` when the kernel had no free huge page,
   `resource/{mlock_huge,mlockall,map_count}` when `mlock`/`mlockall` is
-  refused, `cgroup_policy/{bands,high}` and `cgroup/bg` without a limit or a
+  refused, `resource/map_count` without guard slabs (below 6.13 or
+  `guards:false`), `cgroup_policy/{bands,high}` and `cgroup/bg` without a limit or a
   writable cgroup mount, `mlock_purge/<mode>` when `mlock` is refused (a
   `RLIMIT_MEMLOCK` under 1 MiB, 2 MiB for the decay modes) and
   `mlock_purge/{decay,background}` when the host is too slow to see the

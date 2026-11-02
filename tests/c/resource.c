@@ -436,6 +436,15 @@ static void parent_data_thread(void)
     run_threads(8);
 }
 
+__attribute__((weak)) const char *challoc_features(void);
+
+/* Whether the kernel installs guard markers, so classes have guard slabs. */
+static int guard_slabs(void)
+{
+    const char *f = challoc_features ? challoc_features() : NULL;
+    return f && strstr(f, "guard_install=yes");
+}
+
 static void parent_mlock_huge(void)
 {
     void *p = malloc(1 << 20);
@@ -455,6 +464,15 @@ static void parent_mlock_huge(void)
             fill(q, 307200, (uint32_t)i);
         free(q);
     }
+    /* A larger run over the same extent covers the guard page the
+     * smaller ones left PROT_NONE: its pages must be committed. */
+    void *big = malloc(700000);
+    CHECK(big, "malloc(700000) over a locked extent: errno %d", errno);
+    if (big) {
+        fill(big, 700000, 9);
+        CHECK(check_fill(big, 700000, 9), "700000-byte run changed");
+    }
+    free(big);
 }
 
 static int lock_all(const char *mode, int flags)
@@ -475,14 +493,21 @@ static void parent_mlockall(void)
     for (int i = 0; i < N; i++) {
         small[i] = malloc(4096);
         CHECK(small[i], "malloc(4096) #%d under mlockall: errno %d", i, errno);
+        if (small[i])
+            fill(small[i], 4096, (uint32_t)i);
     }
     for (int i = 0; i < 8; i++) {
         void *q = malloc(307200);
         CHECK(q, "malloc(307200) #%d under mlockall: errno %d", i, errno);
+        if (q)
+            fill(q, 307200, (uint32_t)i);
         free(q);
     }
-    for (int i = 0; i < N; i++)
+    for (int i = 0; i < N; i++) {
+        if (small[i])
+            CHECK(check_fill(small[i], 4096, (uint32_t)i), "4 KiB block #%d changed", i);
         free(small[i]);
+    }
     munlockall();
 }
 
@@ -500,6 +525,12 @@ static size_t count_maps(void)
 
 static void parent_map_count(void)
 {
+    /* Without guard slabs a slab commit only moves the boundary of the
+     * read-write mapping and needs no new one: nothing to exhaust. */
+    if (!guard_slabs()) {
+        skip_note("resource/map_count", "no guard slabs (guard_install=no or guards:false)");
+        return;
+    }
     size_t limit = 65530;
     FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
     if (f) {
@@ -525,6 +556,7 @@ static void parent_map_count(void)
     for (int i = 0; i < 4; i++) {
         blocks[i] = malloc(4096);
         REQUIRE(blocks[i], "malloc(4096) before the fill");
+        fill(blocks[i], 4096, (uint32_t)i);
     }
     /* Alternate protections so neighbouring fillers never merge. */
     for (size_t before = count_maps(); n < cap && before + n < limit; n++) {
@@ -542,6 +574,7 @@ static void parent_map_count(void)
             refused = 1;
             break;
         }
+        fill(blocks[i], 4096, (uint32_t)i);
         got++;
     }
     CHECK(refused, "the map count never ran out (%d blocks)", got);
@@ -551,9 +584,14 @@ static void parent_map_count(void)
     for (int i = got; i < 8192 && i < got + 512; i++) {
         blocks[i] = malloc(4096);
         CHECK(blocks[i], "malloc(4096) after the mappings went: errno %d", errno);
+        if (blocks[i])
+            fill(blocks[i], 4096, (uint32_t)i);
     }
-    for (int i = 0; i < 8192; i++)
+    for (int i = 0; i < 8192; i++) {
+        if (blocks[i])
+            CHECK(check_fill(blocks[i], 4096, (uint32_t)i), "4 KiB block #%d changed", i);
         free(blocks[i]);
+    }
     free(blocks);
     free(fill_maps);
     munlockall();

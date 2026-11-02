@@ -4512,7 +4512,6 @@ impl SlabTable {
     /// [`run_slabs`]: SlabTable::run_slabs
     pub(super) fn commit_run(&self, s: usize, limit: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
-            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             s < limit <= self.spec_nslabs(),
             old(ord).allows(rank_table(0)),
@@ -4608,7 +4607,6 @@ impl SlabTable {
     #[allow(clippy::manual_is_multiple_of)]
     pub(super) fn commit_slab(&self, s: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
-            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             s < self.spec_nslabs(),
             old(ord).allows(rank_table(0)),
