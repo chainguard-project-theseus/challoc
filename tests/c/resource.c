@@ -48,6 +48,11 @@
  *               4 KiB mallocs end in NULL/ENOMEM, never an abort (a guard
  *               slab that can be neither marked nor split is not handed
  *               out); after the mappings are unmapped they arrive again
+ *   bg_cancel   a thread toggling mallctl("background_thread") is
+ *               cancelled (deferred) 300 times, the cancellation landing
+ *               inside challoc's restart: the background thread can be
+ *               started again every time (challoc acts on no
+ *               cancellation, so no start is left half done)
  */
 #include "common.h"
 
@@ -606,6 +611,57 @@ static void parent_map_count(void)
     munlockall();
 }
 
+/* Toggles the background thread off and on until cancelled (deferred,
+ * the POSIX default): the cancellation lands inside challoc's restart. */
+static void *toggler(void *arg)
+{
+    mallctl_fn ctl = (mallctl_fn)arg;
+    for (;;) {
+        bool v = false;
+        ctl("background_thread", NULL, NULL, &v, sizeof v);
+        v = true;
+        ctl("background_thread", NULL, NULL, &v, sizeof v);
+        pthread_testcancel();
+    }
+    return NULL;
+}
+
+static void parent_bg_cancel(void)
+{
+    mallctl_fn ctl = mallctl_dl();
+    REQUIRE(ctl, "no mallctl");
+    bool on = true;
+    if (ctl("background_thread", NULL, NULL, &on, sizeof on) != 0) {
+        skip_note("resource/bg_cancel", "the background thread cannot start here");
+        return;
+    }
+    for (int i = 0; i < 300; i++) {
+        pthread_t t;
+        REQUIRE(pthread_create(&t, NULL, toggler, (void *)ctl) == 0, "pthread_create");
+        struct timespec ts = {0, (100 + (i % 50) * 37) * 1000L};
+        nanosleep(&ts, NULL);
+        pthread_cancel(t);
+        void *res;
+        pthread_join(t, &res);
+        CHECK(res == PTHREAD_CANCELED, "round %d: toggler not cancelled", i);
+        /* The thread comes back when asked again (a start in progress
+         * on another thread may refuse once). */
+        int rc = -1;
+        for (int k = 0; k < 20 && rc != 0; k++) {
+            on = true;
+            rc = ctl("background_thread", NULL, NULL, &on, sizeof on);
+            if (rc != 0)
+                sleep_ms(50);
+        }
+        if (rc != 0) {
+            CHECK(0, "round %d: background_thread:true returns %d after a cancellation", i, rc);
+            return;
+        }
+    }
+    on = false;
+    ctl("background_thread", NULL, NULL, &on, sizeof on);
+}
+
 int main(int argc, char **argv)
 {
     self_path = "/proc/self/exe";
@@ -649,6 +705,8 @@ int main(int argc, char **argv)
         parent_mlockall();
     else if (!strcmp(mode, "map_count"))
         parent_map_count();
+    else if (!strcmp(mode, "bg_cancel"))
+        parent_bg_cancel();
     else
         REQUIRE(0, "unknown mode '%s'", mode);
     return finish("resource");

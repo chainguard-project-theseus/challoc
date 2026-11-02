@@ -465,6 +465,14 @@ verus! {
 
 /// `pthread_join(t, NULL)`: 0 or an error number. Trusted: a raw libc
 /// call; nothing is claimed about the result.
+///
+/// The join is a cancellation point, the only one challoc reaches (every
+/// other system call is a raw `syscall`, and `pthread_create`, the
+/// attribute calls, `pthread_sigmask` and `pthread_setspecific` are not
+/// cancellation points). It runs with cancellation disabled, so a
+/// deferred `pthread_cancel` of the calling thread is acted on at the
+/// program's next cancellation point instead of unwinding out of
+/// [`start`] with its `creating` flag set (design 8.1, 14.1).
 /// `cell` is the calling thread's slot cell: the join frees the exited
 /// thread's key data, which may re-enter the allocator on this thread, so
 /// the slot must be empty or hold a sentinel ([`crate::heap::reentry_benign`]),
@@ -487,8 +495,21 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
     ensures
         final(cell).kept(*old(cell)),
 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) }
+    // glibc's, which the `libc` crate does not bind; the same on both
+    // targets.
+    const PTHREAD_CANCEL_DISABLE: i32 = 1;
+    unsafe extern "C" {
+        fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
+    }
+    // SAFETY: guaranteed by the caller; `old` is a live int the
+    // cancel-state calls write.
+    unsafe {
+        let mut old = 0;
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &mut old);
+        let rc = ::libc::pthread_join(t, core::ptr::null_mut());
+        pthread_setcancelstate(old, &mut old);
+        rc
+    }
 }
 
 /// Create the thread on `stack` (reserving the stack first if there is

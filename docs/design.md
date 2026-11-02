@@ -1007,7 +1007,12 @@ sleeps on a futex until the next decay deadline, is woken when a class's
 first slab goes `Empty`, and samples the cgroup (section 11) before each
 decay pass. Its stack is one metadata reservation, made by the first
 start and never freed: a stopped thread exits at its next wake-up, and
-the next start joins it before reusing the stack. After `fork` the child
+the next start joins it before reusing the stack. That `pthread_join` is
+the only cancellation point challoc reaches (every other system call is
+a raw `syscall`), and it runs with cancellation disabled: a deferred
+`pthread_cancel` of the thread inside `mallctl` or an allocation is acted
+on at the program's next cancellation point, never midway through a
+start (14.1). After `fork` the child
 forgets the parent's thread and does not recreate it until asked or,
 under the lazy start, until it holds enough dirty memory of its own: the
 dirty bytes at the fork are its baseline, lowered as the inherited set
@@ -1670,6 +1675,9 @@ aborts:
   again. Inside `free`, which cannot fail, the memory the failure leaves
   in doubt is kept out of circulation (leaked and counted), never
   recycled and never an abort.
+
+Thread cancellation is not a failure either: challoc acts on no
+cancellation request (8.1), so no state is ever left half set by one.
 
 Guards degrade, never vanish: a guard the kernel refuses as a
 `MADV_GUARD_INSTALL` marker (on an `mlock`ed range, `EINVAL`) is a
