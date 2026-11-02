@@ -1514,6 +1514,141 @@ mod tests {
         );
     }
 
+    /// `MALLOCX_TCACHE_NONE` bypasses every cache, sampled (the proofs'
+    /// `Heap::caches_same`): direct allocations and frees through
+    /// `mallocx`, `rallocx`, `dallocx` and `sdallocx` leave every cache of
+    /// the thread's heap (home, another arena's, the foreign one) and of an
+    /// explicit cache as they were, entries, runs, capacities and pop
+    /// counts included.
+    #[test]
+    fn tcache_none_leaves_every_cache_alone() {
+        use crate::heap::{FOREIGN, Heap, existing_heap};
+        use crate::layout::NCLASSES;
+        let s = shared();
+        let lua = s
+            .arenas
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+            .expect("arenas.create");
+        let t = s
+            .tcaches
+            .create(
+                s,
+                0,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+            .expect("tcache.create");
+        let sizes = [16usize, 100, 300, 1000, 4096];
+        // Give the caches something to hold: the home caches, the Lua
+        // arena's, the foreign one (a plain free of a Lua slot) and the
+        // explicit cache's.
+        let mut kept = Vec::new();
+        for &size in &sizes {
+            for flags in [0, mallocx_arena(lua), mallocx_tcache(t)] {
+                let ps: Vec<*mut u8> = (0..4)
+                    .map(|_| mallocx(size, flags as c_int, vstd::prelude::Tracked::assume_new()))
+                    .collect();
+                dallocx(
+                    ps[0],
+                    flags as c_int,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
+                crate::api::libc::free(
+                    ps[1],
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
+                kept.push((ps[2], flags));
+                kept.push((ps[3], flags));
+            }
+        }
+        let snap = |h: &Heap| {
+            let mut v = Vec::new();
+            for a in [h.arena(), 0, lua, FOREIGN] {
+                for c in 0..NCLASSES {
+                    if let Some(cc) = h.cache_in(a, c) {
+                        v.push((
+                            a,
+                            c,
+                            cc.cap(),
+                            cc.allocs(),
+                            cc.cached().to_vec(),
+                            cc.run().to_vec(),
+                        ));
+                    }
+                }
+            }
+            v
+        };
+        let before = (
+            snap(existing_heap(s).unwrap()),
+            snap(s.tcaches.get(t, Tracked::assume_new()).unwrap()),
+        );
+        for a in [lua, FOREIGN] {
+            assert!(before.0.iter().any(|e| e.0 == a && !e.4.is_empty()), "{a}");
+        }
+        assert!(before.0.iter().any(|e| !e.4.is_empty()));
+        assert!(before.1.iter().any(|e| !e.4.is_empty()));
+        let none = MALLOCX_TCACHE_NONE;
+        for &size in &sizes {
+            for flags in [
+                none,
+                none | mallocx_arena(lua),
+                none | MALLOCX_ZERO,
+                none | mallocx_lg_align(6),
+            ] {
+                let flags = flags as c_int;
+                let p = mallocx(size, flags, vstd::prelude::Tracked::assume_new());
+                assert!(!p.is_null());
+                let q = rallocx(
+                    p,
+                    size * 2,
+                    flags,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
+                assert!(!q.is_null());
+                let r = mallocx(size, flags, vstd::prelude::Tracked::assume_new());
+                assert!(!r.is_null());
+                dallocx(
+                    q,
+                    flags,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
+                sdallocx(
+                    r,
+                    size,
+                    flags,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
+            }
+        }
+        let after = (
+            snap(existing_heap(s).unwrap()),
+            snap(s.tcaches.get(t, Tracked::assume_new()).unwrap()),
+        );
+        assert_eq!(after, before, "a MALLOCX_TCACHE_NONE call touched a cache");
+        for (p, flags) in kept {
+            dallocx(
+                p,
+                flags as c_int,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
+        }
+        assert!(
+            s.tcaches
+                .destroy(s, t, vstd::prelude::Tracked::assume_new())
+        );
+    }
+
     #[test]
     fn mallocx_routes_arenas_and_caches() {
         let s = shared();
