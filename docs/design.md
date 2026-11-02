@@ -1681,8 +1681,8 @@ aborts:
   in doubt is kept out of circulation (leaked and counted), never
   recycled and never an abort.
 
-Thread cancellation is not a failure either: challoc acts on no
-cancellation request (8.1), so no state is ever left half set by one.
+Thread cancellation is not a failure either: challoc never acts on a
+cancellation request while its own state is half set (8.1).
 
 Guards degrade, never vanish: a guard the kernel refuses as a
 `MADV_GUARD_INSTALL` marker (on an `mlock`ed range, `EINVAL`) is a
