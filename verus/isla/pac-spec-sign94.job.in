@@ -1,0 +1,14 @@
+# What `pacda x0, x1` (pac::sign's canonical form) computes with EnDA set
+# in an Armv9.4-A configuration with FEAT_PAuth2 (pac-footprint.job.in),
+# VA width @B@, for a user pointer (bit 55 clear): the PAC, ComputePAC(E,
+# modifier, key A high, key A low, false) of the pointer E with its PAC
+# field (bits 54:@B@) cleared to copies of bit 55 (the last argument is
+# the model's `isgeneric`), is *XORed into* bits 54:@B@ of the pointer,
+# whatever they hold; bits 63:55 and @B1@:0 are kept. Compare
+# pac-spec-sign85.job.in. run.sh prepends the insn and pc-step lines and
+# substitutes @SCTLR@, @B@ (64 - T0SZ), @B1@ and @N@ (55 - @B@).
+abstract ComputePAC
+writes R0
+assume (= ((_ extract 27 27) init.@SCTLR@) #b1)
+assume (= ((_ extract 55 55) init.R0) #b0)
+assert (= final.R0 (concat ((_ extract 63 55) init.R0) (bvxor ((_ extract 54 @B@) init.R0) ((_ extract 54 @B@) (abstract_ComputePAC (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0)) init.R1 init.APDAKeyHi_EL1 init.APDAKeyLo_EL1 false))) ((_ extract @B1@ 0) init.R0)))

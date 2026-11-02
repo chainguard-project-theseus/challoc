@@ -2,6 +2,9 @@
 # whitespace: FILE<TAB>FN<TAB>ASM. `sh verus/seams.sh --check` fails when
 # the asm! calls of a seam's item and these lines differ, so a changed
 # template fails until its jobs are revisited.
+src/sys/pac.rs	auth	asm!( ".arch_extension pauth", "autda {v}, {m}", v = inout(reg) v, m = in(reg) modifier, options(nomem, nostack, preserves_flags), );
+src/sys/pac.rs	sign	asm!( ".arch_extension pauth", "pacda {v}, {m}", v = inout(reg) v, m = in(reg) modifier, options(pure, nomem, nostack, preserves_flags), );
+src/sys/pac.rs	strip	asm!( ".arch_extension pauth", "xpacd {v}", v = inout(reg) v, options(pure, nomem, nostack, preserves_flags), );
 src/sys/raw.rs	syscall0	asm!("svc 0", in("x8") nr, lateout("x0") ret, options(nostack));
 src/sys/raw.rs	syscall1	asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, options(nostack));
 src/sys/raw.rs	syscall2	asm!("svc 0", in("x8") nr, inlateout("x0") a0 => ret, in("x1") a1, options(nostack));

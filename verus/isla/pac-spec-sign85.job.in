@@ -1,0 +1,16 @@
+# What `pacda x0, x1` (pac::sign's canonical form) computes with EnDA set
+# in an Armv8.5-A configuration (pac-footprint.job.in), VA width @B@, for
+# a user pointer (bit 55 clear: the TBI0 half; an upper-half pointer has
+# no top-byte-ignore under Linux's TCR and another formula): the PAC,
+# ComputePAC(E, modifier, key A high, key A low) of the pointer E with its
+# PAC field (bits 54:@B@) cleared to copies of bit 55, *replaces* bits
+# 54:@B@ of the pointer, with bit 54 inverted when the pointer's bits
+# 55:@B@ are not all equal (a non-canonical pointer, so that it never
+# authenticates). Bits 63:55 and @B1@:0 are kept. Compare
+# pac-spec-sign94.job.in (FEAT_PAuth2: XOR). run.sh substitutes @SCTLR@,
+# @B@ (64 - T0SZ), @B1@, @N@ (55 - @B@) and @N1@ (56 - @B@).
+abstract ComputePAC
+writes R0
+assume (= ((_ extract 27 27) init.@SCTLR@) #b1)
+assume (= ((_ extract 55 55) init.R0) #b0)
+assert (= final.R0 (concat ((_ extract 63 55) init.R0) (ite (or (= ((_ extract 55 @B@) init.R0) (_ bv0 @N1@)) (= ((_ extract 55 @B@) init.R0) (bvnot (_ bv0 @N1@)))) ((_ extract 54 54) (abstract_ComputePAC (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0)) init.R1 init.APDAKeyHi_EL1 init.APDAKeyLo_EL1)) (bvnot ((_ extract 54 54) (abstract_ComputePAC (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0)) init.R1 init.APDAKeyHi_EL1 init.APDAKeyLo_EL1)))) ((_ extract 53 @B@) (abstract_ComputePAC (concat ((_ extract 63 55) init.R0) ((_ repeat @N@) ((_ extract 55 55) init.R0)) ((_ extract @B1@ 0) init.R0)) init.R1 init.APDAKeyHi_EL1 init.APDAKeyLo_EL1)) ((_ extract @B1@ 0) init.R0)))
