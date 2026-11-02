@@ -651,9 +651,9 @@ Neither path performs an atomic read-modify-write or takes a lock.
 `free`'s one bitmap load (and owner load with several arenas) is the
 price of invalid-free detection (exact for a slot no cache holds: a slot
 a refill claimed into a cache has its bit set before `malloc` hands it
-out, so a free of it passes; `double_free_scan` catches that) and also
-what makes cross-thread
-frees free of coordination; neither touches the slab descriptor.
+out, so a free of it passes; `double_free_scan` narrows that, comparing
+the slot against the four most recent entries of the cache the free
+pushes to) and also what makes cross-thread frees free of coordination; neither touches the slab descriptor.
 
 The sized path skips that load, and with it the check: an invalid or
 double free through it is caught when a flush releases the slot while
