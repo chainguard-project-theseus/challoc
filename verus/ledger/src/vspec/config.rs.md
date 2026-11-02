@@ -10,6 +10,7 @@ file.
 | `ffi::c_void` | ext_type_spec | core library | Kani | trusted |
 | `ffi::CStr` | ext_type_spec | core library | Kani | trusted |
 | `<*const T>::cast::<U>` | assume_spec | core library | Kani | discharged |
+| `<*const...ng_add` | assume_spec | core library | none (assumption) | trusted |
 | `ffi::CStr::as_ptr` | assume_spec | core library | Kani | discharged |
 | `char::to_digit` | assume_spec | core library | Kani | discharged |
 
@@ -46,9 +47,20 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_cast).
 pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U> ](p: *const T) -> *const U;
 ```
 
+## `<*const T>::wrapping_add`
+
+src/vspec/config.rs:29. Kind: assume_spec. Category: core library.
+Tool: none (assumption). Status: trusted.
+
+> `<*const T>::wrapping_add`: a pointer; nothing is claimed about it (`config::linux::env_var` walks `environ` with it, and only tests the result for null before a trusted read).
+
+```rust
+pub assume_specification<T>[ <*const T>::wrapping_add ](p: *const T, count: usize) -> *const T;
+```
+
 ## `core::ffi::CStr::as_ptr`
 
-src/vspec/config.rs:28. Kind: assume_spec. Category: core library.
+src/vspec/config.rs:33. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::cstr_as_ptr).
 
 > `CStr::as_ptr`: the address of the string; nothing is claimed about it.
@@ -59,7 +71,7 @@ pub assume_specification[ core::ffi::CStr::as_ptr ](s: &core::ffi::CStr) -> *con
 
 ## `char::to_digit`
 
-src/vspec/config.rs:33. Kind: assume_spec. Category: core library.
+src/vspec/config.rs:38. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::char_to_digit).
 
 > `char::to_digit` (`core` documentation): the digits are `0`..`9`, then `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count; panics for a radix outside `2..=36`.
