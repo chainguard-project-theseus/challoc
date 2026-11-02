@@ -1,0 +1,62 @@
+# The TLS slot load, x86_64 (tls::get's asm; verus/isla/seams.md),
+# on the x86 model in its application view with the processor in 64-bit
+# mode (run-x86_64.sh, section 13):
+#   mov @R@, qword ptr [rip + challoc_tls@GOTTPOFF]   (R_X86_64_GOTTPOFF)
+#   mov @R@, qword ptr fs:[@R@]
+# run.sh appends the two insn lines (the second's length is @N@).
+arch x86_64
+fun n64_bit_modep true
+writes @R@
+no-mem-write
+flags-preserved
+mem-reads 16
+# `got` is the GOT entry the linker allocates for the slot's offset from
+# the thread pointer; the relocation as the x86-64 psABI defines it (the
+# displacement is got minus the next instruction's address, within 32
+# signed bits). Residual (ELF and Linux): the entry is 8-byte aligned, the
+# code and the GOT are user addresses (below 2^47).
+decl got 64
+assume (= seg.1.disp ((_ extract 31 0) (bvsub got (bvadd init.rip #x0000000000000007))))
+assume (= ((_ sign_extend 32) seg.1.disp) (bvsub got (bvadd init.rip #x0000000000000007)))
+assume (= ((_ extract 2 0) got) #b000)
+assume (bvult got #x00007ffffffff000)
+assume (bvult init.rip #x00007ffffffff000)
+# `off` is the entry's value, `slot` the FS base (IA32_FS_BASE, the
+# model's msrs.1) plus it: the calling thread's slot, a user address,
+# 8-byte aligned (`.p2align 3` in tls.rs's `.tbss`, which the TLS layout
+# honours; the model checks alignment when CR0.AM and RFLAGS.AC are set).
+decl init.msrs.1 64
+decl mem.1.val 8
+decl mem.2.val 8
+decl mem.3.val 8
+decl mem.4.val 8
+decl mem.5.val 8
+decl mem.6.val 8
+decl mem.7.val 8
+decl mem.8.val 8
+decl off 64
+decl slot 64
+assume (= off (concat mem.8.val mem.7.val mem.6.val mem.5.val mem.4.val mem.3.val mem.2.val mem.1.val))
+assume (= slot (bvadd init.msrs.1 off))
+assume (bvult slot #x00007ffffffff000)
+assume (= ((_ extract 2 0) slot) #b000)
+# The first load reads exactly the GOT entry's 8 bytes, the second the 8
+# bytes at the slot; @R@ ends with the slot's value; nothing else is
+# written and the pair falls through.
+assert (= mem.1.addr (bvadd got #x0000000000000000))
+assert (= mem.2.addr (bvadd got #x0000000000000001))
+assert (= mem.3.addr (bvadd got #x0000000000000002))
+assert (= mem.4.addr (bvadd got #x0000000000000003))
+assert (= mem.5.addr (bvadd got #x0000000000000004))
+assert (= mem.6.addr (bvadd got #x0000000000000005))
+assert (= mem.7.addr (bvadd got #x0000000000000006))
+assert (= mem.8.addr (bvadd got #x0000000000000007))
+assert (= mem.9.addr (bvadd slot #x0000000000000000))
+assert (= mem.10.addr (bvadd slot #x0000000000000001))
+assert (= mem.11.addr (bvadd slot #x0000000000000002))
+assert (= mem.12.addr (bvadd slot #x0000000000000003))
+assert (= mem.13.addr (bvadd slot #x0000000000000004))
+assert (= mem.14.addr (bvadd slot #x0000000000000005))
+assert (= mem.15.addr (bvadd slot #x0000000000000006))
+assert (= mem.16.addr (bvadd slot #x0000000000000007))
+assert (= final.@R@ (concat mem.16.val mem.15.val mem.14.val mem.13.val mem.12.val mem.11.val mem.10.val mem.9.val))

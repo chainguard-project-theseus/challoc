@@ -13,22 +13,23 @@ instance of each checked template in the compiled code, traces each
 distinct instruction, and checks each job (a composition of traces
 and the properties it must have) with `verus/isla/check.rs` and Z3.
 
-[isla/seams.md](isla/seams.md) lists the 19 seams this checks
-(`raw::syscall0` to `syscall6` on both architectures, `tls::get_tp`,
-`sys::pac`'s `sign`, `auth` and `strip`, and `axiom_auth_sign`), the
-contract of each, what the runs establish against it and the residual
-assumptions; the other inline-assembly seams stay trusted. Their
-overrides lines under `verus/ledger/` give each tool Islaris/Isla and
-cite `Isla: verus/isla/seams.md`, and run.sh fails when the two
-disagree. All 19 are `trusted (partly checked, Isla:
-verus/isla/seams.md; not checked: ...)` (verus/SEAMS.md, "Status"): the
-runs end where a system call enters the kernel, before the kernel's side
-of the call; they show which memory `get_tp` reads, not that the slot
-holds the cell's value; they show `pacda` and `autda` to be one function
-of the pointer and modifier for a fixed key and EnDA, not that the
-kernel keeps them fixed (or never resumes past an `autda` that faults);
-and the PAC runs cover two kinds of CPU with the keys firmware enabled,
-not every PAC CPU or the firmware itself.
+[isla/seams.md](isla/seams.md) lists the 28 seams this checks (the
+inline-asm seams with an instruction to trace, and `axiom_auth_sign`),
+the contract of each, what the runs establish against it and the
+residual assumptions. Their overrides lines under `verus/ledger/` give
+each tool Islaris/Isla and cite `Isla: verus/isla/seams.md`, and run.sh
+fails when the two disagree. All 28 are `trusted (partly checked, Isla:
+verus/isla/seams.md; not checked: ...)` (verus/SEAMS.md, "Status"),
+each with what rests on something the runs do not reach: the kernel's
+side of a system call, of the trap and of an `autda` that faults; the
+kernel keeping the PAC key and EnDA fixed; the PAC runs covering two
+kinds of CPU with the keys firmware enabled, not every PAC CPU or the
+firmware itself; the loader's GOT and TLS entries and their mapping;
+user addresses for the code, the x86_64 stack and return address, the
+FS base, the TLS slot and the return area, with the alignment each job
+assumes;
+the TLS slot model's premise; and, for the x86_64 runs other than
+`syscall`, 64-bit mode and the application view.
 
 The harness composes the per-instruction traces itself and proves
 the resulting conditions with Z3, which is weaker than an
@@ -139,6 +140,39 @@ which gates nothing: the presubmit `isla` check runs the aarch64 half
 alone until the x86 model is packaged (#397), so a change that breaks
 the x86_64 check shows up after it merges, not before.
 
+From a fully symbolic state the model explores compatibility mode and
+the other modes for every data access and fault path, and in its system
+view it walks symbolic page tables, so the GOT loads, the TLS accesses,
+`mov fs:[0]` and `ud2` do not finish in ten minutes. For those jobs
+`run-x86_64.sh` (section 13) makes three changes, each a residual in
+[isla/seams.md](isla/seams.md):
+
+- **The entry calls `reset_registers`.** Isla applies function
+  assumptions and reset constraints at the model's call of its
+  `reset_registers` builtin, which Isla's Arm models make at reset and
+  the x86 entry does not. run.sh patches the IR: one declaration and one
+  call in `isla_footprint`, just after the cycle marker (so its events
+  are in the trace), with the function's later jump targets moved past
+  the two new instructions; it fails if the entry is not the shape it
+  patches. With no assumption to apply the call does nothing: the patched
+  model's `syscall` traces are the unpatched model's (`isla-check
+  --same`).
+- **64-bit mode by function assumption.** `--fun-assumption
+  'n64_bit_modep((_ unit)) => true'`: the model's test for 64-bit mode
+  (IA32_EFER.LMA and CS.L, a pure read of the two) answers true without
+  running. The `syscall` job assumes the same two bits, and `syscall`
+  traced with the assumption, in the system view, still meets that job.
+  The trace records the assumption and each use, and a job must name it
+  (`fun n64_bit_modep true`): the checker fails any other.
+- **The application view** (`app_view` true in a copy of `x86.toml`):
+  linear addresses are the memory's, with no page walk.
+
+The model reads and writes memory a byte at a time, so the x86 jobs name
+each byte (`mem.1.addr` to `mem.8.addr` for an 8-byte load) and assemble
+values little-endian. The longest job, `rseq::symbols`'s seven
+instructions, is why `isla-check` judges the children of a prefix in
+parallel (`ISLA_CHECK_JOBS` threads).
+
 ## The harness
 
 `verus/isla/run.sh` takes the libraries (built or given), then:
@@ -183,19 +217,30 @@ Then, in `run-aarch64.sh`:
    distinct general registers or `xpacd` on one, and checks the PAC jobs
    in each of the 36 configurations of [isla/seams.md](isla/seams.md),
    in parallel, one process per CPU;
-7. runs the aarch64 negative controls (below).
+7. requires the GOT functions and `rseq::symbols` to be exactly their
+   instructions and relocations, every `mrs` of TPIDR_EL0 to be one the
+   jobs cover and every `brk` to be `brk #0x1`, and checks their jobs
+   and the TLS store jobs;
+8. runs the aarch64 negative controls (below).
 
 And in `run-x86_64.sh`:
 
-8. disassembles the x86_64 library;
-9. requires every `syscall`, `sysenter` and `int` to be `syscall` (`0f
-   05`) and checks `x86/syscall.job` on the system-view model;
-10. requires every relocation against `challoc_tls` to sit in the TLS
+9. disassembles the x86_64 library;
+10. requires every `syscall`, `sysenter` and `int` to be `syscall` (`0f
+    05`) and checks `x86/syscall.job` on the system-view model;
+11. requires every relocation against `challoc_tls` to sit in the TLS
     load or store shape (a `R_X86_64_GOTTPOFF` `movq (%rip), %R`, then
-    `movq %fs:(%R), %R` or `movq %V, %fs:(%R)`), with no job; its three
-    negative controls change a copy of the disassembly: the first load
-    without `%fs:` or into `%rsp`, and the first store through `%rsp`;
-11. runs the `syscall` negative controls.
+    `movq %fs:(%R), %R` or `movq %V, %fs:(%R)`); its three negative
+    controls change a copy of the disassembly: the first load without
+    `%fs:` or into `%rsp`, and the first store through `%rsp`;
+12. runs the `syscall` negative controls;
+13. requires the four GOT functions and `rseq::symbols` to be exactly
+    their instructions, every `R_X86_64_GOTTPOFF` site to be in the TLS
+    load or store shape (one job per register assignment, one encoding
+    each), every `%fs:` memory operand to be one of those or a load of
+    `%fs:0`, and every `ud2` to be `0f 0b`, and checks their jobs on the
+    patched application-view model;
+14. runs their negative controls.
 
 Last, back in run.sh, each seam's `Jobs:` line in `isla/seams.md` must
 name at least one job (`ARCH/JOB`, the name run.sh records each
@@ -219,14 +264,18 @@ reason fails the run. On the real traces they break one fact per job:
 a wrong syndrome, return address, EL or VA bound; a register write
 left out; a memory read where there is none; flags claimed preserved;
 an exception instruction claimed to fall through; a precondition
-of the model's SYSCALL dropped; a TLS load's GOT load one entry
-off or without its relocation's constraint or the slot's alignment;
+of the model's SYSCALL dropped; a GOT function's or TLS load's GOT load
+one entry off or without its relocation's constraint or the slot's
+alignment; a store of the wrong value, or none; the thread pointer read
+from the GS base;
 determinism with one input left unequal; the PAuth2 XOR claimed an OR
 or the v8.5 bit-54 inversion dropped; `autda` claimed never to fault
 or to fault with key B's syndrome, or its v8.5 failure claimed to
 return another error code; a purity spot check claimed to leave the
-pointer unchanged; a job missing `pc-step` or its abstract function;
-`udf #0` or an `add` claimed to complete or to write nothing. On
+pointer unchanged; a job missing `pc-step`, its abstract function or
+its function assumption; `udf #0`, `ud2`, `ret`, `mrs` or an `add`
+claimed to complete or fall through, or to write nothing; `ud2` claimed to fault
+through the model-error path or after a `rip` write. On
 synthetic traces (`controls/`) they check the checker itself: a read
 after an inexpressible write, a write through a field accessor, a flags
 write under `flags-preserved`, a `fallthrough` continuing at PC + 8, a
@@ -288,9 +337,11 @@ no user register and no system register but the entry's own. The x86
 mode (`arch x86_64`) treats `rip` as the PC and each element of a vector
 register as its own location, makes a write of `isla_fault` an abnormal
 path, and adds the instruction kinds `jump`, `fallthrough LEN` and `trap
-FN`. `isla-check --same A B` compares two trace files up to the order of
-their paths, struct field order and the type arguments of constructor
-names.
+FN`. A **`fun`** line names a function assumption the traces may make
+and use (the x86 jobs' `n64_bit_modep`); the checker fails a trace that
+makes any other. `isla-check --same A B` compares two trace files up to
+the order of their paths, struct field order and the type arguments of
+constructor names.
 
 ## Not covered
 
@@ -302,12 +353,10 @@ names.
   final link. The shipped `cdylib` is a separate fat-LTO run and may choose
   other registers, and a static link of `libchalloc.a` into an
   executable relaxes the TLS sequences to local-exec (aarch64
-  `movz`/`movk`), which need their own jobs.
+  `movz`/`movk`, x86_64 `mov R, imm32`) and may relax the GOT loads to
+  address computations, which need their own jobs.
 - **Islaris** in place of `check.rs`: one Islaris specification per job
   on the same traces; the relational PAC jobs need Islaris's product
   construction or a hand proof.
-- **The other inline-assembly seams** ([isla/seams.md](isla/seams.md)):
-  the TLS store, the GOT functions, `rseq` and the trap stay trusted on
-  both architectures, as does `tls::get`, whose x86_64 load has no job
-  (run.sh only holds it to its shape); the empty templates (`/* {0} */`
-  register hints) have no instruction to trace.
+- **The empty templates** (`/* {0} */` register hints): no instruction to
+  trace; they stay trusted ([isla/seams.md](isla/seams.md)).

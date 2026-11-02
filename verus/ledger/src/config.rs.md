@@ -139,7 +139,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 ## `malloc_conf_addr`
 
 src/config.rs:1737. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
 
@@ -150,7 +150,7 @@ fn malloc_conf_addr() -> *const c_void
 ## `je_malloc_conf_addr`
 
 src/config.rs:1762. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
 

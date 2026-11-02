@@ -1,4 +1,4 @@
-# The aarch64 half of verus/isla/run.sh (sections 2 to 7), sourced by it
+# The aarch64 half of verus/isla/run.sh (sections 2 to 8), sourced by it
 # with its variables and helpers set: `lib` (the aarch64 library),
 # `out`, `here`, `fail`, `check`, `ran`, `refute`, `le`, `bin5`, the token pool
 # on fd 3 and the tools.
@@ -35,7 +35,8 @@ trace() { # NAME ISLA-INSTRUCTION-ARGS...
 	}
 }
 # 4. `svc #0` (sys::raw's aarch64 syscall0..syscall6): every svc, hvc or
-# smc in the code is `svc #0`, and Isla's trace of it.
+# smc in the code is `svc #0` (brk, from sys::trap, is section 7), and
+# Isla's trace of it.
 nsvc=$(grep -cE "^ +[0-9a-f]+: d4000001 +${tab}svc${tab}#0$" "$out/dis.txt" || true)
 nother=$(grep -E "${tab}(svc|hvc|smc)${tab}" "$out/dis.txt" | grep -vcE ": d4000001 +${tab}svc${tab}#0$" || true)
 echo "svc #0 instances: $nsvc; other svc, hvc or smc: $nother"
@@ -50,7 +51,7 @@ cp "$here/svc0.job" "$here/svc0-vhe.job" "$out/"
 check aarch64/svc0 "$out/svc0.job"
 check aarch64/svc0-vhe "$out/svc0-vhe.job"
 
-# 5. The TLS slot load (tls::get_tp; tls::get's aarch64 arm has its shape):
+# 5. The TLS slot load (tls::get_tp on aarch64, and get's aarch64 arm):
 # every `adrp A, :gottprel:challoc_tls; ldr A, [A, :gottprel_lo12:...];
 # mrs B, tpidr_el0; ldr C, [B, A]` in the code, one job per register
 # assignment, with the relocated immediates symbolic.
@@ -493,7 +494,128 @@ for job in $pac_jobs; do
 done
 echo "PAC: $npac jobs: $(echo "$pac_words" | wc -w) instructions in each of $(echo "$pac_configs" | wc -w) configurations (12 Armv8.5-A, 24 Armv9.4-A), and $((k * 3)) purity spot checks"
 
-# 7. Negative controls: jobs that must fail, each with the `FAIL` reason
+# 7. The aarch64 halves of the seams with an asm! call per architecture
+# (verus/isla/seams.md); their x86_64 halves are section 13. Each
+# compiled shape is required exactly, so a change in the code fails here
+# until its job is revisited.
+fn_body() { # NAME-PART: the words and relocations of the one function whose symbol contains NAME-PART
+	awk -v fn="$1" '
+		/^[0-9a-f]+ <[^>]*>:$/ { infn = index($0, fn) > 0; if (infn) nfn++; next }
+		/^$/ { infn = 0 }
+		infn && /^ +[0-9a-f]+: [0-9a-f]+ / { print $2; next }
+		infn && /R_AARCH64_/ { print $2, $3 }
+		END { if (nfn != 1) print "functions:", nfn + 0 }' "$out/dis.txt" | tr '\n' ' '
+}
+# get_new_handler_addr, throw_bad_alloc_addr, malloc_conf_addr,
+# je_malloc_conf_addr: `adrp x0, :got:SYM; ldr x0, [x0, :got_lo12:SYM];
+# ret`, one job for the four (the relocated immediates are symbolic).
+# The job is recorded once for each function whose shape matches it
+# (aarch64/got-fn-NAME), so a seam names a function this section checked.
+gotfns=
+for f in 20get_new_handler_addr:_ZSt15get_new_handlerv \
+	20throw_bad_alloc_addr:_ZSt17__throw_bad_allocv 16malloc_conf_addr:malloc_conf \
+	19je_malloc_conf_addr:je_malloc_conf; do
+	s=${f#*:}
+	want="90000000 R_AARCH64_ADR_GOT_PAGE $s f9400000 R_AARCH64_LD64_GOT_LO12_NC $s d65f03c0 "
+	body=$(fn_body "${f%%:*}")
+	if [ "$body" = "$want" ]; then
+		echo "GOT function ${f%%:*}: the job's shape"
+		g=${f%%:*} && gotfns="$gotfns ${g#"${g%%[!0-9]*}"}"
+	else
+		fail "GOT function ${f%%:*}: not the job's shape: $body"
+	fi
+done
+trace adrp-x0 --partial -i "1 immlo:2 10000 immhi:19 00000"
+trace ldr-x0 --partial -i "1111100101 imm12:12 00000 00000"
+trace ret -x -i "$(le 0xd65f03c0)"
+cp "$here/got-fn.job.in" "$out/got-fn.job"
+if "$out/isla-check" "$out/got-fn.job"; then r=ok; else r=fail; fail "isla-check $out/got-fn.job"; fi
+for g in $gotfns; do ran "aarch64/got-fn-$g" $r; done
+# rseq::symbols: three GOT loads, the tuple's stores through x0, ret.
+want=
+for r in 8:__rseq_offset 9:__rseq_size 10:__rseq_flags; do
+	a=${r%%:*}
+	want="$want$(printf %08x $((0x90000000 | a))) R_AARCH64_ADR_GOT_PAGE ${r#*:} "
+	want="$want$(printf %08x $((0xf9400000 | a << 5 | a))) R_AARCH64_LD64_GOT_LO12_NC ${r#*:} "
+	trace "adrp-x$a" --partial -i "1 immlo:2 10000 immhi:19 $(bin5 "$a")"
+	trace "ldr-x$a" --partial -i "1111100101 imm12:12 $(bin5 "$a") $(bin5 "$a")"
+done
+want="${want}a9002408 f900080a d65f03c0 "
+body=$(fn_body 4rseq7symbols)
+if [ "$body" = "$want" ]; then
+	echo "rseq::symbols: the job's shape"
+else
+	fail "rseq::symbols: not the job's shape: $body"
+	ran aarch64/rseq-symbols fail
+fi
+trace stp-x8-x9-x0 -x -i "$(le 0xa9002408)"
+trace str-x10-x0-16 -x -i "$(le 0xf900080a)"
+cp "$here/rseq-symbols.job.in" "$out/rseq-symbols.job"
+check aarch64/rseq-symbols "$out/rseq-symbols.job"
+# rseq::thread_pointer: every `mrs xN, tpidr_el0` in the code (its own
+# sites and the TLS sequences'), one job per register.
+grep -E "^ +[0-9a-f]+: d53bd0[45][0-9a-f] +${tab}mrs${tab}x[0-9]+, TPIDR_EL0$" "$out/dis.txt" |
+	awk '{ print $2 }' | sort | uniq -c >"$out/mrs-sites.txt"
+[ -s "$out/mrs-sites.txt" ] || fail "no mrs of tpidr_el0 in the aarch64 code"
+nmrs=$(grep -cE "${tab}mrs${tab}.*TPIDR_EL0$" "$out/dis.txt" || true)
+[ "$nmrs" -eq "$(awk '{ s += $1 } END { print s + 0 }' "$out/mrs-sites.txt")" ] ||
+	fail "an mrs of tpidr_el0 into a register the jobs do not cover"
+while read -r _count w; do
+	r=$((0x$w & 31))
+	[ $r -ne 31 ] || { fail "mrs xzr, tpidr_el0"; continue; }
+	trace "mrs-x$r" -x -i "$(le $((0x$w)))"
+	{
+		echo "insn mrs-x$r.trace fallthrough"
+		sed "s/@R@/R$r/g" "$here/mrs-tp.job.in"
+	} >"$out/mrs-tp-x$r.job"
+	check aarch64/mrs-tp "$out/mrs-tp-x$r.job"
+done <"$out/mrs-sites.txt"
+echo "mrs tpidr_el0 instances: $nmrs"
+# sys::trap: every brk in the code is `brk #0x1` (LLVM's own traps are the
+# same instruction), at EL1 and at EL2 (VHE).
+nbrk=$(grep -cE "^ +[0-9a-f]+: d4200020 +${tab}brk${tab}#0x1$" "$out/dis.txt" || true)
+nobrk=$(grep -E "${tab}brk${tab}" "$out/dis.txt" | grep -vcE ": d4200020 +${tab}brk${tab}#0x1$" || true)
+echo "brk #0x1 instances: $nbrk; other brk: $nobrk"
+[ "$nbrk" -gt 0 ] || fail "no brk #0x1 in the aarch64 code"
+[ "$nobrk" -eq 0 ] || fail "$nobrk brk other than brk #0x1"
+# MDCR_EL2.TDE clear, as Linux leaves it for its own EL0 (with TDE set, a
+# hypervisor debugging its guest, the breakpoint goes to EL2 instead).
+trace brk1 -x -i "$(le 0xd4200020)" -R MDCR_EL2=0x00000000
+trace brk1-vhe -x -i "$(le 0xd4200020)" -R HCR_EL2=0x0000000488000000
+cp "$here/brk1.job" "$here/brk1-vhe.job" "$out/"
+check aarch64/brk1 "$out/brk1.job"
+check aarch64/brk1-vhe "$out/brk1-vhe.job"
+# tls::set: the TLS store sites (tls::get's are the load jobs of section 5).
+grep ' store ' "$out/tls-sites.txt" >"$out/tls-stores.txt" || fail "no TLS slot store in the aarch64 code"
+while read -r _count _kind w1 w2 w3 w4; do
+	a=$((0x$w1 & 31)) b=$((0x$w3 & 31)) c=$((0x$w4 & 31))
+	ok=1
+	[ $((0x$w1 & 0x9f00001f)) -eq $((0x90000000 | a)) ] || ok=0              # adrp xA, 0
+	[ $((0x$w2)) -eq $((0xf9400000 | a << 5 | a)) ] || ok=0                    # ldr xA, [xA]
+	[ $((0x$w3 & 0xffffffe0)) -eq $((0xd53bd040)) ] || ok=0                    # mrs xB, tpidr_el0
+	[ $((0x$w4)) -eq $((0xf8206800 | a << 16 | b << 5 | c)) ] || ok=0          # str xC, [xB, xA]
+	[ $a -ne $b ] && [ $a -ne $c ] && [ $b -ne $c ] && [ $c -ne 31 ] || ok=0
+	if [ $ok -eq 0 ]; then
+		fail "TLS store $w1 $w2 $w3 $w4: not the template's shape"
+		continue
+	fi
+	trace "adrp-x$a" --partial -i "1 immlo:2 10000 immhi:19 $(bin5 $a)"
+	trace "ldr-x$a" --partial -i "1111100101 imm12:12 $(bin5 $a) $(bin5 $a)"
+	trace "mrs-x$b" -x -i "$(le $((0x$w3)))"
+	trace "str-x$c-x$b-x$a" -x -i "$(le $((0x$w4)))"
+	job=$out/tls-store-x$a-x$b-x$c.job
+	{
+		echo "insn adrp-x$a.trace fallthrough"
+		echo "insn ldr-x$a.trace fallthrough"
+		echo "insn mrs-x$b.trace fallthrough"
+		echo "insn str-x$c-x$b-x$a.trace fallthrough"
+		echo "writes R$a R$b"
+		sed -e "s/@A@/R$a/g" -e "s/@B@/R$b/g" -e "s/@C@/R$c/g" "$here/tls-store.job.in"
+	} >"$job"
+	check aarch64/tls-store "$job"
+done <"$out/tls-stores.txt"
+
+# 8. Negative controls: jobs that must fail, each with the `FAIL` reason
 # its last argument names, so a checker that accepts everything, or that
 # rejects a control for some other reason, fails here. On the real
 # traces: a wrong syndrome, a wrong exception level, a memory read where
@@ -584,4 +706,25 @@ elif ! grep -q "^FAIL: .* and .* differ$" "$out/neg-same.log"; then
 	fail "negative control same did not fail for its reason (the traces differ): $(tail -n 1 "$out/neg-same.log")"
 else
 	echo "negative control same: rejected, as it should be"
+fi
+# Section 7: the GOT function's load one entry off and its `ret` claimed
+# to fall through, rseq::symbols storing the first value twice, the TLS
+# store storing the offset or writing nothing, `brk` with the wrong
+# syndrome or claimed to fall through, and `mrs` claimed to write nothing.
+refute got-fn-off "$(sed 's/^assert (= mem.1.addr got)$/assert (= mem.1.addr (bvadd got #x0000000000000008))/' "$out/got-fn.job")" 'assert (= mem.1.addr (bvadd got #x0000000000000008))'
+refute got-fn-falls "$(sed 's/^assert (= final._PC init.R30)$/assert (= final._PC (bvadd init._PC #x000000000000000c))/' "$out/got-fn.job")" 'assert (= final._PC (bvadd init._PC #x000000000000000c))'
+refute rseq-store "$(sed 's/^assert (= wmem.2.val mem.2.val)$/assert (= wmem.2.val mem.1.val)/' "$out/rseq-symbols.job")" 'assert (= wmem.2.val mem.1.val)'
+if [ -s "$out/tls-stores.txt" ]; then
+	# shellcheck disable=SC2046 # split the line into its fields
+	set -- $(head -n 1 "$out/tls-stores.txt")
+	a=$((0x$3 & 31)) b=$((0x$5 & 31)) c=$((0x$6 & 31))
+	refute tls-store-val "$(sed "s/^assert (= wmem.1.val init.R$c)$/assert (= wmem.1.val mem.1.val)/" "$out/tls-store-x$a-x$b-x$c.job")" 'assert (= wmem.1.val mem.1.val)'
+	refute tls-store-nowrite "$(sed 's/^mem-writes 1$/no-mem-write/' "$out/tls-store-x$a-x$b-x$c.job")" 'insn 4 writes memory'
+fi
+refute brk-esr "$(sed 's/#xf2000001/#xf2000000/' "$out/brk1.job")" 'assert (= final.ESR_EL1 #xf2000000)'
+refute brk-falls "insn brk1.trace fallthrough" ': an exception'
+if [ -s "$out/mrs-sites.txt" ]; then
+	# shellcheck disable=SC2046 # split the line into its fields
+	set -- $(head -n 1 "$out/mrs-sites.txt")
+	refute mrs-writes "insn mrs-x$((0x$2 & 31)).trace fallthrough" "insn 1 writes R$((0x$2 & 31))"
 fi
