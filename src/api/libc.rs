@@ -59,6 +59,8 @@ use vstd::arithmetic::power2::pow2;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked, verus};
+#[cfg(verus_keep_ghost)]
+use vstd::raw_ptr::MemContents;
 use vstd::raw_ptr::ptr_mut_write;
 
 verus! {
@@ -1789,6 +1791,7 @@ fn store_usable(usable: *mut usize, n: usize, Tracked(uout): Tracked<&mut COut<u
         old(uout).of(usable),
     ensures
         final(uout).of(usable),
+        final(uout).holds(usable, n),
         s@.ptr() == usable,
         s@.val() == n,
 {
@@ -1801,6 +1804,15 @@ fn store_usable(usable: *mut usize, n: usize, Tracked(uout): Tracked<&mut COut<u
         }
     }
     Tracked(Stored::stored(uout, usable, n))
+}
+
+/// What an allocating `_usable` entry point leaves at its caller's
+/// `size_t` (`c`) for a request of `size` bytes that returned `r`: the
+/// block's usable size ([`usable_is`]), or 0 for a null result.
+pub open spec fn reports_usable(c: MemContents<usize>, r: *mut u8, size: int) -> bool {
+    &&& c is Init
+    &&& r@.addr == 0 ==> c.value() == 0
+    &&& r@.addr != 0 ==> usable_is(r, size, c.value() as int)
 }
 
 /// `CLASSES[class].size()` for a class a fast path produced: below
@@ -1826,18 +1838,19 @@ fn class_size(class: usize) -> (r: usize)
 /// block's token goes to C with it. `uout` is the call's token for
 /// `usable`, minted by the export wrapper (`exports::axiom_c_out`).
 #[inline(always)]
-pub fn malloc_usable(size: usize, usable: *mut usize, Tracked(uout): Tracked<COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn malloc_usable(size: usize, usable: *mut usize, Tracked(uout): Tracked<&mut COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        uout.of(usable),
+        old(uout).of(usable),
     ensures
+        final(uout).of(usable),
+        final(uout).opt() matches Some(q) ==> reports_usable(q.opt_value(), r, size as int),
         heap::fits(r, size as int, QUANTUM as int),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let tracked mut uout = uout;
     let tracked mut blk = Live::empty();
-    malloc_usable_stored(size, usable, Tracked(&mut uout), Tracked(&mut blk), Tracked(errno)).0
+    malloc_usable_stored(size, usable, Tracked(uout), Tracked(&mut blk), Tracked(errno)).0
 }
 
 /// [`malloc_usable`] with the token for what it stored through `usable`:
@@ -1852,6 +1865,7 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(uout): Trac
         crate::sys::may_syscall(),
     ensures
         final(uout).of(usable),
+        final(uout).holds(usable, r.1@.val()),
         heap::fits(r.0, size as int, QUANTUM as int),
         r.1@.ptr() == usable,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
@@ -1916,6 +1930,7 @@ fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(uout): Tracked<
         class < NCLASSES,
     ensures
         final(uout).of(usable),
+        final(uout).holds(usable, r.1@.val()),
         heap::regions_ok(),
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
         r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
@@ -1948,6 +1963,7 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(uout): Tracked<&m
         crate::sys::may_syscall(),
     ensures
         final(uout).of(usable),
+        final(uout).holds(usable, r.1@.val()),
         heap::fits(r.0, size as int, QUANTUM as int),
         r.1@.ptr() == usable,
         r.0@.addr == 0 ==> r.1@.val() == 0,
@@ -2010,19 +2026,20 @@ proof fn lemma_huge_usable(shared: &Shared, p: *mut u8, size: usize, u: usize)
 /// the usable bytes (Valkey's `zcalloc_usable` hands them on), and that is
 /// what jemalloc's `calloc` zeroes. The block's token goes to C with it.
 /// `uout` is the call's token for `usable`, as in [`malloc_usable`].
-pub fn calloc_usable(n: usize, m: usize, usable: *mut usize, Tracked(uout): Tracked<COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn calloc_usable(n: usize, m: usize, usable: *mut usize, Tracked(uout): Tracked<&mut COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        uout.of(usable),
+        old(uout).of(usable),
     ensures
+        final(uout).of(usable),
+        final(uout).opt() matches Some(q) ==> reports_usable(q.opt_value(), r, n * m),
         n * m > usize::MAX ==> r@.addr == 0,
         heap::fits(r, n * m, QUANTUM as int),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let tracked mut uout = uout;
     let tracked mut blk = Live::empty();
-    calloc_usable_zeroed(n, m, usable, Tracked(&mut uout), Tracked(&mut blk), Tracked(errno)).0
+    calloc_usable_zeroed(n, m, usable, Tracked(uout), Tracked(&mut blk), Tracked(errno)).0
 }
 
 /// [`calloc_usable`] with the proof that its memory reads as zero, and
@@ -2042,6 +2059,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
         crate::sys::may_syscall(),
     ensures
         final(uout).of(usable),
+        final(uout).holds(usable, r.2@.val()),
         n * m > usize::MAX ==> r.0@.addr == 0,
         heap::fits(r.0, n * m, QUANTUM as int),
         r.0@.addr != 0 ==> r.1@.covers(r.0, n * m),
@@ -2172,13 +2190,15 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
 /// reported. C holds the token of the block it passes
 /// ([`heap::live::axiom_c_claim`]), and gets the result's. `uout` is the
 /// call's token for `usable`, as in [`malloc_usable`].
-pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout): Tracked<COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>) -> (r: *mut u8)
+pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout): Tracked<&mut COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>) -> (r: *mut u8)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        uout.of(usable),
+        old(uout).of(usable),
     ensures
+        final(uout).of(usable),
+        final(uout).opt() matches Some(q) ==> reports_usable(q.opt_value(), r, size as int),
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
         heap::fits(r, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
@@ -2186,9 +2206,8 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout)
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     let tracked blk = heap::live::axiom_c_claim(c);
-    let tracked mut uout = uout;
     let tracked mut out = Live::empty();
-    realloc_usable_stored(p, size, usable, Tracked(&mut uout), Tracked(blk), Tracked(&mut out), Tracked(errno)).0
+    realloc_usable_stored(p, size, usable, Tracked(uout), Tracked(blk), Tracked(&mut out), Tracked(errno)).0
 }
 
 /// [`realloc_usable`] with the token for what it stored through `usable`:
@@ -2205,6 +2224,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         crate::sys::may_syscall(),
     ensures
         final(uout).of(usable),
+        final(uout).holds(usable, r.1@.val()),
         p@.addr != 0 && size == 0 ==> r.0@.addr == 0,
         heap::fits(r.0, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
@@ -2725,28 +2745,34 @@ fn store_out(out: *mut *mut u8, p: *mut u8, Tracked(oout): Tracked<&mut COut<*mu
 /// holds the permission to write through `out`, a valid pointer by
 /// `posix_memalign`'s contract: `oout`, the call's token for it, minted by
 /// the export wrapper (`exports::axiom_c_out`, the trusted step of the C
-/// contract for an out-pointer).
-pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize, Tracked(oout): Tracked<COut<*mut u8>>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
+/// contract for an out-pointer), which it hands back: on a 0 return `*out`
+/// holds the block, and on `EINVAL` or `ENOMEM` it is as the caller left
+/// it, as in glibc.
+pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize, Tracked(oout): Tracked<&mut COut<*mut u8>>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        oout.of(out),
+        old(oout).of(out),
         out@.addr != 0,
     ensures
+        final(oout).of(out),
         r == 0 || r == ENOMEM || r == EINVAL,
         // `sizeof(void *)` is 8 on every target challoc builds for.
         r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
+        r == 0 ==> (final(oout).opt() matches Some(q) && q.is_init() && q.value()@.addr != 0
+            && heap::fits(q.value(), size as int, align as int)),
+        r != 0 ==> final(oout).opt() == old(oout).opt(),
         r == EINVAL ==> final(errno).val() == old(errno).val(),
         r == ENOMEM ==> final(errno).val() == ENOMEM,
 {
-    let tracked mut oout = oout;
     let tracked mut blk = Live::empty();
-    posix_memalign_block(out, align, size, Tracked(&mut oout), Tracked(&mut blk), Tracked(errno))
+    posix_memalign_block(out, align, size, Tracked(oout), Tracked(&mut blk), Tracked(errno))
 }
 
 /// [`posix_memalign`] with the token of the block it stores: on a 0
 /// return, `out` holds a block of at least `size` bytes aligned to
-/// `align`, and `blk` gets its token.
+/// `align`, and `blk` gets its token; on an error return `oout` is as it
+/// came, so `*out` is untouched.
 // `%`: Verus does not specify `usize::is_multiple_of`.
 #[allow(clippy::manual_is_multiple_of)]
 pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracked(oout): Tracked<&mut COut<*mut u8>>, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
@@ -2762,6 +2788,7 @@ pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracke
         r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
         r == 0 ==> (final(oout).opt() matches Some(q) && q.is_init() && q.value()@.addr != 0
             && final(blk).gives(q.value(), size as int) && heap::fits(q.value(), size as int, align as int)),
+        r != 0 ==> final(oout).opt() == old(oout).opt(),
         r == EINVAL ==> final(errno).val() == old(errno).val(),
         r == ENOMEM ==> final(errno).val() == ENOMEM,
 {
@@ -2975,6 +3002,8 @@ mod exports {
     #[cfg(verus_keep_ghost)]
     use crate::vspec::cbuf::CEntry;
     #[cfg(verus_keep_ghost)]
+    use crate::vspec::cbuf::{c_out, c_out_entry};
+    #[cfg(verus_keep_ghost)]
     use crate::vspec::errno::c_errno;
     use core::ffi::c_void;
 
@@ -3096,15 +3125,19 @@ mod exports {
     /// a null `p`, and `p` is not null when the contract does not allow
     /// null (`nullable` false: `posix_memalign`'s `memptr`). Linear, and
     /// private to this module, whose functions are the C entry points: an
-    /// export mints its call's token once, for its own parameter, and
-    /// hands it to the Rust entry point. No other verified code can mint
-    /// one; a second permission for `p` would prove `false`, and so would
-    /// a null `p` with `nullable` false (a C caller that passes one breaks
-    /// the contract).
+    /// export mints its call's token once, for its own parameter, lends it
+    /// to the Rust entry point and hands it back ([`axiom_out_at_return`]).
+    /// No other verified code can mint one; a second permission for `p`
+    /// would prove `false`, and so would a null `p` with `nullable` false
+    /// (a C caller that passes one breaks the contract). The permission
+    /// holds what the caller left at `p` ([`c_out_entry`]). A
+    /// contract-keeping `p` names the caller's own memory: not challoc's,
+    /// not libc's, and not in a block the call frees or hands out.
     axiom fn axiom_c_out<T>(p: *mut T, nullable: bool) -> (tracked o: COut<T>)
         ensures
             o.of(p),
             !nullable ==> p@.addr != 0,
+            o.opt() matches Some(q) ==> q.opt_value() == c_out_entry(p),
     ;
 
     /// The token of a `posix_memalign` call for its `memptr`
@@ -3116,10 +3149,32 @@ mod exports {
         ensures
             o@.of(out),
             out@.addr != 0,
+            o@.opt() matches Some(q) ==> q.opt_value() == c_out_entry(out),
     {
         let tracked o = axiom_c_out(out, false);
         Tracked(o)
     }
+
+    /// Trusted (the C contract of an out-pointer argument, as
+    /// [`axiom_c_out`]): when an export returns, the `T` its C caller
+    /// reads at out-pointer `p` ([`c_out`]) is what the export's token for
+    /// `p` holds after its last use. The token is used up, so nothing
+    /// writes through it afterwards. Nothing else writes `*p` during the
+    /// call: verified code writes only through permissions it holds, and
+    /// `p`'s is this token's alone; trusted code writes challoc's memory,
+    /// libc's (`errno`, thread-specific data) and the blocks the call frees
+    /// or hands out, none of which a contract-keeping `p` names
+    /// ([`axiom_c_out`]). Called only by the exports of this module
+    /// that mint a token with [`axiom_c_out`], at most once each, on that
+    /// token, right after the call whose result they return
+    /// (`api::tests::exports_return_their_callees_result` checks the shape
+    /// and the call sites).
+    axiom fn axiom_out_at_return<T>(tracked o: COut<T>, p: *mut T)
+        requires
+            o.of(p),
+        ensures
+            o.opt() matches Some(q) ==> c_out(p) == q.opt_value(),
+    ;
 
     verified_export_pair! {
         fn calloc / je_calloc(n: usize, m: usize) -> (r: *mut c_void) ensures [
@@ -3177,12 +3232,16 @@ mod exports {
             r == 0 || r == ENOMEM || r == EINVAL,
             r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
             r == ENOMEM ==> c_errno() == ENOMEM,
+            r == 0 ==> (c_out(out as *mut *mut u8) matches MemContents::Init(q) && q@.addr != 0
+                && heap::fits(q, size as int, align as int)),
+            r != 0 ==> c_out(out as *mut *mut u8) == c_out_entry(out as *mut *mut u8),
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
-            let oout = memptr_out(out as *mut *mut u8);
-            let r = super::posix_memalign(out as *mut *mut u8, align, size, oout, Tracked(&mut errno));
+            let Tracked(mut oout) = memptr_out(out as *mut *mut u8);
+            let r = super::posix_memalign(out as *mut *mut u8, align, size, Tracked(&mut oout), Tracked(&mut errno));
             proof {
                 crate::vspec::errno::axiom_errno_at_return(errno, r == ENOMEM);
+                axiom_out_at_return(oout, out as *mut *mut u8);
             }
             r
         }
@@ -3293,16 +3352,18 @@ mod exports {
         ensures
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
             r@.addr == 0 ==> c_errno() == ENOMEM,
+            usable@.addr != 0 ==> reports_usable(c_out(usable), r as *mut u8, size as int),
     {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        let tracked uout = axiom_c_out(usable, true);
-        let r = super::malloc_usable(size, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void;
+        let tracked mut uout = axiom_c_out(usable, true);
+        let r = super::malloc_usable(size, usable, Tracked(&mut uout), Tracked(&mut errno)) as *mut c_void;
         proof {
             crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+            axiom_out_at_return(uout, usable);
         }
         r
     }
@@ -3313,16 +3374,18 @@ mod exports {
             n * m > usize::MAX ==> r@.addr == 0,
             heap::fits(r as *mut u8, n * m, QUANTUM as int),
             r@.addr == 0 ==> c_errno() == ENOMEM,
+            usable@.addr != 0 ==> reports_usable(c_out(usable), r as *mut u8, n * m),
     {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        let tracked uout = axiom_c_out(usable, true);
-        let r = super::calloc_usable(n, m, usable, Tracked(uout), Tracked(&mut errno)) as *mut c_void;
+        let tracked mut uout = axiom_c_out(usable, true);
+        let r = super::calloc_usable(n, m, usable, Tracked(&mut uout), Tracked(&mut errno)) as *mut c_void;
         proof {
             crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0);
+            axiom_out_at_return(uout, usable);
         }
         r
     }
@@ -3334,16 +3397,18 @@ mod exports {
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
             r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> c_errno() == ENOMEM,
+            usable@.addr != 0 ==> reports_usable(c_out(usable), r as *mut u8, size as int),
     {
         proof {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        let tracked uout = axiom_c_out(usable, true);
-        let r = super::realloc_usable(p as *mut u8, size, usable, Tracked(uout), Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void;
+        let tracked mut uout = axiom_c_out(usable, true);
+        let r = super::realloc_usable(p as *mut u8, size, usable, Tracked(&mut uout), Tracked(&mut errno), Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 }))) as *mut c_void;
         proof {
             crate::vspec::errno::axiom_errno_at_return(errno, r@.addr == 0 && !(p@.addr != 0 && size == 0));
+            axiom_out_at_return(uout, usable);
         }
         r
     }

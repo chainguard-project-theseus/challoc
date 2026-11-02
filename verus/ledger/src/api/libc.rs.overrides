@@ -3,3 +3,6 @@
 axiom_c_out	C-program contract	none (assumption)
 # The C caller hands over the block it frees under the entry point's contract.
 axiom_c_call	C-program contract	none (assumption)
+# At an export's return, its C caller reads at an out-pointer what the
+# export's token for it holds.
+axiom_out_at_return	C-program contract	none (assumption)
