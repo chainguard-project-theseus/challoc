@@ -2784,6 +2784,8 @@ fn ctl(
         shared.wf(),
         io.handed(*old(cc)),
         !old(cc).written(),
+        // Both entry points pass the node the MIB resolves to.
+        resolve(root_nodes(), mib@) == Some(*node),
     ensures
         r is Err && !error_after_change(*node, r, final(fx)@) ==> final(fx)@ is Unchanged,
         io.oldp@.addr != 0 && io.oldlenp@.addr != 0 ==> (final(fx)@ matches Change::Set { read_first } ==> read_first),
@@ -2991,7 +2993,7 @@ fn result(r: Result<(), c_int>) -> (c: c_int)
 /// `mallctl(name, oldp, oldlenp, newp, newlen)`. The pointers are C's,
 /// under the `mallctl` contract: `cc` is the call's token for exactly
 /// these arguments ([`CEntry::Mallctl`]), and `errno` the calling thread's `errno`
-/// token; the export wrapper passes placeholders for both.
+/// token; the export wrapper mints the first and lends the second.
 pub fn mallctl(
     name: *const c_char,
     oldp: *mut c_void,
@@ -3174,7 +3176,7 @@ unsafe fn mib_in(mib: *const usize, local: &mut [usize; MAX_MIB], miblen: usize)
 /// `mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)`. The pointers
 /// are C's, under the `mallctl` contract: `cc` is the call's token for
 /// exactly these arguments ([`CEntry::ByMib`]), and `errno` the calling thread's `errno`
-/// token; the export wrapper passes placeholders for both.
+/// token; the export wrapper mints the first and lends the second.
 // The C arguments, the call's token and the `errno` token.
 #[allow(clippy::too_many_arguments)]
 pub fn mallctlbymib(
@@ -3413,47 +3415,6 @@ mod exports {
     use core::ffi::{c_char, c_int, c_void};
     use vstd::prelude::{Tracked, verus};
 
-    export_pair! {
-        fn mallctl / je_mallctl(
-            name: *const c_char,
-            oldp: *mut c_void,
-            oldlenp: *mut usize,
-            newp: *const c_void,
-            newlen: usize
-        ) -> c_int {
-            // Unverified: the call's and `errno`'s tokens are placeholders
-            // until the export is verified.
-            super::mallctl(
-                name,
-                oldp,
-                oldlenp,
-                newp,
-                newlen,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
-            )
-        }
-        fn mallctlbymib / je_mallctlbymib(
-            mib: *const usize,
-            miblen: usize,
-            oldp: *mut c_void,
-            oldlenp: *mut usize,
-            newp: *const c_void,
-            newlen: usize
-        ) -> c_int {
-            super::mallctlbymib(
-                mib,
-                miblen,
-                oldp,
-                oldlenp,
-                newp,
-                newlen,
-                vstd::prelude::Tracked::assume_new(),
-                vstd::prelude::Tracked::assume_new(),
-            )
-        }
-    }
-
     // `verified_export_pair!` expands inside its own `verus!`; this outer
     // block holds it (Verus passes the invocation through) and the mint.
     verus! {
@@ -3464,17 +3425,17 @@ mod exports {
     /// passed under the entry point's contract ([`CCall::fresh`]: each
     /// pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of
     /// the program's, and the string argument's view). Private to this
-    /// module, whose functions are the C entry points and their mint
-    /// below: the `mallctlnametomib` exports mint their call's token once,
-    /// from their own parameters, so no other verified code can mint one
-    /// or name another call's arguments. A C caller that breaks the
+    /// module, whose functions are the C entry points and the
+    /// `mallctlnametomib` mint below: each export mints its call's token
+    /// once, from its own parameters, so no other verified code can mint
+    /// one or name another call's arguments. A C caller that breaks the
     /// contract (a buffer past `isize::MAX` bytes or wrapping the address
     /// space, a string that is not NUL-terminated, a pointer into
     /// challoc's memory other than a published counter read as such)
     /// makes it false.
     axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
         requires
-            e is NameToMib,
+            e is Mallctl || e is NameToMib || e is ByMib,
         ensures
             c.fresh(e),
     ;
@@ -3496,9 +3457,60 @@ mod exports {
     }
 
     verified_export_pair! {
+        fn mallctl / je_mallctl(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *const c_void,
+            newlen: usize
+        ) -> (r: c_int) {
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::mallctl(
+                name,
+                oldp,
+                oldlenp,
+                newp,
+                newlen,
+                Tracked(axiom_c_call(CEntry::Mallctl {
+                    name: name as *const u8,
+                    oldp: oldp as *mut u8,
+                    oldlenp: oldlenp as *const usize,
+                    newp: newp as *mut u8,
+                    newlen,
+                })),
+                Tracked(&mut errno),
+            )
+        }
         fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> (r: c_int) {
             let Tracked(mut cc) = nametomib_call(name, mibp, miblenp);
             super::mallctlnametomib(name, mibp, miblenp, Tracked(&mut cc))
+        }
+        fn mallctlbymib / je_mallctlbymib(
+            mib: *const usize,
+            miblen: usize,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *const c_void,
+            newlen: usize
+        ) -> (r: c_int) {
+            let Tracked(mut errno) = crate::vspec::errno::lend();
+            super::mallctlbymib(
+                mib,
+                miblen,
+                oldp,
+                oldlenp,
+                newp,
+                newlen,
+                Tracked(axiom_c_call(CEntry::ByMib {
+                    mib,
+                    miblen,
+                    oldp: oldp as *mut u8,
+                    oldlenp: oldlenp as *const usize,
+                    newp: newp as *mut u8,
+                    newlen,
+                })),
+                Tracked(&mut errno),
+            )
         }
     }
 
@@ -3516,8 +3528,8 @@ mod tests {
     use std::ffi::CString;
     use std::vec::Vec;
 
-    // The three entry points as the export wrappers call them, with a
-    // placeholder token for the call and for `errno`.
+    // The three entry points, with a placeholder token for the call and
+    // for `errno`.
     fn mallctl(
         name: *const c_char,
         oldp: *mut c_void,
