@@ -1076,10 +1076,9 @@ allocates itself does not. That residual is the common deployment: under
 LD_PRELOAD, glibc runs every DT_NEEDED library's constructor before the
 preloaded challoc's, so a program linked against a thread-pool library
 that registers such a handler from its constructor (libopenblas,
-libgrpc) and run with challoc preloaded still deadlocks in `fork`. Only
-a challoc linked into the program (or preloaded into a program whose
-pool registers later, from its own code) runs after the pool's handler;
-on main every variant hangs. Between the end of challoc's prepare handler
+libgrpc) and run with challoc preloaded deadlocks in `fork`. Only a
+challoc linked into the program (or preloaded into a program whose pool
+registers later, from its own code) runs its prepare after the pool's. Between the end of challoc's prepare handler
 and the start of its release, that thread is the fork window's holder
 (`lock::fork_window_open`): a lock it asks for is taken as acquired and
 its release does nothing (`lock::fork_holder_is_me`, checked only in the
@@ -1099,7 +1098,8 @@ the premise that none can exist yet; and no arena is built there
 arena is not built yet is served from arena 0, the thread's next slow
 path after the fork building it; and an explicit request for an
 automatic arena not built yet, `mallocx` with `MALLOCX_ARENA(i)` or a
-`thread.arena` write, fails as for an index that does not exist), so every lock in the process is one
+`thread.arena` write, fails as for an index that does not exist: a
+consequence of the rule, not a contract, and no test pins it), so every lock in the process is one
 the prepare handler took, the only kind the window serves, and the
 registry the release reads is the one it locked. A cgroup discovery or a feature
 line built in the window completes before the fork, and their child

@@ -12,8 +12,7 @@
  * LD_PRELOAD glibc runs every DT_NEEDED library's constructor before
  * challoc's, so the pool's handler is registered first and its prepare
  * runs after challoc's, inside the fork window, where the workers it
- * joins wait on challoc's locks. That is the common deployment; main
- * hangs in it too, and in every variant here. The parent
+ * joins wait on challoc's locks. That is the common deployment. The parent
  * and child handlers start the pool again. A watcher fails the run if a
  * fork does not return (fork blocks every signal, so a deadlock cannot
  * time itself out).

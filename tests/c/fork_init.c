@@ -3,11 +3,11 @@
  * between init and fork). challoc is loaded late by `dlopen` into a
  * glibc-malloc process, so nothing has initialised it: thread A's first
  * call (`mallocx`) runs init while the main thread forks after a delay
- * that varies across the runs, and the child calls `mallocx` too. Before
- * the gate the child could copy `STATE` at INITIALISING with A's thread
- * ID and wait forever for a thread it does not have. Now the prepare
- * handler waits for an init under way, or keeps one from starting until
- * the fork is done, and every child's call completes (a SIGALRM watchdog
+ * that varies across the runs, and the child calls `mallocx` too. The
+ * prepare handler waits for an init under way on another thread, or keeps
+ * one from starting until the fork is done, so no child copies `STATE` at
+ * INITIALISING for a thread it does not have, and every child's call
+ * completes (a SIGALRM watchdog
  * kills a child that hangs). Each run is a fresh process, since init
  * happens once per process. A second pass forks with challoc loaded but
  * not initialised and no other thread, where the only allocating code is

@@ -1,13 +1,11 @@
 /*
  * No arena is built in the fork window (design 9). A prepare handler
  * registered before challoc initialises runs after challoc's, on the
- * forking thread, with every allocator lock held. If that thread's home
- * arena was not built yet, an allocation of the handler's built it there,
- * with locks no fork handler held, which the window then served to the
- * forking thread as acquired while another thread could hold them. Now
- * such an allocation is served from arena 0 and the arena count is the
- * same after the fork; an `arenas.create` in the window is refused with
- * EAGAIN. Another thread allocates throughout.
+ * forking thread, with every allocator lock held. An allocation of the
+ * handler's whose home arena is not built yet is served from arena 0
+ * (building it would make locks no fork handler holds, which the window
+ * would serve as acquired), so the arena count is the same after the
+ * fork; an `arenas.create` in the window is refused with EAGAIN. Another thread allocates throughout.
  */
 #include "common.h"
 
