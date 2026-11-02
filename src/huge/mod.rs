@@ -1931,7 +1931,8 @@ fn protect_none(addr: usize, len: usize) -> Result<(), Errno>
 /// first (`MADV_POPULATE_WRITE`, kernel 5.14, the floor; it writes
 /// nothing, the page still reads as zero, and the caller is about to
 /// touch it), and both halves of the split inherit the `anon_vma`. If
-/// the kernel refuses the populate (a seccomp filter), a zero written to
+/// the kernel refuses the populate (a seccomp filter: `EINVAL`, `EPERM` or
+/// `ENOSYS`), a zero written to
 /// the run's first byte faults the page in the same way ([`write_zero`]).
 /// The cost is the run's first page resident from the start (a whole
 /// 2 MiB page for a PMD-aligned run under host THP `always`). `populate`
@@ -1944,8 +1945,17 @@ fn split_guard(run: usize, guard: usize, page: usize, populate: bool) -> Result<
     if populate {
         // SAFETY: the first page of a run being placed, which nobody
         // holds yet; populating leaves its contents alone.
-        if unsafe { sys::madvise(run, page, MADV_POPULATE_WRITE) }.is_err() {
-            write_zero(run);
+        if let Err(e) = unsafe { sys::madvise(run, page, MADV_POPULATE_WRITE) } {
+            // A filter's refusal (`EINVAL`, `EPERM`, `ENOSYS`) falls back
+            // to the write; anything else (`ENOMEM` from a memory cgroup,
+            // `EHWPOISON`) is a resource failure the write would only
+            // meet again as a fault, so the run is not handed out
+            // (design 14.1).
+            if e.0 == Errno::EINVAL.0 || e.0 == Errno::EPERM.0 || e.0 == Errno::ENOSYS.0 {
+                write_zero(run);
+            } else {
+                return Err(e);
+            }
         }
     }
     protect_none(guard, GUARD_PAGES * page)

@@ -600,6 +600,10 @@ fn guards_false_places_no_guard() {
 #[test]
 fn refused_marker_guards_are_released_at_free() {
     if !guard_mode() {
+        crate::testutil::skip(
+            "refused_marker_guards_are_released_at_free",
+            "no MADV_GUARD_INSTALL on this kernel",
+        );
         return;
     }
     const N: usize = 8;
