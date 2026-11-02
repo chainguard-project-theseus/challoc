@@ -1383,11 +1383,15 @@ arena takes about 150 MiB of reservations, so about 437 fit the
 preferred 64 GiB region at quantum 16; or `RLIMIT_DATA` refuses its
 commits) the thread's blocks come uncached from arena 0 and
 every later slow path retries the build (14.1). A build is not started
-when the free metadata is below the largest build so far: an arena's
+when the free metadata is below what a build takes (the smallest
+measured, plus up to 16 MiB of slack for concurrent reservations): an arena's
 tables are reserved one after another and never given back, so a build
 that ran out partway would strand them, leaving the huge allocator no
-room for its tables. `arenas.create` keeps room for up to eight
-automatic arenas not built yet (`AUTO_HEADROOM`, at that cost each) and
+room for its tables. A thread served from arena 0 still takes the
+creation lock and reads the metadata counters on each slow path to try
+the build; that is the cost of retrying without remembering a refusal.
+`arenas.create` keeps room for up to eight automatic arenas not built
+yet (`AUTO_HEADROOM`, at that cost each) and
 refuses with `EAGAIN` before it would use it, so explicit arenas never
 take every thread's home; homes past those share arena 0. So `t` live
 threads use `min(t, narenas)` arenas, a single-threaded program stays on arena 0 and never pays the

@@ -167,6 +167,10 @@ pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::Atom
 /// A key that finds no slot (more than `BUILD_COSTS` allocators, tests
 /// only) records nothing and reads 0: no headroom.
 const BUILD_COSTS: usize = 64;
+/// Most slack [`build_cost`] adds for metadata other threads reserve
+/// while a build runs (a huge descriptor-table growth step is the
+/// largest); an eighth of the tables when that is less.
+const BUILD_SLACK: usize = 16 << 20;
 #[allow(clippy::declare_interior_mutable_const)]
 const NO_COST: (
     core::sync::atomic::AtomicUsize,
@@ -189,34 +193,48 @@ verus! {
 const AUTO_HEADROOM: u32 = 8;
 
 /// Record a build over `meta` whose tables took `tables` bytes of
-/// metadata, its `Arena` storage on top ([`BUILD_COST`]). Trusted:
-/// atomics on a plain statistic no proof reads.
+/// metadata ([`BUILD_COST`]). The delta is read without the metadata
+/// lock, so another thread's reservation in between can only inflate a
+/// sample: the smallest sample is kept. Trusted: atomics on a plain
+/// statistic no proof reads.
 #[verifier::external_body]
 fn note_build_cost(meta: &Meta, tables: usize) {
-    let cost = tables.saturating_add(core::mem::size_of::<Arena>());
     let key = meta as *const Meta as usize;
+    let tables = tables.max(1);
     for (k, c) in &BUILD_COST {
         let found = match k.compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => true,
             Err(cur) => cur == key,
         };
         if found {
-            c.fetch_max(cost, Ordering::Relaxed);
+            let _ = c.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                (cur == 0 || tables < cur).then_some(tables)
+            });
             return;
         }
     }
 }
 
-/// [`BUILD_COST`] for `meta`, 0 when none is recorded. Trusted: loads of
-/// a plain statistic; any value is sound (it only decides whether
-/// `arenas.create` refuses).
+/// What a build over `meta` needs free ([`BUILD_COST`]), 0 when none is
+/// recorded: the smallest tables sample, the `Arena` storage rounded up
+/// to the largest page (a reservation takes whole pages), and slack for
+/// what other threads may reserve between the check and the build's
+/// last table (the huge allocator's table growth: an eighth of the
+/// tables, at most `BUILD_SLACK`).
+/// Trusted: loads of a plain statistic; any value is sound (it only
+/// decides whether a build or `arenas.create` is refused).
 #[verifier::external_body]
 fn build_cost(meta: &Meta) -> usize {
     let key = meta as *const Meta as usize;
-    BUILD_COST
+    let tables = BUILD_COST
         .iter()
         .find(|(k, _)| k.load(Ordering::Relaxed) == key)
-        .map_or(0, |(_, c)| c.load(Ordering::Relaxed))
+        .map_or(0, |(_, c)| c.load(Ordering::Relaxed));
+    if tables == 0 {
+        return 0;
+    }
+    let storage = core::mem::size_of::<Arena>().next_multiple_of(1 << 16);
+    tables.saturating_add(storage).saturating_add((tables / 8).min(BUILD_SLACK))
 }
 
 /// Metadata in use (`MetaStats` `bumped + reserved`) and free (`len`
