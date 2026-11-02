@@ -3595,6 +3595,65 @@ mod tests {
         );
     }
 
+    /// `realloc(p, malloc_usable_size(p))` keeps `p` for every slot class
+    /// and for runs above `MEDIUM_MAX` (`keeps`, `lemma_keeps_usable`),
+    /// and a slot is kept for the smallest and the largest size of its
+    /// class.
+    #[test]
+    fn realloc_to_usable_size_keeps() {
+        for c in 0..crate::layout::NCLASSES {
+            let s = class_size(c);
+            let p = malloc(s, vstd::prelude::Tracked::assume_new());
+            assert_eq!(malloc_usable_size(p), s);
+            assert_eq!(
+                realloc(
+                    p,
+                    s,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                ),
+                p,
+                "class {c} ({s} bytes)"
+            );
+            let below = if c == 0 { 1 } else { class_size(c - 1) + 1 };
+            assert_eq!(
+                realloc(
+                    p,
+                    below,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                ),
+                p,
+                "class {c} from {below} bytes"
+            );
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
+        }
+        let page = super::super::shared().regions.page_size();
+        for n in [MEDIUM_MAX + 1, MEDIUM_MAX + page + 1, 3 << 20] {
+            let p = malloc(n, vstd::prelude::Tracked::assume_new());
+            let u = malloc_usable_size(p);
+            assert_eq!(
+                realloc(
+                    p,
+                    u,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                ),
+                p,
+                "run of {n} bytes"
+            );
+            free(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
+        }
+    }
+
     #[test]
     fn aligned_allocations_honour_every_power_of_two() {
         let mut align = QUANTUM;

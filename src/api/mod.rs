@@ -3753,28 +3753,34 @@ mod tests {
         assert!(purge::background::thread().is_none());
     }
 
+    /// The calling thread's signal mask, as the kernel's 64-bit word.
+    fn current_mask() -> u64 {
+        // SAFETY: an all-zero `sigset_t` is a valid (empty) set.
+        let mut set: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+        let rc =
+            // SAFETY: a null new set only reads the mask into `set`, a local.
+            unsafe { ::libc::pthread_sigmask(::libc::SIG_BLOCK, core::ptr::null(), &mut set) };
+        assert_eq!(rc, 0);
+        // The kernel mask is the first 8 bytes of glibc's 128-byte set.
+        // SAFETY: `sigset_t` is 128 bytes, so its first 8 are readable.
+        unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
+    }
+
+    /// glibc's SIGCANCEL (32) and SIGSETXID (33), never blocked.
+    const GLIBC_INTERNAL: u64 = (1 << 31) | (1 << 32);
+
+    /// `mask` without `SIGKILL` and `SIGSTOP`, which the kernel never blocks,
+    /// and glibc's internal two, which the handlers leave unblocked.
+    fn blockable(mask: u64) -> u64 {
+        const KILL_STOP: u64 = (1 << (::libc::SIGKILL - 1)) | (1 << (::libc::SIGSTOP - 1));
+        mask & !KILL_STOP & !GLIBC_INTERNAL
+    }
+
     /// The handlers block every signal but glibc's internal two while the
     /// locks are held and restore the caller's mask (whatever it was)
     /// afterwards, on both fork sides.
     #[test]
     fn fork_handlers_block_signals_while_locked() {
-        fn current_mask() -> u64 {
-            // SAFETY: an all-zero `sigset_t` is a valid (empty) set.
-            let mut set: ::libc::sigset_t = unsafe { core::mem::zeroed() };
-            let rc =
-                // SAFETY: a null new set only reads the mask into `set`, a local.
-                unsafe { ::libc::pthread_sigmask(::libc::SIG_BLOCK, core::ptr::null(), &mut set) };
-            assert_eq!(rc, 0);
-            // The kernel mask is the first 8 bytes of glibc's 128-byte set.
-            // SAFETY: `sigset_t` is 128 bytes, so its first 8 are readable.
-            unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
-        }
-        // glibc's SIGCANCEL (32) and SIGSETXID (33), never blocked.
-        const GLIBC_INTERNAL: u64 = (1 << 31) | (1 << 32);
-        fn blockable(mask: u64) -> u64 {
-            const KILL_STOP: u64 = (1 << (::libc::SIGKILL - 1)) | (1 << (::libc::SIGSTOP - 1));
-            mask & !KILL_STOP & !GLIBC_INTERNAL
-        }
         let _serial = crate::testutil::global_state();
         let all = blockable(!0);
         // Start from a distinctive mask so "restored" is not "left blocked".
@@ -3826,6 +3832,60 @@ mod tests {
         );
 
         unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
+    }
+
+    /// Two threads with different masks run the prepare and parent
+    /// handlers concurrently (glibc serialises them; the shared
+    /// `FORK_SIGMASK` slot must not need it): each gets its own mask back,
+    /// because a prepare saves only once it holds every lock, and the
+    /// release reads before its first unlock.
+    #[test]
+    fn concurrent_fork_handlers_restore_each_threads_mask() {
+        let _serial = crate::testutil::global_state();
+        let all = blockable(!0);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [::libc::SIGUSR1, ::libc::SIGUSR2]
+            .into_iter()
+            .map(|signo| {
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    // SAFETY: an all-zero `sigset_t` is a valid (empty) set.
+                    let mut want: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+                    // SAFETY: `want` is a local set; the new mask is this
+                    // test thread's own.
+                    let rc = unsafe {
+                        ::libc::sigemptyset(&mut want);
+                        ::libc::sigaddset(&mut want, signo);
+                        ::libc::pthread_sigmask(::libc::SIG_SETMASK, &want, core::ptr::null_mut())
+                    };
+                    let start = current_mask();
+                    // Past the barrier before any assert, so a failure here
+                    // cannot leave the other thread waiting.
+                    barrier.wait();
+                    assert_eq!(rc, 0);
+                    assert_eq!(start, 1 << (signo - 1));
+                    for round in 0..200 {
+                        fork_prepare();
+                        // Asserted after the release: a panic with every
+                        // lock held would hang the other thread.
+                        let during = blockable(current_mask());
+                        fork_parent();
+                        assert_eq!(
+                            during, all,
+                            "round {round}: prepare left a signal unblocked"
+                        );
+                        assert_eq!(
+                            current_mask(),
+                            start,
+                            "round {round}: another thread's mask came back"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
     }
 
     /// The C export modules the export-boundary checks below cover.
