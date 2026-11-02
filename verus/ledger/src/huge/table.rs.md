@@ -7,33 +7,25 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Table::storage` | external_body | allocator invariant | Verus | trusted |
+| `axiom_zero_entry` | axiom | raw pointer (internal) | Kani | discharged |
 
-## `Table::storage`
+## `axiom_zero_entry`
 
-src/huge/table.rs:402. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/huge/table.rs:378. Kind: axiom. Category: raw pointer (internal).
+Tool: Kani. Status: discharged (Kani: huge::table::kani_table::zero_entry_is_empty).
 
-> Zeroed storage for `1 << lg_cap` entries, all empty, with what the table holds of it ([`Own`]): the permission for each entry; the block's claim when it is binned; and `meta`'s identity.
-
-Body mints Tracked at line 426; mints Tracked at line 432.
+> The 16 bytes of `z`, which read as zero, as the `Entry` at `p`, empty: `PointsToRaw::into_typed`, initialised with the value the bytes hold.
 
 ```rust
-fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
+axiom fn axiom_zero_entry(tracked z: ZeroRaw, p: *mut Entry) -> (tracked r: PointsTo<Entry>)
     requires
-        crate::sys::may_syscall(),
-        meta::is_pow2(page),
-        lg_cap <= 58,
+        p@.addr != 0,
+        p@.addr as int % 8 == 0,
+        z.is_range(p@.addr as int, 16),
+        z.provenance() == p@.provenance,
     ensures
-        r matches Some((p, _, own)) ==> covers(p, lg_cap, own@.slots) && forall|i: int|
-            0 <= i < cap_of(lg_cap) ==> !occupied(#[trigger] own@.slots[i].value()),
-        r matches Some((p, b, own)) ==> (b ==> (own@.claim matches Some(c) && c.held(
-            meta.live_id(),
-            p as *mut u8,
-            16 * cap_of(lg_cap),
-            16,
-        ))),
-        r matches Some((p, _, _)) ==> meta.holds(p@.addr as int, cap_of(lg_cap) * 16),
-        r matches Some((_, _, own)) ==> own@.mid@ == meta.live_id(),
-        r matches Some((p, _, _)) ==> p@.addr + 16 * cap_of(lg_cap) <= usize::MAX,
+        r.ptr() == p,
+        r.is_init(),
+        !occupied(r.value()),
+;
 ```

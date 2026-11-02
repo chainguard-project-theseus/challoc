@@ -10,8 +10,10 @@
 //! slot without crossing an empty one. `get`, `insert`, `remove` and
 //! `ensure` are proved to act on the map of keys to descriptors that the
 //! slots hold (`Table::lookup`). The storage comes from `Meta` through
-//! `storage`, which Verus takes on trust, and goes back through
-//! `release`.
+//! `storage`, whose entries start empty by `axiom_zero_entry` (16 zero
+//! bytes are an empty `Entry`) on the block's zero permission (for a
+//! binned block, `ZeroRaw::axiom_new` pairs its permission and zero
+//! token), and goes back through `release`.
 
 // The expansion of Verus' `global` in ordinary builds is a braced block.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_braces))]
@@ -22,6 +24,8 @@ use core::ptr;
 use crate::meta::{self, Meta, MetaClaim};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::layout::{layout_align, layout_size};
+#[cfg(verus_keep_ghost)]
+use crate::vspec::zero::ZeroRaw;
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::raw_ptr::PointsToRaw;
@@ -362,6 +366,120 @@ proof fn join_slots(tracked slots: Map<int, PointsTo<Entry>>, p: *mut Entry, n: 
     }
 }
 
+/// The 16 bytes of `z`, which read as zero, as the `Entry` at `p`, empty:
+/// `PointsToRaw::into_typed`, initialised with the value the bytes hold.
+/// Trusted for that value: vstd's raw permissions do not track byte
+/// values, and an `Entry` is a `usize` and a raw pointer, whose all-zero
+/// bit patterns are 0 and the null pointer. The premises are
+/// `into_typed`'s (a non-null `p` aligned for `Entry`, whose 16 bytes are
+/// exactly `z`'s, of `p`'s provenance), so the permission is one
+/// `into_typed` would give; `z` is used up, so the zero fact makes one
+/// permission.
+axiom fn axiom_zero_entry(tracked z: ZeroRaw, p: *mut Entry) -> (tracked r: PointsTo<Entry>)
+    requires
+        p@.addr != 0,
+        p@.addr as int % 8 == 0,
+        z.is_range(p@.addr as int, 16),
+        z.provenance() == p@.provenance,
+    ensures
+        r.ptr() == p,
+        r.is_init(),
+        !occupied(r.value()),
+;
+
+/// Entry `i` from `p` has its permission in `slots` ([`slot_at`]) and is
+/// empty.
+spec fn empty_slot_at(p: *mut Entry, slots: Map<int, PointsTo<Entry>>, i: int) -> bool {
+    slot_at(p, slots, i) && !occupied(slots[i].value())
+}
+
+/// The permissions of the first `n` entries from `p`, each empty, from
+/// `z`, the permission to their bytes, which read as zero
+/// ([`axiom_zero_entry`] on each entry's 16 bytes).
+proof fn entry_slots(tracked z: ZeroRaw, p: *mut Entry, n: int) -> (tracked slots: Map<int, PointsTo<Entry>>)
+    requires
+        0 <= n,
+        z.is_range(p@.addr as int, n * 16),
+        z.provenance() == p@.provenance,
+        p@.addr != 0,
+        p@.addr as int % 8 == 0,
+        p@.addr + n * 16 <= usize::MAX,
+    ensures
+        forall|i: int| 0 <= i < n ==> #[trigger] empty_slot_at(p, slots, i),
+    decreases n,
+{
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let m = n - 1;
+        let lo = p@.addr as int;
+        assert(m * 16 + 16 == n * 16 && 0 <= m * 16) by (nonlinear_arith)
+            requires
+                m == n - 1,
+                0 < n,
+        ;
+        assert(vstd::layout::size_of::<Entry>() == 16);
+        // The bytes are inside the allocation `p` points into, so entry
+        // `m`'s pointer is `m` entries past `p`.
+        crate::vspec::ptr::axiom_raw_readable(z.raw(), p as *mut u8, n * 16);
+        crate::vspec::ptr::axiom_ptr_add_addr(p, m as usize);
+        let q = crate::vspec::ptr::ptr_add(p, m as usize);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(lo, 8);
+        assert(lo + m * 16 == (lo / 8 + 2 * m) * 8) by (nonlinear_arith)
+            requires
+                lo == 8 * (lo / 8) + lo % 8,
+                lo % 8 == 0,
+        ;
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(lo / 8 + 2 * m, 8);
+        let tracked (front, last) = z.split(Set::range(lo, lo + m * 16));
+        assert(front.dom() =~= Set::range(lo, lo + m * 16));
+        assert(last.dom() =~= Set::range(lo + m * 16, lo + n * 16));
+        let tracked mut slots = entry_slots(front, p, m);
+        let ghost before = slots;
+        let tracked e = axiom_zero_entry(last, q);
+        slots.tracked_insert(m, e);
+        assert forall|i: int| 0 <= i < n implies #[trigger] empty_slot_at(p, slots, i) by {
+            if i < m {
+                assert(empty_slot_at(p, before, i));
+            }
+        }
+        slots
+    }
+}
+
+/// [`entry_slots`]' result for a table of `2^lg` entries is what
+/// [`Table::storage`] hands out: every slot covered, none occupied.
+proof fn lemma_empty_covers(p: *mut Entry, lg: u32, slots: Map<int, PointsTo<Entry>>)
+    requires
+        forall|i: int| 0 <= i < cap_of(lg) ==> #[trigger] empty_slot_at(p, slots, i),
+    ensures
+        covers(p, lg, slots),
+        forall|i: int| 0 <= i < cap_of(lg) ==> !occupied(#[trigger] slots[i].value()),
+{
+    assert forall|i: int| 0 <= i < cap_of(lg) implies #[trigger] slot_at(p, slots, i) by {
+        assert(empty_slot_at(p, slots, i));
+    }
+    assert forall|i: int| 0 <= i < cap_of(lg) implies !occupied(#[trigger] slots[i].value()) by {
+        assert(empty_slot_at(p, slots, i));
+    }
+}
+
+/// An address aligned to a power-of-two page of at least 16 bytes is
+/// aligned to 8, as an `Entry` needs.
+proof fn lemma_page_aligned_8(a: usize, page: usize)
+    requires
+        meta::is_pow2(page),
+        16 <= page,
+        a % page == 0,
+    ensures
+        a % 8 == 0,
+{
+    meta::lemma_pow2_bits(page);
+    assert(8usize & sub(8usize, 1usize) == 0) by (bit_vector);
+    meta::lemma_pow2_divides(page, 8);
+    meta::lemma_mod_trans(a as int, page as int, 8);
+}
+
 /// An empty `Own`, to swap a table's out with.
 proof fn own_empty() -> (tracked r: Own) {
     Own { slots: Map::tracked_empty(), claim: None, mid: Ghost(arbitrary()) }
@@ -392,17 +510,18 @@ impl Table {
     /// table holds of it ([`Own`]): the permission for each entry; the
     /// block's claim when it is binned; and `meta`'s identity. The storage
     /// is `meta`'s (`Meta::holds`, which `Meta::alloc_zeroed` and
-    /// `Meta::reserve_committed_raw` ensure of what they return). Trusted:
-    /// both hand out the block's permission and the fact that its bytes
-    /// read as zero (a binned block's permission, claim and zero token, a
-    /// reserved block's `ZeroRaw`), but nothing states that an all-zero
-    /// `Entry` (a `usize` and a raw pointer) is empty, which the entries'
-    /// permissions need.
-    #[verifier::external_body]
+    /// `Meta::reserve_committed_raw` ensure of what they return). Each
+    /// hands out the block's permission with the fact that its bytes read
+    /// as zero: a binned block's permission and zero token, paired here
+    /// (`ZeroRaw::axiom_new`), or a reserved block's `ZeroRaw`, which
+    /// [`entry_slots`] cuts into the entries' permissions, each empty
+    /// ([`axiom_zero_entry`]). A reserved block is aligned to `page`, at
+    /// least 16 bytes, so to an `Entry`.
     fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
         requires
             crate::sys::may_syscall(),
             meta::is_pow2(page),
+            16 <= page,
             lg_cap <= 58,
         ensures
             r matches Some((p, _, own)) ==> covers(p, lg_cap, own@.slots) && forall|i: int|
@@ -417,19 +536,46 @@ impl Table {
             r matches Some((_, _, own)) ==> own@.mid@ == meta.live_id(),
             r matches Some((p, _, _)) ==> p@.addr + 16 * cap_of(lg_cap) <= usize::MAX,
     {
+        proof {
+            use_type_invariant(meta);
+            let l = lg_cap as usize;
+            assert(l <= 58 ==> (16usize << l) == 16 * (1usize << l)) by (bit_vector);
+        }
+        let ghost n = cap_of(lg_cap);
         let layout = Table::layout(lg_cap);
         if layout.size() <= meta::MAX_BINNED {
             let (p, Tracked(blk), Tracked(z)) = meta.alloc_zeroed(layout);
             if p.is_null() {
                 None
             } else {
-                Some((p as *mut Entry, true, Tracked::assume_new()))
+                let tracked (raw, claim) = blk;
+                let tracked zr = ZeroRaw::axiom_new(raw, z);
+                let ghost e = p as *mut Entry;
+                proof {
+                    meta::lemma_mod_trans(p as usize as int, 16, 8);
+                    assert(e@.addr == p@.addr && e@.provenance == p@.provenance);
+                }
+                let tracked slots = entry_slots(zr, e, n);
+                proof {
+                    lemma_empty_covers(e, lg_cap, slots);
+                    assert((e as *mut u8)@ == p@);
+                }
+                Some((p as *mut Entry, true, Tracked(Own { slots, claim: Some(claim), mid: Ghost(meta.live_id()) })))
             }
         } else {
             let (s, Tracked(raw)) = meta.reserve_committed_raw(layout.size(), page);
             let p = s?;
             let e = crate::vspec::addr::addr_to_ptr(p) as *mut Entry;
-            Some((e, false, Tracked::assume_new()))
+            proof {
+                lemma_page_aligned_8(p, page);
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(16 * n + 7, 8, 2 * n, 7);
+                assert(crate::meta::words_up(16 * n) == 16 * n);
+            }
+            let tracked slots = entry_slots(raw, e, n);
+            proof {
+                lemma_empty_covers(e, lg_cap, slots);
+            }
+            Some((e, false, Tracked(Own { slots, claim: None, mid: Ghost(meta.live_id()) })))
         }
     }
 
@@ -571,6 +717,7 @@ impl Table {
             crate::sys::may_syscall(),
             meta.is_process(),
             meta::is_pow2(page),
+            16 <= page,
         ensures
             r matches Some(t) ==> t.wf() && t.spec_count() == 0 && forall|k: usize| t.lookup(k) is None,
             r matches Some(t) ==> t.spec_mid() == meta.live_id(),
@@ -951,6 +1098,7 @@ impl Table {
             crate::sys::may_syscall(),
             meta.is_process(),
             meta::is_pow2(page),
+            16 <= page,
             old(self).wf(),
             old(self).spec_mid() == meta.live_id(),
             old(self).spec_count() + extra <= 0x0100_0000_0000_0000,
@@ -1735,110 +1883,45 @@ mod tests {
     }
 }
 
-/// Kani harnesses for the parts of `Table::storage`'s trust that Kani can
-/// run (`verus/ledger/src/huge/table.rs.md`).
+/// Kani harness for `axiom_zero_entry` (`verus/ledger/src/huge/table.rs.md`),
+/// in the style of `src/kani/zero.rs`.
 #[cfg(kani)]
 mod kani_table {
-    use super::{Entry, Layout, Meta, MetaClaim, Table, Tracked};
-    use crate::meta::{MAX_ALIGN, MAX_BINNED};
-    use crate::vspec::zero::{ZeroRaw, Zeroed};
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    use vstd::raw_ptr::PointsToRaw;
+    use super::Entry;
 
-    /// `Table::storage`'s last trusted step: an all-zero `Entry` is empty.
-    /// 16 zero bytes, aligned as an `Entry`, read as an `Entry` (a
-    /// defined read: a `usize` and a raw pointer accept every bit
-    /// pattern), give an entry whose `desc` has address 0 (`!occupied`)
-    /// and whose key is 0. The entry is 16 bytes, the size the `global
-    /// layout` line states.
+    /// The buffer's length: two entries, at three 8-aligned offsets.
+    const N: usize = 32;
+
+    /// `N` bytes, aligned to 16: offsets 0 and 16 are 16-aligned and 8 is
+    /// only 8-aligned, so both alignments an `Entry` may start at occur.
+    #[repr(C, align(16))]
+    struct Buf([u8; N]);
+
+    /// `axiom_zero_entry`, `requires p@.addr != 0`, `p` 8-aligned and
+    /// `z.is_range(p@.addr, 16)` of `p`'s provenance, `ensures r.ptr() ==
+    /// p`, `r.is_init()`, `!occupied(r.value())`: at every 8-aligned
+    /// offset of a buffer of arbitrary bytes whose 16 bytes there are zero
+    /// (the rest arbitrary), `p` is what a read of an `Entry` needs (non-null,
+    /// aligned, in bounds, the bytes a valid value: `kani::mem::can_dereference`),
+    /// and the entry read through `p` itself has a null `desc` (`!occupied`)
+    /// and key 0. The entry is 16 bytes, the size the `global layout` line
+    /// states.
     #[kani::proof]
     fn zero_entry_is_empty() {
         assert_eq!(core::mem::size_of::<Entry>(), 16);
-        let z = [0u64; 2];
-        assert!(core::mem::align_of::<Entry>() <= core::mem::align_of::<[u64; 2]>());
-        // SAFETY: 16 initialised bytes, aligned for `Entry`, whose fields
-        // accept every bit pattern.
-        let e: Entry = unsafe { core::ptr::read(z.as_ptr().cast::<Entry>()) };
-        assert_eq!(e.desc as usize, 0);
-        assert_eq!(e.key, 0);
-    }
-
-    /// The region `storage_in_meta` gives its `Meta`, `[REGION_BASE,
-    /// REGION_BASE + REGION_LEN)`, for the stubs below to place blocks in.
-    static REGION_BASE: AtomicUsize = AtomicUsize::new(0);
-    static REGION_LEN: AtomicUsize = AtomicUsize::new(0);
-
-    /// `[a, a + len)` lies in the region (`Meta::holds`).
-    fn in_region(a: usize, len: usize) -> bool {
-        let base = REGION_BASE.load(Ordering::Relaxed) as u128;
-        let end = base + REGION_LEN.load(Ordering::Relaxed) as u128;
-        base <= a as u128 && a as u128 + len as u128 <= end
-    }
-
-    /// `Meta::alloc_zeroed` as its contract states: its `requires` on
-    /// `layout` asserted, then null, or a block aligned to `layout` that
-    /// the region holds.
-    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
-    fn stub_alloc_zeroed(
-        _meta: &Meta,
-        layout: Layout,
-    ) -> (*mut u8, Tracked<(PointsToRaw, MetaClaim)>, Tracked<Zeroed>) {
-        assert!(layout.align() <= MAX_ALIGN && layout.size() <= MAX_BINNED);
-        let p: usize = kani::any();
-        kani::assume(p == 0 || (p % layout.align() == 0 && in_region(p, layout.size())));
-        (p as *mut u8, Tracked::assume_new(), Tracked::assume_new())
-    }
-
-    /// `Meta::reserve_committed_raw` as its contract states: its `requires`
-    /// (`align` a power of two) asserted, then `None`, or a nonzero start
-    /// aligned to `align` whose `len` bytes the region holds.
-    #[allow(dead_code)] // As `stub_alloc_zeroed`.
-    fn stub_reserve_committed_raw(
-        _meta: &Meta,
-        len: usize,
-        align: usize,
-    ) -> (Option<usize>, Tracked<ZeroRaw>) {
-        assert!(align.is_power_of_two());
-        let s: usize = kani::any();
-        if kani::any() {
-            kani::assume(s > 0 && s % align == 0 && in_region(s, len));
-            (Some(s), Tracked::assume_new())
-        } else {
-            (None, Tracked::assume_new())
-        }
-    }
-
-    /// `Table::storage`'s `meta.holds(p, cap * 16)` ensures: for every
-    /// region `Meta::owning` accepts with a page of `2^4` to `2^30` bytes,
-    /// every power-of-two `page` argument and `lg_cap <= 58`, the table it
-    /// returns lies in the region. `Meta::alloc_zeroed` and
-    /// `Meta::reserve_committed_raw` are stubbed by their contracts
-    /// (verified by Verus), so this checks the rest of the body: that each
-    /// branch asks for `16 << lg_cap` bytes and returns that block's start.
-    #[kani::proof]
-    #[kani::stub(Meta::alloc_zeroed, stub_alloc_zeroed)]
-    #[kani::stub(Meta::reserve_committed_raw, stub_reserve_committed_raw)]
-    fn storage_in_meta() {
-        let lg_page: u32 = kani::any();
-        kani::assume(4 <= lg_page && lg_page <= 30);
-        let page = 1usize << lg_page;
-        let lg_align: u32 = kani::any();
-        kani::assume(lg_align < 64);
-        let base: usize = kani::any();
-        let len: usize = kani::any();
-        kani::assume(base > 0 && base % page == 0 && len > 0 && len % page == 0);
-        kani::assume(base as u128 + len as u128 <= 0x200_0000_0000_0000);
-        REGION_BASE.store(base, Ordering::Relaxed);
-        REGION_LEN.store(len, Ordering::Relaxed);
-        let meta = Meta::owning(base, len, page, Tracked::assume_new());
-        let lg_cap: u32 = kani::any();
-        kani::assume(lg_cap <= 58);
-        if let Some((p, binned, _)) = Table::storage(&meta, 1usize << lg_align, lg_cap) {
-            let bytes = 16u128 << lg_cap;
-            assert!(base as u128 <= p as usize as u128);
-            assert!(p as usize as u128 + bytes <= base as u128 + len as u128);
-            kani::cover!(binned, "a binned table");
-            kani::cover!(!binned, "a reserved table");
+        let mut i = 0;
+        while i + 16 <= N {
+            let mut b = Buf(kani::any());
+            for k in i..i + 16 {
+                b.0[k] = 0;
+            }
+            let p = b.0.as_ptr().wrapping_add(i).cast::<Entry>();
+            assert!(kani::mem::can_dereference(p));
+            // SAFETY: `can_dereference`, checked above.
+            let e = unsafe { p.read() };
+            assert!(e.desc.is_null());
+            assert_eq!(e.key, 0);
+            i += 8;
         }
     }
 }
