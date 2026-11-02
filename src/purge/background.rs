@@ -470,8 +470,11 @@ verus! {
 /// the slot must be empty or hold a sentinel ([`crate::heap::reentry_benign`]),
 /// as for `pthread_setspecific`. At a sentinel a nested entry leaves the
 /// cell alone; at an empty slot a nested free's slow path (`heap::free`,
-/// `heap_for_thread`) may create this thread's heap and fill the slot
-/// ([`TlsCell::kept`]).
+/// `heap_for_thread`) may create this thread's heap and fill the slot.
+/// That path (`create_heap_for_thread`) parks the slot on `TLS_CREATING`
+/// only while it registers the heap and leaves it empty or holding the
+/// heap, never a sentinel, and so does a nested `create`, which puts back
+/// what it parks ([`TlsCell::kept`]).
 ///
 /// # Safety
 /// `t` is a joinable thread this module created and never joined.
@@ -497,7 +500,8 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
 /// ([`TlsCell::kept`]), unless the slot was empty, when a nested free in
 /// `pthread_join` or a nested allocation in `pthread_create` may create
 /// the thread's heap. A heap the join created is parked the same way
-/// for `pthread_create` and put back after it.
+/// for `pthread_create` and put back after it, so an empty slot ends
+/// empty or holding a heap, never `TLS_CREATING`.
 // The `match` stands for `Option::filter`, which vstd does not specify.
 #[allow(clippy::manual_filter)]
 fn create(
@@ -647,7 +651,8 @@ fn create(
 /// the new thread's DTV, which may re-enter the allocator on this thread,
 /// so the slot must be empty or hold a sentinel, as for [`pthread_join`].
 /// A nested entry leaves a sentinel in the slot as it found it and may
-/// fill an empty slot ([`TlsCell::kept`]).
+/// fill an empty slot with a heap, never a sentinel, as for the join
+/// ([`TlsCell::kept`]).
 #[verifier::external_body]
 fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
     requires
