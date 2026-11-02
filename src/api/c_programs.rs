@@ -769,6 +769,17 @@ ctests! {
     /// `tst-mallocfork`, made deterministic).
     c_fork_signal => [ CTest { prog: "fork_signal", ..BASE } ];
     c_thread_exit => [ CTest { prog: "thread_exit", ..BASE } ];
+    /// `tests/c/resource.c`: resource limits are resource failures, never
+    /// aborts (design 14.1). `data_init`: a 32 MiB `RLIMIT_DATA` from the
+    /// start runs a 15 MB working set, a request past the limit is
+    /// NULL/`ENOMEM`, and succeeds once the limit is raised. `as_min`: an
+    /// `RLIMIT_AS` just above the documented minimum layout starts 16
+    /// processes out of 16 (the random reservation order no longer lets
+    /// one region take what another needs).
+    c_resource => [
+        CTest { prog: "resource", args: &["data_init"], ..BASE },
+        CTest { prog: "resource", args: &["as_min"], ..BASE },
+    ];
     /// `tests/c/jemalloc_api.c`: the jemalloc and glibc
     /// extras under the real `.so`, every non-standard symbol reached through
     /// a weak reference.

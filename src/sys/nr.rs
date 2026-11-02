@@ -35,6 +35,7 @@ pub const TABLE: &[(&str, usize)] = &[
     ("sched_setscheduler", SCHED_SETSCHEDULER),
     ("getpriority", GETPRIORITY),
     ("setpriority", SETPRIORITY),
+    ("prlimit64", PRLIMIT64),
 ];
 
 #[cfg(target_arch = "x86_64")]
@@ -65,6 +66,7 @@ mod arch {
     pub const EXIT_GROUP: usize = 231;
     pub const TGKILL: usize = 234;
     pub const OPENAT: usize = 257;
+    pub const PRLIMIT64: usize = 302;
     pub const GETRANDOM: usize = 318;
 
     } // verus!
@@ -98,6 +100,7 @@ mod arch {
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const MADVISE: usize = 233;
+    pub const PRLIMIT64: usize = 261;
     pub const GETRANDOM: usize = 278;
 
     } // verus!

@@ -2019,6 +2019,61 @@ mod linux {
         Ok((addr, Tracked::assume_new()))
     }
 
+    /// Address space the smallest layout of region `k` takes, with its
+    /// slack (the numbering of `reserve_owning`'s order: 0 the class
+    /// superblock at stride 2x, 1 the huge region, 2 the metadata region):
+    /// the last size [`reserve_superblock`] and [`reserve_shrinking`] ask
+    /// for before they give up.
+    fn min_len(k: u8) -> (r: usize)
+        ensures
+            r <= 0x1000_0000_0000,
+    {
+        proof {
+            assert(NCLASSES <= 64);
+            let n = NCLASSES;
+            assert((n << 33usize) + 0x40_0000 <= 0x1000_0000_0000) by (bit_vector)
+                requires n <= 64;
+            assert((1usize << 30u32) == 0x4000_0000) by (bit_vector);
+            assert((1usize << 34u32) == 0x4_0000_0000) by (bit_vector);
+            assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+        }
+        let slack = (1usize << LG_SLIDE) + MAX_SLAB;
+        match k {
+            0 => (NCLASSES << (LG_REGION_MIN + 1)) + MAX_SLAB,
+            1 => (1usize << LG_HUGE_MIN) + slack,
+            _ => (1usize << LG_META_MIN) + slack,
+        }
+    }
+
+    /// Hold `len` bytes of address space with a `PROT_NONE`,
+    /// `MAP_NORESERVE` placeholder while an earlier region's shrinking
+    /// reservation runs, so under an address-space limit (`RLIMIT_AS`) it
+    /// cannot take what the regions after it need at their smallest; the
+    /// address, 0 for none (`len` 0, or the kernel refused: then the later
+    /// regions do not fit at their smallest either, and their own
+    /// reservation reports it).
+    fn hold(len: usize) -> usize
+        requires
+            crate::sys::may_syscall(),
+    {
+        if len == 0 {
+            return 0;
+        }
+        // SAFETY: fresh anonymous private mapping, no fixed address.
+        unsafe { sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) }.ok().unwrap_or(0)
+    }
+
+    /// Give back a placeholder [`hold`] made.
+    fn unhold(addr: usize, len: usize)
+        requires
+            crate::sys::may_syscall(),
+    {
+        if addr != 0 {
+            // SAFETY: the placeholder is ours and nothing references it.
+            let _ = unsafe { sys::munmap(addr, len) };
+        }
+    }
+
     /// A reservation [`try_reserve`] made: `m` with its token, below
     /// `sys::pac::user_va_limit`.
     pub open spec fn reserved(m: Mapping, t: Reserved) -> bool {
@@ -2479,6 +2534,18 @@ mod linux {
                     },
                 decreases 3 - i,
             {
+                // Each reservation shrinks until the kernel grants it, so
+                // under an address-space limit the first one drawn would
+                // take what the later ones need: hold their smallest
+                // layouts aside while it runs (design 2).
+                let need = if i == 0 {
+                    min_len(order[1]) + min_len(order[2])
+                } else if i == 1 {
+                    min_len(order[2])
+                } else {
+                    0
+                };
+                let held = hold(need);
                 match order[i] {
                     0 => sb = Some(reserve_superblock()),
                     1 => {
@@ -2498,6 +2565,7 @@ mod linux {
                         ))
                     }
                 }
+                unhold(held, need);
                 i += 1;
             }
             let (sb_map, lg_region, lg_stride, _sb_tok) = sb.unwrap();

@@ -1508,7 +1508,7 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
             Tracked(&mut built),
         );
         if !ok {
-            sys::abort("metadata region too small for the allocator tables");
+            sys::abort("cannot set up the allocator tables: metadata region too small, or the kernel refused their commit (RLIMIT_DATA, vm.max_map_count)");
         }
         let tracked shared_perm = built.perm.tracked_unwrap();
         // Design 11: `Shared::init` forced the stored `thp` to `never`

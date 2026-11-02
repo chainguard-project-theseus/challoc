@@ -124,7 +124,7 @@ pub fn write_all(fd: i32, buf: &[u8])
 
 ## `sigprocmask_block`
 
-src/sys/mod.rs:1419. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1443. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the syscall's word.
@@ -145,7 +145,7 @@ unsafe fn sigprocmask_block(
 
 ## `sigprocmask_setmask`
 
-src/sys/mod.rs:1452. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1476. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the syscall's word.
@@ -160,7 +160,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 
 ## `trap`
 
-src/sys/mod.rs:1500. Kind: external_body. Category: inline asm.
+src/sys/mod.rs:1524. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.

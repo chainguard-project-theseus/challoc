@@ -91,8 +91,16 @@ carves cost one call; later commits are accounting only). The small classes' lar
 descriptor arrays and bitmaps stay on the table side: writable whole they
 would put gigabytes of untouched address space into core dumps and under
 `RLIMIT_DATA`. Eager carving is off under `vm.overcommit_memory=2` (which
-ignores `MAP_NORESERVE` and would charge every forked child) and under any
-`thp` key but `never` (`meta::eager_policy`).
+ignores `MAP_NORESERVE` and would charge every forked child), under a
+finite `RLIMIT_DATA` (which since Linux 4.7 charges every private
+writable mapping: the eager tables are about 85 MiB writable from the
+first `malloc`, against under 2 MiB of `VmData` with them on the table
+side; a working set still needs about twice glibc's `VmData` under a
+data limit, every arena's commits counting, and past it `malloc` returns
+NULL and recovers) and
+under any `thp` key but `never` (`meta::eager_policy`). The reservations
+themselves are `PROT_NONE` and `MAP_NORESERVE`, which neither
+`RLIMIT_DATA` nor the overcommit heuristic charges; only commits count.
 
 Sizes are runtime parameters chosen by probing how much virtual address
 space the process can reserve, so the same binary works on 47-bit x86_64,
@@ -105,8 +113,21 @@ space the process can reserve, so the same binary works on 47-bit x86_64,
 | Huge region        | 2^40 (1 TiB)  | 2^34         |
 | Metadata region    | 2^36          | 2^30         |
 
+The minimum layout is the least address space init needs: at quantum 16
+`NCLASSES` = 52, so 52 x 2^33 for the superblock, 2^34 for the huge
+region and 2^30 for the metadata region, each with its slack (4 MiB of
+alignment, plus 1 GiB of slide for the two side regions): about 435 GiB,
+which a 39-bit (512 GiB) kernel or an `RLIMIT_AS` of 436 GiB or more
+holds (quantum 8, with 56 classes, needs 468 GiB or more).
+Below it init aborts with `cannot reserve ...` (section 14.1).
+
 Region bases are randomised with `getrandom` and the three mappings are
-reserved in random order. The huge and metadata regions slide by 1 to 255
+reserved in random order. Each shrinks until the kernel grants it, so
+while one is reserved a `PROT_NONE` placeholder holds the minimum layouts
+of the ones drawn after it (`layout::regions::hold`): under an
+address-space limit the first one drawn can never take what the others
+need at their smallest, and any limit that covers the minimum layout
+on top of the program's own mappings (436 GiB at quantum 16) reserves. The huge and metadata regions slide by 1 to 255
 steps of 4 MiB (just under 8 bits) above their mapping's 4 MiB-aligned
 start. Inside the superblock the class regions sit at
 a fixed power-of-two stride in class order, each at a random offset
@@ -1041,7 +1062,9 @@ never needs waits for first use: the cgroup files, the per-size THP files,
 and the commit of the small tables carved from the metadata object side
 (section 2, one `mprotect` for all of them). `startup-true` (`/bin/true`,
 its `exec` included) makes 234 system calls under challoc on ref-amd64,
-against 357 before these deferrals and 157 under jemalloc 5.4.0.
+against 357 before these deferrals and 157 under jemalloc 5.4.0 (measured
+before the `RLIMIT_DATA` probe and the two reservation placeholders of
+section 2, which add up to five).
 Slabs are still committed one at a time as the arena reaches them
 (section 5): committing a group ahead would leave the slab after an
 arena's newest one read-write, where an overflow now faults.
@@ -1549,7 +1572,8 @@ Always on:
   (the sized path defers the bit test to the flush, 6.3).
 - A guard after every huge run (`MADV_GUARD_INSTALL`, else `PROT_NONE`).
 - Abort, never continue, on any inconsistency: a message on stderr via
-  `write(2)`, then `abort()` (`sys/abort.rs`).
+  `write(2)`, then `abort()` (`sys/abort.rs`). A resource failure is not
+  an inconsistency (14.1).
 
 Kernel-gated, otherwise absent: guard slabs every `guard_slab_interval` x
 64 KiB of slabs (`MADV_GUARD_INSTALL`, 6.13+; section 5); sealing of the
@@ -1576,6 +1600,51 @@ attempted: quarantine (defeats defragmentation and costs throughput) and
 canaries (need bytes inside the block). Sampled guarded allocations in the
 style of GWP-ASan and type-isolated heaps for Clang's
 `-fsanitize=alloc-token` are roadmap items.
+
+### 14.1 Resource failures
+
+Every abort is one of two kinds, and a third kind of failure never
+aborts:
+
+- **Misuse or heap inconsistency**: an invalid, double or mis-sized free,
+  a guard-slab address, an owner word or descriptor naming no arena, a
+  state byte or count no valid history produces, a purge `madvise` that
+  says our own reservation is gone or was sealed by the program
+  (`ENOMEM`, `EPERM`), an invalid `MALLOCX_TCACHE`, an allocation during
+  init. Continuing would hand out memory twice or into someone else's;
+  these abort with a `challoc:` line.
+- **Init below the documented minimum**: the address space for the
+  minimum layout (section 2), `getrandom`, the fork handlers, or the
+  metadata init commits (`cannot set up the allocator tables ...`, a fraction of
+  a MiB once eager carving is off). Nothing has been handed out yet and
+  the process cannot run under any allocator design that needs these.
+- **Resource failure after init** (the kernel or a limit refuses
+  memory, address space, a mapping or a guard; the metadata region is
+  full): never an abort. An allocation returns NULL with `errno` =
+  `ENOMEM` (C++ `operator new` throws), keeps no record of the failure,
+  and the next call tries again, so when the pressure lifts (a raised
+  `RLIMIT_DATA`, `munlockall`, mappings unmapped) allocation works
+  again. Inside `free`, which cannot fail, the memory the failure leaves
+  in doubt is kept out of circulation (leaked and counted), never
+  recycled and never an abort.
+
+Exceptions the code still has, each a resource failure that aborts or
+sticks: a thread whose automatic arena cannot be built (the metadata
+region is full, or `RLIMIT_DATA` refuses the arena's commit) gets NULL
+from the small classes for its life and an `arena N does not exist`
+abort from the huge path; a refused
+`MADV_GUARD_INSTALL` (an `mlock`ed range) fails every huge allocation
+placed there, and a slab guard that neither `MADV_GUARD_INSTALL` nor
+`mprotect` can install aborts; inside `free`, a huge descriptor table
+that could not grow, or a refused `MADV_GUARD_REMOVE`, aborts.
+
+The limits a process may run under are part of this. A process that
+starts under a finite `RLIMIT_DATA` has no table writable before it is
+used (section 2: the policy is probed once, at the first table, so a
+limit set later finds the eager tables already counted). An `RLIMIT_AS`
+that covers the minimum layout on top of the program's own mappings
+(the binary, ld.so, libc, the stack: 436 GiB at quantum 16, 468 GiB at
+quantum 8) always lets init reserve.
 
 ## 15. Per-CPU mode
 
