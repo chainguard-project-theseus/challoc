@@ -376,8 +376,9 @@ the same lock hold, before the slab enters the partial set
 (`claim_prefix`), and the refill reports them zero. Decided after the
 lock is dropped, a bit could be one that another thread claimed from the
 now-partial slab, handed to the program and got back dirty in between,
-and `calloc` would skip its `memset` over it. Slots of an `Active` slab
-are never reported zero. When a slab's bitmap becomes completely set,
+and the zero report (which `check_zero` reads) would be false. No
+zeroing entry point trusts the report for a slab slot (section 6.3).
+Slots of an `Active` slab are never reported zero. When a slab's bitmap becomes completely set,
 the thread that observed it clears the slab's partial bit under the
 lock; when a release clears bits in a slab that was full, the releasing
 thread sets the partial bit under the lock. The lock is taken once per
@@ -1891,7 +1892,7 @@ src/heap/cache.rs     CacheHeader: pop and push primitives, first-use setup (ens
 src/heap/paths.rs     the inlined fast paths, the cold slow paths, free_other
 src/heap/fresh.rs     a fresh heap's plain fields and the FreshHeap token that hands on their permission
 src/heap/live.rs      the live-block ghost model: a Live token per handed-out slot or huge run
-src/heap/zero.rs      the zero prefix of the thread caches as ghost tokens (calloc's skipped memset)
+src/heap/zero.rs      the zero prefix of the thread caches as ghost tokens (no zeroing entry point trusts it)
 src/heap/flush.rs     refill and flush; group_by_slab and the straddling double-free abort
 src/heap/compact.rs   the compacting cache: probe/compact modes, scheduled pop, rebuild (6.4)
 src/heap/others.rs    caches for other arenas (ArenaCaches) and the FOREIGN flush-only cache
