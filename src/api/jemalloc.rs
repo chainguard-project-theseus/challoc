@@ -668,9 +668,10 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>, errn
 /// `sdallocx(p, size, flags)`: `size` must satisfy `nallocx(size, flags)
 /// == sallocx(p)` (jemalloc's contract); the class it names is checked
 /// against the pointer and stands in for the slot bit test, so the fast
-/// path touches no per-slab metadata (design 6.3; the check lands at the
-/// cache flush). A mismatch aborts. With `MALLOCX_TCACHE_NONE` the release
-/// itself checks the bit at once. C holds the token of the block it frees
+/// path touches no per-slab metadata (design 6.3; the check is left to a
+/// flush, which catches a bad free only if the slot is still unclaimed
+/// then). A mismatch aborts. With `MALLOCX_TCACHE_NONE` the release itself
+/// checks the bit at once (a clear bit, not a copy still held in a cache). C holds the token of the block it frees
 /// ([`crate::heap::live::axiom_c_claim`]).
 ///
 /// `flags == 0` (every Valkey free) goes straight to `free_sized`'s path

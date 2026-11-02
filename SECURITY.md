@@ -59,7 +59,8 @@ allocator can contain (see "Out of scope").
 These hold on every supported host with the default configuration:
 
 - **Invalid free aborts.** A plain `free` of a pointer challoc didn't
-  return aborts at the call.
+  return aborts at the call, unless it is a slot start some thread cache
+  holds (see "Frees of slots a refill claimed" below).
 - **Stale double free aborts.** A second `free` of a slot whose slot
   bit is clear (released to its slab and not handed out again) aborts
   at the call.
@@ -94,18 +95,31 @@ These hold on every supported host with the default configuration:
 
 ## Best-effort and probabilistic protections
 
-- **Double frees still in the thread cache.** A second free of a slot
-  that is still cached is caught when the cache flushes. If a `malloc`
-  takes one copy before that, the duplicate isn't detected and the slot
-  is live twice. `double_free_scan:true` closes most of this window at
-  the call, at a measured cost.
+- **Frees of slots a refill claimed.** A refill claims a batch of slots
+  into a thread cache and sets their bits before `malloc` hands them out.
+  A plain `free` of such a slot start, one challoc has not returned yet,
+  passes the bit test: it is accepted, cached, and the slot can then be
+  handed out twice. `double_free_scan:true` narrows this at the call
+  (it compares the slot against the four most recent entries of the
+  cache the free pushes to).
+- **Double frees still in a thread cache.** A second free of a slot
+  still held in any thread's cache is not checked at the call. A flush
+  catches it only if the slot is still unclaimed when the flush reaches
+  the copy: if a `malloc` or any refill takes the slot
+  first, it is live twice. `double_free_scan:true` narrows this window
+  at the call, at a measured cost.
 - **Freed pointers still in the thread cache.** A slot keeps its live
   bit until a flush releases it, so `malloc_usable_size`, `realloc` or
   `sallocx` on a pointer freed into the cache (and not yet flushed) is
   not detected: it reports the class's usable size, or reallocates.
 - **The sized path defers its slot check.** `sdallocx` and `free_sized`
-  check the size at the call but leave the double-free check to the
-  flush, which is jemalloc's behaviour for every free.
+  check the size at the call but leave the invalid- and double-free
+  check to a flush, with no bound on when. A sized free of any slot start
+  of the named class, including one challoc never returned, enters the
+  thread cache: the thread's next `malloc` of that class returns it (a
+  slot the caller chose, writable at once if its slab's memory is
+  committed), and if a refill claims the slot before a flush, the slot is
+  live twice. That deferral is jemalloc's behaviour for every free.
 - **Randomisation is probabilistic.** Class region addresses are
   randomised. Slot order within a class is predictable unless
   `slot_randomize:true` is set.

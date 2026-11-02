@@ -10,7 +10,10 @@ security properties.
 In priority order:
 
 1. **At least as secure as jemalloc, and in practice much more so.** No
-   allocator metadata lives in user-reachable memory. Every free is validated.
+   allocator metadata lives in user-reachable memory. Every plain free is
+   validated against the slot bitmap (a free of a slot still held in a
+   thread cache is not checked exactly, `double_free_scan:true` narrows
+   this, and sized frees defer their check to a flush).
    Size classes are isolated in separate address ranges with guards between
    them.
 2. **At least as fast as jemalloc on the workloads Wolfi actually ships.**
