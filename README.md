@@ -90,8 +90,9 @@ newer, on host kernels 5.14 and newer, on x86_64 and on aarch64 with 4,
 table below); they are never required, and a missing feature changes
 cost, memory or detection, never allocation results. A process needs
 about 435 GiB of address space (`RLIMIT_AS`) at quantum 16, the minimum
-layout of `docs/design.md` section 2; a data limit (`RLIMIT_DATA`)
-counts only memory challoc has committed. Other distributions, libcs and
+layout of `docs/design.md` section 2; under a data limit
+(`RLIMIT_DATA`) in force from the start, challoc makes no metadata
+writable before it uses it. Other distributions, libcs and
 operating systems are not supported.
 
 ## Building

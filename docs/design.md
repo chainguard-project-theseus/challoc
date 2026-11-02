@@ -1635,10 +1635,11 @@ placed there, and a slab guard that neither `MADV_GUARD_INSTALL` nor
 `mprotect` can install aborts; inside `free`, a huge descriptor table
 that could not grow, or a refused `MADV_GUARD_REMOVE`, aborts.
 
-The limits a process may run under are part of this: `RLIMIT_DATA` only
-counts committed bytes (section 2: no table is writable before it is
-used), and `RLIMIT_AS` at or above the minimum layout always lets init
-reserve.
+The limits a process may run under are part of this. A process that
+starts under a finite `RLIMIT_DATA` has no table writable before it is
+used (section 2: the policy is probed once, at the first table, so a
+limit set later finds the eager tables already counted). An `RLIMIT_AS`
+at or above the minimum layout always lets init reserve.
 
 ## 15. Per-CPU mode
 
