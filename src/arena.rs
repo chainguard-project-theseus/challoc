@@ -3230,18 +3230,12 @@ impl Arenas {
 
     /// Automatic arenas not built yet: the threads' homes
     /// [`Arenas::create`] keeps room for.
-    fn unbuilt_auto(&self) -> (r: u32)
-        requires
-            self.wf(),
-    {
-        proof {
-            use_type_invariant(self);
-        }
+    fn unbuilt_auto(&self) -> (r: u32) {
+        let auto = if (self.auto as usize) < MAX_ARENAS { self.auto as usize } else { MAX_ARENAS };
         let mut n = 0u32;
-        for i in 0..self.auto as usize
+        for i in 0..auto
             invariant
-                self.wf(),
-                self.auto <= MAX_ARENAS,
+                auto <= MAX_ARENAS,
                 n <= i,
         {
             if self.table[i].load(Ordering::Relaxed).is_null() {
