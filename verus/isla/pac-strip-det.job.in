@@ -1,0 +1,12 @@
+# Determinism of `xpacd` (pac::strip, whose block is `pure`;
+# verus/isla/seams.md): copy `a` runs the canonical `xpacd x0`,
+# copy `b` the site's `xpacd @D@`, from independent states in the same
+# configuration (pac-footprint.job.in). The same pointer gives the same
+# result. run.sh prepends the copy and insn lines (and `pc-step` for
+# Armv9.4-A).
+writes R0 @D@
+no-mem-write
+mem-reads 0
+flags-preserved
+assume (= a.init.R0 b.init.@D@)
+assert (= a.final.R0 b.final.@D@)

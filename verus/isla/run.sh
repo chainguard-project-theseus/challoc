@@ -1,8 +1,9 @@
 #!/bin/sh
 # Check the inline-assembly seams verus/isla/seams.md lists with Isla
-# (verus/ISLA.md): against the Sail Armv8.5-A model on the aarch64 code
-# built from this tree, and against the Sail x86 model (verus/isla/x86/)
-# on the x86_64 code.
+# (verus/ISLA.md): against the Sail Armv8.5-A model (and the PAC ones also
+# against the Armv9.4-A model, for FEAT_PAuth2 and FEAT_FPAC) on the
+# aarch64 code built from this tree, and against the Sail x86 model
+# (verus/isla/x86/) on the x86_64 code.
 #
 #   verus/isla/run.sh [-a LIBCHALLOC.a] [-x LIBCHALLOC.a] [OUT]
 #
@@ -12,12 +13,13 @@
 # (`seams.sh --check`). Then, for each target in ISLA_TARGETS, builds the
 # release static library (or takes the one given with -a for aarch64, -x
 # for x86_64), finds every instance of each checked template in the
-# compiled code, runs isla-footprint on each distinct instruction and
-# checks each job with isla-check (verus/isla/check.rs): run-aarch64.sh
-# and run-x86_64.sh. Last, checks that the jobs each seam's `Jobs:` line
-# in seams.md names for a target in ISLA_TARGETS ran and passed. OUT
-# (default: a fresh temporary directory) keeps the traces and the jobs.
-# Exit status 0 when every check holds.
+# compiled code, runs isla-footprint on each distinct instruction (the
+# PAC ones in parallel, one per CPU) and checks each job with isla-check
+# (verus/isla/check.rs): run-aarch64.sh and run-x86_64.sh. Last, checks
+# that the jobs each seam's `Jobs:` line in seams.md names for a target
+# in ISLA_TARGETS ran and passed. OUT (default: a fresh temporary
+# directory) keeps the traces and the jobs. Exit status 0 when every
+# check holds.
 #
 # Tools (verus/ISLA.md, "Setup"; the defaults are where the isla,
 # isla-snapshots, sail, isla-sail, z3 and llvm packages put them):
@@ -26,16 +28,17 @@
 #                   `cargo rustc --target <target>-unknown-linux-gnu`,
 #                   which needs that target's standard library
 #   ISLA_FOOTPRINT  isla-footprint (default: on PATH)
-#   ISLA_CONFIGS    Isla's configurations, armv8p5.toml
+#   ISLA_PREPROCESS isla-preprocess (default: on PATH)
+#   ISLA_CONFIGS    Isla's configurations, armv8p5.toml and armv9p4.toml
 #                   (default /usr/share/isla/configs)
-#   ISLA_SNAPSHOTS  the Sail models, armv8p5.ir
-#                   (default /usr/share/isla-snapshots)
+#   ISLA_SNAPSHOTS  the Sail models, armv8p5.ir and armv9p4.ir or
+#                   armv9p4.ir.gz (default /usr/share/isla-snapshots)
 #   ISLA_X86_IR     the x86 model (needed for x86_64 only); without it,
 #                   run.sh fetches sail-x86-from-acl2 at a pinned commit
 #                   and builds the model with verus/isla/x86/build-ir.sh
 #   Z3              the z3 binary isla-check calls (default: z3 on PATH)
-#   ISLA_CHECK_JOBS the threads each isla-check judges prefixes on
-#                   (default 1)
+#   ISLA_CHECK_JOBS the threads each isla-check judges prefixes on (default
+#                   1, as run.sh runs the PAC jobs one isla-check per CPU)
 #   CARGO, RUSTC    the build's cargo and rustc (default: on PATH)
 #   ISLA_CARGO_FLAGS extra cargo flags for the library, such as
 #                   `--no-default-features --features quantum8`
@@ -75,6 +78,7 @@ tool() { # NAME: NAME's path, from PATH when it has no slash
 	case $1 in */*) echo "$1" ;; *) command -v "$1" || echo "$1" ;; esac
 }
 footprint=$(tool "${ISLA_FOOTPRINT:-isla-footprint}")
+preprocess=$(tool "${ISLA_PREPROCESS:-isla-preprocess}")
 configs=${ISLA_CONFIGS:-/usr/share/isla/configs}
 snapshots=${ISLA_SNAPSHOTS:-/usr/share/isla-snapshots}
 cargo=${CARGO:-cargo}
@@ -84,7 +88,12 @@ llvm_ar=$(tool "${LLVM_AR:-llvm-ar}")
 ir=$snapshots/armv8p5.ir
 need="$footprint $llvm_objdump $llvm_ar"
 if want aarch64; then
-	need="$need $ir $configs/armv8p5.toml"
+	ir9=$snapshots/armv9p4.ir
+	if [ ! -e "$ir9" ] && [ -e "$ir9.gz" ]; then
+		gunzip -c "$ir9.gz" >"$out/armv9p4.ir.part" && mv "$out/armv9p4.ir.part" "$out/armv9p4.ir"
+		ir9=$out/armv9p4.ir
+	fi
+	need="$need $preprocess $ir $ir9 $configs/armv8p5.toml $configs/armv9p4.toml"
 fi
 if want x86_64; then
 	xir=${ISLA_X86_IR:-}
@@ -121,7 +130,7 @@ tab=$(printf '\t')
 # aarch64, x86_64 or both) is the one the ledger file of FILE names NAME,
 # with the contract seams.md quotes (the first ```rust block of each),
 # under the `#[cfg(target_arch = ...)]` of ARCH, or under none for both
-# (one item whose body holds an `asm!` call per architecture). The
+# (one item on both architectures, such as `sys::pac`'s). The
 # x86_64 and aarch64 `raw::syscallN` share file, name and contract, so
 # the last check is what tells `syscallN#1` from `syscallN#2`. The seams
 # are exactly those whose overrides line under verus/ledger/ cites
@@ -218,8 +227,8 @@ cmp -s "$out/seams-md.sorted" "$out/cited.sorted" ||
 seam_items "$smd" "$out/seams-md.txt" >"$out/seam-items.txt"
 report "$out/seam-items.txt"
 
-# The tools every target shares: isla-check, the negative-control runner
-# and the encodings.
+# The tools every target shares: isla-check, the negative-control runner,
+# the encodings, and a pool of background tasks.
 "$rustc" -O --edition 2021 "$here/check.rs" -o "$out/isla-check"
 : >"$out/jobs-ran.txt"
 ran() { # NAME ok|fail: one isla-check of job NAME (ARCH/JOB), for the last section
@@ -248,7 +257,7 @@ refute() { # NAME JOB-TEXT REASON
 		echo "negative control $1: rejected, as it should be"
 	fi
 }
-# The negative controls of a check that is not a job (sections 1 and 9
+# The negative controls of a check that is not a job (sections 1 and 10
 # and the last): each runs the check on a mutated copy of its input,
 # which must fail for the reason the mutation causes.
 refuted() { # NAME LOG REASON: LOG, a check's output on a mutated copy, has a FAIL line naming REASON
@@ -269,6 +278,15 @@ bin5() {
 	for _ in 1 2 3 4 5; do s=$((n & 1))$s n=$((n >> 1)); done
 	echo "$s"
 }
+par=$(nproc 2>/dev/null || echo 4)
+# At most `par` background tasks at once: a task takes a token from the
+# pipe on fd 3 before it starts and puts it back when it ends. A run
+# killed before the pipe was opened can leave one in a reused OUT.
+rm -f "${out:?}/tokens.fifo"
+mkfifo "$out/tokens.fifo"
+exec 3<>"$out/tokens.fifo"
+rm -f "${out:?}/tokens.fifo"
+for _ in $(seq "$par"); do echo >&3; done
 
 # The libraries: the release build's static library, one object with every
 # codegen unit.
@@ -330,7 +348,7 @@ seam_jobs() { # SEAMS-MD JOBS-RAN: per seam heading, `FAIL ...` lines or one `se
 			if (n > 0 && nn == n) no("names no job, only ARCH/none")
 			if (nf == 0) {
 				m = ok == "" ? "" : " jobs" ok " ran and passed"
-				if (nos != "") m = m ";" nos " (no asm! call there)"
+				if (nos != "") m = m (m == "" ? "" : ";") nos " (no asm! call there)"
 				if (skip != "") m = m (m == "" ? "" : ";") " not run (not in ISLA_TARGETS):" skip
 				print "seam " seam ":" m
 			}

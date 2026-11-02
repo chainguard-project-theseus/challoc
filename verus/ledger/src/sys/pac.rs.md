@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_u..._limit` | axiom | platform/kernel fact | none (assumption) | trusted |
-| `axiom_auth_sign` | axiom | platform/kernel fact | none (assumption) | trusted |
+| `axiom_auth_sign` | axiom | platform/kernel fact | Islaris/Isla | trusted |
 | `sign` | external_body | inline asm | Islaris/Isla | trusted |
 | `auth` | external_body | inline asm | Islaris/Isla | trusted |
 | `strip` | external_body | inline asm | Islaris/Isla | trusted |
@@ -30,7 +30,7 @@ pub axiom fn axiom_user_va_limit()
 ## `axiom_auth_sign`
 
 src/sys/pac.rs:71. Kind: axiom. Category: platform/kernel fact.
-Tool: none (assumption). Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: that firmware sets SCR_EL3.API and APK and that the CPU is one of the two kinds the runs model).
 
 > Trusted (Armv8.3 PAuth, and the identity on x86_64): authenticating what signing a plain user address returned, with the same modifier, gives the address back.
 
@@ -46,7 +46,7 @@ pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
 ## `sign`
 
 src/sys/pac.rs:199. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: that the kernel keeps the thread's data key A and EnDA fixed).
 
 > Sign `p` with data key A and `modifier` (`pacda`).
 
@@ -62,7 +62,7 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
 ## `auth`
 
 src/sys/pac.rs:245. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: that the kernel keeps the thread's data key A and EnDA fixed and never resumes past an autda that faults).
 
 > Authenticate `p`, signed by [`sign`] with the same `modifier` (`autda`): the plain pointer, or, when the two disagree, a fault or a non-canonical pointer (module doc).
 
@@ -80,7 +80,7 @@ pub fn auth(p: usize, modifier: usize) -> (r: usize)
 ## `strip`
 
 src/sys/pac.rs:285. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: that firmware sets SCR_EL3.API and APK and that the CPU is one of the two kinds the runs model).
 
 > Strip the PAC from `p` without authenticating it (`xpacd`): the address a signed or corrupted entry names, for abort messages and tests.
 

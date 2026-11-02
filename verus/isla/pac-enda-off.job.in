@@ -1,0 +1,12 @@
+# `pacda x0, x1` or `autda x0, x1` (sign's and auth's canonical forms) with
+# SCTLR.EnDA clear, in one configuration (pac-footprint.job.in): the
+# pointer comes back unchanged, and `autda` (prepended as `fallthrough`)
+# does not fault, in both models. run.sh prepends the insn line (and
+# `pc-step` for Armv9.4-A) and substitutes @SCTLR@.
+abstract ComputePAC
+writes R0
+no-mem-write
+mem-reads 0
+flags-preserved
+assume (= ((_ extract 27 27) init.@SCTLR@) #b0)
+assert (= final.R0 init.R0)

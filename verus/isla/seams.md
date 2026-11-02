@@ -7,15 +7,16 @@ whole contract (verus/SEAMS.md, "Status"), and `trusted (partly checked,
 Isla: verus/isla/seams.md; not checked: ...)` when part of it rests on
 something the runs do not reach, which the overrides line names. Each
 heading gives its file, its name as the ledger prints it, and the
-architecture of the item (`both` for one item whose body holds an `asm!`
-call per architecture). Its `Jobs:` line names the run.sh jobs that
+architecture of the item (`both` for one item on both architectures,
+such as `sys::pac`'s, whose aarch64 arm is the `asm!` call and whose
+x86_64 arm is the identity). Its `Jobs:` line names the run.sh jobs that
 trace the seam, as ARCH/JOB (`aarch64/tls-load` for every
 `tls-load-xA-xB-xC.job`): at least one per architecture the heading
 names, each of which must run and pass when its architecture is in
 `ISLA_TARGETS` (or, for a `both` seam whose arm on one architecture has
-no `asm!` call, `ARCH/none` for that arm). The
-```rust block under it is the contract Verus assumes, copied from the
-ledger entry;
+no `asm!` call, `ARCH/none` for that arm, as `sys::pac`'s x86_64 arm).
+The ```rust block under it is the contract Verus assumes, copied from
+the ledger entry;
 `verus/isla/run.sh` fails when the ledger's contract, the item's
 architecture or the set of seams citing this file differs from it, or a
 seam names no job, or a job of a target it runs that did not run or
@@ -30,12 +31,12 @@ and the checker.
 
 The other inline-assembly seams stay trusted, with status `trusted` and
 no check cited: `sys::trap`, `tls::get` and `tls::set`, the GOT functions
-of `api::cxx` and `config`, `rseq::symbols` and `rseq::thread_pointer`,
-and `sys::pac`'s `sign`, `auth`, `strip` and `axiom_auth_sign`. So do the
-four register-pinning hints with an empty template (`/* {0} */`:
-`api::shared_base`, `class::table::word_index`,
-`layout::regions::entry_barrier`, `heap::shared::ClassLine::guard_word`),
-which assemble to no instruction, so Isla has nothing to trace.
+of `api::cxx` and `config`, `rseq::symbols` and
+`rseq::thread_pointer`. So do the four register-pinning hints with an
+empty template (`/* {0} */`: `api::shared_base`,
+`class::table::word_index`, `layout::regions::entry_barrier`,
+`heap::shared::ClassLine::guard_word`), which assemble to no instruction,
+so Isla has nothing to trace.
 
 Every result below is about the release static library's code, read
 before the final link, and its register assignments: run.sh builds a job
@@ -48,6 +49,115 @@ run.sh reads them too ([ISLA.md](../ISLA.md), "Not covered").
 The aarch64 runs start at Non-secure EL0 in AArch64 state with the PC
 and the vector bases symbolic. The x86_64 `syscall` run starts from a
 symbolic state in the model's system view.
+
+## Pointer authentication
+
+`pac::sign`, `auth` and `strip` are `pacda`, `autda` and `xpacd` on
+aarch64 and the identity on x86_64, where no verified caller can
+establish `pac_available()` (`available()` returns false there, and its
+`ensures` is the only fact about it), so the x86_64 bodies are
+unreachable. On aarch64, every
+PAC-family instruction in the code is `pacda Xd, Xn` or `autda Xd, Xn`
+(d and n distinct, neither 31) or `xpacd Xd`. Run in 36 configurations
+(12 of the Armv8.5-A model with FEAT_PAuth; 24 of the Armv9.4-A model as
+an Armv9.0-A CPU with FEAT_PAuth2, FEAT_FPAC and FEAT_FPACCOMBINE, with
+FEAT_CONSTPACFIELD off and on: Neoverse V2's pointer authentication),
+each with a kernel at EL1 or a VHE kernel at EL2 and Linux's TCR for a
+user VA of 36, 39, 42, 47, 48 or 52 bits, SCTLR (EnDA), keys, pointers
+and modifiers symbolic and ComputePAC uninterpreted:
+
+- every site's instruction falls through writing only its destination,
+  no memory and no flags (`pac-footprint.job.in`), except that with
+  FEAT_FPAC an `autda` may instead end at the FPAC fault having written
+  nothing;
+- against the canonical `pacda x0, x1` (`autda x0, x1`, `xpacd x0`) run
+  from an independent state, the same pointer, modifier, data key A and
+  EnDA give the same result, and for `autda` with FEAT_FPAC the same
+  fault or none (`pac-det.job.in`, `pac-strip-det.job.in`): `spec_sign`
+  and `spec_auth` are each one function of `(p, modifier)` once the key,
+  EnDA and the configuration are fixed for the process;
+- `pacda x0, x1; autda x0, x1` gives back every `p` below the VA limit,
+  with EnDA set or clear, and never takes the FPAC fault
+  (`pac-rt.job.in`): `axiom_auth_sign`'s aarch64 half, and `auth`'s
+  second `ensures`, since `user_va_limit()` is at most the VA width the
+  kernel configures (its definition: `2^VA_BITS`, capped);
+- what each model computes, in terms of ComputePAC, for user pointers
+  (`pac-spec-*.job.in`, `pac-enda-off.job.in`), and the FPAC exception
+  entry: EC 0x1C, the `autda` as return address, the kernel's vector, no
+  user register, other system register or memory written
+  (`pac-fault.job.in`), so where `autda` faults it does not return.
+
+`ComputePAC` being a function of its arguments is spot-checked on eight
+concrete inputs in the v8.5 model and in the v9.4 one with QARMA5 and
+QARMA3 (`pac-pure.job.in`). Residual: the process's key and EnDA stay
+fixed (the `prctl` calls `spec_sign`'s doc names break it), firmware
+sets SCR_EL3.API and APK, Linux delivers `SIGILL` on the FPAC fault and
+never resumes past the `autda`, and the CPU is one of the two kinds
+checked; not checked are FEAT_EPAC without FEAT_PAuth2, FEAT_PAuth2
+without FEAT_FPAC and 52-bit VA with 4K or 16K pages (FEAT_LPA2).
+`axiom_auth_sign`'s x86_64 half needs no tool: `spec_sign` and
+`spec_auth` are unconstrained there and the identity satisfies it.
+
+The key and EnDA staying fixed, and the kernel never resuming past a
+faulting `autda`, are the kernel's side, which no run reaches; `sign`'s and
+`auth`'s `ensures` rest on them, so both are `trusted (partly checked,
+Isla: verus/isla/seams.md; not checked: ...)` with those facts named.
+`strip` has no `ensures` and `axiom_auth_sign` relates the two spec
+functions for one key, which every configuration checks with the key
+symbolic; both still rest on the platform residuals above (firmware's
+SCR_EL3.API and APK, a CPU of a kind not checked), so both are `trusted
+(partly checked, ...)` with those named, as `get_tp` is.
+
+## `src/sys/pac.rs` `sign` (both)
+
+Jobs: `aarch64/pac-pacda` `aarch64/pac-pacda-det` `aarch64/pac-pacda-spec` `aarch64/pac-pacda-off` `aarch64/pac-pure` `x86_64/none`
+
+```rust
+pub fn sign(p: usize, modifier: usize) -> (r: usize)
+    requires
+        pac_available(),
+    ensures
+        r == spec_sign(p, modifier),
+    opens_invariants none
+```
+
+## `src/sys/pac.rs` `auth` (both)
+
+Jobs: `aarch64/pac-autda` `aarch64/pac-autda-det` `aarch64/pac-autda-spec` `aarch64/pac-autda-off` `aarch64/pac-autda-fault` `aarch64/pac-rt` `x86_64/none`
+
+```rust
+pub fn auth(p: usize, modifier: usize) -> (r: usize)
+    requires
+        pac_available(),
+        super::may_abort_corrupt() || signed(p, modifier),
+    ensures
+        r == spec_auth(p, modifier),
+        forall|q: usize| q < user_va_limit() && p == #[trigger] spec_sign(q, modifier) ==> r == q,
+    opens_invariants none
+```
+
+## `src/sys/pac.rs` `strip` (both)
+
+Jobs: `aarch64/pac-xpacd` `aarch64/pac-xpacd-det` `x86_64/none`
+
+```rust
+pub fn strip(p: usize) -> usize
+    requires
+        pac_available(),
+```
+
+## `src/sys/pac.rs` `axiom_auth_sign` (both)
+
+Jobs: `aarch64/pac-rt` `x86_64/none`
+
+```rust
+pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
+    requires
+        p < user_va_limit(),
+    ensures
+        #[trigger] spec_auth(spec_sign(p, modifier), modifier) == p,
+;
+```
 
 ## The TLS slot
 
