@@ -8,7 +8,7 @@ exact windows the defaults leave open. The design view is
 | Property                                 | jemalloc 5.3 | challoc         |
 |------------------------------------------|--------------|-----------------|
 | Metadata separate from user memory       | No           | Yes             |
-| Free-list pointers in freed blocks       | Yes          | None            |
+| Free-list pointers in freed blocks       | Yes          | None (5)        |
 | Invalid free detected                    | No           | Yes, aborts (1) |
 | Double free detected                     | Debug only   | Yes, aborts (1) |
 | Size classes in isolated address ranges  | No           | Yes, randomised |
@@ -100,6 +100,21 @@ forged or cross-class pointer aborts (15 times in 16). Four bits is the
 width everywhere, since the LAM kernel series cuts the user tag to 4 bits
 and MTE has 4. AMD UAI has no Linux enable path and is not a target. The
 MTE half waits for a host that exposes MTE (AmpereOne, #51).
+
+## (5) No allocator state in user blocks
+
+challoc keeps all of its state (free lists, cache stacks, slab
+descriptors, bitmaps, huge run tables) in metadata apart from every
+block (`verus/THEOREMS.md` theorem 4). Beyond that, no allocator decision
+reads a byte of a user block (theorem 46). The two exceptions are
+`realloc`'s copy of the old block into the new one, which does not branch
+on the bytes, and the opt-in `check_zero` debug mode, which aborts on a
+non-zero word. So an overflow into a live or freed neighbour, or a write
+through a dangling pointer, corrupts that block's data but cannot steer
+`malloc` or `free`. Not covered: memory the program hands challoc as an
+argument (`mallctl` buffers), the program's own callbacks, a thread
+stack or TLS block the program placed in a `malloc`ed buffer (challoc's
+per-thread slot is then inside it), and hardware side channels.
 
 ## Guard slabs and the run ahead of the cursor
 
