@@ -74,46 +74,78 @@ enum Target {
 }
 
 /// Hand `buf[..len]` to `target`: the report's only calls out of the
-/// allocator. Trusted: calls the caller's callback (a function pointer),
-/// the `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
-/// stderr), `fwrite` or `write(2)`; claims nothing. The calling thread
-/// holds no allocator lock: `ord`, the report's lock-order token
-/// ([`Sink`]), has top 0 (see the `fwrite` arm for why that matters).
-/// `len < 1024`: the body stores the NUL at `buf[len]` and hands on
-/// `len` bytes of `buf`. `no_unwind`, as
-/// `Sink::flush` needs for its `&mut` of the buffer: a C callee cannot
-/// unwind into Rust, and the `panic = "abort"` profiles abort on a panic
-/// (test builds unwind).
+/// allocator. To the caller's callback ([`call_back`]) as the C string
+/// `buf` holds, NUL-terminated at `len`; with no callback, to the
+/// `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
+/// stderr); to the caller's stream ([`write_file`]); or with `write(2)` to
+/// stderr. The calling thread holds no allocator lock: `ord`, the report's
+/// lock-order token ([`Sink`]), has top 0 (see [`write_file`] for why that
+/// matters). Trusted: claims nothing; `Sink::flush` has stored the NUL at
+/// `buf[len]` (`len < 1024`). `no_unwind`: a C callee cannot unwind into
+/// Rust, and the `panic = "abort"` profiles abort on a panic (test builds
+/// unwind).
 #[verifier::external_body]
 #[inline(always)]
-fn emit(target: &Target, buf: &mut [u8; 1024], len: usize, Tracked(ord): Tracked<&LockOrder>)
+fn emit(target: &Target, buf: &[u8; 1024], len: usize, Tracked(ord): Tracked<&LockOrder>)
     requires
         crate::sys::may_syscall(),
         len < 1024,
         ord.top() == 0,
     no_unwind
 {
-    match *target {
-        Target::Callback(WriteCallback(Some(cb)), opaque) => {
-            buf[len] = 0;
-            // SAFETY: the caller's `void (*)(void *, const char *)`; the
-            // chunk is NUL-terminated within the buffer.
-            unsafe { cb(opaque, buf.as_ptr() as *const c_char) };
+    match target {
+        Target::Callback(cb, opaque) => {
+            if !call_back(cb, *opaque, buf, Tracked(ord)) {
+                malloc_write(&buf[..len], Tracked(ord));
+            }
         }
-        Target::Callback(WriteCallback(None), _) => malloc_write(&buf[..len], Tracked(ord)),
-        Target::File(f) => {
-            // SAFETY: `f` is the caller's open stream; `len` bytes are
-            // readable. `fwrite` may itself call `malloc` (glibc allocates
-            // a stream's buffer on its first write), which re-enters this
-            // allocator from inside `malloc_info`: that is safe because no
-            // allocator lock is held while the sink flushes
-            // (`stats::collect_arena` returns its figures before they are
-            // formatted, and the arena scan reads the registry without a
-            // lock) and the report's own state is the sink's stack buffer.
-            unsafe { libc::fwrite(buf.as_ptr() as *const c_void, 1, len, f) };
-        }
+        Target::File(f) => write_file(*f, &buf[..len], Tracked(ord)),
         Target::Stderr => crate::sys::write_all(crate::sys::STDERR_FILENO, &buf[..len]),
     }
+}
+
+/// Call the caller's callback `cb`, when it gave one, with `opaque` and
+/// the C string in `buf`, which holds a NUL; whether it did. Trusted: a
+/// call through the caller's function pointer; claims nothing. The calling
+/// thread holds no allocator lock (`ord` has top 0), as for [`emit`].
+#[verifier::external_body]
+#[inline(always)]
+fn call_back(
+    cb: &WriteCallback,
+    opaque: *mut c_void,
+    buf: &[u8; 1024],
+    Tracked(ord): Tracked<&LockOrder>,
+) -> bool
+    requires
+        crate::sys::may_syscall(),
+        ord.top() == 0,
+{
+    let Some(cb) = cb.0 else {
+        return false;
+    };
+    // SAFETY: the caller's `void (*)(void *, const char *)`; the chunk is
+    // NUL-terminated within the buffer.
+    unsafe { cb(opaque, buf.as_ptr() as *const c_char) };
+    true
+}
+
+/// `fwrite` of `s` to the caller's stream `f`. Trusted: a call into libc;
+/// claims nothing. `fwrite` may itself call `malloc` (glibc allocates a
+/// stream's buffer on its first write), which re-enters this allocator
+/// from inside `malloc_info`: that is safe because no allocator lock is
+/// held while the sink flushes (`stats::collect_arena` returns its figures
+/// before they are formatted, and the arena scan reads the registry
+/// without a lock) and the report's own state is the sink's stack buffer.
+/// `ord`, the report's lock-order token, has top 0, as for [`emit`].
+#[verifier::external_body]
+#[inline(always)]
+fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
+    requires
+        crate::sys::may_syscall(),
+        ord.top() == 0,
+{
+    // SAFETY: `f` is the caller's open stream; `s` is readable.
+    unsafe { libc::fwrite(s.as_ptr() as *const c_void, 1, s.len(), f) };
 }
 
 /// A `fmt::Write` that buffers up to 1023 bytes and forwards them,
@@ -165,8 +197,8 @@ impl Sink {
     }
 
     /// Hand the buffered bytes to the target ([`emit`], under the
-    /// report's token) and empty the buffer. `emit`'s bounds hold by the
-    /// type invariant (`len < 1024`, top 0).
+    /// report's token), NUL-terminated, and empty the buffer. The NUL fits
+    /// and `emit`'s bounds hold by the type invariant (`len < 1024`, top 0).
     fn flush(&mut self)
         ensures
             final(self).len == 0,
@@ -177,7 +209,8 @@ impl Sink {
         if self.len == 0 {
             return;
         }
-        emit(&self.target, &mut self.buf, self.len, Tracked(self.ord.borrow()));
+        self.buf[self.len] = 0;
+        emit(&self.target, &self.buf, self.len, Tracked(self.ord.borrow()));
         self.len = 0;
     }
 }

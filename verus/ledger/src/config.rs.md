@@ -15,12 +15,14 @@ file.
 | `Read` | ext_type_spec | function pointer | Kani | trusted |
 | `TABLE` | external_body const | function pointer | Kani | trusted |
 | `KEYS` | external_body const | function pointer | Kani | discharged |
+| `ToStderr::report` | external_body | function pointer | Kani | trusted |
 | `parse_from` | external_body | function pointer | Kani | trusted |
 | `read_slot` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
 | `je_malloc_conf_addr` | external_body | inline asm | Islaris/Isla | trusted |
 | `byte_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `bytes_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
+| `environ_array` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 | `env_var` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
 
 ## `THP_NAMES`
@@ -47,7 +49,7 @@ const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu
 
 ## `Config::set_listed`
 
-src/config.rs:402. Kind: external_body. Category: function pointer.
+src/config.rs:396. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (Kani: config::kani_config::set_listed_contract).
 
 > The [`TABLE`] entry's parser for `key`, `None` when no entry is named `key`.
@@ -62,7 +64,7 @@ fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Resul
 
 ## `Config::get`
 
-src/config.rs:416. Kind: external_body. Category: function pointer.
+src/config.rs:410. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted (partly checked, Kani: config::kani_config::get_contract; not checked: the real `Thp::name` and `PercpuArena::name`, which the harness stubs (they index the `CStr` tables `THP_NAMES` and `PERCPU_ARENA_NAMES`; Kani 0.68 has no C string literals)).
 
 > The value of a key by name, for `mallctl("opt.<key>")`: the [`TABLE`] entry's reader.
@@ -73,7 +75,7 @@ pub fn get(&self, key: &[u8]) -> Option<Value>
 
 ## `Parse`
 
-src/config.rs:547. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:541. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -82,7 +84,7 @@ struct ExParse(Parse);
 
 ## `Read`
 
-src/config.rs:553. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:547. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 ```rust
@@ -91,7 +93,7 @@ struct ExRead(Read);
 
 ## `TABLE`
 
-src/config.rs:839. Kind: external_body const. Category: function pointer.
+src/config.rs:833. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > [`ENTRIES`], the tunables.
@@ -102,7 +104,7 @@ pub exec const TABLE: &'static [Key] = ENTRIES;
 
 ## `KEYS`
 
-src/config.rs:874. Kind: external_body const. Category: function pointer.
+src/config.rs:868. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: discharged (Kani: config::kani_config::keys_are_the_table_names).
 
 > Every key readable through [`Config::get`], in table order, for the `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at compile time, by position) and the tests: the names of [`TABLE`].
@@ -111,9 +113,20 @@ Tool: Kani. Status: discharged (Kani: config::kani_config::keys_are_the_table_na
 pub exec const KEYS: &'static [&'static str] = &NAMES;
 ```
 
+## `ToStderr::report`
+
+src/config.rs:1571. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: trusted.
+
+> Trusted: formats `issue` through `Issue`'s `Display`, which is outside `verus!`; claims nothing.
+
+```rust
+fn report(&mut self, issue: Issue<'_>)
+```
+
 ## `parse_from`
 
-src/config.rs:1559. Kind: external_body. Category: function pointer.
+src/config.rs:1581. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > [`Config::parse_source`] of `text` from `source`, cut or not, printing each problem as `challoc: <source>: <issue>` to `out`.
@@ -137,10 +150,10 @@ fn parse_from(
 
 ## `read_slot`
 
-src/config.rs:1698. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1718. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
-> The `const char *` the symbol at `slot` holds.
+> The `const char *` at `slot` (a symbol, or an `environ` entry).
 
 ```rust
 unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
@@ -148,7 +161,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ## `malloc_conf_addr`
 
-src/config.rs:1711. Kind: external_body. Category: inline asm.
+src/config.rs:1731. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -159,7 +172,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ## `je_malloc_conf_addr`
 
-src/config.rs:1736. Kind: external_body. Category: inline asm.
+src/config.rs:1756. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted.
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -170,7 +183,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ## `byte_at`
 
-src/config.rs:1797. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1817. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The byte at `p + n`.
@@ -181,7 +194,7 @@ unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ## `bytes_at`
 
-src/config.rs:1809. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1829. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -192,9 +205,20 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
         r@.len() == n,
 ```
 
+## `environ_array`
+
+src/config.rs:1841. Kind: external_body. Category: raw pointer from C caller.
+Tool: Miri (evidence only). Status: trusted.
+
+> glibc's `environ`, null before libc has set it up.
+
+```rust
+fn environ_array() -> *const *const c_char
+```
+
 ## `env_var`
 
-src/config.rs:1834. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1864. Kind: external_body. Category: raw pointer from C caller.
 Tool: Miri (evidence only). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.

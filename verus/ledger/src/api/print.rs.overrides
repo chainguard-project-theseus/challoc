@@ -6,3 +6,6 @@ axiom_c_call	C-program contract	none (assumption)
 WriteCallback	function pointer	Kani
 # `{:?}` of an array, core formatting.
 hist_line	core library	Kani	discharged (Kani: api::print::kani_print::hist_line_returns)
+# The report's calls out of the allocator: the caller's callback and its stream.
+call_back	function pointer	none (assumption)
+write_file	FFI/syscall	none (assumption)
