@@ -7,7 +7,9 @@
 //! A harness is evidence for its seam: the seam's ledger status cites it as
 //! `discharged (Kani: <harness>)` when it covers the whole contract, or
 //! `trusted (partly checked, ...)` when it covers part (`verus/SEAMS.md`,
-//! "Status").
+//! "Status"). A few harnesses (`misc::option_copied`,
+//! `slice::slice_reverse`) cross-check a vstd specification that verified
+//! code relies on and the ledger does not list; no status cites them.
 //! `.chainguard/ci/kani.yaml` runs them all, under both quanta, in two
 //! checks. `kani` runs on pull requests that change `src/kani/`,
 //! `src/vspec/`, a file in its `changed:` list (the files with a `kani_*`

@@ -28,35 +28,57 @@ fn any_order() -> Ordering {
     ORDERS[i]
 }
 
-/// `core::sync::atomic::Atomic::<*mut T>::new`: returns, for every
-/// pointer (to a local, or from any address, null included).
-/// `core::sync::atomic::Atomic::<*mut T>::load`: under `!(order is
-/// Release) && !(order is AcqRel)`, returns. (Sequentially, the load also
-/// reads what `new` stored, which the contracts do not claim.)
-#[kani::proof]
-fn atomic_ptr_new_load() {
-    let mut x: u64 = kani::any();
-    let p: *mut u64 = if kani::any() {
-        &mut x
+/// An arbitrary pointer: to a local, or from any address (null included).
+fn any_ptr(x: &mut u64) -> *mut u64 {
+    if kani::any() {
+        x
     } else {
         core::ptr::without_provenance_mut(kani::any())
-    };
+    }
+}
+
+/// `core::sync::atomic::Atomic::<*mut T>::new`: returns, for every
+/// pointer. `core::sync::atomic::Atomic::<*mut T>::load`: under
+/// `!(order is Release) && !(order is AcqRel)`, returns.
+/// `core::sync::atomic::Atomic::<*mut T>::store`: under
+/// `!(order is Acquire) && !(order is AcqRel)`, returns.
+/// `core::sync::atomic::Atomic::<*mut T>::swap`: no `requires`; returns
+/// under every ordering. Checked at `T = u64`: `AtomicPtr` never reads
+/// through the pointer, so `T` does not matter. (Sequentially, each also
+/// reads what was last written, which the contracts do not claim.)
+#[kani::proof]
+fn atomic_ptr() {
+    let mut x: u64 = kani::any();
+    let mut y: u64 = kani::any();
+    let p = any_ptr(&mut x);
+    let q = any_ptr(&mut y);
     let a = AtomicPtr::new(p);
     let o = any_order();
     kani::assume(!matches!(o, Ordering::Release | Ordering::AcqRel));
     assert_eq!(a.load(o), p);
+    let o = any_order();
+    kani::assume(!matches!(o, Ordering::Acquire | Ordering::AcqRel));
+    a.store(q, o);
+    assert_eq!(a.load(Ordering::Relaxed), q);
+    assert_eq!(a.swap(p, any_order()), q);
+    assert_eq!(a.load(Ordering::Relaxed), p);
 }
 
-/// The orderings the `load` contract excludes are the ones `core` panics
-/// on (the contract's comment): `Release` and `AcqRel`. Not part of the
-/// contract.
+/// The orderings the `load` and `store` contracts exclude are the ones
+/// `core` panics on (the contracts' comments): a load with `Release` or
+/// `AcqRel`, a store with `Acquire` or `AcqRel`. Not part of a contract.
 #[kani::proof]
 #[kani::should_panic]
-fn atomic_ptr_load_bad_orders() {
+fn atomic_ptr_bad_orders() {
     let a = AtomicPtr::new(core::ptr::null_mut::<u64>());
     let o = any_order();
-    kani::assume(matches!(o, Ordering::Release | Ordering::AcqRel));
-    a.load(o);
+    if kani::any() {
+        kani::assume(matches!(o, Ordering::Release | Ordering::AcqRel));
+        a.load(o);
+    } else {
+        kani::assume(matches!(o, Ordering::Acquire | Ordering::AcqRel));
+        a.store(core::ptr::null_mut(), o);
+    }
     super::must_not_return();
 }
 

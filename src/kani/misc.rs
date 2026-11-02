@@ -1,7 +1,8 @@
 //! The `Option`, `Result`, `Layout`, `str`, `CStr`, `Formatter` and
 //! `hint` functions of `core` that `vspec/misc.rs`, `vspec/sys.rs`,
 //! `vspec/layout.rs`, `vspec/config.rs` and `vspec/fmt.rs` specify
-//! (`verus/ledger/src/vspec/`), checked against their contracts.
+//! (`verus/ledger/src/vspec/`), checked against their contracts, and
+//! `Option::copied`, which vstd specifies.
 //!
 //! The closure-taking methods are checked with a closure that records
 //! the argument it was called with and returns an arbitrary function of
@@ -23,6 +24,29 @@ fn any_result() -> Result<u64, u32> {
         Ok(kani::any())
     } else {
         Err(kani::any())
+    }
+}
+
+/// `Option::<T>::or_else`: `option` itself when it is `Some` (and `f` not
+/// called), else what `f()` returned.
+#[kani::proof]
+fn option_or_else() {
+    let o = any_option();
+    let out = any_option();
+    let calls = Cell::new(0u32);
+    let r = o.or_else(|| {
+        calls.set(calls.get() + 1);
+        out
+    });
+    match o {
+        Some(_) => {
+            assert_eq!(r, o);
+            assert_eq!(calls.get(), 0);
+        }
+        None => {
+            assert_eq!(r, out);
+            assert_eq!(calls.get(), 1);
+        }
     }
 }
 
@@ -85,6 +109,20 @@ fn result_unwrap_or() {
     match res {
         Ok(v) => assert_eq!(r, v),
         Err(_) => assert_eq!(r, default),
+    }
+}
+
+/// vstd's specification of `Option::<&T>::copied`, which verified code
+/// uses (`api/mallctl.rs`'s `at`) and the ledger does not list: `Some(*v)`
+/// for `Some(v)`, else `None`.
+#[kani::proof]
+fn option_copied() {
+    let x: u64 = kani::any();
+    let o = if kani::any() { Some(&x) } else { None };
+    let r = o.copied();
+    match o {
+        Some(v) => assert_eq!(r, Some(*v)),
+        None => assert_eq!(r, None),
     }
 }
 
