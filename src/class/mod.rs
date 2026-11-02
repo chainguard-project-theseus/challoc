@@ -2517,6 +2517,7 @@ impl ClassState {
     #[inline(always)]
     fn state_locked(&self, g: &Inner, d: &SlabDesc, slab: usize) -> (r: State)
         requires
+            crate::sys::may_abort_pending(),
             g.descs(),
             g.table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
