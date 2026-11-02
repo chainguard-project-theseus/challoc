@@ -106,9 +106,12 @@ space the process can reserve, so the same binary works on 47-bit x86_64,
 | Metadata region    | 2^36          | 2^30         |
 
 Region bases are randomised with `getrandom` and the three mappings are
-reserved in random order. Inside the superblock the class regions sit at
+reserved in random order. The huge and metadata regions slide by 1 to 255
+steps of 4 MiB (just under 8 bits) above their mapping's 4 MiB-aligned
+start. Inside the superblock the class regions sit at
 a fixed power-of-two stride in class order, each at a random offset
-inside its gap (about 17.6 bits at the preferred layout, in 4 MiB steps)
+inside its gap (1 to gap / 4 MiB - 2 steps of 4 MiB, about 17.6 bits at
+the preferred layout)
 plus a fixed *colour*: `21 * c` units of 64 KiB modulo 4 MiB, rounded
 down to the class's slab and the page (`layout::regions::colour`; none
 under `thp:always` chunks, which are measured from the region base).
@@ -126,6 +129,18 @@ before giving that up, and only then drops to a stride of 2 x
 `c = (p - superblock) >> lg_stride` and a range check against class
 `c`'s region; else the huge region, where the descriptor is looked up by
 page; else invalid, abort.
+
+No draw is ever zero or the largest step, so every region keeps at least
+4 MiB of never-committed (and, with `mseal`, sealed) reservation below
+and above it, independent of the random values and of where `mmap` put
+the mapping: class region 0 above the superblock's start, each class
+region below the next, the last class below the superblock's end, and
+the huge and metadata regions inside their mappings
+(`layout::regions::slab_multiple`). An overflow or underflow off any
+region's edge faults there instead of reaching a neighbouring mapping;
+in particular the first huge run, which has a guard page only after it,
+has this slack before it. Init checks the property (`Regions::slack_ok`)
+and aborts if it ever fails.
 
 ## 3. Size classes
 
