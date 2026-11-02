@@ -1,0 +1,11 @@
+# The `kani` check's class (kani.yaml): `-j 4` runs four CBMC processes,
+# and a check reserves half its vCPUs, so 8 vCPUs reserve the 4 it uses;
+# four of the largest harnesses at once peak near 40 GiB, past large's
+# 32 GiB. xlarge-amd64 gave 64 GiB but reserved 8 cores for 4 workers.
+version: 1
+cpus: 8
+memory: 48Gi
+disk: 40Gi
+platform:
+  os: linux
+  architecture: amd64

@@ -222,7 +222,7 @@ The counter also warns about 1 function without a ledger entry: the 3-line `#[ve
 
 On main, 134 `#[kani::proof]` harnesses under `src/` check bounded seam contracts with Kani `0.68.0` and CBMC `6.11.0`. Each harness comment names its seam and bounds. The source also has 50 top-level `const _: () = assert!(..)` assertions; the compiler evaluates them on both quanta and targets. The 61 loom model tests in `tests/loom` provide evidence for atomic protocols, but no seam status cites loom yet. Isla and emptyasm are not on main.
 
-CI keeps this evidence connected to the ledger. `sh verus/seams.sh --check` fails if the ledger is stale, a seam lacks a classification, a discharged Kani citation names no proof harness, or a constant-assertion citation fails to identify exactly 1 assertion. The presubmit `kani` check runs for changes to `src/kani/`, `src/vspec/`, and listed source files. The postsubmit `kani-main` check runs every harness at quantum 16 and quantum 8. A further postsubmit job runs every harness in 4 shards per quantum and fails on any CBMC `warning: ignoring` line.
+CI keeps this evidence connected to the ledger. `sh verus/seams.sh --check` fails if the ledger is stale, a seam lacks a classification, a discharged Kani citation names no proof harness, or a constant-assertion citation fails to identify exactly 1 assertion. The presubmit `kani` check runs for changes to `src/kani/`, `src/vspec/`, and listed source files. The presubmit `kani` check leaves `formatter_write_fmt` to `kani-fmt`, which runs on changes to the files it checks. The postsubmit `kani-ignoring` check runs every harness at quantum 16 and quantum 8, in 4 shards per quantum, and fails if one does not verify or CBMC prints a `warning: ignoring` line.
 
 ## Process guarantees
 
@@ -239,7 +239,7 @@ Guard tests constrain where trusted permissions and copied proof bodies can be u
 | [heap/tcaches.rs](../src/heap/tcaches.rs) | `axiom_heap_use` appears once in each of the 8 documented mint sites. |
 | [api/restated.rs](../src/api/restated.rs) | The 3 restated-body tests compare names and order of executable calls with their source bodies. They do not compare arguments or control flow. |
 | [tests/loom/tests/pins.rs](../tests/loom/tests/pins.rs) | 258 copied source lines stay pinned; every atomic ordering, fence, or futex line in a pinned function is pinned or waived with a reason. |
-| [tests/loom/tests/kani_trigger.rs](../tests/loom/tests/kani_trigger.rs) | Every file with a `kani_*` module appears in the Kani presubmit list or `kani-main`. |
+| [tests/loom/tests/kani_trigger.rs](../tests/loom/tests/kani_trigger.rs) | Every file with a `kani_*` module appears in the Kani presubmit list or `kani-ignoring`. |
 
 The `verus` presubmit check (x86_64) runs the seam check, quantum 16 proofs, counter tests, the coverage floor against the PR base, and quantum 8 proofs; `verus-arm64` runs the same steps, without the counter tests, natively on arm64. `verus-main` runs postsubmit against the preceding main commit. The `lint` checks include rustfmt, clippy, loom, shellcheck, the codegen function-comparison self-test, `kani-boolcmp`, and an MSRV build. `kani-boolcmp` rejects ordering comparisons on Booleans in Kani code because CBMC `6.11` ignores them and could let a harness pass without checking that comparison.
 

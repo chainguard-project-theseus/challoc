@@ -8,7 +8,7 @@
 //! `tests/kani_trigger.rs`, here because this check runs on every pull
 //! request, checks that each file with a `kani_*` module or a seam its
 //! ledger gives to Kani is in `.chainguard/ci/kani.yaml`'s `changed:` list
-//! or in `src/kani/mod.rs`'s list of files left to `kani-main`.
+//! or in `src/kani/mod.rs`'s list of files left to `kani-ignoring`.
 //!
 //! ```sh
 //! sh tests/loom/run.sh
