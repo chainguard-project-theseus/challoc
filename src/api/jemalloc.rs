@@ -138,8 +138,8 @@ pub fn message_hook() -> Option<Hook> {
 /// calls it, on the C string in `buf`, which holds a NUL. Trusted: a call
 /// through the program's function pointer; claims nothing. The calling
 /// thread holds no allocator lock (`ord`, the report's lock-order token,
-/// has top 0), as for the report's other calls out (`print::emit`), so a
-/// hook that allocates cannot deadlock on one.
+/// has top 0), as for the report's other calls out (`print::call_back`,
+/// `print::write_file`), so a hook that allocates cannot deadlock on one.
 #[verifier::external_body]
 #[inline(always)]
 fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
