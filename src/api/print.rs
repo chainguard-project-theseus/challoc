@@ -2551,8 +2551,9 @@ mod tests {
     /// and without `J`: the letters challoc honours (`g`, `a`, `b`) in
     /// every combination, each with none, each one and all of the letters
     /// it accepts without effect (`m`, `d`, `l`, `x`, `e`, `h`). Every
-    /// `J` report parses as JSON (`g` with `a` once left a trailing comma
-    /// after `implementation`); every text report ends with the end line
+    /// `J` report parses as JSON (`g` with `a` makes `implementation` the
+    /// last member of `jemalloc`, with no comma after it); every text
+    /// report ends with the end line
     /// and starts with the begin line exactly when `g` is absent.
     #[test]
     fn every_option_string_gives_a_well_formed_report() {
