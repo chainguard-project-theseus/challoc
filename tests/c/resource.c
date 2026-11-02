@@ -13,7 +13,7 @@
  *               VmData, a 64 MiB malloc returns NULL/ENOMEM, and after
  *               the limit is raised again it succeeds
  *   as_min      RLIMIT_AS just above the documented minimum layout
- *               (design 2: about 435 GiB at quantum 16, 467 at 8): 16
+ *               (design 2: about 435 GiB at quantum 16, 468 at 8): 16
  *               children in a row all start (the reservation order is
  *               random per process, so one start would not show that
  *               every order fits)

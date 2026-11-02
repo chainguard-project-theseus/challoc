@@ -3935,6 +3935,9 @@ mod tests {
     fn reservations_come_from_the_top() {
         let b = Backing::new(64 * page_size());
         let m = b.meta();
+        // The eager carve below is the host policy's choice (off under a
+        // finite `RLIMIT_DATA`); this test pins it on.
+        m.set_eager_for_test(true);
         let end = b.base + b.len;
         let r1 = reserve(&m, 3 * page_size(), page_size()).unwrap();
         assert_eq!(r1, end - 3 * page_size());

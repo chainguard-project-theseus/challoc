@@ -95,7 +95,9 @@ ignores `MAP_NORESERVE` and would charge every forked child), under a
 finite `RLIMIT_DATA` (which since Linux 4.7 charges every private
 writable mapping: the eager tables are about 85 MiB writable from the
 first `malloc`, against under 2 MiB of `VmData` with them on the table
-side) and
+side; a working set still needs about twice glibc's `VmData` under a
+data limit, every arena's commits counting, and past it `malloc` returns
+NULL and recovers) and
 under any `thp` key but `never` (`meta::eager_policy`). The reservations
 themselves are `PROT_NONE` and `MAP_NORESERVE`, which neither
 `RLIMIT_DATA` nor the overcommit heuristic charges; only commits count.
@@ -116,7 +118,7 @@ The minimum layout is the least address space init needs: at quantum 16
 region and 2^30 for the metadata region, each with its slack (4 MiB of
 alignment, plus 1 GiB of slide for the two side regions): about 435 GiB,
 which a 39-bit (512 GiB) kernel or an `RLIMIT_AS` of 436 GiB or more
-holds (quantum 8, with 56 classes, needs about 467 GiB).
+holds (quantum 8, with 56 classes, needs 468 GiB or more).
 Below it init aborts with `cannot reserve ...` (section 14.1).
 
 Region bases are randomised with `getrandom` and the three mappings are
@@ -1613,7 +1615,7 @@ aborts:
   these abort with a `challoc:` line.
 - **Init below the documented minimum**: the address space for the
   minimum layout (section 2), `getrandom`, the fork handlers, or the
-  metadata init commits (`metadata region too small ...`, a fraction of
+  metadata init commits (`cannot set up the allocator tables ...`, a fraction of
   a MiB once eager carving is off). Nothing has been handed out yet and
   the process cannot run under any allocator design that needs these.
 - **Resource failure after init** (the kernel or a limit refuses
@@ -1628,8 +1630,9 @@ aborts:
 
 Exceptions the code still has, each a resource failure that aborts or
 sticks: a thread whose automatic arena cannot be built (the metadata
-region is full) gets NULL from the small classes for its life and an
-`arena N does not exist` abort from the huge path; a refused
+region is full, or `RLIMIT_DATA` refuses the arena's commit) gets NULL
+from the small classes for its life and an `arena N does not exist`
+abort from the huge path; a refused
 `MADV_GUARD_INSTALL` (an `mlock`ed range) fails every huge allocation
 placed there, and a slab guard that neither `MADV_GUARD_INSTALL` nor
 `mprotect` can install aborts; inside `free`, a huge descriptor table
