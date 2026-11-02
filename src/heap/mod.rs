@@ -279,6 +279,47 @@ pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
     r.lemma_user_block_not_guard(p@.addr, 0, c, slab);
 }
 
+/// Overflow reach: from any byte `a` of a non-null block an allocation
+/// returned ([`fits`]), every byte `b` in the metadata region or the
+/// process's `Shared` static, or in a class region or the huge region that
+/// does not hold `a` ([`Regions::foreign`]), above `a` or below it, has a
+/// whole `MAX_SLAB` (4 MiB) run of reservation slack
+/// ([`Regions::slack_run`]: inside challoc's own `PROT_NONE`
+/// reservations, in no region) between them. A linear overflow or
+/// underflow off the block, or one striding less than 4 MiB at a time,
+/// therefore touches a never-committed byte before it reaches those bytes.
+/// The run is in `a`'s own reservation, so this holds however the kernel
+/// placed the three reservations, adjacent ones included. Other allocator
+/// state (the `api` statics outside `Shared`, the thread pointer's TLS
+/// slot) is not named in [`Regions::foreign`].
+///
+/// [`Regions::foreign`]: crate::layout::Regions::foreign
+/// [`Regions::slack_run`]: crate::layout::Regions::slack_run
+pub proof fn theorem_overflow_reach(p: *mut u8, size: int, align: int, a: int, b: int)
+    requires
+        fits(p, size, align),
+        p@.addr != 0,
+        size >= 0,
+        crate::api::ready(),
+        p@.addr <= a < p@.addr + (if size < 1 { 1 } else { size }),
+        process_regions().foreign(a, b),
+    ensures
+        exists|lo: int|
+            ((a < lo && lo + crate::layout::MAX_SLAB <= b) || (b < lo && lo + crate::layout::MAX_SLAB <= a))
+                && #[trigger] process_regions().slack_run(lo),
+{
+    let r = process_regions();
+    shared::lemma_process_padded();
+    r.lemma_user_block_separated(p@.addr, size);
+    let n = if size < 1 { 1 } else { size };
+    if !(r.huge_base <= p@.addr && p@.addr + n <= r.huge_base + r.huge_len) {
+        let c = choose|c: int|
+            0 <= c < NCLASSES && #[trigger] r.class_base[c] <= p@.addr && p@.addr + n <= r.class_base[c] + (1usize << r.lg_region);
+        assert(r.in_class(c, a));
+    }
+    r.lemma_overflow_reach(a, b);
+}
+
 /// Metadata integrity: a non-null block an allocation returned
 /// ([`fits`]) shares no byte with the metadata the allocator keeps in
 /// the metadata region
