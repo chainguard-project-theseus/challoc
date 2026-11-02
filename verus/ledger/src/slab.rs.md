@@ -14,7 +14,6 @@ file.
 | `SlabDes...y_held` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes..._state` | external_body | atomics primitive | loom/GenMC | trusted |
 | `SlabDes...a_held` | external_body | atomics primitive | loom/GenMC | trusted |
-| `SlabDesc::sub_live` | external_body | panic/abort | Verus | trusted |
 | `SlabDes...rty_at` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `bad_state_byte`
@@ -119,20 +118,9 @@ pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
         perm_for(*m, k, self) ==> r == m[k].arena(),
 ```
 
-## `SlabDesc::sub_live`
-
-src/slab.rs:488. Kind: external_body. Category: panic/abort.
-Tool: Verus. Status: trusted.
-
-> Subtract `n` from `live`, returning the previous value.
-
-```rust
-pub fn sub_live(&self, n: usize) -> usize
-```
-
 ## `SlabDesc::set_dirty_at`
 
-src/slab.rs:508. Kind: external_body. Category: atomics primitive.
+src/slab.rs:513. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).
