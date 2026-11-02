@@ -91,7 +91,7 @@ fn hist_line<W: Write>(
 
 ## `axiom_c_call`
 
-src/api/print.rs:1467. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1473. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
