@@ -557,16 +557,7 @@ pub(crate) fn in_fork_window() -> bool {
 #[cold]
 #[inline(never)]
 fn fork_holder_slow(h: usize) -> bool {
-    h == thread_self()
-}
-
-/// The calling thread's `pthread_self`, which the child of a `fork` keeps
-/// for the forking thread. Trusted: FFI; nothing is claimed of the value.
-#[verifier::external_body]
-#[inline(always)]
-pub(crate) fn thread_self() -> usize {
-    // SAFETY: `pthread_self` has no preconditions.
-    unsafe { libc::pthread_self() as usize }
+    h == crate::sys::pthread_self()
 }
 
 /// Record the calling thread as the fork window's holder; the prepare
@@ -576,7 +567,7 @@ pub(crate) fn fork_window_open()
         crate::sys::may_syscall(),
 {
     FORK_PID.store(crate::sys::getpid() as u32, Ordering::Relaxed);
-    FORK_HOLDER.store(thread_self(), Ordering::Relaxed);
+    FORK_HOLDER.store(crate::sys::pthread_self(), Ordering::Relaxed);
 }
 
 /// Whether the caller is the forking thread in the child of a `fork`,
@@ -590,11 +581,12 @@ pub(crate) fn fork_window_open()
 /// (the child's single thread, before any other runs).
 #[verifier::external_body]
 pub(crate) fn in_child_fork_window() -> (r: bool)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r ==> crate::sys::cgroup::in_fork_child(),
 {
-    // SAFETY: `getpid` has no preconditions.
-    fork_holder_is_me() && FORK_PID.load(Ordering::Relaxed) != unsafe { libc::getpid() } as u32
+    fork_holder_is_me() && FORK_PID.load(Ordering::Relaxed) != crate::sys::getpid() as u32
 }
 
 /// End the fork window; the parent and child handlers' step before their

@@ -198,7 +198,7 @@ exec static FORK_LOCKED: AtomicBool = AtomicBool::new(false);
 /// init under way on another thread, whose child would wait for an
 /// initialising thread it does not have. `GATE_IDLE` until a thread
 /// starts init or a `fork` closes it; while an init is under way, the
-/// initialising thread's `pthread_self` (`lock::thread_self`: never 0, 1
+/// initialising thread's `pthread_self` (`sys::pthread_self`: never 0, 1
 /// or 2, and kept by the forking thread in a `fork` child), which only
 /// that thread's claim follows, until it publishes `READY`; then
 /// `GATE_DONE` for good. `GATE_FORKING` from the prepare handler of a
@@ -214,7 +214,7 @@ const GATE_IDLE: usize = 0;
 const GATE_DONE: usize = 1;
 const GATE_FORKING: usize = 2;
 /// The forking thread while the gate is `GATE_FORKING`, as
-/// `pthread_self` (`lock::thread_self`), which the forking thread keeps in
+/// `pthread_self` (`sys::pthread_self`), which the forking thread keeps in
 /// the child, where its kernel thread ID is new: a child handler
 /// registered before challoc's runs before `fork_gate_exit` and may
 /// initialise.
@@ -1137,6 +1137,7 @@ fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'
 #[verifier::exec_allows_no_decreases_clause]
 fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Tracked<&'static LineCell>>)
     requires
+        crate::sys::may_syscall(),
         published.ok(),
     ensures
         r matches Some(t) ==> t@.built(),
@@ -1144,6 +1145,7 @@ fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Trac
     let tracked inv = published.line;
     loop
         invariant
+            crate::sys::may_syscall(),
             published.ok(),
             inv == published.line,
     {
@@ -1554,7 +1556,7 @@ fn fork_was_locked() -> bool {
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause]
 fn init_gate_enter() {
-    let me = crate::lock::thread_self();
+    let me = crate::sys::pthread_self();
     loop {
         let g = match INIT_GATE.compare_exchange(GATE_IDLE, me, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => return,
@@ -1572,7 +1574,7 @@ fn init_gate_enter() {
 /// (`GATE_FORKING`), whose parent and child handlers then open it.
 #[inline(always)]
 fn init_gate_done() {
-    let me = crate::lock::thread_self();
+    let me = crate::sys::pthread_self();
     let _ = INIT_GATE.compare_exchange(me, GATE_DONE, Ordering::AcqRel, Ordering::Relaxed);
 }
 
@@ -1590,7 +1592,7 @@ fn init_gate_done() {
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause]
 fn fork_gate_enter() {
-    let me = crate::lock::thread_self();
+    let me = crate::sys::pthread_self();
     loop {
         let g = INIT_GATE.load(Ordering::Acquire);
         if g == GATE_IDLE {

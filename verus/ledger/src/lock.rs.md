@@ -13,7 +13,6 @@ file.
 | `axiom_b..._class` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_below_huge` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_meta_order` | axiom | allocator invariant | Verus | trusted |
-| `thread_self` | external_body | FFI/syscall | none (assumption) | trusted |
 | `in_chil...window` | external_body | allocator invariant | none (assumption) | trusted |
 | `wait` | external_body | FFI/syscall | Verus | trusted |
 | `wake` | external_body | FFI/syscall | Verus | trusted |
@@ -112,33 +111,24 @@ pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
 ;
 ```
 
-## `thread_self`
-
-src/lock.rs:567. Kind: external_body. Category: FFI/syscall.
-Tool: none (assumption). Status: trusted.
-
-> The calling thread's `pthread_self`, which the child of a `fork` keeps for the forking thread.
-
-```rust
-pub(crate) fn thread_self() -> usize
-```
-
 ## `in_child_fork_window`
 
-src/lock.rs:592. Kind: external_body. Category: allocator invariant.
+src/lock.rs:583. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Whether the caller is the forking thread in the child of a `fork`, inside the window: a child handler registered before challoc's, which runs before challoc's own resets the work other parent threads had under way (the feature line's build, the cgroup discovery).
 
 ```rust
 pub(crate) fn in_child_fork_window() -> (r: bool)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r ==> crate::sys::cgroup::in_fork_child(),
 ```
 
 ## `wait`
 
-src/lock.rs:611. Kind: external_body. Category: FFI/syscall.
+src/lock.rs:603. Kind: external_body. Category: FFI/syscall.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -149,7 +139,7 @@ fn wait(state: &AtomicU32, val: u32)
 
 ## `wake`
 
-src/lock.rs:622. Kind: external_body. Category: FFI/syscall.
+src/lock.rs:614. Kind: external_body. Category: FFI/syscall.
 Tool: Verus. Status: trusted.
 
 ```rust
@@ -160,7 +150,7 @@ fn wake(state: &AtomicU32)
 
 ## `axiom_acquired`
 
-src/lock.rs:704. Kind: axiom. Category: allocator invariant.
+src/lock.rs:696. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`axiom_held`], for a holder of the raw lock): a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -176,7 +166,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ## `axiom_held`
 
-src/lock.rs:719. Kind: axiom. Category: allocator invariant.
+src/lock.rs:711. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a holder of the raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token lends the permission of `l`'s cell for as long as the token stays borrowed, and the value satisfies [`lock_inv`] and keeps [`lock_frame`], as at [`axiom_acquired`].
@@ -195,7 +185,7 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ## `Lock::value_ptr`
 
-src/lock.rs:782. Kind: external_body. Category: raw pointer (internal).
+src/lock.rs:774. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
@@ -206,12 +196,12 @@ pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
 
 ## `cell_ref`
 
-src/lock.rs:1068. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1060. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 1076.
+Body mints Tracked at line 1068.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -225,12 +215,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:1083. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1075. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 1093.
+Body mints Tracked at line 1085.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -246,7 +236,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:1103. Kind: external_body. Category: atomics primitive.
+src/lock.rs:1095. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 ```rust
