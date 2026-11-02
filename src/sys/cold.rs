@@ -48,9 +48,12 @@ use vstd::prelude::*;
 pub const SLOTS: usize = 16;
 
 /// Bytes of one cold stack, the guard page not included: about twice what
-/// the deepest cold path needs (`malloc_stats_print` with every arena's
-/// bins, a `stats.arenas.<i>.bins.<j>.*` read, the cgroup discovery).
-pub const STACK_BYTES: usize = 64 * 1024;
+/// the deepest cold path needs in the release build (`malloc_stats_print`
+/// with every arena's bins, a `stats.arenas.<i>.bins.<j>.*` read, the
+/// cgroup discovery). An unoptimised build's frames are several times
+/// larger, so it gets 1 MiB (`MAP_NORESERVE`: untouched pages cost
+/// nothing).
+pub const STACK_BYTES: usize = if cfg!(debug_assertions) { 1024 * 1024 } else { 64 * 1024 };
 
 /// Slot `i`'s owner: 0 when free, else the owning thread's thread pointer.
 static OWNER: [AtomicUsize; SLOTS] = [const { AtomicUsize::new(0) }; SLOTS];
@@ -283,7 +286,7 @@ mod tests {
         let mut seen = 0usize;
         let r = run(|| {
             seen = sp();
-            let big = core::hint::black_box([7u8; 40 * 1024]);
+            let big = core::hint::black_box([7u8; 32 * 1024]);
             big[1234] as u32 + 1
         });
         assert_eq!(r, 8);

@@ -1518,6 +1518,7 @@ fn ordinary_programs_run_under_ld_preload() {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 /// The most stack one function of the shipped library may reserve unless
 /// it runs only on a cold stack (`sys::cold`) or is one of [`KNOWN`]:
 /// what every entry point needs of its caller's stack is a few such
@@ -1525,6 +1526,7 @@ fn ordinary_programs_run_under_ld_preload() {
 /// glibc's own (`tests/c/small_stack.c` runs every entry point there).
 const FRAME_BUDGET: usize = 2048;
 
+#[cfg(target_arch = "x86_64")]
 /// The frames past [`FRAME_BUDGET`] on the caller's stack, by exact name,
 /// each with the most it may grow to: on the tick and the cache flush,
 /// measured with the rest of their paths in `small_stack`'s 6 KiB of
@@ -1538,6 +1540,7 @@ const KNOWN: &[(&str, usize)] = &[
     ("challoc::heap::flush::group_by_slab", 2304),
 ];
 
+#[cfg(target_arch = "x86_64")]
 /// The functions allowed past [`FRAME_BUDGET`], by name prefix: each runs
 /// only on a cold stack, because every path to it goes through a
 /// `sys::cold::run` (the exports of `mallctl`, `mallctlbymib`, the

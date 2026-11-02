@@ -5,8 +5,8 @@
 # verifies; `combined-functions` and `combined-lines` also count the
 # trusted functions whose seams the ledger marks discharged
 # (verus/SEAMS.md, "Status"). Leaving out a combined figure sets it to 0.0.
-combined-functions 84.8
-combined-lines 93.6
+combined-functions 84.7
+combined-lines 93.4
 #
 # A change keeps the share at or above these figures. They rise in their
 # own pull requests between merges, to the figures the check names, so
@@ -14,4 +14,7 @@ combined-lines 93.6
 # below the base revision's fails unless a `lowered FIGURE P REASON` line
 # here, new in that change, names that figure and value.
 functions 82.3
-lines 92.7
+lines 92.6
+lowered lines 92.6 sys::cold (hunt 943666c7: every entry point on a PTHREAD_STACK_MIN thread) is trusted code: the stack-switch trampoline, the slot pool's atomics and the wrappers that run a verified callee on a cold stack; the callees' proofs are unchanged
+lowered combined-functions 84.7 sys::cold (hunt 943666c7: every entry point on a PTHREAD_STACK_MIN thread) is trusted code: the stack-switch trampoline, the slot pool's atomics and the wrappers that run a verified callee on a cold stack; the callees' proofs are unchanged
+lowered combined-lines 93.4 sys::cold (hunt 943666c7: every entry point on a PTHREAD_STACK_MIN thread) is trusted code: the stack-switch trampoline, the slot pool's atomics and the wrappers that run a verified callee on a cold stack; the callees' proofs are unchanged
