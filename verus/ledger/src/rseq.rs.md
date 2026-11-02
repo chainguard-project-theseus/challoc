@@ -9,8 +9,8 @@ file.
 |---|---|---|---|---|
 | `read_global` | external_body | raw pointer (internal) | Kani | trusted |
 | `read_cpu_id` | external_body | UnsafeCell/volatile/transmute | Kani | trusted |
-| `symbols` | external_body | inline asm | Islaris/Isla | trusted |
-| `thread_pointer` | external_body | inline asm | Islaris/Isla | trusted |
+| `symbols` | external_body | inline asm | Islaris/Isla | discharged |
+| `thread_pointer` | external_body | inline asm | Islaris/Isla | discharged |
 
 ## `read_global`
 
@@ -41,7 +41,7 @@ unsafe fn read_cpu_id(area: *mut u8, Ghost(size): Ghost<u32>) -> u32
 ## `symbols`
 
 src/rseq.rs:167. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entries, 8-byte aligned, at user addresses and that the return area is an 8-byte aligned 24-byte tuple at a user address).
+Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags` (null when they do not resolve).
 
@@ -52,7 +52,7 @@ fn symbols() -> (*const isize, *const u32, *const u32)
 ## `thread_pointer`
 
 src/rseq.rs:210. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on x86_64, that the code is at a user address and the FS base (the C library's thread control block) is an 8-byte aligned user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view)).
+Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > The calling thread's thread pointer: `%fs:0` (the TCB's self pointer) on x86_64, `tpidr_el0` on aarch64.
 

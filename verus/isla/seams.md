@@ -5,13 +5,13 @@ whose overrides line gives it tool Islaris/Isla and cites this file:
 status `discharged (Isla: verus/isla/seams.md)` when the runs cover the
 whole contract (verus/SEAMS.md, "Status"), and `trusted (partly checked,
 Isla: verus/isla/seams.md; not checked: ...)` when part of it rests on
-something the runs do not reach, which the overrides line names. For
-the GOT functions, the rseq symbols and thread pointer, the trap and the
-TLS slot, that list names every assumption of the seam's jobs other
-than the relocations' definitions, and the facts its contract rests on,
-in one order: the aarch64 jobs' assumptions, then the x86_64 jobs'
-(with the 64-bit mode and application view of their runs), then the
-loader's, the kernel's or the C library's side. Each
+something the runs do not reach, which the overrides line names.
+"Platform premises" below states each fact about the build, the
+loader, Linux and the CPU that the runs assume or that a contract rests
+on, once, with its source. Each seam's `Premises:` line names the
+premises its runs take as their bounds, and its overrides line names,
+after `not checked:`, the premises its contract needs beyond its runs
+and those bounds, by label and in label order. Each
 heading gives its file, its name as the ledger prints it, and the
 architecture of the item (`both` for one item on both architectures:
 one whose body holds an `asm!` call per architecture, or one of
@@ -42,28 +42,170 @@ The four register-pinning hints with an empty template (`/* {0} */`:
 assemble to no instruction, so Isla has nothing to trace; they stay
 trusted.
 
-Every result below is about the release static library's code, read
-before the final link, and its register assignments: run.sh builds a job
-for each assignment it finds there. The shipped `cdylib` is a separate
-fat-LTO build that may assign other registers at some sites, and a
-static link of `libchalloc.a` into an executable relaxes the TLS
-sequences to local-exec, and the linker may relax a GOT load to an
-address computation; all three are residuals of every seam below until
-run.sh reads them too ([ISLA.md](../ISLA.md), "Not covered").
+## Platform premises
 
-The aarch64 runs start at Non-secure EL0 in AArch64 state with the PC
-and the vector bases symbolic. The x86_64 `syscall` run starts from a
-symbolic state in the model's system view. The other x86_64 runs (the
-GOT loads, the TLS accesses, `mov fs:[0]` and `ud2`) add three things,
-each a residual of the seams below that have an x86_64 half: the
-processor is in 64-bit mode by function assumption (`n64_bit_modep`
-answers true, as Linux runs 64-bit tasks; the `syscall` job still passes
-with the assumption in place), the model's application view (linear
-addresses are the memory's, no page walk: Linux maps the GOT, the stack
-and the TLS block, and a page fault is the kernel's), and a call of
-Isla's `reset_registers` hook patched into the entry, through which the
-assumption applies (the patched model gives `syscall` the unpatched
-model's traces).
+The runs start from a stated state and trace the instructions to their
+end, a return or an exception. P1 to P13 describe that state: the code
+the runs read, and what the build, the loader, Linux and the CPU have
+set up before the code runs. They are the bounds of the runs, as a Kani
+harness's are the ones its comment states (verus/SEAMS.md, "Status"),
+and a seam's `Premises:` line names the ones its jobs assume. P8 is the
+one no job assumes: the runs leave GOT entries' contents symbolic, so a
+contract that rests on P8 is partly checked. K1 to K3 are what the
+kernel does after a trace ends or between the process's calls, which
+no run reaches, so a contract that rests on one of them is at most
+partly checked (SEAMS.md: "a trace that ends at an exception the
+kernel handles ... checks nothing the kernel does after it"). A seam is
+`discharged` only when its contract rests on nothing but its runs and
+the premises its `Premises:` line names. An overrides line names, after
+`not checked:`, the P and K premises its contract rests on beyond
+those, by label and in label order, then the premises of Verus's own
+model (the last paragraph of this section). run.sh does not read the
+`Premises:` lines; the jobs' `assume` lines and their comments are where
+the premises meet the runs. The Linux source paths below are those of
+Linux v7.4-rc1; older kernels may reach the same outcome through other
+functions.
+
+- **P1, the build.** The code is the release static library's, read
+  before the final link, with each register assignment the runners find
+  there (one job per assignment). The shipped `cdylib` is a separate
+  fat-LTO build that may assign other registers at some sites, and a
+  static link of `libchalloc.a` into an executable relaxes the TLS
+  sequences to local-exec and may relax a GOT load to an address
+  computation; the runners read neither, so a `discharged` status here
+  is about the static library's code. Source: `run-aarch64.sh` section
+  2 and `run-x86_64.sh` section 9; [ISLA.md](../ISLA.md), "Not covered".
+- **P2, user memory.** The code, the GOT, the stack, the TLS block and
+  the return area are present, accessible user pages when the
+  instruction runs, below `2^48` on aarch64 and below `0x7ffffffff000`
+  (`2^47` less one page) on x86_64, the bounds the jobs assume; a load
+  or store there reads or writes those bytes. The aarch64 runs have the
+  MMU off and the x86_64 runs other than `syscall` use the model's
+  application view (linear addresses are the memory's, no page walk), so
+  no run takes a translation fault. Source: Linux
+  `Documentation/arch/arm64/memory.rst` (the 48-bit user VA; on a 52-bit
+  kernel `mmap` returns an address above `2^48` only for a hint above
+  it) and `Documentation/arch/x86/x86_64/mm.rst` (user space below
+  `2^47` with 4-level paging; with 5-level paging, `mmap` returns an
+  address above it only for a hint above it, `5level-paging.rst`).
+  Linux may fault a page in on first touch or after swapping it out and
+  then reruns the same instruction; that is the flat-memory premise the
+  Verus and Kani results rest on too, and no trace ends at such a fault,
+  so it is a bound here, not a K premise.
+- **P3, the aarch64 start state.** Non-secure EL0 in AArch64 state,
+  with a kernel at EL1 or a VHE kernel at EL2, the PC and the vector
+  bases symbolic. Source: Linux `Documentation/arch/arm64/booting.rst`
+  (the kernel is entered at EL2 or non-secure EL1).
+- **P4, x86_64 64-bit mode.** Linux runs the task in 64-bit mode
+  (IA32_EFER.LMA and the code segment's L flag set). The runs other
+  than `syscall` take it as the function assumption `n64_bit_modep` =
+  true, applied through the `reset_registers` call run.sh patches into
+  the model's entry (the patched model gives `syscall` the unpatched
+  model's traces, and the `syscall` job still passes with the
+  assumption in place). Source: Intel SDM Vol. 3A, sections 2.2.1
+  (IA32_EFER) and 3.4.5 (the L flag).
+- **P5, Linux's SYSCALL setup on x86_64.** EFER.SCE set, IA32_STAR[47:32]
+  `0x10` (`__KERNEL_CS`, below `0x7ff8`), a canonical IA32_LSTAR, and
+  the code below `2^47`, as the `syscall` job assumes; the model lacks
+  the x87, MXCSR, AVX-512 mask, PKRU and CET state, so the run says
+  nothing about them. A kernel with FRED enabled enters through FRED's
+  ring-3 entry point instead of LSTAR, which the model does not have.
+  Source: Linux `arch/x86/kernel/head_64.S` (EFER.SCE) and
+  `arch/x86/kernel/cpu/common.c`, `syscall_init` and `idt_syscall_init`
+  (STAR, LSTAR, the FRED case).
+- **P6, the x86_64 stack.** At a function's entry the stack pointer is
+  8-byte aligned (`rsp + 8` is a multiple of 16) and a user address,
+  and the word on top of the stack is the return address, a user
+  address. Source: System V AMD64 psABI, section 3.2.2 ("The Stack
+  Frame").
+- **P7, GOT entries mapped.** The loader maps each GOT entry, 8 bytes
+  and 8-byte aligned, at a user address before any of challoc's code
+  runs, and the relocations against it resolve as the ABI defines them
+  (the jobs' `assume` lines). Source: ELF gABI, "Global Offset Table";
+  Arm's ELF for the Arm 64-bit Architecture (AAELF64), its relocation
+  chapter; System V AMD64 psABI, section 4.4 ("Relocation").
+- **P8, GOT entry contents.** The loader fills a symbol's GOT entry
+  (`R_AARCH64_GLOB_DAT`, `R_X86_64_GLOB_DAT`) with the address of the
+  definition that symbol resolution picks (the program's, when it
+  interposes), or with 0 for an unresolved weak reference, and the
+  entry of `challoc_tls`'s initial-exec reference
+  (`R_AARCH64_TLS_TPREL`, formerly `R_AARCH64_TLS_TPREL64`;
+  `R_X86_64_TPOFF64`) with the slot's offset from the thread pointer.
+  Source: ELF gABI, "Symbol Table" (an unresolved weak symbol has value
+  zero) and "Global Offset Table"; AAELF64, its dynamic and
+  thread-local storage relocations; Ulrich Drepper, "ELF Handling For
+  Thread-Local Storage", the initial-exec model.
+- **P9, the TLS slot's address.** The slot, the thread pointer plus the
+  offset its GOT entry holds, is an 8-byte aligned user address (`.p2align
+  3` in `tls.rs`'s `.tbss`, which the TLS layout honours). Source:
+  Drepper, the initial-exec model and the TLS block's alignment.
+- **P10, the thread pointer.** TPIDR_EL0 holds the thread's thread
+  pointer (TLS variant I). On x86_64 the FS base is the thread pointer,
+  an 8-byte aligned user address, and the word at `%fs:0` is the TCB's
+  pointer to itself (TLS variant II). Source: Drepper, the two TLS data
+  structure variants; AAELF64, its thread-local storage section.
+- **P11, the return area.** `rseq::symbols` gets its return-area pointer
+  in x0 on aarch64 and rdi on x86_64, to an 8-byte aligned 24-byte area
+  at a user address that its caller, built by the same rustc, provides.
+  Source: the compiled code (`run-aarch64.sh` section 7 and
+  `run-x86_64.sh` section 13 hold the function to its exact
+  instructions); Rust's own ABI is unspecified.
+- **P12, the keys enabled above EL1.** Firmware sets SCR_EL3.API and
+  SCR_EL3.APK; HCR_EL2.API and APK are set by what runs at EL2 for a
+  kernel entered at EL1, and by Linux itself (`HCR_HOST_NVHE_FLAGS`) for
+  a kernel entered at EL2 that runs nVHE; so `pacda`, `autda` and
+  `xpacd` at EL0 do not trap to EL3 or EL2 (the configurations pin
+  SCR_EL3 = `0x30401` and HCR_EL2). Source: Linux
+  `Documentation/arch/arm64/booting.rst`, "System registers" ("SCR_EL3.APK
+  (bit 16) must be initialised to 0b1", "SCR_EL3.API (bit 17) must be
+  initialised to 0b1", and HCR_EL2's bits 40 and 41 for a kernel entered
+  at EL1); Arm ARM (DDI 0487), the SCR_EL3 and HCR_EL2 register
+  descriptions.
+- **P13, the PAC CPU.** The CPU is one of the two kinds the PAC runs
+  model (Pointer authentication, below): Armv8.5-A with FEAT_PAuth, or
+  an Armv9.0-A CPU with FEAT_PAuth2, FEAT_FPAC and FEAT_FPACCOMBINE and
+  FEAT_CONSTPACFIELD off or on, with Linux's TCR for a user VA of 36,
+  39, 42, 47, 48 or 52 bits; and `user_va_limit()` is at most `2^` the
+  VA width that TCR configures (`user_va_limit`'s doc: `2^VA_BITS`,
+  capped; Verus knows only `axiom_user_va_limit`'s `2^48`). Not covered:
+  FEAT_EPAC without FEAT_PAuth2, FEAT_PAuth2 without FEAT_FPAC, and
+  52-bit VA with 4K or 16K pages (FEAT_LPA2). Source:
+  [ISLA.md](../ISLA.md), "The harness" (the PAC configurations) and
+  "Not covered"; `src/sys/pac.rs`, `user_va_limit`; Arm ARM (DDI 0487),
+  the pointer authentication features and the `ComputePAC`, `AddPACDA`
+  and `AuthDA` pseudocode.
+- **K1, the kernel's side of a system call.** For a call that returns
+  (challoc's `exit_group`, and its `tgkill` of itself with `SIGABRT`, do
+  not), Linux returns to the instruction after `svc #0` or `syscall`
+  with the result in x0 or rax and every other user register as it
+  was, but rcx and r11 on x86_64 and, on arm64, the SVE state (the
+  Z-register bits above 128, P0-P15 and FFR); and the call has the effects
+  its manual page defines. challoc makes no `execve`, `clone` or
+  `rt_sigreturn` call. Source: `syscall(2)`, "Architecture calling
+  conventions"; Intel SDM Vol. 2B, SYSCALL (rcx and r11); Linux
+  `Documentation/arch/arm64/sve.rst`, "System call behaviour".
+- **K2, no resume past a trap.** For `brk #0x1` at EL0 Linux delivers
+  `SIGTRAP` (`arch/arm64/kernel/debug-monitors.c`, `do_el0_brk64`: `#1`
+  is not the uprobe immediate), for `ud2` `SIGILL`
+  (`arch/x86/kernel/traps.c`, `handle_invalid_op`) and for an `autda`
+  that takes the FPAC fault `SIGILL` (`arch/arm64/kernel/traps.c`,
+  `do_el0_fpac`). It resumes the thread at the faulting instruction or
+  not at all, never past it: the default action of both signals ends
+  the process (`signal(7)`), and only a handler the program installs
+  could move the PC on.
+- **K3, a fixed data key A and EnDA.** Linux assigns the process its
+  keys at `exec`, shared by all its threads and kept across `fork`;
+  `prctl(PR_PAC_RESET_KEYS)` reinitialises the calling thread's keys,
+  and `prctl(PR_PAC_SET_ENABLED_KEYS)` enables or disables keys for the
+  calling task. challoc calls neither, and the program must not
+  (`spec_sign`'s doc). Source: Linux
+  `Documentation/arch/arm64/pointer-authentication.rst`, "Basic support"
+  and "Enabling and disabling keys"; `prctl(2)`, `PR_PAC_RESET_KEYS`.
+
+Two TLS facts are premises of Verus's own model, not of the platform:
+the slot premise (`src/sys/tls.rs`, `TlsSlot`'s "Premise of the
+model") and the cell recording the calling thread's TPIDR_EL0
+(`TlsCell::tp`, which the trusted `TlsSlot::entry` hands out).
 
 ## The GOT functions
 
@@ -73,30 +215,25 @@ entry. On aarch64 each compiled function is exactly `adrp x0, :got:SYM; ldr x0, 
 :got_lo12:SYM]; ret` (`got-fn.job.in`); on x86_64 exactly `mov rax, [rip
 + SYM@GOTPCREL]; ret` (`x86/got-fn.job`). Under the relocations'
 definitions each reads exactly the GOT entry, returns it in the result
-register, writes nothing else and returns to the caller. Residual: the
-ELF loader fills the entry with the symbol's address (the program's
-definition interposing), or 0 for an unresolved weak symbol; GOT entries
-are 8-byte aligned; code and GOT are user addresses; on x86_64 the stack
-is a user address, the stack pointer 8-byte aligned and the return
-address on top of the stack a user address. The
-contracts claim nothing about the address beyond the uninterpreted
-`is_throw_bad_alloc`, which only this function ensures. That predicate
-says the address is `std::__throw_bad_alloc`'s, or null, which only the
-loader makes true, so `throw_bad_alloc_addr` is `trusted (partly checked,
-Isla: verus/isla/seams.md; not checked: ...)`, its overrides line naming
-that fill and the residuals above. The other three have no
+register, writes nothing else and returns to the caller. The aarch64
+jobs assume P2 and P7 (code and GOT entry at user addresses, the entry
+8-byte aligned); the x86_64 jobs also assume P4 and P6 (64-bit mode and
+the stack). The contracts claim nothing about
+the address beyond the uninterpreted `is_throw_bad_alloc`, which only
+`throw_bad_alloc_addr` ensures. That predicate says the address is
+`std::__throw_bad_alloc`'s, or null, which is P8 itself, so
+`throw_bad_alloc_addr` is `trusted (partly checked, Isla:
+verus/isla/seams.md; not checked: P8 ...)`. The other three have no
 `ensures`: their contracts claim only that the call returns, writing
-nothing Verus tracks, which the runs show given the residuals above.
-Those residuals are platform facts the runs assume (the loader's GOT
-mapping and alignment, user addresses, the x86_64 stack, and on x86_64
-the 64-bit mode and application view), so, as `strip` and
-`axiom_auth_sign` are, each is `trusted (partly checked, Isla:
-verus/isla/seams.md; not checked: ...)` with its overrides line naming
-them.
+nothing Verus tracks, which the runs show within the premises their
+`Premises:` lines name, so each is `discharged (Isla:
+verus/isla/seams.md)`.
 
 ## `src/api/cxx.rs` `get_new_handler_addr` (both)
 
 Jobs: `aarch64/got-fn-get_new_handler_addr` `x86_64/got-fn-get_new_handler_addr`
+
+Premises: P1, P2, P3, P4, P6, P7
 
 ```rust
 fn get_new_handler_addr() -> *const c_void
@@ -105,6 +242,8 @@ fn get_new_handler_addr() -> *const c_void
 ## `src/api/cxx.rs` `throw_bad_alloc_addr` (both)
 
 Jobs: `aarch64/got-fn-throw_bad_alloc_addr` `x86_64/got-fn-throw_bad_alloc_addr`
+
+Premises: P1, P2, P3, P4, P6, P7
 
 ```rust
 fn throw_bad_alloc_addr() -> (r: *const c_void)
@@ -116,6 +255,8 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
 
 Jobs: `aarch64/got-fn-malloc_conf_addr` `x86_64/got-fn-malloc_conf_addr`
 
+Premises: P1, P2, P3, P4, P6, P7
+
 ```rust
 fn malloc_conf_addr() -> *const c_void
 ```
@@ -123,6 +264,8 @@ fn malloc_conf_addr() -> *const c_void
 ## `src/config.rs` `je_malloc_conf_addr` (both)
 
 Jobs: `aarch64/got-fn-je_malloc_conf_addr` `x86_64/got-fn-je_malloc_conf_addr`
+
+Premises: P1, P2, P3, P4, P6, P7
 
 ```rust
 fn je_malloc_conf_addr() -> *const c_void
@@ -135,31 +278,29 @@ the compiler's stores of the tuple through the return-area pointer (x0
 on aarch64, rdi on x86_64) and the return, each required exactly
 (`rseq-symbols.job.in`, `x86/rseq-symbols.job`): the three entries are
 read in order, their values stored to the return area's three words,
-nothing else written. Residual: as for the GOT functions, plus the Rust
-ABI's return area (an 8-byte aligned 24-byte tuple at a user address).
+nothing else written. Its jobs assume what the GOT functions' do, and
+P11 (the return area).
 
 `rseq::thread_pointer` (`#[inline(always)]`): every `mrs xN, tpidr_el0`
 in the aarch64 code, its own and the TLS sequences' third instruction,
 writes only xN, with TPIDR_EL0, and touches no memory or flags
 (`mrs-tp.job.in`, one job per register); every `mov R, qword ptr fs:[0]`
 in the x86_64 code reads the 8 bytes at the FS base into R and writes
-nothing else (`x86/fs0.job.in`). Residual: the C library's thread
-pointer (TPIDR_EL0; the TCB's self pointer at `%fs:0`); on x86_64, the
-code is a user address and the FS base an 8-byte aligned user address.
+nothing else (`x86/fs0.job.in`). The x86_64 job assumes P2 (the code at
+a user address), P4 and P10 (the FS base an 8-byte aligned user
+address).
 
 Neither has an `ensures`: their contracts claim only that the call
-returns, writing nothing Verus tracks, which the runs show given the
-residuals above. Those rest on platform facts the runs assume (the
-loader's GOT, the return area, user addresses for the code, the x86_64
-stack and the FS base and, on x86_64, the 64-bit mode and application
-view),
-so both are `trusted (partly checked, Isla:
-verus/isla/seams.md; not checked: ...)`, their overrides lines naming
-them.
+returns, writing nothing Verus tracks, which the runs show within the
+premises their `Premises:` lines name, so both are `discharged (Isla:
+verus/isla/seams.md)`. What the thread pointer's value means (P10) is a
+fact `thread_pointer`'s contract does not claim.
 
 ## `src/rseq.rs` `symbols` (both)
 
 Jobs: `aarch64/rseq-symbols` `x86_64/rseq-symbols`
+
+Premises: P1, P2, P3, P4, P6, P7, P11
 
 ```rust
 fn symbols() -> (*const isize, *const u32, *const u32)
@@ -168,6 +309,8 @@ fn symbols() -> (*const isize, *const u32, *const u32)
 ## `src/rseq.rs` `thread_pointer` (both)
 
 Jobs: `aarch64/mrs-tp` `x86_64/fs0`
+
+Premises: P1, P2, P3, P4, P10
 
 ```rust
 pub fn thread_pointer() -> usize
@@ -183,18 +326,18 @@ address, writes no user register or memory and never falls through
 it raises the model's architectural fault (`x86_fault`, #UD), writes
 nothing (rip included) and never completes (`x86/ud2.job`). The contract
 (`-> !` under `may_abort()`) needs exactly that the call does not
-return. Residual: Linux delivers `SIGTRAP` or `SIGILL`, which kills the
-process; on x86_64, the code is a user address, with the 64-bit mode
-and application view above. The trace ends at the exception, and resuming at the
-return address runs the trap again, so the thread gets past it only if
-the kernel (or a signal handler it runs) moves the PC on; that is the
-kernel's side, which no run reaches, so `trap` is `trusted (partly
-checked, Isla: verus/isla/seams.md; not checked: ...)`, its overrides
-line naming that and the x86_64 residuals.
+return. The x86_64 job assumes P2 (the code at a user address) and P4.
+The trace ends at the exception, and resuming at the return address
+runs the trap again, so the thread gets past it only if the kernel (or
+a signal handler it runs) moves the PC on, which is K2, the kernel's
+side, which no run reaches. So `trap` is `trusted (partly checked, Isla:
+verus/isla/seams.md; not checked: K2 ...)`.
 
 ## `src/sys/mod.rs` `trap` (both)
 
 Jobs: `aarch64/brk1` `aarch64/brk1-vhe` `x86_64/ud2`
+
+Premises: P1, P2, P3, P4
 
 ```rust
 pub fn trap() -> !
@@ -232,7 +375,7 @@ and modifiers symbolic and ComputePAC uninterpreted:
   with EnDA set or clear, and never takes the FPAC fault
   (`pac-rt.job.in`): `axiom_auth_sign`'s aarch64 half, and `auth`'s
   second `ensures`, since `user_va_limit()` is at most the VA width the
-  kernel configures (its definition: `2^VA_BITS`, capped);
+  kernel configures (P13; `user_va_limit`'s doc: `2^VA_BITS`, capped);
 - what each model computes, in terms of ComputePAC, for user pointers
   (`pac-spec-*.job.in`, `pac-enda-off.job.in`), and the FPAC exception
   entry: EC 0x1C, the `autda` as return address, the kernel's vector, no
@@ -241,28 +384,28 @@ and modifiers symbolic and ComputePAC uninterpreted:
 
 `ComputePAC` being a function of its arguments is spot-checked on eight
 concrete inputs in the v8.5 model and in the v9.4 one with QARMA5 and
-QARMA3 (`pac-pure.job.in`). Residual: the process's key and EnDA stay
-fixed (the `prctl` calls `spec_sign`'s doc names break it), firmware
-sets SCR_EL3.API and APK, Linux delivers `SIGILL` on the FPAC fault and
-never resumes past the `autda`, and the CPU is one of the two kinds
-checked; not checked are FEAT_EPAC without FEAT_PAuth2, FEAT_PAuth2
-without FEAT_FPAC and 52-bit VA with 4K or 16K pages (FEAT_LPA2).
+QARMA3 (`pac-pure.job.in`). The configurations are P12 (the keys
+firmware enables) and P13 (the two kinds of CPU, and the VA sizes).
 `axiom_auth_sign`'s x86_64 half needs no tool: `spec_sign` and
 `spec_auth` are unconstrained there and the identity satisfies it.
 
-The key and EnDA staying fixed, and the kernel never resuming past a
-faulting `autda`, are the kernel's side, which no run reaches; `sign`'s and
-`auth`'s `ensures` rest on them, so both are `trusted (partly checked,
-Isla: verus/isla/seams.md; not checked: ...)` with those facts named.
-`strip` has no `ensures` and `axiom_auth_sign` relates the two spec
-functions for one key, which every configuration checks with the key
-symbolic; both still rest on the platform residuals above (firmware's
-SCR_EL3.API and APK, a CPU of a kind not checked), so both are `trusted
-(partly checked, ...)` with those named, as `get_tp` is.
+`spec_sign` and `spec_auth` are one function per process only while
+the key and EnDA stay as they were, K3, and an `autda` that faults
+returns only if the kernel resumes past it, K2: both are the kernel's
+side, which no run reaches. `sign`'s `ensures` rests on K3, and
+`auth`'s on K2 and K3, so `sign` is `trusted (partly checked, Isla:
+verus/isla/seams.md; not checked: K3 ...)` and `auth` the same with K2
+and K3. `strip` has no `ensures`, and `axiom_auth_sign` relates the two
+spec functions for one key, which every configuration checks with the
+key symbolic and EnDA set or clear; neither rests on anything but its
+runs and the premises its `Premises:` line names, so both are `discharged (Isla:
+verus/isla/seams.md)`.
 
 ## `src/sys/pac.rs` `sign` (both)
 
 Jobs: `aarch64/pac-pacda` `aarch64/pac-pacda-det` `aarch64/pac-pacda-spec` `aarch64/pac-pacda-off` `aarch64/pac-pure` `x86_64/none`
+
+Premises: P1, P3, P12, P13
 
 ```rust
 pub fn sign(p: usize, modifier: usize) -> (r: usize)
@@ -276,6 +419,8 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
 ## `src/sys/pac.rs` `auth` (both)
 
 Jobs: `aarch64/pac-autda` `aarch64/pac-autda-det` `aarch64/pac-autda-spec` `aarch64/pac-autda-off` `aarch64/pac-autda-fault` `aarch64/pac-rt` `x86_64/none`
+
+Premises: P1, P3, P12, P13
 
 ```rust
 pub fn auth(p: usize, modifier: usize) -> (r: usize)
@@ -292,6 +437,8 @@ pub fn auth(p: usize, modifier: usize) -> (r: usize)
 
 Jobs: `aarch64/pac-xpacd` `aarch64/pac-xpacd-det` `x86_64/none`
 
+Premises: P1, P3, P12, P13
+
 ```rust
 pub fn strip(p: usize) -> usize
     requires
@@ -301,6 +448,8 @@ pub fn strip(p: usize) -> usize
 ## `src/sys/pac.rs` `axiom_auth_sign` (both)
 
 Jobs: `aarch64/pac-rt` `x86_64/none`
+
+Premises: P3, P12, P13
 
 ```rust
 pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
@@ -332,15 +481,17 @@ the cell's value: `r == slot.value()` and `set`'s `set_to` rest on the
 ghost slot model's premise (`src/sys/tls.rs`, `TlsSlot`'s "Premise of
 the model": a token is not read after the slot has changed other than
 through it), which holds only if these sequences are the only accesses
-to the slot, and on the loader's initial-exec TLS (the GOT entry holds
-the slot's offset from the thread pointer); `r.1 == slot.tp()` rests on
-the cell recording the calling thread's TPIDR_EL0 (`TlsCell::tp`), which
-the trusted `TlsSlot::entry` hands out. So `get`, `get_tp` and `set` are
-each `trusted (partly checked, Isla: verus/isla/seams.md; not checked:
-...)`, their overrides lines naming those facts and the other
-residuals: code, GOT entry and slot at user addresses below `2^48`
-(`2^47` on x86_64), the GOT entry's and the slot's 8-byte alignment,
-and on x86_64 the 64-bit mode and application view.
+to the slot, and on P8 (the GOT entry holds the slot's offset from the
+thread pointer); `r.1 == slot.tp()` rests on the cell recording the
+calling thread's TPIDR_EL0 (`TlsCell::tp`), which the trusted
+`TlsSlot::entry` hands out. The slot premise and `TlsCell::tp` are
+premises of Verus's model, not of the platform, and the runs check
+neither, nor P8. So `get`, `get_tp` and `set` are each `trusted (partly
+checked, Isla: verus/isla/seams.md; not checked: ...)`, their overrides
+lines naming P8, the slot premise and, for `get_tp`, `TlsCell::tp`.
+Their jobs assume P2, P7 and P9 (code, GOT entry and slot at user
+addresses, the GOT entry and the slot 8-byte aligned) and, on x86_64,
+P4.
 
 On x86_64, `get_tp` has no asm (it pairs `tls::get` with 0), so its
 seam is aarch64 only. Besides the jobs, run.sh holds every relocation
@@ -353,6 +504,8 @@ model (`run-x86_64.sh` section 11): `movq (%rip), %R` with
 
 Jobs: `aarch64/tls-load` `x86_64/tls-load`
 
+Premises: P1, P2, P3, P4, P7, P9
+
 ```rust
 pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
     ensures
@@ -363,6 +516,8 @@ pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
 ## `src/sys/tls.rs` `get_tp` (aarch64)
 
 Jobs: `aarch64/tls-load`
+
+Premises: P1, P2, P3, P7, P9
 
 ```rust
 pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
@@ -375,6 +530,8 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
 ## `src/sys/tls.rs` `set` (both)
 
 Jobs: `aarch64/tls-store` `x86_64/tls-store`
+
+Premises: P1, P2, P3, P4, P7, P9
 
 ```rust
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
@@ -401,16 +558,14 @@ x86_64: every `syscall`, `sysenter` and `int` in the code is `syscall`
 with SYSCALL enabled (`x86/syscall.job`): RCX = RIP + 2, R11 = RFLAGS,
 RIP = IA32_LSTAR, RFLAGS masked by IA32_FMASK, CS and SS from IA32_STAR
 with flat 64-bit code and data descriptors, no other register the model
-has and no memory written, no model fault. Residual: Linux's user-mode
-state (EFER.SCE, 64-bit mode, code below `2^47`, a canonical LSTAR,
-IA32_STAR[47:32] below `0x7ff8`, Linux: `0x10`); the
-model lacks x87, MXCSR, AVX-512 mask, PKRU and CET state. The trace ends
-at the kernel's entry point (LSTAR), so the kernel's side of the call is
-not checked: that `sysret` comes back to the next instruction with the
-result in rax and every user register but rcx and r11 as it was, and
-that the call has the effects the Linux x86_64 syscall ABI defines.
-Each `syscallN#1` is `trusted (partly checked, Isla: verus/isla/seams.md;
-not checked: the kernel's side of the call)`, as each `syscallN#2` below.
+has and no memory written, no model fault. The job assumes P4 and P5
+(Linux's SYSCALL setup). The trace ends at the kernel's entry point
+(LSTAR), so the kernel's side of the call, K1, is not checked: that
+`sysret` comes back to the next instruction with the result in rax and
+every user register but rcx and r11 as it was, and that the call has
+the effects the Linux x86_64 syscall ABI defines. Each `syscallN#1` is
+`trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1
+...)`, as each `syscallN#2` below.
 The x86_64 check behind these statuses runs in CI only after landing
 (`isla-main`, which gates nothing), not in the presubmit; see
 `verus/ISLA.md`, "The x86_64 model".
@@ -421,19 +576,21 @@ it takes the SVC exception with syndrome EC 0x15, IL set, imm16 0, the
 next instruction as return address and the lower-EL AArch64 vector, and
 writes no user register (X0-X30, SP_EL0, the SIMD/FP registers, FPCR,
 FPSR, TPIDR_EL0) and no memory. The trace ends at the exception vector, so the
-kernel's side of the call is not checked: that it returns to the next
+kernel's side of the call, K1, is not checked: that it returns to the next
 instruction, leaves the result in x0 and every other user register as
 it was, and that the call has the effects the Linux arm64 syscall ABI
 defines (none of `execve`, `clone` or `rt_sigreturn` among challoc's).
 Nothing in the runs relates `syscall3`'s `r` to the call, so
 `returned3` and the kernel-fact axioms built on it rest on the kernel
 alone, on both architectures. Each `syscallN#2` is therefore `trusted
-(partly checked, Isla: verus/isla/seams.md; not checked: the kernel's
-side of the call)`.
+(partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's
+side of the call))`.
 
 ## `src/sys/raw.rs` `syscall0#1` (x86_64)
 
 Jobs: `x86_64/syscall`
+
+Premises: P1, P4, P5
 
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
@@ -445,6 +602,8 @@ pub unsafe fn syscall0(nr: usize) -> usize
 
 Jobs: `x86_64/syscall`
 
+Premises: P1, P4, P5
+
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
     requires
@@ -455,6 +614,8 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 
 Jobs: `x86_64/syscall`
 
+Premises: P1, P4, P5
+
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
     requires
@@ -464,6 +625,8 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 ## `src/sys/raw.rs` `syscall3#1` (x86_64)
 
 Jobs: `x86_64/syscall`
+
+Premises: P1, P4, P5
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
@@ -477,6 +640,8 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
 
 Jobs: `x86_64/syscall`
 
+Premises: P1, P4, P5
+
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
     requires
@@ -486,6 +651,8 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 ## `src/sys/raw.rs` `syscall5#1` (x86_64)
 
 Jobs: `x86_64/syscall`
+
+Premises: P1, P4, P5
 
 ```rust
 pub unsafe fn syscall5(
@@ -503,6 +670,8 @@ pub unsafe fn syscall5(
 ## `src/sys/raw.rs` `syscall6#1` (x86_64)
 
 Jobs: `x86_64/syscall`
+
+Premises: P1, P4, P5
 
 ```rust
 pub unsafe fn syscall6(
@@ -522,6 +691,8 @@ pub unsafe fn syscall6(
 
 Jobs: `aarch64/svc0` `aarch64/svc0-vhe`
 
+Premises: P1, P3
+
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
     requires
@@ -531,6 +702,8 @@ pub unsafe fn syscall0(nr: usize) -> usize
 ## `src/sys/raw.rs` `syscall1#2` (aarch64)
 
 Jobs: `aarch64/svc0` `aarch64/svc0-vhe`
+
+Premises: P1, P3
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
@@ -542,6 +715,8 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 
 Jobs: `aarch64/svc0` `aarch64/svc0-vhe`
 
+Premises: P1, P3
+
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
     requires
@@ -551,6 +726,8 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 ## `src/sys/raw.rs` `syscall3#2` (aarch64)
 
 Jobs: `aarch64/svc0` `aarch64/svc0-vhe`
+
+Premises: P1, P3
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
@@ -564,6 +741,8 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
 
 Jobs: `aarch64/svc0` `aarch64/svc0-vhe`
 
+Premises: P1, P3
+
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
     requires
@@ -573,6 +752,8 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 ## `src/sys/raw.rs` `syscall5#2` (aarch64)
 
 Jobs: `aarch64/svc0` `aarch64/svc0-vhe`
+
+Premises: P1, P3
 
 ```rust
 pub unsafe fn syscall5(
@@ -590,6 +771,8 @@ pub unsafe fn syscall5(
 ## `src/sys/raw.rs` `syscall6#2` (aarch64)
 
 Jobs: `aarch64/svc0` `aarch64/svc0-vhe`
+
+Premises: P1, P3
 
 ```rust
 pub unsafe fn syscall6(

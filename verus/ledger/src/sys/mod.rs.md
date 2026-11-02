@@ -173,7 +173,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 ## `trap`
 
 src/sys/mod.rs:1553. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on x86_64, that the code is at a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the kernel never resumes the thread past the trap).
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K2 (no resume past the trap)).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
 

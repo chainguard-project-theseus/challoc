@@ -7,7 +7,7 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `get_new_...ler_addr` | external_body | inline asm | Islaris/Isla | trusted |
+| `get_new...r_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `throw_ba...loc_addr` | external_body | inline asm | Islaris/Isla | trusted |
 | `Handler` | external_body type | function pointer | Kani | trusted |
 | `call_get_new_handler` | external_body | function pointer | Kani | trusted |
@@ -20,7 +20,7 @@ file.
 ## `get_new_handler_addr`
 
 src/api/cxx.rs:83. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address).
+Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of libstdc++'s `std::get_new_handler()`, or null when no libstdc++ is loaded in the process.
 
@@ -31,7 +31,7 @@ fn get_new_handler_addr() -> *const c_void
 ## `throw_bad_alloc_addr`
 
 src/api/cxx.rs:114. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: on aarch64, that the code is at a user address; on x86_64, that the code and the stack are at user addresses, the stack pointer is 8-byte aligned and the return address on top of the stack is a user address, and that the task runs in 64-bit mode with linear addresses the memory's (the runs' function assumption and application view); and that the loader maps the GOT entry, 8-byte aligned, at a user address and fills it with std::__throw_bad_alloc's address or 0).
+Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the loader fills the GOT entry with std::__throw_bad_alloc's address or 0)).
 
 > Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
 
