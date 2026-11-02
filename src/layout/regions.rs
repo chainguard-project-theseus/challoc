@@ -2775,7 +2775,9 @@ mod linux {
         /// slides and the class offsets always leave `MAX_SLAB` below their
         /// region inside its reservation (hunt 943666c7, c-aa8a4f76: a zero
         /// huge slide on a 4 MiB-aligned mapping put the first huge run at
-        /// the reservation's first byte, flush against a thread stack).
+        /// the reservation's first byte, flush against a thread stack;
+        /// c-5acef05a: the same underflow replaced that thread's TLS heap
+        /// pointer and its next `malloc` returned a chosen address).
         #[test]
         fn slab_multiple_is_never_zero() {
             for steps in [2, 3, SLIDE_STEPS, 1024, 196_608] {
