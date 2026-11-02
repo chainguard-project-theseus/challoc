@@ -19,6 +19,8 @@ use crate::vspec::errno::ThreadErrno;
 use crate::vspec::zero::Zeroed;
 
 use super::thread::heap_from_slot;
+#[cfg(verus_keep_ghost)]
+use super::zero::zero_on_free;
 use super::{
     CacheHeader, FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread,
 };
@@ -845,6 +847,7 @@ pub unsafe fn free_fast_slot(
         tp == old(tls).tp(),
     ensures
         r matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
+        zero_on_free(shared) ==> r is None,
         r is Some ==> free_target(p),
         r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
         r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
@@ -908,6 +911,8 @@ unsafe fn free_fast_tail(
         tp == old(tls).tp(),
     ensures
         r matches Some(c) ==> c == class,
+        flags & PUSH_ZERO != 0 ==> r is None,
+        zero_on_free(shared) ==> r is None,
         r is Some ==> free_target(p),
         r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
         r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
@@ -955,17 +960,19 @@ unsafe fn free_fast_tail(
     if pushed { Some(class) } else { None }
 }
 
-/// The [`PUSH_PAC`] bit of a `free_flags` byte the dispatch of
-/// [`free_fast_tail`] passes on: the byte without [`FREE_ROUTE`] keeps
-/// it, and `0` and `FREE_ROUTE` do not have it.
+/// The bits of a `free_flags` byte the dispatch of [`free_fast_tail`]
+/// passes on: the byte without [`FREE_ROUTE`] keeps its [`PUSH_PAC`] and
+/// [`PUSH_ZERO`] bits, and `0` and `FREE_ROUTE` have neither.
 proof fn lemma_free_route_bits(flags: u8)
     ensures
         (flags & !FREE_ROUTE) & PUSH_PAC == flags & PUSH_PAC,
-        flags == 0 || flags == FREE_ROUTE ==> flags & PUSH_PAC == 0,
+        (flags & !FREE_ROUTE) & PUSH_ZERO == flags & PUSH_ZERO,
+        flags == 0 || flags == FREE_ROUTE ==> flags & PUSH_PAC == 0 && flags & PUSH_ZERO == 0,
         0u8 & PUSH_PAC == 0,
 {
     assert((flags & !8u8) & 4u8 == flags & 4u8) by (bit_vector);
-    assert(flags == 0u8 || flags == 8u8 ==> flags & 4u8 == 0u8) by (bit_vector);
+    assert((flags & !8u8) & 2u8 == flags & 2u8) by (bit_vector);
+    assert(flags == 0u8 || flags == 8u8 ==> flags & 4u8 == 0u8 && flags & 2u8 == 0u8) by (bit_vector);
     assert(0u8 & 4u8 == 0u8) by (bit_vector);
 }
 

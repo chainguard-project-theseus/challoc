@@ -3492,7 +3492,8 @@ impl Shared {
 
     /// What a `free_flags` byte `f` carries over from `push_flags`: its
     /// [`PUSH_PAC`] bit is [`pac_mode`](super::pac_mode), set only where the
-    /// process may execute the PAC instructions.
+    /// process may execute the PAC instructions, and its [`PUSH_ZERO`] bit
+    /// is `zero_on_free`'s.
     pub proof fn lemma_route_flags(&self, f: u8)
         requires
             self.wf(),
@@ -3500,9 +3501,10 @@ impl Shared {
         ensures
             (f & PUSH_PAC != 0) == super::pac_mode(),
             (f & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
+            (f & PUSH_ZERO != 0) == (self.flags() & PUSH_ZERO != 0),
     {
         let pf = self.push_flags;
-        assert(f & !8u8 == pf & !8u8 ==> f & 4u8 == pf & 4u8) by (bit_vector);
+        assert(f & !8u8 == pf & !8u8 ==> (f & 4u8 == pf & 4u8 && f & 2u8 == pf & 2u8)) by (bit_vector);
     }
 
     /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
