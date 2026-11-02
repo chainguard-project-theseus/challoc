@@ -1654,8 +1654,9 @@ one, `mallctl` returns `EAGAIN`, `mallinfo` zeros and a report the line
 `(no memory)` until one is given back. The pooled objects count in the
 metadata figures (`stats.metadata`, and so `resident` and `mapped`;
 `malloc_info`'s system and aspace sizes, `mallinfo`'s `arena`): up to
-64 objects of `stats::StatsPair` (11,952 B at q16, 12,848 B at q8) as the
-metadata places them, about 728 to 750 KiB at q16 and 984 KiB at q8 at
+64 objects of `stats::StatsPair` (11,952 B at q16, 12,848 B at q8), each
+in the smallest metadata bin that fits it (12 KiB at q16, 16 KiB at q8,
+the whole bin counted in `allocated`): 768 KiB at q16 and 1 MiB at q8 at
 most, and as many as the most concurrent reports
 the process has made. A text
 `malloc_stats_print` leaves its caller about 1 KiB less of the stack than

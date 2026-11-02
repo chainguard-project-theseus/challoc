@@ -474,7 +474,12 @@ static void op_stats_thread_exit(void)
  * progressively deeper on its stack (so its own abandoned objects are
  * never above its next call). No object is allocated outside the pool:
  * past it a report says "(no memory)", and the metadata stays within the
- * pool's bound. */
+ * pool's bound. While every slot is held, each entry point's fallback is
+ * checked too: mallctl's epoch write and an arena read are EAGAIN,
+ * mallinfo2 is all zeros, malloc_info and malloc_stats say "(no memory)".
+ * (Not covered here: a reserved slot whose metadata allocation fails,
+ * `pool_unreserve`; starving the metadata region from a test would take
+ * every other allocation with it.) */
 #define PARKED 64
 
 static pthread_barrier_t parked_in;
@@ -524,6 +529,62 @@ __attribute__((noinline)) static void abandon_at(int depth)
     __asm__ volatile("" ::"r"(pad) : "memory");
 }
 
+/* What `fn` writes to a FILE, in a buffer the caller frees. */
+static char *captured(void (*fn)(FILE *))
+{
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *f = open_memstream(&buf, &len);
+    REQUIRE(f, "open_memstream");
+    fn(f);
+    fclose(f);
+    return buf;
+}
+
+static void info_to(FILE *f)
+{
+    CHECK(malloc_info(0, f) == 0, "malloc_info");
+}
+
+/* malloc_stats writes to stderr: fd 2 goes to a temporary file. */
+static void stats_to(FILE *f)
+{
+    fflush(stderr);
+    int saved = dup(2);
+    FILE *tmp = tmpfile();
+    REQUIRE(saved >= 0 && tmp, "dup/tmpfile");
+    dup2(fileno(tmp), 2);
+    malloc_stats();
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    rewind(tmp);
+    char line[512];
+    while (fgets(line, sizeof line, tmp))
+        fputs(line, f);
+    fclose(tmp);
+}
+
+static void check_fallbacks(void)
+{
+    uint64_t e = 1;
+    size_t elen = sizeof e;
+    CHECK(mallctl("epoch", &e, &elen, &e, sizeof e) == EAGAIN, "epoch with the pool full is not EAGAIN");
+    size_t v = 0, vlen = sizeof v;
+    CHECK(mallctl("stats.arenas.0.pactive", &v, &vlen, NULL, 0) == EAGAIN,
+          "stats.arenas.0.pactive with the pool full is not EAGAIN");
+    struct mallinfo2 m = mallinfo2();
+    CHECK(m.arena == 0 && m.ordblks == 0 && m.hblks == 0 && m.hblkhd == 0 && m.uordblks == 0 && m.fordblks == 0 &&
+              m.keepcost == 0,
+          "mallinfo2 with the pool full is not zero");
+    char *info = captured(info_to);
+    CHECK(info && strstr(info, "(no memory)"), "malloc_info with the pool full: %s", info ? info : "(null)");
+    free(info);
+    char *st = captured(stats_to);
+    CHECK(st && strstr(st, "(no memory)"), "malloc_stats with the pool full: %s", st ? st : "(null)");
+    free(st);
+}
+
 static void op_stats_pool_full(void)
 {
     size_t before = metadata_now();
@@ -538,6 +599,7 @@ static void op_stats_pool_full(void)
     /* From progressively deeper: each abandons the object at a lower mark. */
     for (int i = 0; i < 2000; i++)
         abandon_at(i % 200);
+    check_fallbacks();
     unpark = 1;
     for (int i = 0; i < PARKED; i++)
         REQUIRE(pthread_join(th[i], NULL) == 0, "pthread_join");
