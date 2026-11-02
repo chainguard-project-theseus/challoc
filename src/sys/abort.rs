@@ -64,15 +64,6 @@ impl Stderr {
     }
 }
 
-// Outside the proofs: building a `Stderr` needs `may_syscall` (its type
-// invariant), which `Default::default` cannot require.
-#[verifier::external]
-impl Default for Stderr {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl fmt::Write for Stderr {
     /// Copies whole characters: a chunk ends on a character boundary, and a
     /// character that does not fit in what is left of the buffer goes out

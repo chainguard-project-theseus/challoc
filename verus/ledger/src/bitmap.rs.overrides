@@ -1,3 +1,3 @@
-# Temporary seam, provable in Verus once the abort its `assert!` makes is
-# specified.
+# Temporary seam, provable in Verus once it requires the abort capability
+# its `check` needs.
 allocated	panic/abort	Verus

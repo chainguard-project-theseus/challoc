@@ -482,12 +482,14 @@ impl SlabDesc {
 
     /// Subtract `n` from `live`, returning the previous value. Aborts if
     /// that would go negative: more slots released than were ever claimed.
-    /// Trusted: Verus does not model the panic's formatted message.
+    /// Trusted: it does not name the abort capability `abort_pending` needs.
     #[inline]
     #[verifier::external_body]
     pub fn sub_live(&self, n: usize) -> usize {
         let prev = self.live.fetch_sub(n as u32, Ordering::AcqRel) as usize;
-        assert!(prev >= n, "slab: live count underflow ({prev} - {n})");
+        if prev < n {
+            crate::sys::abort_pending(format_args!("slab: live count underflow ({prev} - {n})"));
+        }
         prev
     }
 
