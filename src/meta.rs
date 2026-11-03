@@ -1599,7 +1599,7 @@ pub struct Meta {
 }
 
 #[inline]
-const fn align_up(x: usize, a: usize) -> (r: usize)
+pub(crate) const fn align_up(x: usize, a: usize) -> (r: usize)
     requires
         a > 0,
         a & sub(a, 1) == 0,

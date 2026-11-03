@@ -72,7 +72,11 @@ const MAX_SHARED: usize = 32;
 
 /// The arrays of every `Shared` with the key on, in [`init`] order; an
 /// entry is published by its `base` stores (`Release`), the last.
-static ARRAYS: [Arrays; MAX_SHARED] = [const {
+static ARRAYS: [Arrays; MAX_SHARED] = NO_ARRAYS;
+
+/// [`ARRAYS`]'s initial value: every entry unclaimed, all zero.
+#[allow(clippy::declare_interior_mutable_const, clippy::large_const_arrays)]
+const NO_ARRAYS: [Arrays; MAX_SHARED] = [const {
     Arrays {
         class_base: [const { AtomicUsize::new(0) }; NCLASSES],
         base: [const { AtomicUsize::new(0) }; NCLASSES],
@@ -85,9 +89,12 @@ static PAGE: AtomicUsize = AtomicUsize::new(0);
 
 /// The byte array of `class` in the `Shared` whose class region starts at
 /// `class_base`, zero when that `Shared` has the key off.
+// An index loop: Verus specifies no iterator over a slice of `ARRAYS`.
+#[allow(clippy::needless_range_loop)]
 fn array_of(class: usize, class_base: usize) -> usize {
     let n = CLAIMED.load(Ordering::Acquire).min(MAX_SHARED);
-    for a in &ARRAYS[..n] {
+    for i in 0..n {
+        let a = &ARRAYS[i];
         let base = a.base[class].load(Ordering::Acquire);
         if base != 0 && a.class_base[class].load(Ordering::Relaxed) == class_base {
             return base;
@@ -124,7 +131,9 @@ pub(super) fn init(regions: &Regions)
         crate::sys::abort_kernel(format_args!("double_free_scan: more than {MAX_SHARED} allocator instances"));
     }
     for c in 0..NCLASSES {
-        let len = (regions.nslabs(c) * CLASSES.table()[c].slab_bits()).next_multiple_of(page);
+        let n = regions.nslabs(c);
+        let bits = CLASSES.table()[c].slab_bits();
+        let len = crate::meta::align_up(n * bits, page);
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         // SAFETY: a fresh anonymous mapping at an address the kernel picks;
         // no existing memory is touched.
@@ -155,12 +164,14 @@ pub(crate) fn commit(class: usize, class_base: usize, s: usize, end: usize)
         return;
     }
     let bits = CLASSES.table()[class].slab_bits();
-    let page = PAGE.load(Ordering::Relaxed);
-    let lo = (base + s * bits) & !(page - 1);
-    let hi = (base + end * bits).next_multiple_of(page);
+    // The page rounding of `[base + s * bits, base + end * bits)`, by
+    // mask (the page is a power of two).
+    let mask = PAGE.load(Ordering::Relaxed).wrapping_sub(1);
+    let lo = base.wrapping_add(s.wrapping_mul(bits)) & !mask;
+    let hi = base.wrapping_add(end.wrapping_mul(bits)).wrapping_add(mask) & !mask;
     // SAFETY: `[lo, hi)` lies in the class's own reservation (`init`);
     // making it writable touches no other mapping.
-    if unsafe { crate::sys::mprotect(lo, hi - lo, crate::sys::PROT_READ | crate::sys::PROT_WRITE) }.is_err() {
+    if unsafe { crate::sys::mprotect(lo, hi.wrapping_sub(lo), crate::sys::PROT_READ | crate::sys::PROT_WRITE) }.is_err() {
         crate::sys::abort_kernel(format_args!("double_free_scan: cannot commit the slot-state table of class {class}"));
     }
 }
@@ -345,9 +356,22 @@ fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8> 
         return None;
     }
     let slot = (rel & (cls.slab_size() - 1)) / cls.size as usize;
-    let at = base + slab * cls.slab_bits() + slot;
+    let at = base
+        .wrapping_add(slab.wrapping_mul(cls.slab_bits()))
+        .wrapping_add(slot);
     // SAFETY: the byte of a slab below the watermark, which `commit` made
-    // writable before the watermark was published; an `AtomicU8` has no
-    // alignment requirement, and the array lives for the process.
-    Some(unsafe { &*(at as *const AtomicU8) })
+    // writable before the watermark was published.
+    Some(unsafe { byte_at(at) })
+}
+
+/// The `AtomicU8` at address `at`.
+///
+/// # Safety
+/// `at` is a byte of a slot-state array that [`commit`] made writable;
+/// the arrays live for the process.
+#[inline(always)]
+unsafe fn byte_at(at: usize) -> &'static AtomicU8 {
+    // SAFETY: the caller's contract; an `AtomicU8` has no alignment
+    // requirement.
+    unsafe { &*(at as *const AtomicU8) }
 }
