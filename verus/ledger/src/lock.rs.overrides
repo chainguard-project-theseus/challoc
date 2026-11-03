@@ -27,12 +27,6 @@ RawLock::lock_slow	termination	loom/GenMC
 # Lock-order premise of an entry point that holds no allocator lock
 # (`Huge::usable_size`'s callers).
 axiom_entry	allocator invariant	none (assumption)
-# Lock-order premise inside `ClassState::decay_with`'s walk, in place
-# of the caller's token.
-axiom_below_class	allocator invariant	none (assumption)
-# Lock-order premise inside `Huge::decay_with`'s walk, in place of
-# the caller's token.
-axiom_below_huge	allocator invariant	none (assumption)
 # The fork prepare handler holds no lock at entry and keeps its token throughout.
 axiom_fork_entry	allocator invariant	none (assumption)
 # The fork window (design 9): the forking thread, recorded by

@@ -247,15 +247,6 @@ mod tests {
                 concat!("purged_", "zero("),
                 &[("class/mod.rs:", "fn take(", 1)],
             ),
-            // The decay walks' lock-order tokens (`lock.rs`).
-            (
-                concat!("axiom_", "below_class("),
-                &[("class/decay.rs:", "pub fn decay_with(", 1)],
-            ),
-            (
-                concat!("axiom_", "below_huge("),
-                &[("huge/mod.rs:", "pub fn decay_with(", 1)],
-            ),
             // The frozen `Shared` fields (`heap::shared`).
             (
                 concat!("axiom_", "shared_regions("),

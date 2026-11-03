@@ -5749,11 +5749,10 @@ symbol's `ensures` changes.
 **Premises beyond the common ones.** None for the deadline: no axiom,
 `external_body` or `assume_specification` is used by the theorem. The
 gate is two halves, `Decayer::due` and `Decayer::finish`, and the owner
-runs its walk between them in its own `decay_with`, with a lock-order
-token from `axiom_below_class`/`axiom_below_huge` (theorem 33). The
-loads are `core` atomics, which vstd specifies with any value, which is
-why the statement is over the values seen. The walk's `ensures` are not
-used.
+runs its walk between them in its own `decay_with`, with the caller's
+lock-order token (theorem 33). The loads are `core` atomics, which vstd
+specifies with any value, which is why the statement is over the values
+seen. The walk's `ensures` are not used.
 
 **Scope and where the statement is weaker than the code.**
 - What callers can use. The witnesses are existential, so a caller
@@ -6427,7 +6426,7 @@ rank_huge(), rank_meta()       0x600_0000, 0x700_0000
 rank_arena_stats(i)            0x900_0000 + i
 rank_state()                   0xA00_0000              background thread state
 
-// lock.rs:846: a guard acquisition.
+// lock.rs:815: a guard acquisition.
 pub fn lock<'a>(&'a self, Tracked(ord): Tracked<&'a mut LockOrder<'_>>,
                 Tracked(under): Tracked<&mut LockOrder<'a>>) -> (g: LockGuard<'a, T>)
     requires old(ord).allows(self.rank()),          // ord.top() < rank
@@ -6439,7 +6438,7 @@ pub fn lock_held(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<Lo
     ensures  t@.held() == *self, final(ord).root(), final(ord).top() == self.rank(),
 ```
 
-A `LockOrder` (`lock.rs:364`, ghost, fields private to `lock.rs`) bounds
+A `LockOrder` (`lock.rs:363`, ghost, fields private to `lock.rs`) bounds
 the ranks of the locks its owner holds (`top()`). `Lock::lock` borrows
 the caller's token for the guard's lifetime `'a` and hands out another
 at the lock's rank, also of lifetime `'a`, for the code under the guard;
@@ -6509,7 +6508,7 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
 `gated`.
 
 **Premises beyond the common ones.**
-- *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs:506`;
+- *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs:505`;
   ledger category "C-program contract"). The roots: `alloc_slow_in`,
   `free_slow_in`, `alloc_huge_in`, `Heap::free_huge`, `paths::free_direct`
   and the no-heap `alloc_direct` arms of `paths::alloc`,
@@ -6538,13 +6537,7 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   the reports' calls out, by inspection elsewhere), and a signal
   handler that allocates is outside the C contract (the fork handlers
   block signals).
-- *Decay walks* (`axiom_below_class`, `lock.rs:540`, and `axiom_below_huge`,
-  `:555`; one `axiom_held_below` in #138): the decay walks in
-  `ClassState::decay_with` and `Huge::decay_with`, which run between
-  `Decayer::due` and `Decayer::finish`. Both functions take the caller's
-  token and require it below the lock the walk takes, so the premise
-  restates a checked precondition for code that runs during the call.
-- *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs:525`):
+- *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs:524`):
   the one root token; every other entry point's `axiom_entry` token is
   not a root on main.
 - *Trusted bodies with honest specs*: `policy::empty_bytes`:
@@ -6579,10 +6572,9 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
 13 `Meta` methods and trusted one closure axiom, `axiom_held_below`
 (2 uses). Main threads it through the ten `Meta` methods that may take
 the metadata lock, so the metadata lock's acquisitions rest on no
-premise of their own. The decay
-walks take theirs from two axioms,
-`axiom_below_class` and `axiom_below_huge` (one, `axiom_held_below`,
-in #138), and `fork_prepare`'s root token comes from
+premise of their own. The decay walks run between
+`Decayer::due` and `Decayer::finish` with the caller's token, so they
+need no axiom of their own, and `fork_prepare`'s root token comes from
 `axiom_fork_entry` (from `axiom_entry` in #138). `mallinfo2`
 (`api/glibc.rs:132`) takes its token from `axiom_entry`, as in #138
 (verified again since wolfi-dev/challoc#421; its lock-order premise is
