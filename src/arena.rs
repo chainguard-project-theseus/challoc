@@ -160,6 +160,17 @@ unsafe impl Send for Arena {}
 #[cfg(test)]
 pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+#[allow(clippy::declare_interior_mutable_const)]
+const NO_COST: (
+    core::sync::atomic::AtomicUsize,
+    core::sync::atomic::AtomicUsize,
+) = (
+    core::sync::atomic::AtomicUsize::new(0),
+    core::sync::atomic::AtomicUsize::new(0),
+);
+
+verus! {
+
 /// The least metadata (bump and reservation sides together) one arena
 /// build has taken so far ([`Arenas::build`]), per metadata allocator
 /// (keyed by its address: the process has one, the tests build many);
@@ -171,20 +182,15 @@ const BUILD_COSTS: usize = 64;
 /// while a build runs (a huge descriptor-table growth step is the
 /// largest); an eighth of the tables when that is less.
 const BUILD_SLACK: usize = 16 << 20;
-#[allow(clippy::declare_interior_mutable_const)]
-const NO_COST: (
-    core::sync::atomic::AtomicUsize,
-    core::sync::atomic::AtomicUsize,
-) = (
-    core::sync::atomic::AtomicUsize::new(0),
-    core::sync::atomic::AtomicUsize::new(0),
-);
-static BUILD_COST: [(
+
+exec static BUILD_COST: [(
     core::sync::atomic::AtomicUsize,
     core::sync::atomic::AtomicUsize,
 ); BUILD_COSTS] = NO_COSTS;
 
-/// `[NO_COST; BUILD_COSTS]`.
+/// `[NO_COST; BUILD_COSTS]`, which Verus does not take for an element
+/// type that is not `Copy`. Trusted: it claims nothing about the value.
+#[verifier::external_body]
 #[allow(clippy::declare_interior_mutable_const)]
 const NO_COSTS: [(
     core::sync::atomic::AtomicUsize,
@@ -192,16 +198,18 @@ const NO_COSTS: [(
 ); BUILD_COSTS] = [NO_COST; BUILD_COSTS];
 
 /// The `Arena` storage of a build, rounded up to the largest page (a
-/// reservation takes whole pages).
+/// reservation takes whole pages). Trusted: Verus has no specification of
+/// `usize::next_multiple_of`; it claims nothing about the value.
+#[verifier::external_body]
 const ARENA_STORAGE: usize = core::mem::size_of::<Arena>().next_multiple_of(1 << 16);
 
-/// `meta`'s address, [`BUILD_COST`]'s key.
+/// `meta`'s address, [`BUILD_COST`]'s key. Trusted: Verus has no
+/// reference-to-pointer cast; it claims nothing about the value.
+#[verifier::external_body]
 #[inline(always)]
 fn meta_key(meta: &Meta) -> usize {
     meta as *const Meta as usize
 }
-
-verus! {
 
 /// Automatic arenas not built yet that `arenas.create` keeps room for
 /// ([`Arenas::create`]): enough for the threads a program starts after
@@ -212,9 +220,11 @@ const AUTO_HEADROOM: u32 = 8;
 /// Record a build over `meta` whose tables took `tables` bytes of
 /// metadata ([`BUILD_COST`]). The delta is read without the metadata
 /// lock, so another thread's reservation in between can only inflate a
-/// sample: the smallest sample is kept. Trusted: atomics on a plain
-/// statistic no proof reads.
-#[verifier::external_body]
+/// sample: the smallest sample is kept. Trusted (termination): the weak
+/// compare-and-exchange retries while other threads lower the sample but
+/// leave it above `tables`, or spuriously, so the loop has no bound Verus
+/// can check.
+#[verifier::exec_allows_no_decreases_clause]
 fn note_build_cost(meta: &Meta, tables: usize) {
     let key = meta_key(meta);
     let tables = tables.max(1);
@@ -240,10 +250,9 @@ fn note_build_cost(meta: &Meta, tables: usize) {
 /// recorded: the smallest tables sample, the `Arena` storage
 /// ([`ARENA_STORAGE`]), and slack for what other threads may reserve
 /// between the check and the build's last table (the huge allocator's
-/// table growth: an eighth of the tables, at most `BUILD_SLACK`).
-/// Trusted: loads of a plain statistic; any value is sound (it only
-/// decides whether a build or `arenas.create` is refused).
-#[verifier::external_body]
+/// table growth: an eighth of the tables, at most `BUILD_SLACK`). Any
+/// value is sound: it only decides whether a build or `arenas.create` is
+/// refused.
 fn build_cost(meta: &Meta) -> usize {
     let key = meta_key(meta);
     for (k, c) in BUILD_COST.iter() {
