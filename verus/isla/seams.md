@@ -3,15 +3,17 @@
 Each `src/` heading below is one seam of the ledger (`verus/ledger/`)
 whose overrides line gives it tool Islaris/Isla and cites this file:
 status `discharged (Isla: verus/isla/seams.md)` when the runs cover the
-whole contract (verus/SEAMS.md, "Status"), and `trusted (partly checked,
-Isla: verus/isla/seams.md; not checked: ...)` when part of it rests on
-something the runs do not reach, which the overrides line names.
+whole contract (verus/SEAMS.md, "Status"), and `discharged on premises
+(Isla: verus/isla/seams.md; premises: ...)` when part of it rests on
+platform premises the runs do not reach, which the overrides line names,
+and `trusted (partly checked, Isla: verus/isla/seams.md; not checked:
+...)` when part of it also rests on a premise of Verus's own model.
 "Platform premises" below states each fact about the build, the
 loader, Linux and the CPU that the runs assume or that a contract rests
 on, once, with its source. Each seam's `Premises:` line names the
 premises its runs take as their bounds, and its overrides line names,
-after `not checked:`, the premises its contract needs beyond its runs
-and those bounds, by label and in label order. Each
+after `premises:` or `not checked:`, the premises its contract needs
+beyond its runs and those bounds, by label and in label order. Each
 heading gives its file, its name as the ledger prints it, and the
 architecture of the item (`both` for one item on both architectures:
 one whose body holds an `asm!` call per architecture, or one of
@@ -52,20 +54,22 @@ set up before the code runs. They are the bounds of the runs, as a Kani
 harness's are the ones its comment states (verus/SEAMS.md, "Status"),
 and a seam's `Premises:` line names the ones its jobs assume. P8 is the
 one no job assumes: the runs leave GOT entries' contents symbolic, so a
-contract that rests on P8 is partly checked. K1 to K3 are what the
-kernel does after a trace ends or between the process's calls, which
-no run reaches, so a contract that rests on one of them is at most
-partly checked (SEAMS.md: "a trace that ends at an exception the
-kernel handles ... checks nothing the kernel does after it"). A seam is
-`discharged` only when its contract rests on nothing but its runs and
-the premises its `Premises:` line names. An overrides line names, after
-`not checked:`, the P and K premises its contract rests on beyond
-those, by label and in label order, then the premises of Verus's own
-model (the last paragraph of this section). run.sh does not read the
-`Premises:` lines; the jobs' `assume` lines and their comments are where
-the premises meet the runs. The Linux source paths below are those of
-Linux v7.4-rc1; older kernels may reach the same outcome through other
-functions.
+contract that rests on P8 is at most discharged on premises. K1 to K3
+are what the kernel does after a trace ends or between the process's
+calls, which no run reaches, so a contract that rests on one of them is
+at most discharged on premises (SEAMS.md: "a trace that ends at an
+exception the kernel handles ... checks nothing the kernel does after
+it"). A seam is `discharged (Isla: ...)` only when its contract rests on
+nothing but its runs and the premises its `Premises:` line names. A seam
+is `discharged on premises` when its contract rests, beyond those, only
+on P and K premises, which its overrides line names after `premises:`,
+by label and in label order. A contract that also rests on a premise of
+Verus's own model (the last paragraph of this section) is partly
+checked: its overrides line names, after `not checked:`, the P and K
+premises, then the model's. run.sh does not read the `Premises:` lines;
+the jobs' `assume` lines and their comments are where the premises meet
+the runs. The Linux source paths below are those of Linux v7.4-rc1;
+older kernels may reach the same outcome through other functions.
 
 - **P1, the build.** The code is the release static library's, read
   before the final link, with each register assignment the runners find
@@ -223,8 +227,8 @@ the stack). The contracts claim nothing about
 the address beyond the uninterpreted `is_throw_bad_alloc`, which only
 `throw_bad_alloc_addr` ensures. That predicate says the address is
 `std::__throw_bad_alloc`'s, or null, which is P8 itself, so
-`throw_bad_alloc_addr` is `trusted (partly checked, Isla:
-verus/isla/seams.md; not checked: P8 ...)`. The other three have no
+`throw_bad_alloc_addr` is `discharged on premises (Isla:
+verus/isla/seams.md; premises: P8 ...)`. The other three have no
 `ensures`: their contracts claim only that the call returns, writing
 nothing Verus tracks, which the runs show within the premises their
 `Premises:` lines name, so each is `discharged (Isla:
@@ -331,8 +335,8 @@ return. The x86_64 job assumes P2 (the code at a user address) and P4.
 The trace ends at the exception, and resuming at the return address
 runs the trap again, so the thread gets past it only if the kernel (or
 a signal handler it runs) moves the PC on, which is K2, the kernel's
-side, which no run reaches. So `trap` is `trusted (partly checked, Isla:
-verus/isla/seams.md; not checked: K2 ...)`.
+side, which no run reaches. So `trap` is `discharged on premises (Isla:
+verus/isla/seams.md; premises: K2 ...)`.
 
 ## `src/sys/mod.rs` `trap` (both)
 
@@ -394,8 +398,8 @@ firmware enables) and P13 (the two kinds of CPU, and the VA sizes).
 the key and EnDA stay as they were, K3, and an `autda` that faults
 returns only if the kernel resumes past it, K2: both are the kernel's
 side, which no run reaches. `sign`'s `ensures` rests on K3, and
-`auth`'s on K2 and K3, so `sign` is `trusted (partly checked, Isla:
-verus/isla/seams.md; not checked: K3 ...)` and `auth` the same with K2
+`auth`'s on K2 and K3, so `sign` is `discharged on premises (Isla:
+verus/isla/seams.md; premises: K3 ...)` and `auth` the same with K2
 and K3. `strip` has no `ensures`, and `axiom_auth_sign` relates the two
 spec functions for one key, which every configuration checks with the
 key symbolic and EnDA set or clear; neither rests on anything but its
@@ -565,7 +569,7 @@ has and no memory written, no model fault. The job assumes P4 and P5
 `sysret` comes back to the next instruction with the result in rax and
 every user register but rcx and r11 as it was, and that the call has
 the effects the Linux x86_64 syscall ABI defines. Each `syscallN#1` is
-`trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1
+`discharged on premises (Isla: verus/isla/seams.md; premises: K1
 ...)`, as each `syscallN#2` below.
 The x86_64 check behind these statuses runs in CI only after landing
 (`isla-main`, which gates nothing), not in the presubmit; see
@@ -583,8 +587,8 @@ it was, and that the call has the effects the Linux arm64 syscall ABI
 defines (none of `execve`, `clone` or `rt_sigreturn` among challoc's).
 Nothing in the runs relates `syscall3`'s `r` to the call, so
 `returned3` and the kernel-fact axioms built on it rest on the kernel
-alone, on both architectures. Each `syscallN#2` is therefore `trusted
-(partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's
+alone, on both architectures. Each `syscallN#2` is therefore `discharged
+on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's
 side of the call))`.
 
 ## `src/sys/raw.rs` `syscall0#1` (x86_64)

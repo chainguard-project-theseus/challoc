@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `get_new...r_addr` | external_body | inline asm | Islaris/Isla | discharged |
-| `throw_ba...loc_addr` | external_body | inline asm | Islaris/Isla | trusted |
+| `throw_b...c_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `Handler` | external_body type | function pointer | Kani | trusted |
 | `call_get_new_handler` | external_body | function pointer | Kani | trusted |
 | `call_throw_bad_alloc` | external_body | function pointer | Kani | trusted |
@@ -31,7 +31,7 @@ fn get_new_handler_addr() -> *const c_void
 ## `throw_bad_alloc_addr`
 
 src/api/cxx.rs:114. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the loader fills the GOT entry with std::__throw_bad_alloc's address or 0)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the loader fills the GOT entry with std::__throw_bad_alloc's address or 0)).
 
 > Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
 

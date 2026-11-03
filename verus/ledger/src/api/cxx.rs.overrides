@@ -11,4 +11,4 @@ axiom_c_call	C-program contract	none (assumption)
 # against the contract verus/isla/seams.md quotes. `is_throw_bad_alloc`
 # says the address is `std::__throw_bad_alloc`'s, which rests on the loader.
 get_new_handler_addr	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)
-throw_bad_alloc_addr	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the loader fills the GOT entry with std::__throw_bad_alloc's address or 0))
+throw_bad_alloc_addr	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the loader fills the GOT entry with std::__throw_bad_alloc's address or 0))

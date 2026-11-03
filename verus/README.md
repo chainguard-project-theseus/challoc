@@ -93,11 +93,14 @@ functions plus the trusted functions whose seam another tool has
 discharged. It reads the seam ledger (Seams, below) and matches each
 trusted function to its entry by the `src/FILE:LINE` of its `fn` keyword.
 A function counts as discharged when its entry's status is "discharged",
-meaning a check outside Verus (a Kani harness or a const assertion) covers
-its whole contract, as [SEAMS.md](SEAMS.md) ("Status") defines it. A
-function whose status is "trusted (partly checked, ...)" is shown in its
-own column and not counted in the combined share, since part of its
-contract is still assumed. Discharged seams that are not functions
+meaning a check outside Verus (a Kani harness, a const assertion, an
+Isla run or `make emptyasm`) covers its whole contract, as
+[SEAMS.md](SEAMS.md) ("Status") defines it, or "discharged on premises
+(Isla: ...; premises: ...)", meaning an Isla run covers it but for the
+platform premises (P and K labels) the status names. A function whose
+status is "trusted (partly checked, ...)" is shown in its own column and
+not counted in the combined share, since part of its contract is still
+assumed. Discharged seams that are not functions
 (constants, types, `assume_specification`s) do not enter either share.
 Only an `external_body`, `external_body proof` or `axiom` seam classes a
 function. A trusted function with no such entry is a warning; a function
@@ -214,8 +217,9 @@ models: the compiled code of each `asm!` block, traced instruction by
 instruction and composed by `verus/isla/check.rs`. The seams it
 checks, with the contract each run is held to, are in
 [isla/seams.md](isla/seams.md); their overrides lines cite `Isla:
-verus/isla/seams.md`, in `discharged (...)` or, where the runs cover
-only part of the contract, `trusted (partly checked, ...)`. `make isla`
+verus/isla/seams.md`, in `discharged (...)` or, where part of the
+contract rests on premises the runs do not reach, `discharged on
+premises (...; premises: ...)`. `make isla`
 runs it, with the `isla`, `isla-snapshots`, `sail`, `isla-sail`, `z3` and
 `llvm-21` packages.
 

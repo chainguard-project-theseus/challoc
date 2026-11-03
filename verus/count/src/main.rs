@@ -16,7 +16,10 @@
 //! A trusted function is also classed by the status of its seam in the
 //! ledger (verus/ledger, verus/SEAMS.md, "Status"), matched by the
 //! `src/FILE:LINE` of its `fn` keyword: *discharged* when the status is
-//! "discharged" (a check outside Verus covers its whole contract),
+//! "discharged" (a check outside Verus covers its whole contract) or
+//! "discharged on premises (Isla: ...; premises: ...)" (an Isla check
+//! covers it but for the platform premises named by the P and K labels
+//! verus/isla/seams.md defines, which only Isla's checks may cite),
 //! *partly checked* when it is "trusted (partly checked, ...)", and
 //! unchecked otherwise. The *combined* share counts verified and
 //! discharged functions; partly checked ones are shown apart and not
@@ -35,7 +38,7 @@
 //! sets below `REV:verus/FLOOR`'s without a new `lowered` line for it, and
 //! fails when REV does not resolve.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -480,7 +483,16 @@ fn main() {
     let t = c.tallies.remove(&c.krate).unwrap_or_default();
     print_row(&c.krate, &t);
     fail_on_errors(c.errors);
-    let seams = read_ledger(&root.join("verus/ledger")).unwrap_or_else(|e| {
+    let isla = root.join("verus/isla/seams.md");
+    let premises = premise_labels(&fs::read_to_string(&isla).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", isla.display());
+        std::process::exit(2);
+    }));
+    if premises.is_empty() {
+        eprintln!("{}: no platform premise labels", isla.display());
+        std::process::exit(2);
+    }
+    let seams = read_ledger(&root.join("verus/ledger"), &premises).unwrap_or_else(|e| {
         eprintln!("verus/ledger: {e}");
         std::process::exit(2);
     });
@@ -578,7 +590,9 @@ fn print_combined_row(name: &str, t: &Tally, c: &Checked) {
 /// (verus/SEAMS.md, "Status").
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Status {
-    /// `discharged (...)`: the check covers the whole contract.
+    /// `discharged (...)`: the check covers the whole contract; or
+    /// [`PREMISED`]: Isla's check covers it but for the premises the
+    /// status names.
     Discharged,
     /// `trusted (partly checked, ...)`.
     Partly,
@@ -617,8 +631,11 @@ const OTHER_KINDS: &[&str] = &[
 /// The seams of one ledger file: each entry's `src/FILE:LINE. Kind: K.
 /// Category: ...` line and the `Status: S` that follows it in the same
 /// paragraph (`S` may run on over the paragraph's next lines). An entry
-/// without a status is an error.
-fn parse_ledger(text: &str) -> Result<Vec<Seam>, String> {
+/// without a status is an error, and so is a [`PREMISED`] status that
+/// cites a check other than Isla's alone or names anything but labels in
+/// `premises` (or none), and a status starting `discharged` in any other
+/// form than `discharged (`.
+fn parse_ledger(text: &str, premises: &BTreeSet<String>) -> Result<Vec<Seam>, String> {
     let mut seams = Vec::new();
     let mut lines = text.lines().enumerate().peekable();
     while let Some((i, line)) = lines.next() {
@@ -648,8 +665,15 @@ fn parse_ledger(text: &str) -> Result<Vec<Seam>, String> {
         let Some((_, status)) = para.split_once("Status: ") else {
             return Err(format!("line {}: {loc} has no status", i + 1));
         };
-        let status = if status.starts_with("discharged") {
+        let status = if let Some(rest) = status.strip_prefix(PREMISED) {
+            premised(rest, premises).map_err(|e| format!("line {}: {loc}: {e}", i + 1))?
+        } else if status.starts_with("discharged (") {
             Status::Discharged
+        } else if status.starts_with("discharged") {
+            return Err(format!(
+                "line {}: {loc}: a discharged status not of the form `discharged (...)` or `{PREMISED}...)`",
+                i + 1
+            ));
         } else if status.starts_with("trusted (partly checked") {
             Status::Partly
         } else {
@@ -664,8 +688,89 @@ fn parse_ledger(text: &str) -> Result<Vec<Seam>, String> {
     Ok(seams)
 }
 
-/// Every seam in the `*.rs.md` files under `dir` (verus/ledger).
-fn read_ledger(dir: &Path) -> Result<Vec<Seam>, String> {
+/// The status of an Isla check whose contract rests on platform premises
+/// it names (verus/SEAMS.md, "Status"): `discharged on premises (Isla:
+/// verus/isla/seams.md; premises: ...)`.
+const PREMISED: &str = "discharged on premises (";
+
+/// The class of a [`PREMISED`] status, given the text after it: discharged
+/// when it cites the Isla runs alone (`Isla: verus/isla/seams.md`) and
+/// names at least one premise, each the label of a platform premise in
+/// `premises` ([`platform_labels`]), an error otherwise, since only Isla's
+/// checks count with named premises, and only with platform ones.
+fn premised(rest: &str, premises: &BTreeSet<String>) -> Result<Status, String> {
+    let Some(p) = rest.strip_prefix("Isla: verus/isla/seams.md; premises: ") else {
+        return Err(format!(
+            "{PREMISED}...) cites a check other than Isla's alone, or names no premise: {rest:?}"
+        ));
+    };
+    if !platform_labels(p, premises) {
+        return Err(format!(
+            "{PREMISED}...) names no premise, or one that is not the label of a platform premise verus/isla/seams.md defines: {rest:?}"
+        ));
+    }
+    Ok(Status::Discharged)
+}
+
+/// Whether a premise list (`K2 (gloss) and K3 (gloss)`, then the `)` that
+/// closes the status and only `.` and whitespace after it) names at least
+/// one premise and only labels in `premises` (verus/isla/seams.md's
+/// platform premises, [`premise_labels`]), each optionally followed by a
+/// gloss in parentheses. A premise of Verus's own model (`the TLS slot
+/// premise`, `TlsCell::tp`) is no such label, nor is one that file does
+/// not define (`K4`), nor text after the closing `)` or inside a gloss
+/// that never closes.
+fn platform_labels(list: &str, premises: &BTreeSet<String>) -> bool {
+    let mut bare = String::new();
+    let mut depth = 0usize;
+    let mut tail = None;
+    for (i, c) in list.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => {
+                tail = Some(&list[i + 1..]);
+                break;
+            }
+            ')' => depth -= 1,
+            _ if depth == 0 => bare.push(c),
+            _ => {}
+        }
+    }
+    let Some(tail) = tail else {
+        return false;
+    };
+    if !tail.chars().all(|c| c == '.' || c.is_whitespace()) {
+        return false;
+    }
+    let labels: Vec<&str> = bare
+        .split(", ")
+        .flat_map(|s| s.split(" and "))
+        .map(str::trim)
+        .collect();
+    labels.iter().all(|l| premises.contains(*l))
+}
+
+/// The labels of the platform premises verus/isla/seams.md defines: the
+/// `P` or `K` and a number that open each `- **LABEL, title.**` bullet
+/// of its "Platform premises" section.
+fn premise_labels(seams_md: &str) -> BTreeSet<String> {
+    seams_md
+        .lines()
+        .skip_while(|l| *l != "## Platform premises")
+        .skip(1)
+        .take_while(|l| !l.starts_with("## "))
+        .filter_map(|l| l.strip_prefix("- **")?.split_once(',').map(|(p, _)| p))
+        .filter(|p| {
+            p.strip_prefix(['P', 'K'])
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Every seam in the `*.rs.md` files under `dir` (verus/ledger), with
+/// `premises` the platform premise labels a [`PREMISED`] status may name.
+fn read_ledger(dir: &Path, premises: &BTreeSet<String>) -> Result<Vec<Seam>, String> {
     let mut files = Vec::new();
     walk(dir, ".rs.md", &mut files);
     if files.is_empty() {
@@ -674,7 +779,7 @@ fn read_ledger(dir: &Path) -> Result<Vec<Seam>, String> {
     let mut seams = Vec::new();
     for f in files {
         let text = fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
-        seams.extend(parse_ledger(&text).map_err(|e| format!("{}: {e}", f.display()))?);
+        seams.extend(parse_ledger(&text, premises).map_err(|e| format!("{}: {e}", f.display()))?);
     }
     Ok(seams)
 }
@@ -1181,6 +1286,27 @@ mod tests {
         }
     }
 
+    /// The "Platform premises" of a verus/isla/seams.md cut down to P1 to
+    /// P13 and K1 to K3 (as the file defines), with a bullet in another
+    /// section that must not count.
+    const SEAMS_MD: &str = "# The seams Isla checks\n\n- **K9, not a premise.** Outside the section.\n\n## Platform premises\n\nThe runs start from a stated state.\n\n- **P1, the build.** a\n- **P2, user memory.** b\n- **P3, x.** c\n- **P4, x.** d\n- **P5, x.** e\n- **P6, x.** f\n- **P7, x.** g\n- **P8, GOT entry contents.** h\n  continued, with a comma\n- **P9, x.** i\n- **P10, x.** j\n- **P11, x.** k\n- **P12, x.** l\n- **P13, x.** m\n- **K1, the kernel's side of a system call.** n\n- **K2, no resume past a trap.** o\n- **K3, a fixed data key A and EnDA.** p\n- **Note, not a label.** q\n\n## The GOT functions\n\n- **K5, not a premise.** Outside the section.\n";
+
+    fn premises() -> BTreeSet<String> {
+        premise_labels(SEAMS_MD)
+    }
+
+    #[test]
+    fn the_platform_premise_labels_are_the_sections_bullets() {
+        let got = premises();
+        let want: BTreeSet<String> = (1..=13)
+            .map(|n| format!("P{n}"))
+            .chain((1..=3).map(|n| format!("K{n}")))
+            .collect();
+        assert_eq!(got, want, "labels: got = {got:?}, want = {want:?}");
+        let got = premise_labels("- **K1, x.** y\n");
+        assert!(got.is_empty(), "no section: got = {got:?}, want = none");
+    }
+
     fn seam(loc: &str, kind: &str, status: Status) -> Seam {
         Seam {
             loc: loc.into(),
@@ -1223,7 +1349,7 @@ src/a.rs:40. Kind: external_body proof. Category: x.
 Tool: none (assumption).
 Status: discharged (const assert: `k` in src/a.rs).
 "#;
-        let got = parse_ledger(text);
+        let got = parse_ledger(text, &premises());
         let want = vec![
             seam("src/a.rs:10", "axiom", Status::Discharged),
             seam("src/a.rs:20", "external_body", Status::Partly),
@@ -1234,18 +1360,86 @@ Status: discharged (const assert: `k` in src/a.rs).
         // The status belongs to the entry's own paragraph.
         let got = parse_ledger(
             "src/a.rs:10. Kind: axiom. Category: x.\nTool: Kani.\n\nStatus: discharged\n",
+            &premises(),
         );
         assert!(
             got.is_err(),
             "no status in the entry: got = {got:?}, want = an error"
         );
         // A header without a category still gives its kind.
-        let got = parse_ledger("src/a.rs:10. Kind: axiom.\nStatus: discharged (x).\n");
+        let got = parse_ledger(
+            "src/a.rs:10. Kind: axiom.\nStatus: discharged (x).\n",
+            &premises(),
+        );
         assert_eq!(
             got,
             Ok(vec![seam("src/a.rs:10", "axiom", Status::Discharged)]),
             "no category: got = {got:?}"
         );
+    }
+
+    #[test]
+    fn an_isla_check_on_named_premises_counts_as_discharged() {
+        let entry = |status: &str| {
+            format!(
+                "src/a.rs:10. Kind: external_body. Category: inline asm.\nTool: Islaris/Isla. Status: {status}.\n"
+            )
+        };
+        for (status, want) in [
+            (
+                "discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))",
+                Status::Discharged,
+            ),
+            (
+                "discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past an autda that faults) and K3 (a fixed data key A and EnDA))",
+                Status::Discharged,
+            ),
+            (
+                "discharged on premises (Isla: verus/isla/seams.md; premises: P8 (a gloss, with a comma and (nested) parentheses))",
+                Status::Discharged,
+            ),
+            // The same check and premises, still partly checked.
+            (
+                "trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call))",
+                Status::Partly,
+            ),
+        ] {
+            let got = parse_ledger(&entry(status), &premises());
+            assert_eq!(
+                got,
+                Ok(vec![seam("src/a.rs:10", "external_body", want)]),
+                "{status}: got = {got:?}, want = {want:?}"
+            );
+        }
+        // Only Isla's checks count on premises, and only on named ones.
+        for status in [
+            "discharged on premises (Kani: a::kani_f::f; premises: K1 (the kernel's side of the call))",
+            "discharged on premises (emptyasm: f in src/a.rs; premises: the pointer's provenance)",
+            "discharged on premises (Isla: verus/isla/seams.md)",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: )",
+            // A premise of Verus's own model is no platform premise.
+            "discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise)",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: P8 (x), the TLS slot premise and TlsCell::tp (TPIDR_EL0 is the cell's tp))",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: TlsCell::tp)",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: none)",
+            // A label of the right shape that no platform premise has.
+            "discharged on premises (Isla: verus/isla/seams.md; premises: K4)",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: P0)",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: K01 (the kernel's side of the call))",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: K1 and K5)",
+            // Text after the status's closing `)`, or a gloss that never closes.
+            "discharged on premises (Isla: verus/isla/seams.md; premises: K1) and TlsCell::tp",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: K1 (gloss and the TLS slot premise",
+            "discharged on premises (Isla: verus/isla/seams.md, and Kani: a::kani_f::f; premises: K1)",
+            // A near miss of either discharged form does not slip through as
+            // plain discharged.
+            "discharged on premises(Kani: a::kani_f::f; premises: K1)",
+            "discharged on premises: K1",
+            "discharged, on premises (Kani: a::kani_f::f)",
+        ] {
+            let got = parse_ledger(&entry(status), &premises());
+            assert!(got.is_err(), "{status}: got = {got:?}, want = an error");
+        }
     }
 
     #[test]
