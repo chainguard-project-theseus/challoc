@@ -552,6 +552,47 @@ ctests! {
             conf: Some("double_free_scan:true"),
             stdout_lacks: &["returned"]),
     ];
+    /// With `exact_sized_free` a sized free runs plain `free`'s allocation
+    /// check, so a slot start that no allocation returned aborts at the
+    /// call (64 B and 256 B classes, `sdallocx` and `free_sized`).
+    c_negative_sized_never_allocated_64 => [
+        negative!("sized_never_allocated_64", SIGABRT, &["invalid"],
+            conf: Some("exact_sized_free:true,abort_conf:true"),
+            stdout_lacks: &["returned"]),
+    ];
+    c_negative_sized_never_allocated_256 => [
+        negative!("sized_never_allocated_256", SIGABRT, &["invalid"],
+            conf: Some("exact_sized_free:true,abort_conf:true"),
+            stdout_lacks: &["returned"]),
+    ];
+    c_negative_free_sized_never_allocated_64 => [
+        negative!("free_sized_never_allocated_64", SIGABRT, &["invalid"],
+            conf: Some("exact_sized_free:true,abort_conf:true"),
+            stdout_lacks: &["returned"]),
+    ];
+    c_negative_free_sized_never_allocated_256 => [
+        negative!("free_sized_never_allocated_256", SIGABRT, &["invalid"],
+            conf: Some("exact_sized_free:true,abort_conf:true"),
+            stdout_lacks: &["returned"]),
+    ];
+    /// `exact_sized_free` with `double_free_scan`: a sized free takes the
+    /// size check, then plain `free`'s bit test (a slot start never handed
+    /// out, its bit clear) and the state byte (the slot after `p`, which a
+    /// refill claimed: its bit is set, so only the state byte catches it).
+    c_negative_sized_with_both_keys => [
+        negative!("route_sdallocx_forged", SIGABRT, &["invalid or double free of 0x", " slab ", "slot is not allocated"],
+            conf: Some("exact_sized_free:true,double_free_scan:true,abort_conf:true"),
+            stdout_lacks: &["returned"]),
+        negative!("route_free_sized_forged", SIGABRT, &["invalid or double free of 0x", " slab ", "slot is not allocated"],
+            conf: Some("exact_sized_free:true,double_free_scan:true,abort_conf:true"),
+            stdout_lacks: &["returned"]),
+        negative!("route_sdallocx_forged_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("exact_sized_free:true,double_free_scan:true,abort_conf:true"),
+            stdout_lacks: &["returned"]),
+        negative!("route_free_sized_forged_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("exact_sized_free:true,double_free_scan:true,abort_conf:true"),
+            stdout_lacks: &["returned"]),
+    ];
     /// The two copies of a cached double free sort to
     /// the flush's split point, one released and one kept; the flush's
     /// neighbour pass over the kept half catches it.

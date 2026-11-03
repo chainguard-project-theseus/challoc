@@ -87,6 +87,13 @@
  *                                           into the cache (its bit is set; only
  *                                           the state byte says it is not live)
  *                                   size    a sized route with the wrong size
+ *   negative sized_never_allocated_SIZE
+ *                                 sdallocx(p, SIZE, 0) of slot 0 of the slab
+ *                                 after the one the first SIZE-byte block
+ *                                 came from, a slot never handed out: with
+ *                                 exact_sized_free the call aborts
+ *   negative free_sized_never_allocated_SIZE
+ *                                 the same through C23 free_sized
  */
 #include "common.h"
 #include <pthread.h>
@@ -177,17 +184,21 @@ static int cmp_ptr(const void *a, const void *b)
  * middle. */
 static uintptr_t guard_slot_of_64(void);
 
-/* Bin index of the 64-byte class. */
-static unsigned bin_of_64(void)
+/* Slot 0 of the slab after the one the first SIZE-byte block came from:
+ * a slot start of the class that no allocation has returned. */
+static uintptr_t never_allocated_slot(size_t size);
+
+/* Bin index of the SIZE-byte class. */
+static unsigned bin_of(size_t size)
 {
     unsigned nbins = ctl_uint("arenas.nbins");
     for (unsigned i = 0; i < nbins; i++) {
         char name[64];
         snprintf(name, sizeof name, "arenas.bin.%u.size", i);
-        if (ctl_size(name) == 64)
+        if (ctl_size(name) == size)
             return i;
     }
-    REQUIRE(0, "no 64-byte bin");
+    REQUIRE(0, "no %zu-byte bin", size);
     return 0;
 }
 
@@ -536,6 +547,18 @@ int main(int argc, char **argv)
         free(bad);
         size_t u = challoc_free_usable(bad); /* must abort: the run is no longer live */
         printf("free_usable of the freed huge run %p returned %zu\n", bad, u);
+    } else if (strncmp(mode, "sized_never_allocated_", 22) == 0) {
+        REQUIRE(sdallocx != NULL, "sdallocx not exported");
+        size_t size = strtoul(mode + 22, NULL, 10);
+        bad = (void *)never_allocated_slot(size);
+        sdallocx(bad, size, 0); /* with exact_sized_free: must abort */
+        printf("sdallocx of the never-allocated %p returned\n", bad);
+    } else if (strncmp(mode, "free_sized_never_allocated_", 27) == 0) {
+        REQUIRE(free_sized != NULL, "free_sized not exported");
+        size_t size = strtoul(mode + 27, NULL, 10);
+        bad = (void *)never_allocated_slot(size);
+        free_sized(bad, size); /* with exact_sized_free: must abort */
+        printf("free_sized of the never-allocated %p returned\n", bad);
     } else {
         REQUIRE(0, "unknown mode %s", mode);
     }
@@ -548,7 +571,7 @@ static uintptr_t guard_slot_of_64(void)
 {
     unsigned interval = ctl_uint("opt.guard_slab_interval");
     REQUIRE(ctl_bool("opt.guards") && interval > 0, "guards are off (interval %u)", interval);
-    unsigned bin = bin_of_64();
+    unsigned bin = bin_of(64);
     char name[64];
     snprintf(name, sizeof name, "arenas.bin.%u.slab_size", bin);
     size_t slab = ctl_size(name), page = ctl_size("arenas.page");
@@ -582,4 +605,26 @@ static uintptr_t guard_slot_of_64(void)
     printf("guard region at %#lx, slot in its body %#lx\n", (unsigned long)guard, (unsigned long)body);
     fflush(stdout);
     return body;
+}
+
+static uintptr_t never_allocated_slot(size_t size)
+{
+    unsigned bin = bin_of(size);
+    char name[96];
+    snprintf(name, sizeof name, "arenas.bin.%u.slab_size", bin);
+    size_t slab = ctl_size(name);
+    void *first = malloc(size);
+    REQUIRE(first != NULL, "malloc(%zu) failed", size);
+    /* The target is unallocated only while the class has one slab in use:
+     * a refill that reached the next slab would have claimed its slot 0. */
+    uint64_t epoch = 1;
+    REQUIRE(mallctl("epoch", NULL, NULL, &epoch, sizeof epoch) == 0, "epoch failed");
+    snprintf(name, sizeof name, "stats.arenas.0.bins.%u.curslabs", bin);
+    size_t cur = ctl_size(name);
+    REQUIRE(cur == 1, "class %zu has %zu slabs in use, want 1", size, cur);
+    uintptr_t target = ((uintptr_t)first & ~(uintptr_t)(slab - 1)) + slab;
+    printf("class %zu: slab %zu bytes, first block %p, target %#lx\n", size, slab, first,
+           (unsigned long)target);
+    fflush(stdout);
+    return target;
 }

@@ -115,6 +115,7 @@ One row per key, in `TABLE` order. "Values" is the grammar
 | `pac_pointers` | `true`, `false` | `false` | On arm64 with pointer authentication (`pac=yes` in the feature line: Axion, Apple silicon; not Altra, not x86_64), signs every cached slot pointer and the TLS heap pointer with `pacda` and authenticates on pop, so a metadata write cannot make `malloc` return a chosen address. Inert elsewhere. | A hardening requirement on a host with `pac=yes`. | About 11% on cross-thread frees (`xmalloc-test`), 1..2% on `larson`. |
 | `slot_randomize` | `true`, `false` | `false` | Cache refills claim from a random bitmap word and shuffle the batch, so slot order is not predictable from previous allocations. Slow paths only. | A hardening requirement. | Works against the compacting cache (design 6.4): more RSS on churn-heavy workloads. |
 | `double_free_scan` | `true`, `false` | `false` | Keeps one state byte per slot (free, cached, live) and checks it at every free on every route (plain, sized, foreign, cross-thread, `MALLOCX_TCACHE_NONE`, `challoc_free_usable`): a free of a slot that is not live aborts at the call, wherever the first copy sits. `malloc_usable_size`, `realloc` and `sallocx` reject a cached slot. A free moves the byte with one compare-and-exchange, so simultaneous frees of one slot are caught too. Every `malloc` and `free` takes the slow path, and the compacting cache (design 6.4) and a young heap's move on a cross-arena free are off. | Debugging a suspected double free; high-assurance deployments that accept the price. | Large: 1.8..2.9x lower throughput on the quick rows of the GCE gate cells, `alloc-test1` 46..68% slower (cb run `20261102t0229z-caad429-quick-m5fdy`, key off against key on); state bytes of one per slot, committed with the slabs. |
+| `exact_sized_free` | `true`, `false` | `false` | Sized frees (`sdallocx`, `free_sized`, `free_aligned_sized`, sized `operator delete`) run plain `free`'s allocation check after the size check, so a sized free of a slot whose bit is clear (one no refill has claimed, or one already back in its slab) aborts at the call, as it does through `free` (hardening.md, (1)). Only the sized fast path changes: plain `free` and `malloc` keep their fast paths, the compacting cache stays on, and there is no per-slot state. `double_free_scan` covers this check and more; with both keys on, a sized free takes the size check, then plain `free`'s bit test and the state byte, the same route as with `double_free_scan` alone. | A hardening requirement that sized frees check the slot at the call, where `double_free_scan`'s price is too high; with `double_free_scan` on, it adds nothing. | Every sized free takes the slow path; not measured. The default's sized fast path is unchanged. |
 | `abort_conf` | `true`, `false` | `false` | Abort after parsing if any source reported a problem (section 1). | Package tests and any deployment that must not run on a misspelled key. | None at run time. |
 | `cgroup` | `true`, `false` | `true` | Read the memory cgroup (20 ms after init, section 4) and sample it: effective limits, `memory.current`, `memory.events`; apply the policy of section 4. `false` reads nothing, applies nothing, reports `cgroup: not tracked (cgroup:false)`. | `false` only as the control in a measurement. | With `cgroup:false` a container that frees 400 MiB of 512 MiB keeps most of it resident for the whole decay window; with the default it is back to about 13 MiB within 50 ms. |
 | `check_zero` | `true`, `false` | `false` | Debug: every slot claimed from a `Fresh` or `Purged` slab, and every huge page handed out as known zero, is read at its first and last word under the class or huge lock; a non-zero word aborts with the slab's prior state (for a slab slot, usually a heap overflow or a stale-pointer write into memory not yet handed out). Slow paths only. | Diagnosing a `calloc` zero bug or a write into unallocated slab memory. | Extra reads on every refill from `Fresh` or `Purged` memory. |
@@ -152,7 +153,8 @@ with jemalloc but costs about 10% more RSS on that heap and far more on
 smaller ones, and does not meet the budget a shared or memory-limited
 host needs (section 5). The hardening opt-ins (`zero_on_free`,
 `slot_randomize`, `pac_pointers`, `double_free_scan`) each cost more than
-a default-on hardening may; `lazy_band:true` with eager purges when no
+a default-on hardening may, and `exact_sized_free` sends every sized free
+to the slow path (not measured); `lazy_band:true` with eager purges when no
 limit is known is chosen so RSS never lies where nothing knows the
 headroom.
 
@@ -485,6 +487,9 @@ are fixed by measurement:
 - `zero_on_free`, `slot_randomize`, `pac_pointers`, `double_free_scan`:
   hardening opt-ins whose prices are in section 2. Turn one on for a
   requirement, not for a hunch, and re-measure the consumer.
+- `exact_sized_free`: a hardening opt-in that sends every sized free to
+  the slow path; its price is not measured. Turn it on for a requirement
+  and measure the consumer.
 - `muzzy_decay_ms`, `percpu_arena`: accepted for compatibility, no effect.
 - `cgroup:false`: only as a control.
 - `check_zero`: a debug mode.

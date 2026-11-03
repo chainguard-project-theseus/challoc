@@ -9,7 +9,7 @@ exact windows the defaults leave open. The design view is
 |------------------------------------------|--------------|-----------------|
 | Metadata separate from user memory       | No           | Yes             |
 | Free-list pointers in freed blocks       | Yes          | None (5)        |
-| Invalid free detected                    | No           | Partly: plain `free` aborts except on slots a thread cache holds; sized frees defer to a flush; exact on every route with `double_free_scan` (1) |
+| Invalid free detected                    | No           | Partly: plain `free` aborts except on slots a thread cache holds; sized frees defer to a flush unless `exact_sized_free` is set; exact on every route with `double_free_scan` (1) |
 | Double free detected                     | Debug only   | Partly: aborts once the slot has left the caches; a cached copy only if a flush reaches it unclaimed; exact on every route with `double_free_scan` (1) |
 | Size classes in isolated address ranges  | No           | Yes, randomised |
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
@@ -63,7 +63,8 @@ throughput on the quick rows of the GCE gate cells, `alloc-test1`
 debugging and high-assurance deployments, not a default.
 
 Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
-`free_aligned_sized` (what Valkey frees with): the size is checked
+`free_aligned_sized` (what Valkey frees with), by default (`exact_sized_free`,
+below, changes it): the size is checked
 against the pointer's class, or a huge run's page count, at the call (a
 size that names another class or page count aborts, `nallocx(size,
 flags) == sallocx(p)` is the contract), a slot start inside a guard slab
@@ -89,6 +90,27 @@ under its new owner and it is live twice. `double_free_scan` closes all
 of this at the call (above). This trade is made for jemalloc parity: on
 Valkey's write path the exact check's bitmap load is a cache miss per
 free, most of what once separated challoc from jemalloc there.
+
+The `exact_sized_free` tunable (`MALLOC_CONF=exact_sized_free:true`)
+makes sized frees run plain `free`'s allocation check: after the size
+check, every `sdallocx`, `free_sized`, `free_aligned_sized` and sized
+`operator delete` goes through the exact `free`, so an invalid free, or a
+second free of a slot that has left the thread cache, aborts at the call
+as it does through `free`. It is off by default because every sized free
+then takes the slow path, the bitmap load included. The sized fast
+path's code is the same with the key set or not (with the key set, the
+sized check's guard mask is 0, so the check declines every pointer), so
+the default pays nothing for it. `double_free_scan` covers this check
+too (above), and more: it also catches a slot a refill claimed and a
+copy still held in a cache. What `exact_sized_free` adds is the sized
+route's check without `double_free_scan`'s costs: plain `free` and
+`malloc` keep their fast paths, the compacting cache stays on, and there
+is no per-slot state (its own price is not measured; `double_free_scan`
+costs 1.8..2.9x). Pick `exact_sized_free` when sized frees must check the
+slot at the call and `double_free_scan`'s price is too high. With both
+keys on, a sized free takes the size check, then plain `free`'s bit test and the state byte:
+the route `double_free_scan` alone gives it, so `exact_sized_free` adds
+nothing there.
 
 ## (2) Zero on free and slot randomisation
 
