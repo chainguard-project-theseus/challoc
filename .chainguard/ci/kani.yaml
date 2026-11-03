@@ -14,10 +14,8 @@
 # the run to Cargo.lock first.
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` (symbol aliases and the TLS slot) that no harness reaches;
-# `-Z stubbing` for the abort harnesses, which stub
-# `sys::abort::abort_fmt` (its body ends in raw syscalls, inline assembly
-# Kani does not run), and for `get_contract`, which stubs the C-string
-# `name` methods of `config.rs`; `-Z mem-predicates` for `kani::mem`'s
+# `-Z stubbing` for `get_contract`, which stubs the C-string `name`
+# methods of `config.rs`; `-Z mem-predicates` for `kani::mem`'s
 # `can_dereference` and its kin, with which harnesses check what Kani 0.68
 # does not check on a typed access: the alignment and the validity of the
 # value. `-j 4` runs four harnesses at once, on xlarge-amd64 for its
@@ -46,9 +44,9 @@ checks:
     # src/purge.rs, and any later kani_* module in a hot file) are covered by
     # kani-ignoring below instead, after each landing, so presubmit doesn't
     # pay for Kani on every proof round. Items outside both (src/stats.rs,
-    # src/sys/abort.rs, the zero axioms of src/class/table.rs, the class
-    # table in src/layout/, the enums src/kani/eq.rs matches) are checked
-    # by kani-ignoring too.
+    # the zero axioms of src/class/table.rs, the class table in
+    # src/layout/, the enums src/kani/eq.rs matches) are checked by
+    # kani-ignoring too.
     when:
       changed:
         - "src/kani/**"

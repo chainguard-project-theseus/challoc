@@ -259,7 +259,7 @@ items' docs name the test that checks them. A separate guard,
 | `lock::tests::entry_lock_order_uses_are_listed` | `axiom_entry` in the functions its doc lists |
 | `api::tests::lock_holders_match_inv_docs` | the functions that take each lock's guard, against the holders its `lock_inv` doc names, copied into the test by hand; raw `lock_held`/`unlock_held` only in the fork handlers; `get_unlocked` once |
 | `lock::tests::permission_axioms_are_called_only_at_acquisitions` | the lock-cell permission axioms at the acquisitions |
-| `sys::tests::{syscall,abort}_grants_only_at_roots`, `user_read_grants_only_in_listed_callers`, `user_read_capability_ensured_only_at_grants` | the syscall, abort and user-read grants; `may_read_user` in an `ensures` only at `grant_user_reads` and `purge::check_zero` |
+| `sys::tests::{syscall,abort}_grants_only_at_roots`, `user_read_grants_only_in_listed_callers`, `user_read_capability_ensured_only_at_grants`, `sys::abort::tests::abort_relabels_only_in_the_sinks` | the syscall, abort and user-read grants; the abort relabel only in the three narrowed sinks; `may_read_user` in an `ensures` only at `grant_user_reads` and `purge::check_zero` |
 | `heap::tcaches::tests::heap_use_axiom_only_at_listed_mint_sites` | `axiom_heap_use` at its 8 listed callers |
 | `api::tests::fork_hold_is_resumed_once`, `fork_child_resets_are_child_only`, `fork_lock_list_matches_the_source_tree` | the fork handlers' premises and lock list |
 | `huge::tests::zero_axioms_called_from_zero_run_only`, `purge::tests::state_lock_axiom_names_the_one_state_lock` | the huge zero axioms; the one state lock |
