@@ -31,8 +31,8 @@ pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_fmt ](f: &mut co
 verus! {
 
 // `sys::Errno` formats under any formatter (its `Display`, in
-// `sys/errno.rs` outside `verus!`, writes a name or a decimal fallback
-// and has no precondition). Ghost only:
+// `sys/errno.rs`, writes a name or a decimal fallback, and Verus checks
+// it under this precondition). Ghost only:
 // ordinary builds have no `std_specs`. Closed, and stated by
 // [`lemma_errno_fmt_req`] where a module `broadcast use`s it, so that
 // modules that never format an `Errno` do not carry the fact.

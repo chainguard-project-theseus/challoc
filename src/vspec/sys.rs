@@ -16,6 +16,11 @@ pub assume_specification[ u8::is_ascii_whitespace ](b: &u8) -> (r: bool)
     ensures r <==> (*b == 32 || *b == 9 || *b == 10 || *b == 12 || *b == 13),
 ;
 
+/// `u8::is_ascii_graphic`: `!`..`~`.
+pub assume_specification[ u8::is_ascii_graphic ](b: &u8) -> (r: bool)
+    ensures r <==> 33 <= *b <= 126,
+;
+
 /// `isize::wrapping_neg`: `-x`, except that `isize::MIN` is its own
 /// negation.
 pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)

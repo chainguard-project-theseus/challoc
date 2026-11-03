@@ -1338,13 +1338,19 @@ impl Cgroup {
     }
 }
 
-} // verus!
-
 /// A path shown as text, one `?` per byte that is not printable ASCII, for
 /// the `cgroup:` line. (This type, [`unsafe_char`] and [`Limit`] are items
 /// of the module rather than of `Cgroup::fmt`'s body, where Verus does
 /// not see them.)
 struct PathBytes<'a>(&'a [u8]);
+
+// Any bytes format (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for PathBytes<'_> {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
 
 impl fmt::Display for PathBytes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1358,8 +1364,6 @@ impl fmt::Display for PathBytes<'_> {
         Ok(())
     }
 }
-
-verus! {
 
 /// The printable ASCII bytes, `' '..='~'`, in order. Computed rather than
 /// written as a byte-string literal, whose bytes Verus does not see.
@@ -1406,10 +1410,16 @@ fn unsafe_char(b: u8) -> &'static str
     unsafe { str::from_utf8_unchecked(&table[i..i + 1]) }
 }
 
-} // verus!
-
 /// A limit, `max` when unlimited, for the `cgroup:` line.
 struct Limit(u64);
+
+// Any limit formats (ghost only).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Limit {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
 
 impl fmt::Display for Limit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1418,6 +1428,15 @@ impl fmt::Display for Limit {
         } else {
             write!(f, "{}", self.0)
         }
+    }
+}
+
+// A `Cgroup` formats under any formatter, for the `cgroup:` line of the
+// report (`api/print.rs`). Ghost only.
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Cgroup {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
     }
 }
 
@@ -1456,8 +1475,6 @@ impl fmt::Display for Cgroup {
         )
     }
 }
-
-verus! {
 
 /// The process's [`Cgroup`], discovered late (design 11): at init only
 /// when something needs the limit then (`thp:always`, which a limit under
@@ -3393,9 +3410,9 @@ mod linux_tests {
     }
 }
 
-/// Kani harness for the `Display` of `Cgroup`, which the
-/// `DisplaySpecImpl` seam in `vspec/print.rs` describes
-/// (`verus/ledger/src/vspec/print.rs.md`).
+/// Kani harness for the `Display` of `Cgroup`, run under the real
+/// `core::fmt` (Verus checks it against the `Formatter` specifications of
+/// `vspec/fmt.rs`).
 #[cfg(kani)]
 mod kani_fmt {
     use super::{Cgroup, State};
