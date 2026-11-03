@@ -5,6 +5,10 @@
 //! still has the copied lines, in order, and that every other line with an
 //! `Ordering::`, a `fence(` or a `futex_` call inside a function a pin falls
 //! in is pinned too or waived with its reason (`WAIVED`).
+//! `tests/access.rs` checks, by source text, the facts the ledger's
+//! weak-memory arguments state for the seams that cite these models
+//! (`loom: <mod>::<test>`, verus/SEAMS.md): atomic writes only through the
+//! wrappers and accessors they name, and one permission minted per atomic.
 //! `tests/kani_trigger.rs`, here because this check runs on every pull
 //! request, checks that each file with a `kani_*` module or a seam its
 //! ledger gives to Kani is in `.chainguard/ci/kani.yaml`'s `changed:` list

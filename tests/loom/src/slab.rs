@@ -201,6 +201,10 @@ fn read_and_empty(w: &World) {
 
 /// The hand-over and a second holder, then a read ordered after both by
 /// the joins.
+///
+/// Covers copies of `SlabDesc::init`, `SlabDesc::state_byte_held`,
+/// `SlabDesc::dirty_held`, `SlabDesc::set_state`, `SlabDesc::arena_held` and
+/// `SlabDesc::set_dirty_at`.
 #[test]
 fn loom_slab_desc_reads_through_the_lock() {
     model(|| {

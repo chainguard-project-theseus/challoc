@@ -307,6 +307,10 @@ fn release_then_reserve(mutant: Mutant) {
 /// take the other owner's slot, whose release `live` has not counted
 /// yet: then only the bitmap's `Release` and `Acquire` order the two
 /// owners' writes (the two controls below).
+///
+/// Covers copies of `vspec::word::fetch_or`, `vspec::word::fetch_and` and
+/// `vspec::word::store` (`vspec/word.rs`), over one
+/// `vspec::word::WordPerm`'s word.
 #[test]
 fn loom_bitmap_release_then_reserve() {
     release_then_reserve(Mutant::None);
@@ -332,6 +336,10 @@ fn loom_bitmap_relaxed_claim_is_a_race() {
 /// on the word. The loser of a `fetch_or` sees the winner's bit on its
 /// next pass, so each is met within two passes, and the slots are
 /// disjoint.
+///
+/// Covers copies of `vspec::word::fetch_or`, `vspec::word::fetch_and` and
+/// `vspec::word::store` (`vspec/word.rs`), over one
+/// `vspec::word::WordPerm`'s word.
 #[test]
 fn loom_bitmap_two_claimers() {
     model(|| {
@@ -389,6 +397,11 @@ fn init_published(publish: Ordering) {
 }
 
 /// The shipped orderings.
+///
+/// Covers copies of `vspec::word::store`, `vspec::word::fetch_or` and, for
+/// the commit count, `vspec::atom::store_usize` and
+/// `vspec::atom::load_usize_seen` (`vspec/atom.rs`), over one
+/// `vspec::word::WordPerm`'s word.
 #[test]
 fn loom_bitmap_init_is_published() {
     init_published(Ordering::Release);

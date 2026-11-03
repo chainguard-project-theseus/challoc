@@ -97,6 +97,8 @@ fn run(v: Variant) {
 
 /// `B` exits after `request(false)`, whether its `SEQ` load comes before
 /// or after the withdrawal's kick.
+///
+/// Covers a copy of `background::main`'s loop.
 #[test]
 fn loom_exit_after_withdrawal() {
     run(SHIPPED);
@@ -105,6 +107,8 @@ fn loom_exit_after_withdrawal() {
 /// The same with another kick on `SEQ` in between: `B` reading that
 /// kick's value still synchronises with the withdrawal (the release
 /// sequence of `W`'s `fetch_add` continues through `K`'s RMW).
+///
+/// Covers a copy of `background::main`'s loop.
 #[test]
 fn loom_exit_after_withdrawal_with_waker() {
     run(Variant {

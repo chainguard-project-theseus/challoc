@@ -196,6 +196,11 @@ fn run(publish: Ordering) {
 }
 
 /// The shipped orderings.
+///
+/// Covers copies of `table::store_owner` (`src/class/table.rs`) and
+/// `vspec::atom::store_usize`, `vspec::atom::load_usize`,
+/// `vspec::atom::load_usize_seen` and `vspec::atom::load_u16_at`
+/// (`vspec/atom.rs`).
 #[test]
 fn loom_watermark_take_group_publishes() {
     run(Ordering::Release);
@@ -248,6 +253,9 @@ fn run_mirror(install_first: bool, unlocked: bool) {
 /// lock each hand-out finds the copy at the previous holder's store
 /// (the watermark), a reader's loads never go back, and once every
 /// thread is joined the copy is the slab count.
+///
+/// Covers copies of `vspec::atom::store_usize_at` and
+/// `vspec::atom::store_usize` (`vspec/atom.rs`).
 #[test]
 fn loom_watermark_mirror_follows() {
     run_mirror(true, false);
@@ -256,6 +264,9 @@ fn loom_watermark_mirror_follows() {
 /// The same, with the copy installed concurrently with a hand-out:
 /// `mirror_watermark` stores the `next_slab` it reads under the lock,
 /// before or after the hand-out's.
+///
+/// Covers copies of `vspec::atom::store_usize_at` and
+/// `vspec::atom::store_usize` (`vspec/atom.rs`).
 #[test]
 fn loom_watermark_mirror_installed_concurrently() {
     run_mirror(false, false);

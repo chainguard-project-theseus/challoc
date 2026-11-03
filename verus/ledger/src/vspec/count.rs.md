@@ -17,7 +17,7 @@ file.
 ## `fetch_add`
 
 src/vspec/count.rs:81. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_fetch_add; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_fetch_add, and loom: count::loom_count_bind_assign_unbind and count::loom_count_try_bind_idle_rival; not checked: this body under concurrency, which the models replace with loom's `fetch_add` inside copies of the `Arenas` steps, in the configurations tests/loom/src/count.rs states; the C11 argument above that the permission's value is the counter's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `c.fetch_add(v, ordering)`, wrapping.
 
@@ -36,7 +36,7 @@ pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 ## `fetch_sub`
 
 src/vspec/count.rs:98. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_fetch_sub; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_fetch_sub, and loom: count::loom_count_bind_assign_unbind and count::loom_count_try_bind_idle_rival; not checked: this body under concurrency, which the models replace with loom's `fetch_sub` inside copies of the `Arenas` steps, in the configurations tests/loom/src/count.rs states; the C11 argument above that the permission's value is the counter's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `c.fetch_sub(v, ordering)`, wrapping.
 
@@ -55,7 +55,7 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
 ## `store`
 
 src/vspec/count.rs:116. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_store, and loom: narenas::loom_narenas_create_publishes; not checked: this body under concurrency, which the model replaces with loom's `store` inside copies of the `Arenas` steps, in the configuration tests/loom/src/narenas.rs states; the C11 argument above that the permission's value is the counter's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `c.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -75,7 +75,7 @@ pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&
 ## `load`
 
 src/vspec/count.rs:135. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_load, and loom: count::loom_count_bind_assign_unbind, narenas::loom_narenas_create_publishes and position::loom_position_apply_swaps; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the `Arenas` and `Policy` steps, in the configurations their files state; the C11 argument above that the permission's value is the counter's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `c.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
@@ -94,7 +94,7 @@ pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm
 ## `swap`
 
 src/vspec/count.rs:152. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_swap; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_swap, and loom: position::loom_position_apply_swaps; not checked: this body under concurrency, which the model replaces with loom's `swap` inside copies of the `Policy` steps, in the configuration tests/loom/src/position.rs states; the C11 argument above that the permission's value is the counter's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `c.swap(v, ordering)`: the previous value.
 
@@ -113,7 +113,7 @@ pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&m
 ## `compare_exchange`
 
 src/vspec/count.rs:188. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_compare_exchange; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_compare_exchange, and loom: count::loom_count_try_bind_idle_rival and count::loom_count_try_bind_idle_one_wins; not checked: this body under concurrency, which the models replace with loom's `compare_exchange` inside copies of the `Arenas` steps, in the configurations tests/loom/src/count.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show (it has no spurious failure) and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `c.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the counter held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
 

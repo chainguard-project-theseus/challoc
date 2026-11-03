@@ -49,7 +49,7 @@ pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableI
 ## `store_owner`
 
 src/class/table.rs:1097. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes; not checked: this body, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `(*w).store(arena, Relaxed)` of the owner word of hand-out group `group` of `t`, through its permission `perm`: the permission holds `arena` ([`u16_value`], as `vspec::atom::load_u16_at` reads it back), and from here on [`slab_owner`] of every slab of the group is `arena`.
 

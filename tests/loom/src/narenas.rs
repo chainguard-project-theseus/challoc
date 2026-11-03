@@ -197,6 +197,9 @@ fn run(publish: Ordering, entry_order: Ordering) {
 }
 
 /// The shipped orderings.
+///
+/// Covers copies of `vspec::count::store`, `vspec::count::load`,
+/// `vspec::entry::store` and `vspec::entry::load`.
 #[test]
 fn loom_narenas_create_publishes() {
     run(Ordering::Release, Ordering::Release);

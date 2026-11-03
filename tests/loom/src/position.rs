@@ -90,6 +90,8 @@ fn run(split: bool) {
 }
 
 /// The shipped code: one atomic swap.
+///
+/// Covers copies of `vspec::count::swap` and `vspec::count::load`.
 #[test]
 fn loom_position_apply_swaps() {
     run(false);

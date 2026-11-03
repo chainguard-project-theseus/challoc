@@ -1,6 +1,15 @@
 # The free fast path's route byte: each wrapper is one core atomic
 # operation (or AtomicU8::new), and `fixed` is kept because fetch_or of
 # bits within ROUTE is the only write after `new`.
-new	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte; not checked: concurrent interleavings, where the orderings matter; that every write after `new` is `fetch_or` within `ROUTE` (the harness makes no other); that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`))
-load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte; not checked: concurrent interleavings, where the orderings matter; that every write after `new` is `fetch_or` within `ROUTE` (the harness makes no other); that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`))
-fetch_or	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte; not checked: concurrent interleavings, where the orderings matter; that every write after `new` is `fetch_or` within `ROUTE` (the harness makes no other); that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`))
+# loom and C11 (verus/WEAKMEM.md): the byte's AtomicU8 is private to this
+# file, and each wrapper is called once, in heap/shared.rs, with the one
+# raw write through `S_FREE_FLAGS` writing the byte `new` made
+# (tests/loom/tests/access.rs). Every write after `new` is a `fetch_or`
+# within ROUTE, so every value in the byte's modification order keeps the
+# made bits, and C++20's coherence rules ([intro.races]) give a reader
+# ordered after `init` one of those values, for any ordering. The flags
+# models check that on copies of the `Shared` steps
+# (tests/loom/tests/pins.rs).
+new	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte, and loom: flags::loom_flags_route_byte_keeps_push_flags and flags::loom_flags_two_builders; not checked: this body under concurrency, which the models replace with loom's `AtomicU8::new` inside copies of the `Shared` steps, in the configurations tests/loom/src/flags.rs states; that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`); that no write but these reaches the byte, which tests/loom/tests/access.rs backs by matching source text only)
+load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte, and loom: flags::loom_flags_route_byte_keeps_push_flags and flags::loom_flags_two_builders; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the `Shared` steps, in the configurations tests/loom/src/flags.rs states; that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`); that no write but these reaches the byte, which tests/loom/tests/access.rs backs by matching source text only)
+fetch_or	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte, and loom: flags::loom_flags_route_byte_keeps_push_flags and flags::loom_flags_two_builders; not checked: this body under concurrency, which the models replace with loom's `fetch_or` inside copies of the `Shared` steps, in the configurations tests/loom/src/flags.rs states; that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`); that no write but these reaches the byte, which tests/loom/tests/access.rs backs by matching source text only)

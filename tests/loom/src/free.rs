@@ -224,6 +224,12 @@ fn run(
 /// class line's watermark copy lags, on the slow path's re-read of the
 /// table), and its writes to the block do not race with the allocating
 /// thread's.
+///
+/// Covers copies of `table::store_owner` (`src/class/table.rs`),
+/// `vspec::atom::store_usize`, `vspec::atom::store_usize_at`,
+/// `vspec::atom::load_usize`, `vspec::atom::load_usize_seen` and
+/// `vspec::atom::load_u16_at` (`vspec/atom.rs`) and `vspec::word::load`
+/// (`vspec/word.rs`).
 #[test]
 fn loom_free_after_synchronised_handoff() {
     static SEEN: Mutex<BTreeSet<Out>> = Mutex::new(BTreeSet::new());
@@ -249,6 +255,10 @@ fn loom_free_after_synchronised_handoff() {
 /// or a slot released to arena 0 needs the slow path's re-read stale
 /// too). The free does not touch the block here (that would be a reported
 /// race).
+///
+/// Covers copies of `vspec::atom::load_usize`,
+/// `vspec::atom::load_usize_seen` and `vspec::atom::load_u16_at`
+/// (`vspec/atom.rs`) and `vspec::word::load` (`vspec/word.rs`).
 #[test]
 fn loom_free_after_relaxed_handoff() {
     static SEEN: Mutex<BTreeSet<Out>> = Mutex::new(BTreeSet::new());

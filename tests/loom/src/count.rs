@@ -159,6 +159,9 @@ fn run(split: bool) {
 /// ignored here and the `loom-count` check (`.chainguard/ci/lint.yaml`)
 /// runs it with `--ignored` on changes to this model or the code it
 /// copies: `sh tests/loom/run.sh -- --ignored`.
+///
+/// Covers copies of `vspec::count::fetch_add`, `vspec::count::fetch_sub` and
+/// `vspec::count::load`.
 #[test]
 #[ignore = "slow: the loom-count check runs it (sh tests/loom/run.sh -- --ignored)"]
 fn loom_count_bind_assign_unbind() {
@@ -224,6 +227,10 @@ fn run_idle(split_cas: bool, rival: bool) {
 /// The shipped `try_bind_idle`, against a rival `bind` and `unbind`: at
 /// most one heap wins the arena, and every count stays the number of
 /// tickets out.
+///
+/// Covers copies of `vspec::count::compare_exchange`,
+/// `vspec::count::fetch_add`, `vspec::count::fetch_sub` and
+/// `vspec::count::load`.
 #[test]
 fn loom_count_try_bind_idle_rival() {
     run_idle(false, true);
@@ -233,6 +240,9 @@ fn loom_count_try_bind_idle_rival() {
 /// loom's compare-and-swap never fails spuriously (its weak form is its
 /// strong one), so this checks the copy's use of it, not that the
 /// strong form has no spurious failure.
+///
+/// Covers copies of `vspec::count::compare_exchange` and
+/// `vspec::count::load`.
 #[test]
 fn loom_count_try_bind_idle_one_wins() {
     run_idle(false, false);

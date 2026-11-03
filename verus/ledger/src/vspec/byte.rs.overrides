@@ -1,4 +1,17 @@
 # Kani runs each wrapper on a real atomic, one thread (src/kani/atomic.rs).
-load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
-store	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
-compare_exchange	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_compare_exchange; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
+# loom and C11 (verus/WEAKMEM.md): a deferred record's phase
+# (`Deferred::phase`, sys/cgroup.rs) is written only through these
+# wrappers, which no other file calls, and this file mints one BytePerm
+# per atomic, in `new` (tests/loom/tests/access.rs). C++20's coherence
+# rules ([intro.races]) give a load the permission's value at its place in
+# the byte's modification order; the exchange is a read-modify-write,
+# which reads the last value for every ordering ([atomics.order] p10), in
+# the strong form, which fails only when the values differ; and the
+# `Release` store of `DONE` with an `Acquire` load or exchange that reads
+# it orders the record's plain writes before its readers (a
+# release/acquire pair, [atomics.order] p2). The oncecell models check
+# that hand-off and the fork child's reset on copies of the `Deferred`
+# steps (tests/loom/tests/pins.rs).
+load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_load, and loom: oncecell::loom_oncecell_deferred_discover_races_get and oncecell::loom_oncecell_deferred_fork_child_restarts; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the `Deferred` steps, in the configurations tests/loom/src/oncecell.rs states; the C11 argument above that the permission's value is the phase's last write, which tests/loom/tests/access.rs backs by matching source text only)
+store	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_store, and loom: oncecell::loom_oncecell_deferred_discover_races_get and oncecell::loom_oncecell_deferred_fork_child_restarts; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the `Deferred` steps, in the configurations tests/loom/src/oncecell.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+compare_exchange	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::byte_compare_exchange, and loom: oncecell::loom_oncecell_deferred_discover_races_get and oncecell::loom_oncecell_deferred_fork_child_restarts; not checked: this body under concurrency, which the models replace with loom's `compare_exchange` inside copies of the `Deferred` steps, in the configurations tests/loom/src/oncecell.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
