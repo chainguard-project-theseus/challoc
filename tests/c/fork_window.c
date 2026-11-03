@@ -36,6 +36,23 @@ static int bg_threads(void)
     return n;
 }
 
+/* bg_threads() once the count is at most one, or after 2 s. Turning the
+ * thread on joins the one the last "off" stopped before it starts the
+ * next, but pthread_join returns at the exiting thread's CLONE_CHILD_CLEARTID
+ * wake-up, which the kernel makes before it unlinks the thread from
+ * /proc/self/task: a preempted exit can still be listed, as challoc-bg,
+ * next to its successor. That entry goes when the exit finishes; a
+ * second live thread on the same stack (the bug) stays. */
+static int bg_threads_settled(void)
+{
+    int n = bg_threads();
+    for (int i = 0; n > 1 && i < 2000; i++) {
+        usleep(1000);
+        n = bg_threads();
+    }
+    return n;
+}
+
 static void child_handler(void)
 {
     bool on = true;
@@ -83,7 +100,7 @@ static int in_child(void)
         if (mallctl("background_thread", NULL, NULL, &v, sizeof v) != 0)
             return 6;
         churn();
-        int n = bg_threads();
+        int n = bg_threads_settled();
         if (n > 1) {
             fprintf(stderr, "%d challoc-bg threads\n", n);
             return 7;
