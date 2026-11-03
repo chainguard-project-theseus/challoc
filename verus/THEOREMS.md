@@ -2736,7 +2736,7 @@ handler, under the lazy start, then sums the dirty bytes it inherited
 from a lock-order token of its own (`axiom_entry`, theorem 33), so outside this
 statement.
 
-The tokens: `RawLock::lock_held` (`lock.rs:159`) is `lock` plus a
+The tokens: `RawLock::lock_held` (`lock.rs:181`) is `lock` plus a
 `LockHeld` whose `held()` is the lock. The field is private to
 `lock.rs`, so outside it only `lock_held` builds a token; the handoff
 axioms below are the other source.
@@ -2746,11 +2746,14 @@ axioms below are the other source.
   no other thread holds it until `unlock`. This is `RawLock`'s futex
   contract; Verus does not check it (atomics return any value). The
   token records the calls; the mutex turns them into exclusive holds.
-- *The handoff* (`axiom_fork_resumed_state`, `api/mod.rs:1820`, and
-  `axiom_fork_resumed`, `:2534`; axioms). Ghost state does not cross the
+- *The handoff* (`axiom_fork_resumed_state`, `api/mod.rs:2048`, and
+  `axiom_fork_resumed`, `:2802`; axioms). Ghost state does not cross the
   C calls, so the hold `fork_prepare` ends with is restated where the
   release begins: `axiom_fork_resumed` ensures `fork_holds` at the
-  `&Shared` the release reads (`shared` returns the same static). The
+  `&Shared` the release reads, which it requires to be the process's
+  one value, `Shared::built_at(Shared::storage())`: `shared` ensures
+  that, so the prepare's hold and the release's are over the same
+  `Shared` by proof. The
   premise includes that the bundle's `n` and `arenas` are what
   `fork_prepare` read, which the ensures does not name. glibc runs the
   parent and child handlers on the forking thread (in the child, its
@@ -2764,7 +2767,7 @@ axioms below are the other source.
   on the forking thread, so a `true` read there is this fork's). Each handler calls each axiom once. For
   `axiom_fork_resumed` a second call would prove `false` (the creation
   lock cell's permission it restates is exclusive), and the test
-  `fork_hold_is_resumed_once` (`api/mod.rs:2919`) checks that its
+  `fork_hold_is_resumed_once` (`api/mod.rs:3189`) checks that its
   wrapper `resume::resumed` has one call site; for
   `axiom_fork_resumed_state` the same test counts the call sites (one
   per handler), and nothing enforces the run-time count.
@@ -6388,7 +6391,7 @@ pub fn lock<'a>(&'a self, Tracked(ord): Tracked<&'a mut LockOrder<'_>>,
     requires old(ord).allows(self.rank()),          // ord.top() < rank
     ensures  *final(ord) == *old(ord), final(under).top() == self.rank(), ...
 
-// lock.rs:159: a raw acquisition (the fork handlers).
+// lock.rs:181: a raw acquisition (the fork handlers).
 pub fn lock_held(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>)
     requires old(ord).root(), old(ord).allows(self.rank()),
     ensures  t@.held() == *self, final(ord).root(), final(ord).top() == self.rank(),
@@ -7816,10 +7819,10 @@ handoff premises).
   and `abort` (which unblocks `SIGABRT` and never returns), and no other
   code runs on the thread inside the handler. One call per handler
   entry; nothing enforces it at run time (`fork_hold_is_resumed_once`,
-  `api/mod.rs:2919`, checks there is one call site). `SigMask`'s field is private to a module of its own
+  `api/mod.rs:3189`, checks there is one call site). `SigMask`'s field is private to a module of its own
   (`sys::sigmask`), so no code builds a token.
-- *The kernel's `rt_sigprocmask`* (`sigprocmask_block`, `sys/mod.rs:1443`, and
-  `sigprocmask_setmask`, `:1476`, in `sys::linux`, private;
+- *The kernel's `rt_sigprocmask`* (`sigprocmask_block`, `sys/mod.rs:1472`, and
+  `sigprocmask_setmask`, `:1505`, in `sys::linux`, private;
   `external_body`, each the one `raw::syscall4` call its caller made
   before). A successful `SIG_BLOCK` of `BLOCKABLE_SIGNALS`, every
   signal but `SIGCANCEL` and `SIGSETXID`, wrote the mask in force before
@@ -7833,7 +7836,7 @@ handoff premises).
   success; on failure nothing is said (the callers abort). The value
   comes from the call, so no caller can choose it.
 - *The handoff, its signal half* (`api::axiom_fork_resumed_sig`,
-  `api/mod.rs:1848`, and `axiom_fork_resumed`'s new conjuncts, `:2534`;
+  `api/mod.rs:2076`, and `axiom_fork_resumed`'s new conjuncts, `:2802`;
   axioms). The parent and child handlers run on the thread whose
   prepare returned holding `fork_sig_holds` (in the child, its copy,
   which inherits the mask), with the mask still `all_blocked()`:
@@ -7857,8 +7860,10 @@ handoff premises).
   (`slot_addr`; bookkeeping only, as nothing reads that hold after the
   store), and the resumed hold's permission is for the word the axiom
   is passed, so that the release's word is the prepare's (both
-  `&FORK_SIGMASK`; a static has one address) is the handoff premise, as
-  for the `&Shared` both handlers read. Passed another word, the axiom
+  `&FORK_SIGMASK`; a static has one address) is the handoff premise.
+  The `&Shared` both handlers read is not a premise: the axiom requires
+  it to be `Shared::built_at(Shared::storage())`, which `shared`
+  ensures. Passed another word, the axiom
   would mint a second permission to it, so it is private to the module
   `api::resume`, whose one function, the verified `resumed`
   (`fork_release` calls it), passes `fork_slot()`'s word and returns it
@@ -7899,9 +7904,9 @@ handler (glibc always runs one).
 (`sys/mod.rs:305`) now also says glibc's `SIGCANCEL` and `SIGSETXID`
 are unblocked (`mask & !BLOCKABLE_SIGNALS == 0`), so
 `axiom_thread_mask` (`:260`), which ensures `wf`, assumes it of the
-calling thread's mask; and `axiom_fork_resumed` (`api/mod.rs:2534`)
+calling thread's mask; and `axiom_fork_resumed` (`api/mod.rs:2802`)
 also ensures that the saved mask lies inside the blockable signals.
-`set_signal_mask` (`sys/mod.rs:1407`) now requires the mask to leave
+`set_signal_mask` (`sys/mod.rs:1436`) now requires the mask to leave
 those two unblocked, which the release meets through `fork_sig_holds`'
 new conjunct. `purge::background::spawn` passes placeholder tokens
 (`Tracked::assume_new()`) instead of one from `axiom_thread_mask`.
