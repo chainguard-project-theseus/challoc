@@ -47,11 +47,19 @@
 //! Verified: every index here is in bounds and no arithmetic overflows;
 //! the addresses (an array base read from an atomic, plus an offset) and
 //! [`commit`]'s page rounding of them wrap, and [`init`] rounds with
-//! `meta::align_up` within proved bounds. Not verified: the bytes' values,
-//! state no verified invariant constrains (the free's race is modelled in
-//! `tests/loom/src/slotstate.rs`); that a computed address is a committed
-//! byte (trusted, [`byte_at`]); and that [`commit`]'s range lies in
-//! [`init`]'s reservation (`mprotect` is checked only for its call).
+//! `meta::align_up` within proved bounds. Given a byte's value at each
+//! operation as a premise ([`axiom_slot_byte`], and `core`'s atomics on
+//! it through `vspec::byte`'s wrappers): [`free`], [`claim`], [`pop`] and
+//! [`release`] return only when the byte held the state their transition
+//! starts from, and leave the one it ends in; and
+//! [`theorem_double_free_window`] proves, over the code's transitions on
+//! one byte, that a free left `CACHED` or `FREE` stays so until a
+//! hand-out. Not verified: the bytes' values, state no verified
+//! invariant constrains (the free's race is modelled in
+//! `tests/loom/src/slotstate.rs`); that a computed address is a
+//! committed byte (trusted, [`byte_at`]); and that [`commit`]'s range
+//! lies in [`init`]'s reservation (`mprotect` is checked only for its
+//! call).
 //! Every check here only adds an abort ([`crate::sys::abort_pending`]: it
 //! fires on an invalid free, and on a valid one only if this state is
 //! corrupt); none changes what the verified paths do with the bitmap or
@@ -61,9 +69,12 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use super::Shared;
 use crate::layout::{CLASSES, NCLASSES, Regions};
+#[cfg(verus_keep_ghost)]
+use crate::vspec::byte::{BytePerm, byte_id};
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked};
 
 verus! {
 
@@ -128,6 +139,116 @@ pub const FREE: u8 = 0;
 pub const CACHED: u8 = 1;
 /// The slot is the program's.
 pub const LIVE: u8 = 2;
+
+/// A value a slot's state byte holds: [`FREE`], [`CACHED`] or [`LIVE`].
+pub open spec fn is_state(v: u8) -> bool {
+    v == FREE || v == CACHED || v == LIVE
+}
+
+/// The `(from, to)` of every [`step`] the code makes: a claim (`FREE` to
+/// `CACHED` or `LIVE`), a pop (`CACHED` to `LIVE`), a free (`LIVE` to
+/// `CACHED` or `FREE`), a release (`CACHED` to `FREE`), and
+/// [`check_not_cached`]'s read (`NONE` to `NONE`).
+pub open spec fn transition(from: u8, to: u8) -> bool {
+    ||| from == FREE && (to == CACHED || to == LIVE)
+    ||| from == CACHED && (to == LIVE || to == FREE)
+    ||| from == LIVE && (to == CACHED || to == FREE)
+    ||| from == NONE && to == NONE
+}
+
+/// What a [`step`] from `from` to `to` leaves in a byte that holds `held`.
+pub open spec fn after(held: u8, from: u8, to: u8) -> u8 {
+    if held == from {
+        to
+    } else {
+        held
+    }
+}
+
+/// What that [`step`] returns, short of [`PAST`].
+pub open spec fn seen(held: u8, from: u8) -> u8 {
+    if held == from {
+        MOVED
+    } else {
+        held
+    }
+}
+
+/// The byte after the steps `ops`, in order, from `s`.
+pub open spec fn run(s: u8, ops: Seq<(u8, u8)>) -> u8
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        s
+    } else {
+        after(run(s, ops.drop_last()), ops.last().0, ops.last().1)
+    }
+}
+
+/// One of the steps `ops` from `s` moves the byte to `LIVE`: a pop or
+/// `alloc_direct`'s claim hands the slot to the program.
+pub open spec fn hands_out(s: u8, ops: Seq<(u8, u8)>) -> bool {
+    exists|i: int| 0 <= i < ops.len() && #[trigger] ops[i].1 == LIVE && run(s, ops.take(i)) == ops[i].0
+}
+
+/// The double-free window of `double_free_scan`: after a free of a slot
+/// returns, leaving its byte at `to` ([`free`] checks it), every sequence
+/// of the code's steps on that byte that does not hand the slot out
+/// leaves it `CACHED` or `FREE`, so the next free's step returns that
+/// value, on which [`free`] aborts. The window ends at the slot's next
+/// hand-out (a pop, or `alloc_direct`'s claim): the slot is the
+/// program's again, and a free of it passes.
+///
+/// The steps are those of one slot's byte in the order they take effect;
+/// that the byte holds what the last step on that slot left
+/// ([`axiom_slot_byte`]) and that each step is one atomic operation are
+/// premises, not verified here.
+pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
+    requires
+        to == CACHED || to == FREE,
+        forall|i: int| 0 <= i < ops.len() ==> transition(#[trigger] ops[i].0, ops[i].1),
+        !hands_out(to, ops),
+    ensures
+        run(to, ops) == CACHED || run(to, ops) == FREE,
+        seen(run(to, ops), LIVE) == run(to, ops),
+    decreases ops.len(),
+{
+    if ops.len() > 0 {
+        let init = ops.drop_last();
+        assert forall|i: int| 0 <= i < init.len() implies transition(#[trigger] init[i].0, init[i].1) by {
+            assert(init[i] == ops[i]);
+        }
+        assert(!hands_out(to, init)) by {
+            if hands_out(to, init) {
+                let i = choose|i: int| 0 <= i < init.len() && #[trigger] init[i].1 == LIVE && run(to, init.take(i)) == init[i].0;
+                assert(init.take(i) =~= ops.take(i));
+                assert(init[i] == ops[i]);
+            }
+        }
+        theorem_double_free_window(to, init);
+        let k = ops.len() - 1;
+        assert(ops.take(k) =~= init);
+        assert(transition(ops[k].0, ops[k].1));
+        assert(!(ops[k].1 == LIVE && run(to, ops.take(k)) == ops[k].0));
+    }
+}
+
+/// Premise (the slot-state bytes are trusted values): a permission to `b`,
+/// a slot's state byte that [`byte`] computed, which holds a state. That
+/// is all its contract says. That the value is the one the last [`step`]
+/// on that slot left (`FREE` before the first, the array's zero fill) is
+/// an unencoded premise: each step takes one fresh permission, and no
+/// verified invariant constrains the bytes (raw mapped memory, written
+/// only by [`step`], through `vspec::byte`'s wrappers; the free's race is
+/// modelled in `tests/loom/src/slotstate.rs`). The bytes are not made by
+/// `vspec::byte::new`, so this is the one other place a [`BytePerm`] is
+/// minted. Called only in [`step`], once (pinned by
+/// `tests::slot_byte_axiom_is_called_only_in_step`).
+axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
+    ensures
+        perm.id() == byte_id(b),
+        is_state(perm.value()),
+;
 
 /// Reserve one `PROT_NONE` byte array per class, `nslabs * slab_bits`
 /// bytes, and record the class bases. Called once, by `Shared::init`,
@@ -249,23 +370,46 @@ pub const NONE: u8 = 0xfd;
 /// store are one compare-and-exchange (a free: two frees of one slot on
 /// two threads cannot both find it `LIVE`); without, a load and a store
 /// (the claims, pops and releases, which only the thread that holds the
-/// slot makes).
-fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool) -> u8
+/// slot makes). Short of `PAST`, `obs` is the value the byte held and the
+/// one it holds after: the step returns [`seen`] and leaves [`after`] of
+/// the first.
+fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool, Tracked(obs): Tracked<&mut Ghost<(u8, u8)>>) -> (r: u8)
     requires
         class < NCLASSES,
+        transition(from, to),
+    ensures
+        r != PAST ==> is_state(final(obs)@.0) && r == seen(final(obs)@.0, from) && final(obs)@.1 == after(final(obs)@.0, from, to),
 {
     let Some(b) = byte(shared, class, p) else { return PAST };
+    let tracked mut perm = axiom_slot_byte(b);
+    let ghost held = perm.value();
     if exchange {
-        match b.compare_exchange(from, to, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => MOVED,
-            Err(v) => v,
+        match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {
+            Ok(_) => {
+                proof {
+                    *obs = Ghost((held, perm.value()));
+                }
+                MOVED
+            },
+            Err(v) => {
+                proof {
+                    *obs = Ghost((held, perm.value()));
+                }
+                v
+            },
         }
     } else {
-        let v = b.load(Ordering::Relaxed);
+        let v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(&perm));
         if v == from {
-            b.store(to, Ordering::Relaxed);
+            crate::vspec::byte::store(b, to, Ordering::Relaxed, Tracked(&mut perm));
+            proof {
+                *obs = Ghost((held, perm.value()));
+            }
             MOVED
         } else {
+            proof {
+                *obs = Ghost((held, perm.value()));
+            }
             v
         }
     }
@@ -277,21 +421,28 @@ fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: b
 /// onto a cache, `FREE` straight to the slab), with one
 /// compare-and-exchange. Aborts on anything else: `CACHED` is a second
 /// free of a slot a cache still holds (any thread's); `FREE`, or a slab
-/// past the watermark, is an invalid or stale double free.
+/// past the watermark, is an invalid or stale double free. Verified (the
+/// assertion at its end): it returns only when the byte held `LIVE` and
+/// now holds `to`.
 #[cold]
 #[inline(never)]
 pub(super) fn free(shared: &Shared, class: usize, p: *mut u8, to: u8)
     requires
         crate::sys::may_abort_pending(),
         class < NCLASSES,
+        to == CACHED || to == FREE,
 {
-    let r = step(shared, class, p, LIVE, to, true);
+    let tracked mut obs = Ghost((0u8, 0u8));
+    let r = step(shared, class, p, LIVE, to, true, Tracked(&mut obs));
     if r == PAST {
         crate::sys::abort_pending(format_args!("invalid free of {:#x}: class {}: its slab was never allocated", p as usize, class))
     } else if r == CACHED {
         crate::sys::abort_pending(format_args!("double free of {:#x}: the slot is already in a thread cache", p as usize))
     } else if r != MOVED {
         crate::sys::abort_pending(format_args!("invalid or double free of {:#x} (class {}): slot is not allocated", p as usize, class))
+    }
+    proof {
+        assert(obs@.0 == LIVE && obs@.1 == to);
     }
 }
 
@@ -305,9 +456,14 @@ pub(super) fn claim(shared: &Shared, class: usize, p: *mut u8, to: u8)
     requires
         crate::sys::may_abort_pending(),
         class < NCLASSES,
+        to == CACHED || to == LIVE,
 {
-    if step(shared, class, p, FREE, to, false) != MOVED {
+    let tracked mut obs = Ghost((0u8, 0u8));
+    if step(shared, class, p, FREE, to, false, Tracked(&mut obs)) != MOVED {
         crate::sys::abort_pending(format_args!("slot state of {:#x} (class {}) is not free at its claim", p as usize, class))
+    }
+    proof {
+        assert(obs@.0 == FREE && obs@.1 == to);
     }
 }
 
@@ -321,8 +477,12 @@ pub(super) fn pop(shared: &Shared, class: usize, p: *mut u8)
         crate::sys::may_abort_pending(),
         class < NCLASSES,
 {
-    if step(shared, class, p, CACHED, LIVE, false) != MOVED {
+    let tracked mut obs = Ghost((0u8, 0u8));
+    if step(shared, class, p, CACHED, LIVE, false, Tracked(&mut obs)) != MOVED {
         crate::sys::abort_pending(format_args!("double free of {:#x}: a cached copy of a slot that is not cached", p as usize))
+    }
+    proof {
+        assert(obs@.0 == CACHED && obs@.1 == LIVE);
     }
 }
 
@@ -336,8 +496,12 @@ pub(super) fn release(shared: &Shared, class: usize, p: *mut u8)
         crate::sys::may_abort_pending(),
         class < NCLASSES,
 {
-    if step(shared, class, p, CACHED, FREE, false) != MOVED {
+    let tracked mut obs = Ghost((0u8, 0u8));
+    if step(shared, class, p, CACHED, FREE, false, Tracked(&mut obs)) != MOVED {
         crate::sys::abort_pending(format_args!("double free of {:#x}: a cached copy released while the slot is not cached", p as usize))
+    }
+    proof {
+        assert(obs@.0 == CACHED && obs@.1 == FREE);
     }
 }
 
@@ -396,8 +560,9 @@ pub(super) fn check_not_cached(shared: &Shared, class: usize, p: *mut u8)
         crate::sys::may_abort_pending(),
         class < NCLASSES,
 {
+    let tracked mut obs = Ghost((0u8, 0u8));
     // A step from a value no byte holds stores nothing: a read.
-    if step(shared, class, p, NONE, NONE, false) == CACHED {
+    if step(shared, class, p, NONE, NONE, false, Tracked(&mut obs)) == CACHED {
         crate::sys::abort_pending(format_args!("use of {:#x} after free: the slot is in a thread cache", p as usize))
     }
 }
@@ -450,3 +615,32 @@ unsafe fn byte_at(at: usize) -> &'static AtomicU8 {
 }
 
 } // verus!
+
+#[cfg(test)]
+mod tests {
+    /// `axiom_slot_byte` mints a permission whose value is the byte's
+    /// only right where the byte is read: it is called only in `step`,
+    /// once, after `byte` computes the byte and before the one
+    /// `vspec::byte` operation on it. It is private to this file.
+    #[test]
+    fn slot_byte_axiom_is_called_only_in_step() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        // A call is the name then `(`.
+        let name = std::format!("{}{}(", "axiom_", "slot_byte");
+        let mut found = std::vec::Vec::new();
+        let mut func = "";
+        for line in include_str!("slotstate.rs").lines() {
+            let t = line.trim();
+            if t.starts_with("//") {
+                continue;
+            }
+            if let Some(i) = t.find("fn ") {
+                func = t[i + 3..].split(['(', '<']).next().unwrap();
+            }
+            if t.contains(name.as_str()) && !t.starts_with("axiom fn") {
+                found.push(func);
+            }
+        }
+        assert_eq!(found, ["step"]);
+    }
+}

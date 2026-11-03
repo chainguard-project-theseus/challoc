@@ -30,7 +30,7 @@ Every theorem is conditional on the [trust base](#trust-base) and the caller obe
 
 ## Theorems
 
-The 63 `theorem_*` functions comprise 48 proof functions and 15 verification-only executable functions. The count takes every function definition under `src/` whose name starts with `theorem_`, including methods such as `Live::theorem_apart`; it leaves out the 4 `fn theorem_` strings that the restated-body tests in `src/api/restated.rs` search for. The “Assumes” column names the main premises for each result; it is not a substitute for the function’s full `requires` contract. In particular, C entry points rely on the caller’s contract, and proofs about allocator state rely on the state invariants and trusted seams they use.
+The 64 `theorem_*` functions comprise 49 proof functions and 15 verification-only executable functions. The count takes every function definition under `src/` whose name starts with `theorem_`, including methods such as `Live::theorem_apart`; it leaves out the 4 `fn theorem_` strings that the restated-body tests in `src/api/restated.rs` search for. The “Assumes” column names the main premises for each result; it is not a substitute for the function’s full `requires` contract. In particular, C entry points rely on the caller’s contract, and proofs about allocator state rely on the state invariants and trusted seams they use.
 
 ### API and C boundary
 
@@ -61,6 +61,7 @@ The 5 never-abort proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_sy
 | `theorem_valid_sized_free_never_aborts` | A sized free with a correct size hint avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises, a heap, and a correct hint. |
 | `theorem_valid_sized_direct_free_never_aborts` | A sized free without a cache and with a correct size hint avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises, a correct hint, and the direct-path integrity premise. |
 | `theorem_exact_sized_free` | With the opt-in `exact_sized_free` key, a sized free’s hinted fast push declines every pointer and changes neither the heap nor the caller’s token, so the free reaches the size check and the exact free, which runs plain `free`’s slab and bit test before it caches or releases a slot. | [heap/paths.rs](../src/heap/paths.rs) | `may_abort`, `may_syscall`, `shared.wf`, a heap, the caller’s block token, and `exact_sized_free` set. |
+| `theorem_double_free_window` | With the opt-in `double_free_scan` key, after a free of a slot returns, every later free of that slot aborts until a cache pop or `alloc_direct` hands the slot out again. Verified: `free`, `claim`, `pop` and `release` return only when their step found the state their transition starts from, and the lemma over the code's transitions on one byte. | [heap/slotstate.rs](../src/heap/slotstate.rs) | Unencoded: each entry point finds the value the last step on that slot left. Trusted: the byte holds a state (`axiom_slot_byte`, which mints a `BytePerm` for it), and `vspec::byte`'s `load`, `store` and `compare_exchange` on it. Read from the code: every free route calls the check first. |
 
 ### Blocks and metadata
 
@@ -170,7 +171,7 @@ These heap-exploitation techniques have no CVE of their own. Each turns an appli
 
 These stated limits and open work remain on main. [Issue #397](https://github.com/wolfi-dev/challoc/issues/397) tracks the open work.
 
-- Double and invalid frees — stated limit: the proofs assume the C contract. [hardening.md](../docs/hardening.md#1-invalid-and-double-frees) documents that a second free of a slot still held in a thread cache is left to a flush, which catches it only if the slot is still unclaimed then (a `malloc` pop or any refill in between makes it live twice), and that a plain free of a slot start a refill claimed into a cache but `malloc` has not handed out passes the bit test; `double_free_scan` closes it at the call on every free route with a per-slot state byte (its indexing and arithmetic verified; the bytes' values and the address-to-byte cast trusted: `verus/ledger/src/heap/slotstate.rs.md`), simultaneous frees included (one compare-and-exchange).
+- Double and invalid frees — stated limit: the proofs assume the C contract. [hardening.md](../docs/hardening.md#1-invalid-and-double-frees) documents that a second free of a slot still held in a thread cache is left to a flush, which catches it only if the slot is still unclaimed then (a `malloc` pop or any refill in between makes it live twice), and that a plain free of a slot start a refill claimed into a cache but `malloc` has not handed out passes the bit test; `double_free_scan` closes it at the call on every free route with a per-slot state byte (its indexing and arithmetic verified, and, given the bytes' values as a premise, `theorem_double_free_window`: a second free aborts until the slot is handed out again; the bytes' values and the address-to-byte cast trusted: `verus/ledger/src/heap/slotstate.rs.md`), simultaneous frees included (one compare-and-exchange).
 - Use after free with same-class reuse — stated limit: challoc has no quarantine or type isolation, by design.
 - A linear overflow into a neighboring block of the same region — stated limit: `theorem_overflow_reach` covers metadata and other regions only. Inside a class region, guard slabs are the only barrier, and no theorem bounds the reach to them; inside the huge region, run guard pages hold under the huge lock’s invariant (`Inner::theorem_run_guards`), and no theorem bounds an overflow’s reach to them. No commit reopens a live guard of either kind (`theorem_slab_commit_avoids_guards`, `theorem_huge_commit_avoids_guards`), outside a class in `thp:always`’s PMD-chunk mode, which places no guards; a freed run’s guard is made read-write again by design.
 - Allocator state after `fork` — open work: lock state after `fork` rests on `axiom_fork_entry`, tracked under #397’s “Theorem 33”. Thread exit is covered by `theorem_exit_no_rebuild` (exploit techniques above) up to the slot premise, which a source test checks only in part.
@@ -309,7 +310,7 @@ Isla I2 (x86_64), I3 (trap, TLS, GOT, and rseq), I4 (pointer authentication), an
 
 - 92.8% of executable lines and 82.5% of executable functions are Verus-verified.
 - 93.6% of lines and 84.9% of functions count when fully discharged Kani and constant-assertion seams are included.
-- 63 theorems cover metadata integrity, live-block separation, overflow reach, guard pages, commits that spare guards, zeroing, free paths, the sized frees’ opt-in exact check, thread exit, explicit-cache destroy, and accounting.
+- 64 theorems cover metadata integrity, live-block separation, overflow reach, guard pages, commits that spare guards, zeroing, free paths, the sized frees’ opt-in exact check, the double-free scan's window, thread exit, explicit-cache destroy, and accounting.
 - `theorem_metadata_integrity` separates returned blocks from the metadata ranges named in its contract, subject to stated trust assumptions and exclusions.
 - The covered fast paths make no syscall except an integrity abort’s write and `SIGABRT`; valid frees avoid invalid-free and double-free checks.
 - 134 Kani harnesses check bounded contracts; 61 loom tests model atomic protocols.
@@ -320,7 +321,7 @@ Isla I2 (x86_64), I3 (trap, TLS, GOT, and rseq), I4 (pointer authentication), an
 | --- | ---: |
 | Verus-verified executable lines / functions | 38906 of 41901 (92.8%) / 1272 of 1541 (82.5%) |
 | Verified plus discharged lines / functions | 39252 of 41901 (93.6%) / 1309 of 1541 (84.9%) |
-| Theorems | 62: 48 proof, 14 verification-only executable |
+| Theorems | 64: 49 proof, 15 verification-only executable |
 | Seams | 408: 129 discharged, 34 partly checked, 245 trusted |
 | Kani proof harnesses | 134 |
 | Trusted functions with no check | 193 functions, 2194 lines |

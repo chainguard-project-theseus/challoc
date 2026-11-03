@@ -8,11 +8,12 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `NO_ARRAYS` | external_body const | core library | none (assumption) | trusted |
+| `axiom_slot_byte` | axiom | allocator invariant | none (assumption) | trusted |
 | `byte_at` | external_body | raw pointer (internal) | RefinedRust | trusted |
 
 ## `NO_ARRAYS`
 
-src/heap/slotstate.rs:91. Kind: external_body const. Category: core library.
+src/heap/slotstate.rs:102. Kind: external_body const. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > [`ARRAYS`]'s initial value: every entry unclaimed, all zero.
@@ -26,9 +27,24 @@ const NO_ARRAYS: [Arrays; MAX_SHARED] = [const {
 }; MAX_SHARED];
 ```
 
+## `axiom_slot_byte`
+
+src/heap/slotstate.rs:247. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
+
+> Premise (the slot-state bytes are trusted values): a permission to `b`, a slot's state byte that [`byte`] computed, which holds a state.
+
+```rust
+axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
+    ensures
+        perm.id() == byte_id(b),
+        is_state(perm.value()),
+;
+```
+
 ## `byte_at`
 
-src/heap/slotstate.rs:446. Kind: external_body. Category: raw pointer (internal).
+src/heap/slotstate.rs:611. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `AtomicU8` at address `at`.

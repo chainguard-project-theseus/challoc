@@ -1018,8 +1018,8 @@ fn access_init_once_words_control() {
 }
 
 // The deferred cgroup record's phase (`vspec/byte.rs`'s seams): non-test
-// sys/cgroup.rs writes no `.phase` by a method, and no file but it calls
-// `vspec::byte`.
+// sys/cgroup.rs writes no `.phase` by a method, and no file but it and
+// heap/slotstate.rs (the slot-state bytes' `step`) calls `vspec::byte`.
 
 fn check_phase(t: &Tree) -> Vec<String> {
     let mut out = Vec::new();
@@ -1033,6 +1033,7 @@ fn check_phase(t: &Tree) -> Vec<String> {
                 });
             let other = file != "src/sys/cgroup.rs"
                 && file != "src/vspec/byte.rs"
+                && file != "src/heap/slotstate.rs"
                 && (c.contains("vspec::byte::")
                     || [
                         "byte::new",

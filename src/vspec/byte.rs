@@ -2,7 +2,8 @@
 //! the deferred cgroup record (`sys::cgroup::Deferred`, `PENDING` to
 //! `RUNNING` to `DONE`), whose invariant hands the cell's permission to
 //! the exchange's winner and freezes it at the `DONE` store
-//! (`sys::cgroup::PhasePred`).
+//! (`sys::cgroup::PhasePred`), and for `double_free_scan`'s slot-state
+//! bytes (`heap::slotstate::step`).
 //!
 //! A [`BytePerm`] names the byte's identity and value, each operation is
 //! an `#[verifier::atomic]` function (so it can run inside an
@@ -31,13 +32,18 @@
 //!   `Deferred::later`'s result would, each use of it copying one atomic
 //!   and its permission, and none does;
 //! - one permission per byte: [`BytePerm`]'s fields are private to this
-//!   module and [`new`] is the only code that builds one, once, with the
-//!   atomic it makes (`new` itself is verified);
+//!   module and [`new`] is the only code here that builds one, once, with
+//!   the atomic it makes (`new` itself is verified). The slot-state bytes
+//!   are raw mapped memory no `new` made: `heap::slotstate::axiom_slot_byte`
+//!   mints a permission to one for each step on it, called only there
+//!   (its own premise, that the value is the byte's);
 //! - a permission's value is its byte's: every write of a deferred
 //!   record's phase goes through these wrappers (`Deferred::discover`,
 //!   `Deferred::fork_child`), each inside the phase's invariant
 //!   (`sys::cgroup::PhasePred`), as do `Deferred::get`'s and a waiting
-//!   `Deferred::discover`'s loads (`Deferred::load_phase`).
+//!   `Deferred::discover`'s loads (`Deferred::load_phase`); every access
+//!   to a slot-state byte is one of these wrappers in
+//!   `heap::slotstate::step`.
 
 use core::sync::atomic::{AtomicU8, Ordering};
 use vstd::prelude::*;
@@ -69,8 +75,9 @@ impl BytePerm {
     }
 }
 
-/// `AtomicU8::new(v)`, with the one permission to it: the only place a
-/// [`BytePerm`] is minted, one per byte, with the byte it is for. It is
+/// `AtomicU8::new(v)`, with the one permission to it: the only place in
+/// this module a [`BytePerm`] is minted, one per byte, with the byte it is
+/// for. It is
 /// `const` for `Deferred::later`, which runs at run time: neither may
 /// appear in a `const` item, each use of which would be a new atomic with
 /// the same permission.
