@@ -39,12 +39,16 @@ wolfi-dev/challoc#426), which #138 lacks and this file does not number:
 in a secure-execution process (`AT_SECURE` set) no call of `env_var`
 returns, so `config::load` reads neither `MALLOC_CONF` nor
 `CHALLOC_CONF`; that `env_var` is the only reader of the environment is
-a source test (`environment_has_one_reader`, `config.rs:3162`), not
+a source test (`environment_has_one_reader`, `config.rs:3200`), not
 Verus (`verus/RESULTS.md`). Main also proves
 `heap::thread::theorem_exit_no_rebuild` (`heap/thread.rs:509`), which
 #138 lacks: its section, "Thread exit never reuses a destroyed heap",
-comes after theorem 46 and is not numbered. It also proves `theorem_overflow_reach`
-(`heap/mod.rs:298`), which #138 lacks and this file does not number:
+comes after theorem 46 and is not numbered. Main also proves
+`heap::tcaches::theorem_tcache_destroyed_none` (`heap/tcaches.rs:1149`),
+which #138 lacks: its section, "A lookup holding destroy's bound finds no
+destroyed explicit cache", follows the thread-exit one and is not
+numbered. It also proves `theorem_overflow_reach`
+(`heap/mod.rs:300`), which #138 lacks and this file does not number:
 between any byte of a block that `fits` and any byte of the metadata
 region, the `Shared` static, another class region or the huge region,
 above or below it, lies a `MAX_SLAB` (4 MiB) run of challoc's own
@@ -461,9 +465,9 @@ lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it. Also:
 `class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:976`) and
 `heap::tcaches::axiom_tcaches_lock_inv` (the explicit-cache table lock
-guards `()`, so its invariant is true). `Tcaches::init` writes the
-`external_body` constant `heap::tcaches::EMPTY_TABLE` (the empty table;
-nothing is claimed about its entries).
+guards `()`, so its invariant is true). `Tcaches::init` makes each entry null with
+`vspec::entry::new`, over the layout from `axiom_tcaches_layout` and
+`axiom_tcaches_assemble`.
 
 **Class state accessors.** None trusted: `TablePtr::get` reads the
 class's table through the frozen permissions to every class's table
@@ -9577,7 +9581,9 @@ unchanged). The theorem follows from the readers' `ensures`: at a
 
 **Not covered.** Explicit caches (`tcache.create`/`tcache.destroy`)
 are reached through `Tcaches`, not the slot; that a destroyed one is
-not used again is `tcaches::axiom_heap_use`'s premise. The
+not used again is `tcaches::axiom_heap_use`'s premise, and the next
+section proves that a `Tcaches::get` at the generation destroy left
+finds none. The
 destructor's flush and free of the heap itself are `Heap::destroy`'s
 contract.
 
@@ -9593,6 +9599,100 @@ run on the base tree, where they verify):
 | X4 | the background `create` parks any non-null slot, `TLS_EXITED` included | `set` precondition |
 | X5 | the background `create` writes `saved` back even when it parked nothing | `set` precondition |
 | V1 | the theorem asserts `existing_heap_in` returns `Some` at `TLS_EXITED` | assertion |
+
+## A lookup holding destroy's bound finds no destroyed explicit cache (main only; rests on `vspec::entry`'s write list)
+
+Not numbered: #138 does not have it. The `file:line`s point into main
+at this section's commit. An explicit cache (`tcache.create`) is a heap
+owned by no thread, found by id in the `Tcaches` table;
+`tcache.destroy` empties its entry and frees the heap. This states that
+a lookup of the id that holds destroy's lower-bound token finds no
+cache, and so does not reach the freed heap, until `tcache.create` hands
+the id out again.
+
+**Statement.** Each table entry carries a ghost generation, even while
+the entry is null and odd while it holds a cache, which never moves
+back: the table's invariant (`TablePred`, `heap/tcaches.rs:126`) holds
+one `vspec::entry` permission per entry, and every lower bound it has
+issued for an entry is at most that entry's generation. `destroy`
+(`:1040`) swaps the entry to null inside the invariant, before the heap
+is freed, and leaves in its `TableWrite` the record of that write (the
+entry's atomic, null, an even generation) with a lower-bound token for
+that generation. The caller copies the token into its `HeapUse`
+(`watch_from`, `:648`), and `get` (`:917`) loads the entry inside the
+same invariant, recording the entry's atomic, the address read and the
+generation, checked against the token (`floor`). Then the generation
+`get` read is at least the one `destroy` left; if `get` found a cache,
+it read a later generation; so a `get` that reads the generation
+`destroy` left finds no cache. `destroy_then_get` (`:1171`, verification
+only) calls `destroy`, `watch_from` and `get` in that order and discharges the
+theorem's premises.
+
+```rust
+// heap/tcaches.rs:1149
+pub proof fn theorem_tcache_destroyed_none(id: u16, tracked w: &TableWrite, tracked u: &HeapUse, found: bool)
+    requires
+        (id as usize) < MAX_TCACHES,
+        w.last() matches Some(cleared) && cleared.index == id as int,
+        u.read() matches Some(read) && read.index == id as int && (found <==> read.addr != 0)
+            && read.floor == Some(w.last()->Some_0.generation) && read.atomic == w.last()->Some_0.atomic,
+    ensures
+        u.read()->Some_0.generation >= w.last()->Some_0.generation,
+        found ==> u.read()->Some_0.generation > w.last()->Some_0.generation,
+        u.read()->Some_0.generation == w.last()->Some_0.generation ==> !found,
+```
+
+**Trusted.**
+- That a later, odd generation means a `create` of `id`: an entry turns
+  odd only when a non-null pointer is stored in it, and the table's
+  only such store is `Tcaches::create`'s (`:832`), at the id it returns.
+  This rests on `vspec::entry`'s list of writes and reading this module,
+  not on a specification; `tests/loom/tests/access.rs` checks that the
+  table is written only by `Tcaches::init`'s `put_entry` and through
+  `vspec::entry::store` in `create` and
+  `vspec::entry::swap` in `destroy`.
+- `vspec::entry`'s wrapped atomic operations (`store`, `load`, `swap`,
+  `vspec/entry.rs:80`, `:99`, `:117`) and its identity rules. The proof
+  model is sequentially consistent: both records come from the table's
+  invariant, so neither the orderings of the accesses nor a history of
+  the table's writes are premises, and the chosen orderings are not
+  proved sufficient.
+- `axiom_tcaches_assemble` (`:381`), with which `Tcaches::init`
+  (`:419`) builds the invariant over the entries `vspec::entry::new`
+  made, and `axiom_tcaches_layout` (`:244`), discharged by a const
+  assertion.
+- The caller contract: an explicit cache is used by one thread at a
+  time and not concurrently with its `tcache.destroy`, as in jemalloc
+  (`Tcaches::get`).
+
+**Not covered.** A `get` that holds no lower bound from the `destroy`,
+which includes every `MALLOCX_TCACHE(id)` path: `heap::mallocx`'s
+`alloc`, `alloc_huge` and `free`, `api::jemalloc`'s `sdallocx_routed`
+and `Tcaches::flush` make their tokens with `axiom_heap_use` alone, so
+that they do not use a destroyed cache stays that axiom's premise.
+
+**Mutations** (`cargo verus focus --locked -- --verify-only-module
+heap::tcaches`, each on `heap/tcaches.rs` at this section's commit):
+
+| id | change | rejected by |
+|---|---|---|
+| M1 | `destroy` swaps in the entry's current value instead of null | assertion (the invariant) |
+| M2 | `destroy` loads the entry instead of swapping it | assertion |
+| M3 | `get` skips its null check | postcondition |
+| M4 | `get` uses a plain load outside the permission | `HeapUse` type invariant |
+| M5 | `get` loads entry `i + 1` with entry `i`'s permission | precondition |
+| M6 | `create` does not advance the generation | assertion (parity) |
+| M7 | the theorem without its `floor` premise | postcondition |
+| M8 | `destroy` records the generation from before its swap | `TableWrite` type invariant |
+| M9 | `create` moves the generation back, to 1 | assertion (bound) |
+| M10 | `get` records the floor without checking the token | assertion |
+| M11 | `destroy` takes its lower-bound token before the swap | invariant, assertion, `TableWrite` type invariant |
+| M12 | `get` takes another entry's token as its floor | `HeapUse` type invariant |
+| M13 | `create` records no bound at its new generation | invariant |
+| M14 | `destroy_then_get` reads through another `Tcaches` whose bound location equals this one's | the theorem's precondition (`read.atomic`) |
+
+M14 with the theorem's premise lacking `read.atomic == ...` verifies, so
+that conjunct is what rejects it.
 
 ## Interface contract
 

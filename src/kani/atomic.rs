@@ -470,6 +470,20 @@ fn entry_load() {
     assert_eq!(a.load(Ordering::Relaxed), p);
 }
 
+/// `vspec::entry::swap`: `r == old(perm).value()` and
+/// `final(perm).value() == v`, under every ordering; at `T = u64`, as
+/// `entry_store`.
+#[kani::proof]
+fn entry_swap() {
+    let mut x: u64 = kani::any();
+    let mut y: u64 = kani::any();
+    let p = any_ptr(&mut x);
+    let a = AtomicPtr::new(p);
+    let v = any_ptr(&mut y);
+    assert_eq!(entry::swap(&a, v, any_order(), Tracked::assume_new()), p);
+    assert_eq!(a.load(Ordering::Relaxed), v);
+}
+
 /// The orderings `vspec::entry`'s `requires` exclude panic, as
 /// `word_bad_orders`. Not part of a contract.
 #[kani::proof]

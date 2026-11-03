@@ -2765,7 +2765,10 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
         .create(s, 0, Tracked::assume_new(), Tracked::assume_new())
         .unwrap();
     assert_eq!(s.arenas.bound(0), before);
-    assert!(s.tcaches.destroy(s, tc, Tracked::assume_new()));
+    assert!(
+        s.tcaches
+            .destroy(s, tc, Tracked::assume_new(), Tracked::assume_new())
+    );
     assert_eq!(s.arenas.bound(0), before);
     // First touch builds arena 1.
     let c = class_with(64);
@@ -3640,8 +3643,14 @@ fn explicit_caches_create_flush_destroy() {
         0
     );
     assert!(!s.tcaches.flush(s, 9, Tracked::assume_new()));
-    assert!(s.tcaches.destroy(s, t0, Tracked::assume_new()));
-    assert!(!s.tcaches.destroy(s, t0, Tracked::assume_new()));
+    assert!(
+        s.tcaches
+            .destroy(s, t0, Tracked::assume_new(), Tracked::assume_new())
+    );
+    assert!(
+        !s.tcaches
+            .destroy(s, t0, Tracked::assume_new(), Tracked::assume_new())
+    );
     assert!(s.tcaches.get(t0, Tracked::assume_new()).is_none());
     assert_eq!(s.tcaches.len(), 1);
     // The slot is reused.

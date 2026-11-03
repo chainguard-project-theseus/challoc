@@ -1403,7 +1403,7 @@ tracked struct SharedParts {
     tracked config: PointsTo<Config>,
     tracked key: PointsTo<ThreadKey>,
     tracked arenas: Held<Arenas>,
-    tracked tcaches: PointsTo<Tcaches>,
+    tracked tcaches: Held<Tcaches>,
     tracked stats: PointsTo<StatsLock>,
     tracked cgroup: PointsTo<Deferred>,
 }
@@ -1435,7 +1435,7 @@ impl SharedParts {
         &&& self.config.ptr() == field_ptr::<Shared, Config>(p, S_CONFIG)
         &&& self.key.ptr() == field_ptr::<Shared, ThreadKey>(p, S_KEY)
         &&& (self.arenas.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arenas>(p, S_ARENAS))
-        &&& self.tcaches.ptr() == field_ptr::<Shared, Tcaches>(p, S_TCACHES)
+        &&& (self.tcaches.perm matches Some(t) ==> t.ptr() == field_ptr::<Shared, Tcaches>(p, S_TCACHES))
         &&& self.stats.ptr() == field_ptr::<Shared, Lock<Snapshot>>(p, S_STATS)
         &&& self.cgroup.ptr() == field_ptr::<Shared, Deferred>(p, S_CGROUP)
     }
@@ -1453,7 +1453,7 @@ impl SharedParts {
         &&& self.config.is_init()
         &&& self.key.is_init()
         &&& self.arenas.perm matches Some(a) && a.is_init()
-        &&& self.tcaches.is_init()
+        &&& self.tcaches.perm matches Some(t) && t.is_init()
         &&& self.stats.is_init()
         &&& self.cgroup.is_init()
     }
@@ -1627,7 +1627,7 @@ impl Shared {
             r.0.config.is_uninit(),
             r.0.key.is_uninit(),
             r.0.arenas.perm matches Some(a) && a.is_uninit(),
-            r.0.tcaches.is_uninit(),
+            r.0.tcaches.perm matches Some(t) && t.is_uninit(),
             r.0.stats.is_uninit(),
             r.0.cgroup.is_uninit(),
             lines_at(r.1, perm.ptr()),
@@ -1689,7 +1689,7 @@ impl Shared {
                 config,
                 key,
                 arenas: Held { perm: Some(arenas) },
-                tcaches,
+                tcaches: Held { perm: Some(tcaches) },
                 stats,
                 cgroup,
             },
@@ -1918,7 +1918,7 @@ impl Shared {
         narenas: u32,
         Tracked(pg): Tracked<&mut PointsTo<u64>>,
         Tracked(pa): Tracked<&mut Held<Arenas>>,
-        Tracked(pt): Tracked<&mut PointsTo<Tcaches>>,
+        Tracked(pt): Tracked<&mut Held<Tcaches>>,
     )
         requires
             shared_ok(this),
@@ -1927,21 +1927,20 @@ impl Shared {
             a0@.ptr() == arena0,
             a0@.is_init(),
             a0@.value().spec_index() == 0,
-            old(pt).ptr() == field_ptr::<Shared, Tcaches>(this, S_TCACHES),
-            old(pt).is_uninit(),
+            old(pt).perm matches Some(t) && t.ptr() == field_ptr::<Shared, Tcaches>(this, S_TCACHES) && t.is_uninit(),
         ensures
             final(pg).ptr() == old(pg).ptr(),
             final(pg).is_init(),
             final(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_init() && a.value().wf()
                 && a.value().spec_arena0() == a0@.value(),
-            final(pt).ptr() == old(pt).ptr(),
-            final(pt).is_init(),
+            final(pt).perm matches Some(t) && t.ptr() == field_ptr::<Shared, Tcaches>(this, S_TCACHES) && t.is_init(),
     {
         proof {
             axiom_shared_layout();
-            // `Arenas::init` builds in place: its storage ends below the
-            // top of the address space.
+            // `Arenas::init` and `Tcaches::init` build in place: their
+            // storage ends below the top of the address space.
             axiom_ptr_add_addr(this as *mut u8, S_ARENAS);
+            axiom_ptr_add_addr(this as *mut u8, S_TCACHES);
         }
         // SAFETY: as in `put_head`; `arena0` is inside the same `Shared`.
         unsafe {
