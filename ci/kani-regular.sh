@@ -46,7 +46,6 @@ weights='
   kani_proofs::slice::sort_ptrs_short 130
   config::kani_config::display_issue_rounded 125
   kani_proofs::ptr::ptr_copy_nonoverlapping 104
-  heap::tcaches::kani_tcaches::empty_table_is_null 100
   kani_proofs::slice::sort_ptrs_11 98
   kani_proofs::ptr::ptr_write_unaligned 71
   kani_proofs::slice::sort_ptrs_by_key_11 70

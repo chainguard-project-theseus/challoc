@@ -570,34 +570,67 @@ fn access_counts_control() {
     );
 }
 
-// The arena table (`vspec/entry.rs`'s seams): arena.rs writes an entry
-// only through `vspec::entry::store` (an `elem_at(table, ..)` argument of
-// it) or `put_entry`'s write of the atomic `vspec::entry::new` made, no
-// `.table[..]` method writes, and no other file calls `vspec::entry`.
+// The entry tables (`vspec/entry.rs`'s seams): arena.rs and heap/tcaches.rs
+// each write an entry of their table only through the wrapper calls
+// `ENTRY_TABLES` lists, each in the functions it names (an
+// `elem_at(table, ..)` argument of one), or their `put_entry`'s write of
+// the atomic `vspec::entry::new` made; no `.table[..]` method writes; and
+// no other file calls `vspec::entry`.
+
+/// Each table's file, its `put_entry` write line, and the wrapper calls
+/// it makes as `(wrapper, function)`.
+type EntryTable = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+const ENTRY_TABLES: &[EntryTable] = &[
+    (
+        "src/arena.rs",
+        "ptr_mut_write(elem_at(table, i, MAX_ARENAS), Tracked(t), e);",
+        &[("store", "put_arena0"), ("store", "build")],
+    ),
+    (
+        "src/heap/tcaches.rs",
+        "ptr_mut_write(elem_at(table, i, MAX_TCACHES), Tracked(t), e);",
+        &[("store", "create"), ("swap", "destroy")],
+    ),
+];
+
+/// The writing wrappers of `vspec/entry.rs`.
+const ENTRY_WRITES: &[&str] = &["store", "swap"];
 
 fn check_entries(t: &Tree) -> Vec<String> {
     let mut out = Vec::new();
-    let lines = shipped(&t["src/arena.rs"]);
-    for (k, l) in lines.iter().enumerate() {
-        let c = &l.code;
-        if l.ghost {
-            continue;
-        }
-        let table_write = c.match_indices(".table[").any(|(i, _)| {
-            let rest = &c[i..];
-            rest.find("].").is_some_and(|j| writes(&rest[j + 1..]))
-        });
-        let elem = c.contains("elem_at(table,")
-            && !c.contains("crate::vspec::entry::store(")
-            && !(k > 0 && lines[k - 1].code.ends_with("crate::vspec::entry::store("))
-            && !(l.func == "put_entry"
-                && c == "ptr_mut_write(elem_at(table, i, MAX_ARENAS), Tracked(t), e);");
-        if table_write || elem {
-            out.push(bad("src/arena.rs", l));
+    let call = |w: &str| format!("crate::vspec::entry::{w}(");
+    let wrapped = |c: &str| ENTRY_WRITES.iter().any(|w| c.contains(&call(w)));
+    let opens = |c: &str| ENTRY_WRITES.iter().any(|w| c.ends_with(&call(w)));
+    for (file, put, allowed) in ENTRY_TABLES {
+        let lines = shipped(&t[*file]);
+        for (k, l) in lines.iter().enumerate() {
+            let c = &l.code;
+            if l.ghost {
+                continue;
+            }
+            let stray = ENTRY_WRITES.iter().any(|w| {
+                c.contains(&call(w)) && !allowed.iter().any(|(a, f)| a == w && l.func == *f)
+            });
+            let table_write = c.match_indices(".table[").any(|(i, _)| {
+                let rest = &c[i..];
+                rest.find("].").is_some_and(|j| writes(&rest[j + 1..]))
+            });
+            let elem = c.contains("elem_at(table,")
+                && !wrapped(c)
+                && !(k > 0 && opens(&lines[k - 1].code))
+                && !(l.func == "put_entry" && c == put);
+            if stray || table_write || elem {
+                out.push(bad(file, l));
+            }
         }
     }
     for (file, text) in t {
-        if file == "src/arena.rs" || file == "src/vspec/entry.rs" {
+        if file == "src/vspec/entry.rs" || ENTRY_TABLES.iter().any(|(f, _, _)| f == file) {
             continue;
         }
         for l in shipped(text) {
@@ -610,12 +643,12 @@ fn check_entries(t: &Tree) -> Vec<String> {
 }
 
 #[test]
-fn access_arena_table_only_through_vspec_entry() {
-    report("arena table writes", check_entries(&tree()));
+fn access_entry_tables_only_through_vspec_entry() {
+    report("entry table writes", check_entries(&tree()));
 }
 
 #[test]
-fn access_arena_table_control() {
+fn access_entry_tables_control() {
     let t = tree();
     let anchor = "let (c, Tracked(cperm)) = crate::vspec::count::new(0);";
     let t2 = with(
@@ -630,6 +663,42 @@ fn access_arena_table_control() {
         "src/arena.rs",
         anchor,
         "self.table[0].store(p, Ordering::Relaxed);",
+    );
+    assert!(!check_entries(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/arena.rs",
+        anchor,
+        "crate::vspec::entry::swap(&self.table[0], p, Ordering::AcqRel, Tracked(e));",
+    );
+    assert!(!check_entries(&t2).is_empty());
+    let anchor = "let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));";
+    let t2 = with(
+        &t,
+        "src/heap/tcaches.rs",
+        anchor,
+        "ptr_mut_write(elem_at(table, 0, MAX_TCACHES), Tracked(t), e);",
+    );
+    assert!(!check_entries(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/heap/tcaches.rs",
+        anchor,
+        "self.table[0].swap(ptr::null_mut(), Ordering::AcqRel);",
+    );
+    assert!(!check_entries(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/heap/tcaches.rs",
+        anchor,
+        "crate::vspec::entry::swap(&self.table[0], ptr::null_mut(), Ordering::AcqRel, Tracked(e));",
+    );
+    assert!(!check_entries(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/heap/shared.rs",
+        "use crate::vspec::flags::RouteByte;",
+        "fn f(a: &A) { crate::vspec::entry::swap(a, p, R, Tracked(e)); }",
     );
     assert!(!check_entries(&t2).is_empty());
 }
@@ -799,7 +868,7 @@ fn check_perms(t: &Tree) -> Vec<String> {
         for l in shipped(&t[*file]) {
             let c = &l.code;
             // The type's own lines. `Send` is a marker trait, which copies
-            // nothing (`EntryPerm` has it for the arena registry's invariant).
+            // nothing (`EntryPerm` has it for the arena and tcache tables' invariants).
             if *c == format!("pub tracked struct {ty} {{")
                 || *c == format!("pub tracked struct {ty}<T> {{")
                 || *c == format!("impl {ty} {{")

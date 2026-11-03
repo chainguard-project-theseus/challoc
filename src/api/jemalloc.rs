@@ -1671,10 +1671,12 @@ mod tests {
                 vstd::prelude::Tracked::assume_new(),
             );
         }
-        assert!(
-            s.tcaches
-                .destroy(s, t, vstd::prelude::Tracked::assume_new())
-        );
+        assert!(s.tcaches.destroy(
+            s,
+            t,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ));
     }
 
     #[test]
@@ -1764,10 +1766,12 @@ mod tests {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(th.cache_in(0, c).unwrap().len(), before + 1);
-        assert!(
-            s.tcaches
-                .destroy(s, t, vstd::prelude::Tracked::assume_new())
-        );
+        assert!(s.tcaches.destroy(
+            s,
+            t,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ));
         // Huge runs record the arena.
         let h = mallocx(
             2 << 20,
@@ -2059,10 +2063,12 @@ mod tests {
         assert!(s.tcaches.flush(s, t, vstd::prelude::Tracked::assume_new()));
         assert_eq!(th.cache_in(lua, c).unwrap().len(), 0);
         assert_eq!(th.cache_in(heap::FOREIGN, c).unwrap().len(), 0);
-        assert!(
-            s.tcaches
-                .destroy(s, t, vstd::prelude::Tracked::assume_new())
-        );
+        assert!(s.tcaches.destroy(
+            s,
+            t,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ));
 
         // Cross-thread: another thread allocates from the Lua arena and its
         // own home arena; this thread frees both with plain `free`, both

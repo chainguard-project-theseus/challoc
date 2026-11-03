@@ -8,13 +8,17 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_t...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
-| `EMPTY_TABLE` | external_body const | core library | Kani | discharged |
+| `T_TABLE` | external_body const | core library | Kani | discharged |
+| `T_LOCK` | external_body const | core library | Kani | discharged |
+| `T_INV` | external_body const | core library | Kani | discharged |
+| `axiom_tcaches_layout` | axiom | core library | Kani | discharged |
+| `axiom_t...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_heap_use` | axiom | C-program contract | none (assumption) | trusted |
 | `heap_at` | external_body | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_tcaches_lock_inv`
 
-src/heap/tcaches.rs:59. Kind: axiom. Category: allocator invariant.
+src/heap/tcaches.rs:224. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the explicit-cache table lock guards no value (`()`), so its invariant is trivially true.
@@ -26,31 +30,109 @@ pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
 ;
 ```
 
-## `EMPTY_TABLE`
+## `T_TABLE`
 
-src/heap/tcaches.rs:69. Kind: external_body const. Category: core library.
-Tool: Kani. Status: discharged (Kani: heap::tcaches::kani_tcaches::empty_table_is_null).
-
-> The empty table [`Tcaches::init`] writes, every entry null.
+src/heap/tcaches.rs:233. Kind: external_body const. Category: core library.
+Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 ```rust
-const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] = [const { AtomicPtr::new(ptr::null_mut()) }; MAX_TCACHES];
+const T_TABLE: usize = core::mem::offset_of!(Tcaches, table);
+```
+
+## `T_LOCK`
+
+src/heap/tcaches.rs:235. Kind: external_body const. Category: core library.
+Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
+
+```rust
+const T_LOCK: usize = core::mem::offset_of!(Tcaches, lock);
+```
+
+## `T_INV`
+
+src/heap/tcaches.rs:237. Kind: external_body const. Category: core library.
+Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
+
+```rust
+const T_INV: usize = core::mem::offset_of!(Tcaches, inv);
+```
+
+## `axiom_tcaches_layout`
+
+src/heap/tcaches.rs:244. Kind: axiom. Category: core library.
+Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
+
+> `Tcaches`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `inv`) by the size, and a table entry not empty.
+
+```rust
+axiom fn axiom_tcaches_layout()
+    ensures
+        field_fits::<Tcaches, [AtomicPtr<u8>; MAX_TCACHES]>(T_TABLE, T_LOCK as int),
+        0 < size_of::<AtomicPtr<u8>>(),
+        MAX_TCACHES * size_of::<AtomicPtr<u8>>() <= isize::MAX,
+        // Over several lines, as in `arena::axiom_arena_layout`.
+        field_fits::<
+            Tcaches,
+            Lock<()>,
+        >(T_LOCK, T_INV as int),
+        field_fits::<Tcaches, Tracked<TableInv>>(T_INV, size_of::<Tcaches>() as int),
+        size_of::<Tcaches>() <= isize::MAX,
+;
+```
+
+## `axiom_tcaches_assemble`
+
+src/heap/tcaches.rs:381. Kind: axiom. Category: raw pointer (internal).
+Tool: none (assumption). Status: trusted.
+
+> The written fields of the `Tcaches` at `p` (`Tcaches::split`'s parts and table entries, every one initialised), as the `Tcaches`: the value of each field is what its permission holds.
+
+```rust
+axiom fn axiom_tcaches_assemble(
+    tracked parts: TcachesParts,
+    tracked table: Map<int, PointsTo<AtomicPtr<u8>>>,
+    tracked pad: PointsToRaw,
+    p: *mut Tcaches,
+) -> (tracked t: PointsTo<Tcaches>)
+    requires
+        parts.at(p),
+        table_at(table, p),
+        tcaches_pad_covers(pad, p),
+        pad.provenance() == p@.provenance,
+        parts.lock.is_init(),
+        parts.inv.is_init(),
+        elems_init(table, 0, MAX_TCACHES as int),
+        parts.lock.value().rank() == rank_tcaches(),
+        parts.inv.value()@.namespace() == tcaches_ns(),
+        parts.inv.value()@.constant().entries.len() == MAX_TCACHES,
+        forall|i: int| 0 <= i < MAX_TCACHES ==> #[trigger] parts.inv.value()@.constant().entries[i] == entry_id(&table[i].value()),
+    ensures
+        t.ptr() == p,
+        t.is_init(),
+        t.value().lock == parts.lock.value(),
+        forall|i: int| 0 <= i < MAX_TCACHES ==> #[trigger] t.value().table[i] == table[i].value(),
+        t.value().inv == parts.inv.value(),
+;
 ```
 
 ## `axiom_heap_use`
 
-src/heap/tcaches.rs:151. Kind: axiom. Category: C-program contract.
+src/heap/tcaches.rs:725. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the C caller's contract): the calling thread uses the heap it is about to reach through [`heap_at`] with no other reference to it live, here or on another thread: an explicit cache is used by one thread at a time and not after `tcache.destroy` (the contract of [`Tcaches::get`]), a destroyed cache is unreachable through the table, a thread's heap reaches its key destructor once, at thread exit, and a heap created and never published has no other reference.
 
 ```rust
-pub axiom fn axiom_heap_use() -> (tracked u: HeapUse);
+pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
+    ensures
+        u.read() is None,
+        u.watch() is None,
+;
 ```
 
 ## `heap_at`
 
-src/heap/tcaches.rs:191. Kind: external_body. Category: allocator invariant.
+src/heap/tcaches.rs:770. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the heap `Heap::destroy` is handed.
@@ -58,6 +140,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(super) unsafe fn heap_at(p: *mut Heap, Tracked(_u): Tracked<&mut HeapUse>) -> (r: &mut Heap)
     ensures
+        *final(_u) == *old(_u),
         r.wf(),
         r.home_at(p),
 ```
