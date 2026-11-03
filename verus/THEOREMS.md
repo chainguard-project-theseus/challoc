@@ -294,8 +294,7 @@ the call does not return (theorem 3, which is not voided for it).
   `Heap::home_ptr_at` (`heap/cache.rs:321`, the home header's address,
   `heap + 128 + 64 * class`, under the verified `cache_ptr`, `:338`, on
   the `malloc` and `free` fast paths, which proves from `wf` that the
-  header is owned and caches `class`), and `cached_recently`
-  (`heap/cache.rs:740`, `external_body`; discharged by Kani in main's
+  header is owned and caches `class`; partly checked by Kani in main's
   ledger). The `others` list
   readers `node_caches` and `node_caches_detached` are verified since
   package P10, over a shared view of the node's headers' permissions
@@ -2016,7 +2015,7 @@ paths, verified unless marked trusted:
   (verified since P7), `heap_from_slot` (verified since P7, over the
   trusted `slot_heap_ref`).
 - **Pop:** `Heap::alloc_fast`, `pop_fast`, `cache_ptr`, `home_ptr_at`
-  (trusted), `pop_top`, `CacheHeader::slots`.
+  (trusted, partly checked by Kani), `pop_top`, `CacheHeader::slots`.
 - **Push:** `free_fast_slot`, `free_fast_push` (since upstream #78; before,
   `free_fast`, `free_fast_class`; since #87 `free_fast_tail` in place of
   `free_fast_push`), `free_sized_fast` (no mask on main; `none` at

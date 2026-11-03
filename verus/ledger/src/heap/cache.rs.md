@@ -7,12 +7,12 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Heap::h...ptr_at` | external_body | allocator invariant | none (assumption) | trusted |
+| `Heap::home_ptr_at` | external_body | allocator invariant | Kani | trusted |
 
 ## `Heap::home_ptr_at`
 
 src/heap/cache.rs:321. Kind: external_body. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: heap::cache::kani_cache::home_ptr_at_is_the_home_header; not checked: that the heap's record names the headers at its own address (`Heap::home_at`), ghost, and that the result carries the heap's provenance, which Kani cannot observe (the harness compares addresses)).
 
 > The home header for `class`: `heap + 128 + 64 * class`, no load.
 

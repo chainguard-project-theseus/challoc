@@ -56,6 +56,7 @@ weights='
   config::kani_config::display_issue_out_of_range 56
   kani_proofs::stats::fig_mul_exact 54
   kani_proofs::slice::sort_ptrs_by_key_10 33
+  heap::cache::kani_cache::home_ptr_at_is_the_home_header 28
   config::kani_config::display_issue_unknown_key 26
   config::kani_config::get_contract 25
 '
