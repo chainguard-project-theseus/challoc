@@ -351,3 +351,22 @@ const FIELD_TYPES: fn(&Heap) -> (*const Shared, u32, u16, u32, u64, HeadRest) = 
         },
     )
 };
+
+// `Heap` stays `!Unpin` (its `_pin` field), so a `&mut Heap` is not
+// `noalias`. A path names an inherent item when its bounds hold, so
+// `IsUnpin::<T>::VALUE` is the inherent `true` when `T: Unpin` and the
+// trait's `false` otherwise.
+struct IsUnpin<T>(core::marker::PhantomData<T>);
+
+trait NotUnpin {
+    const VALUE: bool = false;
+}
+
+impl<T> NotUnpin for IsUnpin<T> {}
+
+impl<T: Unpin> IsUnpin<T> {
+    #[allow(dead_code, reason = "named only when `Heap` is `Unpin`")]
+    const VALUE: bool = true;
+}
+
+const _: () = assert!(!IsUnpin::<Heap>::VALUE);
