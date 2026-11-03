@@ -3433,7 +3433,7 @@ of the old permit's premises, is obsolete now that Verus checks them.
   that no lock was held while it was in use rested on a source test and
   Rust's types. On main the token is the verified `LockOrder` every
   acquisition takes, so what remains assumed is theorem 33's premises
-  (`axiom_meta_order` and the closure axioms) and the entry premise.
+  (the closure axioms and the fork root) and the entry premise.
 - **The entry premise is the C caller's.** A `pthread_atfork` handler
   (prepare, parent or child) registered before challoc's runs while
   challoc's fork handlers hold every lock, so one that printed a report
@@ -6400,7 +6400,7 @@ rank_huge(), rank_meta()       0x600_0000, 0x700_0000
 rank_arena_stats(i)            0x900_0000 + i
 rank_state()                   0xA00_0000              background thread state
 
-// lock.rs:696: a guard acquisition.
+// lock.rs:846: a guard acquisition.
 pub fn lock<'a>(&'a self, Tracked(ord): Tracked<&'a mut LockOrder<'_>>,
                 Tracked(under): Tracked<&mut LockOrder<'a>>) -> (g: LockGuard<'a, T>)
     requires old(ord).allows(self.rank()),          // ord.top() < rank
@@ -6412,7 +6412,7 @@ pub fn lock_held(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<Lo
     ensures  t@.held() == *self, final(ord).root(), final(ord).top() == self.rank(),
 ```
 
-A `LockOrder` (`lock.rs:316`, ghost, fields private to `lock.rs`) bounds
+A `LockOrder` (`lock.rs:364`, ghost, fields private to `lock.rs`) bounds
 the ranks of the locks its owner holds (`top()`). `Lock::lock` borrows
 the caller's token for the guard's lifetime `'a` and hands out another
 at the lock's rank, also of lifetime `'a`, for the code under the guard;
@@ -6428,10 +6428,12 @@ raises it in place. `RawLock::lock` itself requires `lock_rs_only()`, a
 acquire except through these two. Every function that may take a lock
 takes its caller's token (`Tracked<&mut LockOrder>`, `requires
 old(ord).allows(rank_x())` for the lowest rank it takes, `ensures
-*final(ord) == *old(ord)`), so the bound follows the call chain, with
-one exception on main: of `meta::Meta`'s methods only `Meta::stats`
-(`meta.rs:1042`) takes the caller's token; the others take the
-metadata lock with a token from `axiom_meta_order` (below).
+*final(ord) == *old(ord)`), so the bound follows the call chain. That
+includes the ten `meta::Meta` methods that may take the metadata lock
+(`alloc`, `alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
+`reserve_table`, `commit`, `reserve_committed`,
+`reserve_committed_raw` and `stats`, `meta.rs:628` to `:1059`): each
+requires `old(ord).allows(rank_meta())`.
 
 The ranks are ghost fields of `RawLock` (`#[cfg(verus_keep_ghost)]`: a `Ghost`
 field breaks `repr(transparent)`, which ordinary builds keep), set by
@@ -6480,7 +6482,7 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
 `gated`.
 
 **Premises beyond the common ones.**
-- *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs:448`;
+- *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs:506`;
   ledger category "C-program contract"). The roots: `alloc_slow_in`,
   `free_slow_in`, `alloc_huge_in`, `Heap::free_huge`, `paths::free_direct`
   and the no-heap `alloc_direct` arms of `paths::alloc`,
@@ -6491,7 +6493,8 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   called from the `api::libc` and `api::jemalloc` entry points and
   `Shared::zero_huge` on the free paths); `Shared::check_size_hint`
   (`heap/shared.rs`, the sized frees' slow paths, since #127); `ctl`,
-  `utilization`, `owner_of`, `arena_stats`, and the named readers
+  `utilization`, `owner_of`, `arena_stats`, `arena_figure` (for its
+  `stats::Scratch` record), and the named readers
   `cgroup_empty_bytes`, `tracked` (the seven `stats.cgroup.*` readers'
   cgroup discovery) and
   `stats_allocated` to `stats_retained` (`api/mallctl.rs`; `mallctl`
@@ -6508,20 +6511,14 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   the reports' calls out, by inspection elsewhere), and a signal
   handler that allocates is outside the C contract (the fork handlers
   block signals).
-- *The metadata lock* (`axiom_meta_order`, `lock.rs:500`, 8 call sites,
-  all in `meta.rs`): the calling thread holds only locks ranked below
-  the metadata lock. It stands in for the token `Meta`'s methods would
-  take from their callers; in #138 they took it (13 `Meta` methods
-  had a `Tracked<&mut LockOrder>` parameter), so the Meta < everything
-  rows of the table above rest on this premise on main.
-- *Closures* (`axiom_below_class`, `lock.rs:478`, and `axiom_below_huge`,
-  `:489`; one `axiom_held_below` in #138): the decay walks'
+- *Closures* (`axiom_below_class`, `lock.rs:540`, and `axiom_below_huge`,
+  `:555`; one `axiom_held_below` in #138): the decay walks'
   closures in `ClassState::decay_with` and `Huge::decay_with`
   (`Decayer::decay` takes a closure, which cannot carry a token). Both
   functions take the caller's token and require it below the lock the
   closure takes, so the premise restates a checked precondition for code
   that runs during the call.
-- *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs:467`):
+- *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs:525`):
   the one root token; every other entry point's `axiom_entry` token is
   not a root on main.
 - *Trusted bodies with honest specs*: `policy::empty_bytes`:
@@ -6552,17 +6549,18 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   above, not checked (`Heap::destroy` is verified since package P10).
 - `fork_release` takes no lock and is not part of the statement; the
   release order is unstated.
-**Changed since #138.** Weaker. #138 threaded the caller's
-`LockOrder` through 13 `Meta` methods and trusted one closure axiom,
-`axiom_held_below` (2 uses). Main threads it into `Meta::stats` only and
-mints the metadata lock's tokens from `axiom_meta_order` (8 call
-sites), with `axiom_below_class` and `axiom_below_huge` for the decay
-closures and `axiom_fork_entry` for `fork_prepare`'s root. Threading the
-token through `Meta` again and retiring `axiom_meta_order` is a
-wolfi-dev/challoc#397 item. `mallinfo2` (`api/glibc.rs:108`) takes its
-token from `axiom_entry`, as in #138 (verified again since
-wolfi-dev/challoc#421; its lock-order premise is listed in `lock.rs`'s
-`axiom_entry` doc).
+**Changed since #138.** #138 threaded the caller's `LockOrder` through
+13 `Meta` methods and trusted one closure axiom, `axiom_held_below`
+(2 uses). Main threads it through the ten `Meta` methods that may take
+the metadata lock, so the metadata lock's acquisitions rest on no
+premise of their own. The decay
+closures, which cannot carry a token, take theirs from two axioms,
+`axiom_below_class` and `axiom_below_huge` (one, `axiom_held_below`,
+in #138), and `fork_prepare`'s root token comes from
+`axiom_fork_entry` (from `axiom_entry` in #138). `mallinfo2`
+(`api/glibc.rs:132`) takes its token from `axiom_entry`, as in #138
+(verified again since wolfi-dev/challoc#421; its lock-order premise is
+listed in `lock.rs`'s `axiom_entry` doc).
 
 ## 34. Balanced arena assignment (bound counts at their invariants)
 

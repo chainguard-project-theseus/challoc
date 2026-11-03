@@ -76,7 +76,7 @@ pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
 
 ## `zero_records`
 
-src/stats.rs:2064. Kind: external_body. Category: raw pointer (internal).
+src/stats.rs:2069. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Zero the records at `p` in place: every field of an `ArenaStats` is an integer, for which zero is a value.
@@ -92,7 +92,7 @@ fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPai
 
 ## `stack_mark`
 
-src/stats.rs:2083. Kind: external_body. Category: raw pointer (internal).
+src/stats.rs:2088. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The caller's stack position, as the address of a local of this out-of-line function: [`Scratch::new`] records it with a pooled object, and a later call of the same thread from as high on the stack (not deeper, inside the holder's callback) finds the holder's frame gone ([`pool_take`]).
@@ -103,12 +103,12 @@ fn stack_mark() -> usize
 
 ## `pool_take`
 
-src/stats.rs:2099. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2104. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A pooled object for thread `tid` at stack position `mark`, with its permission: one no call holds, one `tid`'s call abandoned (held by `tid` at a mark at or below `mark`: that call's frame is gone, since a call made from inside it would be deeper), or one a thread that has exited held.
 
-Body mints Tracked at line 2103.
+Body mints Tracked at line 2108.
 
 ```rust
 fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)
@@ -118,7 +118,7 @@ fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<Point
 
 ## `pool_reserve`
 
-src/stats.rs:2110. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2115. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > An empty slot of the pool, held by `tid` for the object the caller allocates next; `None` when every slot has an object.
@@ -129,7 +129,7 @@ fn pool_reserve(tid: u32) -> Option<usize>
 
 ## `pool_fill`
 
-src/stats.rs:2118. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2123. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Put `p` in the reserved `slot`, held at `mark`: `true` (the object is then the pool's, never freed; `false` only in the unit tests).
@@ -140,7 +140,7 @@ fn pool_fill(slot: usize, p: *mut StatsPair, mark: usize) -> bool
 
 ## `pool_unreserve`
 
-src/stats.rs:2125. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2130. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Give back a reserved `slot` the caller could not fill.
@@ -151,7 +151,7 @@ fn pool_unreserve(slot: usize)
 
 ## `pool_release`
 
-src/stats.rs:2131. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2136. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Give the pooled `p` back.
@@ -162,7 +162,7 @@ fn pool_release(p: *mut StatsPair)
 
 ## `pool_fork_prepare`
 
-src/stats.rs:2138. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2143. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The fork prepare handler records the forking thread for [`pool_fork_child`].
@@ -173,7 +173,7 @@ pub fn pool_fork_prepare()
 
 ## `pool_fork_child`
 
-src/stats.rs:2148. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2153. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The child's fork handler: the pooled objects the forking thread held (a `fork` from inside a statistics callback holds one, which the callback's caller still uses after the fork returns) are held under its ID in the child, so that no call of the child takes them as an exited thread's.

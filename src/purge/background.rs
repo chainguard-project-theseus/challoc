@@ -625,7 +625,7 @@ fn create(
         // vstd does not specify `Option::filter`. The commit takes the
         // reservation's claim to the pages above the guard.
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
-        match shared.meta.reserve(STACK_SIZE, page, Tracked(&mut claim)) {
+        match shared.meta.reserve(STACK_SIZE, page, Tracked(&mut claim), Tracked(ord)) {
             Some(s) => {
                 proof {
                     let lg = shared.regions.lg_page;
@@ -651,6 +651,7 @@ fn create(
                         STACK_SIZE - page,
                         Ghost(true),
                         Tracked(&mut claim),
+                        Tracked(ord),
                     )
                     .is_ok()
                 {

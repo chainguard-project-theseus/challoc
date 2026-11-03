@@ -81,7 +81,7 @@ axiom fn axiom_heap_block(h: *mut Heap, heap: Heap, tracked perms: &mut CachePer
 
 ## `Heap::arena_volatile`
 
-src/heap/mod.rs:7261. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:7268. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: heap::kani_volatile::arena_volatile_reads_arena).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.

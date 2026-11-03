@@ -1004,7 +1004,7 @@ impl Heap {
         if unsafe { self.hdr_ref(cache) }.cap != 0 {
             return cache;
         }
-        let (slots, Tracked(blk)) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap));
+        let (slots, Tracked(blk)) = shared.meta.alloc_raw(CacheHeader::slots_layout(cap), Tracked(ord));
         let tracked (raw, mc) = blk;
         if slots.is_null() {
             return ptr::null_mut();

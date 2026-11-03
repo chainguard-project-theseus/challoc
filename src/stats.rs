@@ -54,7 +54,7 @@ use crate::layout::class_table;
 use crate::layout::{NBINS, NCLASSES};
 use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
-use crate::lock::{rank_arena_stats, rank_class, rank_stats};
+use crate::lock::{rank_arena_stats, rank_class, rank_meta, rank_stats};
 use crate::meta::{Meta, MetaClaim, MetaStats};
 use crate::vspec::ctl::Change;
 use core::alloc::Layout;
@@ -1320,13 +1320,13 @@ pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(
     proof {
         shared.lemma_wf();
     }
-    let mut tmp = Scratch::new(&shared.meta)?;
+    let mut tmp = Scratch::new(&shared.meta, Tracked(ord))?;
     proof {
         *fx = Ghost(Change::Refreshed);
     }
     let tracked mut rd = Ghost((Seq::<ArenaStats>::empty(), Seq::<int>::empty()));
     let e = collect_into(shared, true, &mut tmp.record().a, Tracked(&mut rd), Tracked(ord)).epoch;
-    tmp.free(&shared.meta);
+    tmp.free(&shared.meta, Tracked(ord));
     Some(e)
 }
 
@@ -1960,10 +1960,12 @@ impl Scratch {
     /// Records from the pool: an object it holds, or one allocated from
     /// `meta` (zeroed) into a free slot of it; `None` when it has neither
     /// an object nor a slot to give, or `meta` no object.
-    pub fn new(meta: &Meta) -> (r: Option<Scratch>)
+    pub fn new(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Scratch>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
         ensures
+            *final(ord) == *old(ord),
             r matches Some(s) ==> s.wf() && s.meta_id() == meta.live_id(),
     {
         broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
@@ -1986,7 +1988,7 @@ impl Scratch {
             assert(8 <= crate::meta::MAX_ALIGN) by (compute_only);
         }
         let slot = pool_reserve(tid)?;
-        let (p8, Tracked(blk)) = meta.alloc_raw(Layout::new::<StatsPair>());
+        let (p8, Tracked(blk)) = meta.alloc_raw(Layout::new::<StatsPair>(), Tracked(ord));
         if p8.is_null() {
             pool_unreserve(slot);
             return None;
@@ -2030,11 +2032,14 @@ impl Scratch {
 
     /// Give the object back: to the pool if it is the pool's, else to
     /// `meta`.
-    pub fn free(self, meta: &Meta)
+    pub fn free(self, meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             self.wf(),
             self.meta_id() == meta.live_id(),
+        ensures
+            *final(ord) == *old(ord),
     {
         broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
 
@@ -2051,7 +2056,7 @@ impl Scratch {
             raw = perm.into_raw();
             assert((p as *mut u8)@.addr == p@.addr);
         }
-        meta.free(p as *mut u8, Layout::new::<StatsPair>(), Tracked((raw, claim)));
+        meta.free(p as *mut u8, Layout::new::<StatsPair>(), Tracked((raw, claim)), Tracked(ord));
     }
 }
 

@@ -2212,10 +2212,15 @@ fn now_ns() -> u64
 // The tracked result is part of the signature.
 #[allow(clippy::type_complexity)]
 #[inline(always)]
-fn alloc_desc(meta: &Meta) -> (r: (*mut HugeDesc, Tracked<Option<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>>))
+fn alloc_desc(
+    meta: &Meta,
+    Tracked(ord): Tracked<&mut LockOrder>,
+) -> (r: (*mut HugeDesc, Tracked<Option<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>>))
     requires
         crate::sys::may_syscall(),
+        old(ord).allows(rank_meta()),
     ensures
+        *final(ord) == *old(ord),
         r.0@.addr != 0 ==> r.1@ is Some && (r.1@->0).0.ptr() == r.0 && (r.1@->0).0.is_uninit(),
         r.0@.addr != 0 ==> desc_claim_for((r.1@->0).1, r.0, meta.live_id()),
         r.0@.addr != 0 ==> meta.holds(r.0@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
@@ -2224,7 +2229,7 @@ fn alloc_desc(meta: &Meta) -> (r: (*mut HugeDesc, Tracked<Option<(PointsTo<HugeD
     proof {
         crate::meta::lemma_consts();
     }
-    let (p, Tracked(blk)) = meta.alloc_raw(Layout::new::<HugeDesc>());
+    let (p, Tracked(blk)) = meta.alloc_raw(Layout::new::<HugeDesc>(), Tracked(ord));
     let tracked (raw, claim) = blk;
     let d = p as *mut HugeDesc;
     proof {
@@ -2274,18 +2279,26 @@ proof fn desc_raw(tracked desc: (PointsTo<HugeDesc>, crate::meta::MetaClaim)) ->
 /// Give the block `d` from [`alloc_desc`] back to `meta`, with `blk`,
 /// the permission to its bytes and its claim, which `Meta::free` takes.
 #[inline(always)]
-fn free_desc(meta: &Meta, d: *mut HugeDesc, blk: Tracked<(PointsToRaw, crate::meta::MetaClaim)>)
+fn free_desc(
+    meta: &Meta,
+    d: *mut HugeDesc,
+    blk: Tracked<(PointsToRaw, crate::meta::MetaClaim)>,
+    Tracked(ord): Tracked<&mut LockOrder>,
+)
     requires
         crate::sys::may_syscall(),
+        old(ord).allows(rank_meta()),
         d@.addr != 0,
         blk@.0.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
         blk@.0.provenance() == d@.provenance,
         desc_claim_for(blk@.1, d, meta.live_id()),
+    ensures
+        *final(ord) == *old(ord),
 {
     proof {
         assert((d as *mut u8)@.addr == d@.addr && (d as *mut u8)@.provenance == d@.provenance);
     }
-    meta.free(d as *mut u8, Layout::new::<HugeDesc>(), blk);
+    meta.free(d as *mut u8, Layout::new::<HugeDesc>(), blk, Tracked(ord));
 }
 
 /// Where a run may be taken ([`Huge::find`]'s answer): fresh pages at or
@@ -3706,9 +3719,10 @@ impl Inner {
     /// first when it is a member (every `Empty` extent is; a freed run's
     /// descriptor still reads `Active` here and is in no list), with its
     /// permission and its block's claim.
-    fn retire(&mut self, meta: &Meta, d: *mut HugeDesc)
+    fn retire(&mut self, meta: &Meta, d: *mut HugeDesc, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             perms_ok(old(self).descs@),
             elist_ok(old(self).empty_head, old(self).empty_tail, old(self).elist@, old(self).descs@),
             old(self).descs@.contains_key(d),
@@ -3741,6 +3755,7 @@ impl Inner {
             final(self).lg == old(self).lg,
             final(self).runs == old(self).runs,
             final(self).pgs == old(self).pgs,
+            *final(ord) == *old(ord),
     {
         let ghost d0 = self.descs@;
         let ghost l0 = self.elist@;
@@ -3797,7 +3812,7 @@ impl Inner {
                 }
             }
         }
-        free_desc(meta, d, Tracked(desc_raw((perm, dc))));
+        free_desc(meta, d, Tracked(desc_raw((perm, dc))), Tracked(ord));
     }
 
     /// Append to the `Empty` list; `d.dirty_at` must be the newest.
@@ -4134,7 +4149,7 @@ impl Huge {
             assert(crate::meta::is_pow2(page));
         }
         let free = Set::new(meta, page, npages, Tracked(ord))?;
-        let table = Table::new(meta, page)?;
+        let table = Table::new(meta, page, Tracked(ord))?;
         let tracked descs = Map::tracked_empty();
         // The run authorities, empty: no run is live yet.
         let tracked (runs, _) = GhostSetAuth::<(int, int)>::new(vstd::set::Set::empty());
@@ -5046,14 +5061,14 @@ impl Huge {
         }
 
         // Everything fallible happens before any state changes.
-        let (run, _run_opt) = alloc_desc(meta);
+        let (run, _run_opt) = alloc_desc(meta, Tracked(&mut under));
         if run.is_null() {
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
         let run_perm = Tracked(_run_opt.get().tracked_unwrap());
-        let (spare, _spare_opt) = alloc_desc(meta);
+        let (spare, _spare_opt) = alloc_desc(meta, Tracked(&mut under));
         if spare.is_null() {
-            free_desc(meta, run, Tracked(desc_raw(run_perm.get())));
+            free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
         let spare_perm = Tracked(_spare_opt.get().tracked_unwrap());
@@ -5079,12 +5094,12 @@ impl Huge {
         // gets.
         let runs = g.stats.runs;
         let extra = if g.table.keys() <= 0xFFFF_FFFF && runs <= 0xFFFF_FFFF { 4 + runs } else { 3 };
-        let ok = g.table.ensure(meta, page, extra).is_ok()
+        let ok = g.table.ensure(meta, page, extra, Tracked(&mut under)).is_ok()
             && (end <= g.next_page || g.free.ensure(meta, page, end - 1, Tracked(&mut under)).is_ok())
             && self.prepare(s, usable_pages, g.next_page, g.perm()).is_ok();
         if !ok {
-            free_desc(meta, run, Tracked(desc_raw(run_perm.get())));
-            free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())));
+            free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
+            free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())), Tracked(&mut under));
             proof {
                 // The lock's frame: the ghost page count, shift and `Meta`
                 // identity are the ones `new` set.
@@ -5100,7 +5115,7 @@ impl Huge {
         // `check_zero` needs the extent's state before `take` may free it.
         let _gi: &Inner = &g;
         let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
-        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, zero, run_perm, spare_perm, Tracked(tok));
+        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, zero, run_perm, spare_perm, Tracked(tok), Tracked(&mut under));
         // `take` wrote the run's descriptor; the lock is still held.
         let pages = g.desc(run).pages();
         self.sync_oldest(&g);
@@ -5668,10 +5683,12 @@ impl Huge {
         Tracked(run_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
         Tracked(spare_desc): Tracked<(PointsTo<HugeDesc>, crate::meta::MetaClaim)>,
         Tracked(tok): Tracked<&mut Map<int, RunToken>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             old(g).wf(),
             old(g).spec_np() == self.npages,
             old(g).spec_lg() == self.lg_page,
@@ -5701,6 +5718,7 @@ impl Huge {
             final(tok)[0].npages() == p.pages,
             r.0 ==> r.1@.addr() == self.base + p.start * self.spec_page()
                 && r.1@.len() == (p.pages - GUARD_PAGES) * self.spec_page(),
+            *final(ord) == *old(ord),
     {
         // The lists' pairwise distinctness and `index_of`'s choice are
         // most of the solver's work if left open; only the steps that name
@@ -5956,7 +5974,7 @@ impl Huge {
                         }
                     }
                 }
-                g.retire(meta, ext);
+                g.retire(meta, ext, Tracked(ord));
             }
             proof {
                 assert(took_free(f0, g.free.map.view(), s as int, end as int, old_mark as int));
@@ -6008,7 +6026,7 @@ impl Huge {
         if !spare_used {
             let tracked sp = spare_slot.tracked_unwrap();
             let tracked sc = spare_claim_slot.tracked_unwrap();
-            free_desc(meta, spare, Tracked(desc_raw((sp, sc))));
+            free_desc(meta, spare, Tracked(desc_raw((sp, sc))), Tracked(ord));
         }
         proof {
             let t = Take {
@@ -7433,7 +7451,7 @@ impl Huge {
         proof {
             g0.lemma_mid();
         }
-        let _ = g.table.ensure(meta, page_size, 2);
+        let _ = g.table.ensure(meta, page_size, 2, Tracked(&mut under));
         proof {
             // The run is counted.
             lemma_can_sub(g0, d);
@@ -7619,7 +7637,7 @@ impl Huge {
                     lemma_retire_ok(g0, g@, m2, k2, x);
                 }
                 let ghost gr = g@;
-                g.retire(meta, x);
+                g.retire(meta, x, Tracked(&mut under));
                 proof {
                     lemma_retired(g0, gr, g@, m2, k2, x);
                 }
