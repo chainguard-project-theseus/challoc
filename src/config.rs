@@ -187,6 +187,8 @@ pub struct Config {
     pub slot_randomize: bool,
     /// Compare each free against the recently cached slots.
     pub double_free_scan: bool,
+    /// Sized frees run plain `free`'s allocation check (`ClassLine::of`).
+    pub exact_sized_free: bool,
     /// Abort after parsing when any source reported a problem ([`load`]).
     pub abort_conf: bool,
     /// Read and act on the memory cgroup (`sys::cgroup`, `policy.rs`).
@@ -243,6 +245,7 @@ impl Config {
         pac_pointers: false,
         slot_randomize: false,
         double_free_scan: false,
+        exact_sized_free: false,
         abort_conf: false,
         cgroup: true,
         check_zero: false,
@@ -817,6 +820,7 @@ const ENTRIES: &[Key] = &[
     bool_key!("pac_pointers", pac_pointers),
     bool_key!("slot_randomize", slot_randomize),
     bool_key!("double_free_scan", double_free_scan),
+    bool_key!("exact_sized_free", exact_sized_free),
     bool_key!("abort_conf", abort_conf),
     bool_key!("cgroup", cgroup),
     bool_key!("check_zero", check_zero),
@@ -2079,6 +2083,7 @@ mod tests {
             !d.zero_on_free
                 && !d.slot_randomize
                 && !d.double_free_scan
+                && !d.exact_sized_free
                 && !d.abort_conf
                 && !d.check_zero
         );
@@ -2105,6 +2110,7 @@ mod tests {
             "pac_pointers",
             "slot_randomize",
             "double_free_scan",
+            "exact_sized_free",
             "abort_conf",
             "cgroup",
             "check_zero",
@@ -3308,6 +3314,7 @@ mod kani_config {
             pac_pointers: kani::any(),
             slot_randomize: kani::any(),
             double_free_scan: kani::any(),
+            exact_sized_free: kani::any(),
             abort_conf: kani::any(),
             cgroup: kani::any(),
             check_zero: kani::any(),

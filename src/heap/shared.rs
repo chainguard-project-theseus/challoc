@@ -249,7 +249,7 @@ impl Shared {
     /// bits past a class region, each table is its class's and keeps its
     /// arrays in the metadata region ([`SlabTable::meta_ok`]), and each class
     /// line is well formed over its table ([`ClassLine::wf`]) and has the
-    /// table's guard mask ([`SlabTable::guard_mask`]); the huge
+    /// table's guard mask, or 0 under `exact_sized_free`; the huge
     /// allocator covers the huge region on the regions' page, with its
     /// records from `meta`; [`PUSH_PAC`] is [`pac_mode`](super::pac_mode),
     /// set only where pointer authentication is available, and
@@ -271,7 +271,7 @@ impl Shared {
         &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.lines[c].wf(self.tables[c], self.regions, c)
-            && self.lines[c].guard_mask == crate::layout::guard_geom(c).1
+            && self.lines[c].guard_mask == if self.config.exact_sized_free { 0 } else { crate::layout::guard_geom(c).1 }
         &&& self.huge.spec_npages() == self.huge_pages()
         &&& self.meta.spec_base() == self.regions.meta_base
         &&& self.meta.spec_len() == self.regions.meta_len
@@ -411,8 +411,9 @@ pub struct ClassLine {
     nslots: u64,
     /// The last eight bytes are the sized check's guard word
     /// ([`ClassLine::guard_word`]), one load: `guard_mask` is
-    /// [`SlabTable::guard_mask`] over page groups of `2^lg_guard` bytes,
-    /// `tz` the slot-start test's rotate.
+    /// [`SlabTable::guard_mask`] over page groups of `2^lg_guard` bytes
+    /// (0 with `exact_sized_free`, see [`ClassLine::of`]), `tz` the
+    /// slot-start test's rotate.
     guard_mask: u32,
     tz: u8,
     /// `log2` of a page group in bytes: `lg_slab` plus
@@ -482,15 +483,20 @@ impl ClassLine {
 
     /// The line of class `class`, with the other half of its watermark
     /// copy's ghost variable ([`SlabTable::new_mirror`]), for
-    /// [`SlabTable::mirror_watermark`].
-    fn of(regions: &Regions, table: &SlabTable, class: usize) -> (r: (ClassLine, Tracked<GhostVarAuth<usize>>))
+    /// [`SlabTable::mirror_watermark`]. With `exact_sized_free` (the
+    /// configuration key) the guard mask is 0: the sized check's guard
+    /// test ([`ClassLine::is_guard`]) then matches every slab, so
+    /// [`Shared::sized_slot`] accepts nothing and every sized free takes
+    /// the slow path, whose exact `free` runs plain `free`'s check. The
+    /// fast path's code is the same either way.
+    fn of(regions: &Regions, table: &SlabTable, class: usize, exact_sized_free: bool) -> (r: (ClassLine, Tracked<GhostVarAuth<usize>>))
         requires
             class < NCLASSES,
             *regions == crate::layout::process_regions(),
             table.spec_class() == class,
         ensures
             r.0.wf(*table, *regions, class as int),
-            r.0.guard_mask == crate::layout::guard_geom(class as int).1,
+            r.0.guard_mask == if exact_sized_free { 0 } else { crate::layout::guard_geom(class as int).1 },
             r.0.committed_inv@.constant().2 == r.1@.id(),
     {
         broadcast use crate::vspec::class::axiom_class_table_wf;
@@ -509,7 +515,7 @@ impl ClassLine {
             inv: inverse_of_odd_part_u64(cls.size()),
             nslots: cls.nslots as u64,
             slab_mask: cls.slab_mask,
-            guard_mask: table.guard_mask(),
+            guard_mask: if exact_sized_free { 0 } else { table.guard_mask() },
             slab_bits: cls.slab_bits,
             tz: cls.tz,
             lg_slab: cls.lg_slab,
@@ -640,7 +646,8 @@ impl ClassLine {
     /// What [`sized_ok`](ClassLine::sized_ok) accepts, on class `c`'s
     /// line with `region_hi` the regions' bits past the region length: a
     /// slot `q` of the class, at `rel` inside the region, in slab `rel >>
-    /// lg_slab`, which is not a guard slab.
+    /// lg_slab`, which is not a guard slab; and the line's guard mask is
+    /// not 0.
     proof fn lemma_sized_ok(&self, t: SlabTable, regions: Regions, c: int, rel: usize, region_hi: usize)
         requires
             0 <= c < NCLASSES,
@@ -665,6 +672,7 @@ impl ClassLine {
                 &&& (rel >> cls.lg_slab) < regions.spec_nslabs(c)
                 &&& !crate::layout::guard_slab(c, (rel >> cls.lg_slab) as int)
             }),
+            self.guard_mask != 0,
     {
         crate::vspec::class::axiom_class_table_wf(c);
         regions.lemma_nslabs_bound(c);
@@ -2261,7 +2269,7 @@ impl Shared {
                     in_alloc(lines, NCLASSES as int * size_of::<ClassLine>()),
                     ord.allows(rank_table(0)),
                     forall|d: int| 0 <= d < c ==> (#[trigger] line_perms[d]).value().wf(table_perms[d].value(), *regions, d)
-                        && line_perms[d].value().guard_mask == crate::layout::guard_geom(d).1,
+                        && line_perms[d].value().guard_mask == if config.exact_sized_free { 0 } else { crate::layout::guard_geom(d).1 },
             {
                 let ghost before = line_perms;
                 proof {
@@ -2269,7 +2277,7 @@ impl Shared {
                     assert(table_perms.contains_key(c as int));
                 }
                 let table = ptr_ref(elem_at(tables, c, NCLASSES), Tracked(table_perms.tracked_borrow(c as int)));
-                let (line, auth) = ClassLine::of(regions, table, c);
+                let (line, auth) = ClassLine::of(regions, table, c, config.exact_sized_free);
                 let tracked pl = line_perms.tracked_borrow_mut(c as int);
                 Shared::put_line(this, c, line, Tracked(pl));
                 proof {
@@ -2279,7 +2287,7 @@ impl Shared {
                     }
                     assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] line_perms[d]).is_init()
                         && line_perms[d].value().wf(table_perms[d].value(), *regions, d)
-                        && line_perms[d].value().guard_mask == crate::layout::guard_geom(d).1 by {
+                        && line_perms[d].value().guard_mask == if config.exact_sized_free { 0 } else { crate::layout::guard_geom(d).1 } by {
                         if d != c {
                             assert(before[d] == line_perms[d]);
                         }
@@ -2385,7 +2393,7 @@ impl Shared {
                 // The class lines and tables are the ones written above.
                 assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] shared_at(this).tables[d].spec_class() == d
                     && shared_at(this).lines[d].wf(shared_at(this).tables[d], shared_at(this).regions, d)
-                    && shared_at(this).lines[d].guard_mask == crate::layout::guard_geom(d).1
+                    && shared_at(this).lines[d].guard_mask == if shared_at(this).config.exact_sized_free { 0 } else { crate::layout::guard_geom(d).1 }
                     && shared_at(this).tables[d].meta_ok() by {
                     assert(table_perms.contains_key(d));
                     assert(line_perms.contains_key(d));
@@ -3587,6 +3595,11 @@ impl Shared {
         self.push_flags
     }
 
+    /// The `exact_sized_free` key of the configuration `init` applied.
+    pub closed spec fn exact_sized_free(&self) -> bool {
+        self.config.exact_sized_free
+    }
+
     /// The bits of [`Shared::free_flags`]' byte other than [`FREE_ROUTE`],
     /// fixed when `init` made it (`put_flags`;
     /// [`fixed`](crate::vspec::flags::fixed)).
@@ -3715,9 +3728,12 @@ impl Shared {
     /// one run (`SlabTable::commit_run`, up to `RUN_BYTES`; design 4) are
     /// ordinary writable memory.
     /// `None` for anything else; the slow path repeats the checks with
-    /// aborts ([`check_size_hint`], then [`classify_free`]). The arena is
-    /// not read either (it is on the descriptor line): the home cache
-    /// takes the slot and the flush routes it ([`release_routed`]).
+    /// aborts ([`check_size_hint`], then [`classify_free`]). With
+    /// `exact_sized_free` every line's guard mask is 0 and this is `None`
+    /// for every pointer ([`Shared::built`]), so every sized free takes
+    /// that slow path. The arena is not read either (it is on the
+    /// descriptor line): the home cache takes the slot and the flush
+    /// routes it ([`release_routed`]).
     ///
     /// [`check_size_hint`]: Shared::check_size_hint
     /// [`classify_free`]: Shared::classify_free
@@ -3729,6 +3745,7 @@ impl Shared {
             hint matches Some(c) ==> c < NCLASSES,
         ensures
             r matches Some(c) ==> hint == Some(c) && crate::layout::process_regions().is_slot(c as int, p@.addr),
+            self.exact_sized_free() ==> r is None,
     {
         let class = hint?;
         debug_assert!(class < NCLASSES);

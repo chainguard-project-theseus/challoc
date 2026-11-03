@@ -1003,9 +1003,10 @@ proof fn lemma_free_route_bits(flags: u8)
 /// arithmetically and push onto the home cache without loading the slab
 /// descriptor (design 6.3). `false` for anything off the fast path (not a
 /// slot start of the hinted class's region outside a guard slab, a hint
-/// naming another class or a huge size, a full cache); the caller then goes
-/// through [`Shared::check_size_hint`] and the exact [`free`]. A slot start
-/// in a slab no arena has been handed, or not committed, is pushed like any
+/// naming another class or a huge size, a full cache, every sized free with
+/// `exact_sized_free`); the caller then goes through
+/// [`Shared::check_size_hint`] and the exact [`free`]. A slot start in a
+/// slab no arena has been handed, or not committed, is pushed like any
 /// other (`Shared::sized_slot`). Contains no call. `blk` holds the token for
 /// `p`: a push takes its slot token, and a declined push gives `blk` back
 /// the token with a fresh permission to the slot, its bytes unknown.
@@ -1028,6 +1029,7 @@ pub fn free_sized_fast(
     ensures
         final(h).keeps(*old(h)),
         flags & PUSH_ZERO != 0 ==> !r,
+        shared.exact_sized_free() ==> !r,
         r ==> free_target(p),
         r ==> hint_ok(p, hint),
         r ==> slot_start(p),

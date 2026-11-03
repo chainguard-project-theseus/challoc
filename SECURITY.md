@@ -124,6 +124,10 @@ These hold on every supported host with the default configuration:
   slot the caller chose, writable at once if its slab's memory is
   committed), and if a refill claims the slot before a flush, the slot is
   live twice. That deferral is jemalloc's behaviour for every free.
+  `exact_sized_free:true` makes them run plain `free`'s check at the
+  call, at the price of the slow path on every sized free;
+  `double_free_scan:true` checks them at the call too, with its state
+  byte, at its larger price.
 - **Randomisation is probabilistic.** Class region addresses are
   randomised. Slot order within a class is predictable unless
   `slot_randomize:true` is set.

@@ -37,23 +37,33 @@ static void register_first(void)
 
 __attribute__((section(".preinit_array"), used)) static void (*const preinit_register)(void) = register_first;
 
-static unsigned seen_arenas;
+/* malloc_stats_print hands its text over in 1 KiB chunks that can split a
+ * line anywhere, so the callback accumulates the whole report and the
+ * `Arenas:` line is parsed afterwards. */
+static char report[1 << 16];
+static size_t report_len;
 
-static void find_arenas(void *opaque, const char *s)
+static void append(void *opaque, const char *s)
 {
     (void)opaque;
-    const char *a = strstr(s, "Arenas: ");
-    if (a)
-        seen_arenas = (unsigned)strtoul(a + 8, NULL, 10);
+    size_t n = strlen(s);
+    if (report_len + n < sizeof report) {
+        memcpy(report + report_len, s, n);
+        report_len += n;
+    }
 }
 
 /* The arenas built: the report's `Arenas:` count, those the scan found. */
 static unsigned built_arenas(void)
 {
-    seen_arenas = 0;
-    malloc_stats_print(find_arenas, NULL, "ab");
-    REQUIRE(seen_arenas > 0, "no Arenas: line");
-    return seen_arenas;
+    report_len = 0;
+    malloc_stats_print(append, NULL, "ab");
+    report[report_len] = 0;
+    const char *a = strstr(report, "Arenas: ");
+    REQUIRE(a != NULL, "no Arenas: line");
+    unsigned seen = (unsigned)strtoul(a + 8, NULL, 10);
+    REQUIRE(seen > 0, "Arenas: 0");
+    return seen;
 }
 
 static volatile int stop, warm;

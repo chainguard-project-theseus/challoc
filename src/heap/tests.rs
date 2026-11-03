@@ -1133,6 +1133,48 @@ fn sized_free_past_the_watermark_aborts_at_the_flush() {
     t.flush_all();
 }
 
+/// With `exact_sized_free` the sized fast path takes nothing: every
+/// class's check declines a slot start it accepts by default, and a live
+/// slot's sized free is left to the size check and the exact `free`.
+#[test]
+fn exact_sized_free_declines_every_sized_fast_free() {
+    let s = TestShared::with(Config {
+        narenas: 1,
+        exact_sized_free: true,
+        ..Config::DEFAULT
+    })
+    .build();
+    let d = shared();
+    for c in 0..NCLASSES {
+        let first = |s: &Shared| s.regions.slab_addr(c, 0) as *mut u8;
+        assert_eq!(
+            d.sized_slot(first(d), Some(c)),
+            Some(c),
+            "class {c} default"
+        );
+        assert_eq!(s.sized_slot(first(s), Some(c)), None, "class {c}");
+    }
+    let t = TestHeap::new(s);
+    for size in [64, 256] {
+        let c = class_with(size);
+        let p = t.alloc(c);
+        assert!(
+            !free_sized_fast(
+                s,
+                t.heap(),
+                p,
+                Some(c),
+                s.push_flags(),
+                Tracked::assume_new()
+            ),
+            "class {c}"
+        );
+        s.check_size_hint(p, size, Some(c), Tracked::assume_new());
+        t.free(p);
+    }
+    t.destroy();
+}
+
 #[test]
 fn flush_releases_the_highest_addresses_and_keeps_the_lowest() {
     let s = shared();
