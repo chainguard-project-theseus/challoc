@@ -2655,9 +2655,8 @@ and the parent and child handlers release each of them once. Not proved: that
 `listed` names every lock in the crate (a source test checks it,
 `fork_lock_list_matches_the_source_tree`), that the prepare handler
 terminates (a `lock` that never returns satisfies everything), and
-compatibility with other `pthread_atfork` handlers (the handoff
-premise assumes those registered before challoc's take no allocator
-lock). Reclaiming the caches of threads the child no longer has is
+compatibility with other `pthread_atfork` handlers (those registered
+before challoc's run in the fork window, a premise below). Reclaiming the caches of threads the child no longer has is
 out of scope (design 9 leaves them marked).
 
 Read at this section's commit (the `file:line`s are the `fn`/`axiom`
@@ -2759,13 +2758,37 @@ axioms below are the other source.
   are blocked from before the prepare handler's first lock to the
   release's last, and the atfork handlers registered before ours (whose prepare
   runs after ours and whose parent and child handlers run before ours)
-  take no allocator lock. Each handler calls each axiom once. For
+  run allocator code whose releases do nothing (the fork window, below). The handlers call the axioms
+  only when `FORK_LOCKED` says this fork's prepare took the locks
+  (`fork_was_locked`; glibc serialises one fork's handlers and runs them
+  on the forking thread, so a `true` read there is this fork's). Each handler calls each axiom once. For
   `axiom_fork_resumed` a second call would prove `false` (the creation
   lock cell's permission it restates is exclusive), and the test
   `fork_hold_is_resumed_once` (`api/mod.rs:2919`) checks that its
   wrapper `resume::resumed` has one call site; for
   `axiom_fork_resumed_state` the same test counts the call sites (one
   per handler), and nothing enforces the run-time count.
+- *The fork window* (`lock::fork_holder_is_me`, premise).
+  From `fork_prepare`'s `fork_window_open` to `fork_release`'s
+  `fork_window_close`, the forking thread's contended acquires are
+  served as acquired and its releases do nothing, so an atfork handler
+  registered before challoc's may allocate there. The premise is that
+  the forking thread has no allocator critical section open in the
+  window, so each lock's data is as its last holder left it, and that no
+  arena is built and no background thread started there
+  (`Arenas::create`, `Arenas::materialise` and `purge::background::start`
+  refuse on `lock::in_fork_window`, which has no specification). Verus
+  models neither early return of `RawLock::lock_slow` or
+  `RawLock::release`. The order of the window against the hold is
+  proved: `fork_window_open` requires `lock::fork_prepared`, which only
+  `RawLock::lock_held` of the lock at `rank_state` ensures (the state
+  lock, taken last; `RawLock::new` ranks no lock above it, so lock order
+  admits no `lock_held` after it on `fork_prepare`'s one root token, from
+  `lock::axiom_fork_entry`), and
+  `RawLock::unlock_held` and `Lock::unlock_held_perm` require
+  `lock::window_closed`, which only `fork_window_close` ensures. So the
+  window opens after the last acquisition and closes before the first
+  release.
 - *A frozen arena table* is no longer a premise: `arena_held` and
   `count_held` (`api/mod.rs`) verify. `fork_prepare` takes the creation
   lock with `Arenas::lock_held`, which also hands it the permission of
@@ -2815,12 +2838,16 @@ axioms below are the other source.
   locks after the slab table locks). The release order is unstated.
 - Partial correctness: a `lock` that never returns (a deadlock in
   prepare) satisfies everything. A prepare handler registered before
-  challoc's (one that runs after ours) that allocates on a slow path
-  would deadlock on its own thread; the handoff premise excludes it.
+  challoc's that waits on another thread that allocates still deadlocks
+  (design 9's residuals); one that allocates on its own thread runs in
+  the fork window.
 - Consistency in the child covers the one value the handlers write (the
   background state); the child also resets the deferred cgroup record
   and the feature line (`cgroup_fork_child`, `feature_line_fork_child`),
-  which no listed lock guards. The handlers do not touch the other locked values,
+  which no listed lock guards, hands the statistics pool's objects the
+  forking thread held to its new thread ID (`stats::pool_fork_child`,
+  trusted), and reopens the init/fork gate (`fork_gate_exit`, plain
+  atomics with no specification). The handlers do not touch the other locked values,
   which keep the invariant their last holder left, as the lock axioms
   assume for every acquire.
 - The signal mask's save and restore are not part of this statement;
@@ -2832,7 +2859,9 @@ now takes its lock-order token from its own axiom,
 `axiom_entry` (`lock.rs:448`), every other entry point's, ensures
 `!o.root()`; in #138 `axiom_entry` gave the root. The axiom
 `axiom_fork_resumed` also assumes that the saved signal mask lies inside
-the blockable signals (theorem 39).
+the blockable signals (theorem 39). #448 added the fork window and
+`FORK_LOCKED` (premises above); the window's order against the hold is
+proved through `lock::fork_prepared` and `lock::window_closed`.
 
 ## 14. Arena isolation (slab ownership and release routing)
 
