@@ -314,8 +314,8 @@ impl Heap {
     /// record names the headers of the heap at the address
     /// `Heap::create_detached` created it at, and that the heap has not
     /// moved since (verified code never moves, swaps or builds a `Heap`).
-    /// (Verus has no raw borrow, so the address of `self.caches` cannot be
-    /// computed in verified code.)
+    /// (Verus has no raw borrow, so verified code cannot compute it; Kani
+    /// checks the address, `kani_cache::home_ptr_at_is_the_home_header`.)
     #[inline(always)]
     #[verifier::external_body]
     fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
@@ -1127,3 +1127,69 @@ impl CacheHeader {
 }
 
 } // verus!
+
+/// Kani check of `Heap::home_ptr_at` (`verus/ledger/src/heap/cache.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_cache {
+    use super::Heap;
+    use crate::layout::NCLASSES;
+    use core::mem::{MaybeUninit, size_of};
+
+    /// `Heap::home_ptr_at`, `requires` `class < NCLASSES` and `wf`,
+    /// `ensures` the heap unchanged and the result the home header the
+    /// heap's record names (`Heap::home_ptr`), which creation sets to
+    /// `home_hdr` of the heap's address, `heap + 128 + 64 * class`
+    /// (`Heap::home_at`). The harness checks, for every class below
+    /// `NCLASSES` and a heap of any bytes (its bools any bool): the
+    /// result's address is the heap's plus `128 + 64 * class`, it is the
+    /// heap's `caches[class]`, aligned and dereferenceable, reading
+    /// through it gives that header's `len`, `slots` and `allocs`, and the
+    /// call leaves each byte of the heap as it was (byte `i`, for every
+    /// `i`, padding included). The heap is at the address Kani gives the
+    /// local. Not checked: the result's provenance, which Kani does not
+    /// observe (a pointer of the same address and no provenance passes
+    /// too), and the ghost record.
+    #[kani::proof]
+    fn home_ptr_at_is_the_home_header() {
+        let bytes: [u8; size_of::<Heap>()] = kani::any();
+        let mut m = MaybeUninit::<Heap>::uninit();
+        let p = m.as_mut_ptr();
+        // SAFETY: `p` is the heap's own storage, written whole and then
+        // its bools; every other field is a raw pointer, an integer, a
+        // `ThreadStats` (two integers), a `CacheHeader` (integers and a
+        // raw pointer) or a ghost `Tracked`/`Ghost` (a `PhantomData`, no
+        // bytes), valid with any bytes. Borrowed in place, never moved,
+        // so its padding keeps the bytes written.
+        let h = unsafe {
+            p.cast::<[u8; size_of::<Heap>()]>().write(bytes);
+            (&raw mut (*p).tcache_enabled).write(kani::any());
+            (&raw mut (*p).bound).write(kani::any());
+            (&raw mut (*p).rehome).write(kani::any());
+            m.assume_init_mut()
+        };
+        let class: usize = kani::any();
+        kani::assume(class < NCLASSES);
+        let i: usize = kani::any();
+        kani::assume(i < size_of::<Heap>());
+        let want = (
+            h.caches[class].len,
+            h.caches[class].slots,
+            h.caches[class].allocs,
+        );
+        // SAFETY: `i` is inside the heap, whose bytes are all written.
+        let before = unsafe { (&raw const *h).cast::<u8>().add(i).read() };
+        let at = (&raw const *h).addr();
+        let r = h.home_ptr_at(class);
+        assert_eq!(r.addr(), at + 128 + 64 * class);
+        assert!(r.is_aligned());
+        assert!(kani::mem::can_dereference(r));
+        // SAFETY: just checked dereferenceable.
+        let hdr = unsafe { &*r };
+        assert!((hdr.len, hdr.slots, hdr.allocs) == want);
+        assert!(core::ptr::eq(r, &raw mut h.caches[class]));
+        // SAFETY: as `before`.
+        let after = unsafe { (&raw const *h).cast::<u8>().add(i).read() };
+        assert_eq!(after, before);
+    }
+}

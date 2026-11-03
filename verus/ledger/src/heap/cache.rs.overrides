@@ -1,5 +1,6 @@
-# The home header's address: the cast is checkable, but the trust is that
-# the ghost record of home headers names this heap's, which unverified
-# `create_detached` sets up and nothing moves afterwards.
-Heap::home_ptr_at	allocator invariant	none (assumption)
+# The home header's address: Kani checks the body's address and that it
+# changes nothing; the trust left is that the ghost record of home headers
+# names this heap's, which unverified `create_detached` sets up and nothing
+# moves afterwards, and the result's provenance.
+Heap::home_ptr_at	allocator invariant	Kani	trusted (partly checked, Kani: heap::cache::kani_cache::home_ptr_at_is_the_home_header; not checked: that the heap's record names the headers at its own address (`Heap::home_at`), ghost, and that the result carries the heap's provenance, which Kani cannot observe (the harness compares addresses))
 
