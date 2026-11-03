@@ -19,7 +19,7 @@
 //! `heap/flush.rs`, `heap/mod.rs`, `heap/others.rs`, `heap/paths.rs`,
 //! `heap/shared.rs`, `arena.rs`, `purge.rs`, `api/mallctl.rs`, `api/mod.rs`,
 //! `layout/mod.rs` and `lock.rs`), and the checked items outside any listed
-//! path (`stats.rs`'s `fig_*`, `sys/abort.rs`, the zero axioms of
+//! path (`stats.rs`'s `fig_*`, the zero axioms of
 //! `class/table.rs`, the class table, the enums `eq.rs` matches). The list is
 //! kept by hand: a `kani_*` module added to a rarely changed file belongs in
 //! `changed:`; one added to a hot file, one most proof pull requests
