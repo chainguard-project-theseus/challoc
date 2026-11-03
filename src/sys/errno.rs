@@ -31,14 +31,7 @@ impl Errno {
     pub const EROFS: Errno = Errno(30);
     pub const ENOSYS: Errno = Errno(38);
     pub const ETIMEDOUT: Errno = Errno(110);
-}
 
-} // verus!
-
-// Outside `verus!`: inside it, rustc places these names elsewhere in
-// `.rodata`, which moves every PC-relative offset in `.text`
-// (`scripts/codegen-diff.sh` reports them reloc-only).
-impl Errno {
     /// Short symbolic name for diagnostics. Unknown codes print as a number.
     pub const fn name(self) -> &'static str {
         // An `if` chain over the constants: Verus does not match on a
@@ -90,8 +83,6 @@ impl core::fmt::Display for Errno {
         }
     }
 }
-
-verus! {
 
 /// Largest `errno` the kernel will ever return, per `include/linux/err.h`.
 pub const MAX_ERRNO: usize = 4095;
