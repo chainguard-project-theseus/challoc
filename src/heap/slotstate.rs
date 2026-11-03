@@ -44,11 +44,18 @@
 //! (`CACHED -> LIVE`) or `alloc_direct`'s claim (`FREE -> LIVE`) can see
 //! `LIVE` and pass, which is right: the slot is the program's by then.
 //!
-//! Trusted (every function is `external_body`): the bytes are state no
-//! verified invariant constrains, and every check here only adds an abort
-//! ([`crate::sys::abort_pending`]: it fires on an invalid free, and on a
-//! valid one only if this state is corrupt); none changes what the
-//! verified paths do with the bitmap or the caches.
+//! Verified: every index here is in bounds and no arithmetic overflows;
+//! the addresses (an array base read from an atomic, plus an offset) and
+//! [`commit`]'s page rounding of them wrap, and [`init`] rounds with
+//! `meta::align_up` within proved bounds. Not verified: the bytes' values,
+//! state no verified invariant constrains (the free's race is modelled in
+//! `tests/loom/src/slotstate.rs`); that a computed address is a committed
+//! byte (trusted, [`byte_at`]); and that [`commit`]'s range lies in
+//! [`init`]'s reservation (`mprotect` is checked only for its call).
+//! Every check here only adds an abort ([`crate::sys::abort_pending`]: it
+//! fires on an invalid free, and on a valid one only if this state is
+//! corrupt); none changes what the verified paths do with the bitmap or
+//! the caches.
 
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -57,6 +64,8 @@ use crate::layout::{CLASSES, NCLASSES, Regions};
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
+
+verus! {
 
 /// One `Shared`'s arrays: each class's region base, which names the
 /// `Shared` (its regions are its own), and the class's byte array.
@@ -72,9 +81,12 @@ const MAX_SHARED: usize = 32;
 
 /// The arrays of every `Shared` with the key on, in [`init`] order; an
 /// entry is published by its `base` stores (`Release`), the last.
-static ARRAYS: [Arrays; MAX_SHARED] = NO_ARRAYS;
+exec static ARRAYS: [Arrays; MAX_SHARED] = NO_ARRAYS;
 
-/// [`ARRAYS`]'s initial value: every entry unclaimed, all zero.
+/// [`ARRAYS`]'s initial value: every entry unclaimed, all zero. Trusted:
+/// Verus takes no array repeat of an element that is not `Copy`; it
+/// claims nothing about the value.
+#[verifier::external_body]
 #[allow(clippy::declare_interior_mutable_const, clippy::large_const_arrays)]
 const NO_ARRAYS: [Arrays; MAX_SHARED] = [const {
     Arrays {
@@ -83,17 +95,24 @@ const NO_ARRAYS: [Arrays; MAX_SHARED] = [const {
     }
 }; MAX_SHARED];
 /// Entries of [`ARRAYS`] claimed so far.
-static CLAIMED: AtomicUsize = AtomicUsize::new(0);
+exec static CLAIMED: AtomicUsize = AtomicUsize::new(0);
 /// The process page, for [`commit`]'s rounding.
-static PAGE: AtomicUsize = AtomicUsize::new(0);
+exec static PAGE: AtomicUsize = AtomicUsize::new(0);
 
 /// The byte array of `class` in the `Shared` whose class region starts at
 /// `class_base`, zero when that `Shared` has the key off.
 // An index loop: Verus specifies no iterator over a slice of `ARRAYS`.
 #[allow(clippy::needless_range_loop)]
-fn array_of(class: usize, class_base: usize) -> usize {
+fn array_of(class: usize, class_base: usize) -> usize
+    requires
+        class < NCLASSES,
+{
     let n = CLAIMED.load(Ordering::Acquire).min(MAX_SHARED);
-    for i in 0..n {
+    for i in 0..n
+        invariant
+            n <= MAX_SHARED,
+            class < NCLASSES,
+    {
         let a = &ARRAYS[i];
         let base = a.base[class].load(Ordering::Acquire);
         if base != 0 && a.class_base[class].load(Ordering::Relaxed) == class_base {
@@ -102,8 +121,6 @@ fn array_of(class: usize, class_base: usize) -> usize {
     }
     0
 }
-
-verus! {
 
 /// The slot is in its slab's free set (or was never claimed).
 pub const FREE: u8 = 0;
@@ -116,23 +133,65 @@ pub const LIVE: u8 = 2;
 /// bytes, and record the class bases. Called once, by `Shared::init`,
 /// when `double_free_scan` is on, before any class table hands out a
 /// slab. Aborts when the reservation fails (no address space).
-#[verifier::external_body]
 #[cold]
 #[inline(never)]
 pub(super) fn init(regions: &Regions)
     requires
         crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
+        regions.wf(),
+        regions.separated(),
 {
     let page = regions.page_size();
+    proof {
+        // The page is a power of two of at most 64 KiB.
+        let lg = regions.lg_page;
+        assert(page & sub(page, 1) == 0 && page <= 0x1_0000) by (bit_vector)
+            requires
+                page == 1usize << lg,
+                12 <= lg <= 16,
+        ;
+    }
     PAGE.store(page, Ordering::Relaxed);
     let i = CLAIMED.fetch_add(1, Ordering::AcqRel);
     if i >= MAX_SHARED {
         crate::sys::abort_kernel(format_args!("double_free_scan: more than {MAX_SHARED} allocator instances"));
     }
-    for c in 0..NCLASSES {
+    for c in 0..NCLASSES
+        invariant
+            crate::sys::may_abort_kernel(),
+            crate::sys::may_syscall(),
+            regions.wf(),
+            i < MAX_SHARED,
+            page > 0,
+            page & sub(page, 1) == 0,
+            page <= 0x1_0000,
+    {
         let n = regions.nslabs(c);
         let bits = CLASSES.table()[c].slab_bits();
+        proof {
+            // The array fits well inside the address space: at most
+            // 2^38 slabs (the region) of at most 2^13 bits each.
+            assert(crate::layout::class_table()[c as int].wf());
+            let (lr, ls) = (regions.lg_region, crate::layout::class_table()[c as int].lg_slab);
+            let (lru, lsu) = (lr as usize, ls as usize);
+            assert(crate::layout::LG_REGION_PREFERRED == 38);
+            assert(lru <= 38);
+            assert(((1usize << lru) >> lsu) == ((1usize << lr) >> ls)) by (bit_vector)
+                requires
+                    lru == lr as usize,
+                    lsu == ls as usize,
+            ;
+            assert(((1usize << lru) >> lsu) <= 0x40_0000_0000usize) by (bit_vector)
+                requires
+                    lru <= 38,
+            ;
+            assert(n * bits <= 0x40_0000_0000 * 0x2000) by (nonlinear_arith)
+                requires
+                    n <= 0x40_0000_0000,
+                    bits <= 0x2000,
+            ;
+        }
         let len = crate::meta::align_up(n * bits, page);
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         // SAFETY: a fresh anonymous mapping at an address the kernel picks;
@@ -151,13 +210,13 @@ pub(super) fn init(regions: &Regions)
 /// handed to an arena (`SlabTable::take_group`, before it publishes the
 /// watermark), in the `Shared` whose class region starts at
 /// `class_base`. Nothing without the key. Aborts when the commit fails.
-#[verifier::external_body]
 #[cold]
 #[inline(never)]
 pub(crate) fn commit(class: usize, class_base: usize, s: usize, end: usize)
     requires
         crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
+        class < NCLASSES,
 {
     let base = array_of(class, class_base);
     if base == 0 {
@@ -191,10 +250,9 @@ pub const NONE: u8 = 0xfd;
 /// two threads cannot both find it `LIVE`); without, a load and a store
 /// (the claims, pops and releases, which only the thread that holds the
 /// slot makes).
-#[verifier::external_body]
-fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool) -> (r: u8)
-    ensures
-        r == MOVED || r == PAST || r < 3,
+fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool) -> u8
+    requires
+        class < NCLASSES,
 {
     let Some(b) = byte(shared, class, p) else { return PAST };
     if exchange {
@@ -225,6 +283,7 @@ fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: b
 pub(super) fn free(shared: &Shared, class: usize, p: *mut u8, to: u8)
     requires
         crate::sys::may_abort_pending(),
+        class < NCLASSES,
 {
     let r = step(shared, class, p, LIVE, to, true);
     if r == PAST {
@@ -245,6 +304,7 @@ pub(super) fn free(shared: &Shared, class: usize, p: *mut u8, to: u8)
 pub(super) fn claim(shared: &Shared, class: usize, p: *mut u8, to: u8)
     requires
         crate::sys::may_abort_pending(),
+        class < NCLASSES,
 {
     if step(shared, class, p, FREE, to, false) != MOVED {
         crate::sys::abort_pending(format_args!("slot state of {:#x} (class {}) is not free at its claim", p as usize, class))
@@ -259,6 +319,7 @@ pub(super) fn claim(shared: &Shared, class: usize, p: *mut u8, to: u8)
 pub(super) fn pop(shared: &Shared, class: usize, p: *mut u8)
     requires
         crate::sys::may_abort_pending(),
+        class < NCLASSES,
 {
     if step(shared, class, p, CACHED, LIVE, false) != MOVED {
         crate::sys::abort_pending(format_args!("double free of {:#x}: a cached copy of a slot that is not cached", p as usize))
@@ -273,6 +334,7 @@ pub(super) fn pop(shared: &Shared, class: usize, p: *mut u8)
 pub(super) fn release(shared: &Shared, class: usize, p: *mut u8)
     requires
         crate::sys::may_abort_pending(),
+        class < NCLASSES,
 {
     if step(shared, class, p, CACHED, FREE, false) != MOVED {
         crate::sys::abort_pending(format_args!("double free of {:#x}: a cached copy released while the slot is not cached", p as usize))
@@ -286,12 +348,14 @@ pub(super) fn release(shared: &Shared, class: usize, p: *mut u8)
 pub(super) fn claim_all(shared: &Shared, class: usize, ps: &[*mut u8], n: usize)
     requires
         crate::sys::may_abort_pending(),
+        class < NCLASSES,
         n <= ps@.len(),
 {
     let mut i = 0;
     while i < n
         invariant
             crate::sys::may_abort_pending(),
+            class < NCLASSES,
             n <= ps@.len(),
             i <= n,
         decreases n - i,
@@ -307,11 +371,13 @@ pub(super) fn claim_all(shared: &Shared, class: usize, ps: &[*mut u8], n: usize)
 pub(super) fn release_all(shared: &Shared, class: usize, ps: &[*mut u8])
     requires
         crate::sys::may_abort_pending(),
+        class < NCLASSES,
 {
     let mut i = 0;
     while i < ps.len()
         invariant
             crate::sys::may_abort_pending(),
+            class < NCLASSES,
             i <= ps@.len(),
         decreases ps@.len() - i,
     {
@@ -328,6 +394,7 @@ pub(super) fn release_all(shared: &Shared, class: usize, ps: &[*mut u8])
 pub(super) fn check_not_cached(shared: &Shared, class: usize, p: *mut u8)
     requires
         crate::sys::may_abort_pending(),
+        class < NCLASSES,
 {
     // A step from a value no byte holds stores nothing: a read.
     if step(shared, class, p, NONE, NONE, false) == CACHED {
@@ -335,14 +402,17 @@ pub(super) fn check_not_cached(shared: &Shared, class: usize, p: *mut u8)
     }
 }
 
-} // verus!
-
 /// The state byte of slot start `p` of `class`, after the watermark
 /// compare: `None` for a slot of a slab no arena has been handed (whose
-/// byte may be uncommitted). Called by the trusted [`step`]
-/// only.
-fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8> {
+/// byte may be uncommitted). Called by [`step`] only.
+fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8>
+    requires
+        class < NCLASSES,
+{
     let cls = &CLASSES.table()[class];
+    proof {
+        assert(cls.wf());
+    }
     let class_base = shared.regions.class_base[class];
     let rel = (p as usize).wrapping_sub(class_base);
     let slab = rel >> cls.lg_slab;
@@ -356,9 +426,7 @@ fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8> 
         return None;
     }
     let slot = (rel & (cls.slab_size() - 1)) / cls.size as usize;
-    let at = base
-        .wrapping_add(slab.wrapping_mul(cls.slab_bits()))
-        .wrapping_add(slot);
+    let at = base.wrapping_add(slab.wrapping_mul(cls.slab_bits())).wrapping_add(slot);
     // SAFETY: the byte of a slab below the watermark, which `commit` made
     // writable before the watermark was published.
     Some(unsafe { byte_at(at) })
@@ -369,9 +437,16 @@ fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8> 
 /// # Safety
 /// `at` is a byte of a slot-state array that [`commit`] made writable;
 /// the arrays live for the process.
+///
+/// Trusted (raw pointer): Verus has no integer-to-reference cast, and
+/// the contract above is the protocol of [`init`], [`commit`] and the
+/// watermark, not a verified fact. It claims nothing about the byte.
+#[verifier::external_body]
 #[inline(always)]
 unsafe fn byte_at(at: usize) -> &'static AtomicU8 {
     // SAFETY: the caller's contract; an `AtomicU8` has no alignment
     // requirement.
     unsafe { &*(at as *const AtomicU8) }
 }
+
+} // verus!

@@ -1,15 +1,17 @@
 # double_free_scan's per-slot state bytes (heap/slotstate.rs): a byte
-# array outside every verified invariant. The verified wrappers (free,
-# claim, pop, release, the batch loops, check_not_cached) only turn what
-# these return into aborts (`abort_pending`); none changes what the
-# verified paths do.
+# array outside every verified invariant. Verus checks the indexing and
+# the arithmetic (the addresses wrap); the verified wrappers (free, claim,
+# pop, release, the batch loops, check_not_cached) only turn what `step`
+# returns into aborts (`abort_pending`); none changes what the verified
+# paths do. `commit`'s range lying in `init`'s reservation is not
+# verified either (`mprotect` is specified only for its call).
 
-# The reservation and the commits: mmap and mprotect of the arrays.
-init	FFI/syscall	none (assumption)
-commit	FFI/syscall	none (assumption)
+# The arrays' initialiser: an array repeat of an element that is not
+# `Copy`, which Verus does not take. It claims nothing, and it is
+# evaluated at compile time.
+NO_ARRAYS	core library	none (assumption)
 
-# The transition (a read when `from` is `NONE`): the byte's address from the slot index
-# (below the watermark that the commit precedes), then relaxed loads and
-# stores of one AtomicU8, and for a free one compare-and-exchange
-# (tests/loom/src/slotstate.rs models that race).
-step	atomics primitive	loom/GenMC
+# The byte at an address `byte` computes: a slot index below the
+# watermark that `commit` precedes, in an array `init` reserved. That
+# protocol is not a verified fact; it claims nothing about the byte.
+byte_at	raw pointer (internal)	RefinedRust

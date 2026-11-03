@@ -3667,6 +3667,7 @@ impl Shared {
     pub fn check_not_cached(&self, class: usize, p: *mut u8)
         requires
             crate::sys::may_abort_pending(),
+            class < NCLASSES,
     {
         if self.double_free_scan() {
             super::slotstate::check_not_cached(self, class, p);

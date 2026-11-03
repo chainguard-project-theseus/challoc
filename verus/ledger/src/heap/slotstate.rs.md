@@ -7,47 +7,32 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `init` | external_body | FFI/syscall | none (assumption) | trusted |
-| `commit` | external_body | FFI/syscall | none (assumption) | trusted |
-| `step` | external_body | atomics primitive | loom/GenMC | trusted |
+| `NO_ARRAYS` | external_body const | core library | none (assumption) | trusted |
+| `byte_at` | external_body | raw pointer (internal) | RefinedRust | trusted |
 
-## `init`
+## `NO_ARRAYS`
 
-src/heap/slotstate.rs:122. Kind: external_body. Category: FFI/syscall.
+src/heap/slotstate.rs:91. Kind: external_body const. Category: core library.
 Tool: none (assumption). Status: trusted.
 
-> Reserve one `PROT_NONE` byte array per class, `nslabs * slab_bits` bytes, and record the class bases.
+> [`ARRAYS`]'s initial value: every entry unclaimed, all zero.
 
 ```rust
-pub(super) fn init(regions: &Regions)
-    requires
-        crate::sys::may_abort_kernel(),
-        crate::sys::may_syscall(),
+const NO_ARRAYS: [Arrays; MAX_SHARED] = [const {
+    Arrays {
+        class_base: [const { AtomicUsize::new(0) }; NCLASSES],
+        base: [const { AtomicUsize::new(0) }; NCLASSES],
+    }
+}; MAX_SHARED];
 ```
 
-## `commit`
+## `byte_at`
 
-src/heap/slotstate.rs:157. Kind: external_body. Category: FFI/syscall.
-Tool: none (assumption). Status: trusted.
+src/heap/slotstate.rs:446. Kind: external_body. Category: raw pointer (internal).
+Tool: RefinedRust. Status: trusted.
 
-> Commit the state bytes of `class`'s slabs `[s, end)`, a group being handed to an arena (`SlabTable::take_group`, before it publishes the watermark), in the `Shared` whose class region starts at `class_base`.
-
-```rust
-pub(crate) fn commit(class: usize, class_base: usize, s: usize, end: usize)
-    requires
-        crate::sys::may_abort_kernel(),
-        crate::sys::may_syscall(),
-```
-
-## `step`
-
-src/heap/slotstate.rs:195. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
-
-> The one transition every state change is: when the byte of slot start `p` of `class` holds `from`, store `to` and return [`MOVED`]; else return what it holds (or [`PAST`]).
+> The `AtomicU8` at address `at`.
 
 ```rust
-fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool) -> (r: u8)
-    ensures
-        r == MOVED || r == PAST || r < 3,
+unsafe fn byte_at(at: usize) -> &'static AtomicU8
 ```
