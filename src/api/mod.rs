@@ -847,7 +847,9 @@ unsafe fn shared_ref(Tracked(published): Tracked<&'static Published>) -> (r: &'s
     r
 }
 
-/// The process's allocator state, initialising it on first use.
+/// The process's allocator state, initialising it on first use: the one
+/// value `Shared::init` built at the static's storage
+/// ([`Shared::built_at`]`(`[`Shared::storage`]`)`), whichever path returns it.
 #[inline(always)]
 pub fn shared() -> (r: &'static Shared)
     requires
@@ -855,6 +857,7 @@ pub fn shared() -> (r: &'static Shared)
         crate::sys::may_syscall(),
     ensures
         r.wf(),
+        *r == Shared::built_at(Shared::storage()),
 {
     let tracked mut seen = Seen { published: None, mark: None };
     if load_state(Tracked(&mut seen)) == READY {
@@ -871,6 +874,7 @@ pub fn shared() -> (r: &'static Shared)
 pub fn shared_if_ready() -> (r: Option<&'static Shared>)
     ensures
         r matches Some(s) ==> s.wf(),
+        r matches Some(s) ==> *s == Shared::built_at(Shared::storage()),
 {
     let tracked mut seen = Seen { published: None, mark: None };
     if load_state(Tracked(&mut seen)) == READY {
@@ -891,6 +895,7 @@ pub fn shared_published() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
         crate::sys::may_syscall(),
     ensures
         r.0.wf(),
+        *r.0 == Shared::built_at(Shared::storage()),
         marks_ready(*r.1@),
 {
     let tracked mut seen = Seen { published: None, mark: None };
@@ -909,6 +914,7 @@ pub fn shared_marked(Tracked(mark): Tracked<&'static ReadyMark>) -> (r: &'static
         marks_ready(*mark),
     ensures
         r.wf(),
+        *r == Shared::built_at(Shared::storage()),
 {
     let tracked mut seen = Seen { published: None, mark: None };
     if load_state_marked(Tracked(&mut seen), Tracked(mark)) == READY {
@@ -1352,6 +1358,7 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
         crate::sys::may_syscall(),
     ensures
         r.0.wf(),
+        *r.0 == Shared::built_at(Shared::storage()),
         marks_ready(*r.1@),
 {
     let tracked mut seen = Seen { published: None, mark: None };
@@ -2031,8 +2038,9 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -
 /// has no allocator critical section open in the window). Ghost
 /// state does not cross the C calls, so the hold is handed over here:
 /// the state lock's token, then [`resume::axiom_fork_resumed`] for the rest, at
-/// the `&Shared` the release reads (the same object: `shared` returns
-/// the one static). Each handler calls them once, which nothing
+/// the `&Shared` the release reads, which must be the process's one
+/// value (`Shared::built_at(Shared::storage())`, what `shared` ensures).
+/// Each handler calls them once, which nothing
 /// enforces: a second call would hand out a second token for a held
 /// lock, so no lemma may claim that two tokens of one lock are apart,
 /// and two tokens would also let `Lock::get_unlocked` hand out two
@@ -2768,8 +2776,7 @@ mod resume {
     /// hold, with the permission to `slot`, which must be the word the
     /// prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s
     /// `&FORK_SIGMASK`, as the prepare's store did, and a static has one
-    /// address (the same premise as for `s`, the `Shared` the release
-    /// reads); passed any other word, it would mint a second permission
+    /// address; passed any other word, it would mint a second permission
     /// to it, which is why it is private to this module. The hold has the
     /// arena count and the arenas `fork_prepare` read and the mask it
     /// saved in `FORK_SIGMASK` (`n`, `arenas` and `saved` are those reads
@@ -2794,6 +2801,7 @@ mod resume {
     /// `fork_hold_is_resumed_once` checks there is one call site).
     axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &LockHeld) -> (tracked held: ForkHeld)
         requires
+            *s == Shared::built_at(Shared::storage()),
             state.held() == purge::background::state_lock(),
         ensures
             fork_holds(*s, held, *state),
@@ -2811,6 +2819,7 @@ mod resume {
     #[inline(always)]
     pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&LockHeld>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>))
         requires
+            *s == Shared::built_at(Shared::storage()),
             state.held() == purge::background::state_lock(),
         ensures
             fork_holds(*s, r.1@, *state),
