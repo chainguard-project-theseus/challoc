@@ -17,7 +17,7 @@ verus! {
 /// `reserve`, `reserve_table`, `commit`, `reserve_committed_raw` and
 /// `stats`) ends with `LockGuard::unlock`, which requires `wf` (this
 /// axiom) and the frame ([`axiom_meta_lock_frame`]), on every path to a
-/// return (`meta::tests::meta_guards_end_in_unlock`); a guard dropped
+/// return (`api::tests::guards_end_in_unlock`); a guard dropped
 /// without it would release unchecked. A panic aborts (`panic = "abort"`)
 /// outside the tests, so it never releases.
 ///

@@ -266,7 +266,7 @@ above requires its token's block to be its `p`. Once per body, for that
 body's `p`, and no other maker of a free's token rest on convention
 (`axiom_c_call`'s doc comment), not on Verus and not on a source test.
 That no Rust code calls a minting export is checked by a line scan:
-`api::tests::exports_return_their_callees_result` (`api/mod.rs:3995`)
+`api::tests::exports_return_their_callees_result` (`api/mod.rs:4408`)
 fails if a line outside a comment names an `exports` module (a path
 through one, or a `use` of one). A double free, or a free of a slot or
 huge page start that is not a live block, gives C a token it does not
@@ -280,11 +280,11 @@ the call does not return (theorem 3, which is not voided for it).
   `zero_ok`, `tokened`, `claimed`, `regions_ok()`, `list_ok`, `home_ok`
   and `homed_ok` (the arena ticket). Since P7 also `ready()` and that
   its `shared` field is the process's `Shared` at its storage.
-- Assumed by `tcaches::heap_at` (`heap/tcaches.rs:184`, with since
+- Assumed by `tcaches::heap_at` (`heap/tcaches.rs:771`, with since
   package P10 its home headers at the pointer, `Heap::home_at`, and its
   nodes' block permissions and claims, `others::block_ok`;
   `external_body`; on main it also takes the caller's `HeapUse` token,
-  which `heap::tcaches::axiom_heap_use`, `heap/tcaches.rs:144`, mints
+  which `heap::tcaches::axiom_heap_use`, `heap/tcaches.rs:726`, mints
   once per call that reaches an existing heap, so one token gives one
   heap reference at a time), and, for the calling thread's heap, by the slot
   token `sys::tls::TlsSlot::entry` (an axiom since P7): a token whose
@@ -455,15 +455,21 @@ release is the guard's drop at its end) requires `lock_inv` and
 `lock_frame` of the value. Since wolfi-dev/challoc#396 every holder of
 the metadata lock outside the tests ends with it, on every path to a
 return (`Meta::alloc`, `alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
-`reserve_table`, `commit`, `reserve_committed_raw`, `stats`); the
-source test `meta::tests::meta_guards_end_in_unlock` (`meta.rs:4594`)
-checks that no guard drops without it. No other lock's holders call
-it, so for every other lock the invariant and frame are not checked at
-the release: each verified holder ends with them through its last
-call's postcondition or an `assert`. Each
+`reserve_table`, `commit`, `reserve_committed_raw`, `stats`), and so
+does every holder of the explicit-cache table lock (`Tcaches::create`,
+`destroy`), the slab-set tables' lock (`SetTable::ensure`) and the
+process statistics lock (`collect_into`, `snapshot`,
+`arena_stats_all_into`); the source test `api::tests::guards_end_in_unlock`
+checks that none of these guards drops without it. `SetTable::ensure`
+and `collect_into` are trusted (`external_body`) until their locks'
+frames are stated, so neither the acquisitions nor the releases inside
+them are checked yet (theorem 33 names both as trusted). No other
+lock's holders call it, so for every other lock the invariant and frame
+are not checked at the release: each verified holder ends with them
+through its last call's postcondition or an `assert`. Each
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it. Also:
-`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:976`) and
+`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:980`) and
 `heap::tcaches::axiom_tcaches_lock_inv` (the explicit-cache table lock
 guards `()`, so its invariant is true). `Tcaches::init` makes each entry null with
 `vspec::entry::new`, over the layout from `axiom_tcaches_layout` and
@@ -548,7 +554,7 @@ each module's `exports` (`axiom_c_block` in #138), and that each
 body mints once and for its own pointer is now convention: the source
 test `c_blocks_only_for_the_entrys_pointer` is not on main
 (wolfi-dev/challoc#397). A new premise, `axiom_heap_use`
-(`heap/tcaches.rs:144`, #382), mints one `HeapUse` token per call that
+(`heap/tcaches.rs:726`, #382), mints one `HeapUse` token per call that
 reaches an existing heap. `mark_bound` and `mark_rehome` are verified in
 Verus. `mallctl::shared` requires the `ReadyMark` (`marks_ready`) and
 reads through `shared_marked`, where #138 required `ready()` and
@@ -938,7 +944,7 @@ the assumed `Heap::wf` and the huge lock axiom.
   bounds and ghost identities fixed. Since wolfi-dev/challoc#396 both
   are checked at the release: every holder outside the tests ends with
   `LockGuard::unlock` (`lock.rs:885`), which requires them, and
-  `meta::tests::meta_guards_end_in_unlock` (`meta.rs:4594`) checks the
+  `api::tests::guards_end_in_unlock` checks the
   source for a guard that drops without it (common premises, "Locks").
   `Meta::commit` is verified (package
   META): its caller gives the claim to the range that `reserve` or
@@ -2307,7 +2313,7 @@ cache memory `destroy` frees next (`free_caches_in` over the home array and
 each node), so the thread-exit destructor (`heap_destructor`,
 `heap/thread.rs:173`, through `Heap::destroy`, `heap/mod.rs:5539`)
 strands no cached block when it runs (claim (a); whether it runs is
-(b)). `tcache.flush` (`Tcaches::flush`, `heap/tcaches.rs:314`), `malloc_trim` (`api/libc.rs:2884`), the mallctl
+(b)). `tcache.flush` (`Tcaches::flush`, `heap/tcaches.rs:984`), `malloc_trim` (`api/libc.rs:2884`), the mallctl
 purge's `flush_caller` (`api/mallctl.rs:2700`) and
 `thread.tcache.enabled` off (`Heap::set_tcache_enabled`,
 `heap/mod.rs:4616`) run the same function.
@@ -2352,7 +2358,7 @@ the same tokens. The chain that makes an entry of the log a release:
   on the arena while the flush runs), on the heap `tcaches::heap_at`
   hands out for its pointer, `Heap::wf` by that function's premise, and
   not in use elsewhere by `tcaches::axiom_heap_use`
-  (`heap/tcaches.rs:144`, trusted), whose `HeapUse` token `destroy`
+  (`heap/tcaches.rs:726`, trusted), whose `HeapUse` token `destroy`
   consumes: `heap_destructor` and `create_heap_for_thread` each make
   one. The heap `heap_destructor` hands it is the TLS slot's heap, whose
   `wf` `heap_at` assumes (common premise). After the flush
@@ -2385,7 +2391,7 @@ the same tokens. The chain that makes an entry of the log a release:
 
 **Changed since #138.** The heap's exclusive use is a named
 premise on main: `Heap::destroy` and `tcaches::heap_at` take a `HeapUse`
-token from `tcaches::axiom_heap_use` (`heap/tcaches.rs:144`); at
+token from `tcaches::axiom_heap_use` (`heap/tcaches.rs:726`); at
 #138 it was `heap_at`'s unstated safety contract. `flush_all`
 requires `may_abort() || valid_aborts()` in place of `may_abort()`.
 
@@ -3303,7 +3309,7 @@ and the heap loan (`HeapLoan`, with `slot_ok` tying them), so
 unchanged on the benign values, and `existing_heap_in` takes the
 `TlsSlot` `&mut` and lends the heap from it. Explicit caches reach a heap
 through `heap_at` with a `HeapUse` token (`axiom_heap_use`,
-`heap/tcaches.rs:144`, a new premise: one token per call that reaches an
+`heap/tcaches.rs:726`, a new premise: one token per call that reaches an
 existing heap). The background thread's `spawn` (trusted) requires an
 empty slot or a sentinel, as `pthread_join` does; `create` parks a heap
 the join's nested free left in an empty slot before it calls `spawn`
@@ -3634,7 +3640,7 @@ C token and hold unconditionally.
   (`free_sized_block`, `sdallocx_block`, `sdallocx_flags`,
   `sdallocx_routed`, `free_sized_slow`, `free_sized_unhinted`) ensure
   `huge_hint_ok` of C's token.
-- Flags: `Tcaches::get` (`heap/tcaches.rs:288`) ensures `None` for an
+- Flags: `Tcaches::get` (`heap/tcaches.rs:921`) ensures `None` for an
   id of `MAX_TCACHES` or more; `mallocx::alloc`, `alloc_huge` (without
   an explicit arena) and `free` (`heap/mallocx.rs:346`, `:472`, `:522`)
   then reach `invalid_tcache`.
@@ -4528,6 +4534,13 @@ and subtract from the `large` word are the token's
   is `allocated`; `max mmap bytes` is `large.allocated`.
 
 **Premises beyond the common ones.**
+- `collect_into` is trusted (`external_body`) until the process
+  statistics lock's frame is stated, which its closing
+  `LockGuard::unlock` needs. Layer 1's ensures for `collect_into`
+  (`totals_exact` and the ghost `rd`), and so the figures `epoch`,
+  `collect` and the stored snapshot that `mallctl` reads rest on, are
+  assumed at this commit; `collect_all`'s (`mallinfo`, `mallinfo2`,
+  `malloc_stats`) are proved.
 - Quiescence: no allocation, free, flush or `epoch` runs during the scan
   or between the last counter update and it; then each `Relaxed` load in
   `bin_stats` and `Arena::large` reads the last store, and the scan's
@@ -5299,12 +5312,17 @@ for `k <= 256`.
   identities) and `Arena::store_stats` (which requires them);
   `Shared::init` (`Snapshot::EMPTY`, written in `Shared::put_tail`,
   `heap/shared.rs:1961`) and
-  `collect_into` (which asserts it before releasing the guard). The
-  fork handlers take the raw locks only and write nothing. As for every
-  lock but the metadata lock (whose holders end with
-  `LockGuard::unlock`, wolfi-dev/challoc#396), that each holder leaves
-  the invariant true is checked at the holder's last write, not at the
-  guard's drop (`lock.rs`, `lock_inv`).
+  `collect_into` (whose body asserts it and ends in `LockGuard::unlock`,
+  which requires it). `collect_into` is trusted (`external_body`) until
+  the process statistics lock's frame is stated, so at this commit its
+  part-1 identities and the invariant of the snapshot it stores are
+  assumed. The process statistics lock's other holders (`snapshot`,
+  `arena_stats_all_into`) also end in `LockGuard::unlock` and are
+  verified. The fork handlers take the raw locks only and write
+  nothing. For the per-arena statistics lock, as for every lock whose
+  holders do not end with `LockGuard::unlock` (see "Locks"), that each
+  holder leaves the invariant true is checked at the holder's last
+  write, not at the guard's drop (`lock.rs`, `lock_inv`).
 - `process_regions()` is the `Shared`'s regions (`Shared::wf`), so
   `collect_bin`'s new `requires process_regions().wf()` holds for every
   caller in `stats.rs` (the unit tests call it unverified).
@@ -5420,7 +5438,7 @@ In words:
   (`ThreadTcacheFlush`, `api/mallctl.rs:2919`, through `flush_caller`,
   `:2700`, which also serves `arena.<i>.purge` and `arena.<i>.destroy`,
   `:2858`, `:2882`), `tcache.flush` (`TcacheFlush`, `:2962`, through
-  `Tcaches::flush`, `heap/tcaches.rs:314`), `malloc_trim`
+  `Tcaches::flush`, `heap/tcaches.rs:984`), `malloc_trim`
   (`api/libc.rs:2884`), and `Heap::destroy` (theorem 10).
   `Tcaches::flush` restates `drained()` after the call as a ghost
   `assert` (`flush_caller` did in #138; on main it relies on
@@ -6449,7 +6467,9 @@ arena `arena`), `SlabTable`, `SetTable` (a slab-set rank), `Huge`, `Meta`,
 (the process statistics lock). The fork accessors (`raw_lock`,
 `stats_raw_lock`, `Arena::sets`, `Shared::*_lock`) state the rank.
 
-**What is threaded** (every acquisition below is checked):
+**What is threaded** (every acquisition below is checked, except those
+inside `SetTable::ensure` and `collect_into`, trusted under the premises
+below):
 
 | Path | Nesting checked |
 |---|---|
@@ -6535,6 +6555,16 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   is verified since it became an index loop over `Arenas::get_existing`);
   `purge::background::state`, which names `STATE`'s rank, verifies over
   the static's postcondition, which its initialiser proves.
+  Also `SetTable::ensure` (`class/sets.rs:1230`) and `stats::collect_into`
+  (`stats.rs:1202`), `external_body` until their locks' frames are
+  stated: Verus checks only the lowest rank each states for its callers
+  (`old(ord).allows(rank_sets(0))`, `old(ord).allows(rank_stats())`), not
+  the acquisitions inside them. `SetTable::ensure` takes Sets(i), then
+  Meta through `Lazy::ensure` (the slow-allocation row's Sets(i) step);
+  `collect_into` takes Stats, then the class, slab table, huge, metadata
+  and per-arena statistics locks (the statistics row). Until their proof
+  lands, those two rows rest on these bodies taking their locks in rank
+  order.
 - *Ranks set in constructors*: none is trusted. `Tcaches::init` is
   verified (one write of the whole value, whose lock it creates with
   the rank the type invariant states), and so is `Arenas::init`
@@ -6794,7 +6824,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   one to the same bytes (`heap_head`), and records `bound` (its body, verified in
   Verus on main, stores `true` there through a permission carved from
   the token's; in #138 RefinedRust proved it); `tcaches::heap_new`
-  (`heap/tcaches.rs:209`) uses the token up (through
+  (`heap/tcaches.rs:797`) uses the token up (through
   `HeapPerm::assemble`, below), giving the permission to the heap's,
   whose `others`, `shared`, `arena` and `bound` are what it records.
   `create_detached` and `create` pass it on. The memory-requires
@@ -7207,6 +7237,9 @@ premise.
 below `MAX_ARENAS`.
 
 **Premises beyond theorem 22's.**
+- `collect_into`'s `ids_ascending` and `MAX_ARENAS` ensures are trusted
+  with its body (theorem 22's first premise) until the process
+  statistics lock's frame is stated; `collect_all`'s are proved.
 - A stable registry during the scan: the `arenas.count()` the scan
   loads is the ledger's `k`, and each entry load in `get_existing` sees
   the entry as published (non-null exactly for the built indices).
@@ -7818,7 +7851,7 @@ anyway; the unit tests do not, and
 `concurrent_fork_handlers_restore_each_threads_mask` (in #138; not
 on main) ran two threads with different masks through the prepare and parent
 handlers 200 times each and checked each got its own mask back;
-`fork_handlers_block_signals_while_locked` (`api/mod.rs:3757`) checks both sides
+`fork_handlers_block_signals_while_locked` (`api/mod.rs:4170`) checks both sides
 for one thread.
 
 **Findings.** None: the code matches the statement.
@@ -9716,7 +9749,7 @@ restates part of the Rust function's, and the nullable `api::libc`
 exports state its `errno` failure values as the `errno` the C caller
 reads (`c_errno()`); glibc's exports (`api/glibc.rs:195`) and the
 `mallctl` exports (`api/mallctl.rs:3459`) state none of their own.
-`api::tests::exports_return_their_callees_result` (`api/mod.rs:3995`)
+`api::tests::exports_return_their_callees_result` (`api/mod.rs:4408`)
 checks that every export body in `api::libc`, `api::cxx` and
 `api::jemalloc` is that setup, one call of its Rust entry point, and
 that call's result returned unchanged. So the Rust function's `ensures`
@@ -9897,7 +9930,7 @@ Notes that recur below:
   export that passed `true` would get the claim on every path), and no
   verified code calls an export, so no proof sees two returns
   (`c_errno` names one). The source test
-  `api::tests::exports_return_their_callees_result` (`api/mod.rs:3995`)
+  `api::tests::exports_return_their_callees_result` (`api/mod.rs:4408`)
   checks these by reading the source: every `lend` call is in an export
   body, at most one per body in `api::libc`, `api::cxx` and
   `api::jemalloc`; every `axiom_errno_at_return` call is in one of the
