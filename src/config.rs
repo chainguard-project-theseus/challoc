@@ -109,8 +109,8 @@ pub enum PercpuArena {
 }
 
 /// The names [`Thp::name`] gives, in variant order. Outside the
-/// verifier's view (Verus takes no `CStr` literal); nothing is claimed
-/// about them.
+/// verifier's view (Verus takes no `CStr` literal); a const assert after
+/// this block checks them.
 #[allow(clippy::redundant_static_lifetimes)]
 #[verifier::external_body]
 const THP_NAMES: [&'static CStr; 3] = [c"never", c"auto", c"always"];
@@ -523,6 +523,24 @@ impl Config {
 pub const MAX_AUTO_ARENAS: u32 = 64;
 
 } // verus!
+
+// `THP_NAMES`, checked: the names `Thp::name` gives, in variant order, are
+// the C strings `never`, `auto` and `always`. The compiler evaluates this
+// in every build; Verus sees the constant only as a value of its type.
+const _: () = assert!(
+    matches!(THP_NAMES[0].to_bytes(), b"never")
+        && matches!(THP_NAMES[1].to_bytes(), b"auto")
+        && matches!(THP_NAMES[2].to_bytes(), b"always")
+);
+
+// `PERCPU_ARENA_NAMES`, checked: the names `PercpuArena::name` gives, in
+// variant order, are the C strings `disabled`, `percpu` and `phycpu`, as
+// for `THP_NAMES`.
+const _: () = assert!(
+    matches!(PERCPU_ARENA_NAMES[0].to_bytes(), b"disabled")
+        && matches!(PERCPU_ARENA_NAMES[1].to_bytes(), b"percpu")
+        && matches!(PERCPU_ARENA_NAMES[2].to_bytes(), b"phycpu")
+);
 
 /// A key's parser: `(config, key, value)`; the key is passed so the issue
 /// can name it. A newtype, so the verifier, which rejects function

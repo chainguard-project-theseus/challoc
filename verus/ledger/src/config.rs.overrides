@@ -7,9 +7,11 @@ bytes_at	raw pointer from C caller	Miri (evidence only)
 environ_array	raw pointer from C caller	Miri (evidence only)
 # Termination of the `environ` walk: the C program ends the array with a null pointer.
 env_var	C-program contract	none (assumption)
-# `CStr` literals, which Verus does not take; nothing is claimed about them.
-THP_NAMES	core library	none (assumption)
-PERCPU_ARENA_NAMES	core library	none (assumption)
+# `CStr` literals, which Verus does not take: Verus sees each only as a
+# value of its type (the whole contract). The const asserts pin the
+# spelling of each name in every build.
+THP_NAMES	core library	Kani	discharged (const assert: `THP_NAMES` in src/config.rs)
+PERCPU_ARENA_NAMES	core library	Kani	discharged (const assert: `PERCPU_ARENA_NAMES` in src/config.rs)
 # Built from `TABLE`, which holds function pointers; claimed only as a value of its type.
 KEYS	function pointer	Kani	discharged (Kani: config::kani_config::keys_are_the_table_names)
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
