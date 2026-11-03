@@ -30,7 +30,7 @@ Every theorem is conditional on the [trust base](#trust-base) and the caller obe
 
 ## Theorems
 
-The 62 `theorem_*` functions comprise 48 proof functions and 14 verification-only executable functions. The count takes every function definition under `src/` whose name starts with `theorem_`, including methods such as `Live::theorem_apart`; it leaves out the 4 `fn theorem_` strings that the restated-body tests in `src/api/restated.rs` search for. The “Assumes” column names the main premises for each result; it is not a substitute for the function’s full `requires` contract. In particular, C entry points rely on the caller’s contract, and proofs about allocator state rely on the state invariants and trusted seams they use.
+The 63 `theorem_*` functions comprise 48 proof functions and 15 verification-only executable functions. The count takes every function definition under `src/` whose name starts with `theorem_`, including methods such as `Live::theorem_apart`; it leaves out the 4 `fn theorem_` strings that the restated-body tests in `src/api/restated.rs` search for. The “Assumes” column names the main premises for each result; it is not a substitute for the function’s full `requires` contract. In particular, C entry points rely on the caller’s contract, and proofs about allocator state rely on the state invariants and trusted seams they use.
 
 ### API and C boundary
 
@@ -51,7 +51,7 @@ The 62 `theorem_*` functions comprise 48 proof functions and 14 verification-onl
 
 ### Free paths
 
-All 5 proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_syscall`, `kernel_aborts`, `pending_aborts`, `shared.wf`, and a live block token. The direct paths also assume `integrity_aborts`.
+The 5 never-abort proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_syscall`, `kernel_aborts`, `pending_aborts`, `shared.wf`, and a live block token. The direct paths also assume `integrity_aborts`.
 
 | Theorem | Statement | File | Assumes |
 | --- | --- | --- | --- |
@@ -60,6 +60,7 @@ All 5 proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_syscall`, `ker
 | `theorem_valid_cache_free_never_aborts` | Freeing through caches, including garbage collection, decay, purge, arena build, and flush slow paths, avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises and a heap. |
 | `theorem_valid_sized_free_never_aborts` | A sized free with a correct size hint avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises, a heap, and a correct hint. |
 | `theorem_valid_sized_direct_free_never_aborts` | A sized free without a cache and with a correct size hint avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises, a correct hint, and the direct-path integrity premise. |
+| `theorem_exact_sized_free` | With the opt-in `exact_sized_free` key, a sized free’s hinted fast push declines every pointer and changes neither the heap nor the caller’s token, so the free reaches the size check and the exact free, which runs plain `free`’s slab and bit test before it caches or releases a slot. | [heap/paths.rs](../src/heap/paths.rs) | `may_abort`, `may_syscall`, `shared.wf`, a heap, the caller’s block token, and `exact_sized_free` set. |
 
 ### Blocks and metadata
 
@@ -308,7 +309,7 @@ Isla I2 (x86_64), I3 (trap, TLS, GOT, and rseq), I4 (pointer authentication), an
 
 - 92.8% of executable lines and 82.5% of executable functions are Verus-verified.
 - 93.6% of lines and 84.9% of functions count when fully discharged Kani and constant-assertion seams are included.
-- 62 theorems cover metadata integrity, live-block separation, overflow reach, guard pages, commits that spare guards, zeroing, free paths, thread exit, explicit-cache destroy, and accounting.
+- 63 theorems cover metadata integrity, live-block separation, overflow reach, guard pages, commits that spare guards, zeroing, free paths, the sized frees’ opt-in exact check, thread exit, explicit-cache destroy, and accounting.
 - `theorem_metadata_integrity` separates returned blocks from the metadata ranges named in its contract, subject to stated trust assumptions and exclusions.
 - The covered fast paths make no syscall except an integrity abort’s write and `SIGABRT`; valid frees avoid invalid-free and double-free checks.
 - 134 Kani harnesses check bounded contracts; 61 loom tests model atomic protocols.
