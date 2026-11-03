@@ -351,7 +351,7 @@ pub open spec fn rank_spare() -> int {
 /// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
 /// (the exceptions are the entry points, whose token comes from
 /// [`axiom_entry`] or [`axiom_fork_entry`] (each lists its uses), and the
-/// decay walks' closures, [`axiom_below_class`] and [`axiom_below_huge`]).
+/// decay walks, [`axiom_below_class`] and [`axiom_below_huge`]).
 /// The fields are private to this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
@@ -529,10 +529,10 @@ pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
 ;
 
 /// Premise: the calling thread holds only allocator locks ranked below
-/// the class locks. Stands in for a token a closure cannot carry: its use
-/// is `ClassState::decay_with`'s walk, which `Decayer::decay` calls with
-/// no lock taken since `decay_with` was called with a token that allows
-/// the class locks.
+/// the class locks. Stands in for the caller's token in
+/// `ClassState::decay_with`'s walk, which runs between `Decayer::due` and
+/// `Decayer::finish` with no lock taken since `decay_with` was called with
+/// a token that allows the class locks.
 ///
 /// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
 /// call sites to the ones named here: a new one is named here, with its
@@ -544,10 +544,10 @@ pub(crate) axiom fn axiom_below_class<'a>() -> (tracked o: LockOrder<'a>)
 ;
 
 /// Premise: the calling thread holds only allocator locks ranked below
-/// the huge lock. Stands in for a token a closure cannot carry: its use
-/// is `Huge::decay_with`'s walk, which `Decayer::decay` calls with no
-/// lock taken since `decay_with` was called with a token that allows
-/// the huge lock.
+/// the huge lock. Stands in for the caller's token in
+/// `Huge::decay_with`'s walk, which runs between `Decayer::due` and
+/// `Decayer::finish` with no lock taken since `decay_with` was called with
+/// a token that allows the huge lock.
 ///
 /// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
 /// call sites to the ones named here: a new one is named here, with its

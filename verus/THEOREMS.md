@@ -5627,15 +5627,35 @@ background thread wakes at the deadline (the futex wait,
 
 The `file:line`s are the `fn` line at this section's commit.
 
-**Statement** (`purge.rs:1944`, over the spec of `decay` at `:1903`):
+**Statement** (`purge.rs:1989`, over the spec of `due` and `finish` at `:1948`):
 
 ```rust
-// purge.rs:1813
-pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> (r: Option<u64>)
+// purge.rs:1836
+pub fn due(&self, now: u64, decay_ns: u64) -> (r: Due)
+    ensures
+        match r {
+            Due::Done(d) => {
+                &&& d matches Some(t) ==> t >= now
+                &&& exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
+                    d == #[trigger] Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2)
+            },
+            Due::Walk(curve, step, seen) => {
+                &&& Decayer::spec_walks(now, decay_ns, seen@.0, seen@.1, seen@.2)
+                &&& curve.period() == decay_ns
+                &&& step == Decayer::spec_step(decay_ns)
+            },
+        },
+
+// purge.rs:1891
+pub fn finish(&self, now: u64, step: u64, Ghost(decay_ns): Ghost<u64>, Ghost(seen): Ghost<(u64, u64, u64)>)
+    -> (r: Option<u64>)
+    requires
+        Decayer::spec_walks(now, decay_ns, seen.0, seen.1, seen.2),
+        step == Decayer::spec_step(decay_ns),
     ensures
         r matches Some(t) ==> t >= now,
-        exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
-            r == #[trigger] Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2),
+        exists|after: u64, retry2: u64|
+            r == #[trigger] Decayer::spec_decay(now, decay_ns, seen.0, seen.1, seen.2, after, retry2),
 
 pub proof fn theorem_decay_deadline(now: u64, decay_ns: u64, oldest: u64, retry: u64, next: u64,
     after: u64, retry2: u64)
@@ -5660,17 +5680,17 @@ before the walk, `next` the `next_walk` load, `after` the
 after it (upstream 7a12536a); a load the call does
 not make is a free variable of the existential. `spec_step(d)` is
 `d / STEPS`, `Curve::step_ns`'s exact spec (`purge/curve.rs:314`) for
-`Curve::new(d)`. `spec_walks` (`purge.rs:1889`) is the walk's condition:
+`Curve::new(d)`. `spec_walks` (`purge.rs:1934`) is the walk's condition:
 something `Empty`, its first step over, and `next` not within one step
-after `now`. `spec_decay` (`:1903`) is the code's branches with
-`saturating_add` spelled as `sat_add` (`:1874`); it is `closed` (only
+after `now`. `spec_decay` (`:1948`) is the code's branches with
+`saturating_add` spelled as `sat_add` (`:1919`); it is `closed` (only
 `purge.rs` sees its body), so callers reason through the theorem.
 
-In words: `decay` returns `None` exactly when the oldest-`Empty` load is
+In words: the gate (`due`, then `finish` after a walk) returns `None` exactly when the oldest-`Empty` load is
 0 or a walk ran and the load after it reads 0. A deadline is at most
 `max(oldest, now) + step`, so, with the oldest member stamped no later
 than `now`, at most one step past `now`. That is the period-change case
-of `decay` (`next - now <= step`): after `set_decay_ms` (`arena.rs`) or
+of `due` (`next - now <= step`): after `set_decay_ms` (`arena.rs`) or
 a pressure band (theorem 18) lowers the period, the next call no longer
 returns a deadline computed with the old step: it returns the end of the
 oldest member's first (new) step, or walks and returns one new step from
@@ -5688,7 +5708,7 @@ the theorem names it (`t == retry || t == retry2`), a value `retry_at`
 held, and nothing bounds it against `now` beyond `now <= t` (it is a
 stamp `back_off` took from the walk's clock, one second ahead).
 
-With theorem 18 (`purge.rs:1979`):
+With theorem 18 (`purge.rs:2024`):
 
 ```rust
 pub proof fn theorem_decay_deadline_under_pressure(base: u64, limit: u64, c1: u64, c2: u64,
@@ -5712,30 +5732,32 @@ step, so the deadline bound under it is no later than under lower usage.
 band never lengthens a configured step either.
 
 **Covers.** Both gates: `ClassState::decay_with` (`class/decay.rs:1694`)
-and `Huge::decay_with` (`huge/mod.rs:8274`) ensure `decay`'s contract
+and `Huge::decay_with` (`huge/mod.rs:8788`) ensure the gate's contract
 for the `decay_ns` they are given. Since upstream #97 `mallctl
 arena.<i>.decay` (`purge::decay_arena`) gives them the periods
 `purge::decay` does, through the same `decay_one` and `decay_huge`
 (the policy-scaled `effective_decay_ns`, and for the huge extents the
 huge tier's own period); before, it passed the unscaled periods, and
 arena 0's period rather than the huge tier's to the huge walk. `Arena::decay_with`
-and `purge::decay` (`purge.rs:2147`, through `earliest`) take the minimum
-of the per-gate deadlines; the background thread (`purge/background.rs:801`)
+and `purge::decay` (`purge.rs:2192`, through `earliest`) take the minimum
+of the per-gate deadlines; the background thread (`purge/background.rs:802`)
 sleeps until `purge::decay`'s result, and `on_tick` keeps only whether it
 is `Some` (since upstream #111: dirty memory still waiting, which runs
 the lazy start's look, `background::auto_tick`). No C
 symbol's `ensures` changes.
 
 **Premises beyond the common ones.** None for the deadline: no axiom,
-`external_body` or `assume_specification` is used by the theorem; the
-gates' walk closures take the lock-order premises
-`axiom_below_class`/`axiom_below_huge` (theorem 33). The loads are `core` atomics,
-which vstd specifies with any value, which is why the statement is over
-the values seen. The walk closure's `ensures` are not used.
+`external_body` or `assume_specification` is used by the theorem. The
+gate is two halves, `Decayer::due` and `Decayer::finish`, and the owner
+runs its walk between them in its own `decay_with`, with a lock-order
+token from `axiom_below_class`/`axiom_below_huge` (theorem 33). The
+loads are `core` atomics, which vstd specifies with any value, which is
+why the statement is over the values seen. The walk's `ensures` are not
+used.
 
 **Scope and where the statement is weaker than the code.**
 - What callers can use. The witnesses are existential, so a caller
-  cannot discharge `oldest <= now`: what `decay`'s and `decay_with`'s
+  cannot discharge `oldest <= now`: what the gate's and `decay_with`'s
   `ensures` give a caller is `t >= now`, and (through the theorem)
   `t == now` only when `decay_ns < STEPS` or `now == u64::MAX`. The
   one-step bound states what the body does with what it loaded; tying
@@ -5760,11 +5782,11 @@ the values seen. The walk closure's `ensures` are not used.
   thread's later coarse clock read) gives a deadline up to `oldest +
   step`; the theorem bounds it by that, not by `now + step`.
 - Not that the walk runs at most once per step: the store of `next_walk`
-  and the guard are in `decay`'s body, but no ghost history of walks is
+  and the guard are in `finish`'s and `due`'s bodies, but no ghost history of walks is
   kept, so "at most once per step" is not an `ensures`.
 - The `NEVER` period: callers skip it (`Arena::decay_with`, the huge
   branch of `purge::decay`, `mallctl arena.0.decay`'s huge call);
-  `decay` itself would return deadlines up to
+  the gate itself would return deadlines up to
   `sat_add(max(oldest, now), NEVER / STEPS)`, within the bound.
 - The period is the one passed in: that it is the arena's current
   `decay_ns` after `set_decay_ms` is the caller's load (any value, as
@@ -6516,13 +6538,12 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   the reports' calls out, by inspection elsewhere), and a signal
   handler that allocates is outside the C contract (the fork handlers
   block signals).
-- *Closures* (`axiom_below_class`, `lock.rs:540`, and `axiom_below_huge`,
-  `:555`; one `axiom_held_below` in #138): the decay walks'
-  closures in `ClassState::decay_with` and `Huge::decay_with`
-  (`Decayer::decay` takes a closure, which cannot carry a token). Both
-  functions take the caller's token and require it below the lock the
-  closure takes, so the premise restates a checked precondition for code
-  that runs during the call.
+- *Decay walks* (`axiom_below_class`, `lock.rs:540`, and `axiom_below_huge`,
+  `:555`; one `axiom_held_below` in #138): the decay walks in
+  `ClassState::decay_with` and `Huge::decay_with`, which run between
+  `Decayer::due` and `Decayer::finish`. Both functions take the caller's
+  token and require it below the lock the walk takes, so the premise
+  restates a checked precondition for code that runs during the call.
 - *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs:525`):
   the one root token; every other entry point's `axiom_entry` token is
   not a root on main.
@@ -6559,7 +6580,7 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
 (2 uses). Main threads it through the ten `Meta` methods that may take
 the metadata lock, so the metadata lock's acquisitions rest on no
 premise of their own. The decay
-closures, which cannot carry a token, take theirs from two axioms,
+walks take theirs from two axioms,
 `axiom_below_class` and `axiom_below_huge` (one, `axiom_held_below`,
 in #138), and `fork_prepare`'s root token comes from
 `axiom_fork_entry` (from `axiom_entry` in #138). `mallinfo2`

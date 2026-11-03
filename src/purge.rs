@@ -1740,11 +1740,21 @@ pub fn discard_one(addr: usize, len: usize, Ghost(free): Ghost<Bytes>) -> (r: bo
     discarded.discarded
 }
 
+/// What [`Decayer::due`] found at `now`.
+pub enum Due {
+    /// No walk is due: the owner's next deadline, `None` when nothing is
+    /// `Empty`.
+    Done(Option<u64>),
+    /// The owner's walk is due, along this curve, whose step is the
+    /// `u64`; then [`Decayer::finish`], with the load values `due` saw.
+    Walk(Curve, u64, Ghost<(u64, u64, u64)>),
+}
+
 /// The step gate of design 8, one per `ClassState` and one in
 /// the huge allocator: `dirty_at` of the oldest `Empty` member (0 when
 /// none is known), written under the owner's lock and read without it by
 /// the decay driver, and the deadline of the owner's next walk.
-/// [`Decayer::decay`] runs the owner's walk at most once per step of the
+/// [`Decayer::due`] lets the owner's walk run at most once per step of the
 /// curve, and not before the back-off a failed discard set has passed;
 /// the walks themselves (`ClassState::purge_curve`, `Huge::purge_curve`)
 /// differ and stay with their owners.
@@ -1807,32 +1817,43 @@ impl Decayer {
         true
     }
 
-    /// Decay step: once the oldest `Empty` member is a step of the curve
-    /// old, run `walk(now, curve)` (which purges along the curve and
-    /// republishes the oldest `dirty_at`) at most once per step and not
-    /// during a back-off. Returns the owner's next deadline (the end of the
-    /// oldest member's first step, of the back-off, or of the current
-    /// step), `None` when nothing is `Empty`. Lock-free unless a walk is
-    /// due. The result is [`spec_decay`] of the values the call's loads
-    /// saw; the `ensures` states only that some load values give it, which
-    /// is what [`theorem_decay_deadline`] bounds.
+    /// Decay step, first half: once the oldest `Empty` member is a step
+    /// of the curve old, a walk is due ([`Due::Walk`]) at most once per
+    /// step and not during a back-off; the owner then runs its walk (which
+    /// purges along the curve and republishes the oldest `dirty_at`) and
+    /// calls [`finish`](Decayer::finish). Otherwise [`Due::Done`] holds the
+    /// owner's next deadline (the end of the oldest member's first step, of
+    /// the back-off, or of the current step), `None` when nothing is
+    /// `Empty`. Lock-free. The walk runs between the halves, in the
+    /// owner's own `decay_with`, which holds the owner's lock-order
+    /// token. Together the two halves
+    /// return [`spec_decay`] of the values their loads saw; the `ensures`
+    /// state only that some load values give it, which is what
+    /// [`theorem_decay_deadline`] bounds.
     ///
     /// [`spec_decay`]: Decayer::spec_decay
     /// [`theorem_decay_deadline`]: Decayer::theorem_decay_deadline
-    pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> (r: Option<u64>)
-        requires
-            forall|t: u64, c: &Curve| walk.requires((t, c)),
+    pub fn due(&self, now: u64, decay_ns: u64) -> (r: Due)
         ensures
-            r matches Some(t) ==> t >= now,
-            exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
-                r == #[trigger] Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2),
+            match r {
+                Due::Done(d) => {
+                    &&& d matches Some(t) ==> t >= now
+                    &&& exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
+                        d == #[trigger] Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2)
+                },
+                Due::Walk(curve, step, seen) => {
+                    &&& Decayer::spec_walks(now, decay_ns, seen@.0, seen@.1, seen@.2)
+                    &&& curve.period() == decay_ns
+                    &&& step == Decayer::spec_step(decay_ns)
+                },
+            },
     {
         let oldest = self.oldest_empty();
         if oldest == 0 {
             proof {
                 assert(Decayer::spec_decay(now, decay_ns, oldest, 0, 0, 0, 0) == None::<u64>);
             }
-            return None;
+            return Due::Done(None);
         }
         let curve = Curve::new(decay_ns);
         let step = curve.step_ns();
@@ -1841,14 +1862,14 @@ impl Decayer {
             proof {
                 assert(Decayer::spec_decay(now, decay_ns, oldest, 0, 0, 0, 0) == Some(first));
             }
-            return Some(first);
+            return Due::Done(Some(first));
         }
         let retry = self.retry_at.load(Ordering::Relaxed);
         if now < retry {
             proof {
                 assert(Decayer::spec_decay(now, decay_ns, oldest, retry, 0, 0, 0) == Some(retry));
             }
-            return Some(retry);
+            return Due::Done(Some(retry));
         }
         // A deadline further away than one step was set under a longer
         // period since shortened: walk now.
@@ -1857,23 +1878,38 @@ impl Decayer {
             proof {
                 assert(Decayer::spec_decay(now, decay_ns, oldest, retry, next, 0, 0) == Some(next));
             }
-            return Some(next);
+            return Due::Done(Some(next));
         }
-        walk(now, &curve);
-        let ghost seen = next;
+        Due::Walk(curve, step, Ghost((oldest, retry, next)))
+    }
+
+    /// Decay step, second half, after the owner's walk that
+    /// [`due`](Decayer::due) found due at `now` (its `step` and the load
+    /// values it saw, `seen`): store the next walk's deadline and return
+    /// the owner's next deadline, `None` when the walk left nothing
+    /// `Empty`.
+    pub fn finish(&self, now: u64, step: u64, Ghost(decay_ns): Ghost<u64>, Ghost(seen): Ghost<(u64, u64, u64)>) -> (r: Option<u64>)
+        requires
+            Decayer::spec_walks(now, decay_ns, seen.0, seen.1, seen.2),
+            step == Decayer::spec_step(decay_ns),
+        ensures
+            r matches Some(t) ==> t >= now,
+            exists|after: u64, retry2: u64|
+                r == #[trigger] Decayer::spec_decay(now, decay_ns, seen.0, seen.1, seen.2, after, retry2),
+    {
         let next = now.saturating_add(step);
         self.next_walk.store(next, Ordering::Relaxed);
         let after = self.oldest_empty();
         if after == 0 {
             proof {
-                assert(Decayer::spec_decay(now, decay_ns, oldest, retry, seen, after, 0) == None::<u64>);
+                assert(Decayer::spec_decay(now, decay_ns, seen.0, seen.1, seen.2, after, 0) == None::<u64>);
             }
             None
         } else {
             let retry2 = self.retry_at.load(Ordering::Relaxed);
             let late = next.max(retry2);
             proof {
-                assert(Decayer::spec_decay(now, decay_ns, oldest, retry, seen, after, retry2) == Some(late));
+                assert(Decayer::spec_decay(now, decay_ns, seen.0, seen.1, seen.2, after, retry2) == Some(late));
             }
             Some(late)
         }
@@ -1889,7 +1925,7 @@ impl Decayer {
         decay_ns / STEPS as u64
     }
 
-    /// `decay(now, decay_ns, _)` runs the walk: something is `Empty` on
+    /// `due(now, decay_ns)` finds the walk due: something is `Empty` on
     /// entry (`oldest`, the first `oldest_empty` load), its first step is
     /// over, no back-off is in force (`retry`, the first `retry_at` load),
     /// and the stored deadline (`next`, the `next_walk` load) is not
@@ -1903,12 +1939,12 @@ impl Decayer {
         &&& !(now < next && next - now <= step)
     }
 
-    /// What `decay(now, decay_ns, _)` returns when its loads see `oldest`
-    /// (`oldest_empty` on entry), `retry` (`retry_at`), `next`
-    /// (`next_walk`), `after` (`oldest_empty` after the walk, as the walk
-    /// republished it or a concurrent writer left it) and `retry2`
-    /// (`retry_at` after the walk, as a failed discard in it set it). A
-    /// load the call does not make does not matter.
+    /// What `due(now, decay_ns)`, and after the walk `finish`, return when
+    /// their loads see `oldest` (`oldest_empty` on entry), `retry`
+    /// (`retry_at`), `next` (`next_walk`), `after` (`oldest_empty` after
+    /// the walk, as the walk republished it or a concurrent writer left
+    /// it) and `retry2` (`retry_at` after the walk, as a failed discard in
+    /// it set it). A load the calls do not make does not matter.
     pub closed spec fn spec_decay(
         now: u64,
         decay_ns: u64,
@@ -1937,9 +1973,9 @@ impl Decayer {
     }
 
     /// Decay deadline soundness: whatever its loads see,
-    /// [`decay`](Decayer::decay) returns `None` exactly when nothing is
-    /// `Empty` on entry or the walk ran and the `oldest_empty` load after
-    /// it reads 0; a deadline is no earlier than `now`, and either a
+    /// [`due`](Decayer::due) and [`finish`](Decayer::finish) return
+    /// `None` exactly when nothing is `Empty` on entry or the walk ran
+    /// and the `oldest_empty` load after it reads 0; a deadline is no earlier than `now`, and either a
     /// back-off deadline (a value read from `retry_at`, which
     /// [`back_off`](Decayer::back_off) sets [`DISCARD_RETRY_NS`] past the
     /// walk that failed to discard) or at most one step of the period it
@@ -1980,7 +2016,7 @@ impl Decayer {
 
     /// Decay deadline soundness under pressure (with
     /// `policy::theorem_pressure_never_lengthens_decay`): at one limit and
-    /// one configured period `base`, the bound on `decay`'s deadline at
+    /// one configured period `base`, the bound on the gate's deadline at
     /// usage `c2` is no later than at a lower usage `c1`, whatever the
     /// loads see, back-off deadlines aside. `p1` and `p2` are the
     /// effective periods for `c1` and `c2`
