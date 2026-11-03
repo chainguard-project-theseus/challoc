@@ -11,7 +11,7 @@ file.
 
 ## `axiom_zero_entry`
 
-src/huge/table.rs:378. Kind: axiom. Category: raw pointer (internal).
+src/huge/table.rs:381. Kind: axiom. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: huge::table::kani_table::zero_entry_is_empty).
 
 > The 16 bytes of `z`, which read as zero, as the `Entry` at `p`, empty: `PointsToRaw::into_typed`, initialised with the value the bytes hold.

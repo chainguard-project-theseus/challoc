@@ -153,16 +153,16 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
     proof {
         shared.lemma_wf();
     }
-    let Some(mut sc) = stats::Scratch::new(&shared.meta) else {
+    // Premise (lock order): `mallinfo2`'s callers (the C exports and the
+    // tests) hold no allocator lock.
+    let tracked mut ord = axiom_entry();
+    let Some(mut sc) = stats::Scratch::new(&shared.meta, Tracked(&mut ord)) else {
         proof {
             *rd = Ghost((rd@.0, rd@.1, rd@.2, false));
         }
         return zero_info();
     };
     let tracked mut sd = Ghost((Seq::<stats::ArenaStats>::empty(), Seq::<int>::empty()));
-    // Premise (lock order): `mallinfo2`'s callers (the C exports and the
-    // tests) hold no allocator lock.
-    let tracked mut ord = axiom_entry();
     let pair = sc.record();
     stats::collect_all(shared, &mut pair.a, &mut pair.b, Tracked(&mut sd), Tracked(&mut ord));
     let all = &sc.get().a;
@@ -195,7 +195,7 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
         fordblks: arena.saturating_sub(uordblks),
         keepcost: fig_mul(all.pdirty, page),
     };
-    sc.free(&shared.meta);
+    sc.free(&shared.meta, Tracked(&mut ord));
     r
 }
 

@@ -21,6 +21,9 @@
 use core::alloc::Layout;
 use core::ptr;
 
+use crate::lock::LockOrder;
+#[cfg(verus_keep_ghost)]
+use crate::lock::rank_meta;
 use crate::meta::{self, Meta, MetaClaim};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::layout::{layout_align, layout_size};
@@ -517,9 +520,10 @@ impl Table {
     /// [`entry_slots`] cuts into the entries' permissions, each empty
     /// ([`axiom_zero_entry`]). A reserved block is aligned to `page`, at
     /// least 16 bytes, so to an `Entry`.
-    fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
+    fn storage(meta: &Meta, page: usize, lg_cap: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<(*mut Entry, bool, Tracked<Own>)>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             meta::is_pow2(page),
             16 <= page,
             lg_cap <= 58,
@@ -535,6 +539,7 @@ impl Table {
             r matches Some((p, _, _)) ==> meta.holds(p@.addr as int, cap_of(lg_cap) * 16),
             r matches Some((_, _, own)) ==> own@.mid@ == meta.live_id(),
             r matches Some((p, _, _)) ==> p@.addr + 16 * cap_of(lg_cap) <= usize::MAX,
+            *final(ord) == *old(ord),
     {
         proof {
             use_type_invariant(meta);
@@ -544,7 +549,7 @@ impl Table {
         let ghost n = cap_of(lg_cap);
         let layout = Table::layout(lg_cap);
         if layout.size() <= meta::MAX_BINNED {
-            let (p, Tracked(blk), Tracked(z)) = meta.alloc_zeroed(layout);
+            let (p, Tracked(blk), Tracked(z)) = meta.alloc_zeroed(layout, Tracked(ord));
             if p.is_null() {
                 None
             } else {
@@ -563,7 +568,7 @@ impl Table {
                 Some((p as *mut Entry, true, Tracked(Own { slots, claim: Some(claim), mid: Ghost(meta.live_id()) })))
             }
         } else {
-            let (s, Tracked(raw)) = meta.reserve_committed_raw(layout.size(), page);
+            let (s, Tracked(raw)) = meta.reserve_committed_raw(layout.size(), page, Tracked(ord));
             let p = s?;
             let e = crate::vspec::addr::addr_to_ptr(p) as *mut Entry;
             proof {
@@ -586,9 +591,10 @@ impl Table {
     /// and the claim are what `Meta::free` takes back. A reserved table
     /// cannot be given back; it is leaked (at most the size of the final
     /// table in total).
-    fn release(&self, meta: &Meta, Tracked(own): Tracked<Own>)
+    fn release(&self, meta: &Meta, Tracked(own): Tracked<Own>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             LG_INITIAL_TABLE <= self.lg_cap <= 58,
             covers(self.entries, self.lg_cap, own.slots),
             self.entries@.addr + 16 * cap_of(self.lg_cap) <= usize::MAX,
@@ -598,6 +604,8 @@ impl Table {
                 16 * cap_of(self.lg_cap),
                 16,
             )),
+        ensures
+            *final(ord) == *old(ord),
     {
         if self.binned {
             let tracked Own { slots, claim, .. } = own;
@@ -620,6 +628,7 @@ impl Table {
                 self.entries as *mut u8,
                 Table::layout(self.lg_cap),
                 Tracked((raw, c)),
+                Tracked(ord),
             );
         }
     }
@@ -712,17 +721,19 @@ impl Table {
     {
     }
 
-    pub(super) fn new(meta: &Meta, page: usize) -> (r: Option<Table>)
+    pub(super) fn new(meta: &Meta, page: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<Table>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             meta.is_process(),
             meta::is_pow2(page),
             16 <= page,
         ensures
             r matches Some(t) ==> t.wf() && t.spec_count() == 0 && forall|k: usize| t.lookup(k) is None,
             r matches Some(t) ==> t.spec_mid() == meta.live_id(),
+            *final(ord) == *old(ord),
     {
-        let (entries, binned, own) = Table::storage(meta, page, LG_INITIAL_TABLE)?;
+        let (entries, binned, own) = Table::storage(meta, page, LG_INITIAL_TABLE, Tracked(ord))?;
         let t = Table { entries, lg_cap: LG_INITIAL_TABLE, count: 0, binned, own };
         proof {
             assert(cap_of(LG_INITIAL_TABLE) == 1024) by (compute_only);
@@ -1093,9 +1104,10 @@ impl Table {
 
     /// Make room for `extra` more keys at a load of one half or less. On
     /// failure the table is unchanged and still works, only fuller.
-    pub(super) fn ensure(&mut self, meta: &Meta, page: usize, extra: usize) -> (r: Result<(), ()>)
+    pub(super) fn ensure(&mut self, meta: &Meta, page: usize, extra: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), ()>)
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
             meta.is_process(),
             meta::is_pow2(page),
             16 <= page,
@@ -1109,6 +1121,7 @@ impl Table {
             forall|k: usize| #[trigger] final(self).lookup(k) == old(self).lookup(k),
             r is Ok ==> (final(self).spec_count() + extra) * 2 <= final(self).spec_cap(),
             r is Err ==> *final(self) == *old(self),
+            *final(ord) == *old(ord),
     {
         if (self.count + extra) * 2 <= self.cap() {
             return Ok(());
@@ -1133,7 +1146,7 @@ impl Table {
             }
             lg += 1;
         }
-        let (entries, binned, own) = Table::storage(meta, page, lg).ok_or(())?;
+        let (entries, binned, own) = Table::storage(meta, page, lg, Tracked(ord)).ok_or(())?;
         let tracked mut old_own = own_empty();
         proof {
             vstd::modes::tracked_swap(self.own.borrow_mut(), &mut old_own);
@@ -1188,7 +1201,7 @@ impl Table {
         proof {
             vstd::modes::tracked_swap(old.own.borrow_mut(), &mut gone);
         }
-        old.release(meta, Tracked(gone));
+        old.release(meta, Tracked(gone), Tracked(ord));
         Ok(())
     }
 }
@@ -1707,7 +1720,7 @@ mod tests {
     fn table_removal_shifts_across_the_wrap_around() {
         let env = Env::new();
         let page = page_size();
-        let mut t = Table::new(&env.meta, page).expect("table");
+        let mut t = Table::new(&env.meta, page, Tracked::assume_new()).expect("table");
         let last = t.cap() - 1;
         let key_with_hash =
             |t: &Table, h: usize, from: usize| (from..).find(|&k| t.hash(k) == h).unwrap();
@@ -1771,14 +1784,14 @@ mod tests {
         // its first doubling (32 KiB); the second (64 KiB) does not.
         let env = Env::with_meta_len(64 * 1024);
         let page = page_size();
-        let mut t = Table::new(&env.meta, page).expect("table");
+        let mut t = Table::new(&env.meta, page, Tracked::assume_new()).expect("table");
         assert_eq!(t.cap(), 1 << LG_INITIAL_TABLE);
         let desc = |k: usize| k as *mut HugeDesc;
         let mut keys = Vec::new();
         let mut grew = 0;
         loop {
             let cap = t.cap();
-            if t.ensure(&env.meta, page, 1).is_err() {
+            if t.ensure(&env.meta, page, 1, Tracked::assume_new()).is_err() {
                 break;
             }
             if t.cap() > cap {
@@ -1806,7 +1819,7 @@ mod tests {
         // `the_table_never_fills_its_last_slot`).
         let extra = t.cap() - t.count - 1;
         for k in keys.len() + 1..=keys.len() + extra {
-            assert!(t.ensure(&env.meta, page, 1).is_err());
+            assert!(t.ensure(&env.meta, page, 1, Tracked::assume_new()).is_err());
             t.insert(k, desc(k));
             assert!(t.find(k).is_some());
         }
@@ -1826,7 +1839,7 @@ mod tests {
     #[test]
     fn the_table_never_fills_its_last_slot() {
         let env = Env::new();
-        let mut t = Table::new(&env.meta, page_size()).expect("table");
+        let mut t = Table::new(&env.meta, page_size(), Tracked::assume_new()).expect("table");
         let cap = t.cap();
         let desc = |k: usize| k as *mut HugeDesc;
         for k in 1..cap {
@@ -1852,7 +1865,7 @@ mod tests {
     #[should_panic(expected = "descriptor table full")]
     fn the_table_aborts_before_its_last_slot_fills() {
         let env = Env::new();
-        let mut t = Table::new(&env.meta, page_size()).expect("table");
+        let mut t = Table::new(&env.meta, page_size(), Tracked::assume_new()).expect("table");
         let cap = t.cap();
         for k in 1..cap {
             t.insert(k, k as *mut HugeDesc);
@@ -1865,7 +1878,7 @@ mod tests {
     #[should_panic(expected = "key inserted twice")]
     fn the_table_rejects_a_duplicate_key() {
         let env = Env::new();
-        let mut t = Table::new(&env.meta, page_size()).unwrap();
+        let mut t = Table::new(&env.meta, page_size(), Tracked::assume_new()).unwrap();
         let d = 0x10 as *mut HugeDesc;
         t.insert(7, d);
         assert_eq!(t.count, 1);
@@ -1876,7 +1889,7 @@ mod tests {
     #[should_panic(expected = "descriptor table count underflow")]
     fn the_table_aborts_when_its_count_disagrees_with_its_entries() {
         let env = Env::new();
-        let mut t = Table::new(&env.meta, page_size()).unwrap();
+        let mut t = Table::new(&env.meta, page_size(), Tracked::assume_new()).unwrap();
         t.insert(7, 0x10 as *mut HugeDesc);
         t.count = 0;
         t.remove(7);

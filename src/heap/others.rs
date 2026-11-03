@@ -854,7 +854,7 @@ impl Heap {
             shared.lemma_wf();
             assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
         }
-        let (block, Tracked(blk)) = shared.meta.alloc_raw(node_block_layout());
+        let (block, Tracked(blk)) = shared.meta.alloc_raw(node_block_layout(), Tracked(ord));
         let tracked (raw, claim) = blk;
         if block.is_null() {
             return ptr::null_mut();

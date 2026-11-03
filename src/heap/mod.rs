@@ -5223,7 +5223,7 @@ impl Heap {
             cache::lemma_header_layout();
             assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
         }
-        let (block, Tracked(blk)) = shared.meta.alloc_raw(Layout::new::<Heap>());
+        let (block, Tracked(blk)) = shared.meta.alloc_raw(Layout::new::<Heap>(), Tracked(ord));
         let tracked (raw, claim) = blk;
         let h = block as *mut Heap;
         if h.is_null() {
@@ -5744,7 +5744,7 @@ impl Heap {
                 assert(block == others::node_block(o, pad));
                 assert(block@.addr == b);
             }
-            shared.meta.free(block, node_block_layout(), Tracked(blk));
+            shared.meta.free(block, node_block_layout(), Tracked(blk), Tracked(ord));
             heap.others = next;
             proof {
                 Heap::lemma_pop_node(h1, *heap);
@@ -5802,7 +5802,7 @@ impl Heap {
             let ghost hv = *heap;
             blk = axiom_heap_block(h, hv, heap.perms.borrow_mut());
         }
-        shared.meta.free(h as *mut u8, Layout::new::<Heap>(), Tracked(blk));
+        shared.meta.free(h as *mut u8, Layout::new::<Heap>(), Tracked(blk), Tracked(ord));
     }
 }
 
@@ -5868,12 +5868,16 @@ impl Heap {
         shared: &Shared,
         caches: &mut [CacheHeader; NCLASSES],
         Tracked(stacks): Tracked<Map<vstd::prelude::int, (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            old(ord).allows(crate::lock::rank_meta()),
             forall|c: int|
                 0 <= c < NCLASSES && (#[trigger] old(caches)@[c]).cap != 0 ==> stack_given(stacks, c, old(caches)@[c], shared.meta.live_id()),
+        ensures
+            *final(ord) == *old(ord),
     {
         let tracked mut stacks = stacks;
         for cache in it: caches.iter_mut()
@@ -5882,6 +5886,8 @@ impl Heap {
                 crate::sys::may_syscall(),
                 it.seq().len() == NCLASSES,
                 forall|i: int| 0 <= i < NCLASSES ==> *(#[trigger] it.seq()[i]) == old(caches)@[i],
+                *ord == *old(ord),
+                ord.allows(crate::lock::rank_meta()),
                 forall|c: int|
                     it.index() <= c < NCLASSES && (#[trigger] old(caches)@[c]).cap != 0 ==> stack_given(stacks, c, old(caches)@[c], shared.meta.live_id()),
         {
@@ -5891,7 +5897,7 @@ impl Heap {
                 proof {
                     assert(*cache == old(caches)@[it.index()]);
                 }
-                shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap), Tracked(blk));
+                shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap), Tracked(blk), Tracked(ord));
             }
             *cache = CacheHeader::EMPTY;
         }
@@ -6280,6 +6286,7 @@ impl Heap {
                     h.slots as *mut u8,
                     CacheHeader::slots_layout(h.cap),
                     Tracked((stack, claim)),
+                    Tracked(ord),
                 );
             }
             *h = CacheHeader::EMPTY;

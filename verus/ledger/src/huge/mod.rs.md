@@ -42,7 +42,7 @@ fn write_zero(addr: usize)
 
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:2376. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:2389. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -59,7 +59,7 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:2399. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:2412. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
