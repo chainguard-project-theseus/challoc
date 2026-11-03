@@ -227,7 +227,7 @@ pub fn shared_ptr() -> (r: *const Shared)
 ## `shared_base`
 
 src/api/mod.rs:978. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: shared_base in src/api/mod.rs; not checked: that `shared_ptr` returns that pointer (itself trusted, its address checked by a Kani harness), and the pointer's provenance; the check shows only that the asm! block emits no instruction).
 
 > [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
 

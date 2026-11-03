@@ -24,3 +24,6 @@ shared_ptr	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: api
 shared_storage_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::shared_ptrs_agree)
 features_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)
 line_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)
+# Empty-template register hint: verus/emptyasm/run.sh checks the block adds
+# no instruction to the shipped code (a verus/emptyasm/blocks.txt row).
+shared_base	inline asm	Islaris/Isla	trusted (partly checked, emptyasm: shared_base in src/api/mod.rs; not checked: that `shared_ptr` returns that pointer (itself trusted, its address checked by a Kani harness), and the pointer's provenance; the check shows only that the asm! block emits no instruction)

@@ -227,9 +227,9 @@ Among these, the allocator-invariant category includes 14 `axiom_*_lock_inv` and
 
 The counter also warns about 1 function without a ledger entry: the 3-line `#[verifier::external]` `Default for Stderr` implementation in [sys/abort.rs](../src/sys/abort.rs).
 
-On main, 134 `#[kani::proof]` harnesses under `src/` check bounded seam contracts with Kani `0.68.0` and CBMC `6.11.0`. Each harness comment names its seam and bounds. The source also has 50 top-level `const _: () = assert!(..)` assertions; the compiler evaluates them on both quanta and targets. The 61 loom model tests in `tests/loom` provide evidence for atomic protocols, but no seam status cites loom yet. Isla and emptyasm are not on main.
+On main, 134 `#[kani::proof]` harnesses under `src/` check bounded seam contracts with Kani `0.68.0` and CBMC `6.11.0`. Each harness comment names its seam and bounds. The source also has 50 top-level `const _: () = assert!(..)` assertions; the compiler evaluates them on both quanta and targets. The 61 loom model tests in `tests/loom` provide evidence for atomic protocols, but no seam status cites loom yet. `make emptyasm` checks the 4 empty-template `asm!` register hints: `word_index` is discharged, and `shared_base`, `entry_barrier` and `ClassLine::guard_word` are partly checked.
 
-CI keeps this evidence connected to the ledger. `sh verus/seams.sh --check` fails if the ledger is stale, a seam lacks a classification, a discharged Kani citation names no proof harness, or a constant-assertion citation fails to identify exactly 1 assertion. The presubmit `kani` check runs for changes to `src/kani/`, `src/vspec/`, and listed source files. The postsubmit `kani-ignoring` check runs every harness at quantum 16 and quantum 8, in 4 shards per quantum, and fails if one does not verify or CBMC prints a `warning: ignoring` line.
+CI keeps this evidence connected to the ledger. `sh verus/seams.sh --check` fails if the ledger is stale, a seam lacks a classification, a discharged Kani citation names no proof harness, or a constant-assertion citation fails to identify exactly 1 assertion; for an `emptyasm:` citation it also fails unless the seam's item holds one `asm!` call with the empty template, and it fails when a source line `verus/kani/pins.txt` pins moves. The presubmit `kani` check runs for changes to `src/kani/`, `src/vspec/`, and listed source files. The postsubmit `kani-ignoring` check runs every harness at quantum 16 and quantum 8, in 4 shards per quantum, and fails if one does not verify or CBMC prints a `warning: ignoring` line.
 
 ## Process guarantees
 
@@ -278,7 +278,7 @@ A check could not stop a change that landed before it was added. The `kani` and 
 [Issue #397](https://github.com/wolfi-dev/challoc/issues/397) tracks the remaining proof and audit work.
 
 - **Lock release:** Unlock has not been verified to restore the lock invariant. Draft [#396](https://github.com/wolfi-dev/challoc/pull/396) covers Meta; tcaches, sets, and stats follow, then arena, class, huge, and table. `unlock_held_perm` and `get_unlocked` have the same gap.
-- **Instruction semantics:** On main, the 31 inline-assembly seams (582 lines) have no check. The Isla PRs in progress would cite Isla on 28 seams, 7 discharged and 21 partly checked; the parts they leave unchecked include the kernel side of syscalls, PAC fixed data key A and EnDA for sign and authenticate, failure to resume past a trap, and TLS or GOT entry contents.
+- **Instruction semantics:** On main, the 31 inline-assembly seams (582 lines) have no check. `make emptyasm` covers the 4 empty-template register hints among them: 1 discharged and 3 partly checked. The Isla PRs in progress would cite Isla on 28 seams, 7 discharged and 21 partly checked; the parts they leave unchecked include the kernel side of syscalls, PAC fixed data key A and EnDA for sign and authenticate, failure to resume past a trap, and TLS or GOT entry contents.
 - **C boundary:** The `errno` of nullable exports ([#394](https://github.com/wolfi-dev/challoc/pull/394)) and the out-pointer results of `posix_memalign` and the allocating `challoc_*_usable` exports reach the C caller through trusted hand-back axioms, `axiom_errno_at_return` and `axiom_out_at_return`. A shape test, not Verus, checks where the exports call them and each export’s `failed` condition.
 - **Seam drift:** `seams.sh` does not hash contracts or bodies. An edit could leave a stale discharged or partly checked status. Audit test 8 adds the hashes, after the other seam PRs land.
 - **Remaining contracts:** `TlsCell::kept` needs a stronger empty-slot contract, and the R2c mutation that restores 0 remains a stated limit. Draft [#400](https://github.com/wolfi-dev/challoc/pull/400) replaces `axiom_raw_valid` with an `in_alloc`-only axiom.
@@ -299,7 +299,7 @@ These PRs are drafts and are **not merged**:
 - [#413](https://github.com/wolfi-dev/challoc/pull/413): Verify `env_var`, `emit` and `parse_from` at the C boundary (W1c).
 - [#391](https://github.com/wolfi-dev/challoc/pull/391): Re-park a heap created during `pthread_join`.
 
-Isla I2 (x86_64), I3 (trap, TLS, GOT, and rseq), I4 (pointer authentication), emptyasm, and Isla CI are not yet opened.
+Isla I2 (x86_64), I3 (trap, TLS, GOT, and rseq), I4 (pointer authentication), and Isla CI are not yet opened.
 
 ## Summary for slides
 

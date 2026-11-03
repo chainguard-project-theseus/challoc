@@ -1,0 +1,16 @@
+# verus/emptyasm/blocks.txt: the `asm!` blocks verus/emptyasm/run.sh
+# checks contribute no instruction to the shipped code.
+#
+#   FILE<TAB>FN<TAB>ARCH
+#
+# FILE has exactly one `asm!(` call inside a `fn FN(` (any of the items of
+# that name), compiled for ARCH (x86_64 or aarch64) only; the overrides
+# line of its seam under verus/ledger/ cites its row in its status as
+# `emptyasm: FN in FILE` (`discharged (...)`, or in a partly checked
+# status), and `seams.sh --check` fails unless exactly one row names that
+# FN and FILE and the seam's item holds one asm! call, whose template is
+# the empty `"/* {0} */"`.
+src/api/mod.rs	shared_base	aarch64
+src/class/table.rs	word_index	aarch64
+src/heap/shared.rs	guard_word	x86_64
+src/layout/regions.rs	entry_barrier	x86_64

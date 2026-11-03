@@ -17,13 +17,13 @@
 //! after every landing on main and covers the rest: the `kani_*`
 //! modules in files most proof pull requests touch (`heap/cache.rs`,
 //! `heap/flush.rs`, `heap/mod.rs`, `heap/others.rs`, `heap/paths.rs`,
-//! `arena.rs`, `purge.rs`, `api/mallctl.rs`, `api/mod.rs` and
-//! `layout/mod.rs`), and the checked items outside any listed path
+//! `heap/shared.rs`, `arena.rs`, `purge.rs`, `api/mallctl.rs`, `api/mod.rs`
+//! and `layout/mod.rs`), and the checked items outside any listed path
 //! (`stats.rs`'s `fig_*`, `sys/abort.rs`, the zero axioms of
 //! `class/table.rs`, the class table, the enums `eq.rs` matches). The list is
 //! kept by hand: a `kani_*` module added to a rarely changed file belongs in
 //! `changed:`; one added to a hot file, one most proof pull requests
-//! touch (today the ten files above), is left to `kani-ignoring`, so
+//! touch (today the eleven files above), is left to `kani-ignoring`, so
 //! a change that breaks it is caught after it lands, not before.
 //!
 //! The harnesses of items with private parts sit next to them, in a
