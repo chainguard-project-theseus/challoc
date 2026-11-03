@@ -4,11 +4,18 @@
 //! `thp::Mode` (`class::table::SlabTable::commit_slab` and
 //! `commit_page_group`); and of
 //! `fence`, `core::hint::assert_unchecked`, `AtomicU32::as_ptr` and
-//! `Option::as_deref_mut`.
+//! `Option::as_deref_mut`; and the type `PhantomPinned` (a field of
+//! `heap::Heap`).
 
 use vstd::prelude::*;
 
 verus! {
+
+/// `core::marker::PhantomPinned`, opaque: a zero-sized marker field of
+/// `heap::Heap` that makes it `!Unpin`.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExPhantomPinned(core::marker::PhantomPinned);
 
 // The derived `PartialEq` of these enums compares variants.
 

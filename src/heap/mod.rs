@@ -3283,6 +3283,16 @@ pub struct Heap {
     /// rest of the block, and its claim.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     heads: Tracked<Map<*mut ArenaCaches, others::NodeHead>>,
+    /// Makes `Heap` `!Unpin`. `Heap`'s methods write the home headers in
+    /// `caches` through the raw pointer [`Heap::cache_ptr`] returns while a
+    /// `&mut Heap` is live, and pass both to `&mut self` calls such as
+    /// [`Heap::hdr_mut`] and [`Heap::swap_hdrs`]. rustc marks a `&mut` to
+    /// an `Unpin` type `noalias`, which those writes would break, and a
+    /// `&mut` to a `!Unpin` type not: the exception that `UnsafePinned`
+    /// (RFC 3467) is meant to replace. An assertion in `fresh.rs` fails the
+    /// build if `Heap` becomes `Unpin`, and `ci/heap-noalias.sh` checks the
+    /// LLVM IR for a `noalias` `&mut Heap` receiver.
+    _pin: core::marker::PhantomPinned,
 }
 
 } // verus!
