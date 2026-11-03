@@ -16,7 +16,7 @@ file.
 | `in_chil...window` | external_body | allocator invariant | none (assumption) | trusted |
 | `axiom_acquired` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_held` | axiom | allocator invariant | none (assumption) | trusted |
-| `Lock::value_ptr` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `Lock::value_ptr` | external_body | raw pointer (internal) | Kani | trusted |
 | `cell_ref` | external_body | UnsafeCell/volatile/transmute | Verus | trusted |
 | `cell_mut` | external_body | UnsafeCell/volatile/transmute | Verus | trusted |
 | `LockGuard::drop` | external_body | atomics primitive | loom/GenMC | trusted |
@@ -161,8 +161,8 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ## `Lock::value_ptr`
 
-src/lock.rs:825. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+src/lock.rs:826. Kind: external_body. Category: raw pointer (internal).
+Tool: Kani. Status: trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names), and `T` other than `u8`, `u64`, `(u64, u8)` and `ArenaStats`).
 
 > The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
 
@@ -172,12 +172,12 @@ pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
 
 ## `cell_ref`
 
-src/lock.rs:1130. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1131. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 1138.
+Body mints Tracked at line 1139.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -191,12 +191,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:1145. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1146. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 1155.
+Body mints Tracked at line 1156.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -212,7 +212,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:1165. Kind: external_body. Category: atomics primitive.
+src/lock.rs:1166. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return).
 
 ```rust
