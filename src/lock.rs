@@ -645,10 +645,8 @@ pub(crate) fn fork_window_close()
     FORK_HOLDER.store(0, Ordering::Relaxed);
 }
 
-// The futex calls; neither returns anything the callers use. Trusted
-// until the `sys` futex wrappers they call have specifications.
+// The futex calls; neither returns anything the callers use.
 
-#[verifier::external_body]
 #[inline]
 fn wait(state: &AtomicU32, val: u32)
     requires
@@ -659,7 +657,6 @@ fn wait(state: &AtomicU32, val: u32)
     let _ = unsafe { crate::sys::futex_wait(state.as_ptr(), val, None) };
 }
 
-#[verifier::external_body]
 #[inline]
 fn wake(state: &AtomicU32)
     requires
