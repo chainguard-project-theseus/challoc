@@ -1,6 +1,23 @@
-WordPerm	atomics primitive	loom/GenMC
+# loom and C11 (verus/WEAKMEM.md): non-test bitmap.rs writes a bitmap word
+# only through these wrappers, and class/table.rs calls no atomic write
+# method but the owner word's store (tests/loom/tests/access.rs), so a
+# bitmap word's permission value reads as the last write in its
+# modification order. `FORK_SIGMASK` is a word these wrappers also read
+# (`api::save_sigmask` writes it with a raw `store`); neither the models
+# nor access.rs cover it. C++20's coherence
+# rules ([intro.races]) give a load a write no older than the last one
+# that happens before it; `fetch_or` and `fetch_and` are
+# read-modify-writes, which read the last value for every ordering
+# ([atomics.order] p10). The claim's `Acquire` `fetch_or` and the release's
+# `Release` `fetch_and` order one slot owner's writes before the next
+# owner's (a release/acquire pair, [atomics.order] p2); the bitmap models
+# check that, and the free models the free path's `Relaxed` bit test, on
+# copies of the bitmap and table steps (tests/loom/tests/pins.rs).
+# `WordPerm` is the abstraction itself: its content is these contracts
+# and that a word's writes go through them.
+WordPerm	atomics primitive	loom/GenMC	trusted (partly checked, loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: that the type's value is its word's last write, the C11 argument above (the models check the wrappers' orderings on copies, in the configurations tests/loom/src/bitmap.rs states, and no model sees the ghost value), which tests/loom/tests/access.rs backs by matching source text, for the bitmap words only; `FORK_SIGMASK`, which `api::save_sigmask` writes with a raw `store`)
 # Kani runs each wrapper on a real atomic, one thread (src/kani/atomic.rs).
-fetch_or	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_or; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
-store	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
-load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
-fetch_and	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_and; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
+fetch_or	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_or, and loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency, which the models replace with loom's `fetch_or` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only); the C11 argument above that the permission's value is the word's last write, which tests/loom/tests/access.rs backs by matching source text only)
+store	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_store, and loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+load	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_load, and loom: free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the free path's steps, in the configurations tests/loom/src/free.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text, for the bitmap words only; `FORK_SIGMASK`, which `api::save_sigmask` writes with a raw `store`)
+fetch_and	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_and, and loom: bitmap::loom_bitmap_release_then_reserve and bitmap::loom_bitmap_two_claimers; not checked: this body under concurrency, which the models replace with loom's `fetch_and` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only, so not `init`'s sub-word branch); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)

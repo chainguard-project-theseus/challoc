@@ -10,3 +10,13 @@ axiom_zero_owner	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani
 # Empty-template register hint: verus/emptyasm/run.sh checks the block adds
 # no instruction to the shipped code (a verus/emptyasm/blocks.txt row).
 word_index	inline asm	Islaris/Isla	discharged (emptyasm: word_index in src/class/table.rs)
+# loom and C11 (verus/WEAKMEM.md): the store is the owner word's only
+# write in shipped code (tests/loom/tests/access.rs: class/table.rs writes
+# no other atomic, and only it names the owner words' invariants,
+# `owner_invs`), so every load ordered after it in happens-before reads
+# `arena` (write-read coherence, [intro.races]); excluding a load not so
+# ordered is the reader's premise (`load_u16_at`'s witness). Under the
+# watermark's `Release` store the claimer's `Acquire` load supplies that
+# order; the free and watermark models check it on copies of the
+# `SlabTable` steps (tests/loom/tests/pins.rs).
+store_owner	atomics primitive	loom/GenMC	trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes; not checked: this body, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)

@@ -244,6 +244,9 @@ fn run(callers: u32, v: Variant) {
 
 /// One caller initialises while a free races with it: `shared_if_ready`
 /// returns `None` or the built value.
+///
+/// Covers copies of `api::init_slow`, `api::state_claim`, `api::state_load`
+/// and `api::state_publish`.
 #[test]
 fn loom_init_free_races_init() {
     run(1, SHIPPED);
@@ -253,6 +256,9 @@ fn loom_init_free_races_init() {
 /// other returns the value it built (on `READY`, or after spinning on
 /// `INITIALISING`), and its `Relaxed` `INIT_TID` load never matches its
 /// own tid.
+///
+/// Covers copies of `api::init_slow`, `api::state_claim`, `api::state_load`
+/// and `api::state_publish`.
 #[test]
 fn loom_init_two_callers() {
     run(2, SHIPPED);
@@ -261,6 +267,9 @@ fn loom_init_two_callers() {
 /// An allocation during `init` takes the re-entry abort, never the wait
 /// (which would spin for ever on its own `INITIALISING`), while another
 /// caller waits for the outer `init`.
+///
+/// Covers copies of `api::init_slow`, `api::state_claim`, `api::state_load`
+/// and `api::state_publish`.
 #[test]
 fn loom_init_reentry_aborts() {
     run(
@@ -277,6 +286,8 @@ fn loom_init_reentry_aborts() {
 /// `STATE` right after its `READY` store: it reads `READY`. (Every model
 /// also checks each load and exchange of `STATE` against the thread's
 /// last value: [`Statics::state_load`].)
+///
+/// Covers copies of `api::state_load` and `api::state_publish`.
 #[test]
 fn loom_init_publisher_reads_ready() {
     run(

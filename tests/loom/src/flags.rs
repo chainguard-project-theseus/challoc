@@ -186,6 +186,9 @@ fn run(publish: Ordering, builders: usize, bits: u8) {
 }
 
 /// As shipped: one builder, the main thread freeing.
+///
+/// Covers copies of `vspec::flags::new`, `vspec::flags::load` and
+/// `vspec::flags::fetch_or`.
 #[test]
 fn loom_flags_route_byte_keeps_push_flags() {
     run(Ordering::Release, 1, ROUTE);
@@ -193,6 +196,9 @@ fn loom_flags_route_byte_keeps_push_flags() {
 
 /// Two builders (a third arena built while the second's `fetch_or` is in
 /// flight), the main thread freeing.
+///
+/// Covers copies of `vspec::flags::new`, `vspec::flags::load` and
+/// `vspec::flags::fetch_or`.
 #[test]
 fn loom_flags_two_builders() {
     run(Ordering::Release, 2, ROUTE);

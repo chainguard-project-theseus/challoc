@@ -27,3 +27,38 @@ line_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics:
 # Empty-template register hint: verus/emptyasm/run.sh checks the block adds
 # no instruction to the shipped code (a verus/emptyasm/blocks.txt row).
 shared_base	inline asm	Islaris/Isla	trusted (partly checked, emptyasm: shared_base in src/api/mod.rs; not checked: that `shared_ptr` returns that pointer (itself trusted, its address checked by a Kani harness), and the pointer's provenance; the check shows only that the asm! block emits no instruction)
+# loom and C11 (verus/WEAKMEM.md, P4): `STATE` has two writes,
+# `state_claim`'s exchange and `state_publish`'s `READY` store
+# (tests/loom/tests/access.rs), so its modification order is `UNINIT`,
+# `INITIALISING`, `READY`, each written once, and the permission's value
+# reads as the last of them. C++20's exchange is a read-modify-write,
+# which reads the last value for every ordering ([atomics.order] p10), in
+# the strong form, which fails only when the value differs; a load reads a
+# write no older than the last one that happens before it (coherence,
+# [intro.races]); the `Release` store of `READY` with an `Acquire` load or
+# exchange that reads it orders `init`'s plain writes before the reader (a
+# release/acquire pair, [atomics.order] p2). The init models check this on
+# a copy of `init_slow`, `shared` and `shared_if_ready` (`STATE`,
+# `INIT_TID` and `SHARED` are statics built in `const` context, which loom
+# cannot construct).
+state_load	atomics primitive	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready; not checked: this body, which the models replace with loom's `load` inside a copy of the init steps, with the callers tests/loom/src/init.rs states; the C11 argument above that the permission's value is `STATE`'s last write, which tests/loom/tests/access.rs backs by matching source text only)
+state_claim	atomics primitive	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the init steps, with the callers tests/loom/src/init.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+state_publish	atomics primitive	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready; not checked: this body, which the models replace with loom's `store` inside a copy of the init steps, with the callers tests/loom/src/init.rs states (the readback after the store is a load the model adds); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+# The same for the feature line: `LINE_STATE` has two writes outside the
+# tests, `line_compare_exchange`'s and `line_store`'s, and no other file
+# names it (tests/loom/tests/access.rs); the `Release` store of
+# `LINE_READY` with an `Acquire` load or exchange publishes the line the
+# builder wrote. The oncecell models check that hand-off and the fork
+# child's reset on a copy of the line steps.
+line_load	atomics primitive	loom/GenMC	trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `load` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above that the permission's value is `LINE_STATE`'s last write, which tests/loom/tests/access.rs backs by matching source text only)
+line_compare_exchange	atomics primitive	loom/GenMC	trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+line_store	atomics primitive	loom/GenMC	trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `store` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+# Termination of `init_slow`'s wait, given that `init` returns, a fair
+# scheduler and that a store becomes visible in finite time (C++20
+# [intro.progress] says it should): a waiter read `INITIALISING`, which
+# only the one successful exchange writes, and that thread stores `READY`
+# after `init`; were the waiter that thread, its `INIT_TID` load would
+# read its own tid (read-after-write coherence) and it would abort. The
+# init models check that no waiter is left spinning and that only the
+# initialising thread takes the re-entry abort, on a copy.
+init_slow	termination	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time; termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract)

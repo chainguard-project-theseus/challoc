@@ -527,15 +527,13 @@ they do not lift the proofs to weak memory.
 
 ## Seams
 
-On main every seam below that this file discharges with loom, or
-records as evidence, is `trusted`: main's `verus/seams.sh` accepts only Kani, const-assert and Isla
-citations, the `verus/seams/` records are gone, and
-`tests/loom/run.sh` does not make `verus/loom/run.sh`'s source-wide checks
-(writes only through the wrappers, one permission minted per atomic).
-The arguments below still back those seams; "Status on main" at the end
-lists them. Returning them to `discharged` is open work in
-wolfi-dev/challoc#397. The `run.sh` this section names is
-#138's `verus/loom/run.sh`. The `S<n>` are each pass's own ledger numbers;
+On main a seam below cites its loom models in its ledger status
+(`loom: <mod>::<test>`), the argument is the comment above it in its
+overrides file, and `tests/loom/tests/access.rs` makes the source-wide
+checks of #138's `verus/loom/run.sh`. A loom model on main runs a copy
+of the code it checks, so each such seam is at most partly checked;
+"Status on main" at the end lists them. The `run.sh` this section names
+is #138's `verus/loom/run.sh`. The `S<n>` are each pass's own ledger numbers;
 main's ledger names a seam by its item.
 
 The 25 seams `verus/SEAMS.md` gave to loom/GenMC, triaged (records
@@ -685,56 +683,62 @@ through `load_usize_seen` and the owner loads through `load_u16_at`
 (`tests/loom/src/watermark.rs`, `free.rs`, `bitmap.rs`).
 
 
-### Status on main (563886e6)
+### Status on main
 
-The seams #138 discharged with loom (or, for `RawLock::lock_slow`,
-recorded loom evidence for), from its `verus/seams.overrides`, with
-main's ledger entry. All 42 are `trusted` on main: 41 with tool
-loom/GenMC, and `purge/background.rs`'s `main`, a `no_decreases`
-(termination) entry, with tool none.
-#138's `load_usize_in` is main's `load_usize`.
+The 41 seams #138 discharged with loom (or, for `RawLock::lock_slow`,
+recorded loom evidence for) that are still seams on main, each row
+naming the ledger file whose entry gives the seam's line and contract; #138's `SlabDesc::sub_live` is verified on main, and its
+`load_usize_in` is main's `load_usize`. A status cites a model as
+`loom: <mod>::<test>` (verus/SEAMS.md, "Status"); a model runs a copy of
+the code it checks, so each is at most partly checked. `lock_slow`'s
+contract is termination, which the models do not show (deadlock freedom
+only), so it stays trusted, its evidence in its overrides comment. The
+passes' arguments, with main's names, are the comments on each seam's
+overrides line, and `tests/loom/tests/access.rs` makes the source-wide
+checks of #138's `verus/loom/run.sh` (atomic writes only through the
+wrappers and accessors, one permission minted per atomic). "Kani" is
+the one-thread Kani harness of the wrapper's own body.
 
-| main `file:line` | seam | in #138 | on main |
+| ledger file (verus/ledger/src/) | seam | in #138 | on main |
 |---|---|---|---|
-| `api/mod.rs:562` | `state_load` | discharged | trusted |
-| `api/mod.rs:578` | `state_claim` | discharged | trusted |
-| `api/mod.rs:593` | `state_publish` | discharged | trusted |
-| `api/mod.rs:651` | `line_load` | discharged | trusted |
-| `api/mod.rs:672` | `line_compare_exchange` | discharged | trusted |
-| `api/mod.rs:697` | `line_store` | discharged | trusted |
-| `api/mod.rs:1259` | `init_slow` | discharged | trusted |
-| `class/table.rs:976` | `store_owner` | discharged | trusted |
-| `lock.rs:113` | `RawLock::lock_slow` | evidence | trusted |
-| `lock.rs:984` | `LockGuard::drop` | discharged | trusted |
-| `purge/background.rs:758` | `main` | discharged | trusted |
-| `slab.rs:340` | `SlabDesc::init` | discharged | trusted |
-| `slab.rs:382` | `SlabDesc::state_byte_held` | discharged | trusted |
-| `slab.rs:400` | `SlabDesc::dirty_held` | discharged | trusted |
-| `slab.rs:415` | `SlabDesc::set_state` | discharged | trusted |
-| `slab.rs:453` | `SlabDesc::arena_held` | discharged | trusted |
-| `slab.rs:488` | `SlabDesc::sub_live` | discharged | trusted |
-| `slab.rs:506` | `SlabDesc::set_dirty_at` | discharged | trusted |
-| `vspec/atom.rs:109` | `store_usize` | discharged | trusted |
-| `vspec/atom.rs:134` | `load_usize` | discharged | trusted |
-| `vspec/atom.rs:178` | `store_usize_at` | discharged | trusted |
-| `vspec/atom.rs:220` | `load_usize_seen` | discharged | trusted |
-| `vspec/atom.rs:260` | `load_u16_at` | discharged | trusted |
-| `vspec/byte.rs:92` | `load` | discharged | trusted |
-| `vspec/byte.rs:110` | `store` | discharged | trusted |
-| `vspec/byte.rs:132` | `compare_exchange` | discharged | trusted |
-| `vspec/count.rs:81` | `fetch_add` | discharged | trusted |
-| `vspec/count.rs:98` | `fetch_sub` | discharged | trusted |
-| `vspec/count.rs:116` | `store` | discharged | trusted |
-| `vspec/count.rs:135` | `load` | discharged | trusted |
-| `vspec/count.rs:152` | `swap` | discharged | trusted |
-| `vspec/count.rs:188` | `compare_exchange` | discharged | trusted |
-| `vspec/entry.rs:75` | `store` | discharged | trusted |
-| `vspec/entry.rs:94` | `load` | discharged | trusted |
-| `vspec/flags.rs:60` | `new` | discharged | trusted |
-| `vspec/flags.rs:73` | `load` | discharged | trusted |
-| `vspec/flags.rs:89` | `fetch_or` | discharged | trusted |
-| `vspec/word.rs:41` | `WordPerm` | discharged | trusted |
-| `vspec/word.rs:57` | `fetch_or` | discharged | trusted |
-| `vspec/word.rs:75` | `store` | discharged | trusted |
-| `vspec/word.rs:96` | `load` | discharged | trusted |
-| `vspec/word.rs:113` | `fetch_and` | discharged | trusted |
+| `api/mod.rs.md` | `state_load` | discharged | partly checked (loom) |
+| `api/mod.rs.md` | `state_claim` | discharged | partly checked (loom) |
+| `api/mod.rs.md` | `state_publish` | discharged | partly checked (loom) |
+| `api/mod.rs.md` | `line_load` | discharged | partly checked (loom) |
+| `api/mod.rs.md` | `line_compare_exchange` | discharged | partly checked (loom) |
+| `api/mod.rs.md` | `line_store` | discharged | partly checked (loom) |
+| `api/mod.rs.md` | `init_slow` | discharged | partly checked (loom) |
+| `class/table.rs.md` | `store_owner` | discharged | partly checked (loom) |
+| `lock.rs.md` | `RawLock::lock_slow` | evidence | trusted |
+| `lock.rs.md` | `LockGuard::drop` | discharged | partly checked (loom) |
+| `purge/background.rs.md` | `main` | discharged | partly checked (loom) |
+| `slab.rs.md` | `SlabDesc::init` | discharged | partly checked (loom) |
+| `slab.rs.md` | `SlabDesc::state_byte_held` | discharged | partly checked (loom) |
+| `slab.rs.md` | `SlabDesc::dirty_held` | discharged | partly checked (loom) |
+| `slab.rs.md` | `SlabDesc::set_state` | discharged | partly checked (loom) |
+| `slab.rs.md` | `SlabDesc::arena_held` | discharged | partly checked (loom) |
+| `slab.rs.md` | `SlabDesc::set_dirty_at` | discharged | partly checked (loom) |
+| `vspec/atom.rs.md` | `store_usize` | discharged | partly checked (Kani, loom) |
+| `vspec/atom.rs.md` | `load_usize` | discharged | partly checked (Kani, loom) |
+| `vspec/atom.rs.md` | `store_usize_at` | discharged | partly checked (Kani, loom) |
+| `vspec/atom.rs.md` | `load_usize_seen` | discharged | partly checked (loom) |
+| `vspec/atom.rs.md` | `load_u16_at` | discharged | partly checked (Kani, loom) |
+| `vspec/byte.rs.md` | `load` | discharged | partly checked (Kani, loom) |
+| `vspec/byte.rs.md` | `store` | discharged | partly checked (Kani, loom) |
+| `vspec/byte.rs.md` | `compare_exchange` | discharged | partly checked (Kani, loom) |
+| `vspec/count.rs.md` | `fetch_add` | discharged | partly checked (Kani, loom) |
+| `vspec/count.rs.md` | `fetch_sub` | discharged | partly checked (Kani, loom) |
+| `vspec/count.rs.md` | `store` | discharged | partly checked (Kani, loom) |
+| `vspec/count.rs.md` | `load` | discharged | partly checked (Kani, loom) |
+| `vspec/count.rs.md` | `swap` | discharged | partly checked (Kani, loom) |
+| `vspec/count.rs.md` | `compare_exchange` | discharged | partly checked (Kani, loom) |
+| `vspec/entry.rs.md` | `store` | discharged | partly checked (Kani, loom) |
+| `vspec/entry.rs.md` | `load` | discharged | partly checked (Kani, loom) |
+| `vspec/flags.rs.md` | `new` | discharged | partly checked (Kani, loom) |
+| `vspec/flags.rs.md` | `load` | discharged | partly checked (Kani, loom) |
+| `vspec/flags.rs.md` | `fetch_or` | discharged | partly checked (Kani, loom) |
+| `vspec/word.rs.md` | `WordPerm` | discharged | partly checked (loom) |
+| `vspec/word.rs.md` | `fetch_or` | discharged | partly checked (Kani, loom) |
+| `vspec/word.rs.md` | `store` | discharged | partly checked (Kani, loom) |
+| `vspec/word.rs.md` | `load` | discharged | partly checked (Kani, loom) |
+| `vspec/word.rs.md` | `fetch_and` | discharged | partly checked (Kani, loom) |

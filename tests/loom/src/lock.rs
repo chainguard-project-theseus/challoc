@@ -138,6 +138,9 @@ fn contend<L: Mutex>(threads: u32) -> impl Fn() + Sync + Send + 'static {
 }
 
 /// Two lockers: the CAS fast path against the spin and the sleep.
+///
+/// Covers copies of `RawLock::lock_slow` and `LockGuard::drop`
+/// (`RawLock::release`).
 #[test]
 fn loom_lock_two_threads() {
     model(contend::<RawLock>(2));
@@ -146,6 +149,9 @@ fn loom_lock_two_threads() {
 /// Three lockers: the third arrives while the second sleeps on
 /// `CONTENDED`, so a release must wake a sleeper behind another waiter.
 /// Bounded at 5 preemptions: too large to exhaust.
+///
+/// Covers copies of `RawLock::lock_slow` and `LockGuard::drop`
+/// (`RawLock::release`).
 #[test]
 fn loom_lock_three_threads() {
     model_bounded(5, contend::<RawLock>(3));

@@ -2,7 +2,26 @@
 # the atomic it was made from while that atomic stays in place.
 usize_ptr	raw pointer (internal)	Kani	trusted (partly checked, Kani: vspec::atom::kani_atom::usize_ptr_names_its_atomic; not checked: that `r` carries `a`'s provenance, so loads and stores through it reach `a` (the harness compares addresses))
 # Kani runs each wrapper on a real atomic, one thread (src/kani/atomic.rs).
-store_usize	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
-load_usize	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::atom_load_usize; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
-store_usize_at	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize_at; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers))
-load_u16_at	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::atom_load_u16_at; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write to the owner word goes through `class::table::store_owner`, itself trusted, or vstd's `AtomicU16::store` spec, apart from the test helper `SlabTable::corrupt_owner_word`))
+# loom and C11 (verus/WEAKMEM.md): the class table's watermark
+# (`committed_slabs`) is written only by `store_usize` and its class-line
+# copy (`ClassLine::committed`) only by `store_usize_at`; only
+# class/table.rs calls these wrappers and only heap/shared.rs makes a
+# copy's pointer (`usize_ptr`); this file mints one UsizePerm per atomic,
+# in `new_usize` (tests/loom/tests/access.rs). C++20's coherence rules
+# ([intro.races]) give a load a write no older than the last one that
+# happens before it, so the permission's value at its place in the
+# atomic's modification order; the stores are made under the commit lock,
+# which orders them, and `WatermarkPred` bounds one atomic by constants,
+# so any ordering keeps it. `load_usize_seen`'s witness, the owner words
+# of every group below the value read, needs the `Release` store and its
+# `Acquire` load (a release/acquire pair, [atomics.order] p2), which the
+# watermark and free models check; `load_u16_at` reads an owner word whose
+# only write is `table::store_owner`'s, so a load ordered after it reads
+# its value (a free not ordered after its allocation can read 0, the free
+# models' documented fast-path miss). The models run copies of the
+# `SlabTable` steps (tests/loom/tests/pins.rs).
+store_usize	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; the C11 argument above that the permission's value is the watermark's last write, which tests/loom/tests/access.rs backs by matching source text only)
+load_usize	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::atom_load_usize, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the table steps, in the configurations their files state; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+store_usize_at	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize_at, and loom: watermark::loom_watermark_mirror_follows, watermark::loom_watermark_mirror_installed_concurrently and free::loom_free_after_synchronised_handoff; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; that `p` reaches the copy `usize_ptr` made it from (`usize_ptr`'s provenance, itself trusted); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+load_usize_seen	atomics primitive	loom/GenMC	trusted (partly checked, loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff, free::loom_free_after_relaxed_handoff and bitmap::loom_bitmap_init_is_published; not checked: this body, which the models replace with loom's `Acquire` load inside copies of the table steps, in the configurations their files state; the ghost half (the invariant opened around the load, the persistent set duplicated and frozen), an argument about vstd's resource algebra that no tool checks; the C11 argument above that the permission's value is the watermark's last write, which tests/loom/tests/access.rs backs by matching source text only)
+load_u16_at	atomics primitive	loom/GenMC	trusted (partly checked, Kani: kani_proofs::atomic::atom_load_u16_at, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the table steps, in the configurations their files state; that every write to the owner word is `class::table::store_owner`'s (itself trusted) or vstd's `AtomicU16::store` spec, apart from the test helper `SlabTable::corrupt_owner_word`, which tests/loom/tests/access.rs backs by matching source text only)

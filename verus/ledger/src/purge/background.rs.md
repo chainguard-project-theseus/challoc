@@ -11,7 +11,7 @@ file.
 | `pthread_join` | external_body | FFI/syscall | none (assumption) | trusted |
 | `spawn` | external_body | FFI/syscall | none (assumption) | trusted |
 | `shared_arg` | external_body | raw pointer from C caller | none (assumption) | trusted |
-| `main` | no_decreases | termination | none (assumption) | trusted |
+| `main` | no_decreases | termination | loom/GenMC | trusted |
 | `axiom_state_lock` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_state_lock_inv`
@@ -80,7 +80,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 ## `main`
 
 src/purge/background.rs:798. Kind: no_decreases. Category: termination.
-Tool: none (assumption). Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: exit::loom_exit_after_withdrawal and exit::loom_exit_after_withdrawal_with_waker; not checked: this body, which the models replace with a copy of the loop whose pass is its worst case for this property (no deadline); that each pass and the exit's state lock return; a `request(true)` after the withdrawal, which rightly keeps the thread running; the kernel's futex, which the models replace with a stand-in).
 
 > The thread's body: decay and sample until the request is withdrawn.
 

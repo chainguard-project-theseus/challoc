@@ -201,6 +201,9 @@ fn run_line(publish: Ordering) {
 
 /// Two requests race: one builds, the other returns the line it built
 /// (on `LINE_READY`, or after spinning on `LINE_BUILDING`).
+///
+/// Covers copies of `api::line_load`, `api::line_compare_exchange` and
+/// `api::line_store`.
 #[test]
 fn loom_oncecell_line_two_requests() {
     run_line(Ordering::Release);
@@ -218,6 +221,9 @@ fn loom_oncecell_line_relaxed_publish_is_a_race() {
 /// state left at `LINE_BUILDING`, the line unwritten): the reset makes
 /// the child's request build it, not wait for ever; a reset of a ready
 /// line leaves it ready and built once.
+///
+/// Covers copies of `api::line_load`, `api::line_compare_exchange` and
+/// `api::line_store`.
 #[test]
 fn loom_oncecell_line_fork_child_rebuilds() {
     model(|| {
@@ -369,6 +375,9 @@ fn run_deferred(publish: Ordering) {
 /// A tick and a waiting reader race to discover, with a sampler: one
 /// discovers, the waiting reader returns with the record published, and
 /// the sampler sees nothing or the record.
+///
+/// Covers copies of `vspec::byte::load`, `vspec::byte::store` and
+/// `vspec::byte::compare_exchange`.
 #[test]
 fn loom_oncecell_deferred_discover_races_get() {
     run_deferred(Ordering::Release);
@@ -385,6 +394,9 @@ fn loom_oncecell_deferred_relaxed_publish_is_a_race() {
 /// The child of a fork whose other thread was discovering (the phase left
 /// at `RUNNING`): the reset makes the child's waiting discovery run
 /// rather than spin for ever; a reset of a published record leaves it.
+///
+/// Covers copies of `vspec::byte::load`, `vspec::byte::store` and
+/// `vspec::byte::compare_exchange`.
 #[test]
 fn loom_oncecell_deferred_fork_child_restarts() {
     model(|| {
