@@ -3,6 +3,8 @@
 # builds. A proof-only change shows `changed 0`; an exec change lists the
 # functions whose machine code changed, which the review reads against the
 # hot set. Advisory: exec changes are expected to change some functions.
+# heap-noalias (ci/heap-noalias.sh) gates: no `Heap` method takes a
+# `noalias` `&mut self` in the LLVM IR, which `Heap` being `!Unpin` ensures.
 version: 1
 
 environment:
@@ -39,3 +41,17 @@ checks:
     timeout: 30m
     network: *crates
     cmd: [sh, ci/codegen.sh]
+
+  # Not advisory: unlike a machine-code change, a noalias `&mut self` on
+  # a `Heap` method is always a bug (ci/heap-noalias.sh says why).
+  heap-noalias:
+    description: >-
+      ci/heap-noalias.sh: the release library's own LLVM IR before LLVM
+      passes and without LTO, at quantum 16 and 8, has no Heap method
+      whose &mut self is noalias, so the raw writes to the home cache
+      headers under a live &mut Heap stay sound.
+    trigger: [presubmit]
+    resources: medium-amd64
+    timeout: 30m
+    network: *crates
+    cmd: [sh, ci/heap-noalias.sh]
