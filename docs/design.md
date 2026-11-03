@@ -649,6 +649,9 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
    < nslots` holds exactly for a slot start inside the region (past it,
    `x >= 2^32 > nslots * size`). A guard slab goes to the slow path too
    (`((rel >> lg_guard) + 1) & guard_mask == 0`, the page-group test).
+   With `exact_sized_free` every line's `guard_mask` is 0, so this test
+   sends every sized free to the slow path, whose exact `free` reads the
+   slot bit at the call; the instructions are the same either way.
    The region base, the slot geometry and the guard word (`guard_mask`,
    `tz`, `lg_guard`: one 8-byte load) are read from the class's line
    (`Shared::lines[c]`, the one plain `free` reads); the class table line
@@ -1438,6 +1441,7 @@ Format is jemalloc's `key:value,key:value`. The keys, in `TABLE` order:
 | `pac_pointers`            | false   | arm64 with PAC only; 6.1, 6.2           |
 | `slot_randomize`          | false   | 4                                       |
 | `double_free_scan`        | false   | 6.3 step 3                              |
+| `exact_sized_free`        | false   | sized frees run `free`'s check; 6.3     |
 | `abort_conf`              | false   | abort on unknown keys, bad values and inert keys |
 | `cgroup`                  | true    | 11                                      |
 | `check_zero`              | false   | debug: verify every slot or page handed out as zero |
@@ -1832,7 +1836,7 @@ Always on:
 - Invalid-free and stale double-free detection on every plain `free`
   for slots no thread cache holds (a slot a refill claimed and `malloc`
   has not handed out passes the bit test; the sized path defers the bit
-  test to the flush, 6.3). A second free
+  test to the flush, 6.3, unless `exact_sized_free` is set). A second free
   of a slot still held in a thread cache is caught only by a flush that
   reaches the copy while the slot is unclaimed (6.3).
 - A guard after every huge run (`MADV_GUARD_INSTALL`, else `PROT_NONE`;
@@ -1851,6 +1855,8 @@ must meet; the prices are in 6.3 and [tuning.md](tuning.md)):
 
 - `double_free_scan`: a state byte per slot, checked and moved by every
   free route, so a double or invalid free aborts at the call (6.3).
+- `exact_sized_free`: sized frees run plain `free`'s allocation check, so
+  every sized free takes the slow path (6.3); its price is not measured.
 - `guard_slab_interval` below the default of 8, for denser guard slabs.
 - `zero_on_free`: clear a slot's class-size bytes, or a huge run's usable
   bytes, on free (6.3).

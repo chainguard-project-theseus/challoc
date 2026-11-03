@@ -13,8 +13,10 @@ instead of jemalloc. Three things set it apart:
 
 - **Hardening.** No allocator metadata lives in user memory, every plain
   free is validated against the slot bitmap (frees of slots still held in
-  a thread cache, and sized frees, which defer their check to a flush,
-  are checked exactly at the call only with `double_free_scan:true`),
+  a thread cache are checked exactly at the call only with
+  `double_free_scan:true`; sized frees, which defer their check to a flush,
+  are checked at the call only with `double_free_scan:true` or
+  `exact_sized_free:true`),
   size classes live in
   separate randomised address ranges, and guard slabs and sealed gaps are
   used where the kernel has them (`docs/hardening.md`).
