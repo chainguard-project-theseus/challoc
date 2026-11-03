@@ -197,7 +197,11 @@ cross-thread hand-off, random inspection and at the end. Sizes cover
 allocation rotates through `malloc`, `calloc`, `aligned_alloc`,
 `posix_memalign` and `memalign` (alignments up to 64 KiB), and `realloc`
 covers grow, shrink, `realloc(p, 0)`, `realloc(NULL, n)` and
-`reallocarray`. Any byte out of place, a misaligned or undersized result, a
+`reallocarray`. Half the table's and mailbox's frees are sized
+(`free_sized`, `free_aligned_sized` and `sdallocx`, with the block's own
+size or, unaligned, one from it up to the usable size), so each cell's
+configuration also reaches its sized-free route. Any byte out of place, a
+misaligned or undersized result, a
 non-zero `calloc` or lost accounting fails the run with its seed printed.
 
 ```sh

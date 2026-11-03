@@ -8,6 +8,7 @@
 #   fuzz            make fuzz, 50M operations, a random seed (printed)
 #   fuzz-hardened   the same under zero_on_free, slot_randomize and
 #                   double_free_scan
+#   fuzz-sized      the same with exact_sized_free on alone
 #   fuzz-q8         the same with QUANTUM=8
 #   oscillate       make test-cgroup-oscillate OSC_SECS=600 CONTROL=1
 #   check-needed    make check-needed (DT_NEEDED names the allocator)
@@ -38,6 +39,8 @@ case $task in
   fuzz)          bash ci/make.sh "$log" fuzz "${fuzz[@]}" || status=$? ;;
   fuzz-hardened) bash ci/make.sh "$log" fuzz "${fuzz[@]}" \
                    CHALLOC_CONF=zero_on_free:true,slot_randomize:true,double_free_scan:true || status=$? ;;
+  fuzz-sized)    bash ci/make.sh "$log" fuzz "${fuzz[@]}" \
+                   CHALLOC_CONF=exact_sized_free:true || status=$? ;;
   fuzz-q8)       bash ci/make.sh "$log" fuzz "${fuzz[@]}" QUANTUM=8 || status=$? ;;
   oscillate)     bash ci/make.sh "$log" test-cgroup-oscillate OSC_SECS=600 CONTROL=1 CGROUP_WATCHDOG=900 || status=$? ;;
   check-needed)  bash ci/make.sh "$log" check-needed || status=$? ;;
