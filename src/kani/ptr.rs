@@ -112,6 +112,32 @@ fn ptr_cast() {
     assert_eq!(q.cast::<u8>() as usize, a);
 }
 
+/// `<*const T>::wrapping_add`: no `ensures`; it returns, with no failed
+/// check, for every address and every count, at the two pointee types
+/// `config::linux::env_var` walks `environ` with (`c_char` and
+/// `*const c_char`), on pointers with no provenance and on a pointer to
+/// an object. Beyond the contract, a count that stays inside the object
+/// moves the address by that many elements. (Kani keeps a pointer as an
+/// object and an offset, so it cannot show the address of a step that
+/// leaves the object; the contract claims none.)
+#[kani::proof]
+fn ptr_wrapping_add() {
+    use core::ffi::c_char;
+    let a: usize = kani::any();
+    let n: usize = kani::any();
+    let _ = core::ptr::without_provenance::<c_char>(a).wrapping_add(n);
+    let _ = core::ptr::without_provenance::<*const c_char>(a).wrapping_add(n);
+    let x: [*const c_char; 2] = [core::ptr::null(); 2];
+    let r: *const *const c_char = &x[0];
+    let _ = r.wrapping_add(n);
+    let k: usize = kani::any();
+    kani::assume(k <= 2);
+    assert!(r.wrapping_add(k) as usize == r as usize + core::mem::size_of::<*const c_char>() * k);
+    let s: [c_char; 3] = [0; 3];
+    let t: *const c_char = &s[0];
+    assert!(t.wrapping_add(k) as usize == t as usize + k);
+}
+
 /// `core::ptr::from_ref` and `core::ptr::from_mut`: no
 /// `ensures`; they return, the referent's address, for sized and
 /// unsized referents.
