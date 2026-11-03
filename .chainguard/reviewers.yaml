@@ -21,3 +21,7 @@ reviewers:
     trigger:
       paths: ["**"]
     prompt_file: review-prompt.md
+    # Run again at the same head once the presubmit aggregate finishes, so
+    # a verdict that waited on CI (codegen, verus) reads the results
+    # (mono's code-reviewer README, "Finished checks").
+    rerun_on_checks: ["Chainguard Checks (presubmit)"]
