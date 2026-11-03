@@ -32,6 +32,14 @@ get wrong.
   results, has a missing verdict. A missing verdict, or a changed hot-set
   function in a change that does not claim a fast-path change, is
   Blocking.
+- Proof checks. `Chainguard Checks (presubmit)`, which the `chainguard`
+  app publishes, fails whenever a verus job fails a proof or misses
+  `verus/FLOOR`. When every run of it at the head completed with success,
+  the head's Verus proof, ledger and floor results pass: a body that
+  quotes those results from an earlier head needs no finding for them. The
+  run never runs the mutation check, so the Specifications rule's mutation
+  report is still read from the body for the head. Its codegen jobs are
+  advisory, so that run settles nothing about the hot set.
 - Fast-path evidence. A change meant to change code under `src/heap/`,
   `src/class/`, `src/slab.rs` or `src/api/*.rs` needs the `make quick`
   go/no-go verdict, a per-operation cycle attribution on the workload it
@@ -191,9 +199,13 @@ large change, the slices that could land on their own.
 
 ## Evidence
 
-- Ignore CI. Do not call `list_checks`, and do not cite or ask about check
-  runs or statuses in a finding or the summary. The codegen verdict is read
-  from the pull request body, as the hot-set rule says.
+- Ignore CI, with one exception. Do not call `list_checks`, and do not
+  cite or ask about check runs or statuses in a finding or the summary,
+  except to apply the Proof checks rule: there you may call `list_checks`
+  to see whether every `Chainguard Checks (presubmit)` run at the head
+  completed with success, and cite that result for the proof, ledger and
+  floor results only. The codegen verdict and the mutation check are read
+  from the pull request body, as the hot-set and Specifications rules say.
 - Evidence is a file and a line at the head, never a guess from a name.
   Read the callers and callees needed to judge a change, not only the
   diff.
