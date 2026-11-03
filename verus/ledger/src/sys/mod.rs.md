@@ -17,7 +17,7 @@ file.
 | `pthread_self` | external_body | FFI/syscall | none (assumption) | trusted |
 | `sigproc..._block` | external_body | FFI/syscall | none (assumption) | trusted |
 | `sigproc...etmask` | external_body | FFI/syscall | none (assumption) | trusted |
-| `trap` | external_body | inline asm | Islaris/Isla | trusted |
+| `trap` | external_body | inline asm | Islaris/Isla | discharged |
 
 ## `axiom_thread_mask`
 
@@ -173,7 +173,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 ## `trap`
 
 src/sys/mod.rs:1553. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K2 (no resume past the trap)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past the trap)).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
 

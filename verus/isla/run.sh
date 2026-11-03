@@ -136,9 +136,9 @@ tab=$(printf '\t')
 # `raw::syscallN` share file, name and contract, so the last check is
 # what tells `syscallN#1` from `syscallN#2`. The seams are exactly those
 # whose overrides line under verus/ledger/ cites `Isla:
-# verus/isla/seams.md` (`discharged (Isla: ...)`, or `trusted (partly
-# checked, Isla: ...; not checked: ...)` for a check that leaves part of
-# the contract to something else), each with tool Islaris/Isla, so none
+# verus/isla/seams.md` (`discharged (Isla: ...)`, or `discharged on
+# premises (Isla: ...; premises: ...)` for a check that leaves part of
+# the contract to named premises), each with tool Islaris/Isla, so none
 # escapes the check. The ledger must be current, and `seams.sh --check`
 # also holds each seam's asm! calls to templates.txt: every call in the
 # item listed under its file and function, every line read by such a
