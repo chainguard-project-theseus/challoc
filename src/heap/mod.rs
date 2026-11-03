@@ -5450,6 +5450,10 @@ proof fn take_hdr_run(
 /// `create_heap_for_thread`'s `let (h, _, _)`). A caller that kept the
 /// [`FreshHeap`] and also destroyed the heap would hold the head's
 /// permission twice.
+///
+/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+/// call sites to the ones named here: a new one is named here, with its
+/// premise, and added to that test's list in the same change.
 axiom fn axiom_heap_block(h: *mut Heap, heap: Heap, tracked perms: &mut CachePerms) -> (tracked r: (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim))
     requires
         heap.wf(),

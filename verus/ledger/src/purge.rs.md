@@ -23,12 +23,12 @@ fn drop(&mut self)
 
 ## `purged_zero`
 
-src/purge.rs:269. Kind: external_body. Category: atomics primitive.
+src/purge.rs:275. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted.
 
 > [`purged_is_zero`], with the witness of a true read (`Some` exactly when it returns true).
 
-Body mints Tracked at line 273.
+Body mints Tracked at line 279.
 
 ```rust
 pub fn purged_zero() -> (r: (bool, Tracked<Option<PurgedZero>>))

@@ -973,6 +973,9 @@ impl Set {
 /// `Lazy::ensure`'s postcondition (Verus does not check it as the guard
 /// drops); `SetTable::new` proves it of the tables it reserves; the
 /// test-only `committed_ranges` only reads.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
     ensures
         #[trigger] crate::lock::lock_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),

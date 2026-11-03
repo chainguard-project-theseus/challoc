@@ -81,7 +81,8 @@ verus! {
 /// the slot: `heap_for_thread`, `existing_heap`, `heap_destructor`,
 /// `api::libc::free_block`, `api::libc::free_usable_block`, the heap
 /// entry points `heap::paths::alloc`, `alloc_declined` and `alloc_zeroed`,
-/// `heap::mallocx::alloc`, `mallctl`'s `background_thread` write
+/// `heap::mallocx::alloc` (once in each of its two cache arms, which
+/// exclude each other), `mallctl`'s `background_thread` write
 /// (`api::mallctl::ctl`), and, in verification only, the two free paths
 /// of `api::libc::theorem_no_syscall_on_fast_paths`, which restate the
 /// two frees' fast paths. The two frees use their token only on their
@@ -158,6 +159,10 @@ impl TlsCell {
 
     /// Count a `Heap::create` call (`create_heap_for_thread`, right after
     /// the call).
+    ///
+    /// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+    /// call sites to the ones named here: a new one is named here, with its
+    /// premise, and added to that test's list in the same change.
     pub(crate) proof fn note_create(tracked &mut self)
         ensures
             final(self).value() == old(self).value(),
@@ -301,8 +306,9 @@ impl TlsSlot {
     /// write the slot as it no longer is, so `set`'s
     /// [`slot_step`](crate::heap::slot_step) would be checked against a
     /// value the slot does not hold. The test
-    /// `sys::tests::tls_entries_only_in_listed_users` checks the source
-    /// for the callers and the count; that a nested user is lent the
+    /// `sys::tls::tests::tls_entry_only_at_listed_users` checks the source
+    /// for the callers and the count (a new user goes in its list and in
+    /// this doc together); that a nested user is lent the
     /// outer token, and that a user is done with its token before
     /// another user runs, are not checked.
     ///
@@ -465,6 +471,38 @@ mod tests {
     use std::string::String;
     use std::{env, format, vec::Vec};
     use vstd::prelude::Tracked;
+
+    /// `TlsSlot::entry` makes a slot token only at the top-level slot users
+    /// [`TlsSlot`]'s doc lists, once in each, so no verified function holds
+    /// two tokens (two `&'static mut` views of the thread's heap and two
+    /// copies of its ghost state). `heap::mallocx::alloc` has two calls,
+    /// one in each of its `Tcache::Default` and `Tcache::Explicit` match
+    /// arms, which exclude each other, so one runs per call; so do the two
+    /// free paths of `api::libc::theorem_no_syscall_on_fast_paths`, its
+    /// arms `2` and `_` of `match which`.
+    #[test]
+    fn tls_entry_only_at_listed_users() {
+        crate::testutil::assert_only_at(
+            concat!("TlsSlot::", "entry()"),
+            &[
+                ("heap/thread.rs:", "pub fn heap_for_thread(", 1),
+                ("heap/thread.rs:", "pub fn existing_heap(", 1),
+                (
+                    "heap/thread.rs:",
+                    "pub unsafe extern \"C\" fn heap_destructor(",
+                    1,
+                ),
+                ("api/libc.rs:", "pub fn free_block(", 1),
+                ("api/libc.rs:", "pub fn free_usable_block(", 1),
+                ("heap/paths.rs:", "pub fn alloc(", 1),
+                ("heap/paths.rs:", "pub fn alloc_declined(", 1),
+                ("heap/paths.rs:", "pub fn alloc_zeroed(", 1),
+                ("heap/mallocx.rs:", "pub fn alloc(", 2),
+                ("api/mallctl.rs:", "fn ctl(", 1),
+                ("api/libc.rs:", "fn theorem_no_syscall_on_fast_paths(", 2),
+            ],
+        );
+    }
 
     #[test]
     fn slot_starts_null_and_round_trips() {

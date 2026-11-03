@@ -45,12 +45,16 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
 /// free. Its writers: `Arena::init` creates the lock with
 /// `ArenaStats::empty` (verified: `Lock::new` requires the invariant and
 /// `empty` ensures the identities), and `Arena::store_stats` stores a
-/// value it requires them of (verified). `Arena::stats` only reads. The
-/// caller Verus does not check is `stats::collect_into`, which stores
-/// what `collect_arena_with` computes; its sums are exact only when no
-/// figure wraps. The fork handlers take and release the raw lock without
-/// touching the value, and nothing calls `get_unlocked` on it. What is
-/// left is the claim that the lock protects the identities.
+/// value it requires them of (verified). `Arena::stats_into` and
+/// `Arena::add_stats_to` only read. The caller Verus does not check is
+/// `stats::collect_into`, which stores what `collect_arena_with`
+/// computes; its sums are exact only when no figure wraps. The fork
+/// handlers take and release the raw lock without touching the value,
+/// and nothing calls `get_unlocked` on it. What is left is the claim
+/// that the lock protects the identities.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
     ensures
         #[trigger] lock_inv(v) == v.identities(),

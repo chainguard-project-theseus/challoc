@@ -36,7 +36,8 @@ impl ThreadErrno {
 /// before the call that may write it. A nested call (an allocation from
 /// libc during the outer one) gets its own token from its own wrapper;
 /// an outer claim is about challoc's last write at the outer return. No
-/// code: the token is ghost.
+/// code: the token is ghost. The wrappers are checked by
+/// `api::tests::c_call_tokens_only_in_export_bodies`.
 #[verifier::external_body]
 #[inline(always)]
 #[cfg_attr(test, allow(dead_code))]

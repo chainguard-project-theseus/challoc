@@ -1,8 +1,10 @@
 //! Test fixtures shared across modules: [`TestShared`], the one builder of
 //! a [`Shared`] over a synthetic layout, a deterministic [`xorshift`],
 //! [`global_state`], the guard of the tests that write or assert the
-//! process-wide allocator's settings, and [`mlock_or_skip`] for the
-//! tests of purges that fail on locked memory.
+//! process-wide allocator's settings, [`mlock_or_skip`] for the tests of
+//! purges that fail on locked memory, and the source scans of the guard
+//! tests and other source checks ([`grant_sites`], [`assert_only_at`],
+//! [`shipped_sources`]).
 
 use core::mem::MaybeUninit;
 use std::boxed::Box;
@@ -285,4 +287,211 @@ pub(crate) fn skip(test: &str, reason: &str) {
         std::env::var_os("CHALLOC_TEST_ALLOW_SKIP").is_some(),
         "SKIP {test} {reason}\n(set CHALLOC_TEST_ALLOW_SKIP=1 to let a test pass with a note on a host without the feature)"
     );
+}
+
+/// The `.rs` files under `dir`, in path order.
+pub(crate) fn walk(dir: &std::path::Path, out: &mut std::vec::Vec<std::path::PathBuf>) {
+    let mut entries: std::vec::Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            walk(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Whether `t` starts a `fn` item: qualifiers, then `fn `.
+pub(crate) fn fn_item(t: &str) -> bool {
+    let mut t = t;
+    loop {
+        let rest = [
+            "pub ",
+            "const ",
+            "unsafe ",
+            "extern \"C\" ",
+            "proof ",
+            "open ",
+            "closed ",
+            "broadcast ",
+            "spec ",
+            "axiom ",
+            "uninterp ",
+        ]
+        .iter()
+        .find_map(|q| t.strip_prefix(q))
+        .or_else(|| {
+            t.strip_prefix("pub(")
+                .and_then(|r| r.split_once(") ").map(|(_, r)| r))
+        });
+        match rest {
+            Some(r) => t = r,
+            None => return t.starts_with("fn "),
+        }
+    }
+}
+
+/// Every line under `src/` that mentions `grant`, as the `fn` item line it
+/// belongs to (the nearest one above it) and its place
+/// (`file:line: `text``, the file relative to `src/`), skipping comments
+/// and the line `pub proof fn {grant}()`. Test code is scanned too, so a
+/// test that names what it looks for spells the name in parts.
+pub(crate) fn grant_sites(
+    grant: &str,
+) -> std::vec::Vec<(std::string::String, std::string::String)> {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = std::vec::Vec::new();
+    walk(&src, &mut files);
+    let def = std::format!("pub proof fn {grant}()");
+    let mut sites = std::vec::Vec::new();
+    for path in &files {
+        let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut sig = "";
+        for (i, line) in text.lines().enumerate() {
+            let t = line.trim();
+            if t.starts_with("//") || t == def {
+                continue;
+            }
+            if fn_item(t) {
+                sig = t;
+            }
+            if t.contains(grant) {
+                sites.push((sig.into(), std::format!("{rel}:{}: `{t}`", i + 1)));
+            }
+        }
+    }
+    sites
+}
+
+/// A count for [`assert_only_at`]: one call or more.
+pub(crate) const ANY: usize = usize::MAX;
+
+/// Assert that `call` (a name and its `(`, such as `axiom_x(`) is made
+/// only in the functions `sites` lists, as `(file, fn, count)`: a file
+/// relative to `src/` with its `:` (`"heap/mod.rs:"`), the start of the
+/// function's `fn` item line (`"pub fn destroy("`), and the number of
+/// calls in it ([`ANY`]: at least one). A line that declares the name
+/// (`fn name(` or `fn name<`) is not a call. The match is on the exact
+/// spelling: a call through a `use` alias or `Self::` is not seen, so the
+/// pinned items are called by their full spelling. Every
+/// listed function must still make the call, so a call that moves or goes
+/// away updates the list too. Pass `call` built from parts
+/// (`concat!("axiom_", "x(")`), so that the caller's own lines match nothing.
+///
+/// The guard tests (`verus/README.md`, "Guard tests") pin with it the
+/// call sites of trusted axioms whose premise holds only where they are
+/// called: a new call needs that premise argued for its own caller, in the
+/// axiom's doc, before it is added to the list.
+pub(crate) fn assert_only_at(call: &str, sites: &[(&str, &str, usize)]) {
+    // The name `call` declares (`entry` for `TlsSlot::entry()`).
+    let name = call
+        .rsplit("::")
+        .next()
+        .unwrap()
+        .trim_end_matches(['(', ')']);
+    let declares = |text: &str| {
+        text.contains(&std::format!("fn {name}(")) || text.contains(&std::format!("fn {name}<"))
+    };
+    // (fn item line, place, calls on the line).
+    let found: std::vec::Vec<_> = grant_sites(call)
+        .into_iter()
+        .filter_map(|(sig, at)| {
+            let text = at.split_once(": `").map_or("", |(_, t)| t);
+            let calls = text.matches(call).count();
+            (!declares(text)).then_some((sig, at, calls))
+        })
+        .collect();
+    assert!(!found.is_empty(), "no call of `{call}` under src/");
+    for (sig, at, _) in &found {
+        assert!(
+            sites
+                .iter()
+                .any(|(file, f, _)| at.starts_with(file) && sig.starts_with(f)),
+            "{at}: a call of `{call}` in `{sig}`, which is not one of its listed sites. \
+             Its premise is argued per caller: name the caller in the doc of `{name}` with \
+             why the premise holds there, and add it to this test's list, in one change."
+        );
+    }
+    for &(file, f, want) in sites {
+        let n: usize = found
+            .iter()
+            .filter(|(sig, at, _)| at.starts_with(file) && sig.starts_with(f))
+            .map(|(_, _, k)| k)
+            .sum();
+        if want == ANY {
+            assert!(
+                n > 0,
+                "{file} `{f}`: got = no call of `{call}`, want = at least one \
+                 (drop the site from the list and from the axiom's doc)"
+            );
+        } else {
+            assert_eq!(
+                n, want,
+                "{file} `{f}`: got = {n} calls of `{call}`, want = {want}"
+            );
+        }
+    }
+}
+
+/// The source of every non-test file under `src/` that the build or
+/// Verus compiles, as (path relative to `src/`, text), with its
+/// top-level test and Kani modules (`#[cfg(test)]`, `#[cfg(all(test, ..))]`
+/// or `#[cfg(kani)]` on a `mod name {` at column 0, through the next `}`
+/// at column 0) blanked to empty lines, so line numbers are kept. Files
+/// that are test-only or Kani-only as a whole are skipped: `tests.rs`,
+/// `*_tests.rs`, this file, `api/c_programs.rs`, and the `model/` and
+/// `kani/` trees.
+pub(crate) fn shipped_sources() -> std::vec::Vec<(std::string::String, std::string::String)> {
+    use std::string::{String, ToString};
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = std::vec::Vec::new();
+    walk(&src, &mut files);
+    let mut out = std::vec::Vec::new();
+    for path in &files {
+        let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
+        let name = rel.rsplit('/').next().unwrap();
+        if name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || rel == "testutil.rs"
+            || rel == "api/c_programs.rs"
+            || rel.starts_with("model/")
+            || rel.starts_with("kani/")
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(path).unwrap();
+        let lines: std::vec::Vec<&str> = text.lines().collect();
+        let mut kept = String::new();
+        let mut skip = false;
+        for (i, line) in lines.iter().enumerate() {
+            let next = lines.get(i + 1).map_or("", |l| l.trim_start());
+            let next = next
+                .strip_prefix("pub(crate) ")
+                .or_else(|| next.strip_prefix("pub "))
+                .unwrap_or(next);
+            if !skip
+                && (*line == "#[cfg(test)]"
+                    || *line == "#[cfg(kani)]"
+                    || line.starts_with("#[cfg(all(test,"))
+                && next.starts_with("mod ")
+                && next.ends_with('{')
+            {
+                skip = true;
+            }
+            if !skip {
+                kept.push_str(line);
+            }
+            kept.push('\n');
+            if skip && *line == "}" {
+                skip = false;
+            }
+        }
+        out.push((rel.to_string(), kept));
+    }
+    out
 }

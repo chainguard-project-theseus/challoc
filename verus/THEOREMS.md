@@ -9501,7 +9501,7 @@ pub proof fn lemma_exited_final(old: usize, new: usize)
     requires old == TLS_EXITED, slot_step(old, new),
     ensures new == TLS_EXITED,
 
-// sys/tls.rs:424 (trusted asm; the requires binds its verified callers)
+// sys/tls.rs:430 (trusted asm; the requires binds its verified callers)
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
     requires crate::heap::slot_step(old(slot).value(), value as usize),
     ensures final(slot).set_to(*old(slot), value as usize),
@@ -9551,7 +9551,7 @@ unchanged). The theorem follows from the readers' `ensures`: at a
 `reentry_benign` value both return `None` with the token unchanged.
 
 **Premises.**
-- The slot premise (`TlsSlot::entry`, `sys/tls.rs:310`): each top-level
+- The slot premise (`TlsSlot::entry`, `sys/tls.rs:316`): each top-level
   user's token holds the slot as the last verified writer left it.
   Ghost state does not cross from one C call to the next, so the step
   from "`heap_destructor` left `TLS_EXITED`" to "every later entry's
@@ -9560,7 +9560,7 @@ unchanged). The theorem follows from the readers' `ensures`: at a
 - One token per user: two `TlsSlot::entry` calls in one verified
   function would give two tokens, and a write through a stale one would
   be checked against a value the slot no longer holds. The source test
-  `sys::tests::tls_entries_only_in_listed_users` (`sys/mod.rs:1719`)
+  `sys::tls::tests::tls_entry_only_at_listed_users` (`sys/tls.rs:484`)
   checks that only the listed users call it, once each (twice in
   `heap::mallocx::alloc` and in `theorem_no_syscall_on_fast_paths`, one
   per `match` arm). Not checked: that a nested user (the allocator

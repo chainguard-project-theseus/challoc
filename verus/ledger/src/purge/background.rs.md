@@ -16,7 +16,7 @@ file.
 
 ## `axiom_state_lock_inv`
 
-src/purge/background.rs:68. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:71. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: every holder of the state lock leaves the stack's end in range and no thread published that has exited, so the lock's invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first start; after it, a reservation of `STACK_SIZE` bytes, which `Meta::reserve` places below `va_limit`) and `exited ==> !present` (a thread that found the request withdrawn and exited before its `start` published it stays unpublished).
@@ -30,7 +30,7 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 
 ## `pthread_join`
 
-src/purge/background.rs:505. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:508. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
@@ -46,12 +46,12 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
 
 ## `spawn`
 
-src/purge/background.rs:692. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:695. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
 
-Body mints Tracked at line 712; mints Tracked at line 720.
+Body mints Tracked at line 715; mints Tracked at line 723.
 
 ```rust
 fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
@@ -66,7 +66,7 @@ fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut T
 
 ## `shared_arg`
 
-src/purge/background.rs:782. Kind: external_body. Category: raw pointer from C caller.
+src/purge/background.rs:785. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -79,7 +79,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ## `main`
 
-src/purge/background.rs:798. Kind: no_decreases. Category: termination.
+src/purge/background.rs:801. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: exit::loom_exit_after_withdrawal and exit::loom_exit_after_withdrawal_with_waker; not checked: this body, which the models replace with a copy of the loop whose pass is its worst case for this property (no deadline); that each pass and the exit's state lock return; a `request(true)` after the withdrawal, which rightly keeps the thread running; the kernel's futex, which the models replace with a stand-in).
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -90,7 +90,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:898. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:901. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_lock`] is the raw lock of [`STATE`].

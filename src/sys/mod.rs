@@ -1603,84 +1603,13 @@ pub(crate) mod tests {
 
     const PAGE: usize = 4096;
 
-    /// The `.rs` files under `dir`, in path order.
-    pub(crate) fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let mut entries: Vec<_> = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
-    /// Whether `t` starts a `fn` item: qualifiers, then `fn `.
-    fn fn_item(t: &str) -> bool {
-        let mut t = t;
-        loop {
-            let rest = [
-                "pub ",
-                "const ",
-                "unsafe ",
-                "extern \"C\" ",
-                "proof ",
-                "open ",
-                "closed ",
-            ]
-            .iter()
-            .find_map(|q| t.strip_prefix(q))
-            .or_else(|| {
-                t.strip_prefix("pub(")
-                    .and_then(|r| r.split_once(") ").map(|(_, r)| r))
-            });
-            match rest {
-                Some(r) => t = r,
-                None => return t.starts_with("fn "),
-            }
-        }
-    }
-
-    /// Every call of `grant` under `src/`, as the `fn` item line it belongs
-    /// to (the nearest one above it) and its place, skipping comments and
-    /// the grant's own definition.
-    pub(crate) fn grant_sites(grant: &str) -> Vec<(std::string::String, std::string::String)> {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        walk(&src, &mut files);
-        let def = format!("pub proof fn {grant}()");
-        let mut sites = Vec::new();
-        for path in &files {
-            let rel = path.strip_prefix(&src).unwrap().to_str().unwrap();
-            let text = std::fs::read_to_string(path).unwrap();
-            let mut sig = "";
-            for (i, line) in text.lines().enumerate() {
-                let t = line.trim();
-                if t.starts_with("//") || t == def {
-                    continue;
-                }
-                if fn_item(t) {
-                    sig = t;
-                }
-                if t.contains(grant) {
-                    sites.push((sig.into(), format!("{rel}:{}: `{t}`", i + 1)));
-                }
-            }
-        }
-        sites
-    }
-
     /// `grant_syscalls` is called only in the body of an `extern "C"`
     /// function or of `abort_fmt`, which never returns ([`may_syscall`]'s
     /// premise).
     #[test]
     fn syscall_grants_only_at_roots() {
         // Spelled in parts, so that this test's own lines match nothing.
-        let sites = grant_sites(&format!("{}{}", "grant_", "syscalls"));
+        let sites = crate::testutil::grant_sites(&format!("{}{}", "grant_", "syscalls"));
         assert!(!sites.is_empty());
         for (sig, at) in &sites {
             assert!(
@@ -1696,7 +1625,7 @@ pub(crate) mod tests {
     #[test]
     fn abort_grants_only_at_roots() {
         // Spelled in parts, so that this test's own lines match nothing.
-        let sites = grant_sites(&format!("{}{}", "grant_", "aborts"));
+        let sites = crate::testutil::grant_sites(&format!("{}{}", "grant_", "aborts"));
         assert!(!sites.is_empty());
         for (sig, at) in &sites {
             assert!(
@@ -1714,77 +1643,96 @@ pub(crate) mod tests {
     /// [`crate::vspec::user::may_read_user`]'s doc lists).
     #[test]
     fn user_read_grants_only_in_listed_callers() {
-        // Spelled in parts, so that this test's own lines match nothing.
-        let sites = grant_sites(&format!("{}{}", "grant_", "user_reads"));
-        let callers = [
-            ("purge.rs:", "pub fn check_zero("),
-            ("api/libc.rs:", "pub fn realloc_block("),
-            ("api/libc.rs:", "pub fn realloc_usable_stored("),
-            ("api/jemalloc.rs:", "pub fn rallocx_zeroed("),
-        ];
-        for (sig, at) in &sites {
-            assert!(
-                callers
-                    .iter()
-                    .any(|(file, f)| at.starts_with(file) && sig.starts_with(f)),
-                "{at}: a user-read grant in `{sig}`"
-            );
-        }
-        for (file, f) in callers {
-            let n = sites
-                .iter()
-                .filter(|(sig, at)| at.starts_with(file) && sig.starts_with(f))
-                .count();
-            assert_eq!(n, 1, "{file} `{f}`: got = {n} grants, want = 1");
-        }
+        crate::testutil::assert_only_at(
+            concat!("grant_", "user_reads("),
+            &[
+                ("purge.rs:", "pub fn check_zero(", 1),
+                ("api/libc.rs:", "pub fn realloc_block(", 1),
+                ("api/libc.rs:", "pub fn realloc_usable_stored(", 1),
+                ("api/jemalloc.rs:", "pub fn rallocx_zeroed(", 1),
+            ],
+        );
     }
 
-    /// `TlsSlot::entry` is called only in the top-level slot users
-    /// `TlsSlot`'s doc lists, and once in each, but for the two that
-    /// call it in two arms of one `match` (`heap::mallocx::alloc`, and the restated
-    /// fast paths of `api::libc::theorem_no_syscall_on_fast_paths`): no
-    /// verified function holds two tokens of the slot (the slot premise).
+    /// The user-read capability (`vspec::user::may_read_user`) is
+    /// established only by its grants: it appears in an `ensures` only as
+    /// `grant_user_reads`' own and as `purge::check_zero`'s on a `true`
+    /// result (`r ==> ..`), and elsewhere in shipped code only as a
+    /// `requires` or loop invariant clause that ends with it, besides its
+    /// definition and the grant's `reveal`. So no other function hands the
+    /// capability to its caller, and the grant sites
+    /// [`user_read_grants_only_in_listed_callers`] pins are where it starts.
     #[test]
-    fn tls_entries_only_in_listed_users() {
+    fn user_read_capability_ensured_only_at_grants() {
         // Spelled in parts, so that this test's own lines match nothing.
-        let sites = grant_sites(&format!("{}{}", "TlsSlot::", "entry()"));
-        let users = [
-            (
-                "heap/thread.rs:",
-                "pub unsafe extern \"C\" fn heap_destructor(",
-                1,
-            ),
-            ("heap/thread.rs:", "pub fn heap_for_thread(", 1),
-            ("heap/thread.rs:", "pub fn existing_heap(", 1),
-            ("api/libc.rs:", "pub fn free_block(", 1),
-            ("api/libc.rs:", "pub fn free_usable_block(", 1),
-            // Split, so that the count of `fn theorem_` strings stays put.
-            (
-                "api/libc.rs:",
-                concat!("fn theorem_", "no_syscall_on_fast_paths("),
-                2,
-            ),
-            ("heap/paths.rs:", "pub fn alloc(", 1),
-            ("heap/paths.rs:", "pub fn alloc_declined(", 1),
-            ("heap/paths.rs:", "pub fn alloc_zeroed(", 1),
-            ("heap/mallocx.rs:", "pub fn alloc(", 2),
-            ("api/mallctl.rs:", "fn ctl(", 1),
-        ];
-        for (sig, at) in &sites {
-            assert!(
-                users
-                    .iter()
-                    .any(|(file, f, _)| at.starts_with(file) && sig.starts_with(f)),
-                "{at}: a slot token made in `{sig}`"
-            );
+        let cap = std::format!("{}{}", "may_", "read_user");
+        let grant = std::format!("pub proof fn {}{}()", "grant_", "user_reads");
+        let clause = std::format!("crate::vspec::user::{cap}(),");
+        let (short, reveal) = (std::format!("{cap}(),"), std::format!("reveal({cap});"));
+        let def = std::format!("pub closed spec fn {cap}() -> bool {{");
+        let mut ensured = Vec::new();
+        for (rel, text) in crate::testutil::shipped_sources() {
+            let (mut sig, mut kw) = (std::string::String::new(), "");
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                if t.starts_with("//") {
+                    continue;
+                }
+                if crate::testutil::fn_item(t) {
+                    (sig, kw) = (t.into(), "");
+                }
+                if t == "{" || t.ends_with(" {") {
+                    kw = "";
+                }
+                // A clause keyword starts its line, alone or before the
+                // clause (`ensures x,`).
+                if let Some(k) = [
+                    "requires",
+                    "recommends",
+                    "ensures",
+                    "returns",
+                    "invariant",
+                    "invariant_except_break",
+                    "decreases",
+                ]
+                .into_iter()
+                .find(|k| t.split_whitespace().next() == Some(*k))
+                {
+                    kw = k;
+                }
+                if !t.contains(cap.as_str()) {
+                    continue;
+                }
+                let at = std::format!("{rel}:{}: `{t}`", i + 1);
+                let user = rel == "vspec/user.rs";
+                let in_grant = user && sig == grant;
+                if (user && t == def) || (in_grant && t == reveal) {
+                    continue;
+                }
+                if kw == "ensures" {
+                    let grant_own = in_grant && t == short;
+                    let check_zero = rel == "purge.rs"
+                        && sig.starts_with("pub fn check_zero(")
+                        && t == std::format!("r ==> {clause}");
+                    assert!(
+                        grant_own || check_zero,
+                        "{at}: `{cap}` in an `ensures` of `{sig}`: only the grants establish it"
+                    );
+                    ensured.push(at);
+                } else {
+                    assert!(
+                        (t.ends_with(clause.as_str()) || (user && t == short))
+                            && (kw == "requires" || kw.starts_with("invariant")),
+                        "{at}: `{cap}` used other than as a requires or invariant clause"
+                    );
+                }
+            }
         }
-        for (file, f, want) in users {
-            let n = sites
-                .iter()
-                .filter(|(sig, at)| at.starts_with(file) && sig.starts_with(f))
-                .count();
-            assert_eq!(n, want, "{file} `{f}`: got = {n} tokens, want = {want}");
-        }
+        assert_eq!(
+            ensured.len(),
+            2,
+            "got = {ensured:?}, want = the grant's own `ensures` and check_zero's"
+        );
     }
 
     /// A fresh read/write private anonymous mapping of `len` bytes, for

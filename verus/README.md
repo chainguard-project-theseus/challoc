@@ -233,6 +233,59 @@ without the `asm!` block: `seams.sh --check` requires the copy's lines
 to equal the original's but for the rows `verus/kani/pins.txt` marks
 `-only` (today the opening brace and that block).
 
+## Guard tests
+
+Some trusted items are sound only where they are called. An axiom such
+as `TlsSlot::entry` or `lock::axiom_entry` states a premise about its
+caller (one slot token per top-level call; no allocator lock held) that
+Verus cannot check, and a `lock_inv` axiom says that every holder of a
+lock leaves its invariant true, which Verus does not check when a guard
+drops. Each such item's doc names its call sites or holders and argues
+the premise for each one. Nothing in Verus ties that list to the code, so
+unit tests (`cargo test`) scan `src/` and fail when a call site or holder
+appears that the list does not name, or a listed one goes away. Most use
+`testutil::assert_only_at(call, &[(file, fn, count)])`, and most pinned
+items' docs name the test that checks them. A separate guard,
+`no_assume_or_admit_in_verified_code`, keeps shipped code free of
+`assume`/`admit` and of verifier attributes the seam ledger does not know.
+
+| test | what it pins |
+|---|---|
+| `tests::no_assume_or_admit_in_verified_code` | no `assume(..)` or `admit()` in shipped code; verifier attributes spelled `#[verifier::name]`, `name` from a fixed list |
+| `sys::tls::tests::tls_entry_only_at_listed_users` | `TlsSlot::entry` once in each slot user `TlsSlot`'s doc lists (twice in `heap::mallocx::alloc`, on match arms that exclude each other) |
+| `api::tests::c_call_tokens_only_in_export_bodies` | `axiom_c_call`, `axiom_c_out` and `errno::lend` at most once per export body (`extern "C" fn`, `verified_export_pair!` arm, or a helper one arm calls), each token for the call's own arguments (every `CEntry` field and out-pointer a parameter of the minting function, none twice); the 4 `axiom_c_out` mints (the three allocating `challoc_*_usable` exports and `memptr_out`) and the one `memptr_out` call each in the spelling its hand-back names |
+| `api::tests::exports_return_their_callees_result` | `vspec::errno::axiom_errno_at_return` only right after the call in the export bodies that lent the token; `axiom_out_at_return` only right after the call in the 4 export bodies that minted an out-pointer token |
+| `tests::trusted_mint_sites_are_pinned` | `axiom_heap_block`, `ZeroRaw::axiom_new`, the refill's zero and fresh-slab axioms and `purged_zero`, `axiom_below_class` and `axiom_below_huge`, `axiom_shared_regions` and `axiom_shared_meta`, `TlsCell::note_create`: each at the callers its doc names |
+| `lock::tests::entry_lock_order_uses_are_listed` | `axiom_entry` in the functions its doc lists; `axiom_meta_order` in `Meta`'s methods |
+| `api::tests::lock_holders_match_inv_docs` | the functions that take each lock's guard, against the holders its `lock_inv` doc names, copied into the test by hand; raw `lock_held`/`unlock_held` only in the fork handlers; `get_unlocked` once |
+| `lock::tests::permission_axioms_are_called_only_at_acquisitions` | the lock-cell permission axioms at the acquisitions |
+| `sys::tests::{syscall,abort}_grants_only_at_roots`, `user_read_grants_only_in_listed_callers`, `user_read_capability_ensured_only_at_grants` | the syscall, abort and user-read grants; `may_read_user` in an `ensures` only at `grant_user_reads` and `purge::check_zero` |
+| `heap::tcaches::tests::heap_use_axiom_only_at_listed_mint_sites` | `axiom_heap_use` at its 8 listed callers |
+| `api::tests::fork_hold_is_resumed_once`, `fork_child_resets_are_child_only`, `fork_lock_list_matches_the_source_tree` | the fork handlers' premises and lock list |
+| `huge::tests::zero_axioms_called_from_zero_run_only`, `purge::tests::state_lock_axiom_names_the_one_state_lock` | the huge zero axioms; the one state lock |
+
+The tests check where a premise is used, not that it holds: a new site
+fails a test so that a person reads its argument. The call-site scans
+(`assert_only_at`) match exact spellings on one line (a call through a
+`use` alias or `Self::` is not seen), and they cannot tell that two calls
+in one function sit on arms that exclude each other (the two in
+`heap::mallocx::alloc` and in
+`api::libc::theorem_no_syscall_on_fast_paths`): a reviewer checks that.
+For a reviewer:
+
+- A pull request that adds a call to a pinned axiom, or a new holder of
+  a lock, updates the axiom's doc list (with why the premise holds at the
+  new site) and the test's list in the same change. Ask why the premise
+  holds there. A test list edited with no matching doc change is the
+  thing to question.
+- A failing guard test is fixed by arguing the new site in the doc (or
+  removing the call), never by editing the test alone.
+- A new trusted item whose premise is about its caller gets a doc list
+  and a row in a guard test (`trusted_mint_sites_are_pinned` takes one).
+- A new `#[verifier::name]` that trusts code becomes a seam kind in
+  `verus/seams.sh` before it goes on the list in
+  `no_assume_or_admit_in_verified_code`.
+
 ## Conventions
 
 - Keep the executable code as it is. A rewrite needed only to get through

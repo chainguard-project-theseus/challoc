@@ -1183,6 +1183,8 @@ mod exports {
     /// The token of a C call that hands over the block at `p` to
     /// `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
     /// Trusted: as `libc`'s `axiom_c_call`, which this module cannot name.
+    /// Called only in the export bodies, once each, for the call's own
+    /// `p`: checked by `api::tests::c_call_tokens_only_in_export_bodies`.
     axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
         requires
             e is Frees,

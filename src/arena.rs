@@ -2088,6 +2088,11 @@ verus! {
 /// `build`'s ensures), and `Arenas::materialise`, which publishes an
 /// automatic index, below the count (the frame,
 /// [`axiom_arenas_lock_frame`]).
+///
+/// `Arenas::assign` holds the guard while it reads the per-arena counts
+/// (atomics); it neither reads nor writes the locked value.
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
     ensures
         #[trigger] lock_inv(v) == v.ok(),

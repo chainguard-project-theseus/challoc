@@ -336,7 +336,7 @@ axiom fn axiom_shared_built(
 
 ## `axiom_shared_regions`
 
-src/heap/shared.rs:1529. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1534. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The regions of the `Shared` at `p` are what the permission to its `regions` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`] writes the field): no verified code can write the field again, so the value is the built one.
@@ -353,7 +353,7 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 
 ## `axiom_shared_meta`
 
-src/heap/shared.rs:1547. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1556. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The metadata allocator of the `Shared` at `p` is what the permission to its `meta` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, in [`Shared::put_head`], right after it writes the field), as [`axiom_shared_regions`] states of the regions: no verified code can write the field again, so the value is the built one.
@@ -370,12 +370,12 @@ axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
 
 ## `Shared::begin`
 
-src/heap/shared.rs:1573. Kind: external_body. Category: raw pointer from C caller.
+src/heap/shared.rs:1582. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The permission to `init`'s storage, uninitialised, for `once`, the process's token of this step.
 
-Body mints Tracked at line 1582.
+Body mints Tracked at line 1591.
 
 ```rust
 fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsTo<Shared>>)

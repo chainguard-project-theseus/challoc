@@ -454,7 +454,8 @@ impl<'a> LockOrder<'a> {
 ///   `Heap::flush_all` and `purge::purge_all` leave the token unchanged;
 /// - `heap::alloc`, `heap::alloc_declined` and `heap::alloc_zeroed` without
 ///   a thread heap, `heap::free_direct`, and `heap::mallocx`'s
-///   `alloc_direct` and `alloc_huge`: reached from the C entry points
+///   `alloc_direct`, `alloc_huge` and `no_arena` (`heap::mallocx::alloc`'s
+///   check of an explicit `MALLOCX_ARENA`): reached from the C entry points
 ///   (`malloc`, `free` and the `mallocx` family) through code that holds
 ///   no allocator lock;
 /// - `api::jemalloc`'s `get_defrag_hint`, one token for its
@@ -496,6 +497,11 @@ impl<'a> LockOrder<'a> {
 /// code calls nothing that may allocate with a lock held, and a signal
 /// handler that allocates is outside the C contract (the fork handlers
 /// block signals).
+///
+/// Checked by `lock::tests::entry_lock_order_uses_are_listed`, which pins
+/// the functions that call it to the uses listed above: a new use is
+/// listed here, with why no allocator lock is held at it, and added to
+/// that test's list in the same change.
 pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.top() == 0,
@@ -526,6 +532,10 @@ pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
 /// is `ClassState::decay_with`'s walk, which `Decayer::decay` calls with
 /// no lock taken since `decay_with` was called with a token that allows
 /// the class locks.
+///
+/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+/// call sites to the ones named here: a new one is named here, with its
+/// premise, and added to that test's list in the same change.
 pub(crate) axiom fn axiom_below_class<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.allows(rank_class(0, 0)),
@@ -537,6 +547,10 @@ pub(crate) axiom fn axiom_below_class<'a>() -> (tracked o: LockOrder<'a>)
 /// is `Huge::decay_with`'s walk, which `Decayer::decay` calls with no
 /// lock taken since `decay_with` was called with a token that allows
 /// the huge lock.
+///
+/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+/// call sites to the ones named here: a new one is named here, with its
+/// premise, and added to that test's list in the same change.
 pub(crate) axiom fn axiom_below_huge<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.allows(rank_huge()),
@@ -548,6 +562,9 @@ pub(crate) axiom fn axiom_below_huge<'a>() -> (tracked o: LockOrder<'a>)
 /// methods would take from their callers: only `Meta::stats` takes one so
 /// far, and the others would change about 20 signatures. Its uses are
 /// the acquisitions in the other `Meta` methods.
+///
+/// Checked by `lock::tests::entry_lock_order_uses_are_listed`, which pins
+/// its uses to those `Meta` methods.
 pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.allows(rank_meta()),
@@ -726,6 +743,8 @@ pub uninterp spec fn lock_frame<T>(init: T, v: T) -> bool;
 /// is as the last holder left it. Every lock the window serves is one the
 /// prepare handler took: no arena (and so no lock) is built there
 /// (`Arenas::create`, `Arenas::materialise`).
+///
+/// Checked by `lock::tests::permission_axioms_are_called_only_at_acquisitions`.
 axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
     ensures
         p.id() == l.value.id(),
@@ -741,6 +760,8 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 /// `get_unlocked`, which hands out the value, never the permission: a
 /// permission moved out of the borrow (`tracked_swap`) would outlive it,
 /// and the next call would give a second one to the same cell.
+///
+/// Checked by `lock::tests::permission_axioms_are_called_only_at_acquisitions`.
 axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (tracked p: &'a mut PointsTo<T>)
     requires
         old(held).held() == l.raw,
@@ -1193,6 +1214,98 @@ mod tests {
         }
         assert_eq!(a, ["lock", "try_lock", "lock_held_perm"]);
         assert_eq!(h, ["get_unlocked"]);
+    }
+
+    /// `axiom_entry` asserts that no allocator lock is held where it is
+    /// called, which only its caller's context shows: each use is pinned
+    /// to the functions its doc lists, so a new one fails here until the
+    /// doc argues its premise (a count of 1 where the doc says one token,
+    /// otherwise none: some take one token per call they make).
+    /// `axiom_meta_order` is pinned to the `Meta` methods that take the
+    /// metadata lock.
+    #[test]
+    fn entry_lock_order_uses_are_listed() {
+        use crate::testutil::{ANY, assert_only_at};
+        assert_only_at(
+            concat!("axiom_", "entry("),
+            &[
+                // `Huge::usable_size`, `Shared::check_size_hint`.
+                ("huge/mod.rs:", "pub fn usable_size(", ANY),
+                ("heap/shared.rs:", "pub fn check_size_hint(", ANY),
+                // `Heap::alloc_huge_in`, `Heap::free_huge`.
+                ("heap/paths.rs:", "pub fn alloc_huge_in(", ANY),
+                ("heap/paths.rs:", "pub(super) fn free_huge(", ANY),
+                // `Shared::init`, the background thread's `main`.
+                ("heap/shared.rs:", "pub unsafe fn init(", ANY),
+                ("purge/background.rs:", "extern \"C\" fn main(", ANY),
+                // The report entry points of `api::print`, one token per report.
+                ("api/print.rs:", "fn stats_print(", 1),
+                ("api/print.rs:", "pub fn malloc_info(", 1),
+                ("api/print.rs:", "pub fn malloc_stats(", 1),
+                // The readers of `api::mallctl`.
+                ("api/mallctl.rs:", "fn cgroup_empty_bytes(", ANY),
+                ("api/mallctl.rs:", "fn stats_allocated(", ANY),
+                ("api/mallctl.rs:", "fn stats_active(", ANY),
+                ("api/mallctl.rs:", "fn stats_metadata(", ANY),
+                ("api/mallctl.rs:", "fn stats_resident(", ANY),
+                ("api/mallctl.rs:", "fn stats_mapped(", ANY),
+                ("api/mallctl.rs:", "fn stats_retained(", ANY),
+                ("api/mallctl.rs:", "pub fn utilization(", ANY),
+                ("api/mallctl.rs:", "pub fn owner_of(", ANY),
+                ("api/mallctl.rs:", "fn tracked(", ANY),
+                ("api/mallctl.rs:", "fn arena_stats_into(", ANY),
+                ("api/mallctl.rs:", "fn ctl(", ANY),
+                // `api::libc`'s `alloc_huge` and `malloc_trim`.
+                ("api/libc.rs:", "fn alloc_huge(", ANY),
+                ("api/libc.rs:", "pub fn malloc_trim(", ANY),
+                // The heap entry points without a thread heap.
+                ("heap/paths.rs:", "pub fn alloc(", ANY),
+                ("heap/paths.rs:", "pub fn alloc_declined(", ANY),
+                ("heap/paths.rs:", "pub fn alloc_zeroed(", ANY),
+                ("heap/paths.rs:", "pub fn free_direct(", ANY),
+                ("heap/mallocx.rs:", "fn alloc_direct(", ANY),
+                ("heap/mallocx.rs:", "pub fn alloc_huge(", ANY),
+                ("heap/mallocx.rs:", "fn no_arena(", ANY),
+                // `api::jemalloc::get_defrag_hint`.
+                ("api/jemalloc.rs:", "pub fn get_defrag_hint(", ANY),
+                // `api::glibc::mallinfo2`'s `stats::collect_all` call.
+                ("api/glibc.rs:", "pub fn mallinfo2(", 1),
+                // `api::theorem_read_only_never_aborts`, `api::fork_child`.
+                ("api/mod.rs:", "fn theorem_read_only_never_aborts(", ANY),
+                ("api/mod.rs:", "extern \"C\" fn fork_child(", ANY),
+                // The scheduled pops.
+                ("heap/compact.rs:", "pub(super) unsafe fn pop_compact(", ANY),
+                (
+                    "heap/compact.rs:",
+                    "pub(super) unsafe fn pop_compact_run(",
+                    ANY,
+                ),
+                ("heap/compact.rs:", "pub(super) unsafe fn rebuild_run(", ANY),
+                // A thread's first heap and its destructor.
+                ("heap/thread.rs:", "fn create_heap_for_thread<", ANY),
+                (
+                    "heap/thread.rs:",
+                    "pub unsafe extern \"C\" fn heap_destructor(",
+                    ANY,
+                ),
+                // The slow paths.
+                ("heap/paths.rs:", "pub(super) fn alloc_slow_in(", ANY),
+                ("heap/paths.rs:", "pub(super) fn free_slow_in(", ANY),
+            ],
+        );
+        assert_only_at(
+            concat!("axiom_", "meta_order("),
+            &[
+                ("meta.rs:", "pub fn alloc(", 1),
+                ("meta.rs:", "pub fn alloc_raw(", 1),
+                ("meta.rs:", "pub fn alloc_zeroed(", 1),
+                ("meta.rs:", "pub fn free(", 1),
+                ("meta.rs:", "pub fn reserve(", 1),
+                ("meta.rs:", "pub fn reserve_table(", 1),
+                ("meta.rs:", "pub fn commit(", 1),
+                ("meta.rs:", "pub fn reserve_committed_raw(", 1),
+            ],
+        );
     }
 
     #[test]

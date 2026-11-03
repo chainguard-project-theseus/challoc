@@ -126,4 +126,153 @@ mod tests {
         assert!(QUANTUM.is_power_of_two());
         assert!(QUANTUM == 8 || QUANTUM == 16);
     }
+
+    /// The source files `testutil::shipped_sources` returns (no test or
+    /// Kani module or file; `#[cfg(test)]` items inside them are kept, so
+    /// this is stricter than the build) have no `assume(..)` or `admit()`,
+    /// which would let Verus prove anything after them, and no
+    /// `#[verifier(..)]` attribute: the `#[verifier::name]` spelling is the
+    /// one `verus/seams.sh` reads, and `name` is one of the attributes the
+    /// crate uses: seam kinds `seams.sh` lists (`external_body`),
+    /// proof settings (`rlimit`), and `external`, which keeps an item out of
+    /// verification. An attribute that trusts code goes in `seams.sh`
+    /// before this list.
+    #[test]
+    fn no_assume_or_admit_in_verified_code() {
+        const ATTRS: &[&str] = &[
+            "accept_recursive_types",
+            "atomic",
+            "exec_allows_no_decreases_clause",
+            "external",
+            "external_body",
+            "external_trait_specification",
+            "external_type_specification",
+            "loop_isolation",
+            "opaque",
+            "reject_recursive_types",
+            "rlimit",
+            "spinoff_prover",
+            "truncate",
+            "type_invariant",
+        ];
+        // Spelled in parts, so that this test's own lines match nothing.
+        let calls = [concat!("assu", "me("), concat!("adm", "it(")];
+        let attr = concat!("veri", "fier");
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        let mut bad = std::vec::Vec::new();
+        let sources = crate::testutil::shipped_sources();
+        assert!(sources.len() > 50, "the source tree was not found");
+        for (rel, text) in &sources {
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("//") {
+                    continue;
+                }
+                let code = t.split_once(" // ").map_or(t, |(c, _)| c);
+                let at = || std::format!("{rel}:{}: `{t}`", i + 1);
+                for call in calls {
+                    for (k, _) in code.match_indices(call) {
+                        let before = &code[..k];
+                        if !before.ends_with("kani::") && !before.ends_with(ident) {
+                            bad.push(std::format!("{}: a call of `{call}..`", at()));
+                        }
+                    }
+                }
+                for (k, _) in code.match_indices(attr) {
+                    let rest = &code[k + attr.len()..];
+                    if code[..k].ends_with(ident) {
+                        continue;
+                    }
+                    if let Some(rest) = rest.strip_prefix("::") {
+                        let name = rest.split([']', '(', ')', ',']).next().unwrap();
+                        if !ATTRS.contains(&name) {
+                            bad.push(std::format!(
+                                "{}: unlisted attribute `{attr}::{name}`",
+                                at()
+                            ));
+                        }
+                    } else if rest.starts_with('(') {
+                        bad.push(std::format!(
+                            "{}: write `{attr}::name`, not `{attr}(name)`",
+                            at()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "Verus would trust these lines without the seam ledger knowing:\n{}",
+            bad.join("\n")
+        );
+    }
+
+    /// The trusted functions whose premise holds only at their call sites
+    /// (`verus/README.md`, "Guard tests"): each is pinned to the callers
+    /// its doc names, so a new caller fails here until that doc argues the
+    /// premise for it.
+    #[test]
+    fn trusted_mint_sites_are_pinned() {
+        type Sites = &'static [(&'static str, &'static str, usize)];
+        const PINS: &[(&str, Sites)] = &[
+            // A destroyed heap's block (`heap::axiom_heap_block`).
+            (
+                concat!("axiom_", "heap_block("),
+                &[("heap/mod.rs:", "pub unsafe fn destroy(", 1)],
+            ),
+            // Zero bytes for a fresh permission (`vspec::zero::ZeroRaw::axiom_new`).
+            (
+                concat!("ZeroRaw::", "axiom_new("),
+                &[
+                    ("meta.rs:", "pub fn reserve_table(", 1),
+                    ("meta.rs:", "proof fn reserved_table(", 1),
+                    ("meta.rs:", "fn reserve_committed(", 1),
+                    ("huge/table.rs:", "fn storage(", 1),
+                ],
+            ),
+            // The zero and fresh-memory facts of a refill's claim.
+            (
+                concat!("axiom_", "fresh_slots_zero("),
+                &[("class/mod.rs:", "fn take(", 1)],
+            ),
+            (
+                concat!("axiom_", "discarded_slots_zero("),
+                &[("class/mod.rs:", "fn take(", 1)],
+            ),
+            (
+                concat!("axiom_", "fresh_slab_mem("),
+                &[("class/mod.rs:", "fn take(", 1)],
+            ),
+            (
+                concat!("purged_", "zero("),
+                &[("class/mod.rs:", "fn take(", 1)],
+            ),
+            // The decay walks' lock-order tokens (`lock.rs`).
+            (
+                concat!("axiom_", "below_class("),
+                &[("class/decay.rs:", "pub fn decay_with(", 1)],
+            ),
+            (
+                concat!("axiom_", "below_huge("),
+                &[("huge/mod.rs:", "pub fn decay_with(", 1)],
+            ),
+            // The frozen `Shared` fields (`heap::shared`).
+            (
+                concat!("axiom_", "shared_regions("),
+                &[("heap/shared.rs:", "pub unsafe fn init(", 1)],
+            ),
+            (
+                concat!("axiom_", "shared_meta("),
+                &[("heap/shared.rs:", "unsafe fn put_head<", 1)],
+            ),
+            // The thread slot's `Heap::create` count (`sys::tls::TlsCell`).
+            (
+                concat!("note_", "create("),
+                &[("heap/thread.rs:", "fn create_heap_for_thread<", 1)],
+            ),
+        ];
+        for (call, sites) in PINS {
+            crate::testutil::assert_only_at(call, sites);
+        }
+    }
 }
