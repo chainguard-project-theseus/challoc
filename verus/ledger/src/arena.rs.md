@@ -88,7 +88,7 @@ fn note_build_cost(meta: &Meta, tables: usize)
 ## `axiom_array_layout`
 
 src/arena.rs:431. Kind: axiom. Category: core library.
-Tool: Kani. Status: trusted (partly checked, const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, and Kani: arena::kani_array_layout::array_layout_samples; not checked: the axiom is generic in `T` and `N`, and these check only the five instances the proofs use and the sampled ones).
+Tool: Kani. Status: trusted (partly checked, const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples; not checked: the axiom is generic in `T` and `N`, and these check only the six instances the proofs use and the sampled ones).
 
 > An array of `N` `T`s is `N` `T`s back to back, aligned as one: the size and alignment the Rust reference gives arrays.
 

@@ -9,11 +9,12 @@ file.
 |---|---|---|---|---|
 | `store` | external_body | atomics primitive | loom/GenMC | trusted |
 | `load` | external_body | atomics primitive | loom/GenMC | trusted |
+| `swap` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `store`
 
-src/vspec/entry.rs:75. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_store, and loom: narenas::loom_narenas_create_publishes; not checked: this body under concurrency, which the model replaces with loom's `store` inside copies of the `Arenas` steps, in the configuration tests/loom/src/narenas.rs states; the pointers' provenance (the harness compares addresses); `T = Arena`, the instance challoc uses (checked at `T = u64`); the C11 argument above that the permission's value is the entry's last write, which tests/loom/tests/access.rs backs by matching source text only).
+src/vspec/entry.rs:80. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_store, and loom: narenas::loom_narenas_create_publishes; not checked: this body under concurrency, which the model replaces with loom's `store` inside copies of the `Arenas` steps, in the configuration tests/loom/src/narenas.rs states, and the tcache table's store in `Tcaches::create`, which no model runs; the pointers' provenance (the harness compares addresses); the instances challoc uses, `T = Arena` and the tcache table's `T = u8` (checked at `T = u64`); the C11 argument above that the permission's value is the entry's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -32,8 +33,8 @@ pub fn store<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): 
 
 ## `load`
 
-src/vspec/entry.rs:94. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_load, and loom: narenas::loom_narenas_create_publishes; not checked: this body under concurrency, which the model replaces with loom's `load` inside copies of the `Arenas` steps, in the configuration tests/loom/src/narenas.rs states; the pointers' provenance (the harness compares addresses); `T = Arena`, the instance challoc uses (checked at `T = u64`); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
+src/vspec/entry.rs:99. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_load, and loom: narenas::loom_narenas_create_publishes; not checked: this body under concurrency, which the model replaces with loom's `load` inside copies of the `Arenas` steps, in the configuration tests/loom/src/narenas.rs states, and the tcache table's load in `Tcaches::get`, which no model runs; the pointers' provenance (the harness compares addresses); the instances challoc uses, `T = Arena` and the tcache table's `T = u8` (checked at `T = u64`); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
@@ -45,6 +46,25 @@ pub fn load<T>(a: &AtomicPtr<T>, ordering: Ordering, Tracked(perm): Tracked<&Ent
         !(ordering is AcqRel),
     ensures
         r == perm.value(),
+    opens_invariants none
+    no_unwind
+```
+
+## `swap`
+
+src/vspec/entry.rs:117. Kind: external_body. Category: atomics primitive.
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_swap; not checked: this body under concurrency, which no loom model runs (its one caller is `Tcaches::destroy`); the pointers' provenance (the harness compares addresses); the instance challoc uses, the tcache table's `T = u8` (checked at `T = u64`); the C11 argument above that the permission's value is the entry's last write, which tests/loom/tests/access.rs backs by matching source text only).
+
+> `a.swap(v, ordering)`: the permission's value before, which becomes `v`.
+
+```rust
+pub fn swap<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): Tracked<&mut EntryPerm<T>>) -> (r: *mut T)
+    requires
+        old(perm).id() == entry_id(a),
+    ensures
+        r == old(perm).value(),
+        final(perm).id() == old(perm).id(),
+        final(perm).value() == v,
     opens_invariants none
     no_unwind
 ```

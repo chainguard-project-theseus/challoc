@@ -3039,7 +3039,10 @@ fn ctl(
             }
             let ok = match op {
                 TcacheFlush => shared.tcaches.flush(shared, t as u16, Tracked(&mut ord)),
-                _ => shared.tcaches.destroy(shared, t as u16, Tracked(&mut ord)),
+                _ => {
+                    let tracked mut w = heap::TableWrite::new();
+                    shared.tcaches.destroy(shared, t as u16, Tracked(&mut w), Tracked(&mut ord))
+                },
             };
             if ok { Ok(()) } else { Err(EFAULT) }
         },
