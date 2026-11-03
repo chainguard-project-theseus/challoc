@@ -63,7 +63,7 @@ use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{axiom_below_huge, axiom_entry, lock_frame, lock_init, rank_huge, rank_meta};
 use crate::meta::Meta;
-use crate::purge::{self, Batch, Curve, Decayer, Settle};
+use crate::purge::{self, Batch, Curve, Decayer, Due, Settle};
 use crate::sys::{self, Errno};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::huge::{axiom_huge_lock_frame, axiom_huge_lock_inv};
@@ -8781,7 +8781,7 @@ impl Huge {
     }
 
     /// Decay step (design 8), as `ClassState::decay_with`: the
-    /// gate runs `purge_curve` over the list at most once per step of the
+    /// gate lets `purge_curve` run over the list at most once per step of the
     /// curve, with the cgroup policy's keep ratio (design 11), and returns
     /// the next deadline, `None` when nothing is `Empty`. Lock-free unless
     /// a walk is due.
@@ -8797,13 +8797,17 @@ impl Huge {
             exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
                 r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2),
     {
-        self.gate.decay(now, decay_ns, |now, curve| {
-            // Premise (lock order): the closure cannot carry the caller's
-            // token; `ord`, which `decay_with` requires, bounds the same
-            // locks (this thread's, unchanged since the call).
-            let tracked mut ord = axiom_below_huge();
-            self.purge_curve(now, curve, keep16, Tracked(&mut ord));
-        })
+        match self.gate.due(now, decay_ns) {
+            Due::Done(r) => r,
+            Due::Walk(curve, step, seen) => {
+                // Premise (lock order): `ord`, which `decay_with` requires,
+                // bounds the same locks (this thread's, unchanged since the
+                // call).
+                let tracked mut ord = axiom_below_huge();
+                self.purge_curve(now, &curve, keep16, Tracked(&mut ord));
+                self.gate.finish(now, step, Ghost(decay_ns), seen)
+            },
+        }
     }
 
     /// `dirty_at` of the oldest `Empty` extent as the decay driver sees it
