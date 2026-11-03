@@ -2578,6 +2578,16 @@ fn arena_registry_creates_and_looks_up() {
     assert_eq!(s.decay_ns(), 5_000_000);
 }
 
+/// The tests that arm [`crate::arena::FAIL_INIT`] take turns on this
+/// guard. It holds one metadata address, so without it one test's store
+/// replaces another's and that test's build does not fail.
+static FAIL_INIT_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take [`FAIL_INIT_SERIAL`]; a panic in one holder must not fail the rest.
+fn fail_init_serial() -> std::sync::MutexGuard<'static, ()> {
+    FAIL_INIT_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A build whose `Arena::init` fails keeps its storage for the next
 /// build: the reservation is never freed, so every retry under metadata
 /// pressure (each slow path of a heap homed on an unbuilt arena, each
@@ -2585,6 +2595,7 @@ fn arena_registry_creates_and_looks_up() {
 #[test]
 fn failed_arena_build_leaves_its_storage_to_the_next() {
     use core::sync::atomic::Ordering::Relaxed;
+    let _serial = fail_init_serial();
     let s = shared();
     // On the reservation side the arena's storage is the lowest
     // reservation right after its build, so `top` names it.
@@ -4366,6 +4377,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
 #[test]
 fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
     use core::sync::atomic::Ordering::Relaxed;
+    let _serial = fail_init_serial();
     let s = TestShared::with(Config {
         narenas: 4,
         ..Config::DEFAULT
@@ -4403,6 +4415,7 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
 #[test]
 fn an_unbuildable_home_arena_serves_small_blocks_from_arena_0_then_recovers() {
     use core::sync::atomic::Ordering::Relaxed;
+    let _serial = fail_init_serial();
     let s = TestShared::with(Config {
         narenas: 4,
         ..Config::DEFAULT
