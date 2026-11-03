@@ -61,7 +61,7 @@ use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{axiom_below_huge, axiom_entry, lock_frame, lock_init, rank_huge, rank_meta};
+use crate::lock::{axiom_entry, lock_frame, lock_init, rank_huge, rank_meta};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, Due, Settle};
 use crate::sys::{self, Errno};
@@ -8800,11 +8800,7 @@ impl Huge {
         match self.gate.due(now, decay_ns) {
             Due::Done(r) => r,
             Due::Walk(curve, step, seen) => {
-                // Premise (lock order): `ord`, which `decay_with` requires,
-                // bounds the same locks (this thread's, unchanged since the
-                // call).
-                let tracked mut ord = axiom_below_huge();
-                self.purge_curve(now, &curve, keep16, Tracked(&mut ord));
+                self.purge_curve(now, &curve, keep16, Tracked(ord));
                 self.gate.finish(now, step, Ghost(decay_ns), seen)
             },
         }

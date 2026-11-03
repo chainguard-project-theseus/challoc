@@ -350,8 +350,7 @@ pub open spec fn rank_spare() -> int {
 /// root in place. Every function that may take a lock takes its caller's
 /// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
 /// (the exceptions are the entry points, whose token comes from
-/// [`axiom_entry`] or [`axiom_fork_entry`] (each lists its uses), and the
-/// decay walks, [`axiom_below_class`] and [`axiom_below_huge`]).
+/// [`axiom_entry`] or [`axiom_fork_entry`] (each lists its uses)).
 /// The fields are private to this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
@@ -526,36 +525,6 @@ pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.top() == 0,
         o.root(),
-;
-
-/// Premise: the calling thread holds only allocator locks ranked below
-/// the class locks. Stands in for the caller's token in
-/// `ClassState::decay_with`'s walk, which runs between `Decayer::due` and
-/// `Decayer::finish` with no lock taken since `decay_with` was called with
-/// a token that allows the class locks.
-///
-/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
-/// call sites to the ones named here: a new one is named here, with its
-/// premise, and added to that test's list in the same change.
-pub(crate) axiom fn axiom_below_class<'a>() -> (tracked o: LockOrder<'a>)
-    ensures
-        o.allows(rank_class(0, 0)),
-        !o.root(),
-;
-
-/// Premise: the calling thread holds only allocator locks ranked below
-/// the huge lock. Stands in for the caller's token in
-/// `Huge::decay_with`'s walk, which runs between `Decayer::due` and
-/// `Decayer::finish` with no lock taken since `decay_with` was called with
-/// a token that allows the huge lock.
-///
-/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
-/// call sites to the ones named here: a new one is named here, with its
-/// premise, and added to that test's list in the same change.
-pub(crate) axiom fn axiom_below_huge<'a>() -> (tracked o: LockOrder<'a>)
-    ensures
-        o.allows(rank_huge()),
-        !o.root(),
 ;
 
 /// Whether the calling thread holds every allocator lock for a `fork`:
