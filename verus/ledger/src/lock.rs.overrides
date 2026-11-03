@@ -24,10 +24,6 @@ LockGuard::drop	atomics primitive	loom/GenMC	trusted (partly checked, loom: lock
 # taking the lock once, on a copy): evidence, not termination, which is
 # all the contract claims, so the seam stays trusted.
 RawLock::lock_slow	termination	loom/GenMC
-# Temporary: verified once `sys::futex_wait` and `sys::futex_wake` have
-# specifications.
-wait	FFI/syscall	Verus
-wake	FFI/syscall	Verus
 # Lock-order premise for `Meta`'s acquisitions until its callers pass
 # their own tokens (an exec signature change in about 20 callers).
 axiom_meta_order	allocator invariant	Verus
