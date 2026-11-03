@@ -67,7 +67,14 @@ cell's permission, from the caller's guard), stays in the huge region
 and shares no byte with the guard page of a live run of the lock's value
 other than the one being freed, whose token has come back. Freed runs'
 guards are not covered (wolfi-dev/challoc#397); scope and trusted facts
-are in `verus/RESULTS.md`. Theorem 45's table was measured on main at
+are in `verus/RESULTS.md`. It also proves, unnumbered and absent from #138,
+`heap::paths::theorem_exact_sized_free` (`heap/paths.rs:1465`): with
+the opt-in hardening key `exact_sized_free`, a sized free's hinted fast
+push declines every pointer and changes neither the heap nor the
+caller's token, so the free reaches the size check and the exact free,
+which tests the slot's slab and bit first; its section, "Sized frees
+run plain `free`'s check under `exact_sized_free`", follows the
+explicit-cache destroy one. Theorem 45's table was measured on main at
 `98790244`, not `45efb38c` (its section's "Changed since #138" note). Verification-only functions are
 `cfg(verus_keep_ghost)` on main (`cfg(verus_only)` in #138). As
 in #138, a function that takes a lock also takes
@@ -9691,6 +9698,94 @@ heap::tcaches`, each on `heap/tcaches.rs` at this section's commit):
 
 M14 with the theorem's premise lacking `read.atomic == ...` verifies, so
 that conjunct is what rejects it.
+
+## Sized frees run plain `free`'s check under `exact_sized_free` (main only; rests on the C-boundary assumption)
+
+Not numbered: #138 does not have it. The `file:line`s point into main
+at this section's commit. `exact_sized_free` is an opt-in hardening key
+(`config.rs`, wolfi-dev/challoc#429): with it, the sized frees check the
+slot at the call through plain `free`'s exact path instead of pushing it
+on the sized fast path, whose default leaves the slot's bit test to a
+flush (`docs/hardening.md`, (1)).
+
+**Statement.** With the key, the hinted fast push declines every
+pointer and leaves the heap and the caller's token unchanged, so a
+sized free goes on to the size check and the exact free, whose
+`Shared::classify_free` tests the slot's slab and bit
+(`SlabTable::check_live`, `class/table.rs:3960`) before anything is
+cached or released. Verus checks the decline and the unchanged heap and
+token (the assertion) and the composed route's `ensures`, which are the
+same as without the key; that the exact free's test aborts on a clear
+bit is read from the code.
+
+```rust
+// heap/shared.rs:274, in Shared::built (part of Shared::wf; Shared::init makes it from ClassLine::of, :492, at :2279)
+self.lines[c].guard_mask == if self.config.exact_sized_free { 0 } else { crate::layout::guard_geom(c).1 }
+
+// heap/shared.rs:3741 (a guard mask of 0 makes the guard test match every slab)
+pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> (r: Option<usize>)
+    ensures self.exact_sized_free() ==> r is None, ...
+
+// heap/paths.rs:1016
+pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>, flags: u8,
+    Tracked(blk): Tracked<&mut Live>) -> (r: bool)
+    ensures shared.exact_sized_free() ==> !r,
+        shared.exact_sized_free() ==> *final(h) == *old(h) && *final(blk) == *old(blk), ...
+
+// heap/paths.rs:1465 (verification only, cfg(verus_keep_ghost))
+fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>,
+    Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    requires may_abort(), may_syscall(), shared.wf(), shared.exact_sized_free(), old(h).wf(),
+        hint matches Some(c) ==> c < NCLASSES, blk.claims(p),
+    ensures final(errno).val() == old(errno).val(), free_target(p), hint_ok(p, hint), blk.block(p),
+{
+    let tracked mut blk = blk;
+    let ghost (h0, b0) = (*h, blk);
+    if hint.is_some() {
+        let pushed = free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk));
+        assert(!pushed && *h == h0 && blk == b0);
+    }
+    shared.check_size_hint(p, size, hint, Tracked(&blk));
+    h.free(shared, p, Tracked(blk), Tracked(errno));
+}
+```
+
+**Covers.** Every sized free that has a fast push: `free_sized`,
+`free_aligned_sized` and the sized `operator delete`s (through
+`free_sized_block`), and `sdallocx` on the thread's cache or an explicit
+one (`sdallocx_flags`, `sdallocx_routed`). The theorem composes the
+steps on a given heap, as `theorem_valid_sized_free_never_aborts`
+does; the real slow paths (`free_sized_slow`, `sdallocx_routed`) reach
+that heap through `heap::free` or `mallocx::free`. A sized free that
+finds no heap, or names no cache (`MALLOCX_TCACHE_NONE`), makes no fast
+push and reaches the same check through `free_direct` or
+`heap::free`. A huge size has no fast push with the key or without it.
+
+**Premises.**
+- The C-boundary assumption (`axiom_c_claim`): the caller's token
+  claims `p`, as for every free path.
+- The key is the configuration `init` applied: `Shared::wf` names it
+  (`Shared::exact_sized_free`, `heap/shared.rs:3598`); `Shared::init`
+  proves each class line's guard mask from it (`ClassLine::of`), and
+  `Shared::built` states it.
+
+**Not covered.** The value of the bit the exact free loads: no
+`ensures` states it, for plain `free` either; that a clear bit or a
+slab not handed out aborts is read from `SlabTable::check_live`
+(which states the guard-slab case in its `ensures`).
+
+**Mutations** (each rejected by `cargo verus focus`; X2 is the one exec change):
+
+| id | change | rejected by |
+|---|---|---|
+| V1 | the theorem without the `exact_sized_free()` premise | assertion |
+| X2 | `ClassLine::of` keeps the table's guard mask under the key | `ClassLine::of` postcondition |
+| S3 | `Shared::built` names the table's guard mask whatever the key | `Shared::sized_slot` postcondition |
+| S4 | `free_sized_fast`'s unchanged heap and token claimed without the key | `free_sized_fast` postcondition |
+| S5 | `free_sized_fast` states the unchanged heap only | assertion |
+| V6 | the theorem asserts that the fast push pushed | assertion |
+| S7 | `Shared::sized_slot` without `exact_sized_free() ==> r is None` | `free_sized_fast` postconditions |
+| S8 | `ClassLine::lemma_sized_ok` without its nonzero guard mask | `Shared::sized_slot` postcondition |
 
 ## Interface contract
 

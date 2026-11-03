@@ -1005,11 +1005,13 @@ proof fn lemma_free_route_bits(flags: u8)
 /// slot start of the hinted class's region outside a guard slab, a hint
 /// naming another class or a huge size, a full cache, every sized free with
 /// `exact_sized_free`); the caller then goes through
-/// [`Shared::check_size_hint`] and the exact [`free`]. A slot start in a
-/// slab no arena has been handed, or not committed, is pushed like any
-/// other (`Shared::sized_slot`). Contains no call. `blk` holds the token for
-/// `p`: a push takes its slot token, and a declined push gives `blk` back
-/// the token with a fresh permission to the slot, its bytes unknown.
+/// [`Shared::check_size_hint`] and the exact [`free`]. With
+/// `exact_sized_free` it declines every pointer and leaves `h` and `blk` as
+/// they were. A slot start in a slab no arena has been handed, or not
+/// committed, is pushed like any other (`Shared::sized_slot`). Contains
+/// no call. `blk` holds the token for `p`: a push takes its slot token,
+/// and a declined push gives `blk` back the token with a fresh permission
+/// to the slot, its bytes unknown.
 #[inline(always)]
 pub fn free_sized_fast(
     shared: &Shared,
@@ -1030,6 +1032,7 @@ pub fn free_sized_fast(
         final(h).keeps(*old(h)),
         flags & PUSH_ZERO != 0 ==> !r,
         shared.exact_sized_free() ==> !r,
+        shared.exact_sized_free() ==> *final(h) == *old(h) && *final(blk) == *old(blk),
         r ==> free_target(p),
         r ==> hint_ok(p, hint),
         r ==> slot_start(p),
@@ -1438,6 +1441,50 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk));
     free_direct(shared, p, Tracked(blk));
+}
+
+/// With `exact_sized_free` (the configuration key), a sized free
+/// (`free_sized`, `free_aligned_sized`, `sdallocx` and the sized
+/// `operator delete`s) runs plain `free`'s allocation check before it
+/// caches or releases a slot: the hinted fast push ([`free_sized_fast`])
+/// declines every pointer and leaves the heap and the caller's token as
+/// they were (the assertion), so the free goes on to
+/// [`Shared::check_size_hint`] and the exact free ([`Heap::free`]), whose
+/// [`Shared::classify_free`] tests the slot's slab and bit
+/// (`SlabTable::check_live`) first; the order and the bit test are read
+/// from the code.
+/// The heap is any: the thread's, or an explicit cache's
+/// (`sdallocx_routed`). The theorem composes the steps on a given heap,
+/// as [`theorem_valid_sized_free_never_aborts`] does; the real slow paths
+/// reach that heap through `heap::free` or `mallocx::free`, whose other
+/// route, [`free_direct`], has no fast push and starts with the same
+/// check.
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        shared.exact_sized_free(),
+        old(h).wf(),
+        hint matches Some(c) ==> c < NCLASSES,
+        blk.claims(p),
+    ensures
+        final(errno).val() == old(errno).val(),
+        free_target(p),
+        hint_ok(p, hint),
+        blk.block(p),
+{
+    let tracked mut blk = blk;
+    let ghost (h0, b0) = (*h, blk);
+    if hint.is_some() {
+        let pushed = free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk));
+        assert(!pushed && *h == h0 && blk == b0);
+    }
+    shared.check_size_hint(p, size, hint, Tracked(&blk));
+    h.free(shared, p, Tracked(blk), Tracked(errno));
 }
 
 /// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`
