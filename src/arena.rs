@@ -993,10 +993,12 @@ impl Arena {
     // The tracked result is part of the signature.
     #[allow(clippy::type_complexity)]
     #[inline(always)]
-    fn alloc_sets(meta: &Meta) -> (r: (*mut SetTable, Tracked<(PointsToRaw, MetaClaim)>))
+    fn alloc_sets(meta: &Meta, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut SetTable, Tracked<(PointsToRaw, MetaClaim)>))
         requires
             crate::sys::may_syscall(),
+            old(ord).allows(rank_meta()),
         ensures
+            *final(ord) == *old(ord),
             r.0@.addr != 0 ==> {
                 &&& r.1@.0.is_range(r.0@.addr as int, size_of::<SetTable>() as int)
                 &&& r.1@.0.provenance() == r.0@.provenance
@@ -1010,7 +1012,7 @@ impl Arena {
             assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
             assert(8 <= crate::meta::MAX_ALIGN) by (compute_only);
         }
-        let (p, blk) = meta.alloc_raw(core::alloc::Layout::new::<SetTable>());
+        let (p, blk) = meta.alloc_raw(core::alloc::Layout::new::<SetTable>(), Tracked(ord));
         let ghost p8 = p;
         let p = p as *mut SetTable;
         proof {
@@ -1202,7 +1204,7 @@ impl Arena {
             {
                 return false;
             }
-            let (sets_ptr, Tracked(blk)) = Arena::alloc_sets(meta);
+            let (sets_ptr, Tracked(blk)) = Arena::alloc_sets(meta, Tracked(ord));
             if sets_ptr.is_null() {
                 proof {
                     slot.perm = Some(Arena::unsplit(parts, classes, pad, this));
@@ -1225,7 +1227,7 @@ impl Arena {
                 },
                 None => {
                     let tracked raw = perm.into_raw();
-                    meta.free(sets_ptr as *mut u8, core::alloc::Layout::new::<SetTable>(), Tracked((raw, claim)));
+                    meta.free(sets_ptr as *mut u8, core::alloc::Layout::new::<SetTable>(), Tracked((raw, claim)), Tracked(ord));
                     proof {
                         slot.perm = Some(Arena::unsplit(parts, classes, pad, this));
                     }
@@ -3823,7 +3825,7 @@ impl Arenas {
             // Never freed, so a reservation (page aligned, which covers the
             // 128-byte class state alignment) rather than an object.
             let align = layout.align().max(shared.regions.page_size());
-            let (s, Tracked(z)) = shared.meta.reserve_committed_raw(layout.size(), align);
+            let (s, Tracked(z)) = shared.meta.reserve_committed_raw(layout.size(), align, Tracked(ord));
             let s = s?;
             p = addr_to_ptr(s) as *mut Arena;
             proof {

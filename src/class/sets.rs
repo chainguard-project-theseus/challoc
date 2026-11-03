@@ -161,7 +161,7 @@ impl Lazy {
         // folios and the kernel can map them as such.
         let folio = crate::thp::meta_folio_size();
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
-        let (base, Tracked(z)) = meta.reserve_table(len, align.max(folio), Tracked(&mut claim));
+        let (base, Tracked(z)) = meta.reserve_table(len, align.max(folio), Tracked(&mut claim), Tracked(ord));
         let base = base?;
         proof {
             // The larger of two powers of two is a multiple of the smaller.
@@ -246,7 +246,7 @@ impl Lazy {
             // pages' part of it, and comes back before the error return.
             let ghost c0 = self.claim@@;
             let tracked mut claim = self.claim.borrow_mut().take();
-            let r = meta.commit(self.base + self.committed, want - self.committed, Ghost(self.side@), Tracked(&mut claim));
+            let r = meta.commit(self.base + self.committed, want - self.committed, Ghost(self.side@), Tracked(&mut claim), Tracked(ord));
             proof {
                 self.claim = Tracked(claim);
             }

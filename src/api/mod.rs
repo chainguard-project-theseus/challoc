@@ -1241,19 +1241,19 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
     let f = crate::heap::mallocx::Flags::decode(flags as u32);
     let _ = jemalloc::usable_for(shared, size, &f).unwrap_or(0);
     // `mallinfo2` after its `shared()`: its calls that carry a contract.
-    let first = crate::stats::Scratch::new(&shared.meta);
+    // Premise (lock order), as at an entry point: it holds no allocator
+    // lock.
+    let tracked mut ord = axiom_entry();
+    let first = crate::stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let _ = glibc::zero_info();
     if let Some(mut sc) = first {
         let tracked mut sd = Ghost((Seq::<crate::stats::ArenaStats>::empty(), Seq::<int>::empty()));
-        // Premise (lock order), as at an entry point: it holds no
-        // allocator lock.
-        let tracked mut ord = axiom_entry();
         let pair = sc.record();
         crate::stats::collect_all(shared, &mut pair.a, &mut pair.b, Tracked(&mut sd), Tracked(&mut ord));
         let all = &sc.get().a;
         let page = shared.regions.page_size();
         let _ = crate::stats::fig_mul(all.pdirty, page);
-        sc.free(&shared.meta);
+        sc.free(&shared.meta, Tracked(&mut ord));
     }
     // `challoc_features` after its `shared()`: the line's build on the
     // first request, or the wait for it.

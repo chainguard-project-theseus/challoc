@@ -1341,7 +1341,8 @@ fn stats_report(target: Target, shared: &Shared, o: &Opts, features: &str, Track
     // The record each arena's figures are collected into (about 6 KiB
     // with its bins), taken before any lock rather than on the caller's
     // stack, and given back before the report's last write.
-    let scratch = stats::Scratch::new(&shared.meta);
+    let tracked mut ord = ord;
+    let scratch = stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let mut sink = Sink::new(target, Tracked(ord));
     match scratch {
         Some(mut sc) => {
@@ -1350,7 +1351,8 @@ fn stats_report(target: Target, shared: &Shared, o: &Opts, features: &str, Track
             } else {
                 text_report(&mut sink, shared, o, &mut sc.record().a, features)
             };
-            sc.free(&shared.meta);
+            let tracked mut lent = sink.lend();
+            sc.free(&shared.meta, Tracked(&mut lent));
         },
         None => {
             let _ = no_memory(&mut sink);
@@ -1498,9 +1500,9 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Trac
     let shared = super::shared();
     // Premise (lock order): the report's C caller holds no allocator
     // lock, and `shared` releases every lock it takes before it returns.
-    let tracked ord = axiom_entry();
+    let tracked mut ord = axiom_entry();
     // The totals' and each arena's records, as in `stats_print`.
-    let scratch = stats::Scratch::new(&shared.meta);
+    let scratch = stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let mut sink = Sink::new(file_target(stream), Tracked(ord));
     pair_report(&mut sink, shared, scratch, true);
     sink.flush();
@@ -1517,9 +1519,9 @@ pub fn malloc_stats()
     let shared = super::shared();
     // Premise (lock order): the report's C caller holds no allocator
     // lock, and `shared` releases every lock it takes before it returns.
-    let tracked ord = axiom_entry();
+    let tracked mut ord = axiom_entry();
     // The totals' and each arena's records, as in `stats_print`.
-    let scratch = stats::Scratch::new(&shared.meta);
+    let scratch = stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let mut sink = Sink::new(stderr_target(), Tracked(ord));
     pair_report(&mut sink, shared, scratch, false);
     sink.flush();
@@ -1543,7 +1545,8 @@ fn pair_report<W: Write + Report>(sink: &mut W, shared: &Shared, scratch: Option
             } else {
                 glibc_stats(sink, shared, &mut pair.a, &mut pair.b)
             };
-            sc.free(&shared.meta);
+            let tracked mut lent = sink.lend();
+            sc.free(&shared.meta, Tracked(&mut lent));
         },
         None => {
             let _ = no_memory(sink);

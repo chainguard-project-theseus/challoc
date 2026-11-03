@@ -349,11 +349,10 @@ pub open spec fn rank_spare() -> int {
 /// rank, for the code under the guard; [`RawLock::lock_held`] raises a
 /// root in place. Every function that may take a lock takes its caller's
 /// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
-/// (the exceptions are `meta::Meta`'s methods but `Meta::stats`,
-/// [`axiom_meta_order`], and `huge::Huge::usable_size`,
-/// `heap::shared::Shared::check_size_hint` and `heap::shared::Shared::init`,
-/// [`axiom_entry`]). The fields are private to
-/// this module.
+/// (the exceptions are the entry points, whose token comes from
+/// [`axiom_entry`] or [`axiom_fork_entry`] (each lists its uses), and the
+/// decay walks' closures, [`axiom_below_class`] and [`axiom_below_huge`]).
+/// The fields are private to this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
 /// guard's borrow, which also borrows the caller's token: the caller's
@@ -433,21 +432,21 @@ impl<'a> LockOrder<'a> {
 /// - the report entry points of `api::print` (`malloc_stats_print`,
 ///   `malloc_info` and `malloc_stats`), one token per report: their C
 ///   caller holds no allocator lock, and `api::shared`, called first,
-///   releases every lock it takes before it returns. The report's sink
+///   releases every lock it takes before it returns. `stats::Scratch::new`
+///   takes the token before the sink is made; then the report's sink
 ///   holds the token and lends it to each call that may take a lock
 ///   (`stats::collect`, `stats::collect_arena`, `stats::collect_all`,
-///   `Shared::cgroup_now`, `ClassState::is_partial` and
-///   `policy::empty_bytes`) through `LockOrder::lend`, whose token
+///   `Shared::cgroup_now`, `ClassState::is_partial`, `stats::Scratch::free`
+///   and `policy::empty_bytes`) through `LockOrder::lend`, whose token
 ///   borrows the sink and is not a root, and the sink's flush (`emit`)
 ///   requires top 0;
 /// - the readers of `api::mallctl` (under `mallctl` and `mallctlbymib`,
 ///   `batch_query` and `experimental.utilization.query` among them), one
-///   token per reader or per `utilization` and `owner_of` call: the entry
-///   point holds no allocator lock, `ctl` and the readers take none
-///   themselves (but the metadata lock `stats::Scratch` takes and releases
-///   inside `Meta::alloc_raw` and `Meta::free`, under its own order), and
-///   each call the token is passed to releases every lock it takes before
-///   it returns;
+///   token per reader or per `utilization` and `owner_of` call, and one
+///   in `arena_figure` for its `stats::Scratch`'s `new` and `free` (which
+///   take the metadata lock): the entry point holds no allocator lock,
+///   `ctl` and the readers take none themselves, and each call the token
+///   is passed to releases every lock it takes before it returns;
 /// - `api::libc`'s `alloc_huge` without a thread heap, reached only from the
 ///   C entry points, and the entry point `malloc_trim`: their callers hold
 ///   no allocator lock, and `malloc_trim`'s
@@ -462,12 +461,14 @@ impl<'a> LockOrder<'a> {
 ///   `ClassState::lowest_partial` and `ClassState::bin_stats` calls: a C
 ///   entry point, which holds no allocator lock, and each call releases the
 ///   class lock before it returns;
-/// - `api::glibc::mallinfo2`'s `stats::collect_all` call: its callers
-///   (the C exports `mallinfo2` and `mallinfo`, the latter through
-///   `api::glibc::mallinfo`, and the tests) hold no allocator lock, and
-///   `api::shared`, called first, releases its locks before it returns;
+/// - `api::glibc::mallinfo2`'s `stats::Scratch` and `stats::collect_all`
+///   calls: its callers (the C exports `mallinfo2` and `mallinfo`, the
+///   latter through `api::glibc::mallinfo`, and the tests) hold no
+///   allocator lock, and `api::shared`, called first, releases its locks
+///   before it returns;
 /// - the verification-only `api::theorem_read_only_never_aborts`, for its
-///   `stats::collect_all` call, which restates `mallinfo2`'s;
+///   `stats::Scratch` and `stats::collect_all` calls, which restate
+///   `mallinfo2`'s;
 /// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes
@@ -554,20 +555,6 @@ pub(crate) axiom fn axiom_below_class<'a>() -> (tracked o: LockOrder<'a>)
 pub(crate) axiom fn axiom_below_huge<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.allows(rank_huge()),
-        !o.root(),
-;
-
-/// Premise: the calling thread holds only allocator locks ranked below the
-/// metadata lock ([`rank_meta`]). Stands in for the token `meta::Meta`'s
-/// methods would take from their callers: only `Meta::stats` takes one so
-/// far, and the others would change about 20 signatures. Its uses are
-/// the acquisitions in the other `Meta` methods.
-///
-/// Checked by `lock::tests::entry_lock_order_uses_are_listed`, which pins
-/// its uses to those `Meta` methods.
-pub axiom fn axiom_meta_order<'a>() -> (tracked o: LockOrder<'a>)
-    ensures
-        o.allows(rank_meta()),
         !o.root(),
 ;
 
@@ -1219,8 +1206,6 @@ mod tests {
     /// to the functions its doc lists, so a new one fails here until the
     /// doc argues its premise (a count of 1 where the doc says one token,
     /// otherwise none: some take one token per call they make).
-    /// `axiom_meta_order` is pinned to the `Meta` methods that take the
-    /// metadata lock.
     #[test]
     fn entry_lock_order_uses_are_listed() {
         use crate::testutil::{ANY, assert_only_at};
@@ -1252,6 +1237,7 @@ mod tests {
                 ("api/mallctl.rs:", "pub fn owner_of(", ANY),
                 ("api/mallctl.rs:", "fn tracked(", ANY),
                 ("api/mallctl.rs:", "fn arena_stats_into(", ANY),
+                ("api/mallctl.rs:", "fn arena_figure(", ANY),
                 ("api/mallctl.rs:", "fn ctl(", ANY),
                 // `api::libc`'s `alloc_huge` and `malloc_trim`.
                 ("api/libc.rs:", "fn alloc_huge(", ANY),
@@ -1289,19 +1275,6 @@ mod tests {
                 // The slow paths.
                 ("heap/paths.rs:", "pub(super) fn alloc_slow_in(", ANY),
                 ("heap/paths.rs:", "pub(super) fn free_slow_in(", ANY),
-            ],
-        );
-        assert_only_at(
-            concat!("axiom_", "meta_order("),
-            &[
-                ("meta.rs:", "pub fn alloc(", 1),
-                ("meta.rs:", "pub fn alloc_raw(", 1),
-                ("meta.rs:", "pub fn alloc_zeroed(", 1),
-                ("meta.rs:", "pub fn free(", 1),
-                ("meta.rs:", "pub fn reserve(", 1),
-                ("meta.rs:", "pub fn reserve_table(", 1),
-                ("meta.rs:", "pub fn commit(", 1),
-                ("meta.rs:", "pub fn reserve_committed_raw(", 1),
             ],
         );
     }

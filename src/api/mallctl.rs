@@ -2691,7 +2691,10 @@ fn arena_figure(m: &[usize], fig: Fig, Tracked(mark): Tracked<&'static ReadyMark
         r matches Err(e) ==> e == ENOENT || e == EAGAIN,
 {
     let shared = shared(Tracked(mark));
-    let Some(mut sc) = stats::Scratch::new(&shared.meta) else {
+    // Premise (lock order): a reader under the `mallctl` entry points,
+    // which hold no lock; for the scratch record's metadata lock.
+    let tracked mut ord = axiom_entry();
+    let Some(mut sc) = stats::Scratch::new(&shared.meta, Tracked(&mut ord)) else {
         return Err(EAGAIN);
     };
     let r = match arena_stats_into(shared, at(m, 2), &mut sc.record().a) {
@@ -2726,7 +2729,7 @@ fn arena_figure(m: &[usize], fig: Fig, Tracked(mark): Tracked<&'static ReadyMark
             }
         },
     };
-    sc.free(&shared.meta);
+    sc.free(&shared.meta, Tracked(&mut ord));
     r
 }
 
