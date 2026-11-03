@@ -605,6 +605,7 @@ impl Regions {
             r.huge_base == huge.0 && r.huge_len == huge.1,
             r.meta_base == meta.0 && r.meta_len == meta.1,
             r.lg_page == lg_page,
+            r.superblock_map == maps[0] && r.huge_map == maps[1] && r.meta_map == maps[2],
             forall|c: int| 0 <= c < NCLASSES ==>
                 #[trigger] r.class_base[c] == superblock + ((c as usize) << lg_stride) + offsets[c],
     {
@@ -1689,6 +1690,177 @@ impl Regions {
         self.lemma_slot_aligned_in(c, p, align);
     }
 
+    /// The regions are inside their three reservations
+    /// ([`Regions::mapped`]) with [`MAX_SLAB`] of slack around each
+    /// ([`Regions::padded`]). Opaque, so that the contracts that only carry
+    /// it from `Regions::reserve_owning` to `Shared::built` keep the two
+    /// quantified facts out of their queries.
+    #[verifier::opaque]
+    pub open spec fn fenced(self) -> bool {
+        self.mapped() && self.padded()
+    }
+
+    /// Every region keeps [`MAX_SLAB`] of its own reservation on each
+    /// side: each class region starts at least `MAX_SLAB` above its
+    /// stride's start and ends at least `MAX_SLAB` below its stride's end,
+    /// and the huge and metadata regions have at least `MAX_SLAB` of their
+    /// mappings below and above them. [`Regions::reserve_owning`] draws
+    /// the class offsets and the two slides so ([`Regions::slack_ok`]
+    /// checks the same at run time).
+    pub open spec fn padded(self) -> bool {
+        let stride = (1usize << self.lg_stride) as int;
+        let region = (1usize << self.lg_region) as int;
+        let slack = MAX_SLAB as int;
+        &&& forall|c: int| 0 <= c < NCLASSES ==> {
+            &&& self.superblock + c * stride + slack <= #[trigger] self.class_base[c]
+            &&& self.class_base[c] + region + slack <= self.superblock + (c + 1) * stride
+        }
+        &&& self.huge_map.addr + slack <= self.huge_base
+        &&& self.huge_base + self.huge_len + slack <= self.huge_map.addr + self.huge_map.len
+        &&& self.meta_map.addr + slack <= self.meta_base
+        &&& self.meta_base + self.meta_len + slack <= self.meta_map.addr + self.meta_map.len
+    }
+
+    /// Byte `x` is in class `c`'s region.
+    pub open spec fn in_class(self, c: int, x: int) -> bool {
+        &&& self.class_base[c] <= x
+        &&& x < self.class_base[c] + (1usize << self.lg_region)
+    }
+
+    /// Byte `x` is in the huge region.
+    pub open spec fn in_huge(self, x: int) -> bool {
+        &&& self.huge_base <= x
+        &&& x < self.huge_base + self.huge_len
+    }
+
+    /// Byte `g` is reservation slack: inside one of the three reservations
+    /// ([`Regions::in_mapping`]) but in no class region, not in the huge
+    /// region and not in the metadata region. The reservations are
+    /// `PROT_NONE` (`try_reserve`), and challoc commits, purges and
+    /// reprotects only inside its regions, so such a byte is never
+    /// committed, unless the program itself maps or reprotects over it
+    /// where `mseal` is unavailable; [`Regions::never_committed`] lists
+    /// these ranges for `mseal`.
+    pub open spec fn slack_byte(self, g: int) -> bool {
+        &&& self.in_mapping(g, 1)
+        &&& forall|c: int| 0 <= c < NCLASSES ==> !#[trigger] self.in_class(c, g)
+        &&& !self.in_huge(g)
+        &&& !self.in_meta(g, 1)
+    }
+
+    /// The [`MAX_SLAB`] bytes from `lo` on are all reservation slack
+    /// ([`Regions::slack_byte`]).
+    pub open spec fn slack_run(self, lo: int) -> bool {
+        forall|g: int| lo <= g < lo + MAX_SLAB ==> #[trigger] self.slack_byte(g)
+    }
+
+    /// Byte `b` is out of bounds for a linear overflow from byte `a`: `b`
+    /// is in the metadata region or the process's `Shared` static, or in a
+    /// class region or the huge region that does not hold `a`. Other
+    /// allocator state (the `api` statics outside `Shared`, the thread
+    /// pointer's TLS slot) is not named.
+    pub open spec fn foreign(self, a: int, b: int) -> bool {
+        ||| self.in_meta(b, 1)
+        ||| shared_static_addr() <= b < shared_static_addr() + shared_static_len()
+        ||| exists|k: int| 0 <= k < NCLASSES && #[trigger] self.in_class(k, b) && !self.in_class(k, a)
+        ||| self.in_huge(b) && !self.in_huge(a)
+    }
+
+    /// Overflow reach, over the regions: from a byte `a` of a class region
+    /// or of the huge region, every [`foreign`](Regions::foreign) byte `b`,
+    /// above `a` or below it, has a whole [`MAX_SLAB`] run of reservation
+    /// slack ([`Regions::slack_run`]) between them. The run is the one
+    /// right after `a`'s region (for `b > a`) or right before it (for
+    /// `b < a`), inside `a`'s own reservation ([`Regions::padded`]); every
+    /// other region and the `Shared` static lie beyond it, in another
+    /// stride or outside `a`'s reservation ([`Regions::separated`],
+    /// [`Regions::mapped`]). No gap between the three reservations is
+    /// assumed: they only have to be disjoint.
+    pub proof fn lemma_overflow_reach(self, a: int, b: int)
+        requires
+            self.wf(),
+            self.separated(),
+            self.mapped(),
+            self.padded(),
+            (exists|c: int| 0 <= c < NCLASSES && #[trigger] self.in_class(c, a)) || self.in_huge(a),
+            self.foreign(a, b),
+        ensures
+            exists|lo: int|
+                ((a < lo && lo + MAX_SLAB <= b) || (b < lo && lo + MAX_SLAB <= a)) && #[trigger] self.slack_run(lo),
+    {
+        assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+        let stride = (1usize << self.lg_stride) as int;
+        let region = (1usize << self.lg_region) as int;
+        if exists|c: int| 0 <= c < NCLASSES && #[trigger] self.in_class(c, a) {
+            let c = choose|c: int| 0 <= c < NCLASSES && #[trigger] self.in_class(c, a);
+            let lo = if b > a { self.class_base[c] + region } else { self.class_base[c] - MAX_SLAB };
+            assert(self.superblock + c * stride + MAX_SLAB <= self.class_base[c]);
+            assert(self.class_base[c] + region + MAX_SLAB <= self.superblock + (c + 1) * stride);
+            assert(0 <= c * stride && (c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+                requires
+                    0 <= c < NCLASSES,
+                    stride >= 0,
+            ;
+            // The run is in stride `c`, beside class `c`'s region; every
+            // other class region is in another stride.
+            assert(self.superblock + c * stride <= lo && lo + MAX_SLAB <= self.superblock + (c + 1) * stride);
+            assert forall|k: int| 0 <= k < NCLASSES && k != c implies {
+                ||| self.class_base[k] + region <= self.superblock + c * stride
+                ||| self.superblock + (c + 1) * stride <= self.class_base[k]
+            } by {
+                if k < c {
+                    assert(self.class_base[k] + region <= self.superblock + (k + 1) * stride);
+                    assert((k + 1) * stride <= c * stride) by (nonlinear_arith)
+                        requires
+                            k + 1 <= c,
+                            stride >= 0,
+                    ;
+                } else {
+                    assert(self.superblock + k * stride <= self.class_base[k]);
+                    assert((c + 1) * stride <= k * stride) by (nonlinear_arith)
+                        requires
+                            c + 1 <= k,
+                            stride >= 0,
+                    ;
+                }
+            }
+            assert forall|g: int| lo <= g < lo + MAX_SLAB implies #[trigger] self.slack_byte(g) by {
+                assert forall|k: int| 0 <= k < NCLASSES implies !#[trigger] self.in_class(k, g) by {
+                    if k != c {
+                        assert(self.class_base[k] + region <= self.superblock + c * stride
+                            || self.superblock + (c + 1) * stride <= self.class_base[k]);
+                    }
+                }
+            }
+            assert(self.slack_run(lo));
+            // Every foreign `b` lies beyond the run: the metadata region,
+            // the huge region and the static are outside the strides, and
+            // every other class region is in another stride.
+            if exists|k: int| 0 <= k < NCLASSES && #[trigger] self.in_class(k, b) && !self.in_class(k, a) {
+                let k = choose|k: int| 0 <= k < NCLASSES && #[trigger] self.in_class(k, b) && !self.in_class(k, a);
+                assert(self.class_base[k] + region <= self.superblock + c * stride
+                    || self.superblock + (c + 1) * stride <= self.class_base[k]);
+            }
+            assert((a < lo && lo + MAX_SLAB <= b) || (b < lo && lo + MAX_SLAB <= a));
+        } else {
+            let lo = if b > a { self.huge_base + self.huge_len } else { self.huge_base - MAX_SLAB };
+            // The run is in the huge reservation, outside the huge region;
+            // every class region is in the superblock's reservation and
+            // the metadata region in its own, both apart from the huge one.
+            assert forall|g: int| lo <= g < lo + MAX_SLAB implies #[trigger] self.slack_byte(g) by {
+                assert forall|k: int| 0 <= k < NCLASSES implies !#[trigger] self.in_class(k, g) by {
+                    self.lemma_class_in_strides(k);
+                }
+            }
+            assert(self.slack_run(lo));
+            if exists|k: int| 0 <= k < NCLASSES && #[trigger] self.in_class(k, b) && !self.in_class(k, a) {
+                let k = choose|k: int| 0 <= k < NCLASSES && #[trigger] self.in_class(k, b) && !self.in_class(k, a);
+                self.lemma_class_in_strides(k);
+            }
+            assert((a < lo && lo + MAX_SLAB <= b) || (b < lo && lo + MAX_SLAB <= a));
+        }
+    }
+
     /// [`Regions::lemma_slot_aligned`] for any slot start of class `c`,
     /// guard slabs included, from the alignment of the class's base alone
     /// (which [`Regions::separated`] gives every class base).
@@ -2458,6 +2630,7 @@ mod linux {
                 res.0.separated(),
                 res.0.ready(),
                 res.0.mapped(),
+                res.0.fenced(),
                 res.1@.addr() == res.0.meta_base,
                 res.1@.len() == res.0.meta_len,
         {
@@ -2613,6 +2786,7 @@ mod linux {
                     MAX_SLAB == 0x40_0000,
                     forall|j: int| 0 <= j < c ==>
                         offset_ok(#[trigger] offsets[j], class_table()[j].lg_slab as u32, lg_page) && offsets[j] < gap,
+                    forall|j: int| 0 <= j < c ==> MAX_SLAB <= #[trigger] offsets[j] && offsets[j] + MAX_SLAB <= gap,
             {
                 offsets[c] = class_offset(word(&rnd, c) as usize, gap);
                 let ghost a = offsets[c as int];
@@ -2713,6 +2887,20 @@ mod linux {
                 lg_page,
                 [sb_map, huge_map, meta_map],
             );
+            proof {
+                // `Regions::padded`, from the class offsets' bounds and the
+                // slides' (asserted above).
+                let stride = (1usize << lg_stride) as int;
+                assert forall|c: int| 0 <= c < NCLASSES implies {
+                    &&& superblock + c * stride + MAX_SLAB <= #[trigger] r.class_base[c]
+                    &&& r.class_base[c] + (1usize << lg_region) + MAX_SLAB <= superblock + (c + 1) * stride
+                } by {
+                    super::lemma_shl_mul(c as usize, lg_stride);
+                    assert(MAX_SLAB <= offsets[c] && offsets[c] + MAX_SLAB <= gap);
+                    assert((c + 1) * stride == c * stride + stride) by (nonlinear_arith);
+                }
+                reveal(Regions::fenced);
+            }
             // Design 2: every region keeps `MAX_SLAB` of its reservation's
             // never-committed slack on both sides, whatever was drawn.
             if !r.slack_ok() {

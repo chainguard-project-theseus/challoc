@@ -204,6 +204,26 @@ axiom fn axiom_process_shared()
         super::pac_mode() == (shared_at(shared_storage()).push_flags & PUSH_PAC != 0),
 ;
 
+/// Once the allocator is published, the process's regions are the
+/// published `Shared`'s ([`Shared::built`]): well formed, separated, inside
+/// their three reservations with `MAX_SLAB` of slack around each region,
+/// as `Shared::init` requires of the regions `Regions::reserve_owning`
+/// hands it.
+pub proof fn lemma_process_padded()
+    requires
+        crate::api::ready(),
+    ensures
+        crate::layout::process_regions().wf(),
+        crate::layout::process_regions().separated(),
+        crate::layout::process_regions().mapped(),
+        crate::layout::process_regions().padded(),
+{
+    let tracked published = crate::api::axiom_published();
+    axiom_process_shared();
+    assert(published.shared.value().built());
+    reveal(crate::layout::Regions::fenced);
+}
+
 impl Shared {
     /// [`shared_storage`], for modules outside `heap`.
     pub open spec fn storage() -> *mut Shared {
@@ -217,8 +237,10 @@ impl Shared {
 
     /// What `Shared::init` establishes of the value it builds, and nothing
     /// changes afterwards (the fields it names are written once, before the
-    /// `Shared` is published): the address-space layout is well formed and
-    /// separated and is the process's ([`crate::layout::process_regions`]),
+    /// `Shared` is published): the address-space layout is well formed,
+    /// separated, inside its three reservations with `MAX_SLAB` of slack
+    /// around each region (`Regions::fenced`) and is the
+    /// process's ([`crate::layout::process_regions`]),
     /// and `meta` allocates from the metadata region and is the process's
     /// (its claims to reserved pages are
     /// [`process_pages_id`](crate::meta::process_pages_id)'s, on the
@@ -239,6 +261,7 @@ impl Shared {
         &&& self.regions.wf()
         &&& self.regions == crate::layout::process_regions()
         &&& self.regions.separated()
+        &&& self.regions.fenced()
         &&& self.region_hi == !(((1usize << self.regions.lg_region) - 1) as usize)
         &&& self.huge.spec_base() == self.regions.huge_base
         &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
@@ -2042,6 +2065,7 @@ impl Shared {
             this == shared_storage(),
             regions.wf(),
             regions.separated(),
+            regions.fenced(),
             regions.ready(),
             space@.addr() == regions.meta_base,
             space@.len() == regions.meta_len,

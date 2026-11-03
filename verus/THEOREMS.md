@@ -43,7 +43,13 @@ a source test (`environment_has_one_reader`, `config.rs:3162`), not
 Verus (`verus/RESULTS.md`). Main also proves
 `heap::thread::theorem_exit_no_rebuild` (`heap/thread.rs:509`), which
 #138 lacks: its section, "Thread exit never reuses a destroyed heap",
-comes after theorem 46 and is not numbered. Theorem 45's table was
+comes after theorem 46 and is not numbered. It also proves `theorem_overflow_reach`
+(`heap/mod.rs:298`), which #138 lacks and this file does not number:
+between any byte of a block that `fits` and any byte of the metadata
+region, the `Shared` static, another class region or the huge region,
+above or below it, lies a `MAX_SLAB` (4 MiB) run of challoc's own
+reservation outside every region (`Regions::slack_run`); its scope and
+trusted facts are in `verus/RESULTS.md`. Theorem 45's table was
 measured on main at `98790244`, not `45efb38c` (its section's "Changed
 since #138" note). Verification-only functions are
 `cfg(verus_keep_ghost)` on main (`cfg(verus_only)` in #138). As
