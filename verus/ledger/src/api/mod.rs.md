@@ -106,7 +106,7 @@ axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, Sta
 ## `state_load`
 
 src/api/mod.rs:609. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready; not checked: this body, which the models replace with loom's `load` inside a copy of the init steps, with the callers tests/loom/src/init.rs states; the C11 argument above that the permission's value is `STATE`'s last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `STATE.load(Acquire)`: the permission's value.
 
@@ -121,7 +121,7 @@ fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
 ## `state_claim`
 
 src/api/mod.rs:625. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the init steps, with the callers tests/loom/src/init.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)` when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value it has otherwise, left unchanged.
 
@@ -137,7 +137,7 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
 ## `state_publish`
 
 src/api/mod.rs:640. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready; not checked: this body, which the models replace with loom's `store` inside a copy of the init steps, with the callers tests/loom/src/init.rs states (the readback after the store is a load the model adds); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `STATE`'s `READY` store, `Release`.
 
@@ -152,7 +152,7 @@ fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
 ## `line_load`
 
 src/api/mod.rs:698. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `load` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above that the permission's value is `LINE_STATE`'s last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `LINE_STATE.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
@@ -170,7 +170,7 @@ fn line_load(ordering: Ordering, Tracked(perm): Tracked<&LinePerm>) -> (r: u8)
 ## `line_compare_exchange`
 
 src/api/mod.rs:719. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `LINE_STATE.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when it held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
 
@@ -195,7 +195,7 @@ fn line_compare_exchange(
 ## `line_store`
 
 src/api/mod.rs:744. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `store` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `LINE_STATE.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -273,7 +273,7 @@ fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Trac
 ## `init_slow`
 
 src/api/mod.rs:1355. Kind: no_decreases. Category: termination.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time; termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
 

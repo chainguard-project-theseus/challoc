@@ -123,10 +123,33 @@ original's lines and the copy's, and `seams.sh --check` fails unless
 they are in place; where rows mark the two sides (`NAME:orig`,
 `NAME:copy` and their `-only` rows), it also fails unless the copy's
 rows equal the original's but for the `-only` ones.
+`loom: <mod>::<test>` names a loom model, a `#[test]` fn of
+`tests/loom/src/<mod>.rs`, which the `loom` and `loom-count` checks
+(`.chainguard/ci/lint.yaml`) run under every interleaving loom reaches.
+A model runs a copy of the code it checks (challoc's statics are built
+in `const` context, which loom cannot construct;
+`tests/loom/tests/pins.rs` keeps the copied lines in place), not the
+item's own body, so a seam that cites one is at most partly checked, and
+`seams.sh --check` fails on a "discharged" status that cites `loom:`. It
+also fails unless the model is no `#[should_panic]` control, its doc
+comment or body names the seam's function in backquotes (`Type::fn` for
+a method, else `m::fn` with `m` the source file's module, after any
+path), and its file names the seam's source file (`src/a/b.rs`, or
+`a/b.rs` in a directory). A model may be `#[ignore]`d: the `loom-count`
+check runs those (`--ignored`) on changes to the loom crate or the code
+they copy.
+`sh verus/seams-mutants.sh` checks that `--check`'s self-tests catch
+weakened forms of this rule.
+The weak-memory argument a loom citation rests on (C++20's coherence
+and read-modify-write rules for one atomic, and the release/acquire
+edges the models check) is the comment above the seam's overrides line,
+with `verus/WEAKMEM.md`; `tests/loom/tests/access.rs` checks, by
+matching source text, the source-wide facts those arguments state
+(atomic writes only through the wrappers, one permission per atomic).
 A check that covers only part of the contract leaves the
 status "trusted", with a note that names the check and what it does
 not cover: `trusted (partly checked, <check>; not checked: <what>)`,
 where `<check>` is `Kani: <harness path>`, `const assert: <label> in
-<file>`, `Isla: <file>`, `emptyasm: <fn> in <file>`, or several joined
-by `, and`. A list separates
+<file>`, `Isla: <file>`, `emptyasm: <fn> in <file>`, `loom:
+<mod>::<test>`, or several joined by `, and`. A list separates
 its items with `, ` or ` and `, and ends at `;`, `)` or the next tag.

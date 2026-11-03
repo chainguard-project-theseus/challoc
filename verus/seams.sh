@@ -46,9 +46,13 @@
 # `emptyasm: <fn> in <file>` and the seam is not `<fn>` of `<file>`, not
 # exactly one row of verus/emptyasm/blocks.txt names them, or the seam's
 # item holds other than one asm! call with the empty template
-# `"/* {0} */"`; and when a line verus/kani/pins.txt lists (the source a
-# Kani harness runs a copy of) is not in place, or a copy those lines
-# mark differs from its original but for the rows marked `-only`.
+# `"/* {0} */"`; or `loom: <mod>::<test>` and tests/loom/src/<mod>.rs has
+# no `#[test]` fn <test> outside `#[should_panic]` whose doc comment or
+# body names the seam's function, or the file does not name the seam's
+# source file, or the status is "discharged" (a loom model runs a copy);
+# and when a line verus/kani/pins.txt lists (the source a Kani harness
+# runs a copy of) is not in place, or a copy those lines mark differs from
+# its original but for the rows marked `-only`.
 # The output depends only on the tree: files are read in byte order.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -544,13 +548,17 @@ $render"
 
 # The checks the overrides statuses cite: one line `<overrides file> <tag>
 # <item>` per item of each `Kani: a, b and c`, `const assert: a, b and
-# c`, `Isla: FILE` or `emptyasm: a` list (up to `;`, `)` or the next
-# tag), tag `Kani`, `assert`, `Isla` (its item `<seam> in FILE`) or
-# `emptyasm` (its item `<seam> @ <fn> in <file>`); `none` for a
-# "discharged" or "partly checked" status, or a list, that cites nothing.
+# c`, `Isla: FILE`, `emptyasm: a` or `loom: a` list (up to `;`, `)` or
+# the next tag), tag `Kani`, `assert`, `Isla` (its item `<seam> in FILE`),
+# `emptyasm` (its item `<seam> @ <fn> in <file>`) or `loom` (its item
+# `<seam> @ <mod>::<test>`); `none` for a
+# "discharged" or "partly checked" status, or a list, that cites nothing;
+# and `loomdischarged` (its item the seam) for a "discharged" status that
+# cites `loom:`, which a model running a copy cannot give. Reads the
+# overrides files given.
 cites() {
-  for o in $ovfiles; do
-    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla"; tag["emptyasm: "] = "emptyasm" }
+  for o in "$@"; do
+    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla"; tag["emptyasm: "] = "emptyasm"; tag["loom: "] = "loom" }
     !/^#/ && NF >= 4 {
       k = 0
       for (t in tag) {
@@ -560,12 +568,13 @@ cites() {
           n = split(l, h, /,? and |, */); m = 0
           for (j = 1; j <= n; j++) {
             if (index(h[j], ": ")) break
-            if (h[j] != "") { print o, tag[t], (tag[t] == "Isla" ? $1 " in " h[j] : (tag[t] == "emptyasm" ? $1 " @ " h[j] : h[j])); m++ }
+            if (h[j] != "") { print o, tag[t], (tag[t] == "Isla" ? $1 " in " h[j] : (tag[t] == "emptyasm" || tag[t] == "loom" ? $1 " @ " h[j] : h[j])); m++ }
           }
           k++; if (m == 0) print o, "none", $1
         }
       }
       if (k == 0 && $4 ~ /^(discharged|trusted \(partly checked)/) print o, "none", $1
+      if ($4 ~ /^discharged/ && index($4, "loom: ")) print o, "loomdischarged", $1
     }' "$o"
   done
 }
@@ -743,6 +752,67 @@ emptyitem() {
     END { exit !(n == 1 && e == 1) }'
 }
 
+# loomtest DIR OVERRIDES '<seam> @ <mod>::<test>': exit 0 if DIR/<mod>.rs
+# (DIR is tests/loom/src, the loom models) names the source file of
+# OVERRIDES in backquotes (`src/a/b.rs`, or `a/b.rs` for a file in a
+# directory) and has a top-level `#[test]` fn <test>, not `#[should_panic]`
+# (a control fails by design), whose doc comment or body names the seam's
+# function in backquotes: `Type::fn` for a method, else `m::fn` with `m`
+# the source file's module (`b`; the directory's for a `mod.rs`), alone
+# or after a path (`a::m::fn`), the name without `#N`.
+loomtest() {
+  lt_c=${3#* @ }; lt_mod=${lt_c%%::*}; lt_t=${lt_c#*::}
+  case $lt_c in *::*) ;; *) return 1 ;; esac
+  lt_src=${2#*verus/ledger/}; lt_src=${lt_src%.overrides}; lt_name=${3%% @ *}; lt_name=${lt_name%%#*}
+  case $lt_mod in *[!A-Za-z0-9_]* | '') return 1 ;; esac
+  case $lt_t in *[!A-Za-z0-9_]* | '') return 1 ;; esac
+  [ -f "$1/$lt_mod.rs" ] || return 1
+  case $lt_name in
+    *::*) ;;
+    *) lt_m=${lt_src%.rs}; case $lt_m in */mod) lt_m=${lt_m%/mod} ;; esac
+       lt_name=${lt_m##*/}::$lt_name ;;
+  esac
+  lt_s2=${lt_src#src/}; case $lt_s2 in */*) ;; *) lt_s2=$lt_src ;; esac
+  awk -v t="$lt_t" -v name="$lt_name" -v s1="\`$lt_src\`" -v s2="\`$lt_s2\`" '
+    # Whether a backquoted span of s is name, or a path ending in ::name.
+    function names(s,    n, p, i, sp, k) {
+      n = split(s, p, "`"); k = length(name)
+      for (i = 2; i <= n; i += 2) {
+        sp = p[i]
+        if (sp == name) return 1
+        if (length(sp) > k + 2 && substr(sp, length(sp) - k - 1) == "::" name &&
+          substr(sp, 1, length(sp) - k - 2) ~ /^[A-Za-z0-9_]+(::[A-Za-z0-9_]+)*$/) return 1
+      }
+      return 0
+    }
+    index($0, s1) || index($0, s2) { file = 1 }
+    body && $0 == "}" { body = 0; if (names(text)) found = 1; next }
+    body { text = text " " $0; next }
+    /^\/\/\/( |$)/ { if (!indoc) { doc = ""; attrs = "" } doc = doc " " $0; indoc = 1; next }
+    /^#\[/ { attrs = attrs $0; indoc = 0; next }
+    $0 == "fn " t "() {" && index(attrs, "#[test]") && !index(attrs, "#[should_panic") { body = 1; text = doc }
+    { doc = ""; attrs = ""; indoc = 0 }
+    END { exit !(file && found) }
+  ' "$1/$lt_mod.rs"
+}
+
+# checkcite OVERRIDES TAG ITEM: one line of cites (its loom models in
+# $loomdir, tests/loom/src by default): nothing when the cited check
+# resolves, else the error. A loom model runs a copy of the code it checks
+# (tests/loom/src/lib.rs), not the item's own body, so a status citing one
+# is at most partly checked: `loomdischarged` is always an error.
+checkcite() {
+  case $2 in
+    Kani) harness "$3" || echo "seams: $1: Kani: $3 names no #[kani::proof] fn" ;;
+    assert) assertion "$3" || echo "seams: $1: const assert: $3 names no one labeled assertion" ;;
+    Isla) isla "$1" "$3" || echo "seams: $1: Isla: $3: no such seam heading" ;;
+    emptyasm) emptyasm "$1" "$3" || echo "seams: $1: emptyasm: ${3#* @ } is not this seam's fn and file, or names no one row of verus/emptyasm/blocks.txt" ;;
+    loom) loomtest "${loomdir:-tests/loom/src}" "$1" "$3" || echo "seams: $1: loom: ${3#* @ } is no #[test] outside #[should_panic] in ${loomdir:-tests/loom/src} naming ${3%% @ *} in a file naming its source file" ;;
+    loomdischarged) echo "seams: $1: $3: discharged by a loom model, which runs a copy (at most partly checked)" ;;
+    *) echo "seams: $1: $3: the status cites no check" ;;
+  esac
+}
+
 # pins PINS: for each file PINS (verus/kani/pins.txt, `FILE<TAB>LINE`
 # lines, with an optional third field, and `#` comments) names, the first
 # of its lines that FILE does not hold in place: the lines must appear in
@@ -853,15 +923,58 @@ case $mode in
       [ -f "$tmp/ledger/$md" ] || { echo "seams: $o: its source file has no seams" >&2; stale=1; }
     done
     # A status cites a check that is gone (renamed or removed), or none.
-    cites | while read -r o t c; do
-      case $t in
-        Kani) harness "$c" || echo "seams: $o: Kani: $c names no #[kani::proof] fn" ;;
-        assert) assertion "$c" || echo "seams: $o: const assert: $c names no one labeled assertion" ;;
-        Isla) isla "$o" "$c" || echo "seams: $o: Isla: $c: no such seam heading" ;;
-        emptyasm) emptyasm "$o" "$c" || echo "seams: $o: emptyasm: ${c#* @ } is not this seam's fn and file, or names no one row of verus/emptyasm/blocks.txt" ;;
-        *) echo "seams: $o: $c: the status cites no check" ;;
-      esac
-    done > "$tmp/cites"
+    # shellcheck disable=SC2086 # one word per overrides file
+    cites $ovfiles | while read -r o t c; do checkcite "$o" "$t" "$c"; done > "$tmp/cites"
+    # Self-test: a loom citation resolves only for a #[test] that is no
+    # control, whose doc or body names the seam's function (a method by
+    # `Type::fn`), in a file naming the seam's source file; and a
+    # discharged status citing loom is refused.
+    mkdir -p "$tmp/loom"
+    # shellcheck disable=SC2016
+    printf '%s\n' '//! A model of `src/vspec/count.rs`.' '' '/// Checks `count::fetch_add`.' '#[test]' 'fn loom_ok() {' '    run();' '}' '' \
+      '/// The control: `count::fetch_add` split.' '#[test]' '#[should_panic(expected = "x")]' 'fn loom_control() {' '    run();' '}' '' \
+      '/// Checks `count::fetch_add_split` and count::fetch_add.' '#[test]' 'fn loom_longer() {' '    run();' '}' '' \
+      '/// Checks `count::fetch_add`.' 'fn loom_untested() {' '    run();' '}' '' \
+      '/// Checks `init` and `SlabDesc::set_state` (`src/slab.rs`).' '#[test]' 'fn loom_method() {' '    run();' '}' '' \
+      '/// Checks `fetch_add`, not by its module.' '#[test]' 'fn loom_bare() {' '    run();' '}' '' \
+      '/// Checks `entry::store`, of another module.' '#[test]' 'fn loom_other_mod() {' '    run();' '}' > "$tmp/loom/m.rs"
+    # shellcheck disable=SC2016
+    printf '%s\n' '//! A model of `lock.rs`, not by its path.' '' '/// Checks `RawLock::lock_slow`.' '#[test]' 'fn loom_lock() {' '    run();' '}' > "$tmp/loom/n.rs"
+    loomtest "$tmp/loom" verus/ledger/src/vspec/count.rs.overrides 'fetch_add @ m::loom_ok' ||
+      echo "seams: self-test: loom: fetch_add @ m::loom_ok rejected, want resolved" >> "$tmp/cites"
+    loomtest "$tmp/loom" verus/ledger/src/slab.rs.overrides 'SlabDesc::set_state @ m::loom_method' ||
+      echo "seams: self-test: loom: SlabDesc::set_state @ m::loom_method rejected, want resolved" >> "$tmp/cites"
+    loomtest "$tmp/loom" verus/ledger/src/vspec/count.rs.overrides 'fetch_add#2 @ m::loom_ok' ||
+      echo "seams: self-test: loom: fetch_add#2 @ m::loom_ok rejected, want resolved" >> "$tmp/cites"
+    if loomtest "$tmp/loom" verus/ledger/src/lock.rs.overrides 'RawLock::lock_slow @ n::loom_lock'; then
+      echo "seams: self-test: loom: RawLock::lock_slow @ n::loom_lock (file names lock.rs only) resolved, want rejected" >> "$tmp/cites"
+    fi
+    for c in 'fetch_add @ m::loom_control' 'fetch_add @ m::loom_longer' 'fetch_add @ m::loom_untested' \
+        'fetch_add @ m::no_such_test' 'fetch_add @ no_such_mod::loom_ok' 'fetch_add @ loom_ok' 'store @ m::loom_ok' \
+        'fetch_add @ m::loom_bare' 'store @ m::loom_other_mod'; do
+      if loomtest "$tmp/loom" verus/ledger/src/vspec/count.rs.overrides "$c"; then echo "seams: self-test: loom: $c resolved, want rejected"; fi
+    done >> "$tmp/cites"
+    if loomtest "$tmp/loom" verus/ledger/src/vspec/byte.rs.overrides 'fetch_add @ m::loom_ok'; then
+      echo "seams: self-test: loom: fetch_add @ m::loom_ok from src/vspec/byte.rs resolved, want rejected" >> "$tmp/cites"
+    fi
+    if loomtest "$tmp/loom" verus/ledger/src/slab.rs.overrides 'SlabDesc::init @ m::loom_method'; then
+      echo "seams: self-test: loom: SlabDesc::init @ m::loom_method resolved, want rejected" >> "$tmp/cites"
+    fi
+    # End to end, through the same cites and checkcite --check runs on the
+    # real overrides: a partly checked status citing a resolving model
+    # passes, the same status discharged is refused, and one citing a
+    # control is refused.
+    o="$tmp/verus/ledger/src/vspec/count.rs.overrides"
+    mkdir -p "$(dirname "$o")"
+    printf 'fetch_add\tatomics primitive\tloom/GenMC\t%s\n' \
+      'trusted (partly checked, loom: m::loom_ok; not checked: x)' > "$o"
+    r=$(cites "$o" | while read -r ro rt rc; do loomdir="$tmp/loom" checkcite "$ro" "$rt" "$rc"; done)
+    [ -z "$r" ] || echo "seams: self-test: loom: a partly checked status citing m::loom_ok refused, want accepted: $r" >> "$tmp/cites"
+    for st in 'discharged (loom: m::loom_ok)' 'trusted (partly checked, loom: m::loom_control; not checked: x)'; do
+      printf 'fetch_add\tatomics primitive\tloom/GenMC\t%s\n' "$st" > "$o"
+      r=$(cites "$o" | while read -r ro rt rc; do loomdir="$tmp/loom" checkcite "$ro" "$rt" "$rc"; done)
+      [ -n "$r" ] || echo "seams: self-test: loom: status $st accepted, want refused" >> "$tmp/cites"
+    done
     # Self-test: paths that name no harness must be rejected, so a change
     # that makes the resolver accept everything fails here.
     for c in kani_proofs::ptr::no_such_harness kani::ptr::ptr_add \
@@ -895,7 +1008,8 @@ case $mode in
     # The item of each seam a status cites `emptyasm:` for must hold one
     # asm! call with the empty template (emptyitem), so a status stays
     # true when verus/emptyasm/run.sh does not run.
-    cites | while read -r o t c; do
+    # shellcheck disable=SC2086 # one word per overrides file
+    cites $ovfiles | while read -r o t c; do
       [ "$t" = emptyasm ] || continue
       seam=${c%% @ *}; src=${o#verus/ledger/}; src=${src%.overrides}
       l=$(awk -v h="## \`$seam\`" -v s="$src" '
@@ -980,7 +1094,8 @@ case $mode in
     # The asm! templates of the seams a status cites `Isla: FILE` for must
     # be the lines of the templates.txt next to FILE (islatemplates), so a
     # status stays true when no Isla tool runs.
-    cites | while read -r o t c; do
+    # shellcheck disable=SC2086 # one word per overrides file
+    cites $ovfiles | while read -r o t c; do
       [ "$t" = Isla ] || continue
       name=${c% in *}; file=${c##* in }; src=${o#verus/ledger/}; src=${src%.overrides}
       r=$(awk -v h="## \`$name\`" -v nm="$name" -v f="$file" -v s="$src" '

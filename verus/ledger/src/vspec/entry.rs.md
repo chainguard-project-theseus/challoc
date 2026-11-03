@@ -13,7 +13,7 @@ file.
 ## `store`
 
 src/vspec/entry.rs:75. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_store; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers); the pointers' provenance (the harness compares addresses); `T = Arena`, the instance challoc uses (checked at `T = u64`)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_store, and loom: narenas::loom_narenas_create_publishes; not checked: this body under concurrency, which the model replaces with loom's `store` inside copies of the `Arenas` steps, in the configuration tests/loom/src/narenas.rs states; the pointers' provenance (the harness compares addresses); `T = Arena`, the instance challoc uses (checked at `T = u64`); the C11 argument above that the permission's value is the entry's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -33,7 +33,7 @@ pub fn store<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): 
 ## `load`
 
 src/vspec/entry.rs:94. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_load; not checked: concurrent interleavings, where the orderings matter, and that the permission's value is the atomic's (the harness assumes every write goes through these wrappers); the pointers' provenance (the harness compares addresses); `T = Arena`, the instance challoc uses (checked at `T = u64`)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_load, and loom: narenas::loom_narenas_create_publishes; not checked: this body under concurrency, which the model replaces with loom's `load` inside copies of the `Arenas` steps, in the configuration tests/loom/src/narenas.rs states; the pointers' provenance (the harness compares addresses); `T = Arena`, the instance challoc uses (checked at `T = u64`); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 

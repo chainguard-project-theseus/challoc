@@ -7,4 +7,14 @@ pthread_join	FFI/syscall	none (assumption)
 spawn	FFI/syscall	none (assumption)
 shared_arg	raw pointer from C caller	none (assumption)
 # The thread's loop ends only when another thread withdraws the request.
-main	termination	none (assumption)
+# loom (verus/WEAKMEM.md): after a final `request(false)` (a
+# `Relaxed` store of `REQUESTED`, then `kick`'s `SeqCst` `fetch_add` of
+# `SEQ` and a futex wake), the thread's `SeqCst` load of `SEQ` before its
+# `requested()` check either comes after the kick in `SEQ`'s order, and
+# then synchronises with it (every write to `SEQ` is a `kick`, so the
+# value read heads or continues its release sequence) and reads the
+# withdrawal, or comes before it,
+# and then its `futex_wait` on the loaded value returns at once or is
+# woken. The exit models check that the thread returns in every execution
+# on a copy of the loop, with and without another kick in between.
+main	termination	loom/GenMC	trusted (partly checked, loom: exit::loom_exit_after_withdrawal and exit::loom_exit_after_withdrawal_with_waker; not checked: this body, which the models replace with a copy of the loop whose pass is its worst case for this property (no deadline); that each pass and the exit's state lock return; a `request(true)` after the withdrawal, which rightly keeps the thread running; the kernel's futex, which the models replace with a stand-in)
