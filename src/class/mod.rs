@@ -192,24 +192,20 @@ pub(crate) fn xorshift(state: &mut u64) -> u64 {
     x
 }
 
-} // verus!
-
-/// Fisher-Yates shuffle of `out` with [`xorshift`] ([`shuffle_zero`] with
-/// no tokens to carry).
+/// Fisher-Yates shuffle of `out` with [`xorshift`]: a permutation
+/// ([`permutes`]), whatever `rng` holds ([`shuffle_zero`] with no tokens
+/// to carry).
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64) {
-    shuffle_zero(
-        out,
-        rng,
-        Ghost::assume_new(),
-        Ghost::assume_new(),
-        Tracked::assume_new(),
-        Ghost::assume_new(),
-        Tracked::assume_new(),
-    );
+pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64)
+    ensures
+        final(out)@.len() == old(out)@.len(),
+        permutes(final(out)@, old(out)@),
+        forall|i: int| 0 <= i < old(out)@.len() ==> #[trigger] from_seq(final(out)@, old(out)@, i),
+{
+    let tracked mut z = Map::tracked_empty();
+    let tracked mut t = Map::tracked_empty();
+    shuffle_zero(out, rng, Ghost(false), Ghost(0), Tracked(&mut z), Ghost(None), Tracked(&mut t));
 }
-
-verus! {
 
 /// `z[i]` is a zero token covering `size` bytes of `s[i]`, for every entry.
 pub open spec fn tokens_cover(z: Map<int, Zeroed>, s: Seq<*mut u8>, size: int) -> bool {
@@ -2665,8 +2661,6 @@ impl ClassState {
     }
 }
 
-} // verus!
-
 impl ClassState {
     /// Claim up to `out.len()` slots, lowest address first, writing slot
     /// pointers to `out[..n]`. Each lock hold reserves from up to
@@ -2675,15 +2669,21 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn claim(
-        &self,
-        meta: &Meta,
-        out: &mut [*mut u8],
-        pubw: Tracked<&'static Published>,
-        ord: Tracked<&mut LockOrder>,
-    ) -> Claim {
-        self.claim_tokens(meta, out, Tracked::assume_new(), pubw, ord)
-            .0
+    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8], pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Claim)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
+            meta.is_process(),
+        ensures
+            *final(ord) == *old(ord),
+            r.n <= old(out)@.len(),
+            final(out)@.len() == old(out)@.len(),
+            slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
+    {
+        let tracked mut toks = SlotToks::empty();
+        self.claim_tokens(meta, out, Tracked(&mut toks), pubw, Tracked(ord)).0
     }
 
     /// [`claim`] for `slot_randomize` (design 4): the same slabs
@@ -2699,20 +2699,23 @@ impl ClassState {
     ///
     /// [`claim`]: ClassState::claim
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn claim_random(
-        &self,
-        meta: &Meta,
-        out: &mut [*mut u8],
-        rng: &mut u64,
-        pubw: Tracked<&'static Published>,
-        ord: Tracked<&mut LockOrder>,
-    ) -> Claim {
-        self.claim_random_zero(meta, out, rng, Tracked::assume_new(), pubw, ord)
-            .0
+    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Claim)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
+            meta.is_process(),
+        ensures
+            *final(ord) == *old(ord),
+            r.n <= old(out)@.len(),
+            final(out)@.len() == old(out)@.len(),
+            slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
+    {
+        let tracked mut toks = SlotToks::empty();
+        self.claim_random_zero(meta, out, rng, Tracked(&mut toks), pubw, Tracked(ord)).0
     }
 }
-
-verus! {
 
 /// `picks_sum` only grows along the picks.
 proof fn lemma_picks_sum_mono(p: Seq<Pick>, i: int, j: int)
