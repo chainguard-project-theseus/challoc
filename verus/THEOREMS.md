@@ -2422,10 +2422,8 @@ same membership, and no duplicates after exactly when none before.
 The production shuffle is `shuffle_zero`, which `claim_random_zero`
 calls. `shuffle` (`:199`) is a test-only wrapper
 (`cfg_attr(not(test), allow(dead_code))`, called only from
-`class/tests.rs`) that sits outside `verus!` on main and calls
-`shuffle_zero` with assumed ghost arguments; in #138 it was
-verified with the same `ensures`. That move is cosmetic: the theorem
-holds on main through `shuffle_zero`.
+`class/tests.rs`) that calls `shuffle_zero` with no tokens to carry
+and is verified with the same `ensures`.
 
 **Proof.** The Fisher-Yates loop (`for i in (1..len).rev()`, swap `i`
 with `j = xorshift(rng) % (i + 1)`) keeps `permutes(out@, old(out)@)` as
@@ -2477,8 +2475,7 @@ discharged by Kani in main's ledger) and vstd's multiset lemmas.
 **Changed since #138.** The statement is unchanged and holds on
 main: `shuffle_zero`, the shuffle `claim_random_zero` runs, is verified
 with the same `permutes`/`from_seq` ensures that #138's `shuffle`
-had. The test-only wrapper `shuffle` now sits outside `verus!`
-(cosmetic: no production code calls it).
+had, and so is the test-only wrapper `shuffle`.
 
 ## 12. Zero-on-free (at release)
 
@@ -7383,23 +7380,23 @@ arena has a free slot (a clear bit) or an unreserved one (`live <
 nslots`) at a quiescent hold, the claim does not return zero.
 
 **Covers.** Verified, in the code layer: `ClassState::claim_with`
-(`class/mod.rs:2870`), `plan` (`:3825`), `take` (`:4015`), `next_slab`
+(`class/mod.rs:2881`), `plan` (`:3848`), `take` (`:4038`), `next_slab`
 and `next_fresh_slab` (`class/fresh.rs:36`, `:127`). Modelled, as
 steps of `Proto` (the code's `protocol::Refill`, `Release` and `Purge`
 steps, `class/mod.rs`), and related to the code by premise: `finish`,
-`claim_prefix`, `release_word` (`class/mod.rs:4669`), `reopen`
-(`:4739`), `dec_live`, `on_live_zero` (`:4816`), `push_group` and
+`claim_prefix`, `release_word` (`class/mod.rs:4692`), `reopen`
+(`:4762`), `dec_live`, `on_live_zero` (`:4839`), `push_group` and
 `settle` (`class/decay.rs:1165`, `:1280`, which replaced `purge_group`)
-and `take_group`. `claim_tokens` (`class/mod.rs:2749`) and
-`claim_random_zero` (`:2776`) call `claim_with` with a local `ex`,
+and `take_group`. `claim_tokens` (`class/mod.rs:2760`) and
+`claim_random_zero` (`:2787`) call `claim_with` with a local `ex`,
 return its claim count unchanged and do not export the ensures (their
-signatures are the heap's interface). `claim` (`:2670`, which calls
-`claim_tokens`) and `claim_random` (`:2694`, which calls
+signatures are the heap's interface). `claim` (`:2672`, which calls
+`claim_tokens`) and `claim_random` (`:2702`, which calls
 `claim_random_zero`) are test-only wrappers
-(`cfg_attr(not(test), allow(dead_code))`) outside `verus!` on main, with
-placeholder tokens (`Tracked::assume_new()`); production code calls the
+(`cfg_attr(not(test), allow(dead_code))`), verified over the caller's
+`Published` witness and lock-order token; production code calls the
 verified `claim_tokens` and `claim_random_zero` directly
-(`heap/flush.rs:96`, `:98`; `heap/shared.rs:2907`). Machine code is unchanged on x86_64 (identical to a build of
+(`heap/flush.rs:96`, `:98`; `heap/shared.rs:3008`). Machine code is unchanged on x86_64 (identical to a build of
 `0c9cd77`); aarch64 was not linked here. The one exec edit binds
 `plan`'s `desc.live()` load to a local the ghost `seen` records.
 
@@ -7478,9 +7475,8 @@ are empty.
 **Changed since #138.** The theorem holds on main through the
 verified `claim_tokens` and `claim_random_zero`, which production code
 calls and whose contracts match #138's. The test-only wrappers
-`claim` and `claim_random` now sit outside `verus!` with placeholder
-tokens (`claim` calls `claim_tokens`); that is cosmetic. Stronger: `exhausted` gained
-`g.oauth@.id() == self.spec_oloc()`, and `take` (`class/mod.rs:4015`)
+`claim` and `claim_random` are verified over them. Stronger: `exhausted` gained
+`g.oauth@.id() == self.spec_oloc()`, and `take` (`class/mod.rs:4038`)
 now also ensures that a slab its hold did not fill stays in the partial
 set. The model (`class/complete.rs`) is unchanged apart from
 `lemma_example_clear`, which now also proves its states keep
