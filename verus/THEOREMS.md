@@ -49,9 +49,22 @@ between any byte of a block that `fits` and any byte of the metadata
 region, the `Shared` static, another class region or the huge region,
 above or below it, lies a `MAX_SLAB` (4 MiB) run of challoc's own
 reservation outside every region (`Regions::slack_run`); its scope and
-trusted facts are in `verus/RESULTS.md`. Theorem 45's table was
-measured on main at `98790244`, not `45efb38c` (its section's "Changed
-since #138" note). Verification-only functions are
+trusted facts are in `verus/RESULTS.md`. It also proves, unnumbered and absent
+from #138, `class::table::theorem_slab_commit_avoids_guards`
+(`class/table.rs:926`) and `huge::theorem_huge_commit_avoids_guards`
+(`huge/mod.rs:2164`): every `mprotect` read-write commit of a class
+region stays in the region and shares no byte with a guard slab, except
+one starting in the range's first page for which an
+`MADV_GUARD_INSTALL` of that page succeeded (the marker stays; the rest
+of the slab is committed); commits of a class in `thp:always`'s PMD-chunk
+mode, which places no guards, are claimed only to stay in the region; every
+huge commit or `MADV_GUARD_REMOVE`, made holding the huge lock (its
+cell's permission, from the caller's guard), stays in the huge region
+and shares no byte with the guard page of a live run of the lock's value
+other than the one being freed, whose token has come back. Freed runs'
+guards are not covered (wolfi-dev/challoc#397); scope and trusted facts
+are in `verus/RESULTS.md`. Theorem 45's table was measured on main at
+`98790244`, not `45efb38c` (its section's "Changed since #138" note). Verification-only functions are
 `cfg(verus_keep_ghost)` on main (`cfg(verus_only)` in #138). As
 in #138, a function that takes a lock also takes
 `Tracked<&mut LockOrder>` arguments, which the abridged signatures below

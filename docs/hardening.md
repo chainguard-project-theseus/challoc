@@ -166,6 +166,15 @@ at the run's end (the guard slab, or the uncommitted slab after the
 run), where with one commit per slab it faulted at the next slab. Those
 slabs are not guards and were never promised as such; the guard slabs
 themselves are unchanged.
+Verus proves that no commit reopens a live guard
+(`class::table::theorem_slab_commit_avoids_guards`,
+`huge::theorem_huge_commit_avoids_guards`): a class commit shares no
+byte with a guard slab, except one whose first page carries a marker
+the commit keeps (the rest of that slab is committed with it), and a
+huge commit or marker removal, made holding the huge lock, shares no
+byte with the guard page of a live run other than the one being freed,
+whose run token has come back. A class in `thp:always`'s PMD-chunk
+mode places no guards.
 
 ## Region edges
 
