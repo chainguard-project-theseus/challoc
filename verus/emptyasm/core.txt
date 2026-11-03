@@ -1,0 +1,11 @@
+# verus/emptyasm/core.txt: the inline-asm blocks of the Rust core library
+# that verus/emptyasm/run.sh accepts in the crate's assembly. None is one
+# of the seams of verus/emptyasm/blocks.txt (those come from src/).
+#
+#   FILE<TAB>CALL<TAB>WHAT
+#
+# A block whose `.loc` names a file ending in `/FILE` is accepted only if
+# the toolchain's copy of that file (the path the assembly names, or the
+# same path under `rustc --print sysroot`) holds CALL on the `.loc`'s line,
+# and the block is empty: no instruction, directive or comment line.
+library/core/src/hint.rs	intrinsics::black_box(	core::hint::black_box: rustc lowers the intrinsic to an inline-asm statement with an empty template (an optimization barrier), so it adds no instruction; stats::stack_mark calls it

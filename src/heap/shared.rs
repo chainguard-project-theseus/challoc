@@ -4047,11 +4047,79 @@ proof fn lemma_newton64(e: u64)
 
 } // verus!
 
-// The guard word: `guard_mask`, `tz`, `lg_guard` and the zero padding are
-// the line's last eight bytes, 8-aligned.
+// `ClassLine::guard_word`'s word: `guard_mask`, `tz`, `lg_guard` and the
+// zero padding are the line's last eight bytes, 8-aligned, and the target
+// is little-endian, as the contract takes the bytes of the one native
+// `u64` it reads.
 const _: () = assert!(
     core::mem::offset_of!(ClassLine, guard_mask) == 56
         && core::mem::offset_of!(ClassLine, tz) == 60
         && core::mem::offset_of!(ClassLine, lg_guard) == 61
         && core::mem::offset_of!(ClassLine, _pad) == 62
+        && cfg!(target_endian = "little")
 );
+
+/// Kani check of `ClassLine::guard_word`.
+#[cfg(kani)]
+mod kani_guard_word {
+    use super::ClassLine;
+    use core::mem::{offset_of, size_of};
+    use core::ptr;
+
+    impl ClassLine {
+        /// `guard_word`'s body without its x86_64 `asm!` block, which
+        /// Kani cannot run (it has no model of inline assembly; the
+        /// block's empty template is checked by `verus/emptyasm/run.sh`):
+        /// the load, copied verbatim, the copy and the original pinned in
+        /// `verus/kani/pins.txt`.
+        fn guard_word_load(&self) -> u64 {
+            // SAFETY: as `guard_word`'s.
+            #[allow(unused_mut)]
+            let mut gw = unsafe {
+                ptr::read(
+                    (self as *const ClassLine as *const u8)
+                        .add(core::mem::offset_of!(ClassLine, guard_mask))
+                        as *const u64,
+                )
+            };
+            gw
+        }
+    }
+
+    /// `ClassLine::guard_word`, `requires` the padding zero, `ensures r ==
+    /// guard_word_of(guard_mask, tz, lg_guard)`: on a line with every
+    /// integer field any value but `_pad` zero (and the atomic
+    /// `committed` zero), the one 8-byte load returns `guard_mask | tz <<
+    /// 32 | lg_guard << 40`, through the layout it relies on (the four
+    /// fields packed into the line's last eight bytes, 8-aligned, read
+    /// little-endian).
+    #[kani::proof]
+    fn guard_word_is_the_three_fields() {
+        let g = offset_of!(ClassLine, guard_mask);
+        assert_eq!(g % 8, 0);
+        assert_eq!(g + 8, size_of::<ClassLine>());
+        assert_eq!(offset_of!(ClassLine, tz), g + 4);
+        assert_eq!(offset_of!(ClassLine, lg_guard), g + 5);
+        assert_eq!(offset_of!(ClassLine, _pad), g + 6);
+        assert!(cfg!(target_endian = "little"));
+        // SAFETY: every field of `ClassLine` is valid all-zero (integers,
+        // an atomic, a zero-sized ghost field).
+        let mut line: ClassLine = unsafe { core::mem::zeroed() };
+        line.class_base = kani::any();
+        line.bits_base = kani::any();
+        line.owners_base = kani::any();
+        line.slab_bits = kani::any();
+        line.lg_slab = kani::any();
+        line.lg_group = kani::any();
+        line.slab_mask = kani::any();
+        line.inv = kani::any();
+        line.nslots = kani::any();
+        let (gm, tz, lg): (u32, u8, u8) = kani::any();
+        line.guard_mask = gm;
+        line.tz = tz;
+        line.lg_guard = lg;
+        line._pad = [0, 0];
+        let want = gm as u64 | (tz as u64) << 32 | (lg as u64) << 40;
+        assert_eq!(line.guard_word_load(), want);
+    }
+}

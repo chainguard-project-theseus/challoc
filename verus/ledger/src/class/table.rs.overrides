@@ -7,3 +7,6 @@ axiom_fresh_words	allocator invariant	Kani	trusted (partly checked, Kani: kani_p
 # Zero bytes as plain atomics, valid for every bit pattern.
 axiom_zero_desc	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::zero::zero_desc_reads_fresh; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe, and `desc_id` and the `DescPerm`'s `id`, ghost identities)
 axiom_zero_owner	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::zero::zero_owner_loads_zero; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe: the harness reads through a pointer to its own buffer)
+# Empty-template register hint: verus/emptyasm/run.sh checks the block adds
+# no instruction to the shipped code (a verus/emptyasm/blocks.txt row).
+word_index	inline asm	Islaris/Isla	discharged (emptyasm: word_index in src/class/table.rs)

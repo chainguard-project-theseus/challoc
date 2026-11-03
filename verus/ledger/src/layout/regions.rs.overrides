@@ -6,3 +6,6 @@ Reserved::is_disjoint	platform/kernel fact	none (assumption)
 Reserved::into_unbacked	platform/kernel fact	none (assumption)
 # `copy_from_slice` and `from_ne_bytes`; nothing is claimed of the word.
 word	core library	Kani	discharged (Kani: layout::regions::linux::kani_word::word_returns)
+# Empty-template register hint: verus/emptyasm/run.sh checks the block adds
+# no instruction to the shipped code (a verus/emptyasm/blocks.txt row).
+entry_barrier	inline asm	Islaris/Isla	trusted (partly checked, emptyasm: entry_barrier in src/layout/regions.rs; not checked: the pointer's provenance, the check shows only that no instruction is emitted)

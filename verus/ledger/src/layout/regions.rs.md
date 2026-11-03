@@ -105,7 +105,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 ## `entry_barrier`
 
 src/layout/regions.rs:3166. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: entry_barrier in src/layout/regions.rs; not checked: the pointer's provenance, the check shows only that no instruction is emitted).
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
 

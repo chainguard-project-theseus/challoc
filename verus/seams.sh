@@ -42,7 +42,13 @@
 # status cites `Kani: <harness>` and no `#[kani::proof]` fn has that path,
 # or `const assert: <label> in <file>` and not exactly one assertion there
 # carries that label, or `Isla: <file>` and that file lists no such seam
-# or the seam's asm! calls differ from the templates.txt next to it.
+# or the seam's asm! calls differ from the templates.txt next to it, or
+# `emptyasm: <fn> in <file>` and the seam is not `<fn>` of `<file>`, not
+# exactly one row of verus/emptyasm/blocks.txt names them, or the seam's
+# item holds other than one asm! call with the empty template
+# `"/* {0} */"`; and when a line verus/kani/pins.txt lists (the source a
+# Kani harness runs a copy of) is not in place, or a copy those lines
+# mark differs from its original but for the rows marked `-only`.
 # The output depends only on the tree: files are read in byte order.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -538,12 +544,13 @@ $render"
 
 # The checks the overrides statuses cite: one line `<overrides file> <tag>
 # <item>` per item of each `Kani: a, b and c`, `const assert: a, b and
-# c` or `Isla: FILE` list (up to `;`, `)` or the next tag), tag `Kani`,
-# `assert` or `Isla` (its item `<seam> in FILE`); `none` for a
+# c`, `Isla: FILE` or `emptyasm: a` list (up to `;`, `)` or the next
+# tag), tag `Kani`, `assert`, `Isla` (its item `<seam> in FILE`) or
+# `emptyasm` (its item `<seam> @ <fn> in <file>`); `none` for a
 # "discharged" or "partly checked" status, or a list, that cites nothing.
 cites() {
   for o in $ovfiles; do
-    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla" }
+    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla"; tag["emptyasm: "] = "emptyasm" }
     !/^#/ && NF >= 4 {
       k = 0
       for (t in tag) {
@@ -553,7 +560,7 @@ cites() {
           n = split(l, h, /,? and |, */); m = 0
           for (j = 1; j <= n; j++) {
             if (index(h[j], ": ")) break
-            if (h[j] != "") { print o, tag[t], (tag[t] == "Isla" ? $1 " in " h[j] : h[j]); m++ }
+            if (h[j] != "") { print o, tag[t], (tag[t] == "Isla" ? $1 " in " h[j] : (tag[t] == "emptyasm" ? $1 " @ " h[j] : h[j])); m++ }
           }
           k++; if (m == 0) print o, "none", $1
         }
@@ -709,6 +716,117 @@ assertion() {
   ' "$file"
 }
 
+# emptyasm OVERRIDES '<seam> @ <fn> in FILE': exit 0 if FILE is the source
+# file of OVERRIDES, <fn> is <seam> without its `Type::` and `#N`, and
+# exactly one row of verus/emptyasm/blocks.txt names FILE and <fn>
+# (verus/emptyasm/run.sh, `make emptyasm`, checks those blocks).
+# emptyitem checks the seam's item.
+emptyasm() {
+  seam=${2%% @ *}; c=${2#* @ }; fn=${c% in *}; file=${c##* in }
+  src=${1#verus/ledger/}; src=${src%.overrides}
+  s=${seam%%#*}; s=${s##*::}
+  [ "$file" = "$src" ] && [ "$fn" = "$s" ] || return 1
+  awk -F '\t' -v fn="$fn" -v file="$file" '
+    !/^#/ && $1 == file && $2 == fn { n++ }
+    END { exit n != 1 }
+  ' verus/emptyasm/blocks.txt
+}
+
+# emptyitem SRC LINE: exit 0 if the item that starts at SRC:LINE holds
+# exactly one asm! call, whose template is the empty `"/* {0} */"` and whose
+# first operand is `inout(reg) <ident>` (so the register comes out as it
+# went in), and no string literal that islaasm flags.
+emptyitem() {
+  islaasm "$1" "$2" | awk -F '\t' '
+    $1 == "asm" && $2 ~ /^asm!\("\/\* [{]0[}] \*\/", inout\(reg\) [A-Za-z_][A-Za-z0-9_]*, / { e++ }
+    { n++ }
+    END { exit !(n == 1 && e == 1) }'
+}
+
+# pins PINS: for each file PINS (verus/kani/pins.txt, `FILE<TAB>LINE`
+# lines, with an optional third field, and `#` comments) names, the first
+# of its lines that FILE does not hold in place: the lines must appear in
+# FILE in that order, each on the line after the one before (lines
+# compared with leading and trailing whitespace removed; blank and `//`
+# comment lines in FILE skipped), but where a `...` line allows any lines
+# in between. The first line of each run (the first line, and each line
+# after a `...`) must appear in FILE exactly once, so a second copy of a
+# run (in a block comment, say) cannot stand in for the real one. A row
+# with more than three fields fails. Prints nothing when every file holds
+# its lines.
+pins() {
+  [ -f "$1" ] || { echo "seams: $1 is gone"; return; }
+  awk -F '\t' -v pf="$1" '!/^#/ && NF > 3 { print "seams: " pf ": a row has more than three fields: " $0 }' "$1"
+  awk -F '\t' '!/^#/ && (NF == 2 || NF == 3) { print $1 }' "$1" | sort -u | while IFS= read -r f; do
+    if [ ! -f "$f" ]; then echo "seams: $1: $f is gone"; continue; fi
+    awk -F '\t' -v pf="$1" -v f="$f" '
+      FILENAME == pf {
+        if ($0 !~ /^#/ && (NF == 2 || NF == 3) && $1 == f) { p[++n] = $2; if (n == 1 || p[n - 1] == "...") a[$2] = 0 }
+        next
+      }
+      !started { gap = 1; started = 1 }
+      { t = $0; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t) }
+      t == "" || t ~ /^\/\// { next }
+      t in a { a[t]++ }
+      done || k >= n { next }
+      t == p[k + 1] { k++; gap = 0; if (p[k + 1] == "...") { k++; gap = 1 } next }
+      !gap { done = 1 }
+      END {
+        if (k < n) print "seams: " pf ": " f " no longer has, in place: " p[k + 1]
+        for (t in a) if (a[t] != 1) print "seams: " pf ": " f " has " a[t] " lines " t ", want 1"
+      }
+    ' "$1" "$f"
+  done
+}
+
+# copies PINS: for each NAME the third field of PINS's rows names
+# (`NAME:orig`, `NAME:orig-only`, `NAME:copy`, `NAME:copy-only`), where
+# the copy's lines differ from the original's: the `NAME:orig` rows, in
+# order, must equal the `NAME:copy` rows, and each side's rows (orig and
+# orig-only, copy and copy-only) must be consecutive rows of PINS, so a
+# row added inside either side must say which side it is on. As pins
+# holds every row in place, equal rows mean the copy repeats the
+# original's lines but for its `-only` rows. Prints nothing when every
+# NAME's copy matches.
+copies() {
+  [ -f "$1" ] || return 0
+  awk -F '\t' -v pf="$1" '
+    /^#/ { next }
+    NF != 2 && NF != 3 { next }
+    { r++ }
+    NF == 2 { next }
+    {
+      nm = $3; sub(/:[^:]*$/, "", nm); role = $3; sub(/^.*:/, "", role)
+      if (nm == "" || (role != "orig" && role != "orig-only" && role != "copy" && role != "copy-only")) {
+        print "seams: " pf ": row " r ": " $3 " is not NAME:orig, NAME:orig-only, NAME:copy or NAME:copy-only"; next
+      }
+      if (!(nm in seen)) { seen[nm] = 1; names[++nn] = nm }
+      side = (role ~ /^orig/) ? "orig" : "copy"
+      k = nm SUBSEP side
+      if (!(k in first)) first[k] = r
+      last[k] = r; cnt[k]++
+      if (role == "orig") o[nm, ++no[nm]] = $2
+      if (role == "copy") c[nm, ++nc[nm]] = $2
+    }
+    END {
+      for (i = 1; i <= nn; i++) {
+        nm = names[i]
+        for (s = 1; s <= 2; s++) {
+          side = s == 1 ? "orig" : "copy"; k = nm SUBSEP side
+          if (!(k in first)) { print "seams: " pf ": " nm " has no " side " rows"; continue }
+          if (last[k] - first[k] + 1 != cnt[k]) print "seams: " pf ": " nm ": the " side " rows are not consecutive"
+        }
+        if (!((nm SUBSEP "orig") in first) || !((nm SUBSEP "copy") in first)) continue
+        if (no[nm] + 0 == 0) { print "seams: " pf ": " nm " has no NAME:orig rows"; continue }
+        if (no[nm] != nc[nm]) { print "seams: " pf ": " nm ": the copy has " (nc[nm] + 0) " shared rows, the original " no[nm]; continue }
+        for (j = 1; j <= no[nm]; j++) if (o[nm, j] != c[nm, j]) {
+          print "seams: " pf ": " nm ": the copy has " c[nm, j] " where the original has " o[nm, j]; break
+        }
+      }
+    }
+  ' "$1"
+}
+
 case $mode in
   print) gen summary '' ;;
   write)
@@ -740,6 +858,7 @@ case $mode in
         Kani) harness "$c" || echo "seams: $o: Kani: $c names no #[kani::proof] fn" ;;
         assert) assertion "$c" || echo "seams: $o: const assert: $c names no one labeled assertion" ;;
         Isla) isla "$o" "$c" || echo "seams: $o: Isla: $c: no such seam heading" ;;
+        emptyasm) emptyasm "$o" "$c" || echo "seams: $o: emptyasm: ${c#* @ } is not this seam's fn and file, or names no one row of verus/emptyasm/blocks.txt" ;;
         *) echo "seams: $o: $c: the status cites no check" ;;
       esac
     done > "$tmp/cites"
@@ -762,6 +881,101 @@ case $mode in
     for c in "no_such_seam in verus/isla/seams.md" "get_tp in verus/isla/no_such_file.md" \
         "syscall0#2 in verus/isla/seams.md"; do
       if isla verus/ledger/src/sys/tls.rs.overrides "$c"; then echo "seams: self-test: Isla: $c resolved, want rejected"; fi
+    done >> "$tmp/cites"
+    # And for emptyasm: a seam's own fn and file that no row names, a fn
+    # other than the seam's, a listed fn cited from another source file's
+    # seam, and a listed fn cited for another seam; a correct cite must
+    # resolve.
+    for c in 'shared_ptr @ shared_ptr in src/api/mod.rs' 'shared_base @ no_such_fn in src/api/mod.rs' \
+        'shared_base @ word_index in src/class/table.rs' 'shared_ptr @ shared_base in src/api/mod.rs'; do
+      if emptyasm verus/ledger/src/api/mod.rs.overrides "$c"; then echo "seams: self-test: emptyasm: $c resolved, want rejected"; fi
+    done >> "$tmp/cites"
+    emptyasm verus/ledger/src/api/mod.rs.overrides 'shared_base @ shared_base in src/api/mod.rs' ||
+      echo "seams: self-test: emptyasm: shared_base @ shared_base in src/api/mod.rs rejected, want resolved" >> "$tmp/cites"
+    # The item of each seam a status cites `emptyasm:` for must hold one
+    # asm! call with the empty template (emptyitem), so a status stays
+    # true when verus/emptyasm/run.sh does not run.
+    cites | while read -r o t c; do
+      [ "$t" = emptyasm ] || continue
+      seam=${c%% @ *}; src=${o#verus/ledger/}; src=${src%.overrides}
+      l=$(awk -v h="## \`$seam\`" -v s="$src" '
+        $0 == h { on = 1; next }
+        on && index($0, s ":") == 1 { l = $0; sub(/^[^:]*:/, "", l); sub(/\..*$/, "", l); print l; exit }
+      ' "$tmp/ledger/$src.md" 2>/dev/null || true)
+      if [ -z "$l" ]; then
+        echo "seams: $o: emptyasm: $seam has no ledger entry"
+      elif ! emptyitem "$src" "$l"; then
+        echo "seams: $o: emptyasm: $seam ($src:$l) holds other than one asm! call with the empty template"
+      fi
+    done >> "$tmp/cites"
+    # Self-test: an item with one empty template passes; one whose
+    # template holds an instruction, one with two calls, one with none and
+    # one whose operand is `out(reg)` (its register undefined after the
+    # call) must be rejected.
+    # shellcheck disable=SC2016
+    printf '%s\n' 'fn ok() {' '    unsafe {' '        asm!("/* {0} */", inout(reg) x, options(nomem));' '    }' '}' \
+      'fn nop() {' '    unsafe {' '        asm!("nop /* {0} */", inout(reg) x, options(nomem));' '    }' '}' \
+      'fn two() {' '    unsafe {' '        asm!("/* {0} */", inout(reg) x, options(nomem));' \
+      '        asm!("/* {0} */", inout(reg) y, options(nomem));' '    }' '}' \
+      'fn none() {' '    let x = 1;' '}' \
+      'fn out() {' '    unsafe {' '        asm!("/* {0} */", out(reg) x, options(nomem));' '    }' '}' > "$tmp/ea.rs"
+    emptyitem "$tmp/ea.rs" 1 || echo "seams: self-test: emptyasm: ok rejected, want accepted" >> "$tmp/cites"
+    for l in 6 11 17 20; do
+      if emptyitem "$tmp/ea.rs" "$l"; then echo "seams: self-test: emptyasm: the item at line $l accepted, want rejected"; fi
+    done >> "$tmp/cites"
+    # The source lines Kani harnesses run copies of (verus/kani/pins.txt)
+    # must be in place, so a change to an original or its copy fails here
+    # until the copy, the list and the status citing the harness are
+    # revisited; and a status that names verus/kani/pins.txt needs rows
+    # there for its source file. Self-test: lines in place pass (with a
+    # `...` row between two of them); a changed line, a skipped line,
+    # lines a `...` row is missing between, a second copy of the lines
+    # earlier in the file (in a block comment) and a row with four fields
+    # fail, as does a pins file that is gone.
+    pins verus/kani/pins.txt >> "$tmp/cites"
+    for o in $ovfiles; do
+      grep -q 'verus/kani/pins\.txt' "$o" || continue
+      src=${o#verus/ledger/}; src=${src%.overrides}
+      awk -F '\t' -v s="$src" '!/^#/ && (NF == 2 || NF == 3) && $1 == s { n++ } END { exit !n }' verus/kani/pins.txt 2>/dev/null ||
+        echo "seams: $o: a status names verus/kani/pins.txt, which has no row for $src"
+    done >> "$tmp/cites"
+    printf '%s\n' 'fn f() {' '    // a comment' '' '    let a = 1;' '    a' '}' 'fn g() {}' > "$tmp/pin.rs"
+    printf '%s\t%s\n' "$tmp/pin.rs" 'fn f() {' "$tmp/pin.rs" 'let a = 1;' "$tmp/pin.rs" 'a' \
+      "$tmp/pin.rs" '...' "$tmp/pin.rs" 'fn g() {}' > "$tmp/pins-ok.txt"
+    [ -z "$(pins "$tmp/pins-ok.txt")" ] || echo "seams: self-test: pins: lines in place rejected" >> "$tmp/cites"
+    printf '%s\t%s\n' "$tmp/pin.rs" 'fn f() {' "$tmp/pin.rs" 'let a = 2;' > "$tmp/pins-changed.txt"
+    printf '%s\t%s\n' "$tmp/pin.rs" 'fn f() {' "$tmp/pin.rs" 'a' > "$tmp/pins-skip.txt"
+    printf '%s\t%s\n' "$tmp/pin.rs" 'a' "$tmp/pin.rs" 'fn g() {}' > "$tmp/pins-gap.txt"
+    { printf '%s\n' '/*' 'fn f() {' '    let a = 1;' '    a' '}' '*/'; cat "$tmp/pin.rs"; } > "$tmp/pin-decoy.rs"
+    awk -F '\t' -v OFS='\t' -v d="$tmp/pin-decoy.rs" '{ $1 = d; print }' "$tmp/pins-ok.txt" > "$tmp/pins-decoy.txt"
+    printf '%s\t%s\t%s\t%s\n' "$tmp/pin.rs" 'fn f() {' 'w:orig' 'x' > "$tmp/pins-fields.txt"
+    for p in "$tmp/pins-changed.txt" "$tmp/pins-skip.txt" "$tmp/pins-gap.txt" "$tmp/pins-decoy.txt" "$tmp/pins-fields.txt" "$tmp/no-such-pins.txt"; do
+      [ -n "$(pins "$p")" ] || echo "seams: self-test: pins: $p accepted, want rejected"
+    done >> "$tmp/cites"
+    # A copy whose lines differ from its original's (a Kani copy without
+    # the original's asm! block) must repeat the original's lines but for
+    # the rows marked `-only` (copies). Self-test: a matching copy passes,
+    # with its pins in place; a copy changed with its rows updated (pins
+    # still passes), an unmarked row inside the original or inside the
+    # copy, a row with an unknown role, and a NAME with no copy rows fail.
+    copies verus/kani/pins.txt >> "$tmp/cites"
+    printf '%s\n' 'fn o() {' '    let a = 1;' '    hint(a);' '    a' '}' 'fn c() {' '    let a = 1;' '    a' '}' > "$tmp/cp.rs"
+    printf '%s\n' 'fn o() {' '    let a = 1;' '    hint(a);' '    a' '}' 'fn c() {' '    let a = 2;' '    a' '}' > "$tmp/cp-changed.rs"
+    cprows() { # FILE COPY-FIRST-LINE [ORIG-HINT-TAG] [NAME]
+      printf '%s\n' "$1${tab}fn o() {${tab}${4:-w}:orig-only" "$1${tab}let a = 1;${tab}${4:-w}:orig" \
+        "$1${tab}hint(a);${3:+${tab}}${3:-}" "$1${tab}a${tab}${4:-w}:orig" "$1${tab}}${tab}${4:-w}:orig" "$1${tab}..." \
+        "$1${tab}fn c() {${tab}w:copy-only" "$1${tab}$2${tab}w:copy" "$1${tab}a${tab}w:copy" "$1${tab}}${tab}w:copy"
+    }
+    cprows "$tmp/cp.rs" 'let a = 1;' w:orig-only > "$tmp/copies-ok.txt"
+    [ -z "$(pins "$tmp/copies-ok.txt")$(copies "$tmp/copies-ok.txt")" ] || echo "seams: self-test: copies: a matching copy rejected" >> "$tmp/cites"
+    cprows "$tmp/cp-changed.rs" 'let a = 2;' w:orig-only > "$tmp/copies-changed.txt"
+    [ -z "$(pins "$tmp/copies-changed.txt")" ] || echo "seams: self-test: copies: the changed copy's pins rejected, want accepted" >> "$tmp/cites"
+    cprows "$tmp/cp.rs" 'let a = 1;' > "$tmp/copies-unmarked.txt"
+    cprows "$tmp/cp.rs" 'let a = 1;' w:body > "$tmp/copies-role.txt"
+    cprows "$tmp/cp.rs" 'let a = 1;' v:orig-only v > "$tmp/copies-nocopy.txt"
+    awk -F '\t' -v OFS='\t' '$3 == "w:copy" && $2 == "a" { print $1, $2; next } { print }' "$tmp/copies-ok.txt" > "$tmp/copies-copygap.txt"
+    for p in "$tmp/copies-changed.txt" "$tmp/copies-unmarked.txt" "$tmp/copies-copygap.txt" "$tmp/copies-role.txt" "$tmp/copies-nocopy.txt"; do
+      [ -n "$(copies "$p")" ] || echo "seams: self-test: copies: $p accepted, want rejected"
     done >> "$tmp/cites"
     # The asm! templates of the seams a status cites `Isla: FILE` for must
     # be the lines of the templates.txt next to FILE (islatemplates), so a

@@ -1,9 +1,10 @@
 #!/bin/sh
 # ci/shellcheck.sh: lint every shell script in the tree (the lint check):
-# ci/, verus/, scripts/, tests/ (with tests/loom and tests/consumers),
-# bench/ (the build script, cb, the drivers and the probes) and the CI
-# services. .shellcheckrc at the root lets it follow the drivers'
-# `. "$(dirname "$0")/cb.sh"` includes. Run it from the repository root.
+# ci/, verus/ (with verus/emptyasm), scripts/, tests/ (with tests/loom and
+# tests/consumers), bench/ (the build script, cb, the drivers and the
+# probes) and the CI services. .shellcheckrc at the root lets it follow
+# the drivers' `. "$(dirname "$0")/cb.sh"` includes. Run it from the
+# repository root.
 # Wolfi does not package the linter, so this fetches the pinned upstream
 # release and checks its SHA-256 (the digests GitHub publishes for the
 # release assets) before running it.
@@ -23,7 +24,7 @@ echo "$sum  $tarball" | sha256sum -c -
 tar -xJf "$tarball" -C "$dir"
 "$dir/shellcheck-$version/shellcheck" --version
 "$dir/shellcheck-$version/shellcheck" \
-  ci/*.sh verus/*.sh scripts/*.sh \
+  ci/*.sh verus/*.sh verus/emptyasm/*.sh scripts/*.sh \
   tests/*.sh tests/loom/*.sh tests/consumers/*.sh \
   bench/*.sh bench/cb/*.sh bench/drivers/*.sh bench/probes/*.sh \
   .chainguard/ci/services/*/*.sh

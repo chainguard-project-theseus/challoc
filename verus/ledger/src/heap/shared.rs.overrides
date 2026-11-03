@@ -31,3 +31,8 @@ Shared::begin	raw pointer from C caller	none (assumption)
 # An FFI call that may re-enter the allocator: the nested entries leave
 # the token as they found it (the slot premise).
 pthread_setspecific	FFI/syscall	none (assumption)
+# Empty-template register hint: verus/emptyasm/run.sh checks the block adds
+# no instruction to the shipped code (a verus/emptyasm/blocks.txt row);
+# Kani checks the load, on a copy whose lines seams.sh --check requires
+# to equal the body's but for the rows verus/kani/pins.txt marks `-only`.
+ClassLine::guard_word	inline asm	Islaris/Isla	trusted (partly checked, Kani: heap::shared::kani_guard_word::guard_word_is_the_three_fields, const assert: `ClassLine::guard_word`'s word in src/heap/shared.rs, and emptyasm: guard_word in src/heap/shared.rs; not checked: the body itself, since the harness runs a copy of its load without the asm! block (Kani has no model of inline assembly), whose lines `sh verus/seams.sh --check` requires to equal the body's but for the rows verus/kani/pins.txt marks `-only`, today the opening brace and the asm! block, with comment and blank lines not compared)
