@@ -2672,15 +2672,15 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
-        self.claim_tokens(
-            meta,
-            out,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
-        .0
+    pub fn claim(
+        &self,
+        meta: &Meta,
+        out: &mut [*mut u8],
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Claim {
+        self.claim_tokens(meta, out, Tracked::assume_new(), pubw, ord)
+            .0
     }
 
     /// [`claim`] for `slot_randomize` (design 4): the same slabs
@@ -2696,16 +2696,16 @@ impl ClassState {
     ///
     /// [`claim`]: ClassState::claim
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> Claim {
-        self.claim_random_zero(
-            meta,
-            out,
-            rng,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
-        .0
+    pub fn claim_random(
+        &self,
+        meta: &Meta,
+        out: &mut [*mut u8],
+        rng: &mut u64,
+        pubw: Tracked<&'static Published>,
+        ord: Tracked<&mut LockOrder>,
+    ) -> Claim {
+        self.claim_random_zero(meta, out, rng, Tracked::assume_new(), pubw, ord)
+            .0
     }
 }
 

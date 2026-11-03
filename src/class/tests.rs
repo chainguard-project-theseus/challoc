@@ -189,7 +189,12 @@ impl Env {
 
     fn claim(&self, cs: &ClassState, n: usize) -> (Vec<*mut u8>, Claim) {
         let mut out = vec![ptr::null_mut(); n];
-        let c = cs.claim(&self.meta, &mut out);
+        let c = cs.claim(
+            &self.meta,
+            &mut out,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         out.truncate(c.n);
         (out, c)
     }
@@ -2476,7 +2481,13 @@ fn claim_random_hands_out_the_same_slots_in_a_random_order() {
     let cs = env.class(c, 0);
     let mut rng = 0x2545_f491_4f6c_dd1du64;
     let mut out = vec![ptr::null_mut(); n];
-    let claim = cs.claim_random(&env.meta, &mut out, &mut rng);
+    let claim = cs.claim_random(
+        &env.meta,
+        &mut out,
+        &mut rng,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(claim.n, n);
     assert!(
         claim.zeroed,
@@ -2502,10 +2513,22 @@ fn claim_random_hands_out_the_same_slots_in_a_random_order() {
     cs.release(&out);
     assert_eq!(cs.desc(0).state(), State::Empty);
     let mut half = vec![ptr::null_mut(); n / 2];
-    let c1 = cs.claim_random(&env.meta, &mut half, &mut rng);
+    let c1 = cs.claim_random(
+        &env.meta,
+        &mut half,
+        &mut rng,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!((c1.n, c1.zeroed), (n / 2, false), "an Empty slab is dirty");
     let mut rest = vec![ptr::null_mut(); n - n / 2];
-    let c2 = cs.claim_random(&env.meta, &mut rest, &mut rng);
+    let c2 = cs.claim_random(
+        &env.meta,
+        &mut rest,
+        &mut rng,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(
         (c2.n, c2.zeroed),
         (n - n / 2, false),
