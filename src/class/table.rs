@@ -850,16 +850,132 @@ pub(super) const RUN_BYTES: usize = 512 << 10;
 
 // In the three wrappers below, `addr..addr + len` is inside a class
 // region this allocator reserved (the callers pass slab or page-group
-// ranges below the region's end), so changing its protection or
-// installing a guard affects only pages nothing else in the process maps.
+// ranges below the region's end, which `commit` requires), so changing
+// its protection or installing a guard affects only pages nothing else
+// in the process maps.
 verus! {
 
-fn commit(addr: usize, len: usize) -> Result<(), Errno>
+/// `[addr, addr + len)` lies in class `c`'s region of the process's
+/// regions: from its base to the end of its last slab.
+pub open spec fn commit_inside(c: int, addr: int, len: int) -> bool {
+    let r = process_regions();
+    &&& r.class_base[c] <= addr
+    &&& addr + len <= r.slab_span(c, r.spec_nslabs(c)).0
+}
+
+/// A commit of `[addr, addr + len)` in class `c`'s region spares the guard
+/// slabs of `c` ([`guard_slab`](crate::layout::guard_slab), the slabs
+/// `heap::theorem_guard_pages` keeps out of every block): the range
+/// shares no byte with a guard slab, unless the slab starts in the
+/// range's first page and an `MADV_GUARD_INSTALL` of that page succeeded
+/// (`sys::madvise_ok`). That marker is the slab's guard
+/// (`SlabTable::install_guard`), which the commit's `mprotect` leaves in
+/// place; the rest of such a slab is committed with the range.
+pub open spec fn commit_spares_guards(c: int, addr: int, len: int) -> bool {
+    let r = process_regions();
+    let page = 1usize << r.lg_page;
+    forall|g: int|
+        0 <= g < r.spec_nslabs(c) && #[trigger] crate::layout::guard_slab(c, g) ==> {
+            ||| crate::layout::disjoint(addr, len, r.slab_span(c, g).0, r.slab_span(c, g).1)
+            ||| (sys::madvise_ok(addr as usize, page, MADV_GUARD_INSTALL) && addr <= r.slab_span(c, g).0 < addr + page)
+        }
+}
+
+/// Make `[addr, addr + len)` of class `c`'s region read-write. Every
+/// caller proves the range inside the region and, unless `chunk`, apart
+/// from the guards (`commit_spares_guards`). `chunk` marks every commit
+/// of a class whose `thp` mode is `Mode::Chunks` (the PMD chunk and its
+/// plain fallback in `SlabTable::commit_page_group`): that mode places no
+/// guards and commits its guard slabs read-write
+/// ([`SlabTable::commit_slab`], design 17). It is ghost, set from the mode
+/// the caller read; no specification ties it to the class's mode.
+fn commit(addr: usize, len: usize, Ghost(c): Ghost<int>, Ghost(chunk): Ghost<bool>) -> (r: Result<(), Errno>)
     requires
         crate::sys::may_syscall(),
+        commit_inside(c, addr as int, len as int),
+        !chunk ==> commit_spares_guards(c, addr as int, len as int),
+    ensures
+        commit_inside(c, addr as int, len as int),
+        !chunk ==> commit_spares_guards(c, addr as int, len as int),
 {
     // SAFETY: a range of a reserved class region (above).
     unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
+}
+
+/// Commits keep the class guard slabs inaccessible: every call of
+/// [`commit`] outside a `Mode::Chunks` class (`chunk` false) makes
+/// read-write only bytes of class `c`'s region, and none of any guard
+/// slab of `c`, except a guard slab starting in the range's first page
+/// for which an `MADV_GUARD_INSTALL` of that page succeeded
+/// (`sys::madvise_ok`; in the code, the call just before on the same
+/// path), a marker the `mprotect` keeps. `commit` ensures what its
+/// precondition asks of each caller ([`SlabTable::commit_run`],
+/// [`SlabTable::commit_slab`] through `commit_page_group`), so Verus
+/// rejects any caller that has not proved it. The class region is apart
+/// from every other class region and the huge region
+/// (`Regions::separated`), so such a commit touches no other class's
+/// region (nor its guard slabs), the huge region (nor any huge run's guard
+/// page) or the metadata region.
+///
+/// Trusted: `mprotect` keeps a guard marker (`MADV_GUARD_INSTALL`), and
+/// nothing removes a class guard's marker. Not claimed: commits of a
+/// `Mode::Chunks` class, which places no guards and commits its guard
+/// slabs read-write; that a class's `thp` mode is fixed before its first
+/// commit (`thp::class_mode`), so such a class never placed a guard, is
+/// read from the code.
+proof fn theorem_slab_commit_avoids_guards(addr: usize, len: usize, c: int, chunk: bool, r: Result<(), Errno>, g: int)
+    requires
+        crate::heap::regions_ok(),
+        0 <= c < NCLASSES,
+        call_ensures(commit, (addr, len, Ghost(c), Ghost(chunk)), r),
+        !chunk,
+        0 <= g < process_regions().spec_nslabs(c),
+        crate::layout::guard_slab(c, g),
+    ensures
+        process_regions().class_base[c] <= addr,
+        addr + len <= process_regions().slab_span(c, process_regions().spec_nslabs(c)).0,
+        ({
+            let (r, page) = (process_regions(), 1usize << process_regions().lg_page);
+            ||| crate::layout::disjoint(addr as int, len as int, r.slab_span(c, g).0, r.slab_span(c, g).1)
+            ||| (sys::madvise_ok(addr, page, MADV_GUARD_INSTALL) && addr <= r.slab_span(c, g).0 < addr + page)
+        }),
+        ({
+            let (r, region) = (process_regions(), (1usize << process_regions().lg_region) as int);
+            &&& forall|c2: int| 0 <= c2 < NCLASSES && c2 != c ==> crate::layout::disjoint(addr as int, len as int, #[trigger] r.class_base[c2] as int, region)
+            &&& crate::layout::disjoint(addr as int, len as int, r.huge_base as int, r.huge_len as int)
+            &&& crate::layout::disjoint(addr as int, len as int, r.meta_base as int, r.meta_len as int)
+        }),
+{
+    let r = process_regions();
+    let (stride, region) = ((1usize << r.lg_stride) as int, (1usize << r.lg_region) as int);
+    lemma_slabs_fit_region(r, c);
+    assert(r.superblock + c * stride <= r.class_base[c] && r.class_base[c] + region <= r.superblock + (c + 1) * stride);
+    assert forall|c2: int| 0 <= c2 < NCLASSES && c2 != c implies crate::layout::disjoint(addr as int, len as int, #[trigger] r.class_base[c2] as int, region) by {
+        assert(r.superblock + c2 * stride <= r.class_base[c2] && r.class_base[c2] + region <= r.superblock + (c2 + 1) * stride);
+        if c2 < c {
+            vstd::arithmetic::mul::lemma_mul_inequality(c2 + 1, c, stride);
+        } else {
+            vstd::arithmetic::mul::lemma_mul_inequality(c + 1, c2, stride);
+        }
+    }
+    vstd::arithmetic::mul::lemma_mul_inequality(c + 1, NCLASSES as int, stride);
+}
+
+/// Class `c`'s slabs end inside its region: `spec_nslabs` whole slabs fit
+/// in `2^lg_region` bytes.
+proof fn lemma_slabs_fit_region(r: Regions, c: int)
+    requires
+        r.wf(),
+        0 <= c < NCLASSES,
+    ensures
+        r.slab_span(c, r.spec_nslabs(c)).0 <= r.class_base[c] + (1usize << r.lg_region),
+{
+    crate::vspec::class::axiom_class_table_wf(c);
+    let (lg, region) = (class_table()[c].lg_slab as usize, 1usize << r.lg_region);
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(region >> lg, lg, region);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+    assert(region >> class_table()[c].lg_slab == region >> lg);
 }
 
 fn decommit(addr: usize, len: usize) -> Result<(), Errno>
@@ -870,9 +986,11 @@ fn decommit(addr: usize, len: usize) -> Result<(), Errno>
     unsafe { sys::mprotect(addr, len, PROT_NONE) }
 }
 
-fn guard(addr: usize, len: usize) -> Result<(), Errno>
+fn guard(addr: usize, len: usize) -> (r: Result<(), Errno>)
     requires
         crate::sys::may_syscall(),
+    ensures
+        r is Ok ==> sys::madvise_ok(addr, len, MADV_GUARD_INSTALL),
 {
     // SAFETY: a range of a reserved class region (above).
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
@@ -2119,6 +2237,198 @@ proof fn lemma_guard_test(t: SlabTable, x: usize)
     assert((pg & m == m) == (x & mu == mu)) by (bit_vector)
         requires pg as usize == x, mu == m as usize;
     assert(pg != u32::MAX);
+}
+
+/// `n` slabs of `t`'s class, `n` at most the region's: `n << lg_slab` is
+/// their bytes, `n` times the slab, and from the base they end inside the
+/// address space.
+proof fn lemma_slab_bytes(t: SlabTable, n: usize)
+    requires
+        t.inv(),
+        n <= t.nslabs,
+    ensures
+        (n << class_table()[t.class as int].lg_slab) as int == n * ((1usize << class_table()[t.class as int].lg_slab) as int),
+        n * ((1usize << class_table()[t.class as int].lg_slab) as int) <= t.nslabs * ((1usize << class_table()[t.class as int].lg_slab) as int),
+        t.base + t.nslabs * ((1usize << class_table()[t.class as int].lg_slab) as int) <= usize::MAX,
+{
+    let lg = class_table()[t.class as int].lg_slab as usize;
+    let m = (usize::MAX - t.base) as usize;
+    assert(class_table()[t.class as int].wf());
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(t.nslabs, lg, m);
+    let p = pow2(lg as nat) as int;
+    assert(n * p <= t.nslabs * p) by (nonlinear_arith)
+        requires n <= t.nslabs, p >= 0;
+    vstd::bits::lemma_usize_shl_is_mul(n, lg);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+}
+
+/// The commit contract ([`commit_inside`], [`commit_spares_guards`]) for
+/// the `len` bytes from slab `a` of `t`'s region, `len` at most the bytes
+/// of slabs `a..b`, given it for the guard slabs of `a..b`: each is apart
+/// from the range or starts in its first page, which an
+/// `MADV_GUARD_INSTALL` marked. The slabs below `a` end by the range's
+/// start and those from `b` start past its end.
+proof fn lemma_commit_slabs(t: SlabTable, a: usize, b: usize, len: int)
+    requires
+        t.inv(),
+        a < b <= t.nslabs,
+        0 <= len <= (b - a) * ((1usize << class_table()[t.class as int].lg_slab) as int),
+        forall|g: int|
+            a <= g < b && #[trigger] t.spec_is_guard(g as usize) ==> {
+                let (slab, page) = ((1usize << class_table()[t.class as int].lg_slab) as int, 1usize << t.lg_page);
+                ||| crate::layout::disjoint(t.base + a * slab, len, t.base + g * slab, slab)
+                ||| (sys::madvise_ok((t.base + a * slab) as usize, page, MADV_GUARD_INSTALL) && t.base + g * slab < t.base + a * slab + page)
+            },
+    ensures
+        ({
+            let addr = t.base + a * ((1usize << class_table()[t.class as int].lg_slab) as int);
+            &&& commit_inside(t.class as int, addr, len)
+            &&& commit_spares_guards(t.class as int, addr, len)
+        }),
+{
+    let c = t.class as int;
+    let slab = (1usize << class_table()[c].lg_slab) as int;
+    let r = process_regions();
+    lemma_slab_bytes(t, b);
+    assert(slab > 0) by {
+        assert(class_table()[c].wf());
+        let lg = class_table()[c].lg_slab;
+        assert((1usize << lg) > 0) by (bit_vector)
+            requires lg <= 22;
+    }
+    assert(a * slab + (b - a) * slab == b * slab) by (nonlinear_arith);
+    vstd::arithmetic::mul::lemma_mul_inequality(b as int, t.nslabs as int, slab);
+    assert(r.spec_nslabs(c) == t.nslabs);
+    assert forall|g: int| 0 <= g < r.spec_nslabs(c) && #[trigger] crate::layout::guard_slab(c, g) implies {
+        let page = 1usize << r.lg_page;
+        ||| crate::layout::disjoint(t.base + a * slab, len, r.slab_span(c, g).0, r.slab_span(c, g).1)
+        ||| (sys::madvise_ok((t.base + a * slab) as usize, page, MADV_GUARD_INSTALL) && t.base + a * slab <= r.slab_span(c, g).0 < t.base + a * slab + page)
+    } by {
+        assert(t.spec_is_guard(g as usize));
+        if g < a {
+            vstd::arithmetic::mul::lemma_mul_inequality(g + 1, a as int, slab);
+            assert((g + 1) * slab == g * slab + slab) by (nonlinear_arith);
+        } else if g >= b {
+            vstd::arithmetic::mul::lemma_mul_inequality(b as int, g, slab);
+        } else {
+            vstd::arithmetic::mul::lemma_mul_inequality(a as int, g, slab);
+        }
+    }
+}
+
+/// [`SlabTable::commit_run`]'s commit of slabs `a..b`, none of whose
+/// slabs past `a` is a guard slab: in the region, and apart from the
+/// guards when `a` is no guard slab either or `MADV_GUARD_INSTALL` marked
+/// its first page. `(b - a) << lg_slab` is its length.
+proof fn lemma_run_commit(t: SlabTable, a: usize, b: usize, marked: bool)
+    requires
+        t.inv(),
+        a < b <= t.nslabs,
+        forall|g: usize| a < g < b ==> !#[trigger] t.spec_is_guard(g),
+        marked ==> sys::madvise_ok(
+            (t.base + a * ((1usize << class_table()[t.class as int].lg_slab) as int)) as usize,
+            1usize << t.lg_page,
+            MADV_GUARD_INSTALL,
+        ),
+        !marked ==> !t.spec_is_guard(a),
+    ensures
+        ({
+            let slab = (1usize << class_table()[t.class as int].lg_slab) as int;
+            &&& (((b - a) as usize) << class_table()[t.class as int].lg_slab) as int == (b - a) * slab
+            &&& commit_inside(t.class as int, t.base + a * slab, (b - a) * slab)
+            &&& commit_spares_guards(t.class as int, t.base + a * slab, (b - a) * slab)
+        }),
+{
+    lemma_slab_bytes(t, (b - a) as usize);
+    let lp = t.lg_page;
+    assert((1usize << lp) > 0) by (bit_vector)
+        requires lp < 64;
+    assert forall|g: int| a <= g < b && #[trigger] t.spec_is_guard(g as usize) implies g == a && marked by {
+        if g > a {
+            assert(!t.spec_is_guard(g as usize));
+        }
+    }
+    lemma_commit_slabs(t, a, b, (b - a) * ((1usize << class_table()[t.class as int].lg_slab) as int));
+}
+
+/// [`SlabTable::commit_slab`]'s commit of the page group slab `s` starts,
+/// `len` bytes: its slab, or the page when the slab is smaller. It lies
+/// in the region, inside slabs `s..s + slabs_per_page`, and spares the
+/// guards when `s` is no guard slab or `MADV_GUARD_INSTALL` marked the
+/// group's first page: a page group's slabs are all guard slabs or none.
+proof fn lemma_page_group_commit(t: SlabTable, s: usize, len: usize, addr: usize)
+    requires
+        t.inv(),
+        addr == t.base + s * ((1usize << class_table()[t.class as int].lg_slab) as int),
+        s < t.nslabs,
+        s % (t.slabs_per_page as usize) == 0,
+        len == (if (1usize << class_table()[t.class as int].lg_slab) >= (1usize << t.lg_page) {
+            1usize << class_table()[t.class as int].lg_slab
+        } else {
+            1usize << t.lg_page
+        }),
+    ensures
+        ({
+            &&& commit_inside(t.class as int, addr as int, len as int)
+            &&& addr + len <= t.base + (t.nslabs << class_table()[t.class as int].lg_slab)
+            &&& (!t.spec_is_guard(s) || sys::madvise_ok(addr, 1usize << t.lg_page, MADV_GUARD_INSTALL))
+                ==> commit_spares_guards(t.class as int, addr as int, len as int)
+        }),
+{
+    reveal(crate::layout::guard_of);
+    reveal(groups_paged);
+    reveal(SlabTable::page_groups_ok);
+    let c = t.class as int;
+    let lgs = class_table()[c].lg_slab;
+    let slab = (1usize << lgs) as int;
+    let page = 1usize << t.lg_page;
+    let (spp, lg, n) = (t.slabs_per_page as usize, t.lg_slabs_per_page, t.nslabs);
+    assert(class_table()[c].wf());
+    assert(spp == 1usize << lg && lg <= 26 && s % spp == 0 && n & sub(spp, 1) == 0 && s < n && n <= 0x400_0000
+        ==> s + spp <= n) by (bit_vector);
+    let b = (s + spp) as usize;
+    // The group's bytes, `spp` slabs, are a whole number of pages (at
+    // least one) and at least a slab.
+    assert(groups_paged(t.base, t.slabs_per_page, lgs, t.lg_page));
+    assert(page > 0 && slab > 0) by {
+        let lp = t.lg_page;
+        assert((1usize << lp) > 0 && (1usize << lgs) > 0) by (bit_vector)
+            requires lp < 64, lgs <= 22;
+    }
+    assert(spp * slab >= page) by {
+        let (x, pg) = (t.slabs_per_page as int * (1usize << lgs) as int, (1usize << t.lg_page) as int);
+        assert(x % pg == 0);
+        assert(x > 0) by (nonlinear_arith)
+            requires x == t.slabs_per_page as int * slab, t.slabs_per_page >= 1, slab > 0;
+        vstd::arithmetic::div_mod::lemma_mod_is_zero(x as nat, pg as nat);
+        assert(x == spp * slab);
+    }
+    assert(spp * slab >= slab) by (nonlinear_arith)
+        requires spp >= 1, slab > 0;
+    assert((b - s) * slab == spp * slab);
+    lemma_slab_bytes(t, n);
+    assert(s * slab + spp * slab == b * slab) by (nonlinear_arith)
+        requires b == s + spp;
+    vstd::arithmetic::mul::lemma_mul_inequality(b as int, n as int, slab);
+    assert(process_regions().spec_nslabs(c) == n);
+    if !t.spec_is_guard(s) || sys::madvise_ok(addr, page, MADV_GUARD_INSTALL) {
+        assert forall|g: int| s <= g < b && #[trigger] t.spec_is_guard(g as usize) implies {
+            ||| crate::layout::disjoint(addr as int, len as int, t.base + g * slab, slab)
+            ||| (sys::madvise_ok(addr, page, MADV_GUARD_INSTALL) && t.base + g * slab < addr as int + page as int)
+        } by {
+            let gu = g as usize;
+            assert(spp == 1usize << lg && lg <= 26 && s % spp == 0 && s <= gu && gu < s + spp && s + spp <= 0x400_0000
+                ==> gu >> lg == s >> lg) by (bit_vector);
+            assert(t.spec_is_guard(s));
+            assert(g * slab == s * slab + (g - s) * slab) by (nonlinear_arith);
+            if g > s {
+                vstd::arithmetic::mul::lemma_mul_inequality(1, g - s, slab);
+            }
+        }
+        assert((t.base + s * slab) as usize == addr);
+        lemma_commit_slabs(t, s, b, len as int);
+    }
 }
 
 /// [`SlabTable::run_slabs`] is a power of two from 1 to 128.
@@ -4539,9 +4849,15 @@ impl SlabTable {
             // `mprotect` as before; without one the slab stays
             // `PROT_NONE` and only the slabs after it are committed.
             if self.install_guard(self.slab_addr(s), page, cls.slab_size())? {
-                commit(self.slab_addr(s), (end - s) << cls.lg_slab).ok()?;
+                proof {
+                    lemma_run_commit(*self, s, end, true);
+                }
+                commit(self.slab_addr(s), (end - s) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
             } else if end > s + 1 {
-                commit(self.slab_addr(s + 1), (end - s - 1) << cls.lg_slab).ok()?;
+                proof {
+                    lemma_run_commit(*self, (s + 1) as usize, end, false);
+                }
+                commit(self.slab_addr(s + 1), (end - s - 1) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
             }
             proof {
                 assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
@@ -4551,7 +4867,10 @@ impl SlabTable {
             self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).guards += 1;
             return Some(false);
         }
-        commit(self.slab_addr(s), (end - s) << cls.lg_slab).ok()?;
+        proof {
+            lemma_run_commit(*self, s, end, false);
+        }
+        commit(self.slab_addr(s), (end - s) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
         Some(true)
     }
 
@@ -4568,6 +4887,7 @@ impl SlabTable {
             self.spec_slabs_per_page() == 1,
         ensures
             s < r <= limit,
+            forall|g: usize| s < g < r ==> !#[trigger] self.spec_is_guard(g),
     {
         proof {
             use_type_invariant(self);
@@ -4595,6 +4915,21 @@ impl SlabTable {
             } else {
                 s | self.guard_mask as usize
             });
+        }
+        proof {
+            // No guard slab lies past `s` and before `end`: `x | guard_mask`
+            // is the first one at or above `x` (`s + 1` after a guard slab).
+            assert forall|g: usize| s < g < end implies !#[trigger] self.spec_is_guard(g) by {
+                lemma_guard_test(*self, g);
+                if self.guard_mask != u32::MAX {
+                    let m = self.guard_mask;
+                    let gm = m as usize;
+                    let x = if guard { (s + 1) as usize } else { s };
+                    assert(m & (m >> 1u32) == m >> 1u32 ==> gm & (gm >> 1) == gm >> 1) by (bit_vector)
+                        requires gm == m as usize;
+                    assert(gm & (gm >> 1) == gm >> 1 && x <= g && g < (x | gm) ==> g & gm != gm) by (bit_vector);
+                }
+            }
         }
         end
     }
@@ -4653,9 +4988,15 @@ impl SlabTable {
         if first_of_page_group {
             if is_guard && mode != crate::thp::Mode::Chunks {
                 if self.install_guard(addr, page, len)? {
+                    proof {
+                        lemma_page_group_commit(*self, s, len, addr);
+                    }
                     self.commit_page_group(addr, len, mode)?;
                 }
             } else {
+                proof {
+                    lemma_page_group_commit(*self, s, len, addr);
+                }
                 self.commit_page_group(addr, len, mode)?;
             }
         }
@@ -4681,6 +5022,8 @@ impl SlabTable {
             crate::sys::may_syscall(),
             self.base <= addr <= self.base + (self.spec_nslabs() << class_table()[self.spec_class() as int].lg_slab),
             addr + len <= usize::MAX,
+            commit_inside(self.class as int, addr as int, len as int),
+            mode != crate::thp::Mode::Chunks ==> commit_spares_guards(self.class as int, addr as int, len as int),
     {
         proof {
             use_type_invariant(self);
@@ -4701,12 +5044,16 @@ impl SlabTable {
             // calls (no-ops in the kernel once the first has run, a
             // microsecond each per 64 KiB committed), and the counters
             // take the one that starts the chunk.
-            if commit(lo, hi - lo).is_ok() {
+            proof {
+                lemma_slab_bytes(*self, self.nslabs);
+                assert(process_regions().spec_nslabs(self.class as int) == self.nslabs);
+            }
+            if commit(lo, hi - lo, Ghost(self.class as int), Ghost(true)).is_ok() {
                 crate::thp::advise_class(lo, hi - lo, addr == lo);
                 return Some(());
             }
         }
-        commit(addr, len).ok()
+        commit(addr, len, Ghost(self.class as int), Ghost(mode == crate::thp::Mode::Chunks)).ok()
     }
 
     /// Guard the slab (or page group, `len` bytes) at `addr`, before
@@ -4723,6 +5070,8 @@ impl SlabTable {
     fn install_guard(&self, addr: usize, page: usize, len: usize) -> (r: Option<bool>)
         requires
             crate::sys::may_syscall(),
+        ensures
+            r == Some(true) ==> sys::madvise_ok(addr, page, MADV_GUARD_INSTALL),
     {
         if guard(addr, page).is_ok() {
             return Some(true);

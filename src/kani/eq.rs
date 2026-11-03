@@ -9,6 +9,7 @@ use crate::config::{PercpuArena, Thp};
 use crate::huge::RunState;
 use crate::slab;
 use crate::sys::thp_host::ThpSetting;
+use crate::thp::Mode;
 
 /// Every variant, by index: `pick(variants)` is `variants[i]` for a
 /// symbolic `i < variants.len()`, returned with `i`. The arrays are
@@ -110,6 +111,24 @@ fn eq_run_state() {
     let v = [RunState::Active, RunState::Empty, RunState::Purged];
     for (i, s) in v.iter().enumerate() {
         assert_eq!(run_state_index(*s), i);
+    }
+    check_variants(&v);
+}
+
+fn thp_mode_index(m: Mode) -> usize {
+    match m {
+        Mode::Off => 0,
+        Mode::Folios => 1,
+        Mode::Chunks => 2,
+    }
+}
+
+/// `PartialEqSpecImpl for thp::Mode`.
+#[kani::proof]
+fn eq_thp_mode() {
+    let v = [Mode::Off, Mode::Folios, Mode::Chunks];
+    for (i, m) in v.iter().enumerate() {
+        assert_eq!(thp_mode_index(*m), i);
     }
     check_variants(&v);
 }

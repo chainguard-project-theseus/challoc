@@ -81,6 +81,7 @@ use crate::vspec::zero::{page_aligned, run_need, run_placeable};
 use table::Table;
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::pow2;
+use vstd::cell::pcell::PointsTo as LockPerm;
 use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_ref, ptr_mut_write, ptr_ref};
 use vstd::resource::set::{GhostSetAuth, GhostSingleton, GhostSubset};
@@ -1901,9 +1902,58 @@ const _: () = assert!(
 
 verus! {
 
-fn commit(addr: usize, len: usize) -> Result<(), Errno>
+/// A commit, or a guard marker's removal, of `[addr, addr + len)` leaves
+/// the guard page of every live run of `g` (the huge lock's value) but
+/// `freed` inaccessible: the range lies in `h`'s region and shares no byte
+/// with the [`GUARD_PAGES`] that end such a run (`Active`, `run_ok`).
+/// `freed` is the run [`Huge::free_run`] is freeing, whose guard goes
+/// with it: when it names a descriptor of `g`, the range is exactly that
+/// run's guard. Elsewhere it is null, which names no descriptor
+/// (`perms_ok`).
+spec fn spares_guards(h: Huge, g: Inner, freed: *mut HugeDesc, addr: int, len: int) -> bool {
+    let p = pow2(h.lg_page as nat) as int;
+    &&& h.base <= addr
+    &&& addr + len <= h.base + h.npages * p
+    &&& forall|d: *mut HugeDesc|
+        #[trigger] g.descs@.contains_key(d) && d != freed && g.descs@[d].value().state == RunState::Active as u8 ==> {
+            let v = g.descs@[d].value();
+            crate::layout::disjoint(addr, len, h.base + (v.start + v.pages - GUARD_PAGES) * p, GUARD_PAGES * p)
+        }
+    &&& g.descs@.contains_key(freed) ==> {
+        let v = g.descs@[freed].value();
+        addr == h.base + (v.start + v.pages - GUARD_PAGES) * p && len == GUARD_PAGES * p
+    }
+}
+
+/// `lk` is the permission of `h`'s lock cell ([`Lock::has_perm`]): only
+/// a holder of the lock has it, from its guard
+/// ([`LockGuard::perm`](crate::lock::LockGuard::perm)), so
+/// its value is the lock's. And when `freed` names a descriptor of that
+/// value, the run's [`RunToken`] has come back: its extent is out of the
+/// run authority (`runs`), as [`Huge::free_run`] leaves it before it
+/// frees the guard. A run still handed out keeps its token's extent there
+/// (the authority agrees with every outstanding token, `tok.ext.agree` in
+/// `free_run`), so `freed` names no such run.
+spec fn held_by(h: Huge, lk: LockPerm<Inner>, freed: *mut HugeDesc) -> bool {
+    let g = *lk.value();
+    &&& h.inner.has_perm(lk)
+    &&& g.descs@.contains_key(freed) ==> {
+        let v = g.descs@[freed].value();
+        !g.runs@@.contains((v.start as int, v.pages as int))
+    }
+}
+
+/// Make `[addr, addr + len)` read-write. Every caller holds the huge lock
+/// (`lk`, [`held_by`]) and proves the range apart from its live runs'
+/// guards (`spares_guards`).
+fn commit(addr: usize, len: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>, Ghost(freed): Ghost<*mut HugeDesc>) -> (r: Result<(), Errno>)
     requires
         crate::sys::may_syscall(),
+        held_by(h, *lk, freed),
+        spares_guards(h, *lk.value(), freed, addr as int, len as int),
+    ensures
+        held_by(h, *lk, freed),
+        spares_guards(h, *lk.value(), freed, addr as int, len as int),
 {
     // SAFETY: inside our own reservation; adding permissions to pages
     // nobody holds cannot break anything.
@@ -1985,12 +2035,166 @@ fn guard_install(addr: usize, len: usize) -> Result<(), Errno>
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
 
-fn guard_remove(addr: usize, len: usize) -> Result<(), Errno>
+/// Remove the guard marker on `[addr, addr + len)`, the guard of the run
+/// being freed. Every caller proves the range apart from every other live
+/// run's guard (`spares_guards`), holding the huge lock (`lk`,
+/// [`held_by`]).
+fn guard_remove(addr: usize, len: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>, Ghost(freed): Ghost<*mut HugeDesc>) -> (r: Result<(), Errno>)
     requires
         crate::sys::may_syscall(),
+        held_by(h, *lk, freed),
+        spares_guards(h, *lk.value(), freed, addr as int, len as int),
+    ensures
+        held_by(h, *lk, freed),
+        spares_guards(h, *lk.value(), freed, addr as int, len as int),
 {
     // SAFETY: the run is being freed; the guard protects nothing now.
     unsafe { sys::madvise(addr, len, MADV_GUARD_REMOVE) }
+}
+
+/// Null names no descriptor of `g`, and every live run of `g` ends by
+/// `watermark`, has its guard page, and shares no page with
+/// `[s, s + need)`: what the placement [`Huge::find`] returns has, at the
+/// mark.
+spec fn runs_apart(g: Inner, s: int, need: int, watermark: int) -> bool {
+    &&& !g.descs@.contains_key(vstd::raw_ptr::ptr_null_mut())
+    &&& forall|d: *mut HugeDesc|
+        #[trigger] g.descs@.contains_key(d) && g.descs@[d].value().state == RunState::Active as u8 ==> {
+            let v = g.descs@[d].value();
+            &&& v.pages >= GUARD_PAGES
+            &&& v.start + v.pages <= watermark
+            &&& (v.start + v.pages <= s || s + need <= v.start)
+        }
+}
+
+/// Pages `x..y` of `h`'s region spare the guards ([`spares_guards`]) of
+/// the live runs of `g` but `freed` when each of those ends by `x` or has
+/// its guard page at or past `y`.
+proof fn lemma_pages_spare_guards(h: Huge, g: Inner, freed: *mut HugeDesc, x: int, y: int)
+    requires
+        h.inv(),
+        0 <= x <= y <= h.npages,
+        g.descs@.contains_key(freed) ==> {
+            let v = g.descs@[freed].value();
+            x == v.start + v.pages - GUARD_PAGES && y == v.start + v.pages
+        },
+        forall|d: *mut HugeDesc|
+            #[trigger] g.descs@.contains_key(d) && d != freed && g.descs@[d].value().state == RunState::Active as u8 ==> {
+                let v = g.descs@[d].value();
+                v.start + v.pages <= x || y <= v.start + v.pages - GUARD_PAGES
+            },
+    ensures
+        spares_guards(h, g, freed, h.base + x * pow2(h.lg_page as nat), (y - x) * pow2(h.lg_page as nat)),
+{
+    let p = pow2(h.lg_page as nat) as int;
+    vstd::arithmetic::power2::lemma_pow2_pos(h.lg_page as nat);
+    assert(x * p + (y - x) * p == y * p) by (nonlinear_arith);
+    vstd::arithmetic::mul::lemma_mul_inequality(y, h.npages as int, p);
+    assert forall|d: *mut HugeDesc|
+        #[trigger] g.descs@.contains_key(d) && d != freed && g.descs@[d].value().state == RunState::Active as u8 implies {
+            let v = g.descs@[d].value();
+            crate::layout::disjoint(h.base + x * p, (y - x) * p, h.base + (v.start + v.pages - GUARD_PAGES) * p, GUARD_PAGES * p)
+        } by {
+        let v = g.descs@[d].value();
+        let e = v.start + v.pages;
+        assert((e - GUARD_PAGES) * p + GUARD_PAGES * p == e * p) by (nonlinear_arith);
+        if e <= x {
+            vstd::arithmetic::mul::lemma_mul_inequality(e, x, p);
+        } else {
+            vstd::arithmetic::mul::lemma_mul_inequality(y, e - GUARD_PAGES, p);
+        }
+    }
+}
+
+/// The guard page of the live run `d` of `g` ([`spares_guards`] with `d`
+/// as the run being freed): apart from every other live run's guard, as
+/// live extents are pairwise apart (`Inner::wf`).
+proof fn lemma_freed_guard_apart(h: Huge, g: Inner, d: *mut HugeDesc)
+    requires
+        h.inv(),
+        g.wf(),
+        g.spec_np() == h.npages,
+        g.descs@.contains_key(d),
+        g.descs@[d].value().state == RunState::Active as u8,
+    ensures
+        ({
+            let (v, p) = (g.descs@[d].value(), pow2(h.lg_page as nat) as int);
+            spares_guards(h, g, d, h.base + (v.start + v.pages - GUARD_PAGES) * p, GUARD_PAGES * p)
+        }),
+{
+    g.lemma_wf_for_take();
+    let v = g.descs@[d].value();
+    assert(desc_ok(v, g.next_page));
+    assert(run_ok(v, g.lg@));
+    assert forall|x: *mut HugeDesc|
+        #[trigger] g.descs@.contains_key(x) && x != d && g.descs@[x].value().state == RunState::Active as u8 implies {
+            let w = g.descs@[x].value();
+            w.start + w.pages <= v.start + v.pages - GUARD_PAGES || v.start + v.pages <= w.start + w.pages - GUARD_PAGES
+        } by {
+        assert(apart(g.descs@[x].value(), v));
+        assert(run_ok(g.descs@[x].value(), g.lg@));
+    }
+    lemma_pages_spare_guards(h, g, d, v.start + v.pages - GUARD_PAGES, v.start + v.pages);
+}
+
+/// Commits keep the guard pages of live huge runs inaccessible: every
+/// call of [`commit`] (`mprotect` read-write) or [`guard_remove`]
+/// (`MADV_GUARD_REMOVE`) is made holding the huge lock, whose cell's
+/// permission `lk` it takes from the caller's guard (`held_by`, so `g`,
+/// the value `lk` holds, is the lock's), and makes accessible only bytes
+/// of `h`'s region, and none of the guard page of any live run of `g`
+/// other than `freed`, the run [`Huge::free_run`] is freeing. When
+/// `freed` names a descriptor of `g`, its run's token has come back to
+/// the lock (`held_by`: no live run's has), and the range is exactly that
+/// run's guard page (`spares_guards`), so the exception covers nothing
+/// else. Both ensure what their precondition asks of each caller
+/// ([`Huge::prepare`] for a run being placed, [`Huge::free_run`]), so
+/// Verus rejects any caller that has not proved it. For the
+/// process's huge allocator ([`Huge::is_process`]) that region is the huge
+/// region, apart from every class region and the metadata region
+/// (`Regions::separated`), so such a commit touches no class guard slab
+/// either. Under `guards:false` no run has a guard to keep; the commits
+/// stay apart from the pages all the same.
+///
+/// Not covered: a freed run's guard, which `free_run` makes read-write
+/// again (or whose marker it removes) so that its VMA merges back; and
+/// that `prepare` puts each run's guard on the page this names (its
+/// `guard_install` and `split_guard` calls, read from the code). Trusted:
+/// `mprotect` and `madvise` change only the range they are given.
+proof fn theorem_huge_commit_avoids_guards(h: Huge, lk: LockPerm<Inner>, freed: *mut HugeDesc, addr: usize, len: usize, r: Result<(), Errno>, d: *mut HugeDesc)
+    requires
+        call_ensures(commit, (addr, len, Ghost(h), Tracked(&lk), Ghost(freed)), r)
+            || call_ensures(guard_remove, (addr, len, Ghost(h), Tracked(&lk), Ghost(freed)), r),
+        lk.value().descs@.contains_key(d),
+        d != freed,
+        lk.value().descs@[d].value().state == RunState::Active as u8,
+    ensures
+        held_by(h, lk, freed),
+        h.spec_base() <= addr,
+        addr + len <= h.spec_base() + h.spec_npages() * h.spec_page(),
+        ({
+            let (v, p) = (lk.value().descs@[d].value(), h.spec_page());
+            crate::layout::disjoint(addr as int, len as int, h.spec_base() + (v.start + v.pages - GUARD_PAGES) * p, GUARD_PAGES * p)
+        }),
+        h.is_process() ==> ({
+            let (r, region) = (crate::layout::process_regions(), (1usize << crate::layout::process_regions().lg_region) as int);
+            &&& forall|c: int| 0 <= c < crate::layout::NCLASSES ==> crate::layout::disjoint(addr as int, len as int, #[trigger] r.class_base[c] as int, region)
+            &&& crate::layout::disjoint(addr as int, len as int, r.meta_base as int, r.meta_len as int)
+        }),
+{
+    if h.is_process() {
+        let r = crate::layout::process_regions();
+        let (stride, region) = ((1usize << r.lg_stride) as int, (1usize << r.lg_region) as int);
+        let lg = r.lg_page as usize;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(r.huge_len >> lg, lg, r.huge_len);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg);
+        assert(h.npages * h.spec_page() <= r.huge_len);
+        assert forall|c: int| 0 <= c < crate::layout::NCLASSES implies crate::layout::disjoint(addr as int, len as int, #[trigger] r.class_base[c] as int, region) by {
+            assert(r.superblock + c * stride <= r.class_base[c] && r.class_base[c] + region <= r.superblock + (c + 1) * stride);
+            vstd::arithmetic::mul::lemma_mul_inequality(c + 1, crate::layout::NCLASSES as int, stride);
+        }
+    }
 }
 
 fn now_ns() -> u64
@@ -4446,6 +4650,42 @@ impl Huge {
         &&& forall|p: int| q <= p < q + need ==> #[trigger] page_free(g.descs@, g.next_page as int, p)
     }
 
+    /// A placement that [`fits`](Huge::fits) at `s` is apart from every
+    /// live run ([`runs_apart`]): its pages are free, past the mark or in
+    /// a free extent, which is apart from every run.
+    proof fn lemma_fits_apart(&self, g: &Inner, s: int, need: int, align: usize)
+        requires
+            g.wf(),
+            self.fits(g, s, need, align),
+            need >= 1,
+        ensures
+            runs_apart(*g, s, need, g.next_page as int),
+    {
+        g.lemma_wf_for_take();
+        assert(!g.descs@.contains_key(vstd::raw_ptr::ptr_null_mut())) by {
+            if g.descs@.contains_key(vstd::raw_ptr::ptr_null_mut()) {
+                assert(vstd::raw_ptr::ptr_null_mut::<HugeDesc>()@.addr == 0);
+            }
+        }
+        assert forall|d: *mut HugeDesc|
+            #[trigger] g.descs@.contains_key(d) && g.descs@[d].value().state == RunState::Active as u8 implies {
+                let v = g.descs@[d].value();
+                &&& v.pages >= GUARD_PAGES
+                &&& v.start + v.pages <= g.next_page as int
+                &&& (v.start + v.pages <= s || s + need <= v.start)
+            } by {
+            let v = g.descs@[d].value();
+            assert(desc_ok(v, g.next_page));
+            assert(run_ok(v, g.lg@));
+            if !(v.start + v.pages <= s || s + need <= v.start) {
+                let p = if s <= v.start { v.start as int } else { s };
+                assert(page_free(g.descs@, g.next_page as int, p));
+                let x = choose|x: *mut HugeDesc| #[trigger] in_free(g.descs@, x, p);
+                assert(apart(g.descs@[x].value(), g.descs@[d].value()));
+            }
+        }
+    }
+
     /// No placement starts below `s` when none starts below `from`, every
     /// free extent starting below `from` ends by it, no free page lies in
     /// `[from, a)`, and no page in `[a, s)` is aligned: a placement in
@@ -4793,7 +5033,13 @@ impl Huge {
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
         let Some((s, ext)) = self.find(&g, need, align) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
         let end = s + need;
+        // The lock's value at the placement: `prepare`'s commits are apart
+        // from its live runs' guards. The `ensure` calls below change neither
+        // its descriptors nor its mark (`prepare` gets the guard's
+        // permission and `g.next_page`).
+        let ghost gp = g@;
         proof {
+            self.lemma_fits_apart(&gp, s as int, need as int, align);
             // `s` is a placement, so the request is placeable.
             assert(self.aligned_at(s as int, align));
             assert(page_aligned(self.base as int, self.spec_page(), s as int, align as int));
@@ -4835,7 +5081,7 @@ impl Huge {
         let extra = if g.table.keys() <= 0xFFFF_FFFF && runs <= 0xFFFF_FFFF { 4 + runs } else { 3 };
         let ok = g.table.ensure(meta, page, extra).is_ok()
             && (end <= g.next_page || g.free.ensure(meta, page, end - 1, Tracked(&mut under)).is_ok())
-            && self.prepare(s, usable_pages, g.next_page).is_ok();
+            && self.prepare(s, usable_pages, g.next_page, g.perm()).is_ok();
         if !ok {
             free_desc(meta, run, Tracked(desc_raw(run_perm.get())));
             free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())));
@@ -4847,6 +5093,10 @@ impl Huge {
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
 
+        proof {
+            // The `ensure` calls left the runs `prepare` was shown apart from.
+            assert(g@.descs@ == gp.descs@);
+        }
         // `check_zero` needs the extent's state before `take` may free it.
         let _gi: &Inner = &g;
         let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
@@ -5301,12 +5551,16 @@ impl Huge {
     /// committed. Committing only `[s, end)` here left the hole `PROT_NONE`
     /// and the first write into it faulted; the fallback mode commits from
     /// the mark for the same reason.
-    fn prepare(&self, s: usize, usable: usize, watermark: usize) -> Result<(), Errno>
+    fn prepare(&self, s: usize, usable: usize, watermark: usize, Tracked(lk): Tracked<&LockPerm<Inner>>) -> Result<(), Errno>
         requires
             crate::sys::may_syscall(),
             s + usable + GUARD_PAGES <= self.npages,
             watermark <= self.npages,
+            self.inner.has_perm(*lk),
+            runs_apart(*lk.value(), s as int, usable + GUARD_PAGES, watermark as int),
     {
+        // The huge lock's value, which the caller holds (`lk`).
+        let ghost g = *lk.value();
         proof {
             use_type_invariant(self);
             self.lemma_pages(usable);
@@ -5325,10 +5579,16 @@ impl Huge {
         let r = if self.guard_install {
             if self.mixed_guards.load(Ordering::Relaxed) {
                 // A `PROT_NONE` guard may lie below the mark.
-                commit(self.addr(s), usable * page)?;
+                proof {
+                    lemma_pages_spare_guards(*self, g, vstd::raw_ptr::ptr_null_mut(), s as int, s + usable);
+                }
+                commit(self.addr(s), usable * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
             }
             if watermark < end {
-                commit(self.addr(watermark), (end - watermark) * page)?;
+                proof {
+                    lemma_pages_spare_guards(*self, g, vstd::raw_ptr::ptr_null_mut(), watermark as int, end as int);
+                }
+                commit(self.addr(watermark), (end - watermark) * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
             }
             if guard_install(self.addr(guard), GUARD_PAGES * page).is_err() {
                 // Refused (`EINVAL` on an `mlock`ed range: the marker
@@ -5359,8 +5619,9 @@ impl Huge {
                 let lo = if watermark < s { watermark } else { s };
                 proof {
                     self.lemma_pages((end - lo) as usize);
+                    lemma_pages_spare_guards(*self, g, vstd::raw_ptr::ptr_null_mut(), lo as int, end as int);
                 }
-                commit(self.addr(lo), (end - lo) * page)?;
+                commit(self.addr(lo), (end - lo) * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
             }
             if self.guards {
                 split_guard(self.addr(s), self.addr(guard), page, fresh)?;
@@ -7094,6 +7355,22 @@ impl Huge {
             assert(n * p == (n - 1) * p + p) by (nonlinear_arith);
         }
         let guard_addr = addr + (n - GUARD_PAGES) * page_size;
+        proof {
+            // The freed run's guard page is apart from every other live
+            // run's guard (`spares_guards`), and the run's token is back
+            // (`held_by`): the descriptors are still `g0`'s, and the
+            // token's extent left the run authority above.
+            lemma_freed_guard_apart(*self, g0, d);
+            assert(g@.descs@ == g0.descs@);
+            assert(!g@.runs@@.contains((vd.start as int, vd.pages as int)));
+            let p = pow2(self.lg_page as nat) as int;
+            assert(guard_addr == self.base + (page + n - GUARD_PAGES) * p) by (nonlinear_arith)
+                requires
+                    guard_addr == addr + (n - GUARD_PAGES) * page_size,
+                    addr == self.base + page * p,
+                    page_size == p,
+                    n >= GUARD_PAGES;
+        }
         // Nested, not a `let` chain: Verus does not take `let` chains.
         #[allow(clippy::collapsible_if)]
         if self.guard_install {
@@ -7103,7 +7380,7 @@ impl Huge {
             // anonymous mapping it fails only when the program unmapped
             // (`ENOMEM`) or sealed (`EPERM`) part of the huge region: an
             // inconsistency, as for the purge (design 14.1).
-            if let Err(e) = guard_remove(guard_addr, GUARD_PAGES * page_size) {
+            if let Err(e) = guard_remove(guard_addr, GUARD_PAGES * page_size, Ghost(*self), g.perm(), Ghost(d)) {
                 sys::abort_kernel(format_args!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}"));
             }
         }
@@ -7116,7 +7393,7 @@ impl Huge {
             // stays `PROT_NONE`, `mixed_guards` is set, and from then on
             // every allocation commits its own range (`prepare`), which
             // undoes it when the page is reused.
-            if commit(guard_addr, GUARD_PAGES * page_size).is_err() {
+            if commit(guard_addr, GUARD_PAGES * page_size, Ghost(*self), g.perm(), Ghost(d)).is_err() {
                 self.mixed_guards.store(true, Ordering::Relaxed);
             }
         }

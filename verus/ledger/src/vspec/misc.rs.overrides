@@ -5,6 +5,7 @@ PartialEqSpecImpl for config::Thp	core library	Kani	discharged (Kani: kani_proof
 PartialEqSpecImpl for sys::thp_host::ThpSetting	core library	Kani	discharged (Kani: kani_proofs::eq::eq_thp_setting)
 PartialEqSpecImpl for huge::RunState	core library	Kani	discharged (Kani: kani_proofs::eq::eq_run_state)
 PartialEqSpecImpl for slab::State	core library	Kani	discharged (Kani: kani_proofs::eq::eq_slab_state)
+PartialEqSpecImpl for thp::Mode	core library	Kani	discharged (Kani: kani_proofs::eq::eq_thp_mode)
 core::sync::atomic::fence	core library	Kani	discharged (Kani: kani_proofs::atomic::fence)
 core::hint::assert_unchecked	core library	Kani	discharged (Kani: kani_proofs::misc::hint_assert_unchecked)
 Option::<T>::as_deref_mut	core library	Kani	discharged (Kani: kani_proofs::misc::option_as_deref_mut)
