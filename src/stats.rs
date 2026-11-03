@@ -663,6 +663,10 @@ impl Snapshot {
 /// every `lock_inv` axiom is: the `shared.stats` lock's writers are
 /// `Shared::init` (`Snapshot::EMPTY`, all zero) and [`collect_into`],
 /// which asserts it; the fork handlers take only the raw lock.
+///
+/// `snapshot` only reads it, and `arena_stats_all_into` leaves it unchanged.
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
     ensures
         #[trigger] crate::lock::lock_inv(v) == v.inv(),

@@ -367,7 +367,7 @@ axiom fn axiom_arenas_layout()
 
 ## `axiom_arenas_lock_inv`
 
-src/arena.rs:2091. Kind: axiom. Category: allocator invariant.
+src/arena.rs:2096. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The creation lock's invariant ([`Created::ok`]): `n` is at most [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`, and no published entry at or above it.
@@ -381,7 +381,7 @@ pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
 
 ## `axiom_arenas_assemble`
 
-src/arena.rs:2244. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:2249. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
@@ -434,7 +434,7 @@ axiom fn axiom_arenas_assemble(
 
 ## `axiom_arenas_lock_frame`
 
-src/arena.rs:3549. Kind: axiom. Category: allocator invariant.
+src/arena.rs:3554. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): what the creation lock's value keeps from the value it was created with is exactly the snapshot half's location and a count at or above the one it was created with (the automatic count, `Arenas::type_inv`).

@@ -65,6 +65,9 @@ struct State {
 /// checks nothing when a guard is released, so this is the claim. The
 /// test-only readers (`join_exited`, `stack`, `thread`) never write
 /// `stack`, `present` or `exited`, and no other code touches the value.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 broadcast axiom fn axiom_state_lock_inv(v: State)
     ensures
         #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),

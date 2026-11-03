@@ -3028,9 +3028,10 @@ mod exports {
     /// Trusted (the C contract of a free or a realloc, `vspec::cbuf`):
     /// the token of this call from C, which hands over the block at `p`
     /// ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to
-    /// use up. One call is one token. The axiom is private to this module;
-    /// by convention only its `extern "C"` bodies, the Rust side of a C
-    /// call, call it, each at most once and for its own `p`.
+    /// use up. One call is one token. The axiom is private to this module,
+    /// and only its `extern "C"` bodies, the Rust side of a C call, call
+    /// it, each at most once and for its own `p`: checked by
+    /// `api::tests::c_call_tokens_only_in_export_bodies`.
     axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
         requires
             e is Frees,
@@ -3145,8 +3146,11 @@ mod exports {
     /// to the Rust entry point and hands it back ([`axiom_out_at_return`]).
     /// No other verified code can mint one; a second permission for `p`
     /// would prove `false`, and so would a null `p` with `nullable` false
-    /// (a C caller that passes one breaks the contract). The permission
-    /// holds what the caller left at `p` ([`c_out_entry`]). A
+    /// (a C caller that passes one breaks the contract). Minted only in
+    /// the three allocating `challoc_*_usable` export bodies and in
+    /// `memptr_out`, once each: checked by
+    /// `api::tests::c_call_tokens_only_in_export_bodies`. The
+    /// permission holds what the caller left at `p` ([`c_out_entry`]). A
     /// contract-keeping `p` names the caller's own memory: not challoc's,
     /// not libc's, and not in a block the call frees or hands out.
     axiom fn axiom_c_out<T>(p: *mut T, nullable: bool) -> (tracked o: COut<T>)

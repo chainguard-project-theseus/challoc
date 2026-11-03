@@ -3501,7 +3501,10 @@ mod exports {
     /// contract (a buffer past `isize::MAX` bytes or wrapping the address
     /// space, a string that is not NUL-terminated, a pointer into
     /// challoc's memory other than a published counter read as such)
-    /// makes it false.
+    /// makes it false. The `mallctlnametomib` exports mint theirs through
+    /// `nametomib_call`, which each calls once: checked, with the
+    /// one-token-per-export rule, by
+    /// `api::tests::c_call_tokens_only_in_export_bodies`.
     axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
         requires
             e is Mallctl || e is NameToMib || e is ByMib,

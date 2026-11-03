@@ -26,6 +26,9 @@ verus! {
 /// and release the raw lock without touching the value, and nothing calls
 /// `get_unlocked` on it. What is left is the claim that the lock protects
 /// `wf`.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
     ensures
         #[trigger] lock_inv(v) == v.wf(),

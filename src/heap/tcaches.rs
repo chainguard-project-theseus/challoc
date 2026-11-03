@@ -51,6 +51,11 @@ impl Tcaches {
 
 /// Assumption (`lock.rs`): the explicit-cache table lock guards no value
 /// (`()`), so its invariant is trivially true. Nothing writes the value.
+///
+/// Its holders, `Tcaches::create` and `Tcaches::destroy`, hold it only to
+/// serialise their table updates.
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
     ensures
         #[trigger] crate::lock::lock_inv(v),
@@ -141,6 +146,8 @@ pub tracked struct HeapUse {
 /// `sdallocx_routed`, [`Tcaches::flush`], [`Tcaches::destroy`],
 /// `heap::thread::heap_destructor` and `heap::thread::create_heap_for_thread`
 /// (the heap it could not register).
+///
+/// Checked by `heap::tcaches::tests::heap_use_axiom_only_at_listed_mint_sites`.
 pub axiom fn axiom_heap_use() -> (tracked u: HeapUse);
 
 /// A heap [`Heap::create`] or [`Heap::create_detached`] returned and
@@ -408,41 +415,23 @@ mod tests {
     /// its own caller, so a new call needs a premise of its own.
     #[test]
     fn heap_use_axiom_only_at_listed_mint_sites() {
-        // Spelled in parts, so that this test's own lines match nothing.
-        let name = std::format!("{}{}", "axiom_", "heap_use");
-        let call = std::format!("{name}(");
-        let sites: std::vec::Vec<_> = crate::sys::tests::grant_sites(&name)
-            .into_iter()
-            .filter(|(_, at)| at.contains(call.as_str()) && !at.contains("axiom fn "))
-            .collect();
-        let callers = [
-            ("heap/mallocx.rs:", "pub fn alloc("),
-            ("heap/mallocx.rs:", "pub fn alloc_huge("),
-            ("heap/mallocx.rs:", "pub fn free("),
-            ("api/jemalloc.rs:", "fn sdallocx_routed("),
-            ("heap/tcaches.rs:", "pub fn flush("),
-            ("heap/tcaches.rs:", "pub fn destroy("),
-            (
-                "heap/thread.rs:",
-                "pub unsafe extern \"C\" fn heap_destructor(",
-            ),
-            ("heap/thread.rs:", "fn create_heap_for_thread<"),
-        ];
-        for (sig, at) in &sites {
-            assert!(
-                callers
-                    .iter()
-                    .any(|(file, f)| at.starts_with(file) && sig.starts_with(f)),
-                "{at}: a heap-use token made in `{sig}`"
-            );
-        }
-        for (file, f) in callers {
-            let n = sites
-                .iter()
-                .filter(|(sig, at)| at.starts_with(file) && sig.starts_with(f))
-                .count();
-            assert_eq!(n, 1, "{file} `{f}`: got = {n} tokens, want = 1");
-        }
+        crate::testutil::assert_only_at(
+            concat!("axiom_", "heap_use("),
+            &[
+                ("heap/mallocx.rs:", "pub fn alloc(", 1),
+                ("heap/mallocx.rs:", "pub fn alloc_huge(", 1),
+                ("heap/mallocx.rs:", "pub fn free(", 1),
+                ("api/jemalloc.rs:", "fn sdallocx_routed(", 1),
+                ("heap/tcaches.rs:", "pub fn flush(", 1),
+                ("heap/tcaches.rs:", "pub fn destroy(", 1),
+                (
+                    "heap/thread.rs:",
+                    "pub unsafe extern \"C\" fn heap_destructor(",
+                    1,
+                ),
+                ("heap/thread.rs:", "fn create_heap_for_thread<", 1),
+            ],
+        );
     }
 }
 

@@ -78,7 +78,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
 
 ## `axiom_arena_stats_lock_inv`
 
-src/vspec/arena.rs:54. Kind: axiom. Category: allocator invariant.
+src/vspec/arena.rs:58. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the value of an arena's statistics lock keeps the accounting identities (`ArenaStats::identities`) while the lock is free.
