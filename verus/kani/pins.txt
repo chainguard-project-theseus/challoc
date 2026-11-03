@@ -1,0 +1,55 @@
+# verus/kani/pins.txt: the lines of the source that a Kani harness runs a
+# copy of, because Kani cannot run the original (an inline `asm!` block),
+# which `sh verus/seams.sh --check` requires to appear in each file in
+# this order, each on the line after the one before (lines compared with
+# leading and trailing whitespace removed; blank lines and `//` comment
+# lines in the source skipped). A `...` line allows any lines in between.
+# The original's lines come first, then the copy's, so a change to either
+# fails the check until the copy, this list and the ledger status that
+# cites the harness are revisited.
+#
+#   file<TAB>line[<TAB>NAME:ROLE]
+#
+# A third field ties a copy to its original: --check also requires the
+# `NAME:orig` rows, in order, to equal the `NAME:copy` rows, and each
+# side's rows (`orig` and `orig-only`, `copy` and `copy-only`) to be
+# consecutive here. So the copy holds the original's lines but for the
+# `-only` rows (the original's opening brace and asm! block, the copy's
+# fn line).
+#
+# heap/shared.rs: ClassLine::guard_word's contract, load and x86_64 asm!
+# block, then the copy of the load in kani_guard_word,
+# ClassLine::guard_word_load.
+src/heap/shared.rs	fn guard_word(&self) -> (r: u64)
+src/heap/shared.rs	requires
+src/heap/shared.rs	self._pad[0] == 0 && self._pad[1] == 0,
+src/heap/shared.rs	ensures
+src/heap/shared.rs	r == guard_word_of(self.guard_mask, self.tz, self.lg_guard),
+src/heap/shared.rs	opens_invariants none
+src/heap/shared.rs	{	guard_word:orig-only
+src/heap/shared.rs	#[allow(unused_mut)]	guard_word:orig
+src/heap/shared.rs	let mut gw = unsafe {	guard_word:orig
+src/heap/shared.rs	ptr::read(	guard_word:orig
+src/heap/shared.rs	(self as *const ClassLine as *const u8)	guard_word:orig
+src/heap/shared.rs	.add(core::mem::offset_of!(ClassLine, guard_mask))	guard_word:orig
+src/heap/shared.rs	as *const u64,	guard_word:orig
+src/heap/shared.rs	)	guard_word:orig
+src/heap/shared.rs	};	guard_word:orig
+src/heap/shared.rs	#[cfg(target_arch = "x86_64")]	guard_word:orig-only
+src/heap/shared.rs	unsafe {	guard_word:orig-only
+src/heap/shared.rs	core::arch::asm!("/* {0} */", inout(reg) gw, options(pure, nomem, nostack, preserves_flags))	guard_word:orig-only
+src/heap/shared.rs	};	guard_word:orig-only
+src/heap/shared.rs	gw	guard_word:orig
+src/heap/shared.rs	}	guard_word:orig
+src/heap/shared.rs	...
+src/heap/shared.rs	fn guard_word_load(&self) -> u64 {	guard_word:copy-only
+src/heap/shared.rs	#[allow(unused_mut)]	guard_word:copy
+src/heap/shared.rs	let mut gw = unsafe {	guard_word:copy
+src/heap/shared.rs	ptr::read(	guard_word:copy
+src/heap/shared.rs	(self as *const ClassLine as *const u8)	guard_word:copy
+src/heap/shared.rs	.add(core::mem::offset_of!(ClassLine, guard_mask))	guard_word:copy
+src/heap/shared.rs	as *const u64,	guard_word:copy
+src/heap/shared.rs	)	guard_word:copy
+src/heap/shared.rs	};	guard_word:copy
+src/heap/shared.rs	gw	guard_word:copy
+src/heap/shared.rs	}	guard_word:copy

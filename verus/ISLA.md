@@ -362,4 +362,4 @@ constructor names.
   on the same traces; the relational PAC jobs need Islaris's product
   construction or a hand proof.
 - **The empty templates** (`/* {0} */` register hints): no instruction to
-  trace; they stay trusted ([isla/seams.md](isla/seams.md)).
+  trace; `make emptyasm` checks that they add none ([README.md](README.md)).

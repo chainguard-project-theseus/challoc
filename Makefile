@@ -1,7 +1,7 @@
 # challoc build entry points. The library is Linux-only; every target except
-# `help`, `verus`, `isla` and the `clean-*` targets runs inside the Wolfi dev
-# container built from Dockerfile.dev. `make help` lists the targets from the
-# `##` comments below; the benchmark harness (bench/cb, its targets in
+# `help`, `verus`, `isla`, `emptyasm` and the `clean-*` targets runs inside the
+# Wolfi dev container built from Dockerfile.dev. `make help` lists the targets
+# from the `##` comments below; the benchmark harness (bench/cb, its targets in
 # bench/bench.mk) is described in bench/README.md, the environment (target
 # volumes) in CONTRIBUTING.md.
 #
@@ -89,7 +89,7 @@ env_flags = $(foreach v,$(1),$(if $($(v)),-e $(v)="$($(v))"))
 # expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey ruby check-needed clean-volumes help print-docker-run test-all verus isla
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey ruby check-needed clean-volumes help print-docker-run test-all verus isla emptyasm
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -264,6 +264,16 @@ verus: ## the seam ledger, the Verus proofs, then the coverage floor (verus/READ
 # other than the host's needs its rust standard library.
 isla: ## Isla over the inline-assembly seams verus/isla/seams.md lists (verus/ISLA.md; ISLA_TARGETS, ISLA_X86_IR)
 	sh verus/isla/run.sh
+
+# emptyasm runs where it is invoked, not in the dev container: it needs
+# cargo and rustc (rust-1.98), a C++ compiler for build.rs (build-base),
+# llvm-objdump (llvm-21), and git for the negative test's copy of the
+# tree. It checks the host's architecture (EMPTYASM_TARGETS; a target other
+# than the host's needs its rust standard library) at QUANTUM, then runs
+# the negative test.
+emptyasm: ## the empty-template asm! blocks of verus/emptyasm/blocks.txt add no instruction, then its negative test (verus/emptyasm/run.sh; QUANTUM, EMPTYASM_TARGETS)
+	EMPTYASM_CARGO_FLAGS='$(FEATURES)' sh verus/emptyasm/run.sh
+	EMPTYASM_CARGO_FLAGS='$(FEATURES)' sh verus/emptyasm/run.sh -n
 
 clean-volumes: ## remove the target and cargo-registry volumes TARGET_VOLUME and CARGO_VOLUME name
 	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)

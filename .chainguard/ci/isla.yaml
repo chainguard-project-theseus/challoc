@@ -1,7 +1,8 @@
-# Isla over the inline-assembly seams verus/isla/seams.md lists (make
-# isla, verus/ISLA.md), each architecture natively on its own runner, at
-# quantum 16 and at quantum 8, since the quantum changes what the
-# compiler inlines around each site.
+# The inline-assembly checks. Isla over the seams verus/isla/seams.md
+# lists (make isla, verus/ISLA.md), and make emptyasm over the
+# empty-template register hints (emptyasm below), each architecture
+# natively on its own runner, at quantum 16 and at quantum 8, since the
+# quantum changes what the compiler inlines around each site.
 #
 # make isla: section 1 checks the asm templates against templates.txt and
 # that seams.md matches the ledger (verus/ledger/, seams.sh --check);
@@ -143,3 +144,55 @@ checks:
     network:
       egress: [index.crates.io, static.crates.io, github.com]
     cmd: *isla-cmd
+
+  # make emptyasm (verus/emptyasm/run.sh) checks the host architecture's
+  # empty-template register hints of verus/emptyasm/blocks.txt, then its
+  # `-n` negative test copies the tree with git ls-files (hence git) and
+  # must see a `nop` in each template fail the check. The blocks of
+  # src/api/mod.rs and src/class/table.rs are aarch64-only, those of
+  # src/heap/shared.rs and src/layout/regions.rs x86_64-only, so both
+  # architectures run. It needs none of the Isla packages.
+  emptyasm:
+    description: >-
+      make emptyasm on each architecture natively, at quantum 16 and at
+      quantum 8: the listed empty-template asm! blocks of that architecture
+      add no instruction to the release build's assembly or object code,
+      no other asm! block holds a comment, and a nop added to each listed
+      template fails the check. Runs on pull requests that change src/,
+      the harness or the build.
+    trigger: [presubmit]
+    environment: &emptyasm-env
+      packages: [rust-1.98, build-base, llvm-21, make, git, busybox]
+    # Every asm! block in the crate's assembly is checked (each must come
+    # from an `asm!(` line, and only the listed ones may hold a comment),
+    # so any file under src/ can fail it. Also the build inputs, the
+    # harness and this file.
+    when:
+      changed:
+        - "src/**"
+        - "Cargo.toml"
+        - "Cargo.lock"
+        - "build.rs"
+        - "Makefile"
+        - "verus/emptyasm/**"
+        - ".chainguard/ci/isla.yaml"
+    foreach: &emptyasm-legs
+      - {name: arm64-q16, resources: medium-arm64, vars: {QUANTUM: "16"}}
+      - {name: arm64-q8, resources: medium-arm64, vars: {QUANTUM: "8"}}
+      - {name: amd64-q16, resources: medium-amd64, vars: {QUANTUM: "16"}}
+      - {name: amd64-q8, resources: medium-amd64, vars: {QUANTUM: "8"}}
+    timeout: 15m
+    network: *crates
+    cmd: &emptyasm-cmd [make, emptyasm]
+
+  # The same after each landing on main. It gates nothing.
+  emptyasm-main:
+    description: >-
+      make emptyasm on main, on each architecture natively, at quantum 16
+      and at quantum 8, after each landing.
+    trigger: [postsubmit]
+    environment: *emptyasm-env
+    foreach: *emptyasm-legs
+    timeout: 15m
+    network: *crates
+    cmd: *emptyasm-cmd

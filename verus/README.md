@@ -219,6 +219,20 @@ only part of the contract, `trusted (partly checked, ...)`. `make isla`
 runs it, with the `isla`, `isla-snapshots`, `sail`, `isla-sail`, `z3` and
 `llvm-21` packages.
 
+`make emptyasm` (`verus/emptyasm/run.sh`) covers the four register
+hints whose `asm!` template is empty (`verus/emptyasm/blocks.txt`): it
+checks that the release build's assembly and object code hold no
+instruction for them on the host's architecture, and that a `nop` added
+to each template fails the check. It needs `rust-1.98`, `build-base`, `llvm-21` and git.
+A core-library block in the build (today the empty one rustc emits for
+`core::hint::black_box`) passes only as `verus/emptyasm/core.txt` names it.
+That discharges `word_index`; the other three stay trusted, partly
+checked (their ledger notes say what the check leaves out).
+`ClassLine::guard_word`'s load is also checked by Kani, on a copy
+without the `asm!` block: `seams.sh --check` requires the copy's lines
+to equal the original's but for the rows `verus/kani/pins.txt` marks
+`-only` (today the opening brace and that block).
+
 ## Conventions
 
 - Keep the executable code as it is. A rewrite needed only to get through

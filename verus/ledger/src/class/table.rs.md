@@ -10,7 +10,7 @@ file.
 | `axiom_t...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_t..._frame` | axiom | allocator invariant | none (assumption) | trusted |
 | `store_owner` | external_body | atomics primitive | loom/GenMC | trusted |
-| `word_index` | external_body | inline asm | Islaris/Isla | trusted |
+| `word_index` | external_body | inline asm | Islaris/Isla | discharged |
 | `axiom_zero_desc` | axiom | raw pointer (internal) | Kani | trusted |
 | `axiom_zero_owner` | axiom | raw pointer (internal) | Kani | trusted |
 | `axiom_slot_loc` | axiom | allocator invariant | none (assumption) | trusted |
@@ -82,7 +82,7 @@ unsafe fn store_owner(
 ## `word_index`
 
 src/class/table.rs:1149. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted.
+Tool: Islaris/Isla. Status: discharged (emptyasm: word_index in src/class/table.rs).
 
 > [`word_index`] on aarch64: `index` through the empty `asm!`.
 

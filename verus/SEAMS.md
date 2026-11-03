@@ -106,9 +106,27 @@ Isla check are the build, link and platform residuals `verus/isla/seams.md`
 states for its runs (the static library's code and register assignments,
 the Linux user state the runs start from, the CPU configurations
 checked), as a Kani harness's are the ones its comment states.
+`discharged (emptyasm: <fn> in <file>)` names the row of
+`verus/emptyasm/blocks.txt` for an `asm!` block with an empty template
+in `<fn>` of `<file>`, the seam's own fn and file: `make emptyasm`
+(`verus/emptyasm/run.sh`, `.chainguard/ci/isla.yaml`) checks that the
+release build holds no instruction for it on the row's architecture.
+That discharges a seam only when the item's body is that block alone and
+its contract is that the operand comes out unchanged; otherwise the check
+covers part of it.
+`seams.sh --check` fails unless exactly one row names that fn and file
+and the seam's item holds one `asm!` call, whose template is the empty
+`"/* {0} */"`, so a template that gains an instruction fails without
+the build. Where a Kani harness runs a copy of source it cannot run (a
+body around an `asm!` block), `verus/kani/pins.txt` lists the
+original's lines and the copy's, and `seams.sh --check` fails unless
+they are in place; where rows mark the two sides (`NAME:orig`,
+`NAME:copy` and their `-only` rows), it also fails unless the copy's
+rows equal the original's but for the `-only` ones.
 A check that covers only part of the contract leaves the
 status "trusted", with a note that names the check and what it does
 not cover: `trusted (partly checked, <check>; not checked: <what>)`,
 where `<check>` is `Kani: <harness path>`, `const assert: <label> in
-<file>`, `Isla: <file>`, or several joined by `, and`. A list separates
+<file>`, `Isla: <file>`, `emptyasm: <fn> in <file>`, or several joined
+by `, and`. A list separates
 its items with `, ` or ` and `, and ends at `;`, `)` or the next tag.

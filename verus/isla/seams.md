@@ -39,8 +39,9 @@ and the checker.
 The four register-pinning hints with an empty template (`/* {0} */`:
 `api::shared_base`, `class::table::word_index`,
 `layout::regions::entry_barrier`, `heap::shared::ClassLine::guard_word`)
-assemble to no instruction, so Isla has nothing to trace; they stay
-trusted.
+assemble to no instruction, so Isla has nothing to trace. `make
+emptyasm` (`verus/emptyasm/run.sh`) checks that instead: their ledger
+statuses cite it as `emptyasm: <fn> in <file>`.
 
 ## Platform premises
 

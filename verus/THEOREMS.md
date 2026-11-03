@@ -374,10 +374,11 @@ the call does not return (theorem 3, which is not voided for it).
   that a frozen permission to one gives one to each element), whose
   value is `class_table()` (`layout::axiom_class_table`, trusted,
   definitional), at the pointer the x86_64 barrier returns unchanged
-  (`entry_barrier`, an empty `asm!`; discharged in #138, trusted
-  in main's ledger: it assembles to no instruction, so main's Isla runs,
-  which cover the x86_64 system calls since wolfi-dev/challoc#415, have
-  nothing to trace).
+  (`entry_barrier`, an empty `asm!`; discharged in #138; in main's ledger
+  trusted, partly checked: `make emptyasm` shows it assembles to no
+  instruction, and the pointer's provenance is not checked. Main's Isla
+  runs, which cover the x86_64 system calls since wolfi-dev/challoc#415,
+  have nothing to trace).
 - `vspec::class::axiom_class_table_wf` (`vspec/class.rs:12`), the same
   fact for proofs; `adopt_page_geometry` (verified) writes the table
   through the permission `api::axiom_statics` gives and keeps
@@ -2025,7 +2026,8 @@ paths, verified unless marked trusted:
 - **Size and process state:** `class_index`, `layout::class_of`;
   `api::shared_ptr` (trusted), `shared_unchecked` (trusted; since
   upstream #77 `shared_base`, trusted (since ASMHINT only on aarch64,
-  the x86_64 item verified, over the trusted `shared_storage_ptr`), and
+  partly checked by `make emptyasm`; the x86_64 item verified, over
+  the trusted `shared_storage_ptr`), and
   `shared_deref`, trusted until package P7 and verified since); since
   #101 `class_index_small`, `layout::class_of_small` and `small_class`.
 - **Heap lookup:** `existing_heap` (on a ghost `TlsSlot::entry()`),
@@ -2056,8 +2058,8 @@ paths, verified unless marked trusted:
   `load_owner` (verified since OWNER; its loads are `load_u16_at` and
   `load_usize_seen`, loom-discharged in #138, trusted in main's ledger,
   `load_u16_at` partly checked by Kani on one thread), and since #77 `word_index`
-  (trusted on aarch64, an empty `asm!`; since ASMHINT the x86_64 item,
-  the identity, verified). Since #87 the class line's
+  (on aarch64 an empty `asm!`, discharged by `make emptyasm`; since
+  ASMHINT the x86_64 item, the identity, verified). Since #87 the class line's
   `ClassLine::set_slab`, `slot_start`, `bit_fields` (aarch64), `owner`
   and `sized_ok`, `class::load_mirror`, and `SlabTable::bit_word` and
   `owner_from` in place of `is_handed_out`, `is_set_unchecked`,
@@ -2066,8 +2068,8 @@ paths, verified unless marked trusted:
   `vspec::atom::load_u16_at`, trusted, inside the word's invariant, and
   `load_owner` is not on the fast path), `word_index`
   stay, and `GuardTest::is_guard` until #101 (since then `GuardTest` is gone: the
-  sized check is `ClassLine::sized_ok`, over `guard_word`, trusted, and
-  `is_guard`).
+  sized check is `ClassLine::sized_ok`, over `guard_word`, trusted and
+  partly checked, and `is_guard`).
 - **Layout:** `Regions::slab_slot_unbounded` (since #78, for the
   unsized path; `slab_slot` before), `slot_in_class`, `region_len`, the
   free function `layout::regions::class_entry` (trusted; verified since
@@ -2131,11 +2133,14 @@ changed the order of two cold tail calls in `free_sized_medium` and
     `shared_storage_ptr`'s pointer (address and provenance), so on x86_64
     `api::shared_storage_ptr` (trusted, `opens_invariants none`, a
     projection of `SHARED`) is on these paths in its place; Isla records
-    in #138; on main the aarch64 items are trusted, Islaris/Isla in
-    the ledger, and the x86_64 items verified) and
+    in #138; on main the aarch64 items are in the ledger, `word_index`
+    discharged and `shared_base` partly checked by `make emptyasm`, and
+    the x86_64 items verified) and
     `shared_deref` (a reference to the static).
   - Since upstream #101: `ClassLine::guard_word` (one 8-byte load and,
-    on x86_64, an empty `asm!`).
+    on x86_64, an empty `asm!`; on main trusted, partly checked: Kani
+    checks a copy of the load, a const assertion the layout and byte
+    order, and `make emptyasm` the `asm!`).
   - Since package P7 `shared_deref`, `fast_flags`, `heap_from_slot` and
     `class_entry` are verified (their masks are checked); in their place
     `heap::thread::slot_heap_ref` (a cast) and, on x86_64,
