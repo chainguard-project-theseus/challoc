@@ -10,7 +10,7 @@ file.
 | `ffi::c_void` | ext_type_spec | core library | Kani | trusted |
 | `ffi::CStr` | ext_type_spec | core library | Kani | trusted |
 | `<*const T>::cast::<U>` | assume_spec | core library | Kani | discharged |
-| `<*const...ng_add` | assume_spec | core library | none (assumption) | trusted |
+| `<*const T>::wrapping_add` | assume_spec | core library | Kani | discharged |
 | `ffi::CStr::as_ptr` | assume_spec | core library | Kani | discharged |
 | `char::to_digit` | assume_spec | core library | Kani | discharged |
 
@@ -50,7 +50,7 @@ pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U
 ## `<*const T>::wrapping_add`
 
 src/vspec/config.rs:29. Kind: assume_spec. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_wrapping_add).
 
 > `<*const T>::wrapping_add`: a pointer; nothing is claimed about it (`config::linux::env_var` walks `environ` with it, and only tests the result for null before a trusted read).
 
