@@ -2367,7 +2367,9 @@ extern "C" fn fork_prepare() {
     // The fork window: the atfork handlers registered before ours run on
     // this thread with every lock held (their prepare after this, their
     // parent and child handlers before our release), and their allocations
-    // take the held locks as acquired (`lock::fork_holder_is_me`).
+    // take the held locks as acquired (`lock::fork_holder_is_me`). It
+    // opens after the last acquisition (`lock::fork_prepared`, which only
+    // the state lock's `lock_held` gives).
     crate::lock::fork_window_open();
     proof {
         before.lemma_with_saved(*s, mask, held.slot_addr());
@@ -2451,7 +2453,8 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
         crate::sys::may_syscall(),
         state.held() == purge::background::state_lock(),
 {
-    // The window ends before the first release, which must then unlock.
+    // The window ends before the first release, which must then unlock
+    // (`lock::window_closed`, which every token release requires).
     crate::lock::fork_window_close();
     let s = shared();
     let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));
@@ -2477,6 +2480,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     while i > 0
         invariant
             crate::sys::may_syscall(),
+            crate::lock::window_closed(),
             sig.wf(),
             sig.mask() == all_blocked(),
             i <= n == held.n(),
@@ -2502,6 +2506,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     while i > 0
         invariant
             crate::sys::may_syscall(),
+            crate::lock::window_closed(),
             sig.wf(),
             sig.mask() == all_blocked(),
             i <= n == held.n(),
@@ -2523,6 +2528,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     while c > 0
         invariant
             crate::sys::may_syscall(),
+            crate::lock::window_closed(),
             sig.wf(),
             sig.mask() == all_blocked(),
             c <= NCLASSES,
@@ -2542,6 +2548,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
     while i > 0
         invariant
             crate::sys::may_syscall(),
+            crate::lock::window_closed(),
             sig.wf(),
             sig.mask() == all_blocked(),
             i <= n == held.n(),
@@ -2560,6 +2567,7 @@ fn fork_release(Tracked(state): Tracked<LockHeld>)
             while c > 0
                 invariant
                     crate::sys::may_syscall(),
+                    crate::lock::window_closed(),
                     sig.wf(),
                     sig.mask() == all_blocked(),
                     c <= NCLASSES,

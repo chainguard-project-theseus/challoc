@@ -58,16 +58,18 @@ pub struct RawLock {
 
 impl Default for RawLock {
     fn default() -> Self {
-        // A rank below a spare token's, which [`RawLock::new`] requires.
+        // A rank at most the state lock's, which [`RawLock::new`] requires.
         Self::new(Ghost(1))
     }
 }
 
 impl RawLock {
-    /// A free lock of rank `rank` (ghost).
+    /// A free lock of rank `rank` (ghost), at most the state lock's
+    /// ([`rank_state`]), so none ranks above the lock `api::fork_prepare`
+    /// takes last ([`fork_prepared`]).
     pub const fn new(Ghost(rank): Ghost<int>) -> (l: RawLock)
         requires
-            rank < rank_spare(),
+            rank <= rank_state(),
         ensures
             l.rank() == rank,
     {
@@ -185,6 +187,7 @@ impl RawLock {
             t@.held() == *self,
             final(ord).root(),
             final(ord).top() == self.rank(),
+            self.rank() == rank_state() ==> fork_prepared(),
     {
         self.lock();
         proof {
@@ -193,12 +196,14 @@ impl RawLock {
         Tracked(LockHeld { lock: *self })
     }
 
-    /// [`RawLock::release`] by the holder, which hands its token back.
+    /// [`RawLock::release`] by the holder, which hands its token back,
+    /// once the fork window has closed ([`window_closed`]).
     #[inline(always)]
     pub fn unlock_held(&self, Tracked(t): Tracked<LockHeld>)
         requires
             crate::sys::may_syscall(),
             t.held() == *self,
+            window_closed(),
     {
         self.release();
     }
@@ -241,6 +246,30 @@ impl LockHeld {
 /// True, but only inside this module (the body is closed): the
 /// requirement of the unchecked [`RawLock::lock`].
 pub closed spec fn lock_rs_only() -> bool {
+    true
+}
+
+/// True, but only inside this module (the body is closed), and ensured
+/// only by [`RawLock::lock_held`] of a lock at [`rank_state`] (the
+/// background thread's state lock, which `api::fork_prepare` takes last;
+/// the test `purge::tests::state_lock_axiom_names_the_one_state_lock`
+/// checks it is the one lock of that rank): the requirement of
+/// [`fork_window_open`]. After that acquisition the root's top is
+/// `rank_state`, which no lock ranks above ([`RawLock::new`]), so no
+/// `lock_held` follows it on that token, and the window opens only once every lock is
+/// taken: an acquire after the window opened would be served as acquired
+/// ([`fork_holder_is_me`]) without the lock.
+pub closed spec fn fork_prepared() -> bool {
+    true
+}
+
+/// True, but only inside this module (the body is closed), and ensured
+/// only by [`fork_window_close`]: the requirement of the token releases
+/// ([`RawLock::unlock_held`], [`Lock::unlock_held_perm`]). While the window
+/// is open [`RawLock::release`] does nothing for the forking thread, so a
+/// fork handler's release before the window closed would leave its lock
+/// held.
+pub closed spec fn window_closed() -> bool {
     true
 }
 
@@ -561,10 +590,11 @@ fn fork_holder_slow(h: usize) -> bool {
 }
 
 /// Record the calling thread as the fork window's holder; the prepare
-/// handler's last step, with every lock taken.
+/// handler's last step, with every lock taken ([`fork_prepared`]).
 pub(crate) fn fork_window_open()
     requires
         crate::sys::may_syscall(),
+        fork_prepared(),
 {
     FORK_PID.store(crate::sys::getpid() as u32, Ordering::Relaxed);
     FORK_HOLDER.store(crate::sys::pthread_self(), Ordering::Relaxed);
@@ -590,8 +620,11 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
 }
 
 /// End the fork window; the parent and child handlers' step before their
-/// release.
-pub(crate) fn fork_window_close() {
+/// release, which it allows ([`window_closed`]).
+pub(crate) fn fork_window_close()
+    ensures
+        window_closed(),
+{
     FORK_HOLDER.store(0, Ordering::Relaxed);
 }
 
@@ -776,11 +809,12 @@ impl<T> Lock<T> {
         unsafe { core::ptr::addr_of_mut!((*p).value) as *mut T }
     }
 
-    /// A lock of rank `rank` (ghost) guarding `value`.
+    /// A lock of rank `rank` (ghost) guarding `value`, at most the state
+    /// lock's ([`RawLock::new`]).
     pub const fn new(value: T, Ghost(rank): Ghost<int>) -> (l: Lock<T>)
         requires
             lock_inv(value),
-            rank < rank_spare(),
+            rank <= rank_state(),
         ensures
             lock_init(l) == value,
             l.rank() == rank,
@@ -951,13 +985,15 @@ impl<T> Lock<T> {
 
     /// [`RawLock::unlock_held`] for a [`Lock::lock_held_perm`] holder:
     /// release, handing back the token and the permission of the cell,
-    /// which the free lock's invariant holds again.
+    /// which the free lock's invariant holds again, once the fork window
+    /// has closed ([`window_closed`]).
     #[inline(always)]
     pub(crate) fn unlock_held_perm(&self, Tracked(t): Tracked<LockHeld>, Tracked(perm): Tracked<PointsTo<T>>)
         requires
             crate::sys::may_syscall(),
             t.held() == self.spec_raw(),
             self.has_perm(perm),
+            window_closed(),
     {
         self.raw.release();
     }

@@ -915,7 +915,8 @@ fn state() -> (r: &'static Lock<State>)
 
 /// Take the state lock (fork prepare, last: after the arena statistics
 /// locks); the token is the hold, and `ord` (a root) is raised to its
-/// rank.
+/// rank. The last acquisition, after which the fork window may open
+/// (`lock::fork_prepared`).
 pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>)
     requires
         crate::sys::may_syscall(),
@@ -925,16 +926,19 @@ pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>
         t@.held() == state_lock(),
         final(ord).root(),
         final(ord).top() == rank_state(),
+        crate::lock::fork_prepared(),
 {
     state().raw().lock_held(Tracked(ord))
 }
 
 /// Release the state lock (fork parent and child, before the others),
-/// handing back the token of the hold.
+/// handing back the token of the hold, once the fork window has closed
+/// (`lock::window_closed`).
 pub fn fork_unlock(Tracked(t): Tracked<LockHeld>)
     requires
         crate::sys::may_syscall(),
         t.held() == state_lock(),
+        crate::lock::window_closed(),
 {
     state().raw().unlock_held(Tracked(t))
 }
