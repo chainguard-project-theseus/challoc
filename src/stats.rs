@@ -2198,7 +2198,12 @@ mod pool {
         mark: AtomicUsize::new(FREE),
     };
 
-    static POOL: [Slot; POOL_SLOTS] = [EMPTY; POOL_SLOTS];
+    static POOL: [Slot; POOL_SLOTS] = empty_pool();
+
+    /// `[EMPTY; POOL_SLOTS]`.
+    const fn empty_pool() -> [Slot; POOL_SLOTS] {
+        [EMPTY; POOL_SLOTS]
+    }
 
     // The unit tests build many `Shared`s, each with its own metadata,
     // which a process-wide pool would mix: there every scratch is
@@ -2233,25 +2238,25 @@ mod pool {
         let mut got = None;
         for s in POOL.iter() {
             let p = s.rec.load(Ordering::Acquire);
-            if p.is_null() || s.owner.load(Ordering::Relaxed) != tid {
-                continue;
-            }
-            let m = s.mark.load(Ordering::Relaxed);
-            if m == FREE || m > mark {
-                continue;
-            }
-            let to = if got.is_none() { mark } else { FREE };
-            if s.mark
-                .compare_exchange(m, to, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
-            {
-                // A handler on this stack took it and gave it back.
-                continue;
-            }
-            if got.is_none() {
-                got = Some(p);
-            } else {
-                s.owner.store(0, Ordering::Release);
+            if !p.is_null() && s.owner.load(Ordering::Relaxed) == tid {
+                let m = s.mark.load(Ordering::Relaxed);
+                // A mark above this call's is a caller's: this call runs inside
+                // the holder's callback, which still uses the object.
+                if m != FREE && m <= mark {
+                    let to = if got.is_none() { mark } else { FREE };
+                    // A failed exchange: a handler on this stack took it and
+                    // gave it back.
+                    if s.mark
+                        .compare_exchange(m, to, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        if got.is_none() {
+                            got = Some(p);
+                        } else {
+                            s.owner.store(0, Ordering::Release);
+                        }
+                    }
+                }
             }
         }
         if got.is_some() {
@@ -2264,30 +2269,25 @@ mod pool {
         // leaves it.
         for s in POOL.iter() {
             let p = s.rec.load(Ordering::Acquire);
-            if p.is_null() {
-                continue;
-            }
-            let o = s.owner.load(Ordering::Relaxed);
-            if o != 0 {
-                if o == tid || !crate::sys::thread_gone(o) {
-                    continue;
+            if !p.is_null() {
+                let o = s.owner.load(Ordering::Relaxed);
+                let mut open = o == 0;
+                if !open && o != tid && crate::sys::thread_gone(o) {
+                    let m = s.mark.load(Ordering::Relaxed);
+                    // A failed exchange: another thread took it since.
+                    open = m == FREE
+                        || s.mark
+                            .compare_exchange(m, FREE, Ordering::Relaxed, Ordering::Relaxed)
+                            .is_ok();
                 }
-                let m = s.mark.load(Ordering::Relaxed);
-                if m != FREE
-                    && s.mark
-                        .compare_exchange(m, FREE, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_err()
+                if open
+                    && s.owner
+                        .compare_exchange(o, tid, Ordering::Acquire, Ordering::Relaxed)
+                        .is_ok()
                 {
-                    // Another thread took it since.
-                    continue;
+                    s.mark.store(mark, Ordering::Relaxed);
+                    return Some(p);
                 }
-            }
-            if s.owner
-                .compare_exchange(o, tid, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                s.mark.store(mark, Ordering::Relaxed);
-                return Some(p);
             }
         }
         None
@@ -2323,20 +2323,23 @@ mod pool {
     #[cfg(test)]
     pub fn fork_child(_tid: u32) {}
 
+    // The indexed loop stands for `POOL.iter().enumerate()`: Verus does not
+    // specify `Enumerate`.
+    #[allow(clippy::needless_range_loop)]
     #[cfg(not(test))]
     pub fn reserve(tid: u32) -> Option<usize> {
-        for (i, s) in POOL.iter().enumerate() {
+        for i in 0..POOL_SLOTS {
+            let s = &POOL[i];
             if s.rec.load(Ordering::Relaxed).is_null()
                 && s.owner
                     .compare_exchange(0, tid, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok()
             {
-                if !s.rec.load(Ordering::Relaxed).is_null() {
-                    // Filled since: it was free, and is not this call's.
-                    s.owner.store(0, Ordering::Release);
-                    continue;
+                if s.rec.load(Ordering::Relaxed).is_null() {
+                    return Some(i);
                 }
-                return Some(i);
+                // Filled since: it was free, and is not this call's.
+                s.owner.store(0, Ordering::Release);
             }
         }
         None
