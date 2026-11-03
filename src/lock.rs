@@ -819,7 +819,8 @@ unsafe impl<T: Send> Send for Lock<T> {}
 impl<T> Lock<T> {
     /// The value's address inside the lock at `p`, for building a large
     /// value in place (`Arena::put_stats`). Trusted: the address of the
-    /// cell, whose value is its only data.
+    /// cell, whose value is its only data (`kani_lock` checks it for locks
+    /// at four `T`s).
     #[verifier::external_body]
     #[inline(always)]
     pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T {
@@ -1454,5 +1455,40 @@ mod tests {
             released_at - acquired_at
         );
         assert_eq!(l.state.load(Ordering::Relaxed), UNLOCKED);
+    }
+}
+
+/// Kani harness for [`Lock::value_ptr`] (`cfg(kani)` only; the value
+/// field is private, so it sits here).
+#[cfg(kani)]
+mod kani_lock {
+    use super::*;
+    use core::mem::{MaybeUninit, align_of, offset_of, size_of};
+
+    /// `Lock::value_ptr`, no `requires`, no `ensures`: on a pointer to a
+    /// lock of `T` (here uninitialised: the call reads nothing), at `T` a
+    /// byte, a word, a padded pair and `ArenaStats` (`Arena::put_stats`'
+    /// instance), it returns, and (beyond the contract) the pointer is the
+    /// value field's: its `T` fills the cell, lies inside the lock and
+    /// apart from the lock word, is aligned for `T` and is writable.
+    #[kani::proof]
+    fn value_ptr_is_the_value_field() {
+        fn on<T>() {
+            let mut l = MaybeUninit::<Lock<T>>::uninit();
+            let p = l.as_mut_ptr();
+            let r = Lock::value_ptr(p);
+            let off = r as usize - p as usize;
+            assert_eq!(off, offset_of!(Lock<T>, value));
+            assert_eq!(size_of::<PCell<T>>(), size_of::<T>());
+            assert!(off + size_of::<T>() <= size_of::<Lock<T>>());
+            let w = offset_of!(Lock<T>, raw);
+            assert!(w + size_of::<RawLock>() <= off || off + size_of::<T>() <= w);
+            assert_eq!(r as usize % align_of::<T>(), 0);
+            assert!(kani::mem::can_write(r));
+        }
+        on::<u8>();
+        on::<u64>();
+        on::<(u64, u8)>();
+        on::<crate::stats::ArenaStats>();
     }
 }
