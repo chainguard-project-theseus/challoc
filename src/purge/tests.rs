@@ -1,5 +1,17 @@
 use super::*;
 
+/// The owners' decay step (`ClassState::decay_with`, `Huge::decay_with`)
+/// with `walk` for the owner's walk.
+fn decay(d: &Decayer, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> Option<u64> {
+    match d.due(now, decay_ns) {
+        Due::Done(r) => r,
+        Due::Walk(curve, step, seen) => {
+            walk(now, &curve);
+            d.finish(now, step, Ghost::assume_new(), seen)
+        }
+    }
+}
+
 /// The step gate: nothing `Empty` is `None` and no walk; the oldest
 /// member's first step is the deadline until it passes, then one walk
 /// per step; a deadline set under a longer period since shortened
@@ -12,7 +24,7 @@ fn decayer_walks_once_per_step_and_follows_a_shortened_period() {
     // the calls can read it.
     let walks = std::cell::RefCell::new(std::vec::Vec::new());
     let walk_to = |d: &Decayer, now: u64, decay_ns: u64, leave: u64| {
-        d.decay(now, decay_ns, |at, curve| {
+        decay(d, now, decay_ns, |at, curve| {
             walks.borrow_mut().push((at, *curve));
             d.set_oldest_empty(leave);
         })
@@ -73,7 +85,7 @@ fn decayer_backs_off_after_a_failed_discard() {
     let d = Decayer::new();
     let walks = core::cell::Cell::new(0);
     let walk = |now: u64, fail: bool| {
-        d.decay(now, 0, |at, _| {
+        decay(&d, now, 0, |at, _| {
             walks.set(walks.get() + 1);
             if fail {
                 d.back_off(at);

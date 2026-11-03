@@ -8,7 +8,7 @@ use crate::layout::class_table;
 use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::{axiom_below_class, rank_class};
-use crate::purge::{Batch, Curve, Left, STEPS, Settle};
+use crate::purge::{Batch, Curve, Due, Left, STEPS, Settle};
 use crate::slab::{DescPerm, State};
 use vstd::prelude::*;
 
@@ -1679,7 +1679,7 @@ impl ClassState {
         v.p.t.purged
     }
 
-    /// Decay step (design 8): the gate runs `purge_curve` over
+    /// Decay step (design 8): the gate lets `purge_curve` run over
     /// the empty set at most once per step of the curve and returns the
     /// class's next deadline, `None` when nothing is `Empty`. Takes the
     /// lock only when a walk is due.
@@ -1702,13 +1702,17 @@ impl ClassState {
             exists|oldest: u64, retry: u64, next: u64, after: u64, retry2: u64|
                 r == #[trigger] crate::purge::Decayer::spec_decay(now, decay_ns, oldest, retry, next, after, retry2),
     {
-        self.gate.decay(now, decay_ns, |now, curve| {
-            // Premise (lock order): the closure cannot carry the caller's
-            // token; `ord`, which `decay_with` requires, bounds the same
-            // locks (this thread's, unchanged since the call).
-            let tracked mut ord = axiom_below_class();
-            self.purge_curve(now, curve, keep16, Tracked(&mut ord));
-        })
+        match self.gate.due(now, decay_ns) {
+            Due::Done(r) => r,
+            Due::Walk(curve, step, seen) => {
+                // Premise (lock order): `ord`, which `decay_with` requires,
+                // bounds the same locks (this thread's, unchanged since the
+                // call).
+                let tracked mut ord = axiom_below_class();
+                self.purge_curve(now, &curve, keep16, Tracked(&mut ord));
+                self.gate.finish(now, step, Ghost(decay_ns), seen)
+            },
+        }
     }
 }
 

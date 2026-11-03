@@ -11,7 +11,7 @@
 //!   `PRESENT` `Relaxed`, then kicks it (`kick`: `SEQ.fetch_add(SeqCst)`
 //!   and a futex wake);
 //! - the thread (`B`): `background::main` loads `SEQ` `SeqCst`, runs
-//!   `decay`, which loads `oldest_empty` `Relaxed` (`Decayer::decay`) and
+//!   `decay`, which loads `oldest_empty` `Relaxed` (`Decayer::due`) and
 //!   computes no deadline when it is 0, then waits on `SEQ` with no
 //!   timeout.
 //!
