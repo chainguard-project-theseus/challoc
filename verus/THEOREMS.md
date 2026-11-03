@@ -6172,11 +6172,12 @@ bounds, and `Sink::write_str` (verified) keeps it.
 - Every abort goes through `abort_fmt` (`sys/abort.rs:139`): `abort`
   (`:129`), every `-> !` helper, and the `#[panic_handler]`
   (`lib.rs:98`) that a `panic!` in a trusted body reaches. `abort_fmt`
-  and `abort` require `may_abort()`; `abort_integrity` (trusted, a call
-  of `abort_fmt`) and `check` (trusted, an `assert!`) require
-  `may_abort_corrupt()`, or `c` for `check`. `die`, `exit_group` and
+  and `abort` require `may_abort()`; `abort_integrity` (verified, a call
+  of `abort_fmt` after the module-private `relabel`) and `check`
+  (trusted, an `assert!`) require `may_abort_corrupt()`, or `c` for
+  `check`. `die`, `exit_group` and
   `trap` (the process's end) require `may_abort()` too. (Since theorem
-  44 two more trusted calls of `abort_fmt` take narrower capabilities
+  44 two more calls of `abort_fmt` take narrower capabilities
   that no witness of this theorem holds: `abort_kernel`
   (`may_abort_kernel()`) and `abort_pending` (`may_abort_pending()`).)
 - About 340 `requires` and loop-invariant clauses name `may_abort()`
@@ -8643,12 +8644,10 @@ pub open spec fn may_abort_pending() -> bool { may_abort() || pending_aborts() }
 
 pub open spec fn valid_aborts() -> bool { kernel_aborts() && pending_aborts() }
 
-#[verifier::external_body]
 pub fn abort_kernel(args: fmt::Arguments<'_>) -> !
     requires
         crate::sys::may_abort_kernel(),
 
-#[verifier::external_body]
 pub fn abort_pending(args: fmt::Arguments<'_>) -> !
     requires
         crate::sys::may_abort_pending(),
@@ -8729,7 +8728,7 @@ fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, T
 
 `kernel_aborts()` and `pending_aborts()` are two more capabilities
 beside theorem 32's `may_abort()` and `integrity_aborts()`:
-uninterpreted, granted by nothing, each accepted only by its trusted sink
+uninterpreted, granted by nothing, each accepted only by its sink
 (`abort_kernel`, `abort_pending`: `abort_fmt` under the narrower
 `may_abort_kernel()` or `may_abort_pending()`, as `abort_integrity` is
 under `may_abort_corrupt()`). The witnesses hold the two, not
@@ -8972,15 +8971,14 @@ checked it).
   creates a heap, and may abort when that fails), come before the calls
   the witnesses make, and are not covered; nor is `mallocx::free`'s
   `invalid_tcache` (a bad `MALLOCX_TCACHE` is "Bad input").
-- `abort_kernel` and `abort_pending` (`sys/abort.rs:181`, `:195`, S207,
-  S208, `external_body`; discharged by Kani in #138, partly
-  checked on main: the ledger leaves the capability narrowing
-  unchecked): the relabels of
-  `abort_fmt`'s capability, as `abort_integrity`'s (S206); their
-  harnesses (`abort_kernel_reaches_abort_fmt`,
-  `abort_pending_reaches_abort_fmt`, `src/kani/abort.rs`) show each
-  body reaches `abort_fmt` with nothing failing on the way, and the
-  relabel itself is this theorem's policy (the records' residual).
+- `abort_kernel` and `abort_pending` (verified): the relabels of `abort_fmt`'s
+  capability, as `abort_integrity`'s. Each body calls `abort_fmt` after
+  `relabel`, a proof private to `sys/abort.rs` that reveals
+  `may_abort()` (opaque, and `true`). The relabel itself is this
+  theorem's policy: `sys::abort::tests::abort_relabels_only_in_the_sinks`
+  checks that only the three sinks call `relabel` and that nothing else
+  but `grant_aborts` reveals `may_abort` (any `reveal(..may_abort)`), and
+  `relabel` requires one of the narrower capabilities.
 - `Heap::cached_recently` (`heap/cache.rs:740`, S112, discharged by
   Kani in main's ledger): its contract now ensures that a hit is one of the `len`
   entries whose address is `e`'s, read off its body (the four compares

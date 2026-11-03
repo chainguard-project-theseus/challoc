@@ -157,45 +157,72 @@ pub fn abort_fmt(args: fmt::Arguments<'_>) -> !
     die()
 }
 
+/// The relabel the three sinks below make: [`super::may_abort`] for a
+/// caller that holds only one of the narrower capabilities. Neither has a
+/// run-time meaning (`may_abort` is opaque and `true`, the narrower ones
+/// are uninterpreted), so the relabel is a policy, not a fact: the
+/// theorems that hold a narrower capability ("Read-only APIs never
+/// abort", "Valid programs never abort", verus/THEOREMS.md) exclude
+/// exactly the aborts of the sink that takes it. Private to this module,
+/// called only in the three sinks' bodies
+/// (`tests::abort_relabels_only_in_the_sinks`), and requiring one of the
+/// narrower capabilities, so no other function can turn a narrower
+/// capability, or none, into [`super::may_abort`].
+proof fn relabel()
+    requires
+        crate::sys::may_abort_corrupt() || crate::sys::may_abort_kernel()
+            || crate::sys::may_abort_pending(),
+    ensures
+        crate::sys::may_abort(),
+{
+    reveal(crate::sys::may_abort);
+}
+
 /// [`abort_fmt`] at an integrity check: a test of allocator state that no
 /// verified invariant constrains failed ([`super::integrity_aborts`]).
-/// Trusted: the call, which needs [`super::may_abort`], under the narrower
-/// [`super::may_abort_corrupt`].
-#[verifier::external_body]
+/// The call, which needs [`super::may_abort`], under the narrower
+/// [`super::may_abort_corrupt`] ([`relabel`]).
 #[inline(always)]
 pub fn abort_integrity(args: fmt::Arguments<'_>) -> !
     requires
         crate::sys::may_abort_corrupt(),
 {
+    proof {
+        relabel();
+    }
     abort_fmt(args)
 }
 
 /// [`abort_fmt`] at a resource failure: a resource the allocator needs
 /// failed it (a system call that returns an error, such as an `madvise`,
 /// or metadata the reservation or the kernel cannot supply), which nothing
-/// the program does rules out ([`super::kernel_aborts`]). Trusted: the
-/// call, which needs [`super::may_abort`], under the narrower
-/// [`super::may_abort_kernel`].
-#[verifier::external_body]
+/// the program does rules out ([`super::kernel_aborts`]). The call, which
+/// needs [`super::may_abort`], under the narrower
+/// [`super::may_abort_kernel`] ([`relabel`]).
 #[inline(always)]
 pub fn abort_kernel(args: fmt::Arguments<'_>) -> !
     requires
         crate::sys::may_abort_kernel(),
 {
+    proof {
+        relabel();
+    }
     abort_fmt(args)
 }
 
 /// [`abort_fmt`] at a check of the free paths that fires on an invalid
 /// free, and on a valid one only if allocator state is corrupt (the
 /// watermark, the live count, the slab state, the owner word;
-/// [`super::pending_aborts`]). Trusted: the call, which needs
-/// [`super::may_abort`], under the narrower [`super::may_abort_pending`].
-#[verifier::external_body]
+/// [`super::pending_aborts`]). The call, which needs [`super::may_abort`],
+/// under the narrower [`super::may_abort_pending`] ([`relabel`]).
 #[inline(always)]
 pub fn abort_pending(args: fmt::Arguments<'_>) -> !
     requires
         crate::sys::may_abort_pending(),
 {
+    proof {
+        relabel();
+    }
     abort_fmt(args)
 }
 
@@ -377,5 +404,33 @@ mod tests {
         assert_eq!(sig, Some(SIGABRT), "stderr: {err}");
         let expected = format!("challoc: {}\n", "x".repeat(1500));
         assert!(err.contains(&expected), "stderr len {}", err.len());
+    }
+
+    /// `relabel` is called only in the bodies of the three narrowed sinks,
+    /// once each, and `may_abort` is revealed (any `reveal(..may_abort)`,
+    /// whatever follows it) only in it and in `grant_aborts`: so a narrower
+    /// capability turns into `may_abort` only on the way into `abort_fmt`.
+    #[test]
+    fn abort_relabels_only_in_the_sinks() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        crate::testutil::assert_only_at(
+            concat!("rel", "abel()"),
+            &[
+                ("sys/abort.rs:", "pub fn abort_integrity(", 1),
+                ("sys/abort.rs:", "pub fn abort_kernel(", 1),
+                ("sys/abort.rs:", "pub fn abort_pending(", 1),
+            ],
+        );
+        let sites = crate::testutil::grant_sites(concat!("may_", "abort)"));
+        assert_eq!(sites.len(), 2, "got = {sites:?}, want = two reveals");
+        for (sig, at) in &sites {
+            assert!(
+                (at.starts_with("sys/mod.rs:")
+                    && sig == concat!("pub proof fn grant_", "aborts()"))
+                    || (at.starts_with("sys/abort.rs:")
+                        && sig == concat!("proof fn rel", "abel()")),
+                "{at}: `may_abort` revealed in `{sig}`"
+            );
+        }
     }
 }
