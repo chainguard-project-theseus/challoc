@@ -1630,6 +1630,9 @@ mod exports {
     /// own parameters. A string that breaks the contract (not
     /// NUL-terminated, wrapping the address space, in challoc's memory
     /// other than a published counter) makes it false.
+    /// `stats_print_entry` is its one caller and is called once, by the
+    /// export pair: checked by
+    /// `api::tests::c_call_tokens_only_in_export_bodies`.
     axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
         requires
             e is StatsPrint,

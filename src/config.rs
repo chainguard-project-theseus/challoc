@@ -3185,7 +3185,7 @@ mod linux_tests {
     /// the tests above. No code calls `getenv` or `secure_getenv`.
     #[test]
     fn environment_has_one_reader() {
-        use crate::sys::tests::grant_sites;
+        use crate::testutil::grant_sites;
         // Spelled in parts, so that this test's own lines match nothing.
         let var = std::format!("{}{}", "envi", "ron");
         let call = std::format!("{}{}(", "env_", "var");

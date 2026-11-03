@@ -265,6 +265,9 @@ impl TableInner {
 /// Unverified holders: the test helper `corrupt_owner_word` only commits
 /// through `Lazy::ensure`. The fork handlers take the raw lock without
 /// touching the value.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
     ensures
         #[trigger] lock_inv(v) == v.inv(),

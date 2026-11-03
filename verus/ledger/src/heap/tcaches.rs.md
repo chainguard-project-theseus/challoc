@@ -14,7 +14,7 @@ file.
 
 ## `axiom_tcaches_lock_inv`
 
-src/heap/tcaches.rs:54. Kind: axiom. Category: allocator invariant.
+src/heap/tcaches.rs:59. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the explicit-cache table lock guards no value (`()`), so its invariant is trivially true.
@@ -28,7 +28,7 @@ pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
 
 ## `EMPTY_TABLE`
 
-src/heap/tcaches.rs:64. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:69. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (Kani: heap::tcaches::kani_tcaches::empty_table_is_null).
 
 > The empty table [`Tcaches::init`] writes, every entry null.
@@ -39,7 +39,7 @@ const EMPTY_TABLE: [AtomicPtr<u8>; MAX_TCACHES] = [const { AtomicPtr::new(ptr::n
 
 ## `axiom_heap_use`
 
-src/heap/tcaches.rs:144. Kind: axiom. Category: C-program contract.
+src/heap/tcaches.rs:151. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the C caller's contract): the calling thread uses the heap it is about to reach through [`heap_at`] with no other reference to it live, here or on another thread: an explicit cache is used by one thread at a time and not after `tcache.destroy` (the contract of [`Tcaches::get`]), a destroyed cache is unreachable through the table, a thread's heap reaches its key destructor once, at thread exit, and a heap created and never published has no other reference.
@@ -50,7 +50,7 @@ pub axiom fn axiom_heap_use() -> (tracked u: HeapUse);
 
 ## `heap_at`
 
-src/heap/tcaches.rs:184. Kind: external_body. Category: allocator invariant.
+src/heap/tcaches.rs:191. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the heap `Heap::destroy` is handed.

@@ -12,7 +12,7 @@ file.
 
 ## `axiom_meta_lock_inv`
 
-src/vspec/meta.rs:30. Kind: axiom. Category: allocator invariant.
+src/vspec/meta.rs:33. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: every holder of the metadata lock leaves `Inner::wf` true when it unlocks, so the lock's invariant is `Inner::wf`.
@@ -26,7 +26,7 @@ pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
 
 ## `axiom_meta_lock_frame`
 
-src/vspec/meta.rs:42. Kind: axiom. Category: allocator invariant.
+src/vspec/meta.rs:45. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: what every value the metadata lock holds keeps from the one `Meta::owning` created it with is exactly the page size, the region's bounds and the identities of the ghost records (live objects, unclaimed reserved bytes).

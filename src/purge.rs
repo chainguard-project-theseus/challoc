@@ -264,6 +264,12 @@ pub tracked struct PurgedZero {
 /// [`purged_is_zero`], with the witness of a true read (`Some` exactly
 /// when it returns true). Trusted: it is the one load of the flag, and the
 /// witness stands for its result.
+///
+/// Read only in `class::ClassState::take`, in the lock hold that claims
+/// the slots the witness is for. Checked by
+/// `crate::tests::trusted_mint_sites_are_pinned`, which pins its call sites to
+/// the one named here: a new one is named here, with its premise, and
+/// added to that test's list in the same change.
 #[inline]
 #[verifier::external_body]
 pub fn purged_zero() -> (r: (bool, Tracked<Option<PurgedZero>>))

@@ -145,6 +145,10 @@ impl ZeroRaw {
     /// object's token comes from the `zero_raw` that cleared it, and a
     /// fresh one's from the commit of memory above the bump pointer, which
     /// nothing has written; `storage` writes nothing before the pairing.
+    ///
+    /// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+    /// call sites to the ones named here: a new one is named here, with its
+    /// premise, and added to that test's list in the same change.
     #[verifier::external_body]
     pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
         requires

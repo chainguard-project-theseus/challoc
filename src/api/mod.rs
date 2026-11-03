@@ -3350,6 +3350,635 @@ mod tests {
         );
     }
 
+    /// The text between the first `(` at or after byte `from` of `text`
+    /// and the `)` that closes it.
+    fn parenthesized(text: &str, from: usize) -> &str {
+        let open = from + text[from..].find('(').unwrap();
+        let mut depth = 0;
+        for (k, c) in text[open..].char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &text[open + 1..open + k];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced parentheses from byte {from}")
+    }
+
+    /// `list` split at its top-level commas, each part trimmed, empty
+    /// parts (a trailing comma's) dropped.
+    fn top_level(list: &str) -> Vec<&str> {
+        let (mut out, mut depth, mut start) = (Vec::new(), 0, 0);
+        for (k, c) in list.char_indices() {
+            match c {
+                '(' | '[' | '{' | '<' => depth += 1,
+                ')' | ']' | '}' | '>' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(list[start..k].trim());
+                    start = k + 1;
+                }
+                _ => {}
+            }
+        }
+        out.push(list[start..].trim());
+        out.retain(|s| !s.is_empty());
+        out
+    }
+
+    /// The parameters of the nearest `fn` item above the line `at`
+    /// (`file:line: ..`, as `testutil::grant_sites` gives it), after
+    /// checking that no `let` between the `fn` line and `at` rebinds one
+    /// (`let p = q;`), so that a parameter's name still means the
+    /// argument there; with the file's text and the byte range of the line.
+    /// Only lines that start with `let` are read: a rebinding by `if let`,
+    /// `match`, `for` or a closure is not seen.
+    fn own_params(
+        what: &str,
+        at: &str,
+    ) -> (
+        std::string::String,
+        core::ops::Range<usize>,
+        Vec<std::string::String>,
+    ) {
+        let (file, rest) = at.split_once(':').unwrap();
+        let line: usize = rest.split_once(':').unwrap().0.parse().unwrap();
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let text = std::fs::read_to_string(src.join(file)).unwrap();
+        let starts: Vec<usize> = core::iter::once(0)
+            .chain(text.match_indices('\n').map(|(k, _)| k + 1))
+            .collect();
+        let item = (0..line)
+            .rev()
+            .find(|&i| crate::testutil::fn_item(text[starts[i]..].lines().next().unwrap().trim()))
+            .unwrap_or_else(|| panic!("{at}: no `fn` item above `{what}`"));
+        let params: Vec<std::string::String> = top_level(parenthesized(&text, starts[item]))
+            .into_iter()
+            .map(|p| p.split_once(':').unwrap().0.trim())
+            .map(|p| p.strip_prefix("mut ").unwrap_or(p).into())
+            .collect();
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        for l in text[starts[item]..starts[line - 1]].lines().skip(1) {
+            let Some(pat) = l.trim().strip_prefix("let ") else {
+                continue;
+            };
+            let pat = pat.split(['=', ':']).next().unwrap();
+            for p in &params {
+                let rebinds = pat.match_indices(p.as_str()).any(|(k, _)| {
+                    !pat[..k].ends_with(ident) && !pat[k + p.len()..].starts_with(ident)
+                });
+                assert!(
+                    !rebinds,
+                    "{at}: `{}` rebinds the parameter `{p}` before `{what}`",
+                    l.trim()
+                );
+            }
+        }
+        let end = starts.get(line).copied().unwrap_or(text.len());
+        (text, starts[line - 1]..end, params)
+    }
+
+    /// Each mint `mint` on the line `at` (`file:line: ..`, as
+    /// `testutil::grant_sites` gives it) names only its function's own
+    /// parameters: each field of the `CEntry` an `axiom_c_call` builds, or
+    /// the out-pointer an `axiom_c_out` takes, is a parameter of the
+    /// nearest `fn` item above it, as is or cast with `as`, no parameter
+    /// fills two fields, and no `let` between the `fn` line and the mint
+    /// rebinds a parameter ([`own_params`]). So the token is for the
+    /// arguments of the C call that entered challoc, not for another
+    /// pointer the body could compute.
+    fn own_arguments(mint: &str, at: &str) {
+        let (text, line, params) = own_params(mint, at);
+        let params: Vec<&str> = params.iter().map(|p| p.as_str()).collect();
+        let calls: Vec<usize> = text[line.clone()]
+            .match_indices(mint)
+            .map(|(k, _)| line.start + k)
+            .collect();
+        assert!(!calls.is_empty(), "{at}: no `{mint}` on the line");
+        for call in calls {
+            let args = parenthesized(&text, call);
+            let named: Vec<&str> = if mint.contains("c_out") {
+                let args = top_level(args);
+                assert!(
+                    args.len() == 2 && (args[1] == "true" || args[1] == "false"),
+                    "{at}: `{mint}` with arguments {args:?}"
+                );
+                std::vec![args[0]]
+            } else {
+                let (entry, fields) = args
+                    .split_once('{')
+                    .unwrap_or_else(|| panic!("{at}: `{mint}` of no `CEntry` literal"));
+                assert!(
+                    entry.trim().starts_with("CEntry::"),
+                    "{at}: `{mint}` of `{entry}`, not a `CEntry` literal"
+                );
+                let fields = fields.trim_end().strip_suffix('}').unwrap();
+                top_level(fields)
+                    .into_iter()
+                    .map(|f| f.split_once(':').map_or(f, |(_, v)| v.trim()))
+                    .collect()
+            };
+            assert!(!named.is_empty(), "{at}: `{mint}` names no argument");
+            for (k, v) in named.iter().enumerate() {
+                let v = v.split_once(" as ").map_or(*v, |(v, _)| v.trim());
+                assert!(
+                    params.contains(&v),
+                    "{at}: `{mint}` names `{v}`, which is not a parameter of its function \
+                     ({params:?}): a C call's token is for that call's own arguments"
+                );
+                let twice = named[..k]
+                    .iter()
+                    .any(|w| w.split_once(" as ").map_or(*w, |(w, _)| w.trim()) == v);
+                assert!(!twice, "{at}: `{mint}` names the parameter `{v}` twice");
+            }
+        }
+    }
+
+    /// Each call `call` (a helper's name and its `(`) on the line `at`
+    /// passes the helper, in order, its own parameters' names, each a
+    /// parameter of the calling arm, not rebound before the call
+    /// ([`own_params`]). The helper's mint names its parameters
+    /// ([`own_arguments`]), so this makes them the arm's: the arguments of
+    /// the C call that entered challoc. `helper` is the start of the
+    /// helper's `fn` line in the same file.
+    fn passes_own_arguments(call: &str, helper: &str, at: &str) {
+        let (text, line, params) = own_params(call, at);
+        let def = text
+            .find(helper)
+            .unwrap_or_else(|| panic!("{at}: no `{helper}` in the file"));
+        let want = top_level(parenthesized(&text, def))
+            .into_iter()
+            .map(|p| p.split_once(':').unwrap().0.trim())
+            .map(|p| p.strip_prefix("mut ").unwrap_or(p))
+            .collect::<Vec<_>>();
+        let calls: Vec<usize> = text[line.clone()]
+            .match_indices(call)
+            .map(|(k, _)| line.start + k)
+            .collect();
+        assert!(!calls.is_empty(), "{at}: no `{call}` on the line");
+        for c in calls {
+            let got = top_level(parenthesized(&text, c));
+            assert_eq!(
+                got, want,
+                "{at}: `{call}` arguments: got = {got:?}, want = {want:?} (the helper's \
+                 parameters, in order)"
+            );
+            for a in &got {
+                assert!(
+                    params.iter().any(|p| p == a),
+                    "{at}: `{call}` passes `{a}`, which is not a parameter of the arm \
+                     ({params:?}): the helper's token is for the C call's own arguments"
+                );
+            }
+        }
+    }
+
+    /// The C-call tokens (`axiom_c_call` of each `api` module, `libc`'s
+    /// `axiom_c_out`) and the errno loan (`vspec::errno::lend`) are minted
+    /// only in an export body, the Rust side of one C call: an
+    /// `extern "C" fn` or an arm `fn x / je_x(..)` of a
+    /// `verified_export_pair!`, or one of the helpers such an arm calls
+    /// (`stats_print_entry`, `nametomib_call`, `memptr_out`), each called
+    /// by one arm. At most one mint per body: two tokens for one C call
+    /// would let `heap::live::axiom_c_claim` mint two `Live` for one block,
+    /// or two write permissions for one out-pointer, either proving
+    /// `false`. And each token is for the C call's own arguments
+    /// ([`own_arguments`]). The 4 out-pointer tokens are minted each in one
+    /// spelling: in the three allocating `challoc_*_usable` exports as the
+    /// token their hand-back names ([`out_tokens`]), and in `memptr_out`,
+    /// which only the `posix_memalign` pair calls, as the token its
+    /// hand-back names; so each export's `c_out_entry` and `c_out` name its
+    /// one call.
+    #[test]
+    fn c_call_tokens_only_in_export_bodies() {
+        let helpers = [
+            ("api/print.rs:", concat!("fn stats_print_", "entry(")),
+            ("api/mallctl.rs:", concat!("fn nametomib_", "call(")),
+            ("api/libc.rs:", concat!("fn memptr_", "out(")),
+        ];
+        // Spelled in parts, so that this test's own lines match nothing.
+        for mint in [
+            concat!("axiom_", "c_call("),
+            concat!("axiom_", "c_out("),
+            concat!("errno::", "lend()"),
+        ] {
+            let sites: Vec<_> = crate::testutil::grant_sites(mint)
+                .into_iter()
+                .filter(|(_, at)| !at.contains("axiom fn "))
+                .collect();
+            assert!(!sites.is_empty(), "no call of `{mint}` under src/");
+            for (sig, at) in &sites {
+                // The fork handlers are `extern "C"` but no C call into challoc.
+                let export = (sig.contains("extern \"C\" fn ") && !sig.contains("fn fork_"))
+                    || (sig.starts_with("fn ") && sig.contains(" / je_"));
+                let helper = helpers
+                    .iter()
+                    .any(|(file, f)| at.starts_with(file) && sig.starts_with(f));
+                assert!(
+                    at.starts_with("api/") && (export || helper),
+                    "{at}: `{mint}` in `{sig}`, which is not an export body: a C-call \
+                     token is minted only where one C call enters challoc"
+                );
+                let file = at.split_once(':').unwrap().0;
+                // Every mint on every line of the body: a second one on
+                // the same line is a second token too.
+                let n: usize = sites
+                    .iter()
+                    .filter(|(s, a)| s == sig && a.split_once(':').unwrap().0 == file)
+                    .map(|(_, a)| {
+                        a.split_once(": `")
+                            .map_or("", |(_, t)| t)
+                            .matches(mint)
+                            .count()
+                    })
+                    .sum();
+                assert_eq!(
+                    n, 1,
+                    "{file} `{sig}`: got = {n} calls of `{mint}`, want = 1 (one token per C call)"
+                );
+                if !mint.starts_with("errno") {
+                    own_arguments(mint, at);
+                }
+                // Out-pointer tokens, each in its one spelling: directly in
+                // the three `challoc_*_usable` exports, as the token their
+                // hand-back names ([`out_tokens`]), and in `memptr_out`.
+                if mint.contains("c_out") {
+                    let usable = std::format!("`{}`", out_tokens()[1].0);
+                    let memptr = concat!("`let tracked o = axiom_", "c_out(out, false);`");
+                    assert!(
+                        at.starts_with("api/libc.rs:")
+                            && ((export && export_head(sig) && at.ends_with(&usable))
+                                || (helper && at.ends_with(memptr))),
+                        "{at}: an out-pointer token minted in `{sig}`, not as {usable} in \
+                         an export or {memptr} in `memptr_out`"
+                    );
+                }
+            }
+            if mint.contains("c_out") {
+                assert_eq!(sites.len(), 4, "out-pointer token mints");
+            }
+        }
+        // An arm that mints through a helper mints nothing itself: that
+        // would be two tokens for one C call.
+        for (file, arm, mint) in [
+            (
+                "api/print.rs:",
+                "fn malloc_stats_print / je_malloc_stats_print(",
+                concat!("axiom_", "c_call("),
+            ),
+            (
+                "api/mallctl.rs:",
+                "fn mallctlnametomib / je_mallctlnametomib(",
+                concat!("axiom_", "c_call("),
+            ),
+            (
+                "api/libc.rs:",
+                "fn posix_memalign / je_posix_memalign(",
+                concat!("axiom_", "c_out("),
+            ),
+        ] {
+            let direct: Vec<_> = crate::testutil::grant_sites(mint)
+                .into_iter()
+                .filter(|(sig, at)| at.starts_with(file) && sig.starts_with(arm))
+                .map(|(_, at)| at)
+                .collect();
+            assert!(
+                direct.is_empty(),
+                "`{arm}` mints `{mint}` through its helper and also directly: {direct:?}"
+            );
+        }
+        crate::testutil::assert_only_at(
+            concat!("stats_print_", "entry("),
+            &[(
+                "api/print.rs:",
+                "fn malloc_stats_print / je_malloc_stats_print(",
+                1,
+            )],
+        );
+        crate::testutil::assert_only_at(
+            concat!("nametomib_", "call("),
+            &[(
+                "api/mallctl.rs:",
+                "fn mallctlnametomib / je_mallctlnametomib(",
+                1,
+            )],
+        );
+        // Each arm passes its helper its own arguments, so the helper's
+        // token ([`own_arguments`]) is for the C call's.
+        for (file, helper, call) in [
+            (
+                "api/print.rs:",
+                concat!("fn stats_print_", "entry("),
+                concat!("stats_print_", "entry("),
+            ),
+            (
+                "api/mallctl.rs:",
+                concat!("fn nametomib_", "call("),
+                concat!("nametomib_", "call("),
+            ),
+        ] {
+            let at: Vec<_> = crate::testutil::grant_sites(call)
+                .into_iter()
+                .filter(|(sig, at)| at.starts_with(file) && !sig.starts_with(helper))
+                .map(|(_, at)| at)
+                .collect();
+            assert_eq!(at.len(), 1, "{file} lines calling `{call}`: {at:?}");
+            passes_own_arguments(call, helper, &at[0]);
+        }
+        // `memptr_out` is called once, by the `posix_memalign` pair, as
+        // the token that pair's hand-back names ([`out_tokens`]).
+        let memptr = concat!("memptr_", "out(");
+        crate::testutil::assert_only_at(
+            memptr,
+            &[("api/libc.rs:", "fn posix_memalign / je_posix_memalign(", 1)],
+        );
+        let call = std::format!("`{}`", out_tokens()[0].0);
+        for (sig, at) in crate::testutil::grant_sites(memptr) {
+            assert!(
+                sig.starts_with(concat!("fn memptr_", "out(")) || at.ends_with(&call),
+                "{at}: `{memptr}` in `{sig}`, not as {call}"
+            );
+        }
+    }
+
+    /// Every function that takes a lock's guard (`Lock::lock`, `Lock::try_lock`,
+    /// `Lock::lock_t`) is one its `lock_inv` axiom's doc names among the
+    /// lock's holders: `LockGuard::drop` checks nothing, so each axiom
+    /// rests on its doc's argument that every holder leaves the invariant
+    /// true, and a holder the doc does not name has no such argument. The
+    /// table lists, per lock of [`lock_inventory`], each holder as (file,
+    /// function, the field or static its call names), copied by hand from
+    /// the doc: the docs are not parsed, so the two change together. A
+    /// holder matches a row by file, function and receiver name, not by
+    /// the lock's type, so a row filed under the wrong lock is not caught
+    /// when the field names agree. Raw
+    /// access, which skips the value, is only the fork handlers':
+    /// `lock_held` and `unlock_held` in `fork_prepare`, `fork_release` and
+    /// the arena and background-thread helpers they call, and
+    /// `get_unlocked` once, in the background thread's `fork_child`
+    /// (`RawLock::lock` is not scanned). `lock.rs`, which defines the calls,
+    /// is skipped, as are test files and modules.
+    #[test]
+    fn lock_holders_match_inv_docs() {
+        use std::string::ToString;
+        type Holders = &'static [(&'static str, &'static str, &'static str)];
+        const HOLDERS: &[(&str, Holders)] = &[
+            // `vspec::arena::axiom_arena_stats_lock_inv`.
+            (
+                "arena.rs:Arena.stats",
+                &[
+                    ("arena.rs:", "pub fn stats_into(", "stats"),
+                    ("arena.rs:", "pub fn add_stats_to(", "stats"),
+                    ("arena.rs:", "pub fn store_stats(", "stats"),
+                ],
+            ),
+            // `arena::axiom_arenas_lock_inv`.
+            (
+                "arena.rs:Arenas.lock",
+                &[
+                    ("arena.rs:", "pub fn assign(", "lock"),
+                    ("arena.rs:", "pub fn create(", "lock"),
+                    ("arena.rs:", "fn materialise<", "lock"),
+                ],
+            ),
+            // `class::axiom_class_lock_inv`.
+            (
+                "class/mod.rs:ClassState.inner",
+                &[
+                    ("class/mod.rs:", "fn plan(", "inner"),
+                    ("class/mod.rs:", "fn reopen(", "inner"),
+                    ("class/mod.rs:", "fn on_live_zero(", "inner"),
+                    ("class/mod.rs:", "pub fn bin_stats(", "inner"),
+                    ("class/mod.rs:", "pub fn lowest_partial(", "inner"),
+                    ("class/mod.rs:", "pub fn is_partial(", "inner"),
+                    ("class/mod.rs:", "pub(crate) fn set_membership(", "inner"),
+                    ("class/decay.rs:", "pub fn empty_bytes(", "inner"),
+                    ("class/decay.rs:", "pub fn purge_empty(", "inner"),
+                    ("class/decay.rs:", "fn purge_curve(", "inner"),
+                ],
+            ),
+            // `class::sets::axiom_set_tables_lock_inv`.
+            (
+                "class/sets.rs:SetTable.tables",
+                &[
+                    ("class/sets.rs:", "fn ensure(", "tables"),
+                    ("class/sets.rs:", "pub fn committed_ranges(", "tables"),
+                ],
+            ),
+            // `class::table::axiom_table_lock_inv`.
+            (
+                "class/table.rs:SlabTable.inner",
+                &[
+                    (
+                        "class/table.rs:",
+                        "pub unsafe fn mirror_watermark(",
+                        "inner",
+                    ),
+                    ("class/table.rs:", "pub fn guards(", "inner"),
+                    ("class/table.rs:", "pub(super) fn take_group(", "inner"),
+                    ("class/table.rs:", "pub(super) fn commit_run(", "inner"),
+                    ("class/table.rs:", "pub(super) fn commit_slab(", "inner"),
+                    (
+                        "class/table.rs:",
+                        "pub(crate) fn corrupt_owner_word(",
+                        "inner",
+                    ),
+                ],
+            ),
+            // `heap::tcaches::axiom_tcaches_lock_inv`.
+            (
+                "heap/tcaches.rs:Tcaches.lock",
+                &[
+                    ("heap/tcaches.rs:", "pub fn create(", "lock"),
+                    ("heap/tcaches.rs:", "pub fn destroy(", "lock"),
+                ],
+            ),
+            // `stats::axiom_snapshot_lock_inv`.
+            (
+                "heap/shared.rs:Shared.stats",
+                &[
+                    ("stats.rs:", "fn collect_into(", "stats"),
+                    ("stats.rs:", "pub fn snapshot(", "stats"),
+                    ("stats.rs:", "pub fn arena_stats_all_into(", "stats"),
+                ],
+            ),
+            // `vspec::huge::axiom_huge_lock_inv`.
+            (
+                "huge/mod.rs:Huge.inner",
+                &[
+                    ("huge/mod.rs:", "fn alloc_aligned(", "inner"),
+                    ("huge/mod.rs:", "pub fn free_run(", "inner"),
+                    ("huge/mod.rs:", "pub fn usable_size(", "inner"),
+                    ("huge/mod.rs:", "pub fn lookup(", "inner"),
+                    ("huge/mod.rs:", "pub fn purge_empty(", "inner"),
+                    ("huge/mod.rs:", "fn purge_curve(", "inner"),
+                    ("huge/mod.rs:", "pub fn empty_bytes(", "inner"),
+                    ("huge/mod.rs:", "pub fn stats(", "inner"),
+                    ("huge/mod.rs:", "pub fn oldest_dirty_at(", "inner"),
+                    ("huge/mod.rs:", "fn audit(", "inner"),
+                ],
+            ),
+            // `vspec::meta::axiom_meta_lock_inv`.
+            (
+                "meta.rs:Meta.inner",
+                &[
+                    ("meta.rs:", "pub fn alloc(", "inner"),
+                    ("meta.rs:", "pub fn alloc_raw(", "inner"),
+                    ("meta.rs:", "pub fn alloc_zeroed(", "inner"),
+                    ("meta.rs:", "pub fn free(", "inner"),
+                    ("meta.rs:", "pub fn reserve(", "inner"),
+                    ("meta.rs:", "pub fn reserve_table(", "inner"),
+                    ("meta.rs:", "pub fn commit(", "inner"),
+                    ("meta.rs:", "pub fn reserve_committed_raw(", "inner"),
+                    ("meta.rs:", "pub fn stats(", "inner"),
+                    ("meta.rs:", "pub fn set_eager_for_test(", "inner"),
+                    ("meta.rs:", "pub fn eager_allowed(", "inner"),
+                    ("meta.rs:", "pub fn base(", "inner"),
+                    ("meta.rs:", "pub fn top(", "inner"),
+                ],
+            ),
+            // `purge::background::axiom_state_lock_inv`.
+            (
+                "purge/background.rs:static.STATE",
+                &[
+                    ("purge/background.rs:", "pub fn request(", "state()"),
+                    ("purge/background.rs:", "pub fn start(", "state()"),
+                    ("purge/background.rs:", "pub fn start_requested(", "state()"),
+                    ("purge/background.rs:", "pub fn auto_tick(", "state()"),
+                    ("purge/background.rs:", "extern \"C\" fn main(", "state()"),
+                    ("purge/background.rs:", "pub fn join_exited(", "STATE"),
+                    ("purge/background.rs:", "pub fn stack(", "STATE"),
+                    ("purge/background.rs:", "pub fn thread(", "STATE"),
+                ],
+            ),
+        ];
+        // The raw acquisitions: (file, function).
+        const RAW: &[(&str, &str)] = &[
+            ("api/mod.rs:", "extern \"C\" fn fork_prepare("),
+            ("api/mod.rs:", "fn fork_release("),
+            ("arena.rs:", "pub(crate) fn lock_held("),
+            ("arena.rs:", "pub(crate) fn unlock_held("),
+            ("purge/background.rs:", "pub fn fork_lock("),
+            ("purge/background.rs:", "pub fn fork_unlock("),
+        ];
+        // Spelled in parts, so that this test's own lines match nothing
+        // (they are skipped anyway, as test code).
+        let guards = [
+            concat!(".lock(", "Tracked"),
+            concat!(".try_", "lock("),
+            concat!(".lock_", "t()"),
+        ];
+        let raw = [concat!(".lock_", "held"), concat!(".unlock_", "held")];
+        let unlocked = concat!(".get_", "unlocked(");
+        // The field, static or accessor call (`state()`) a call is made on.
+        let receiver = |before: &str| {
+            let (stem, call) = match before.strip_suffix("()") {
+                Some(s) => (s, "()"),
+                None => (before, ""),
+            };
+            let start = stem
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .map_or(0, |k| k + 1);
+            std::format!("{}{call}", &stem[start..])
+        };
+        let mut holders = Vec::new();
+        let mut raws = Vec::new();
+        let mut gets = Vec::new();
+        for (rel, text) in crate::testutil::shipped_sources() {
+            if rel == "lock.rs" {
+                continue;
+            }
+            let mut sig = String::new();
+            let mut prev = String::new();
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                if t.starts_with("//") {
+                    continue;
+                }
+                if crate::testutil::fn_item(t) {
+                    sig = t.to_string();
+                }
+                let at = std::format!("{rel}:{}", i + 1);
+                // A guard call whose arguments wrap to the next line.
+                let wrapped = t.strip_suffix(concat!(".lock", "(")).map(str::len);
+                for k in guards.iter().filter_map(|g| t.find(g)).chain(wrapped) {
+                    // A call chained from the line above (`self.inner`
+                    // then `.lock(..)`) names its receiver there.
+                    let before = if k == 0 {
+                        prev.clone()
+                    } else {
+                        t[..k].to_string()
+                    };
+                    holders.push((rel.clone(), sig.clone(), receiver(&before), at.clone()));
+                }
+                if raw.iter().any(|r| t.contains(r)) {
+                    raws.push((rel.clone(), sig.clone(), at.clone()));
+                }
+                if t.contains(unlocked) {
+                    gets.push((rel.clone(), sig.clone(), at.clone()));
+                }
+                if !t.is_empty() {
+                    prev = t.to_string();
+                }
+            }
+        }
+        let matches = |rel: &str, sig: &str, file: &str, f: &str| {
+            std::format!("{rel}:").starts_with(file) && sig.starts_with(f)
+        };
+        let listed = || {
+            HOLDERS
+                .iter()
+                .flat_map(|(key, rows)| rows.iter().map(move |row| (*key, row)))
+        };
+        for (rel, sig, recv, at) in &holders {
+            assert!(
+                listed().any(|(_, (file, f, r))| matches(rel, sig, file, f) && recv == r),
+                "{at}: `{sig}` takes the guard of `{recv}`, and no lock's holder list has it. \
+                 Name it in that lock's `lock_inv` axiom doc, with how it leaves the invariant \
+                 true (or that it only reads), and add it to this test's table, in one change."
+            );
+        }
+        for (key, (file, f, r)) in listed() {
+            assert!(
+                holders
+                    .iter()
+                    .any(|(rel, sig, recv, _)| matches(rel, sig, file, f) && recv == r),
+                "{key}: {file} `{f}` no longer takes the guard of `{r}`: drop it from this \
+                 table and from the lock's `lock_inv` doc"
+            );
+        }
+        let mut keys: Vec<String> = HOLDERS.iter().map(|h| h.0.to_string()).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(
+            keys,
+            lock_inventory(),
+            "every lock in src/ has its holders listed here, from its `lock_inv` axiom's doc"
+        );
+        for (rel, sig, at) in &raws {
+            assert!(
+                RAW.iter().any(|(file, f)| matches(rel, sig, file, f)),
+                "{at}: raw lock access in `{sig}`, outside the fork handlers"
+            );
+        }
+        for (file, f) in RAW {
+            assert!(
+                raws.iter().any(|(rel, sig, _)| matches(rel, sig, file, f)),
+                "{file} `{f}` no longer takes a lock raw: drop it from this list"
+            );
+        }
+        assert!(
+            gets.len() == 1
+                && gets[0].0 == "purge/background.rs"
+                && gets[0].1.starts_with("pub fn fork_child("),
+            "get_unlocked is called once, in the background thread's fork_child: {gets:?}"
+        );
+    }
+
     /// The handlers take every lock and release every lock, on both fork
     /// sides. The checks run in a fork child: in this process another test
     /// can take a heap lock (a huge allocation, a refill) the moment the
@@ -4304,7 +4933,7 @@ mod tests {
     /// the out-pointer token it minted, then `r`.
     fn check_export_body(at: &str, body: &[String], axiom: &str) -> (bool, bool) {
         // The root grants spelled in parts, so that these lines are not
-        // grant sites (`sys::tests::grant_sites`).
+        // grant sites (`testutil::grant_sites`).
         let grant = |g: &str| std::format!("crate::sys::grant_{g}();");
         let outs = out_tokens();
         let setup = [
@@ -4380,10 +5009,12 @@ mod tests {
     /// `vspec::errno::axiom_errno_at_return` hold: the axiom is named only
     /// in those exports' bodies, right after the call, on the token the
     /// body lent, with that export's `failed` condition from [`FAILED`];
-    /// tokens are lent only by exports, one each; out-pointer tokens are
-    /// minted only by exports, at most one each, and go back through
-    /// `axiom_out_at_return`, named only there, right after the call; and no code names an `exports` module,
-    /// so nothing verified calls an export.
+    /// tokens are lent only by exports, one each; an export body mints at
+    /// most one out-pointer token (where they are minted:
+    /// [`c_call_tokens_only_in_export_bodies`]), and it goes back through
+    /// `axiom_out_at_return`, named only there, right after the call; and
+    /// no code names an `exports` module, so nothing verified calls an
+    /// export.
     #[test]
     fn exports_return_their_callees_result() {
         // Spelled in parts, so that this test's own lines match nothing.
@@ -4426,7 +5057,7 @@ mod tests {
         // 13 bodies in `api::libc` (each pair's body counted once): the
         // exports whose entry point states `errno`.
         assert_eq!(handed_back, 13, "exports that hand their token back");
-        let sites: Vec<_> = crate::sys::tests::grant_sites(&axiom)
+        let sites: Vec<_> = crate::testutil::grant_sites(&axiom)
             .into_iter()
             .filter(|(_, at)| !at.contains("axiom fn "))
             .collect();
@@ -4447,7 +5078,7 @@ mod tests {
         assert_eq!(outs_back, 4, "exports that hand an out-pointer token back");
         let outs = out_tokens();
         let out_axiom = std::format!("{}{}", "axiom_out_", "at_return");
-        let out_sites: Vec<_> = crate::sys::tests::grant_sites(&out_axiom)
+        let out_sites: Vec<_> = crate::testutil::grant_sites(&out_axiom)
             .into_iter()
             .filter(|(_, at)| !at.contains("axiom fn "))
             .collect();
@@ -4462,43 +5093,8 @@ mod tests {
             );
         }
         assert_eq!(out_sites.len(), outs_back, "out-pointer axiom calls");
-        // Out-pointer tokens are minted only by those exports: `axiom_c_out`
-        // directly in the `_usable` exports and through `memptr_out` in the
-        // `posix_memalign` pair, so each export's `c_out_entry` and `c_out`
-        // name its one call.
-        let mint = std::format!("{}{}", "axiom_c_", "out(");
-        let memptr = std::format!("{}{}", "memptr_", "out(");
-        let mints: Vec<_> = crate::sys::tests::grant_sites(&mint)
-            .into_iter()
-            .filter(|(_, at)| !at.contains("axiom fn "))
-            .collect();
-        for (sig, at) in &mints {
-            assert!(
-                at.starts_with("api/libc.rs:")
-                    && ((export_head(sig) && at.ends_with(&std::format!("`{}`", outs[1].0)))
-                        || (sig.starts_with(&std::format!("fn {memptr}"))
-                            && at
-                                .ends_with(&std::format!("`let tracked o = {mint}out, false);`")))),
-                "{at}: an out-pointer token minted in `{sig}`"
-            );
-        }
-        assert_eq!(mints.len(), 4, "out-pointer token mints");
-        let memptrs: Vec<_> = crate::sys::tests::grant_sites(&memptr)
-            .into_iter()
-            .filter(|(sig, _)| !sig.starts_with(&std::format!("fn {memptr}")))
-            .collect();
-        for (sig, at) in &memptrs {
-            assert!(
-                at.starts_with("api/libc.rs:")
-                    && export_head(sig)
-                    && at.ends_with(&std::format!("`{}`", outs[0].0)),
-                "{at}: a `posix_memalign` token minted in `{sig}`"
-            );
-        }
-        assert_eq!(memptrs.len(), 1, "`memptr_out` calls");
         let lend = lend_line();
-        for (sig, at) in crate::sys::tests::grant_sites(&std::format!("{}{}", "errno::", "lend()"))
-        {
+        for (sig, at) in crate::testutil::grant_sites(&std::format!("{}{}", "errno::", "lend()")) {
             assert!(
                 export_head(&sig) && at.ends_with(&std::format!("`{lend}`")),
                 "{at}: an errno token lent in `{sig}`"
@@ -4508,7 +5104,7 @@ mod tests {
         // `use` of one), so no verified code calls an export and no proof
         // sees two returns (`vspec::errno::c_errno`).
         let mut files = Vec::new();
-        crate::sys::tests::walk(&src, &mut files);
+        crate::testutil::walk(&src, &mut files);
         let name = std::format!("{}{}", "expo", "rts");
         let path = std::format!("{name}::");
         for f in &files {

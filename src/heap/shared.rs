@@ -1526,6 +1526,11 @@ axiom fn axiom_shared_built(
 /// vstd has no way to relate a field's permission to the whole value.
 /// `init` needs it before the build is done (the process's regions,
 /// [`axiom_process_shared`], are the arena's and the tables').
+///
+/// Called only by `Shared::init`. Checked by
+/// `crate::tests::trusted_mint_sites_are_pinned`, which pins its call sites to
+/// the one named here: a new one is named here, with its premise, and
+/// added to that test's list in the same change.
 axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Shared)
     requires
         pr.ptr() == field_ptr::<Shared, Regions>(p, S_REGIONS),
@@ -1544,6 +1549,10 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 /// ([`process_pages_id`](crate::meta::process_pages_id)) before the
 /// build is done, for the lazily committed tables it reserves. Called
 /// only by `put_head`, on the permission it has just written and frozen.
+///
+/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+/// call sites to the ones named here: a new one is named here, with its
+/// premise, and added to that test's list in the same change.
 axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
     requires
         pm.ptr() == field_ptr::<Shared, Meta>(p, S_META),

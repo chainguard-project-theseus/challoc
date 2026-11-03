@@ -2152,12 +2152,14 @@ broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
 /// Verified holders show it through the postconditions of the `Inner`
 /// methods and of `next_slab` and `next_fresh_slab` (with
 /// `SlabTable::take_group` under it); `ClassState::new` proves it of the
-/// value it creates the lock with, `lowest_partial` and `is_partial`
-/// only read the value, and the refill's lock hold (`plan`, with `take`)
-/// keeps it by their postconditions, as do the release path (`reopen`,
-/// `on_live_zero`) and the purge and decay walks (`decay.rs`). The
-/// unverified holders are the tests, but for those that break the counts
-/// on purpose to reach an abort. Each of them writes an owned slab's
+/// value it creates the lock with, `lowest_partial`, `is_partial`,
+/// `bin_stats` and `empty_bytes` (`decay.rs`) only read the value, and
+/// the refill's lock hold (`plan`, with `take`) keeps it by their
+/// postconditions, as do the release path (`reopen`, `on_live_zero`) and
+/// the purge and decay walks (`decay.rs`'s `purge_empty` and
+/// `purge_curve`). The unverified holders are the tests, but for those
+/// that break the counts on purpose to reach an abort; the test helper
+/// `set_membership` only reads. Each of the others writes an owned slab's
 /// state and stamp only through the bridges (`set_state_locked`,
 /// `set_dirty_locked`), which write the descriptor through the permission the value
 /// holds and update the ghost state and stamp with it: verified, so they
@@ -2168,7 +2170,8 @@ broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
 /// link between the sets and the ghost states (`Inner::slab_core`), which
 /// their set updates and the bridges' state updates are meant to keep
 /// together. The fork handlers take the raw lock without touching the
-/// value.
+/// value. `api::tests::lock_holders_match_inv_docs` checks that the
+/// functions that take the guard are the holders named here.
 broadcast axiom fn axiom_class_lock_inv(v: Inner)
     ensures
         #[trigger] lock_inv(v) == v.inv(),
@@ -3493,6 +3496,10 @@ spec fn prefix_addrs(t: SlabTable, slab: int, n: int) -> VSet<int> {
 /// writes `Fresh` (its `requires` says so, and its verified callers pass
 /// `Active`, `Empty` and `Purged`), and on `take` moving a slab to `Active` before it
 /// claims a slot. Call site: `ClassState::take`.
+///
+/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+/// call sites to the ones named here: a new one is named here, with its
+/// premise, and added to that test's list in the same change.
 axiom fn axiom_fresh_slots_zero(
     tracked ticket: StateTicket,
     t: SlabTable,
@@ -3532,6 +3539,10 @@ axiom fn axiom_fresh_slots_zero(
 /// (`ClassState::purge_empty`, `purge_curve`), and a `Purged` slab has no
 /// allocated slot until a claim makes it `Active`. Call site:
 /// `ClassState::take`.
+///
+/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+/// call sites to the ones named here: a new one is named here, with its
+/// premise, and added to that test's list in the same change.
 axiom fn axiom_discarded_slots_zero(
     tracked ticket: StateTicket,
     tracked witness: PurgedZero,
@@ -3586,6 +3597,10 @@ axiom fn axiom_discarded_slots_zero(
 /// `ClassState::set_state_locked`, which never sets it, so
 /// `heap::live`'s `axiom_hand_out` mints no permission to these bytes
 /// meanwhile. Call site: `ClassState::take`.
+///
+/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
+/// call sites to the ones named here: a new one is named here, with its
+/// premise, and added to that test's list in the same change.
 axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)
     requires
         g.table@.inv(),
