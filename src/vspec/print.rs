@@ -1,6 +1,6 @@
 //! Calls the report writers of `api/print.rs` make into code Verus does
 //! not model, and the external type and ghost `std_specs` impls those
-//! writers need (`ExFile`, `Cgroup`'s `Display`, `PercpuArena`'s
+//! writers need (`ExFile`, `PercpuArena`'s
 //! `PartialEq`). Each wrapper claims nothing about its result; the report
 //! prints what it gives. Delete `base_slab_sizes` when Verus can check
 //! its iterator chain over `BASE_CLASSES`.
@@ -36,18 +36,6 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
             .unwrap_or(0)
     };
     (base(usize::min), base(usize::max))
-}
-
-// `sys::cgroup::Cgroup` formats under any formatter, for the report's
-// `cgroup:` line. Its `Display` (in `sys/cgroup.rs`) is outside `verus!`;
-// `sys::cgroup::kani_fmt::display_cgroup` checks that it needs no
-// precondition, for directories up to the harness's `DIR_MAX` bytes.
-// Ghost only: ordinary builds have no `std_specs`.
-#[cfg(verus_keep_ghost)]
-impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
-    open spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
-        true
-    }
 }
 
 // The derived `PartialEq` of `config::PercpuArena` compares variants

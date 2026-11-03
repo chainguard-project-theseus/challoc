@@ -1004,9 +1004,8 @@ pub trait Report {
 }
 
 // `Issue` formats under any formatter, for the `challoc: <source>:
-// <issue>` lines of `config::load`. Trusted: its `Display` (below) is
-// outside `verus!`, so nothing checks that it needs no precondition.
-// Ghost only: ordinary builds have no `std_specs`.
+// <issue>` lines of `config::load`. Ghost only: ordinary builds have no
+// `std_specs`.
 #[cfg(verus_keep_ghost)]
 impl vstd::std_specs::fmt::DisplaySpecImpl for Issue<'_> {
     open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
@@ -1023,6 +1022,8 @@ impl<F: FnMut(Issue<'_>)> Report for F {
         self(issue)
     }
 }
+
+verus! {
 
 impl fmt::Display for Issue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1073,6 +1074,14 @@ impl fmt::Display for Issue<'_> {
 /// Bytes shown as text, one `?` per non-printable byte, at most 64 bytes.
 struct Bytes<'a>(&'a [u8]);
 
+// Any bytes format (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Bytes<'_> {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
 impl fmt::Display for Bytes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for &b in self.0.iter().take(64) {
@@ -1088,8 +1097,6 @@ impl fmt::Display for Bytes<'_> {
         Ok(())
     }
 }
-
-verus! {
 
 /// Iterator over the comma-separated pairs of a conf string.
 struct Pairs<'a>(&'a [u8]);
@@ -3252,8 +3259,9 @@ mod linux_tests {
 
 /// Kani harnesses for this file's seams that Kani can run
 /// (`verus/ledger/src/config.rs.md`): `Config::set_listed`, `Config::get`
-/// and `KEYS`, and the `Display` of `Issue` and `Bytes` that `parse_from`
-/// prints each problem with (the `DisplaySpecImpl` for `Issue`).
+/// and `KEYS`; and the `Display` of `Issue` and `Bytes` that `parse_from`
+/// prints each problem with, run under the real `core::fmt` (Verus checks
+/// it against the `Formatter` specifications of `vspec/fmt.rs`).
 #[cfg(kani)]
 mod kani_config {
     use super::*;
@@ -3424,7 +3432,7 @@ mod kani_config {
     }
 
     /// `Issue`'s `Display`, which `parse_from` prints each problem with
-    /// (its `fmt_req` is trusted to be `true`), returns without a panic
+    /// (its `fmt_req` is `true`), returns without a panic
     /// for the issue `make` builds from arbitrary byte strings up to 3
     /// bytes. Each `display_issue_*` harness names one variant in its
     /// closure, so that CBMC runs only that arm of `fmt`.

@@ -235,3 +235,10 @@ fn u8_is_ascii_whitespace() {
         b == 32 || b == 9 || b == 10 || b == 12 || b == 13
     );
 }
+
+/// `u8::is_ascii_graphic`: `r <==> 33 <= b <= 126`.
+#[kani::proof]
+fn u8_is_ascii_graphic() {
+    let b: u8 = kani::any();
+    assert_eq!(b.is_ascii_graphic(), 33 <= b && b <= 126);
+}
