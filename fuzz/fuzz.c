@@ -16,7 +16,16 @@
  * malloc, calloc (with a random nmemb/size split), aligned_alloc,
  * posix_memalign and memalign with alignments up to 64 KiB, and realloc
  * covers grow, shrink, realloc(p, 0), realloc(NULL, n) and reallocarray.
- * A share of frees crosses threads through a per-thread mailbox.
+ * A share of frees crosses threads through a per-thread mailbox. The
+ * table's frees and the mailbox's (`release`; not realloc's, nor the
+ * leftover mailbox blocks `main` frees) pick a route from the block's seed:
+ * plain free half the time, otherwise a sized free, `free_sized` or
+ * `sdallocx(p, n, 0)` for a block from malloc, calloc or realloc and
+ * `free_aligned_sized` or `sdallocx` with `MALLOCX_LG_ALIGN` for an aligned
+ * one. The size is the one the block was last allocated or reallocated
+ * with or, for an unaligned block, any size from that up to its usable
+ * size (the same class, or for a huge run the same page count). A wrong
+ * size aborts by design; tests/c/negative.c covers that.
  *
  * Usage: fuzz [ops] [threads] [seed|random] [table]
  *   ops      total operations across all threads (default 10,000,000)
@@ -62,6 +71,7 @@ struct blk {
     unsigned char *p;
     size_t n;      /* requested size */
     size_t usable; /* malloc_usable_size(p), the filled extent */
+    size_t align;  /* alignment requested, 0 for malloc, calloc and realloc */
     uint32_t seed;
 };
 
@@ -72,7 +82,7 @@ struct mailbox {
 };
 
 struct counts {
-    long alloc, free_, realloc_, handoff, foreign, inspect, aligned, zeroed;
+    long alloc, free_, realloc_, handoff, foreign, inspect, aligned, zeroed, sized;
     long bytes_filled;
 };
 
@@ -148,14 +158,49 @@ static void verify(struct worker *w, long op, const struct blk *b, const char *w
 }
 
 /* Fill the whole usable extent and record it. */
-static void stamp(struct worker *w, struct blk *b, unsigned char *p, size_t n, uint64_t *rng)
+static void stamp(struct worker *w, struct blk *b, unsigned char *p, size_t n, size_t align, uint64_t *rng)
 {
     b->p = p;
     b->n = n;
+    b->align = align;
     b->usable = malloc_usable_size(p);
     b->seed = (uint32_t)rng_next(rng);
     fill(p, b->usable, b->seed);
     w->c.bytes_filled += (long)b->usable;
+}
+
+/* Free `b` through one of the libc routes, chosen by its seed: plain `free`
+ * half the time, otherwise a sized free that names the block's request. A
+ * block from malloc, calloc or realloc goes to `free_sized` or
+ * `sdallocx(p, n, 0)`, half of those with a size between `n` and its usable
+ * size, which names the same class (or for a huge run the same page count);
+ * an aligned block goes to `free_aligned_sized` or `sdallocx` with its
+ * `MALLOCX_LG_ALIGN`, with the size it was allocated with. */
+static void release(struct worker *w, const struct blk *b)
+{
+    /* From the block's own seed, not the worker's stream: a drained
+     * mailbox holds a scheduling-dependent number of blocks, and drawing
+     * for them would make the run depend on timing, not on its seed. */
+    uint64_t h = ((uint64_t)b->seed + 1) * 0x9E3779B97F4A7C15ULL;
+    unsigned r = (unsigned)(h >> 61);
+    if (r < 4) {
+        free(b->p);
+        return;
+    }
+    w->c.sized++;
+    if (b->align == 0) {
+        size_t n = b->n;
+        if (r & 1)
+            n += (size_t)((h >> 8) % (uint64_t)(b->usable - b->n + 1));
+        if (r < 6)
+            free_sized(b->p, n);
+        else
+            sdallocx(b->p, n, 0);
+    } else if (r < 6) {
+        free_aligned_sized(b->p, b->align, b->n);
+    } else {
+        sdallocx(b->p, b->n, MALLOCX_LG_ALIGN(__builtin_ctzl(b->align)));
+    }
 }
 
 static void do_alloc(struct worker *w, long op, struct blk *b, uint64_t *rng)
@@ -214,7 +259,7 @@ static void do_alloc(struct worker *w, long op, struct blk *b, uint64_t *rng)
     }
     if (align > (size_t)QUANTUM)
         w->c.aligned++;
-    stamp(w, b, p, n, rng);
+    stamp(w, b, p, n, fl >= FL_ALIGNED_ALLOC ? align : 0, rng);
     w->c.alloc++;
 }
 
@@ -251,7 +296,7 @@ static void do_realloc(struct worker *w, long op, struct blk *b, uint64_t *rng)
            (void *)b->p, (void *)p);
     FCHECK(w, op, malloc_usable_size(p) >= n, "realloc usable %zu < %zu", malloc_usable_size(p), n);
     FCHECK(w, op, ((uintptr_t)p % QUANTUM) == 0, "realloc result %p misaligned", (void *)p);
-    stamp(w, b, p, n, rng);
+    stamp(w, b, p, n, 0, rng);
     w->c.realloc_++;
 }
 
@@ -266,7 +311,7 @@ static void drain_mailbox(struct worker *w, long op, struct mailbox *box)
     pthread_mutex_unlock(&box->lock);
     for (int i = 0; i < n; i++) {
         verify(w, op, &got[i], "foreign free");
-        free(got[i].p);
+        release(w, &got[i]);
         w->c.foreign++;
     }
 }
@@ -289,14 +334,14 @@ static void *run(void *arg)
             switch (pick(&rng, WEIGHTS, OP_COUNT)) {
             case OP_ALLOC:
                 verify(w, op, b, "free before replace");
-                free(b->p);
+                release(w, b);
                 b->p = NULL;
                 w->c.free_++;
                 do_alloc(w, op, b, &rng);
                 break;
             case OP_FREE:
                 verify(w, op, b, "free");
-                free(b->p);
+                release(w, b);
                 b->p = NULL;
                 w->c.free_++;
                 break;
@@ -340,7 +385,7 @@ static void *run(void *arg)
     for (int i = 0; i < w->table_len; i++)
         if (table[i].p) {
             verify(w, w->ops, &table[i], "final");
-            free(table[i].p);
+            release(w, &table[i]);
             w->c.free_++;
         }
     free(table);
@@ -360,6 +405,7 @@ static uint64_t parse_seed(const char *s)
 int main(int argc, char **argv)
 {
     require_challoc();
+    REQUIRE(free_sized != NULL && free_aligned_sized != NULL && sdallocx != NULL, "sized frees not exported");
     long total_ops = argc > 1 ? atol(argv[1]) : 10000000;
     int nthreads = argc > 2 ? atoi(argv[2]) : 4;
     run_seed = argc > 3 ? parse_seed(argv[3]) : 0xC4A110CULL;
@@ -405,15 +451,16 @@ int main(int argc, char **argv)
         t.inspect += workers[i].c.inspect;
         t.aligned += workers[i].c.aligned;
         t.zeroed += workers[i].c.zeroed;
+        t.sized += workers[i].c.sized;
         t.bytes_filled += workers[i].c.bytes_filled;
     }
     CHECK(t.alloc == t.free_ + t.foreign + leftover, "accounting: %ld allocs vs %ld frees + %ld foreign + %ld leftover",
           t.alloc, t.free_, t.foreign, leftover);
     CHECK(t.handoff == t.foreign + leftover, "handoffs %ld vs foreign %ld + leftover %ld", t.handoff, t.foreign,
           leftover);
-    printf("fuzz: %ld allocs (%ld aligned, %ld calloc) %ld frees (%ld cross-thread) %ld reallocs %ld inspections, "
-           "%.1f MiB filled\n",
-           t.alloc, t.aligned, t.zeroed, t.free_ + t.foreign + leftover, t.foreign + leftover, t.realloc_,
+    printf("fuzz: %ld allocs (%ld aligned, %ld calloc) %ld frees (%ld cross-thread, %ld sized) %ld reallocs "
+           "%ld inspections, %.1f MiB filled\n",
+           t.alloc, t.aligned, t.zeroed, t.free_ + t.foreign + leftover, t.foreign + leftover, t.sized, t.realloc_,
            t.inspect, (double)t.bytes_filled / (1024.0 * 1024.0));
     free(boxes);
     free(workers);

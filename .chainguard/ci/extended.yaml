@@ -26,15 +26,18 @@ checks:
     when: {requested: true}
     description: >-
       fuzz/fuzz.c under LD_PRELOAD for 50M operations with a random seed
-      (printed), three ways: default, hardened (zero_on_free,
-      slot_randomize, double_free_scan) and quantum 8, on x86_64 and
-      aarch64. 25-45 minutes per instance. Worth running on changes to the
-      allocation and free paths, the size classes or the hardening options.
+      (printed), four ways: default, hardened (zero_on_free,
+      slot_randomize, double_free_scan), sized (the opt-in hardening key
+      exact_sized_free alone) and quantum 8, on x86_64 and aarch64. 25-45
+      minutes per instance. Worth running on changes to the allocation and
+      free paths, the size classes or the hardening options.
     foreach:
       - {name: default-amd64, resources: medium-amd64, vars: {TASK: fuzz}}
       - {name: default-arm64, resources: medium-arm64, vars: {TASK: fuzz}}
       - {name: hardened-amd64, resources: medium-amd64, vars: {TASK: fuzz-hardened}}
       - {name: hardened-arm64, resources: medium-arm64, vars: {TASK: fuzz-hardened}}
+      - {name: sized-amd64, resources: medium-amd64, vars: {TASK: fuzz-sized}}
+      - {name: sized-arm64, resources: medium-arm64, vars: {TASK: fuzz-sized}}
       - {name: q8-amd64, resources: medium-amd64, vars: {TASK: fuzz-q8}}
       - {name: q8-arm64, resources: medium-arm64, vars: {TASK: fuzz-q8}}
     timeout: 50m

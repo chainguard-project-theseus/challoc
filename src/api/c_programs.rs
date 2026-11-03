@@ -1062,6 +1062,11 @@ ctests! {
         CTest { prog: "tunables", args: &["random"], conf: Some("abort_conf:true,slot_randomize:true"), ..BASE },
         CTest { prog: "tunables", args: &["ordered"], conf: Some("abort_conf:true"), ..BASE },
     ];
+    /// The fuzz driver (`c_fuzz_short`) under `exact_sized_free`: its sized
+    /// frees all take the slow path.
+    c_fuzz_short_under_exact_sized_free => [
+        CTest { dir: "fuzz", prog: "fuzz", args: &["400000", "4"], conf: Some("abort_conf:true,exact_sized_free:true"), ..BASE },
+    ];
     /// The fuzz driver (`c_fuzz_short`) once under each key, and both.
     c_fuzz_short_under_zero_on_free => [
         CTest { dir: "fuzz", prog: "fuzz", args: &["400000", "4"], conf: Some("abort_conf:true,zero_on_free:true"), ..BASE },

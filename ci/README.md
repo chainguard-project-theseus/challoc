@@ -57,7 +57,7 @@ On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
 --check <check>` for any pushed commit), until Checks schedules this
 repository (`extended.yaml`'s header says why it does not yet):
 
-- `extended.yaml`: `fuzz` (50M operations: default, hardened, q8),
+- `extended.yaml`: `fuzz` (50M operations: default, hardened, sized, q8),
   `oscillate` (the 600 s soak), `check-needed`, `consumers` (the Valkey and
   Ruby builds), each on both arches.
 
