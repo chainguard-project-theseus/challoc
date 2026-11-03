@@ -7,7 +7,7 @@ use super::{ClassState, Inner};
 use crate::layout::class_table;
 use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
-use crate::lock::{axiom_below_class, rank_class};
+use crate::lock::rank_class;
 use crate::purge::{Batch, Curve, Due, Left, STEPS, Settle};
 use crate::slab::{DescPerm, State};
 use vstd::prelude::*;
@@ -1705,11 +1705,7 @@ impl ClassState {
         match self.gate.due(now, decay_ns) {
             Due::Done(r) => r,
             Due::Walk(curve, step, seen) => {
-                // Premise (lock order): `ord`, which `decay_with` requires,
-                // bounds the same locks (this thread's, unchanged since the
-                // call).
-                let tracked mut ord = axiom_below_class();
-                self.purge_curve(now, &curve, keep16, Tracked(&mut ord));
+                self.purge_curve(now, &curve, keep16, Tracked(ord));
                 self.gate.finish(now, step, Ghost(decay_ns), seen)
             },
         }
