@@ -1022,6 +1022,22 @@ impl<'a, T> LockGuard<'a, T> {
         *self.lock
     }
 
+    /// The permission of the lock's cell, lent for as long as the guard
+    /// is borrowed: a ghost argument for a callee that must know a value
+    /// is the one this guard holds ([`Lock::has_perm`]). Read-only, like
+    /// [`Deref`]: nothing writes the value through it.
+    #[inline(always)]
+    pub fn perm(&self) -> (p: Tracked<&PointsTo<T>>)
+        ensures
+            self.spec_lock().has_perm(*p@),
+            *p@.value() == self@,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        Tracked(self.perm.borrow())
+    }
+
     /// Release the lock, handing the value back with the lock's invariant
     /// and frame restored ([`lock_inv`], [`lock_frame`]): the explicit
     /// unlock a verified holder ends with, which checks what the free

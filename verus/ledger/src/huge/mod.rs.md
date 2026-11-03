@@ -14,7 +14,7 @@ file.
 
 ## `axiom_run_locs`
 
-src/huge/mod.rs:1084. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:1085. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: outside tests, [`Huge::new`] runs once per process, for the process's `Shared` (`Shared::init`), so the run authorities it makes are the process's ([`run_loc`], [`page_loc`]), as `class::table::axiom_slot_loc` for the slot authorities.
@@ -31,7 +31,7 @@ axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked 
 
 ## `write_zero`
 
-src/huge/mod.rs:1975. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:2025. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted.
 
 > Write a zero to the byte at `addr`, the first byte of a run being placed (`split_guard`), to give its VMA an `anon_vma` by a write fault when `MADV_POPULATE_WRITE` is refused.
@@ -42,7 +42,7 @@ fn write_zero(addr: usize)
 
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:2172. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:2376. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -59,7 +59,7 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:2195. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:2399. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
