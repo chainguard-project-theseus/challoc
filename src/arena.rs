@@ -3203,6 +3203,7 @@ impl Arenas {
             crate::sys::may_syscall(),
             t.held() == self.spec_raw_lock(),
             self.frozen(cp),
+            crate::lock::window_closed(),
     {
         self.lock.unlock_held_perm(Tracked(t), Tracked(cp));
     }
