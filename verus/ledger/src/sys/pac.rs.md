@@ -9,8 +9,8 @@ file.
 |---|---|---|---|---|
 | `axiom_u..._limit` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_auth_sign` | axiom | platform/kernel fact | Islaris/Isla | discharged |
-| `sign` | external_body | inline asm | Islaris/Isla | trusted |
-| `auth` | external_body | inline asm | Islaris/Isla | trusted |
+| `sign` | external_body | inline asm | Islaris/Isla | discharged |
+| `auth` | external_body | inline asm | Islaris/Isla | discharged |
 | `strip` | external_body | inline asm | Islaris/Isla | discharged |
 
 ## `axiom_user_va_limit`
@@ -46,7 +46,7 @@ pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
 ## `sign`
 
 src/sys/pac.rs:199. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K3 (a fixed data key A and EnDA)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K3 (a fixed data key A and EnDA)).
 
 > Sign `p` with data key A and `modifier` (`pacda`).
 
@@ -62,7 +62,7 @@ pub fn sign(p: usize, modifier: usize) -> (r: usize)
 ## `auth`
 
 src/sys/pac.rs:245. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K2 (no resume past an autda that faults) and K3 (a fixed data key A and EnDA)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past an autda that faults) and K3 (a fixed data key A and EnDA)).
 
 > Authenticate `p`, signed by [`sign`] with the same `modifier` (`autda`): the plain pointer, or, when the two disagree, a fault or a non-canonical pointer (module doc).
 

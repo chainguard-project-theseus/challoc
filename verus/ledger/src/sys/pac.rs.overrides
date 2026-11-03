@@ -10,6 +10,6 @@ axiom_auth_sign	platform/kernel fact	Islaris/Isla	discharged (Isla: verus/isla/s
 # the thread's data key A and EnDA as they were, which the runs take as
 # given, and an `autda` that faults returns only if the kernel resumes
 # past it.
-sign	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: K3 (a fixed data key A and EnDA))
-auth	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: K2 (no resume past an autda that faults) and K3 (a fixed data key A and EnDA))
+sign	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K3 (a fixed data key A and EnDA))
+auth	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past an autda that faults) and K3 (a fixed data key A and EnDA))
 strip	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)

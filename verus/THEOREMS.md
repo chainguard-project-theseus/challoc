@@ -653,8 +653,8 @@ turns that into `is_huge_block(p, max(size, 1))`.
   limit; `sign`, `auth` (`sys/pac.rs:199`, `:245`) are `external_body`
   and equal `spec_sign`/`spec_auth`, one function per process (no
   `PR_PAC_RESET_KEYS`). Main's ledger lists `sign` and `auth` as
-  trusted, partly checked by Isla on the Armv8.5-A and Armv9.4-A models
-  (`verus/isla/seams.md`): not checked is that the kernel keeps the
+  discharged on premises by Isla on the Armv8.5-A and Armv9.4-A models
+  (`verus/isla/seams.md`): the premises, not checked, are that the kernel keeps the
   thread's data key A and EnDA fixed (K3 there), and for `auth` that it
   never resumes past an `autda` that faults (K2); `axiom_auth_sign` and
   `strip` are discharged by those runs, within the firmware and CPU
@@ -702,8 +702,8 @@ gone because `kept` is open; the bitmap words' two axioms
 which needs a `ZeroRaw` token where neither did, and which Kani partly
 checks on main (trusted with no check in #138). The PAC seams
 (`axiom_auth_sign`, `sign`, `auth`), Isla-discharged in #138, are on
-main: `axiom_auth_sign` discharged by Isla, `sign` and `auth` partly
-checked.
+main: `axiom_auth_sign` discharged by Isla, `sign` and `auth`
+discharged on premises (K3, and K2 for `auth`).
 
 ## 2. Fit and alignment
 
@@ -1705,7 +1705,7 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
 - The only instructions that enter the kernel are the `syscall`/`svc 0`
   in `sys/raw.rs` (`syscall0`..`syscall6`, both architectures,
   `sys/raw.rs:37`-`:138`, `:172`-`:269`), each `requires may_syscall()`.
-  Main's ledger lists all 14 as trusted, partly checked by Isla up to
+  Main's ledger lists all 14 as discharged on premises by Isla up to
   the system call (x86_64 since wolfi-dev/challoc#415, on the Sail x86
   model); the kernel's side is not checked.
 - Every trusted body or specification that can reach the kernel, by a
@@ -1862,8 +1862,8 @@ cache entry or slot value, and that abort writes and raises `SIGABRT`
 where `may_syscall` appears as a clause. The source test
 `api::restated::fast_path_restatements_match_their_bodies` is new; it
 ties the restated paths to their bodies by call names. The
-`sys/raw.rs` wrappers, Isla-discharged in #138, are partly checked by
-Isla on main, which does not check the kernel's side.
+`sys/raw.rs` wrappers, Isla-discharged in #138, are discharged on
+premises by Isla on main, the kernel's side (K1) assumed.
 
 ## 9. Fast paths take no lock and terminate
 
@@ -2078,8 +2078,8 @@ paths, verified unless marked trusted:
   `region_len` (the sized path's bound; since #101 `Shared::region_hi`,
   a field, and nothing from the layout): the lines hold the geometry,
   `slab_slot_unbounded` is gone and `slot_in_class` is test-only.
-- **Primitives:** `sys::pac::sign` and `auth` (trusted asm, partly
-  checked by Isla on main),
+- **Primitives:** `sys::pac::sign` and `auth` (trusted asm, discharged
+  on premises by Isla on main),
   `sys::opaque` (trusted, an empty `asm!` on aarch64, from #78 until
   #77 replaced it with `shared_base`),
   `vspec::addr::addr_to_ptr` (trusted), and the `vspec` items under
@@ -5917,9 +5917,9 @@ token).
 - The kernel's answer: `madvise_ok` and `madvise_err`
   (`sys/mod.rs:701`, `:708`) read the word `raw::syscall3` returned
   (`raw::returned3`, which only `syscall3`'s trusted `asm!` body
-  ensures: `sys/raw.rs:82` on x86_64, `:215` on aarch64; partly checked
-  by Isla on both, up to the system call, not the kernel's side). The
-  discard step itself is verified (above).
+  ensures: `sys/raw.rs:82` on x86_64, `:215` on aarch64; discharged on
+  premises (K1) by Isla on both, up to the system call, the kernel's side
+  assumed). The discard step itself is verified (above).
 - `madvise` does what it is asked when it succeeds (the kernel
   contract, a common premise); `EINVAL` leaves the range in place and
   is reported, any other failure aborts in `discard`.

@@ -101,7 +101,22 @@ next to that file (or a line there matches no call, or a string literal
 in the item names a trapping or system-register instruction), so a
 changed template fails without the Isla tools. A trace that ends at an
 exception the kernel handles (a system call) checks nothing the kernel
-does after it, so such a seam is at most partly checked. The bounds of an
+does after it, so such a seam is at most discharged on premises (below).
+`discharged on premises (Isla: verus/isla/seams.md; premises: <what>)`
+is the status of an Isla check that covers the whole contract except
+for platform premises: the P and K premises of `verus/isla/seams.md`
+("Platform premises"), which `<what>` lists by label, each label
+optionally followed by a gloss in parentheses, as a partly checked
+status lists what it leaves unchecked. The premises stay assumed, and
+`verus/count` counts the seam as discharged. A contract that also rests
+on a premise of Verus's own model (a trusted seam such as
+`TlsSlot::entry`, or a ghost cell such as `TlsCell::tp`) is
+`trusted (partly checked, ...)`. Only Isla's checks take this status:
+`verus/count` fails on one that cites another check, names no premise,
+or names anything but labels of the platform premises
+`verus/isla/seams.md` defines: it reads the `- **LABEL, ...**` bullets
+of that file's "Platform premises" section and resolves each label
+against them. The bounds of an
 Isla check are the build, link and platform residuals `verus/isla/seams.md`
 states for its runs (the static library's code and register assignments,
 the Linux user state the runs start from, the CPU configurations

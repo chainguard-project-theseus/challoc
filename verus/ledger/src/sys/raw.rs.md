@@ -7,25 +7,25 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `syscall0#1` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall1#1` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall2#1` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall3#1` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall4#1` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall5#1` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall6#1` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall0#2` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall1#2` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall2#2` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall3#2` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall4#2` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall5#2` | external_body | inline asm | Islaris/Isla | trusted |
-| `syscall6#2` | external_body | inline asm | Islaris/Isla | trusted |
+| `syscall0#1` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall1#1` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall2#1` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall3#1` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall4#1` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall5#1` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall6#1` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall0#2` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall1#2` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall2#2` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall3#2` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall4#2` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall5#2` | external_body | inline asm | Islaris/Isla | discharged |
+| `syscall6#2` | external_body | inline asm | Islaris/Isla | discharged |
 
 ## `syscall0#1`
 
 src/sys/raw.rs:37. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
@@ -36,7 +36,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
 ## `syscall1#1`
 
 src/sys/raw.rs:52. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
@@ -47,7 +47,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 ## `syscall2#1`
 
 src/sys/raw.rs:67. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
@@ -58,7 +58,7 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 ## `syscall3#1`
 
 src/sys/raw.rs:82. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
@@ -71,7 +71,7 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
 ## `syscall4#1`
 
 src/sys/raw.rs:99. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
@@ -82,7 +82,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 ## `syscall5#1`
 
 src/sys/raw.rs:115. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall5(
@@ -100,7 +100,7 @@ pub unsafe fn syscall5(
 ## `syscall6#1`
 
 src/sys/raw.rs:138. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall6(
@@ -119,7 +119,7 @@ pub unsafe fn syscall6(
 ## `syscall0#2`
 
 src/sys/raw.rs:172. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
@@ -130,7 +130,7 @@ pub unsafe fn syscall0(nr: usize) -> usize
 ## `syscall1#2`
 
 src/sys/raw.rs:186. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
@@ -141,7 +141,7 @@ pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
 ## `syscall2#2`
 
 src/sys/raw.rs:200. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
@@ -152,7 +152,7 @@ pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
 ## `syscall3#2`
 
 src/sys/raw.rs:215. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
@@ -165,7 +165,7 @@ pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
 ## `syscall4#2`
 
 src/sys/raw.rs:232. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
@@ -176,7 +176,7 @@ pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) ->
 ## `syscall5#2`
 
 src/sys/raw.rs:247. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall5(
@@ -194,7 +194,7 @@ pub unsafe fn syscall5(
 ## `syscall6#2`
 
 src/sys/raw.rs:269. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call)).
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 ```rust
 pub unsafe fn syscall6(

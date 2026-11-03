@@ -26,13 +26,15 @@ the 28 are `discharged (Isla: verus/isla/seams.md)`: the three GOT
 functions with no `ensures`, `rseq::symbols` and `thread_pointer`,
 `strip` and `axiom_auth_sign`, whose contracts rest on nothing but their
 runs and those bounds; for the code, that is the static library's, not
-the shipped `cdylib` (P1). The other 21 are `trusted (partly checked,
-Isla: verus/isla/seams.md; not checked: ...)`, each naming what it rests
-on beyond them: the kernel's side of a system call (K1), of the trap and
-of an `autda` that faults (K2); the kernel keeping the PAC key and EnDA
-fixed (K3); the loader's fill of a GOT entry (P8), which
-`throw_bad_alloc_addr`'s `ensures` states and the TLS slot's value rests
-on; and the TLS slot model's premise and `TlsCell::tp`.
+the shipped `cdylib` (P1). 18 are `discharged on premises (Isla:
+verus/isla/seams.md; premises: ...)`, each naming the platform premises
+it rests on beyond them: the kernel's side of a system call (K1), of the
+trap and of an `autda` that faults (K2); the kernel keeping the PAC key
+and EnDA fixed (K3); and the loader's fill of a GOT entry (P8), which
+`throw_bad_alloc_addr`'s `ensures` states. The TLS accessors `get`,
+`get_tp` and `set` are `trusted (partly checked, Isla:
+verus/isla/seams.md; not checked: ...)`: besides P8 they rest on the TLS
+slot model's premise and `TlsCell::tp`, premises of Verus's own model.
 
 The harness composes the per-instruction traces itself and proves
 the resulting conditions with Z3, which is weaker than an
