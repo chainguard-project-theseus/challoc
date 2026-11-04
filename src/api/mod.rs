@@ -4209,7 +4209,7 @@ mod tests {
                     ("arena.rs:", "fn materialise<", "lock"),
                 ],
             ),
-            // `class::axiom_class_lock_inv`.
+            // `class::Inner`'s `LockSpec` impl.
             (
                 "class/mod.rs:ClassState.inner",
                 &[

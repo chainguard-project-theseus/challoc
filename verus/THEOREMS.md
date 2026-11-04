@@ -494,7 +494,7 @@ process statistics lock (`collect_into`, `snapshot`,
 these guards drops without it. For every other lock the invariant and
 frame are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Nine locks'
-holders all end with it. For five of them no axiom states `lock_inv` and
+holders all end with it. For six of them no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
 left is the mutex contract (`lock::axiom_acquired`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
@@ -508,11 +508,11 @@ for `Snapshot` (`stats.rs`), the process statistics lock:
 `()` (`heap/tcaches.rs`), the explicit-cache table lock: both `true`.
 The impl for `huge::Inner` (`huge/mod.rs`), the huge lock: `Inner::wf`,
 with the ghost page count, page shift, region base and `Meta` identity
-fixed.
-Three of the other four take them from axioms: the arena creation lock from
-`axiom_arenas_lock_inv` and `axiom_arenas_lock_frame` (`arena.rs`), the
-class lock from `class::axiom_class_lock_inv` and `axiom_class_lock`
-(`class/mod.rs`), and the commit lock from
+fixed. The impl for `class::Inner` (`class/mod.rs`), the class lock:
+`Inner::inv`, with the sets' slab count, the arena, the table and the
+owned-slab record's location fixed.
+Two of the other three take them from axioms: the arena creation lock from
+`axiom_arenas_lock_inv` and `axiom_arenas_lock_frame` (`arena.rs`), and the commit lock from
 `table::axiom_table_lock_inv` and `axiom_table_lock_frame`
 (`class/table.rs`).
 For the ninth, the per-arena statistics locks, the impl for
@@ -706,9 +706,9 @@ turns that into `is_huge_block(p, max(size, 1))`.
   live `Active` descriptor under the huge lock invariant (`run_ok`,
   `desc_ok`).
 - Class lock and commit lock invariants for the claim path:
-  `class::axiom_class_lock_inv`, `axiom_class_lock`
-  (`class/mod.rs`), `table::axiom_table_lock_inv`,
-  `_frame` (`class/table.rs`), all four checked at the release: every
+  the class lock's, which `class::Inner`'s `LockSpec` impl
+  (`class/mod.rs`) defines, and `table::axiom_table_lock_inv`,
+  `_frame` (`class/table.rs`), all checked at the release: every
   holder outside the tests ends with `LockGuard::unlock`, which
   requires them (common premises, "Locks"); `next_slab_locked`
   (`class/table.rs`, verified); `bits_unchecked` is verified,
@@ -1207,8 +1207,8 @@ block; the free cores take the token C holds (common premises, "The
   class bitmap's through the permissions of `table::axiom_fresh_words`
   (`class/table.rs`), whose `word_addr` ties them to the word
   invariants.
-- Class and commit lock axioms (`class/mod.rs`,
-  `class/table.rs`; the commit lock's
+- The class lock's `LockSpec` impl (`class/mod.rs`) and the commit
+  lock axioms (`class/table.rs`; the commit lock's
   value also keeps the owner words' persistent witness markers of the
   slabs below `next_slab`, and the class lock's frame the location of
   the owned-slab record, `Inner::oauth`; the class lock bridge
@@ -1339,8 +1339,8 @@ meaning, and no stronger.
   the history.
 - Cache path: `CachePerms::zero_ok` (`heap/zero.rs`), part of the
   assumed `Heap::wf`; `Heap::take_handed` (`heap/zero.rs`).
-- The class lock axioms and the huge lock's invariant (`huge::Inner`'s
-  `LockSpec` impl), for the state `take` reads.
+- The class and huge locks' invariants (`class::Inner`'s and
+  `huge::Inner`'s `LockSpec` impls), for the state `take` reads.
 - The fills and the copy are valid because they take the block's
   permission (`vspec::user`, from `heap::live::axiom_hand_out` or
   `axiom_c_claim`); no other axiom makes them valid.
@@ -1545,7 +1545,8 @@ share no page with the guard pages of any live run, its own included.
 - `vspec::word::load` (`external_body`, one atomic load of the word, as
   the three writers are one atomic step each); its result is the
   permission's value under sequential consistency.
-- Class lock axioms for `ready`, and `api::shared_deref`'s `Shared::wf`
+- The class lock's invariant (`class::Inner`'s `LockSpec` impl) for
+  `ready`, and `api::shared_deref`'s `Shared::wf`
   for the class lines and the table geometry the free paths read.
 
 **Where the statement is weaker than the code.**
@@ -2816,7 +2817,8 @@ an owned slab, and ensures its pick's owner; `plan` collects
   (`tests/loom/tests/access.rs`) checks for `class/table.rs`: its one
   atomic write is `store_owner`'s store, `axiom_table_lock_inv` (its `seen` and `next_slab`
   conjuncts, as the others, checked at the release by `LockGuard::unlock`),
-  `axiom_class_lock` (the owned-slab record's location never changes),
+  the class lock's frame (the owned-slab record's location never
+  changes, `class::Inner`'s `LockSpec` impl),
   sequential consistency, and one table per class (`axiom_slot_loc`).
 
 **Where the statement is weaker than the code.**
@@ -3733,7 +3735,9 @@ run authority stay those the batch's `free` was made from. The makers:
   `LockGuard::unlock` (`huge::Inner`'s `LockSpec` impl) and
   `huge::axiom_run_locs` (one huge allocator per process), which
   theorem 5's run tokens already use.
-- Class: none beyond the class lock axioms. `page_group_is_idle`
+- Class: none; the class lock's invariant and frame are
+  `class::Inner`'s `LockSpec` impl's, checked at every release.
+  `page_group_is_idle`
   (`class/decay.rs`) is verified: every slab of the group is owned
   because an arena owns whole hand-out groups (`class::whole_groups`,
   part of the class lock invariant, kept by `next_fresh_slab`, which
@@ -7210,9 +7214,9 @@ How it is proved:
 `purge_arena`'s contract).
 
 **Premises beyond the common ones.**
-- The class lock axiom (`axiom_class_lock_inv`) and the huge lock's
-  invariant (`huge::Inner`'s `LockSpec` impl), as for theorems 17, 19
-  and 29: the value a lock
+- The class and huge locks' invariants (`class::Inner`'s and
+  `huge::Inner`'s `LockSpec` impls, checked at every release), as for
+  theorems 17, 19 and 29: the value a lock
   hands over satisfies its invariant, which is what ties the empty set to
   the `Empty` slabs and the `Empty` list to the `Empty` extents.
 - `madvise` does what it is asked when it succeeds (a common premise);
@@ -7624,7 +7628,8 @@ so through `purge_arena`'s contract).
   `Shared` (as every verified function taking a `&Shared`).
 - The guard geometry: a table's guard slabs are the process's
   (`guard_geom`, `class::table::axiom_slot_loc`), as for theorem 7.
-- The class lock axioms (`axiom_class_lock_inv`): the value `push_group`
+- The class lock's invariant (`class::Inner`'s `LockSpec` impl, checked
+  at every release): the value `push_group`
   holds satisfies the lock invariant, which is what makes an empty-set
   slab `Empty`, so not a guard slab.
 

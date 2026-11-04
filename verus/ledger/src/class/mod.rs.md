@@ -7,45 +7,14 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `axiom_c...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
-| `axiom_class_lock` | axiom | allocator invariant | none (assumption) | trusted |
 | `ClassStat...laim_with` | no_decreases | termination | loom/GenMC | trusted |
 | `axiom_f...s_zero` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_d...s_zero` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_f...ab_mem` | axiom | allocator invariant | none (assumption) | trusted |
 
-## `axiom_class_lock_inv`
-
-src/class/mod.rs:2171. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> Assumption (`lock.rs`): the class lock's value keeps the set/count seam's invariant, ghost link included, while the lock is free.
-
-```rust
-broadcast axiom fn axiom_class_lock_inv(v: Inner)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
-;
-```
-
-## `axiom_class_lock`
-
-src/class/mod.rs:2183. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> Assumption (`lock.rs`): the sets behind a class lock stay over the slab count they were created with, and the value's arena, table and owned-slab record's location are the ones `new` set.
-
-```rust
-broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
-    ensures
-        #[trigger] crate::lock::assumed_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
-            && v.oauth@.id() == init.oauth@.id()),
-;
-```
-
 ## `ClassState::claim_with`
 
-src/class/mod.rs:2882. Kind: no_decreases. Category: termination.
+src/class/mod.rs:2838. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -73,7 +42,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ## `axiom_fresh_slots_zero`
 
-src/class/mod.rs:3507. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3463. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The kernel fact of `mmap(2)` (a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -102,7 +71,7 @@ axiom fn axiom_fresh_slots_zero(
 
 ## `axiom_discarded_slots_zero`
 
-src/class/mod.rs:3550. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3506. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -132,7 +101,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ## `axiom_fresh_slab_mem`
 
-src/class/mod.rs:3608. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3564. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.

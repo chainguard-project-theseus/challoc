@@ -6,7 +6,7 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 34 of those seams that are still seams in the
+*This file lists the 32 of those seams that are still seams in the
 ledger. The others are verified or no longer exist, so their rows are
 left out: among them `axiom_raw_valid`, gone, and `axiom_process_shared`,
 which `lemma_process_shared` (`heap/shared.rs`) now proves from the
@@ -45,7 +45,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 34 seams listed: 14 sound, 13 sound (premise), 7 fixed.
+Totals for the 32 seams listed: 12 sound, 13 sound (premise), 7 fixed.
 
 ## Per seam
 
@@ -56,8 +56,6 @@ Totals for the 34 seams listed: 14 sound, 13 sound (premise), 7 fixed.
 | `axiom_array_layout` | `arena.rs` | sound | Requires `N * size_of::<T>() <= isize::MAX`, which every array with a layout meets (`library-control.md`). |
 | `axiom_arena_layout` | `arena.rs` | sound | The build's `const` assertion covers every clause, on every target and quantum. |
 | `axiom_arena_assemble` | `arena.rs` | sound (premise) | Consumes the field permissions and the padding (`pad_covers`), so the assembled permission covers exactly the bytes it is given (`memory.md`). |
-| `axiom_class_lock_inv` | `class/mod.rs` | sound | One `lock_inv` axiom for the class `Inner`; it rests on the lock premise below. |
-| `axiom_class_lock` | `class/mod.rs` | sound | One `lock_frame` axiom: the slab count, `arena`, `table` and the owned-slab record's id (`oauth`). Nothing writes the first three, and only `take_group` writes the record. |
 | `axiom_fresh_slots_zero` | `class/mod.rs` | fixed | Requires `n <= nslots`, a `Fresh` state ticket for the slab, and the held slot tokens of the slots it covers, so the zero claim stays inside the slab. |
 | `axiom_discarded_slots_zero` | `class/mod.rs` | fixed | As `axiom_fresh_slots_zero`, for a `Purged` slab, with the `PurgedZero` witness of the call site's run-time test (`purged_is_zero`). |
 | `axiom_table_lock_inv` | `class/table.rs` | sound | The initial value is verified and `take_group` asserts `inv`. `commit_run` and `commit_slab` change only `guards`, which `inv` does not bound. |
