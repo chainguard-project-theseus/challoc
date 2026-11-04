@@ -19,11 +19,9 @@ axiom_snapshot_lock_inv	allocator invariant	none (assumption)
 # under its new thread ID (pool_fork_prepare records the old one), so the
 # child's copy of the call keeps its object.
 pool_take	allocator invariant	none (assumption)
-pool_reserve	allocator invariant	none (assumption)
-pool_fill	allocator invariant	none (assumption)
-pool_unreserve	allocator invariant	none (assumption)
-pool_release	allocator invariant	none (assumption)
-pool_fork_prepare	allocator invariant	none (assumption)
-pool_fork_child	allocator invariant	none (assumption)
 # Its frame: true of any two snapshots (no constant to keep).
 axiom_snapshot_lock_frame	allocator invariant	none (assumption)
+# The empty pool: `[EMPTY; POOL_SLOTS]`, an array-repeat expression Verus
+# does not take for an element type that is not `Copy`. It claims nothing,
+# and runs at compile time (`POOL`'s initialiser).
+empty_pool	core library	none (assumption)
