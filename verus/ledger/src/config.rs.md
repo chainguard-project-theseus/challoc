@@ -10,7 +10,7 @@ file.
 | `THP_NAMES` | external_body const | core library | Kani | discharged |
 | `PERCPU_..._NAMES` | external_body const | core library | Kani | discharged |
 | `Config::set_listed` | external_body | function pointer | Kani | discharged |
-| `Config::get` | external_body | function pointer | Kani | trusted |
+| `Config::get` | external_body | function pointer | Kani | discharged |
 | `Parse` | ext_type_spec | function pointer | Kani | trusted |
 | `Read` | ext_type_spec | function pointer | Kani | trusted |
 | `TABLE` | external_body const | function pointer | Kani | trusted |
@@ -70,7 +70,7 @@ fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Resul
 ## `Config::get`
 
 src/config.rs:413. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted (partly checked, Kani: config::kani_config::get_contract; not checked: the real `Thp::name` and `PercpuArena::name`, which the harness stubs (they index the `CStr` tables `THP_NAMES` and `PERCPU_ARENA_NAMES`; Kani 0.68 has no C string literals)).
+Tool: Kani. Status: discharged (Kani: config::kani_config::get_contract).
 
 > The value of a key by name, for `mallctl("opt.<key>")`: the [`TABLE`] entry's reader.
 
