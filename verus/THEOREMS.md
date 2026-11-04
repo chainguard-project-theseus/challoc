@@ -191,15 +191,22 @@ add.
   frozen permission, and `api::mallctl::shared`, the readers' accessor,
   requires `api::marks_ready(*mark)` and reads through
   `api::shared_marked` (`api/mod.rs`); neither is trusted.
-- One `Shared`, at its storage: a well-formed `&Shared` is
-  the one at `Shared::storage()`, the only place `Shared::init` builds
-  one. Assumed where a reference becomes a pointer:
-  `heap::paths::shared_ptr` (`external_body`), what the cold paths hand
-  `existing_heap` and what `heap::init_fields` (verified) stores in the
-  heap's `shared` field,
-  recorded by `FreshHeap::shared`, which `Heap::wf` states is the
-  storage. The unit tests build other `Shared`s; the
-  premise is about the shipped library, as `axiom_process_shared`'s.
+- One `Shared`, at its storage: the pointer the cold paths hand
+  `existing_heap`, and the one `heap::init_fields` (verified) stores in
+  the heap's `shared` field (recorded by `FreshHeap::shared`, which
+  `Heap::wf` states is the storage), are `heap::paths::shared_ptr`'s
+  (`heap/paths.rs`, verified), which in the library is the static's:
+  `api::shared_ptr` (`api/mod.rs`), trusted only as the projection of
+  `SHARED`'s cell (`external_body`; Kani
+  `api::kani_statics::shared_ptrs_agree`). No Verus fact ties the
+  caller's well-formed `&Shared` to that pointer. That the heap found
+  through it and the `Shared` the caller works through are one object
+  is unverified: it rests on the exec code building one `Shared`, at
+  its storage (`Shared::init(shared_storage_ptr(), ..)` in `api::init`,
+  `api/mod.rs`), the premise `axiom_process_shared` states for the
+  regions and the PAC mode. The unit tests build other `Shared`s and
+  take the `cfg(test)` `shared_ptr`, `ptr::from_ref(shared)`; the
+  premise is about the shipped library.
 - `Shared::init` (`heap/shared.rs`) proves
   `r ==> shared_at(this).built()`, using the tracked `Built` token,
   the trusted `begin` (`external_body`: the
@@ -1695,8 +1702,9 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   load, and on x86_64 an empty `asm!`), and the specification of
   `core::hint::assert_unchecked` (no instruction). `heap_from_slot`,
   `fast_flags`, `api::shared_deref` and `class_entry` are verified
-  (Verus checks they make no system call). `heap::paths::shared_ptr`
-  (a cast) is on the cold paths only.
+  (Verus checks they make no system call), and so is
+  `heap::paths::shared_ptr` (the cold paths only), which in the library
+  returns `api::shared_ptr`.
   So do the `core` functions they use (`Option::map`, `?`, atomics,
   pointer arithmetic), which the common premises already trust.
 - Two values reach the kernel from code with no `requires`, and only a
