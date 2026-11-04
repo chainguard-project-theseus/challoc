@@ -17,7 +17,10 @@ PERCPU_ARENA_NAMES	core library	Kani	discharged (const assert: `PERCPU_ARENA_NAM
 KEYS	function pointer	Kani	discharged (Kani: config::kani_config::keys_are_the_table_names)	contract 208287259, body none
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 Config::set_listed	function pointer	Kani	discharged (Kani: config::kani_config::set_listed_contract)	contract 1746912615, body 2364960765
-Config::get	function pointer	Kani	trusted (partly checked, Kani: config::kani_config::get_contract; not checked: the real `Thp::name` and `PercpuArena::name`, which the harness stubs (they index the `CStr` tables `THP_NAMES` and `PERCPU_ARENA_NAMES`; Kani 0.68 has no C string literals))	contract 2444094337, body 4260931877
+# `get_contract` stubs `Thp::name` and `PercpuArena::name`, verified code
+# (inside `verus!`), whose tables `THP_NAMES` and `PERCPU_ARENA_NAMES` the
+# const asserts check; it runs the rest of `get`, the `TABLE` readers included.
+Config::get	function pointer	Kani	discharged (Kani: config::kani_config::get_contract)	contract 2444094337, body 4260931877
 # Inline assembly checked with Isla (verus/ISLA.md): run.sh checks
 # each against the contract verus/isla/seams.md quotes.
 malloc_conf_addr	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 235445132, body 2594729634
