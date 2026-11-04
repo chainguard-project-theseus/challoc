@@ -243,6 +243,9 @@ mod tests {
                 concat!("axiom_", "fresh_slab_mem("),
                 &[("class/mod.rs:", "fn take(", 1)],
             ),
+            // Verified itself, but `axiom_discarded_slots_zero` takes its
+            // witness on the premise that the read was made in the lock
+            // hold that claims the slots.
             (
                 concat!("purged_", "zero("),
                 &[("class/mod.rs:", "fn take(", 1)],

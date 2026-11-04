@@ -8,7 +8,6 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `Explicit::drop` | external_body | atomics primitive | Kani | discharged |
-| `purged_zero` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `Explicit::drop`
 
@@ -19,19 +18,4 @@ Tool: Kani. Status: discharged (Kani: purge::kani_explicit::explicit_drop_return
 fn drop(&mut self)
     opens_invariants none
     no_unwind
-```
-
-## `purged_zero`
-
-src/purge.rs:275. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
-
-> [`purged_is_zero`], with the witness of a true read (`Some` exactly when it returns true).
-
-Body mints Tracked at line 279.
-
-```rust
-pub fn purged_zero() -> (r: (bool, Tracked<Option<PurgedZero>>))
-    ensures
-        r.0 <==> r.1@ is Some,
 ```
