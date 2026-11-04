@@ -2631,7 +2631,17 @@ build a token; the handoff axioms below are the other source.
   snapshot `fork_prepare` read, and the release and `fork_prepare`'s
   second arena scan cover the same arenas as its first scan, given the
   handoff (whose `axiom_fork_resumed` also restates the cell
-  permission as part of the hold, `ForkHeld::wf`).
+  permission as part of the hold, `ForkHeld::wf`). Both reads also
+  require the creation lock's token (`LockHeld`), which the caller lends
+  and only a release consumes (`axiom_fork_resumed` restates it for the
+  release), so each read is checked to hold the creation lock's token.
+  That the holder takes no guard of the creation lock meanwhile rests on
+  `lock::axiom_entry`'s premise (no allocator lock held at an entry
+  point; `lock::tests::entry_lock_order_uses_are_listed` pins its call
+  sites). No such read runs in the fork window: the guards the window
+  serves stand for the hold (`lock::axiom_acquired`), and that they
+  leave the count and the table as read is `axiom_fork_resumed`'s
+  premise.
 - `axiom_state_lock` (`purge/background.rs`, an axiom, used in
   `STATE`'s initialiser): the static is `state_static()`, whose raw
   lock is `state_lock()` (Verus does not read statics in
