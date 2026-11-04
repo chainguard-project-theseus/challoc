@@ -9015,6 +9015,22 @@ fn dirty_zero_run(
 
 } // verus!
 
+verus! {
+
+/// The huge lock's invariant and frame, which `vspec::huge`'s
+/// `axiom_huge_lock_inv` and `axiom_huge_lock_frame` state.
+impl crate::lock::LockSpec for Inner {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
+    }
+}
+
+} // verus!
+
 #[cfg(test)]
 mod tests;
 

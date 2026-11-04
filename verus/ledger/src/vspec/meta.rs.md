@@ -12,7 +12,7 @@ file.
 
 ## `axiom_meta_lock_inv`
 
-src/vspec/meta.rs:33. Kind: axiom. Category: allocator invariant.
+src/vspec/meta.rs:31. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: every holder of the metadata lock leaves `Inner::wf` true when it unlocks, so the lock's invariant is `Inner::wf`.
@@ -20,13 +20,13 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
     ensures
-        #[trigger] lock_inv(v) == v.wf(),
+        #[trigger] crate::lock::assumed_inv(v) == v.wf(),
 ;
 ```
 
 ## `axiom_meta_lock_frame`
 
-src/vspec/meta.rs:45. Kind: axiom. Category: allocator invariant.
+src/vspec/meta.rs:43. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: what every value the metadata lock holds keeps from the one `Meta::owning` created it with is exactly the page size, the region's bounds and the identities of the ghost records (live objects, unclaimed reserved bytes).
@@ -34,7 +34,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(crate) broadcast axiom fn axiom_meta_lock_frame(a: crate::meta::Inner, b: crate::meta::Inner)
     ensures
-        #[trigger] lock_frame(a, b) == (a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
+        #[trigger] crate::lock::assumed_frame(a, b) == (a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
             && a.spec_page() == b.spec_page() && a.spec_base() == b.spec_base() && a.spec_len() == b.spec_len()),
 ;
 ```

@@ -3,8 +3,6 @@
 
 use vstd::prelude::*;
 
-use crate::lock::lock_inv;
-
 verus! {
 
 /// `AtomicPtr::load`, which vstd does not specify: any pointer. It panics
@@ -57,7 +55,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
 /// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
     ensures
-        #[trigger] lock_inv(v) == v.identities(),
+        #[trigger] crate::lock::assumed_inv(v) == v.identities(),
 ;
 
 } // verus!

@@ -402,7 +402,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
     ensures
-        #[trigger] lock_inv(v) == v.ok(),
+        #[trigger] crate::lock::assumed_inv(v) == v.ok(),
 ;
 ```
 
@@ -469,6 +469,6 @@ Tool: none (assumption). Status: trusted.
 ```rust
 broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
     ensures
-        #[trigger] lock_frame(init, v) == (v.n >= init.n && v.half@.id() == init.half@.id()),
+        #[trigger] crate::lock::assumed_frame(init, v) == (v.n >= init.n && v.half@.id() == init.half@.id()),
 ;
 ```

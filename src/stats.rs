@@ -672,7 +672,7 @@ impl Snapshot {
 /// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
     ensures
-        #[trigger] crate::lock::lock_inv(v) == v.inv(),
+        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
 ;
 
 /// The snapshot behind `shared.stats` keeps no constant from the one
@@ -680,7 +680,7 @@ pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
 /// `LockGuard::unlock` requires holds of any two snapshots.
 pub broadcast axiom fn axiom_snapshot_lock_frame(init: Snapshot, v: Snapshot)
     ensures
-        #[trigger] crate::lock::lock_frame(init, v),
+        #[trigger] crate::lock::assumed_frame(init, v),
 ;
 
 } // verus!
@@ -2366,6 +2366,35 @@ mod pool {
         }
     }
 }
+
+verus! {
+
+/// The process statistics lock's invariant and frame, which
+/// [`axiom_snapshot_lock_inv`] and [`axiom_snapshot_lock_frame`] state.
+impl crate::lock::LockSpec for Snapshot {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
+    }
+}
+
+/// An arena statistics lock's invariant, which
+/// `vspec::arena::axiom_arena_stats_lock_inv` states; its frame is
+/// uninterpreted.
+impl crate::lock::LockSpec for ArenaStats {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
+    }
+}
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

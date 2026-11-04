@@ -3,8 +3,6 @@
 
 use vstd::prelude::*;
 
-use crate::lock::{lock_frame, lock_inv};
-
 verus! {
 
 /// Assumption: every holder of the huge lock leaves `huge::Inner::wf`
@@ -31,7 +29,7 @@ verus! {
 /// that take the guard are the holders named here.
 pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
     ensures
-        #[trigger] lock_inv(v) == v.wf(),
+        #[trigger] crate::lock::assumed_inv(v) == v.wf(),
 ;
 
 /// Assumption: what every value the huge lock holds keeps from the one
@@ -42,7 +40,7 @@ pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
 /// `purge_curve`, `free_run`).
 pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: crate::huge::Inner)
     ensures
-        #[trigger] lock_frame(a, b) == (a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg() && a.spec_mid() == b.spec_mid()),
+        #[trigger] crate::lock::assumed_frame(a, b) == (a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg() && a.spec_mid() == b.spec_mid()),
 ;
 
 } // verus!

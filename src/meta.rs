@@ -3646,6 +3646,22 @@ impl MetaClaim {
 
 } // verus!
 
+verus! {
+
+/// The metadata lock's invariant and frame, which `vspec::meta`'s
+/// `axiom_meta_lock_inv` and `axiom_meta_lock_frame` state.
+impl crate::lock::LockSpec for Inner {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
+    }
+}
+
+} // verus!
+
 #[cfg(test)]
 mod tests {
     use super::*;
