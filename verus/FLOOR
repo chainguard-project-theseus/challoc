@@ -5,13 +5,13 @@
 # verifies; `combined-functions` and `combined-lines` also count the
 # trusted functions whose seams the ledger marks discharged
 # (verus/SEAMS.md, "Status"). Leaving out a combined figure sets it to 0.0.
-combined-functions 89.3
-combined-lines 95.8
+combined-functions 89.8
+combined-lines 96.0
 #
 # A change keeps the share at or above these figures. They rise in their
 # own pull requests between merges, to the figures the check names, so
 # that pull requests landing in parallel do not conflict here. A figure set
 # below the base revision's fails unless a `lowered FIGURE P REASON` line
 # here, new in that change, names that figure and value.
-functions 85.2
-lines 94.0
+functions 85.5
+lines 94.1
