@@ -298,8 +298,8 @@ pub proof fn lemma_slot_unique(c1: int, c2: int, p: usize)
     let stride = (1usize << r.lg_stride) as int;
     r.lemma_slot_in_region(c1, p);
     r.lemma_slot_in_region(c2, p);
-    crate::vspec::class::axiom_class_table_wf(c1);
-    crate::vspec::class::axiom_class_table_wf(c2);
+    crate::vspec::class::lemma_class_table_wf(c1);
+    crate::vspec::class::lemma_class_table_wf(c2);
     assert(r.superblock + c1 * stride <= p < r.superblock + (c1 + 1) * stride);
     assert(r.superblock + c2 * stride <= p < r.superblock + (c2 + 1) * stride);
     if c1 < c2 {
@@ -331,7 +331,7 @@ pub proof fn lemma_slot_not_huge(c: int, p: usize)
     let r = crate::layout::process_regions();
     let stride = (1usize << r.lg_stride) as int;
     r.lemma_slot_in_region(c, p);
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     assert(r.superblock + c * stride <= r.class_base[c]);
     assert((c + 1) * stride <= crate::layout::NCLASSES * stride) by (nonlinear_arith)
         requires

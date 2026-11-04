@@ -4,6 +4,8 @@ axiom_class_table	allocator invariant	none (assumption)
 # The class table's static: its constructor, its storage, and its entries.
 ClassTable::new	UnsafeCell/volatile/transmute	Kani	discharged (Kani: layout::kani_classes::class_table_new)
 classes_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: layout::kani_classes::classes_ptr_fixed)
-# Kani checks the entries' facts; that a reader sees the table init left is
-# the `Sync` impl's argument, not checked.
-ClassTable::table	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: page sizes outside 4 to 64 KiB, and that a reader sees the table `init` left, which is the `Sync` impl's argument)
+# Kani checks that the reference is to the storage and that its entries are
+# `table_ok` (at every page size Verus checks it: `adopt_page_geometry`
+# keeps it); that a reader sees the table init left is the `Sync` impl's
+# argument, not checked.
+ClassTable::table	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: that a reader sees the table `init` left, which is the `Sync` impl's argument)

@@ -1040,6 +1040,62 @@ const _: () = assert!(LG_COMPACT_UNIT >= LG_MIN_SLAB && LG_COMPACT_UNIT <= LG_MA
 
 verus! {
 
+/// `size` is its odd part `d` shifted left by its trailing zeros `t`,
+/// fewer than 32.
+proof fn lemma_odd_part(size: usize)
+    requires 1 <= size <= MEDIUM_MAX,
+    ensures
+        ({
+            let t = vstd::std_specs::bits::u64_trailing_zeros(size as u64);
+            let d = (size as u32) >> t;
+            &&& t < 32
+            &&& d << t == size as u32
+            &&& d & 1 == 1
+        }),
+{
+    let w = size as u64;
+    vstd::std_specs::bits::axiom_u64_trailing_zeros(w);
+    let t = vstd::std_specs::bits::u64_trailing_zeros(w) as u64;
+    assert(t < 32) by (bit_vector)
+        requires 1 <= w <= 0x4_0000u64, t <= 64, t < 64 ==> (w >> t) & 1u64 == 1u64, w == 0 <==> t == 64;
+    let s = size as u32;
+    let tt = vstd::std_specs::bits::u64_trailing_zeros(size as u64);
+    assert(MEDIUM_MAX == 0x4_0000);
+    assert((s >> tt) & 1 == 1 && (s >> tt) << tt == s) by (bit_vector)
+        requires
+            1 <= w <= 0x4_0000u64,
+            s == w as u32,
+            tt as u64 == t,
+            t < 32,
+            (w >> t) & 1u64 == 1u64,
+            w << sub(64, t) == 0,
+    ;
+}
+
+/// Every odd `d` has an inverse modulo `2^32`: four steps of Newton's
+/// iteration from `x = d` ([`lemma_newton`]), the steps
+/// [`inverse_of_odd_part`]'s loop takes, for spec code, which cannot call
+/// it.
+proof fn lemma_odd_inverse(d: u32)
+    requires d & 1 == 1,
+    ensures exists|v: u32| d.wrapping_mul(v) == 1,
+{
+    assert(d & 1 == 1 ==> d.wrapping_mul(d) & 7 == 1) by (bit_vector);
+    let x1 = d.wrapping_mul(2u32.wrapping_sub(d.wrapping_mul(d)));
+    lemma_wmul_assoc(d, d, 2u32.wrapping_sub(d.wrapping_mul(d)));
+    lemma_newton(d.wrapping_mul(d));
+    let x2 = x1.wrapping_mul(2u32.wrapping_sub(d.wrapping_mul(x1)));
+    lemma_wmul_assoc(d, x1, 2u32.wrapping_sub(d.wrapping_mul(x1)));
+    lemma_newton(d.wrapping_mul(x1));
+    let x3 = x2.wrapping_mul(2u32.wrapping_sub(d.wrapping_mul(x2)));
+    lemma_wmul_assoc(d, x2, 2u32.wrapping_sub(d.wrapping_mul(x2)));
+    lemma_newton(d.wrapping_mul(x2));
+    let x4 = x3.wrapping_mul(2u32.wrapping_sub(d.wrapping_mul(x3)));
+    lemma_wmul_assoc(d, x3, 2u32.wrapping_sub(d.wrapping_mul(x3)));
+    lemma_newton(d.wrapping_mul(x3));
+    assert(d.wrapping_mul(x4) == 1);
+}
+
 /// The inverse of the odd part of `size` modulo `2^32` (the `inv_odd`
 /// field): Newton's iteration `x = x * (2 - d * x)` doubles the correct
 /// low bits from the 3 that `x = d` has for odd `d`.
@@ -1057,23 +1113,7 @@ const fn inverse_of_odd_part(size: usize) -> (r: u32)
 {
     let ghost t32 = vstd::std_specs::bits::u64_trailing_zeros(size as u64);
     proof {
-        let w = size as u64;
-        vstd::std_specs::bits::axiom_u64_trailing_zeros(w);
-        let t = vstd::std_specs::bits::u64_trailing_zeros(w) as u64;
-        assert(t < 32) by (bit_vector)
-            requires 1 <= w <= 0x4_0000u64, t <= 64, t < 64 ==> (w >> t) & 1u64 == 1u64, w == 0 <==> t == 64;
-        let s = size as u32;
-        let tt = t32;
-        assert(MEDIUM_MAX == 0x4_0000);
-        assert((s >> tt) & 1 == 1 && (s >> tt) << tt == s) by (bit_vector)
-            requires
-                1 <= w <= 0x4_0000u64,
-                s == w as u32,
-                tt as u64 == t,
-                t < 32,
-                (w >> t) & 1u64 == 1u64,
-                w << sub(64, t) == 0,
-        ;
+        lemma_odd_part(size);
     }
     let d = (size as u32) >> size.trailing_zeros();
     let mut x = d;
@@ -1351,19 +1391,141 @@ verus! {
 #[verifier::external_body]
 pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
-/// The contents of [`CLASSES`] after init.
-pub uninterp spec fn class_table() -> [Class; NCLASSES];
+/// The contents of [`CLASSES`] after init. Uninterpreted;
+/// [`axiom_class_table`] fixes it.
+pub uninterp spec fn classes_after_init() -> [Class; NCLASSES];
 
-/// Trusted: what [`class_table`] names, the contents of [`CLASSES`] after
-/// init, is what a frozen permission to its storage holds. `api::init`
-/// freezes the one permission to it (`api::axiom_statics` hands it out
-/// once, for the process's one-shot token) after [`adopt_page_geometry`],
-/// and nothing writes the table through a `'static` shared permission, so
+/// The class table in use: the contents of [`CLASSES`] after init
+/// ([`classes_after_init`]) when they are [`table_ok`], as
+/// [`adopt_page_geometry`] leaves them, and otherwise a spec table that
+/// is [`table_ok`] ([`spec_ok_table`]), so every entry is well formed
+/// without an assumption. Opaque; `vspec::class::lemma_class_table_wf` reveals it.
+#[verifier::opaque]
+pub open(crate) spec fn class_table() -> [Class; NCLASSES] {
+    if table_ok(classes_after_init()) {
+        classes_after_init()
+    } else {
+        spec_ok_table(NCLASSES as int)
+    }
+}
+
+/// A spec entry for class `i` that is well formed and sized
+/// [`spec_class_size`] ([`lemma_spec_ok_entry`]): one slot in a
+/// [`MAX_SLAB`] slab, one bitmap bit, and the size's slot-start constants.
+closed spec fn spec_ok_entry(i: int) -> Class {
+    let s = spec_class_size(i) as u32;
+    let t = vstd::std_specs::bits::u64_trailing_zeros(s as u64);
+    let d = s >> t;
+    Class {
+        size: s,
+        lg_slab: LG_MAX_SLAB as u8,
+        nslots: 1,
+        slab_mask: (MAX_SLAB - 1) as u32,
+        inv_odd: choose|v: u32| d.wrapping_mul(v) == 1,
+        tz: t as u8,
+        slab_bits: 1,
+    }
+}
+
+/// A table whose entries below `n` are [`spec_ok_entry`]'s
+/// ([`lemma_spec_ok_table`]).
+pub(crate) closed spec fn spec_ok_table(n: int) -> [Class; NCLASSES]
+    decreases n,
+{
+    if n <= 0 {
+        vstd::array::spec_array_fill_for_copy_type(spec_ok_entry(0))
+    } else {
+        vstd::array::spec_array_update(spec_ok_table(n - 1), n - 1, spec_ok_entry(n - 1))
+    }
+}
+
+/// [`spec_ok_entry`] is well formed and sized [`spec_class_size`].
+proof fn lemma_spec_ok_entry(i: int)
+    requires
+        0 <= i < NCLASSES,
+    ensures
+        spec_ok_entry(i).wf(),
+        spec_ok_entry(i).size == spec_class_size(i),
+{
+    lemma_last_class_size();
+    if i > 0 {
+        lemma_class_size_mono(0, i);
+    }
+    if i < NCLASSES - 1 {
+        lemma_class_size_mono(i, NCLASSES - 1);
+    }
+    let z = spec_class_size(i);
+    assert(QUANTUM <= z <= MEDIUM_MAX);
+    lemma_odd_part(z as usize);
+    let e = spec_ok_entry(i);
+    let s = z as u32;
+    let t = vstd::std_specs::bits::u64_trailing_zeros(s as u64);
+    let d = s >> t;
+    lemma_odd_inverse(d);
+    assert(d.wrapping_mul(e.inv_odd) == 1);
+    assert((t as u8) as u32 == t);
+    assert(e.inv_ok());
+    let lg = e.lg_slab;
+    assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+    assert((1usize << lg) == 0x40_0000) by (bit_vector)
+        requires lg == 22u8;
+    vstd::arithmetic::power2::lemma2_to64();
+    assert(crate::meta::is_pow2(1usize)) by {
+        assert(1usize as nat == vstd::arithmetic::power2::pow2(0));
+    }
+}
+
+/// The entries of [`spec_ok_table`]`(n)` below `n` are [`spec_ok_entry`]'s.
+proof fn lemma_spec_ok_table(n: int)
+    requires
+        0 <= n <= NCLASSES,
+    ensures
+        forall|j: int| 0 <= j < n ==> #[trigger] spec_ok_table(n)[j] == spec_ok_entry(j),
+    decreases n,
+{
+    broadcast use vstd::array::axiom_spec_array_update, vstd::array::lemma_array_index;
+    if n > 0 {
+        lemma_spec_ok_table(n - 1);
+        let prev = spec_ok_table(n - 1);
+        vstd::array::array_len_matches_n(&prev);
+        assert(spec_ok_table(n)@ == prev@.update(n - 1, spec_ok_entry(n - 1)));
+        assert forall|j: int| 0 <= j < n implies #[trigger] spec_ok_table(n)[j] == spec_ok_entry(j) by {
+            assert(spec_ok_table(n)[j] == spec_ok_table(n)@[j]);
+            if j < n - 1 {
+                assert(prev[j] == prev@[j]);
+            }
+        }
+    }
+}
+
+/// [`spec_ok_table`]`(NCLASSES)` is [`table_ok`]: [`class_table`]'s
+/// fallback.
+pub(crate) proof fn lemma_spec_ok_table_ok()
+    ensures
+        table_ok(spec_ok_table(NCLASSES as int)),
+{
+    lemma_spec_ok_table(NCLASSES as int);
+    assert forall|i: int| 0 <= i < NCLASSES implies #[trigger] spec_ok_table(NCLASSES as int)[i].wf() by {
+        lemma_spec_ok_entry(i);
+    }
+    assert forall|i: int| 0 <= i < NCLASSES implies #[trigger] spec_ok_table(NCLASSES as int)[i].size
+        == spec_class_size(i) by {
+        lemma_spec_ok_entry(i);
+    }
+}
+
+/// Trusted: a [`table_ok`] value that a frozen permission to the storage
+/// of [`CLASSES`] holds is [`class_table`], since it is
+/// [`classes_after_init`], the contents of [`CLASSES`] after init. `api::init` freezes
+/// the one permission to it (`api::axiom_statics` hands it out once, for
+/// the process's one-shot token) after [`adopt_page_geometry`], and
+/// nothing writes the table through a `'static` shared permission, so
 /// every such permission holds that one value.
 pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
     requires
         t.ptr() == classes_storage(),
         t.is_init(),
+        table_ok(t.value()),
     ensures
         class_table() == t.value(),
 ;
@@ -1374,22 +1536,21 @@ impl ClassTable {
         ClassTable(UnsafeCell::new(table))
     }
 
-    /// The table, for verified code. Trusted: the table is [`BASE_CLASSES`],
-    /// whose entries are well formed and sized [`spec_class_size`]
-    /// (`build_classes`'s postcondition), or that table after
-    /// [`adopt_page_geometry`], whose [`apply_page_geometry`] keeps both
-    /// ([`table_ok`]), and it is written only before the allocator is
-    /// published (the `Sync` impl). What this assumes is that a reader
-    /// sees that value: `Shared::init` reads the table before the
-    /// allocator is published, and `Deref` (`CLASSES[c]`) can state no
-    /// precondition.
+    /// The table, for verified code: [`class_table`], whose entries are
+    /// well formed and sized [`spec_class_size`]
+    /// (`vspec::class::lemma_class_table_wf`). Trusted: the table is
+    /// written only before the allocator is published (the `Sync` impl),
+    /// its value is [`table_ok`] (`api::axiom_statics` gives
+    /// [`BASE_CLASSES`]' value and [`adopt_page_geometry`] keeps it),
+    /// without which [`class_table`] is its spec fallback, and what this
+    /// assumes is that a reader sees the value `init` left:
+    /// `Shared::init` reads the table before the allocator is published,
+    /// and `Deref` (`CLASSES[c]`) can state no precondition.
     #[verifier::external_body]
     #[inline(always)]
     pub fn table(&self) -> (r: &[Class; NCLASSES])
         ensures
             *r == class_table(),
-            forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].wf(),
-            forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].size == spec_class_size(i),
     {
         // SAFETY: see the `Sync` impl.
         unsafe { &*self.0.get() }
@@ -1486,8 +1647,8 @@ spec fn keeps_size(a: Class, b: Class) -> bool {
 
 /// [`adopt_page_geometry`] over any table (the tests run it on a copy).
 /// It writes the geometry fields only, so a table whose entries are well
-/// formed and sized [`spec_class_size`] stays so (what
-/// [`ClassTable::table`] trusts of [`CLASSES`] after init).
+/// formed and sized [`spec_class_size`] stays so (what makes
+/// [`ClassTable::table`]'s `*r == class_table()` hold after init).
 pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -> (changed: usize)
     ensures
         changed <= NCLASSES,
@@ -1913,10 +2074,9 @@ mod tests;
 mod linux_tests;
 
 /// Kani checks of the class table's trusted access, `ClassTable::new`,
-/// `ClassTable::table` and `classes_ptr`, and of
-/// `vspec::class::axiom_class_table_wf`, which restates `table`'s facts
-/// (`verus/ledger/src/layout/mod.rs.md`, `verus/ledger/src/vspec/class.rs.md`;
-/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+/// `ClassTable::table` and `classes_ptr`
+/// (`verus/ledger/src/layout/mod.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
 #[cfg(kani)]
 mod kani_classes {
     use super::{
@@ -1981,13 +2141,12 @@ mod kani_classes {
         }
     }
 
-    /// `ClassTable::table`, `ensures *r == class_table()`, every `r[i]`
-    /// well formed and `r[i].size == spec_class_size(i)`, and
-    /// `axiom_class_table_wf`, the same facts of `class_table()`: with
-    /// `class_table()` read as the contents of `CLASSES`' storage (what
-    /// `axiom_class_table` fixes, from a permission to `classes_storage()`),
-    /// the reference is to that storage (`classes_ptr`), and its entries
-    /// meet both facts, before `adopt_page_geometry` (`BASE_CLASSES`) and
+    /// `ClassTable::table`, `ensures *r == class_table()`: with
+    /// `classes_after_init()` read as the contents of `CLASSES`' storage
+    /// (what `axiom_class_table` fixes, from a permission to
+    /// `classes_storage()`), the reference is to that storage
+    /// (`classes_ptr`), and its entries are `table_ok`, so the storage is
+    /// `class_table()`, before `adopt_page_geometry` (`BASE_CLASSES`) and
     /// after it at the kernel page sizes `lg_page` 12 to 16 (4 KiB to 64
     /// KiB). The adoption runs once, as at init (nothing else runs in a
     /// harness).

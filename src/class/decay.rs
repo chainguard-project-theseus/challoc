@@ -1007,7 +1007,7 @@ proof fn lemma_slab_bytes_pos(t: SlabTable)
     ensures
         (1usize << class_table()[t.spec_class() as int].lg_slab) as int > 0,
 {
-    broadcast use {super::table::lemma_spec_class, crate::vspec::class::axiom_class_table_wf};
+    broadcast use {super::table::lemma_spec_class, crate::vspec::class::lemma_class_table_wf};
     let c = class_table()[t.spec_class() as int];
     let l8 = c.lg_slab;
     let lg = l8 as usize;

@@ -385,8 +385,9 @@ the call does not return (theorem 3, which is not voided for it).
   leaves its ghost fields alone (theorem 15), nothing more.
 
 **Class table.**
-- `ClassTable::table` (`layout/mod.rs`, `external_body`): entries
-  are `class_table()`, `wf`, sized `spec_class_size`. (Its readers
+- `ClassTable::table` (`layout/mod.rs`, `external_body`): returns
+  `class_table()`, trusting that the table `init` left is `table_ok`
+  (as `adopt_page_geometry` keeps it). (Its readers
   include `Shared::init`, before `READY`, and the `Deref` impl, which
   can state no precondition, so it does not read through the frozen
   permission.)
@@ -401,10 +402,14 @@ the call does not return (theorem 3, which is not voided for it).
   `make emptyasm` shows it assembles to no instruction, and the
   pointer's provenance is not checked,
   `verus/ledger/src/layout/regions.rs.md`).
-- `vspec::class::axiom_class_table_wf` (`vspec/class.rs`), the same
-  fact for proofs; `adopt_page_geometry` (verified) writes the table
-  through the permission `api::axiom_statics` gives and keeps
-  `table_ok`, which `api::Published` freezes at `READY`.
+- Every entry of `class_table()` is `wf` and sized `spec_class_size`
+  (`vspec::class::lemma_class_table_wf`, verified): `class_table()` is
+  the table after init when that table is `table_ok`, and otherwise a
+  spec table that is `table_ok` (`layout::spec_ok_table`).
+  `adopt_page_geometry` (verified) writes the table through the
+  permission `api::axiom_statics` gives and keeps `table_ok`, which
+  `api::Published` freezes at `READY`, and `layout::axiom_class_table`
+  requires it.
 
 **Class lines.** The `free` fast paths read each
 class's slot geometry, bitmap and owner bases, hand-out group and a
@@ -765,7 +770,7 @@ is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/mod.rs`),
   offsets: a random multiple of `MAX_SLAB` plus the class's colour, or
   no colour under `thp:always` chunks); class sizes are
   multiples of the quantum and slabs powers of two (`Class::wf`, through
-  `axiom_class_table_wf`).
+  `lemma_class_table_wf`, verified).
 - Huge alignment: `Huge::alloc_run`'s placement, under the huge lock
   axioms; small alignments fall back to the page, at least 4 KiB
   (`Regions::separated`).
@@ -3383,8 +3388,9 @@ C token and hold unconditionally.
   others; `oom` (`api/cxx.rs`) is reached only with a power of two.
 
 **Premises beyond the common ones.** None new. The size-hint rows rest
-on the class table premises (`class_entry`, `axiom_class_table_wf`)
-through `slab_slot`'s completeness; *(C)* is the `free` contract.
+on the class table premise `class_entry` through `slab_slot`'s
+completeness (`lemma_class_table_wf` is verified); *(C)* is the `free`
+contract.
 
 **Scope.**
 - NULL: `free`, `free_sized`, `dallocx`, `sdallocx` and the `delete`s
@@ -4484,7 +4490,7 @@ mappings' `addr > 0` (`try_reserve`'s `0 < a`), as
 `align_base` and `slab_multiple` only add to the mapping's address. A
 slot start lies at or above its class base (`lemma_slot_in_region`) and
 a huge page start at or above the huge base. A slot's usable size is
-its class's size, at least the quantum (`axiom_class_table_wf`); a huge
+its class's size, at least the quantum (`lemma_class_table_wf`); a huge
 run's is at least one page (`run_bytes`, `huge_usable`). Two live
 tokens' usable bytes are disjoint and each holds at least one, so their
 addresses differ. `operator new`: `oom` returns a non-null block or,
@@ -4493,8 +4499,8 @@ with `nothrow`, NULL; without `nothrow` its exhausted loop is
 (a slot).
 
 **Premises beyond the common ones.** None: the kernel's `mmap`
-contract (`try_reserve`, already a common premise) and the class table
-premises (`axiom_class_table_wf`).
+contract (`try_reserve`, already a common premise); the class sizes are
+verified (`lemma_class_table_wf`).
 
 **Scope.**
 - `malloc(0)` returns NULL only with `ENOMEM` (row 1's F); a non-null
@@ -4645,10 +4651,9 @@ a serving class below the last, whose size is `MEDIUM_MAX`).
 - The C contract `heap::live::axiom_c_claim` (`heap/live.rs`): the
   token `realloc` takes for `p` is the live block's, so `blk.len()` is the
   usable size `malloc_usable_size` reads.
-- `vspec::class::axiom_class_table_wf` (`vspec/class.rs`): the class
-  table holds `spec_class_size`.
-- Nothing else: `class_of`, `class_for`, `Huge::usable_for` and
-  `Huge::usable_size` are verified.
+- Nothing else: `class_of`, `class_for`, `Huge::usable_for`,
+  `Huge::usable_size` and that the class table holds `spec_class_size`
+  (`vspec::class::lemma_class_table_wf`) are verified.
 
 **Scope.** `realloc`, `reallocarray` and `challoc_realloc_usable` (through
 `realloc_block` and `realloc_usable_stored`), and `rallocx` (through
@@ -6630,7 +6635,7 @@ whose `ensures` add no code.
 in the hint), and each `return` asserts `util_read`/`hint_read` of it,
 the trigger of the existential `ensures`. `util_from` and `defrag_rule`
 are opaque, revealed only in the two bodies, so their callers' queries
-hold them as atoms. The `BIN_MAX` branch uses `axiom_class_table_wf`
+hold them as atoms. The `BIN_MAX` branch uses `lemma_class_table_wf`
 (`size == spec_class_size`) and `NBINS`' `ensures`. `util_triple`'s
 existential has one trigger, `util_read(.., rd, u)`, over a conjunction
 whose other conjunct (`triple_is(u, ..)`) does not mention `rd`, so it

@@ -500,7 +500,7 @@ impl ClassLine {
             r.0.guard_mask == if exact_sized_free { 0 } else { crate::layout::guard_geom(class as int).1 },
             r.0.committed_inv@.constant().2 == r.1@.id(),
     {
-        broadcast use crate::vspec::class::axiom_class_table_wf;
+        broadcast use crate::vspec::class::lemma_class_table_wf;
 
         let cls = &CLASSES.table()[class];
         let (committed, committed_inv, auth) = table.new_mirror();
@@ -577,7 +577,7 @@ impl ClassLine {
             q < class_table()[c].nslots,
             rel & (((1usize << class_table()[c].lg_slab) - 1) as usize) == q * class_table()[c].size,
     {
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         let cls = class_table()[c];
         let lg = cls.lg_slab;
         let m = cls.slab_mask;
@@ -675,7 +675,7 @@ impl ClassLine {
             }),
             self.guard_mask != 0,
     {
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         regions.lemma_nslabs_bound(c);
         let cls = class_table()[c];
         let (gm, tz, lgg) = (self.guard_mask, self.tz, self.lg_guard);
@@ -828,7 +828,7 @@ impl ClassLine {
     {
         let ghost c = table.spec_class() as int;
         proof {
-            crate::vspec::class::axiom_class_table_wf(c);
+            crate::vspec::class::lemma_class_table_wf(c);
         }
         // On aarch64 every field is read up front, before the first
         // branch: read after it, LLVM rebuilt the line's address (one more
@@ -1167,7 +1167,7 @@ pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> (r
         (exists|lg: u32| 12 <= lg <= 22 && page == 1usize << lg) && (interval == 0 || (2 <= interval <= 0x40_0000
             && crate::meta::is_pow2(interval as usize))) ==> table_interval_ok(r),
 {
-    broadcast use crate::vspec::class::axiom_class_table_wf;
+    broadcast use crate::vspec::class::lemma_class_table_wf;
 
     let unit = (1usize << crate::layout::LG_GUARD_UNIT).max(page);
     let group = CLASSES.table()[class].slab_size().max(page);
@@ -1223,7 +1223,7 @@ proof fn lemma_guard_interval_scaled(class: usize, page: usize, interval: u32, u
         (exists|lg: u32| 12 <= lg <= 22 && page == 1usize << lg) && (interval == 0 || (2 <= interval <= 0x40_0000
             && crate::meta::is_pow2(interval as usize))) ==> table_interval_ok(r),
 {
-    broadcast use crate::vspec::class::axiom_class_table_wf;
+    broadcast use crate::vspec::class::lemma_class_table_wf;
 
     if (exists|lg: u32| 12 <= lg <= 22 && page == 1usize << lg) && interval != 0 && 2 <= interval <= 0x40_0000
         && crate::meta::is_pow2(interval as usize) {
@@ -3767,7 +3767,7 @@ impl Shared {
             let c = class as int;
             let regions = self.regions;
             line.lemma_sized_ok(self.tables[c], regions, c, rel, self.region_hi);
-            crate::vspec::class::axiom_class_table_wf(c);
+            crate::vspec::class::lemma_class_table_wf(c);
             let q = crate::vspec::core_int::rotr64(
                 ((rel & (line.slab_mask as usize | self.region_hi)) as u64).wrapping_mul(line.inv),
                 (guard_word_of(line.guard_mask, line.tz, line.lg_guard) >> 32u64) as u32,

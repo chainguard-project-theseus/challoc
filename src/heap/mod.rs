@@ -591,7 +591,7 @@ pub proof fn theorem_free_target_aligned(p: *mut u8)
 {
     if slot_start(p) {
         let c = choose|c: int| #[trigger] process_regions().is_slot(c, p@.addr);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         lemma_slot_fits_quantum(p, c, 0);
     } else {
         lemma_quantum_pow2();
@@ -651,7 +651,7 @@ pub proof fn lemma_slot_fits_quantum(p: *mut u8, c: int, size: int)
         process_regions().user_block(p@.addr, size),
         (p@.addr as int) % (crate::QUANTUM as int) == 0,
 {
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     crate::layout::lemma_class_size_quantum(c);
     lemma_quantum_pow2();
     lemma_slot_fits(p, c, size, crate::QUANTUM);

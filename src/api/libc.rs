@@ -151,13 +151,13 @@ proof fn lemma_class_index(n: usize, r: Option<usize>)
     reveal(crate::layout::classes_below);
     if let Some(c) = r {
         assert forall|j: int| c <= j < NCLASSES implies n <= #[trigger] class_table()[j].size by {
-            crate::vspec::class::axiom_class_table_wf(j);
+            crate::vspec::class::lemma_class_table_wf(j);
             if j > c {
                 crate::layout::lemma_class_size_mono(c as int, j);
             }
         }
         assert forall|j: int| 0 <= j < c implies #[trigger] class_table()[j].size < n by {
-            crate::vspec::class::axiom_class_table_wf(j);
+            crate::vspec::class::lemma_class_table_wf(j);
             assert(crate::layout::spec_class_size(j) < n);
         }
         assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, n as int, 1) by {
@@ -166,7 +166,7 @@ proof fn lemma_class_index(n: usize, r: Option<usize>)
         lemma_class_for_some(n, 1, c as int);
     } else {
         assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, n as int, 1) by {
-            crate::vspec::class::axiom_class_table_wf(j);
+            crate::vspec::class::lemma_class_table_wf(j);
         }
         lemma_class_for_none(n, 1);
     }
@@ -1190,7 +1190,7 @@ pub(super) proof fn lemma_class_aligned(c: usize, align: usize)
     ensures
         (class_table()[c as int].size as int) % (align as int) == 0,
 {
-    crate::vspec::class::axiom_class_table_wf(c as int);
+    crate::vspec::class::lemma_class_table_wf(c as int);
     crate::meta::lemma_pow2_bits(align);
     let s = class_table()[c as int].size as usize;
     if align <= QUANTUM {
@@ -1363,16 +1363,16 @@ proof fn lemma_class_of_for(size: usize)
         0 <= c < NCLASSES && size <= crate::layout::spec_class_size(c) && #[trigger] crate::layout::classes_below(c, size as int)
             implies spec_class_for(size, 1) == Some(c as usize) by {
         reveal(crate::layout::classes_below);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, size as int, 1) by {
-            crate::vspec::class::axiom_class_table_wf(j);
+            crate::vspec::class::lemma_class_table_wf(j);
             assert(crate::layout::spec_class_size(j) < size);
         }
         lemma_class_for_some(size, 1, c);
     }
     if size > MEDIUM_MAX {
         assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, size as int, 1) by {
-            crate::vspec::class::axiom_class_table_wf(j);
+            crate::vspec::class::lemma_class_table_wf(j);
         }
         lemma_class_for_none(size, 1);
     }
@@ -1396,10 +1396,10 @@ pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
     let r = crate::layout::process_regions();
     if heap::slot_start(p) {
         let c = choose|c: int| #[trigger] r.is_slot(c, p@.addr);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         assert(n == class_table()[c].size);
         assert forall|j: int| 0 <= j < c implies !#[trigger] class_serves(j, n as int, 1) by {
-            crate::vspec::class::axiom_class_table_wf(j);
+            crate::vspec::class::lemma_class_table_wf(j);
             crate::layout::lemma_class_size_mono(j, c);
         }
         lemma_class_for_some(n, 1, c);
@@ -1430,7 +1430,7 @@ pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
             lemma_class_of_for(n);
         } else {
             crate::layout::lemma_last_class_size();
-            crate::vspec::class::axiom_class_table_wf(NCLASSES - 1);
+            crate::vspec::class::lemma_class_table_wf(NCLASSES - 1);
             lemma_class_for_one(n, NCLASSES - 1);
         }
     }
@@ -2343,7 +2343,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
             }
             proof {
-                crate::vspec::class::axiom_class_table_wf(class as int);
+                crate::vspec::class::lemma_class_table_wf(class as int);
                 if size <= class_table()[class as int].size {
                     heap::lemma_slot_fits_quantum(p, class as int, size as int);
                 }
@@ -2465,7 +2465,7 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno)
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
                 b0.lemma_slot_len(p, class as int);
-                crate::vspec::class::axiom_class_table_wf(class as int);
+                crate::vspec::class::lemma_class_table_wf(class as int);
             }
             return class_size(class);
         }
@@ -2546,7 +2546,7 @@ pub(super) fn class_for(size: usize, align: usize) -> (r: Option<usize>)
     proof {
         if size > MEDIUM_MAX {
             assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, size as int, align) by {
-                crate::vspec::class::axiom_class_table_wf(j);
+                crate::vspec::class::lemma_class_table_wf(j);
             }
             lemma_class_for_none(size, align);
         }
@@ -2567,7 +2567,7 @@ pub(super) fn class_for(size: usize, align: usize) -> (r: Option<usize>)
                 // A class size is below `align` and not zero, so not a
                 // multiple of it.
                 assert forall|j: int| 0 <= j < NCLASSES implies !#[trigger] class_serves(j, size as int, align) by {
-                    crate::vspec::class::axiom_class_table_wf(j);
+                    crate::vspec::class::lemma_class_table_wf(j);
                     lemma_mask_mod(class_table()[j].size as usize, align);
                     let s = class_table()[j].size as usize;
                     if s & ((align - 1) as usize) == 0 {
@@ -2646,7 +2646,7 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
             let p = heap::alloc(shared, c, Tracked(blk), Tracked(&mut *errno));
             proof {
                 if p@.addr != 0 {
-                    crate::vspec::class::axiom_class_table_wf(c as int);
+                    crate::vspec::class::lemma_class_table_wf(c as int);
                     lemma_mask_mod(class_table()[c as int].size as usize, align);
                     heap::lemma_slot_fits(p, c as int, size as int, align);
                 }

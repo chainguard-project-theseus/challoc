@@ -578,6 +578,9 @@ fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapsho
         // Design 3: on a kernel whose page is larger than a class's table
         // slab, the class's slab is the page.
         let (base_min, base_max) = base_slab_sizes(lo, hi);
+        proof {
+            crate::vspec::class::lemma_class_table_wf(lo as int);
+        }
         writeln!(
             out,
             "Page-sized slabs: classes {}..{} ({}..{} bytes) at {} bytes ({}..{} in the table)",
