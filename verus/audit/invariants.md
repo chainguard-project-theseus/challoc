@@ -6,11 +6,13 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 29 of those seams that are still seams in the
+*This file lists the 28 of those seams that are still seams in the
 ledger. The others are verified or no longer exist, so their rows are
-left out: among them `axiom_raw_valid`, gone, and `axiom_process_shared`,
+left out: among them `axiom_raw_valid`, gone; `axiom_process_shared`,
 which `lemma_process_shared` (`heap/shared.rs`) now proves from the
-opaque definitions of `process_regions` and `pac_mode`. Seams
+opaque definitions of `process_regions` and `pac_mode`; and
+`axiom_run_locs`, gone, its facts now following from the opaque
+definitions of `run_loc` and `page_loc` (`huge/mod.rs`). Seams
 of this scope that the audit did not cover, such as `axiom_slot_byte`
 (`heap/slotstate.rs`) and `axiom_ready` (`api/mod.rs`), are not
 listed. Each row names the seam by its item and its ledger file,
@@ -45,7 +47,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 29 seams listed: 9 sound, 13 sound (premise), 7 fixed.
+Totals for the 28 seams listed: 9 sound, 12 sound (premise), 7 fixed.
 
 ## Per seam
 
@@ -66,7 +68,6 @@ Totals for the 29 seams listed: 9 sound, 13 sound (premise), 7 fixed.
 | `axiom_shared_built` | `heap/shared.rs` | sound (premise) | Consumes the field permissions; a second use needs a second `Shared::begin`, which does not verify. |
 | `axiom_shared_regions` | `heap/shared.rs` | sound (premise) | A `'static` permission freezes the field; as `axiom_shared_built`. |
 | `Shared::begin` | `heap/shared.rs` | fixed | Requires `this == shared_storage()` and takes the `Shared` step's `Once` token, so it mints one permission per process. Without the `requires`, a call at null proves `false` through `is_nonnull`. |
-| `axiom_run_locs` | `huge/mod.rs` | sound (premise) | Takes the `Huge` step's one-shot token. |
 | `axiom_zero_entry` | `huge/table.rs` | sound (premise) | An all-zero `Entry` is unoccupied. Its `ZeroRaw` is a snapshot, not tied to the permission (see "Premises"). |
 | `Reserved::is_apart_from_static` | `layout/regions.rs` | fixed | Requires a non-empty reservation; an empty one inside the static would make the claim false. |
 | `Reserved::is_disjoint` | `layout/regions.rs` | fixed | Requires both reservations non-empty, for the same reason. |
@@ -124,7 +125,7 @@ one-shot token) against main's.
   when `b < a < b + blen`. A zero-length reservation is impossible
   (`mmap` of 0 bytes fails), and the non-empty `requires` say so.
 - **The one-shot seams called twice.** `Shared::begin`,
-  `axiom_slot_loc`, `axiom_fresh_words` and `axiom_run_locs` each take a
+  `axiom_slot_loc` and `axiom_fresh_words` each take a
   linear `Once` token (`vspec/once.rs`), and `store_owner` uses up its
   group's markers. A second call with the same token fails with E0382; a
   second token for the same step cannot be taken from the process's map
