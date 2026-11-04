@@ -45,6 +45,7 @@ use crate::vspec::once::Step;
 use crate::vspec::word::{WordPerm, word_addr};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::zero::ZeroRaw;
+use crate::vspec::zero::Zeroed;
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::pow2;
@@ -106,6 +107,17 @@ pub(crate) struct TableInner {
     pub(super) dbase: Ghost<int>,
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) dstride: Ghost<int>,
+    /// Ghost: the zero token of the bytes of the slabs not yet handed out,
+    /// from slab `next_slab` to the region's end, which `new` made of the
+    /// whole class region and `take_group` splits one group at a time; and
+    /// where the class region starts and its slab size, fixed at `new`,
+    /// which the token is for.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) zrest: Tracked<Zeroed>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) zbase: Ghost<int>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) zslab: Ghost<int>,
     /// Ghost: the location of the owner words' witness markers
     /// ([`OwnerPred`]), fixed at `new`, and those markers, persistent, of
     /// every slab below `next_slab`: the groups handed out, whose owner
@@ -181,9 +193,17 @@ pub(super) open spec fn desc_handed(m: Map<nat, DescPerm>, t: SlabTable, x: nat,
     &&& !t.spec_is_guard(x as usize) ==> m[x].arena() == arena
 }
 
+/// `z` holds the zero token of the bytes of slab `x` of `t`, all of them
+/// from its first: as [`SlabTable::take_group`] hands it out.
+pub(super) open spec fn slab_zero(z: Map<int, Zeroed>, t: SlabTable, x: int) -> bool {
+    &&& z.contains_key(x)
+    &&& z[x].addr() == t.spec_slots().base + x * t.spec_slots().slab_size
+    &&& z[x].len() == t.spec_slots().slab_size
+}
+
 impl TableInner {
-    /// `self` is `o` but for the init markers and the descriptor
-    /// permissions.
+    /// `self` is `o` but for the init markers, the descriptor permissions
+    /// and the zero token.
     pub(super) open spec fn same_but_fresh(self, o: TableInner) -> bool {
         &&& self.descs == o.descs
         &&& self.bits == o.bits
@@ -197,6 +217,8 @@ impl TableInner {
         &&& self.mloc == o.mloc
         &&& self.dbase == o.dbase
         &&& self.dstride == o.dstride
+        &&& self.zbase == o.zbase
+        &&& self.zslab == o.zslab
         &&& self.mirror == o.mirror
         &&& self.mirror_inv == o.mirror_inv
         &&& self.mauth == o.mauth
@@ -212,7 +234,8 @@ impl TableInner {
     /// the process's page ([`lazy_ok`], what `Lazy::ensure` takes). The
     /// commit lock holds the init markers of every bit and the owner-store
     /// markers of every slab from the watermark on, and those slabs'
-    /// descriptor permissions as `new` made them. Once
+    /// descriptor permissions as `new` made them, and the zero token of
+    /// those slabs' bytes. Once
     /// [`SlabTable::mirror_watermark`] has set the watermark copy's
     /// pointer, it holds the copy's invariant (`take_group` stores into
     /// it), and its half of the copy's ghost variable is `next_slab`. Its
@@ -232,6 +255,8 @@ impl TableInner {
         &&& init_marks(self.next_slab * self.sb@, self.nslabs@ * self.sb@).subset_of(self.fresh@@)
         &&& owner_marks(self.next_slab as int, self.nslabs@ as int).subset_of(self.fresh@@)
         &&& forall|s: int| self.next_slab <= s < self.nslabs@ ==> #[trigger] dfresh(self.dperms@, self.dbase@, self.dstride@, s)
+        &&& self.zrest@.addr() == self.zbase@ + self.next_slab * self.zslab@
+        &&& self.zrest@.len() == (self.nslabs@ - self.next_slab) * self.zslab@
         &&& self.mirror@.addr != 0 ==> (self.mirror_inv@ matches Some(i) && self.mauth@ matches Some(a)
             && i.constant() == (usize_id_at(self.mirror), self.nslabs@, a.id()) && i.namespace() == committed_ns()
             && a@ == self.next_slab)
@@ -1211,6 +1236,8 @@ impl SlabTable {
         &&& lock_init(self.inner.0).mloc@ == self.mark_auth@.id()
         &&& lock_init(self.inner.0).dbase@ == self.desc_base as int
         &&& lock_init(self.inner.0).dstride@ == self.desc_stride as int
+        &&& lock_init(self.inner.0).zbase@ == self.base as int
+        &&& lock_init(self.inner.0).zslab@ == (1usize << class_table()[self.class as int].lg_slab) as int
         &&& words_wf(*self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
         &&& self.bits_base + 8 * self.spec_nwords() <= usize::MAX
         &&& self.perms_ok()
@@ -1945,6 +1972,15 @@ impl SlabTable {
                 assert(dmap.contains_key(s));
             }
         }
+        // The class region's bytes, every slab's, read as zero: nothing
+        // has written them since `Regions::reserve` mapped the region, and
+        // `new` runs once per class (`words_once`, used up above).
+        let ghost zslab = (1usize << cls.lg_slab) as int;
+        proof {
+            assert(nslabs * zslab >= 0) by (nonlinear_arith)
+                requires zslab >= 0;
+        }
+        let tracked zall = crate::huge::axiom_fresh_anon_zero(regions.class_base[class as int] as int, nslabs * zslab);
         let (committed_slabs, Tracked(cperm)) = new_usize(0);
         let inner = Padded(Lock::new(
             TableInner {
@@ -1960,6 +1996,9 @@ impl SlabTable {
                 mloc: Ghost(mark_auth.id()),
                 dbase: Ghost(desc_base as int),
                 dstride: Ghost(stride as int),
+                zrest: Tracked(zall),
+                zbase: Ghost(regions.class_base[class as int] as int),
+                zslab: Ghost(zslab),
                 mirror: core::ptr::null(),
                 sloc: Ghost(sloc),
                 fresh: Tracked(imarks),
@@ -1981,6 +2020,8 @@ impl SlabTable {
             assert(lock_init(inner.0).mloc@ == mark_auth.id());
             assert(lock_init(inner.0).dbase@ == desc_base as int);
             assert(lock_init(inner.0).dstride@ == stride as int);
+            assert(lock_init(inner.0).zbase@ == regions.class_base[class as int] as int);
+            assert(lock_init(inner.0).zslab@ == zslab);
             assert(inner.0.rank() == rank_table(class as int));
             assert(crate::bitmap::words_wf(word_invs, slots, bits_base, nwords));
         }
@@ -3988,7 +4029,9 @@ impl SlabTable {
     /// `inited` for `next_fresh_slab` to keep with the slabs. So do the
     /// group's descriptor permissions, out of the commit lock's value into
     /// `dout`: each written by `init` (`Fresh`, `arena`'s), or as it is for
-    /// a guard slab (zero).
+    /// a guard slab (zero). And so do the zero tokens of the bytes of the
+    /// group's slabs but its guards, split from the commit lock's token of
+    /// the slabs not yet handed out, into `zout`.
     ///
     /// [`commit_run`]: SlabTable::commit_run
     /// [`next_slab_locked`]: SlabTable::next_slab_locked
@@ -4003,6 +4046,7 @@ impl SlabTable {
         sets_page: usize,
         Tracked(inited): Tracked<&mut GhostPersistentSubset<int>>,
         Tracked(dout): Tracked<&mut Map<nat, DescPerm>>,
+        Tracked(zout): Tracked<&mut Map<int, Zeroed>>,
         pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<(usize, usize)>)
@@ -4018,6 +4062,7 @@ impl SlabTable {
             old(sets).nbits() == self.spec_nslabs(),
             old(inited).id() == self.spec_slots().mloc,
             old(dout).dom().is_empty(),
+            old(zout).dom().is_empty(),
             // The taker is the published state of this class and arena
             // (`ClassState::published_by`), whose owned-slab record `sets`
             // has.
@@ -4044,7 +4089,9 @@ impl SlabTable {
                 && (forall|x: int| s <= x < e && !self.spec_is_guard(x as usize) ==> #[trigger] slab_marked(*self, x, final(inited)@))
                 && (forall|x: int| s <= x < e && self.spec_is_guard(x as usize) ==> #[trigger] guard_marked(*self, x, final(inited)@))
                 && (forall|x: nat| #[trigger] final(dout).contains_key(x) ==> s <= x < e)
-                && (forall|x: nat| s <= x < e ==> #[trigger] desc_handed(*final(dout), *self, x, arena)),
+                && (forall|x: nat| s <= x < e ==> #[trigger] desc_handed(*final(dout), *self, x, arena))
+                && (forall|x: int| #[trigger] final(zout).contains_key(x) ==> s <= x < e)
+                && (forall|x: int| s <= x < e && !self.spec_is_guard(x as usize) ==> #[trigger] slab_zero(*final(zout), *self, x)),
     {
         proof {
             use_type_invariant(self);
@@ -4156,6 +4203,28 @@ impl SlabTable {
             assert(s * sl.sb <= sl.nbits) by (nonlinear_arith)
                 requires s < self.nslabs, sl.nbits == self.nslabs * sl.sb, sl.sb > 0;
         }
+        // The group's zero token, from the commit lock's token of the
+        // slabs from `s` on: each slab's part goes out with the slab, but a
+        // guard slab's, which is dropped.
+        let tracked mut zg = Zeroed::empty(0);
+        proof {
+            use_type_invariant(self);
+            assert(sl.slab_size > 0) by (nonlinear_arith)
+                requires sl.nslots > 0, sl.size > 0, sl.nslots * sl.size <= sl.slab_size;
+            assert(gi.zbase@ == sl.base && gi.zslab@ == sl.slab_size && gi.nslabs@ == self.spec_nslabs());
+            assert((end - s) * sl.slab_size <= (self.spec_nslabs() - s) * sl.slab_size) by (nonlinear_arith)
+                requires end <= self.spec_nslabs(), sl.slab_size > 0;
+            assert(0 <= (end - s) * sl.slab_size) by (nonlinear_arith)
+                requires s < end, sl.slab_size > 0;
+            assert(sl.base + s * sl.slab_size + (end - s) * sl.slab_size == sl.base + end * sl.slab_size) by (nonlinear_arith);
+            assert((self.spec_nslabs() - s) * sl.slab_size - (end - s) * sl.slab_size == (self.spec_nslabs() - end) * sl.slab_size) by (nonlinear_arith);
+            let tracked mut zr = Zeroed::empty(0);
+            vstd::modes::tracked_swap(gi.zrest.borrow_mut(), &mut zr);
+            let tracked (zh, zt) = zr.split((end - s) * sl.slab_size);
+            zg = zh;
+            gi.zrest = Tracked(zt);
+        }
+        let ghost zr1 = gi.zrest@;
         let mut slabs = s..end;
         loop
             invariant
@@ -4166,6 +4235,11 @@ impl SlabTable {
                 self.lg_group < 64,
                 class == self.class as usize,
                 gi.same_but_fresh(g0),
+                gi.zrest@ == zr1,
+                zg.addr() == sl.base + slabs.start * sl.slab_size,
+                zg.len() == (end - slabs.start) * sl.slab_size,
+                forall|x: int| #[trigger] zout.contains_key(x) ==> s <= x < slabs.start,
+                forall|x: int| s <= x < slabs.start && !self.spec_is_guard(x as usize) ==> #[trigger] slab_zero(*zout, *self, x),
                 self.inv(),
                 sl == self.spec_slots(),
                 sl.wf(),
@@ -4202,6 +4276,9 @@ impl SlabTable {
                     ==> #[trigger] slab_marked(*self, x, inited@),
                 forall|x: int| s <= x < end && self.spec_is_guard(x as usize)
                     ==> #[trigger] guard_marked(*self, x, inited@),
+                gi.zrest@ == zr1,
+                forall|x: int| #[trigger] zout.contains_key(x) ==> s <= x < end,
+                forall|x: int| s <= x < end && !self.spec_is_guard(x as usize) ==> #[trigger] slab_zero(*zout, *self, x),
             decreases slabs.end - slabs.start,
         {
             proof {
@@ -4210,6 +4287,29 @@ impl SlabTable {
                 assert((slabs.start + 1) * sl.sb == slabs.start * sl.sb + sl.sb) by (nonlinear_arith);
                 crate::bitmap::lemma_marks_sub((slabs.start + 1) * sl.sb, self.spec_nslabs() * sl.sb,
                     slabs.start * sl.sb, self.spec_nslabs() * sl.sb);
+                // The next slab's zero token, kept for it unless it is a
+                // guard slab.
+                if slabs.start < end {
+                    let x = slabs.start as int;
+                    let ss = sl.slab_size;
+                    assert(ss <= (end - x) * ss) by (nonlinear_arith)
+                        requires x < end, ss > 0;
+                    assert(sl.base + x * ss + ss == sl.base + (x + 1) * ss) by (nonlinear_arith);
+                    assert((end - x) * ss - ss == (end - (x + 1)) * ss) by (nonlinear_arith);
+                    let tracked mut zr = Zeroed::empty(0);
+                    vstd::modes::tracked_swap(&mut zg, &mut zr);
+                    let tracked (zx, zn) = zr.split(ss);
+                    zg = zn;
+                    let z0 = *zout;
+                    if !self.spec_is_guard(x as usize) {
+                        zout.tracked_insert(x, zx);
+                    }
+                    assert forall|y: int| s <= y < x + 1 && !self.spec_is_guard(y as usize) implies #[trigger] slab_zero(*zout, *self, y) by {
+                        if y != x {
+                            assert(slab_zero(z0, *self, y));
+                        }
+                    }
+                }
             }
             match slabs.next() {
                 None => break,
@@ -5165,7 +5265,8 @@ impl crate::lock::LockSpec for TableInner {
 
     closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
         v.page == init.page && v.group == init.group && v.nslabs == init.nslabs && v.sb == init.sb && v.mloc == init.mloc
-            && v.dbase == init.dbase && v.dstride == init.dstride && v.sloc == init.sloc && v.wloc == init.wloc
+            && v.dbase == init.dbase && v.dstride == init.dstride && v.zbase == init.zbase && v.zslab == init.zslab
+            && v.sloc == init.sloc && v.wloc == init.wloc
     }
 }
 

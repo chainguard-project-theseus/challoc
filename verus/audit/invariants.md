@@ -52,7 +52,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 25 seams listed: 7 sound, 11 sound (premise), 7 fixed.
+Totals for the 24 seams listed: 7 sound, 11 sound (premise), 6 fixed.
 
 ## Per seam
 
@@ -63,8 +63,7 @@ Totals for the 25 seams listed: 7 sound, 11 sound (premise), 7 fixed.
 | `axiom_array_layout` | `arena.rs` | sound | Requires `N * size_of::<T>() <= isize::MAX`, which every array with a layout meets (`library-control.md`). |
 | `axiom_arena_layout` | `arena.rs` | sound | The build's `const` assertion covers every clause, on every target and quantum. |
 | `axiom_arena_assemble` | `arena.rs` | sound (premise) | Consumes the field permissions and the padding (`pad_covers`), so the assembled permission covers exactly the bytes it is given (`memory.md`). |
-| `axiom_fresh_slots_zero` | `class/mod.rs` | fixed | Requires `n <= nslots`, a `Fresh` state ticket for the slab, and the held slot tokens of the slots it covers, so the zero claim stays inside the slab. |
-| `axiom_discarded_slots_zero` | `class/mod.rs` | fixed | As `axiom_fresh_slots_zero`, for a `Purged` slab, with the `PurgedZero` witness of the call site's run-time test (`purged_is_zero`). |
+| `axiom_discarded_slots_zero` | `class/mod.rs` | fixed | Requires `n <= nslots`, a `Purged` state ticket for the slab, the held slot tokens of the slots it covers, so the zero claim stays inside the slab, and the `PurgedZero` witness of the call site's run-time test (`purged_is_zero`). |
 | `store_owner` | `class/table.rs` | sound (premise) | Uses up the owner-store markers of the group's slabs (`owner_marks`), so a second store of one group does not verify. That holds while every holder of the commit lock restores `TableInner::inv` before releasing it (see "Premises"). |
 | `axiom_fresh_words` | `class/table.rs` | fixed | Requires the words to end below `usize::MAX` and takes the class's `FreshWords(c)` token. Nothing ties `base` to the class's bitmap; a call at another address would give `WordPerm`s that no lemma separates from other permissions, so no `false`. |
 | `axiom_c_claim` | `heap/live.rs` | sound (premise) | The C contract: two claims of one slot start prove `false` through `theorem_apart`, as its doc says. Every C free is its own entry, with no ghost state from the allocation that made the block. |
@@ -80,7 +79,7 @@ Totals for the 25 seams listed: 7 sound, 11 sound (premise), 7 fixed.
 | `axiom_user_va_limit` | `sys/pac.rs` | sound | Linux's default map window is at most 2^48 on both targets. |
 | `axiom_auth_sign` | `sys/pac.rs` | sound | True for every address below `user_va_limit()` and every modifier, and with the keys disabled. |
 | `axiom_ptr_add_addr` | `vspec/ptr.rs` | sound | True: `add` is `wrapping_add` where it is defined (see "Premises" for the harness's reach). |
-| `axiom_fresh_anon_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for any range; its call sites (`huge/mod.rs`) pass a run's freshly mapped pages. |
+| `axiom_fresh_anon_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for any range; its call sites pass a run's freshly mapped pages (`zero_run`, `huge/mod.rs`) and a class region, once per class (`SlabTable::new`, `class/table.rs`), whose token then goes only with the slabs handed out. |
 | `axiom_discarded_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for a range whose `MADV_DONTNEED` the kernel answered with success (`sys::madvise_ok`, required; `huge::zero_run` passes `Huge::rediscard`'s); that nothing has written it since is the premise. |
 | `Unbacked::commit` | `vspec/unbacked.rs` | sound (premise) | Called after a successful `mprotect` (`committed_range`); non-empty tokens come only from reservations, which start above 0. |
 

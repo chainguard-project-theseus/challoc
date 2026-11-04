@@ -1329,12 +1329,16 @@ meaning, and no stronger.
   discharged by the Kani harness `zero_raw_fills`; it takes the bytes'
   permission):
   `write_bytes(p, 0, n)` makes `n` zero bytes.
-- Never-written anonymous memory reads zero: for class slabs,
-  `class::axiom_fresh_slots_zero` (`class/mod.rs`, called in
-  `ClassState::take`, for a `Fresh` slab, with the slab's
-  descriptor state ticket); for huge runs, `huge::axiom_fresh_anon_zero`
-  (`huge/mod.rs`, private to `huge`, called in `zero_run`,
-  pages at or past the mark); for metadata, the `Zeroed` that
+- Never-written anonymous memory reads zero:
+  `huge::axiom_fresh_anon_zero` (`huge/mod.rs`). For huge runs it is
+  called in `zero_run`, for pages at or past the mark. For class slabs
+  it is called once per class in `SlabTable::new` (`class/table.rs`),
+  for the whole class region; the commit lock keeps the token of the
+  slabs not yet handed out (`TableInner::zrest`), `take_group` splits
+  off each group's slabs' tokens, but the guards', for the arena's class
+  lock value (`class::Inner::zeros`, one per owned `Fresh` slab), and
+  `ClassState::take` uses up a `Fresh` slab's as it makes the slab
+  `Active`. For metadata, the `Zeroed` that
   `Unbacked::commit` and `into_lazy` return (`vspec/unbacked.rs`,
   `external_body`), under `alloc_zeroed` (`meta.rs`) and
   `reserve_committed_raw` (`meta.rs`).
@@ -1344,13 +1348,16 @@ meaning, and no stronger.
   `purge::purged_zero` read, `purge.rs`) and
   `huge::axiom_discarded_zero` (`huge/mod.rs`, called in
   `zero_run`).
-- The huge pair is private to `huge`; the class pair takes the slab
-  descriptor's state ticket.
+- `huge::axiom_discarded_zero` is private to `huge`;
+  `class::axiom_discarded_slots_zero` takes the slab descriptor's state
+  ticket.
 
 **Premises beyond the common ones.**
-- Each kernel axiom's protocol premise, the caller's: a `Fresh` slab
-  was never handed out; pages past the huge mark were never covered by a
-  run; a `Purged` slab was discarded in the lock hold that
+- Each kernel axiom's protocol premise, the caller's: nothing has
+  written a class region's bytes before `SlabTable::new`, nor a slab's
+  bytes before `take` claims its first slots (the token's path from
+  `new` to `take` is verified); pages past the huge mark were never
+  covered by a run; a `Purged` slab was discarded in the lock hold that
   set the state (`class/decay.rs` sets it whatever the advice) and
   has no allocated slot since; and `take` makes a zero claim of a
   `Purged` one only while `purge::purged_is_zero` (`purge.rs`, a

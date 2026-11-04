@@ -1178,6 +1178,12 @@ struct Inner {
     /// and, but for a guard slab, this arena ([`descs_ok`]).
     #[allow(dead_code)]
     dperms: Tracked<Map<nat, DescPerm>>,
+    /// Ghost: the zero tokens of the bytes of the owned `Fresh` slabs but
+    /// the guards, which `take_group` handed over with the slabs
+    /// (`table::slab_zero`) and `take` uses up as it makes the slab
+    /// `Active` ([`zeros_ok`]).
+    #[allow(dead_code)]
+    zeros: Tracked<Map<int, Zeroed>>,
     /// Ghost: the authority of the record of this state's owned slabs,
     /// whose every element is an owned slab, at a location of this state
     /// alone (minted by `new`). `take_group` adds a group's slabs as it
@@ -1455,6 +1461,49 @@ spec fn desc_ok(dperms: Map<nat, DescPerm>, t: SlabTable, arena: u16, s: nat, st
     &&& !t.spec_is_guard(s as usize) ==> dperms[s].arena() == arena
 }
 
+/// The class lock value holds the zero token of the bytes of every owned
+/// `Fresh` slab but the guards (`table::slab_zero`): `take_group` handed
+/// it over with the slab, and only `take`, which makes the slab `Active`,
+/// uses it up. Opaque ([`lemma_zeros_at`] reads it at one slab); a
+/// function of the fields it reads, as [`descs_ok`] is.
+#[verifier::opaque]
+spec fn zeros_ok(states: Map<nat, State>, zeros: Map<int, Zeroed>, t: SlabTable) -> bool {
+    forall|s: nat| #[trigger] states.contains_key(s) && states[s] == State::Fresh && !t.spec_is_guard(s as usize)
+        ==> table::slab_zero(zeros, t, s as int)
+}
+
+/// [`zeros_ok`] at owned `Fresh` slab `s`, not a guard slab.
+proof fn lemma_zeros_at(states: Map<nat, State>, zeros: Map<int, Zeroed>, t: SlabTable, s: nat)
+    requires
+        zeros_ok(states, zeros, t),
+        states.contains_key(s),
+        states[s] == State::Fresh,
+        !t.spec_is_guard(s as usize),
+    ensures
+        table::slab_zero(zeros, t, s as int),
+{
+    reveal(zeros_ok);
+}
+
+/// [`zeros_ok`] survives a write of slab `s`'s state other than `Fresh`,
+/// and then the removal of its token.
+proof fn lemma_zeros_set(states: Map<nat, State>, zeros: Map<int, Zeroed>, t: SlabTable, s: nat, st: State)
+    requires
+        zeros_ok(states, zeros, t),
+        st != State::Fresh,
+    ensures
+        zeros_ok(states.insert(s, st), zeros, t),
+        zeros_ok(states.insert(s, st), zeros.remove(s as int), t),
+{
+    reveal(zeros_ok);
+    let s1 = states.insert(s, st);
+    assert forall|x: nat| #[trigger] s1.contains_key(x) && s1[x] == State::Fresh && !t.spec_is_guard(x as usize)
+        implies table::slab_zero(zeros.remove(s as int), t, x as int) by {
+        assert(x != s);
+        assert(states.contains_key(x) && states[x] == State::Fresh);
+    }
+}
+
 /// [`desc_ok`] at every slab `states` owns: the class lock value holds
 /// the permission of every owned slab's descriptor, which agrees with
 /// its ghost. Opaque ([`Inner::lemma_desc`] reads it at one slab); a
@@ -1520,10 +1569,17 @@ proof fn lemma_descs_update(g0: Inner, g1: Inner, k: nat)
         g1.table == g0.table,
         g1.arena == g0.arena,
         desc_ok(g1.dperms@, g1.table@, g1.arena@, k, g1.st(k), g1.dirty@[k]),
+        g1.zeros == g0.zeros,
+        g1.st(k) == g0.st(k) || g1.st(k) != State::Fresh,
     ensures
         g1.descs(),
 {
     reveal(descs_ok);
+    reveal(zeros_ok);
+    assert forall|s: nat| #[trigger] g1.states@.contains_key(s) && g1.states@[s] == State::Fresh && !g1.table@.spec_is_guard(s as usize)
+        implies table::slab_zero(g1.zeros@, g1.table@, s as int) by {
+        assert(g0.states@.contains_key(s) && g0.states@[s] == State::Fresh);
+    }
     assert forall|s: nat| #[trigger] g1.states@.contains_key(s)
         implies desc_ok(g1.dperms@, g1.table@, g1.arena@, s, g1.states@[s], g1.dirty@[s]) by {
         if s != k {
@@ -1574,9 +1630,11 @@ impl Inner {
     }
 
     /// The value holds the agreeing permission of every owned slab's
-    /// descriptor ([`descs_ok`]).
+    /// descriptor ([`descs_ok`]) and the zero token of every owned `Fresh`
+    /// slab's bytes but the guards' ([`zeros_ok`]).
     spec fn descs(&self) -> bool {
-        descs_ok(self.states@, self.dirty@, self.dperms@, self.table@, self.arena@)
+        &&& descs_ok(self.states@, self.dirty@, self.dperms@, self.table@, self.arena@)
+        &&& zeros_ok(self.states@, self.zeros@, self.table@)
     }
 
     /// [`descs`](Inner::descs) at owned slab `s`.
@@ -1731,6 +1789,7 @@ impl Inner {
         &&& self.table == o.table
         &&& self.inited == o.inited
         &&& self.dperms == o.dperms
+        &&& self.zeros == o.zeros
     }
 
     /// Values that agree as [`Inner::same_sets`] says agree on the invariant.
@@ -1770,6 +1829,7 @@ impl Inner {
         &&& self.table == o.table
         &&& self.inited == o.inited
         &&& self.dperms == o.dperms
+        &&& self.zeros == o.zeros
         &&& self.oauth@@ == o.oauth@@
         &&& self.oauth@.id() == o.oauth@.id()
         &&& self.seen == o.seen
@@ -2228,6 +2288,7 @@ impl ClassState {
         let purged = Set::in_table(sets_ptr, Tracked(sets_perm), class, 2, Tracked(w2));
         let tracked im = table.empty_marks();
         let tracked dm = Map::<nat, DescPerm>::tracked_empty();
+        let tracked zm = Map::<int, Zeroed>::tracked_empty();
         let tracked (oa, _) = GhostSetAuth::<int>::new(vstd::set::Set::empty());
         // No witness markers: nothing owned yet (`take_group` gives the set
         // its location with the first group).
@@ -2253,6 +2314,7 @@ impl ClassState {
             table: Ghost(*table),
             inited: Tracked(im),
             dperms: Tracked(dm),
+            zeros: Tracked(zm),
             oauth: Tracked(oa),
             seen: Tracked(sn),
         };
@@ -2264,6 +2326,7 @@ impl ClassState {
             assert(n <= usize::MAX >> 12);
             assert(inner.descs()) by {
                 reveal(descs_ok);
+                reveal(zeros_ok);
             }
             assert(whole_groups(inner.states@.dom(), inner.table@)) by {
                 reveal(whole_groups);
@@ -2585,6 +2648,7 @@ impl ClassState {
             final(g).inited == old(g).inited,
             final(g).seen == old(g).seen,
             final(g).oauth == old(g).oauth,
+            final(g).zeros == old(g).zeros,
     {
         let ghost g0 = *g;
         let ghost k = slab as nat;
@@ -2629,6 +2693,7 @@ impl ClassState {
             final(g).inited == old(g).inited,
             final(g).seen == old(g).seen,
             final(g).oauth == old(g).oauth,
+            final(g).zeros == old(g).zeros,
     {
         let ghost g0 = *g;
         let ghost k = slab as nat;
@@ -3464,60 +3529,19 @@ spec fn prefix_addrs(t: SlabTable, slab: int, n: int) -> VSet<int> {
     addrs(t.spec_slots(), VSet::<int>::range(slab * t.spec_slots().sb, slab * t.spec_slots().sb + n))
 }
 
-/// The kernel fact of `mmap(2)` (a private anonymous mapping reads as
-/// zero until it is first written) for slots `0..n` of slab `slab` of
-/// table `t`: their `n * size` bytes from slot 0 read as zero.
-///
-/// Required, so proved at the call site: `ticket`, which this uses up, is
-/// a state ticket (`slab::DescPerm::ticket`) from the slab's descriptor
-/// permission recording `Fresh`, so made from the permission the slab's
-/// arena's class lock value holds; the slab is one of the table's and not
-/// a guard slab; and the caller holds the slots' uniqueness tokens
-/// (`held`), so none of them is allocated, cached or in another claim at
-/// the call; the `n` slots are the slab's own (`n <= nslots`), so the
-/// range ends inside the slab.
-///
-/// Premise, the caller's and trusted: a slab whose descriptor reads
-/// `Fresh` was never written since its class region was mapped. That rests
-/// on `take_group` initialising each group's descriptors once, to `Fresh`,
-/// through `SlabDesc::init` on its permission (the trusted accessor and
-/// `table::axiom_zero_desc`), on every later write of an owned slab's
-/// state byte going through `ClassState::set_state_locked`, which never
-/// writes `Fresh` (its `requires` says so, and its verified callers pass
-/// `Active`, `Empty` and `Purged`), and on `take` moving a slab to `Active` before it
-/// claims a slot. Call site: `ClassState::take`.
-///
-/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
-/// call sites to the ones named here: a new one is named here, with its
-/// premise, and added to that test's list in the same change.
-axiom fn axiom_fresh_slots_zero(
-    tracked ticket: StateTicket,
-    t: SlabTable,
-    slab: int,
-    n: int,
-    tracked held: &GhostSubset<int>,
-) -> (tracked z: Zeroed)
-    requires
-        ticket.id() == desc_id(&desc_at(t, slab as usize)),
-        ticket.state() == state_byte(State::Fresh),
-        0 <= slab < t.spec_nslabs(),
-        !t.spec_is_guard(slab as usize),
-        0 <= n <= t.spec_slots().nslots,
-        held.id() == t.spec_slots().loc,
-        prefix_addrs(t, slab, n).subset_of(held@),
-    ensures
-        z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
-        z.len() == n * t.spec_slots().size,
-;
-
 /// The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private
 /// anonymous memory reads as zero) for slots `0..n` of slab `slab` of
 /// table `t`: their `n * size` bytes from slot 0 read as zero.
 ///
-/// Required, so proved at the call site: as for
-/// [`axiom_fresh_slots_zero`], with the ticket recording `Purged`; and
-/// `witness`, which this uses up, from a read of `purge::purged_zero` that
-/// returned true (`purge::PurgedZero`).
+/// Required, so proved at the call site: `ticket`, which this uses up, is
+/// a state ticket (`slab::DescPerm::ticket`) from the slab's descriptor
+/// permission recording `Purged`, so made from the permission the slab's
+/// arena's class lock value holds; the slab is one of the table's and not
+/// a guard slab; the caller holds the slots' uniqueness tokens (`held`),
+/// so none of them is allocated, cached or in another claim at the call;
+/// the `n` slots are the slab's own (`n <= nslots`), so the range ends
+/// inside the slab; and `witness`, which this uses up, from a read of
+/// `purge::purged_zero` that returned true (`purge::PurgedZero`).
 ///
 /// Premise, the caller's and trusted: the witness's read was made in the
 /// lock hold that claims the slots (`take` reads it there and passes it
@@ -4134,6 +4158,15 @@ impl ClassState {
                 assert(g.states@.insert(slab as nat, State::Active) =~= g.states@);
             }
         }
+        // A `Fresh` slab's zero token, now that the slab is `Active`.
+        let tracked mut zs = Zeroed::empty(0);
+        proof {
+            if state == State::Fresh {
+                lemma_zeros_at(g0.states@, g0.zeros@, g0.table@, slab as nat);
+                lemma_zeros_set(g0.states@, g0.zeros@, g0.table@, slab as nat, State::Active);
+                zs = g.zeros.borrow_mut().tracked_remove(slab as int);
+            }
+        }
         proof {
             assert(g.slab_ok(slab as nat));
             assert forall|x: nat| x != slab implies #[trigger] g.slab_ok(x) by {
@@ -4169,9 +4202,9 @@ impl ClassState {
             }
             self.claim_prefix(slab, n, state, live, Tracked(&mut pt), Tracked(g.inited.borrow()), Tracked(g.seen.borrow()));
         }
-        // The zero pick's bytes, slots `0..n` of the slab: a `Fresh` slab
-        // was never handed out since its pages were mapped, so they are
-        // fresh anonymous memory (`axiom_fresh_slots_zero`); a `Purged` one
+        // The zero pick's bytes, slots `0..n` of the slab: a `Fresh` slab's
+        // are the first `n * size` bytes of its zero token, which the lock
+        // value held from `take_group` on (`zs`); a `Purged` one
         // was discarded with `MADV_DONTNEED` in the lock hold that made it
         // `Purged` and has had no allocated slot since, and
         // `purged_is_zero` read true in this hold (its witness,
@@ -4181,10 +4214,18 @@ impl ClassState {
         // `claim_prefix` claimed in this hold.
         proof {
             _t.lemma_slots_wf();
+            let sl = _t.spec_slots();
+            assert(n * sl.size <= sl.nslots * sl.size) by (nonlinear_arith)
+                requires n <= sl.nslots, sl.size > 0;
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(slab as int, sl.sb);
+            vstd::arithmetic::div_mod::lemma_mod_multiples_basic(slab as int, sl.sb);
+            vstd::arithmetic::mul::lemma_mul_is_commutative(slab as int, sl.sb);
+            assert(sl.addr(slab * sl.sb) == sl.base + slab * sl.slab_size);
         }
         let tracked zt = if zero {
             if state == State::Fresh {
-                axiom_fresh_slots_zero(ticket, *_t, slab as int, n as int, &pt)
+                let tracked (zh, _zr) = zs.split(n * _t.spec_slots().size);
+                zh
             } else {
                 axiom_discarded_slots_zero(ticket, _purged_witness.get().tracked_unwrap(), *_t, slab as int, n as int, &pt)
             }

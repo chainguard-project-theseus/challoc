@@ -1,6 +1,5 @@
-# Kernel facts at the refill: a Fresh slab's slots read as zero (mmap), and
-# a Purged one's while every discard was MADV_DONTNEED (madvise).
-axiom_fresh_slots_zero	allocator invariant	none (assumption)
+# Kernel fact at the refill: a Purged slab's slots read as zero while every
+# discard was MADV_DONTNEED (madvise).
 axiom_discarded_slots_zero	allocator invariant	none (assumption)
 # The check_zero debug mode's read of a Fresh slab's slots: a permission to
 # them, lent while its descriptor permission is borrowed under the lock.

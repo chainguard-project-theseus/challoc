@@ -8,13 +8,12 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `ClassStat...laim_with` | no_decreases | termination | loom/GenMC | trusted |
-| `axiom_f...s_zero` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_d...s_zero` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_f...ab_mem` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `ClassState::claim_with`
 
-src/class/mod.rs:2865. Kind: no_decreases. Category: termination.
+src/class/mod.rs:2930. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -42,40 +41,9 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
         r.0.n == 0 && old(out)@.len() > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
 ```
 
-## `axiom_fresh_slots_zero`
-
-src/class/mod.rs:3493. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> The kernel fact of `mmap(2)` (a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
-
-Hashes: contract 3017249109, body none.
-
-```rust
-axiom fn axiom_fresh_slots_zero(
-    tracked ticket: StateTicket,
-    t: SlabTable,
-    slab: int,
-    n: int,
-    tracked held: &GhostSubset<int>,
-) -> (tracked z: Zeroed)
-    requires
-        ticket.id() == desc_id(&desc_at(t, slab as usize)),
-        ticket.state() == state_byte(State::Fresh),
-        0 <= slab < t.spec_nslabs(),
-        !t.spec_is_guard(slab as usize),
-        0 <= n <= t.spec_slots().nslots,
-        held.id() == t.spec_slots().loc,
-        prefix_addrs(t, slab, n).subset_of(held@),
-    ensures
-        z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
-        z.len() == n * t.spec_slots().size,
-;
-```
-
 ## `axiom_discarded_slots_zero`
 
-src/class/mod.rs:3536. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3560. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -107,7 +75,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ## `axiom_fresh_slab_mem`
 
-src/class/mod.rs:3596. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3620. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
