@@ -393,7 +393,7 @@ const PINS: &[(&str, &[&str])] = &[
         "src/purge/background.rs",
         &[
             "REQUESTED.load(Ordering::Relaxed)",
-            "let _g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
+            "let g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
             "REQUESTED.store(on, Ordering::Relaxed);",
             "if !on {",
             "kick();",

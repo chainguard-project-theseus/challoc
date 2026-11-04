@@ -55,16 +55,19 @@ struct State {
 /// start; after it, a reservation of `STACK_SIZE` bytes, which
 /// `Meta::reserve` places below `va_limit`) and `exited ==> !present`
 /// (a thread that found the request withdrawn and exited before its
-/// `start` published it stays unpublished). The verified holders keep
-/// it: `start` asserts it after writing `stack` and `present` (which it
+/// `start` published it stays unpublished). Each guard's holder outside
+/// the tests (`request`, `start`, `start_requested`, `auto_tick`,
+/// `main`) ends in `LockGuard::unlock` (`api::tests::guards_end_in_unlock`),
+/// which requires it: `start` writes `stack` and `present` (which it
 /// sets only to `thread.is_some() && !exited`, and clears `exited` only
-/// while nothing is present), `main` asserts it after its exit's writes
-/// (`present` false, `exited` true), and `fork_child` (the fork child's
-/// writer through `Lock::get_unlocked`) after clearing both; `request`,
-/// `start_requested` and `auto_tick` write nothing under it. Verus
-/// checks nothing when a guard is released, so this is the claim. The
-/// test-only readers (`join_exited`, `stack`, `thread`) never write
-/// `stack`, `present` or `exited`, and no other code touches the value.
+/// while nothing is present), `main` its exit's `present` false and
+/// `exited` true, and `request`, `start_requested` and `auto_tick` write
+/// nothing under it. `fork_child` (the fork child's writer through
+/// `Lock::get_unlocked`) asserts it after clearing both, but the fork
+/// handlers' release (`RawLock::unlock_held`) checks nothing, so for
+/// that hold this is the claim. The test-only readers (`join_exited`,
+/// `stack`, `thread`), whose guards drop, never write `stack`, `present`
+/// or `exited`, and no other code touches the value.
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
@@ -201,9 +204,10 @@ pub fn request(on: bool, Tracked(cc): Tracked<&CCall>, Tracked(fx): Tracked<&mut
     {
         // Under the state lock, so a failing lazy start (`start_requested`)
         // cannot withdraw this request after it was made.
-        let _g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        let g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         AUTO.store(false, Ordering::Relaxed);
         REQUESTED.store(on, Ordering::Relaxed);
+        g.unlock();
     }
     if !on {
         // Unconditional: a thread the bookkeeping has already forgotten
@@ -275,15 +279,19 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
     let (stack, previous) = {
         let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         if g.present {
+            g.unlock();
             return true;
         }
         if g.creating {
+            g.unlock();
             return false;
         }
         g.creating = true;
         g.exited = false;
         assert(lock_inv(g@));
-        (g.stack, g.thread.take())
+        let r = (g.stack, g.thread.take());
+        g.unlock();
+        r
     };
     let saved_errno = get_errno(Tracked(&*errno));
     let (stack, thread) = create(shared, stack, previous, Tracked(ord), Tracked(cell));
@@ -303,7 +311,9 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
         g.present = thread.is_some() && !g.exited;
         PRESENT.store(g.present, Ordering::Relaxed);
         assert(lock_inv(g@));
-        g.present
+        let present = g.present;
+        g.unlock();
+        present
     };
     // A class's first `Empty` slab may have arrived after the thread's
     // last scan, which left it asleep with no deadline, and its `wake`
@@ -363,6 +373,7 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, T
             );
         }
     }
+    g.unlock();
     false
 }
 
@@ -416,11 +427,13 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
     }
     {
         // Under the state lock: an explicit `request` in between wins.
-        let _g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        let g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         if !AUTO.load(Ordering::Relaxed) {
+            g.unlock();
             return;
         }
         REQUESTED.store(true, Ordering::Relaxed);
+        g.unlock();
     }
     if alloc {
         start_requested(shared, Tracked(ord), Tracked(&mut *errno), Tracked(cell.tracked_unwrap()));
@@ -833,6 +846,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
             PRESENT.store(false, Ordering::Relaxed);
             #[cfg(test)]
             EXITS.fetch_add(1, Ordering::SeqCst);
+            g.unlock();
             return core::ptr::null_mut();
         }
         let now = sys::now_coarse_ns();

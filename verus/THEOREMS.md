@@ -496,25 +496,33 @@ process statistics lock (`collect_into`, `snapshot`,
 (`Arena::stats_into`, `add_stats_to`, `store_stats`), the class lock
 (`ClassState::plan`, `reopen`, `on_live_zero`, `bin_stats`,
 `lowest_partial`, `is_partial`, `empty_bytes`, `purge_empty`,
-`purge_curve`) and the slab table's commit lock
+`purge_curve`), the slab table's commit lock
 (`SlabTable::mirror_watermark`, `guards`, `take_group`, `commit_run`,
-`commit_slab`); the source test
+`commit_slab`) and the background thread's state lock
+(`purge::background::request`, `start`, `start_requested`,
+`auto_tick`, `main`); the source test
 `api::tests::guards_end_in_unlock` (`api/mod.rs`) checks that none of
 these guards drops without it. For every other lock the invariant and
 frame are not checked at the release: each verified holder ends with them
-through its last call's postcondition or an `assert`. Nine locks'
-holders all end with it. For all nine no axiom states `lock_inv` and
+through its last call's postcondition or an `assert`. Ten locks'
+holders all end with it. For all but the state lock (whose invariant
+`axiom_state_lock_inv` states) no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
 left is the mutex contract (`lock::axiom_acquired`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
 test `api::tests::guards_end_in_unlock` checks. The arena creation lock
 is also held by the fork handlers, whose release,
 `Lock::unlock_held_perm`, requires the invariant and frame as
-`LockGuard::unlock` does. The one exception is the initial value: eight
-of the nine take it from `Lock::new`, which requires the invariant,
-but the per-arena statistics locks take theirs from the trusted
-`Arena::put_stats`, which the test `put_stats_writes_lock_new_of_empty`
-compares with `Lock::new(ArenaStats::empty(index), ..)`. The impl for
+`LockGuard::unlock` does. The state lock is held by the fork handlers
+too, and that hold still rests on `axiom_state_lock_inv`:
+`purge::background::fork_child` writes the value through
+`Lock::get_unlocked`, and `fork_unlock` releases it through
+`RawLock::unlock_held`, which checks nothing. The one exception is the
+initial value: eight of those nine take it from `Lock::new`, which
+requires the invariant, but the per-arena statistics locks take theirs
+from the trusted `Arena::put_stats`, which the test
+`put_stats_writes_lock_new_of_empty` compares with
+`Lock::new(ArenaStats::empty(index), ..)`. The impl for
 `meta::Inner` (`meta.rs`), the metadata lock: `Inner::wf`, with the
 page, the region's bounds and the ghost identities fixed. The impl for
 `[Lazy; SET_GROUPS]` (`class/sets.rs`), the slab-set tables' lock:
