@@ -480,14 +480,16 @@ return (`Meta::alloc`, `alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
 does every holder of the explicit-cache table lock (`Tcaches::create`,
 `destroy`), the slab-set tables' lock (`SetTable::ensure`), the huge
 lock (`Huge::alloc_aligned`, `free_run`, `usable_size`, `lookup`,
-`purge_empty`, `purge_curve`, `empty_bytes`, `stats`) and the
+`purge_empty`, `purge_curve`, `empty_bytes`, `stats`), the
 process statistics lock (`collect_into`, `snapshot`,
-`arena_stats_all_into`); the source test `api::tests::guards_end_in_unlock`
-(`api/mod.rs`) checks that none of these guards drops without it.
-No other lock's holders call it, so for every other lock the invariant and frame
-are not checked at the release: each verified holder ends with them
-through its last call's postcondition or an `assert`. Five locks'
-holders all end with it, and for all five no axiom states `lock_inv` and
+`arena_stats_all_into`), the arena creation lock (`Arenas::assign`,
+`create`, `materialise`) and the per-arena statistics locks
+(`Arena::stats_into`, `add_stats_to`, `store_stats`); the source test
+`api::tests::guards_end_in_unlock` (`api/mod.rs`) checks that none of
+these guards drops without it. For every other lock the invariant and
+frame are not checked at the release: each verified holder ends with them
+through its last call's postcondition or an `assert`. Seven locks'
+holders all end with it. For five of them no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
 left is the mutex contract (`lock::axiom_acquired`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
@@ -502,8 +504,10 @@ for `Snapshot` (`stats.rs`), the process statistics lock:
 The impl for `huge::Inner` (`huge/mod.rs`), the huge lock: `Inner::wf`,
 with the ghost page count, page shift, region base and `Meta` identity
 fixed.
-The impl for `ArenaStats` (`stats.rs`), the per-arena statistics locks,
-defines only the frame, true of any two values, which no release can
+The sixth, the arena creation lock, takes them from
+`axiom_arenas_lock_inv` and `axiom_arenas_lock_frame` (`arena.rs`).
+For the seventh, the per-arena statistics locks, the impl for
+`ArenaStats` (`stats.rs`) defines only the frame, true of any two values, which no release can
 break; its invariant is `axiom_arena_stats_lock_inv`'s. Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it.
@@ -4964,11 +4968,10 @@ for `k <= 256`.
   `Snapshot::EMPTY`, and every holder (`collect_into`, `snapshot`,
   `arena_stats_all_into`) ends in `LockGuard::unlock`, which requires
   it (`api::tests::guards_end_in_unlock`).
+  The per-arena statistics lock's holders (`Arena::store_stats`,
+  `stats_into`, `add_stats_to`) also end in `LockGuard::unlock`, which
+  requires its invariant and frame.
   The fork handlers take the raw locks only and write nothing.
-  For the per-arena statistics lock, as for every lock whose holders do
-  not end with `LockGuard::unlock` (common premises, "Locks"), that each
-  holder leaves the invariant true is checked at the holder's last
-  write, not at the guard's drop (`lock.rs`, `lock_inv`).
 - `process_regions()` is the `Shared`'s regions (`Shared::wf`), so
   `collect_bin`'s `requires process_regions().wf()` holds for every
   caller in `stats.rs` (the unit tests call it unverified).
