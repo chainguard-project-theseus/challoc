@@ -4623,7 +4623,7 @@ mod tests {
                     ("meta.rs:", "pub fn top(", "inner"),
                 ],
             ),
-            // `purge::background::axiom_state_lock_inv`.
+            // `purge::background::State`'s `LockSpec` impl.
             (
                 "purge/background.rs:static.STATE",
                 &[

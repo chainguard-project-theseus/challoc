@@ -6,7 +6,7 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 26 of those seams that are still seams in the
+*This file lists the 25 of those seams that are still seams in the
 ledger. The others are verified or no longer exist, so their rows are
 left out: among them `axiom_raw_valid`, gone; `axiom_process_shared`,
 which `lemma_process_shared` (`heap/shared.rs`) proves from the
@@ -52,7 +52,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 26 seams listed: 8 sound, 11 sound (premise), 7 fixed.
+Totals for the 25 seams listed: 7 sound, 11 sound (premise), 7 fixed.
 
 ## Per seam
 
@@ -77,7 +77,6 @@ Totals for the 26 seams listed: 8 sound, 11 sound (premise), 7 fixed.
 | `Reserved::is_disjoint` | `layout/regions.rs` | fixed | Requires both reservations non-empty, for the same reason. |
 | `Reserved::into_unbacked` | `layout/regions.rs` | sound | Consumes the token. |
 | `axiom_acquired` | `lock.rs` | sound (premise) | Private, called on the guard just built; `deref_mut` havocs the guard, so a changed guard cannot meet its `requires` (see "Premises"). |
-| `axiom_state_lock_inv` | `purge/background.rs` | sound | The initial value meets it; `start` (both holds), `main`'s exit and `fork_child` assert it, including `exited ==> !present`. |
 | `axiom_user_va_limit` | `sys/pac.rs` | sound | Linux's default map window is at most 2^48 on both targets. |
 | `axiom_auth_sign` | `sys/pac.rs` | sound | True for every address below `user_va_limit()` and every modifier, and with the keys disabled. |
 | `axiom_ptr_add_addr` | `vspec/ptr.rs` | sound | True: `add` is `wrapping_add` where it is defined (see "Premises" for the harness's reach). |

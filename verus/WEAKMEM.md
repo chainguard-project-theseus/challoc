@@ -418,7 +418,8 @@ shows the check can fail.
   alone, without the `exited` test, leaves the exited thread published.
   The flags are under the state lock, so this model is about the
   interleaving, not the orderings; Verus proves the lock-value side
-  (`exited ==> !present` in `axiom_state_lock_inv`).
+  (`exited ==> !present` in `purge::background::State`'s lock invariant,
+  which `lemma_state_inv_unpublishes_exited` reads from it).
 - The once-cells, `oncecell.rs`. The feature line (copies of
   `line_ready`, `feature_line_fork_child` and the `LINE_STATE` wrappers
   `line_load`, `line_compare_exchange` and `line_store`): the line is

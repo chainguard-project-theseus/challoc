@@ -188,7 +188,6 @@ impl RawLock {
             t@.held() == *self,
             final(ord).root(),
             final(ord).top() == self.rank(),
-            self.rank() == rank_state() ==> fork_prepared(*final(ord)),
     {
         self.lock();
         proof {
@@ -255,9 +254,9 @@ pub closed spec fn lock_rs_only() -> bool {
 /// the test `purge::tests::state_lock_axiom_names_the_one_state_lock`
 /// checks it is the one lock of that rank): the requirement of
 /// [`fork_window_open`]. The body is closed, so outside this module only
-/// the postconditions of [`RawLock::lock_held`] and
-/// [`Lock::lock_held_perm`] of a lock at `rank_state` give it; a root's
-/// top is raised only by those two, to the rank they take. After that
+/// the postcondition of [`Lock::lock_held_perm`] of a lock at
+/// `rank_state` gives it; a root's top is raised only by that and
+/// [`RawLock::lock_held`], to the rank they take. After that
 /// acquisition the root's top is `rank_state`, which no lock ranks above
 /// ([`RawLock::new`]), so no acquisition follows it on that token, and
 /// the window opens only once every lock is taken: an acquire after the
@@ -918,8 +917,8 @@ impl<T> Lock<T> {
     /// guard's scope here, `ord` must be a root). Crate-private, for the
     /// arena registry's creation lock (`Arenas::lock_held`) and the state
     /// lock (`purge::background::fork_lock`). Taking the lock of
-    /// [`rank_state`] gives [`fork_prepared`] of `ord`, as
-    /// [`RawLock::lock_held`] does.
+    /// [`rank_state`] gives [`fork_prepared`] of `ord`, which nothing else
+    /// gives.
     ///
     /// Lock order: as [`RawLock::lock_held`].
     #[inline(always)]
@@ -1202,7 +1201,7 @@ mod tests {
             ("crate::heap::tcaches::()", true, true),
             ("crate::huge::Inner", true, true),
             ("crate::meta::Inner", true, true),
-            ("crate::purge::background::State", false, true),
+            ("crate::purge::background::State", true, true),
             ("crate::stats::ArenaStats", true, true),
             ("crate::stats::Snapshot", true, true),
         ];
@@ -1241,6 +1240,10 @@ mod tests {
             })
             .collect();
         let mut axioms: Vec<(String, String, String)> = Vec::new();
+        // Every `axiom fn` the scan reads, lock axiom or not: no lock axiom
+        // is left outside this file, so the scan's health is that it sees
+        // the others.
+        let mut seen = 0;
         for (rel, text) in crate::testutil::shipped_sources() {
             if rel == "lock.rs" {
                 continue;
@@ -1259,6 +1262,7 @@ mod tests {
                     // impl defines them.
                     panic!("{at}: a function named as a `LockSpec` method outside an impl of it");
                 } else if !t.starts_with("//") && t.contains("axiom fn ") {
+                    seen += 1;
                     let mut item = String::new();
                     loop {
                         item.push_str(lines[i]);
@@ -1280,7 +1284,7 @@ mod tests {
             }
         }
         assert!(!impls.is_empty(), "no `LockSpec` impl found");
-        assert!(!axioms.is_empty(), "no lock axiom found");
+        assert!(seen > 0, "no `axiom fn` found");
         for (k, imp, inv, frame) in &impls {
             let want = DEFINED
                 .iter()

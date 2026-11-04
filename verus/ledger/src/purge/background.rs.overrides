@@ -1,6 +1,4 @@
-# The state lock's invariant and the name of its raw lock: premises
-# about the unverified holders and the one static.
-axiom_state_lock_inv	allocator invariant	none (assumption)
+# The name of the state lock: a premise about the one static.
 axiom_state_lock	allocator invariant	none (assumption)
 # libc's thread calls and the argument C passes the thread.
 pthread_join	FFI/syscall	none (assumption)
