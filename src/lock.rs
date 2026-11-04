@@ -651,7 +651,10 @@ pub struct Lock<T> {
 /// An owner may define them in its impl only when every holder of its
 /// lock outside the tests ends with [`LockGuard::unlock`], which checks
 /// both at each release, and `api::tests::UNLOCKED_LOCKS` lists the lock
-/// with those holders (`api::tests::guards_end_in_unlock`). Otherwise
+/// with those holders (`api::tests::guards_end_in_unlock`;
+/// `api::tests::defined_lock_specs_are_unlocked_locks` checks that it
+/// lists every lock of a type whose impl defines either, a frame of
+/// `true` aside). Otherwise
 /// the impl keeps them uninterpreted ([`assumed_inv`], [`assumed_frame`])
 /// and the owner states them by an axiom that names the holders. A frame
 /// of `true` may be defined either way: no release can break it. A frame
@@ -1215,7 +1218,7 @@ mod tests {
     /// and a leftover axiom on it fails here.
     #[test]
     fn lock_axioms_state_assumed_specs() {
-        use std::string::{String, ToString};
+        use std::string::String;
         // (type, defines `inv`, defines `frame`) for each impl that defines
         // either; every other impl delegates both.
         const DEFINED: &[(&str, bool, bool)] = &[
@@ -1247,54 +1250,36 @@ mod tests {
             t.match_indices(name)
                 .any(|(i, _)| !t[..i].ends_with(ident) && !t[i + name.len()..].starts_with(ident))
         };
-        let module = |rel: &str| {
-            let stem = rel.strip_suffix(".rs").unwrap();
-            let stem = stem.strip_suffix("/mod").unwrap_or(stem);
-            std::format!("crate::{}", stem.replace('/', "::"))
-        };
-        let key = |m: &str, ty: &str| {
-            let ty = ty.trim();
-            if ty.starts_with("crate::") {
-                ty.to_string()
-            } else {
-                std::format!("{m}::{ty}")
-            }
-        };
-        // Per impl: (type, where, defines `inv`, defines `frame`); per lock
-        // axiom: (where, module, text).
-        let mut impls: Vec<(String, String, bool, bool)> = Vec::new();
+        let key = crate::testutil::type_key;
+        // Per impl: (type, where, defines `inv`, defines `frame`), from the
+        // scan the unlock-rule test shares; per lock axiom: (where, module,
+        // text).
+        let scanned = crate::testutil::lock_spec_impls();
+        let impls: Vec<(String, String, bool, bool)> = scanned
+            .iter()
+            .map(|s| {
+                (
+                    s.ty.clone(),
+                    std::format!("{}:{}", s.rel, s.start + 1),
+                    s.inv,
+                    s.frame,
+                )
+            })
+            .collect();
         let mut axioms: Vec<(String, String, String)> = Vec::new();
-        let for_ = std::format!("{}{}", "LockSpec", " for ");
         for (rel, text) in crate::testutil::shipped_sources() {
             if rel == "lock.rs" {
                 continue;
             }
-            let m = module(&rel);
+            let m = crate::testutil::module_of(&rel);
             let lines: Vec<&str> = text.lines().collect();
             let mut i = 0;
             while i < lines.len() {
                 let t = lines[i].trim_start();
                 let at = std::format!("{rel}:{}", i + 1);
-                if t.starts_with("impl") && t.contains(for_.as_str()) {
-                    let rest = &t[t.find(for_.as_str()).unwrap() + for_.len()..];
-                    let ty = rest.split(" where").next().unwrap().trim_end();
-                    let ty = ty.trim_end_matches('}').trim_end_matches('{').trim_end();
-                    let indent = &lines[i][..lines[i].len() - t.len()];
-                    let mut body = String::new();
-                    if !t.trim_end().ends_with('}') {
-                        i += 1;
-                        while lines[i] != std::format!("{indent}}}") {
-                            body.push_str(lines[i]);
-                            body.push('\n');
-                            i += 1;
-                        }
-                    }
-                    impls.push((
-                        key(&m, ty),
-                        at,
-                        !calls(&body, &assumed_inv),
-                        !calls(&body, &assumed_frame),
-                    ));
+                if let Some(s) = scanned.iter().find(|s| s.rel == rel && s.start == i) {
+                    // An impl's body is the shared scan's; skip it.
+                    i = s.end;
                 } else if named[2..].iter().any(|n| word(t, &std::format!("fn {n}"))) {
                     // The names stay unique: no item outside a `LockSpec`
                     // impl defines them.
