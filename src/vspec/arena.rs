@@ -1,5 +1,4 @@
-//! Specifications for `arena.rs`: `AtomicPtr::new`, `load` and `store`, and the
-//! invariant of its statistics lock.
+//! Specifications for `arena.rs`: `AtomicPtr::new`, `load`, `store` and `swap`.
 
 use vstd::prelude::*;
 
@@ -37,28 +36,5 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
     val: *mut T,
     order: core::sync::atomic::Ordering,
 ) -> *mut T;
-
-/// Assumption (`lock.rs`): the value of an arena's statistics lock keeps
-/// the accounting identities (`ArenaStats::identities`) while the lock is
-/// free. Its writers: `Arena::init` creates the lock with
-/// `ArenaStats::empty` (verified: `Lock::new` requires the invariant and
-/// `empty` ensures the identities), and `Arena::store_stats` stores a
-/// value it requires them of (verified). `Arena::stats_into` and
-/// `Arena::add_stats_to` only read. Each of the three ends in
-/// `LockGuard::unlock`, which requires this and the frame
-/// (`ArenaStats`'s `LockSpec` impl: true of any two values), on every
-/// path to a return (`api::tests::guards_end_in_unlock`).
-/// `Arena::store_stats`'s one caller, `stats::collect_into`, stores what
-/// `collect_arena_with` computes, whose ensures give the identities. The fork
-/// handlers take and release the raw lock without touching the value,
-/// and nothing calls `get_unlocked` on it. What is left is the claim
-/// that the lock protects the identities.
-///
-/// `api::tests::lock_holders_match_inv_docs` checks that the functions
-/// that take the guard are the holders named here.
-pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == v.identities(),
-;
 
 } // verus!

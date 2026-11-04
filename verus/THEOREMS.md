@@ -494,7 +494,7 @@ process statistics lock (`collect_into`, `snapshot`,
 these guards drops without it. For every other lock the invariant and
 frame are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Nine locks'
-holders all end with it. For seven of them no axiom states `lock_inv` and
+holders all end with it. For all nine no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
 left is the mutex contract (`lock::axiom_acquired`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
@@ -514,11 +514,11 @@ owned-slab record's location fixed. The impl for `class::table::TableInner`
 (`class/table.rs`), the slab table's commit lock: `TableInner::inv`,
 with the ghost geometry, the marker authorities, the descriptor array
 and the watermark's ghost location fixed.
-The eighth, the arena creation lock, takes them from
-`axiom_arenas_lock_inv` and `axiom_arenas_lock_frame` (`arena.rs`).
-For the ninth, the per-arena statistics locks, the impl for
-`ArenaStats` (`stats.rs`) defines only the frame, true of any two values, which no release can
-break; its invariant is `axiom_arena_stats_lock_inv`'s. Each other
+The impl for `Created` (`arena.rs`), the arena creation lock:
+`Created::ok`, with the snapshot half's location fixed and the count at
+or above the one the lock was created with. The impl for `ArenaStats`
+(`stats.rs`), the per-arena statistics locks: `ArenaStats::identities`,
+with a frame true of any two values. Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it.
 `Tcaches::init` makes each entry null with
@@ -4974,12 +4974,12 @@ is counted once and `k` arenas sum below `2^58 + k * 2^55`, which fits
 for `k <= 256`.
 
 **Premises beyond the common ones.**
-- The per-arena statistics lock's `lock_inv` axiom
-  (`axiom_arena_stats_lock_inv`, `vspec/arena.rs`) says the stored
-  value satisfies `ArenaStats::identities`. Its writers: `Arena`
-  initialisation (`ArenaStats::empty`, which ensures the identities)
-  and `Arena::store_stats` (which requires them). Its frame is true of
-  any two values (`ArenaStats`'s `LockSpec` impl, `stats.rs`). The process
+- The per-arena statistics lock's invariant, `ArenaStats::identities`,
+  is stated by no axiom: `ArenaStats`'s `LockSpec` impl (`stats.rs`)
+  defines it, with a frame true of any two values. Its writers: `Arena`
+  initialisation (`ArenaStats::empty`, which ensures the identities,
+  written by the trusted `Arena::put_stats`, which a test compares with
+  `Lock::new`) and `Arena::store_stats` (which requires them). The process
   statistics lock's invariant, `Snapshot::inv`, is stated by no axiom:
   `Snapshot`'s `LockSpec` impl (`stats.rs`) defines it, `Lock::new` in
   `Shared::put_tail` (`heap/shared.rs`) requires it of
@@ -5012,10 +5012,9 @@ for `k <= 256`.
   arena's `stats.arenas.<i>.*` (`arena_stats`, which does not take the
   process statistics lock) may see it from a newer collection than the
   `stats.*` totals it read before.
-- The lock-frame axiom it rests on (`axiom_arenas_lock_frame`) states
-  the frame as an equivalence (`==`); the metadata and huge locks'
-  frames, which `meta::Inner`'s and `huge::Inner`'s `LockSpec` impls
-  define, are equivalences too.
+- The lock frames it rests on, which the `LockSpec` impls of `Created`
+  (the arena creation lock), `meta::Inner` and `huge::Inner` define, are
+  definitions, not axioms.
 
 ## 28. Cache flush completeness
 
@@ -6822,9 +6821,9 @@ below `MAX_ARENAS`. `mallinfo2` (`api/glibc.rs`, verified) ensures
   invariant (`NarenasPred`, `arena.rs`): `build` requires
   that the creation lock's snapshot has no arena at the index, so each
   index is published at most once (proved), and `create`'s index is at
-  or above `auto` by `axiom_arenas_lock_frame` (the lock's `n`
-  never drops below its initial, automatic count; its writers are
-  verified against it). The ledger's `built` set is not tied to that
+  or above `auto` by the creation lock's frame (`Created`'s `LockSpec`
+  impl: the lock's `n` never drops below its initial, automatic count,
+  which every guard's release checks). The ledger's `built` set is not tied to that
   snapshot (read from the code).
 - `Snapshot::narenas` is the number of arenas the scan found, so it is
   below `arenas.narenas` while an automatic arena is unbuilt

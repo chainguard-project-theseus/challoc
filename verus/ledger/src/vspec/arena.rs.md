@@ -11,11 +11,10 @@ file.
 | `Atomic::<*mut T>::store` | assume_spec | core library | Kani | discharged |
 | `Atomic::<*mut T>::new` | assume_spec | core library | Kani | discharged |
 | `Atomic::<*mut T>::swap` | assume_spec | core library | Kani | discharged |
-| `axiom_a...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `core::sync::atomic::Atomic::<*mut T>::load`
 
-src/vspec/arena.rs:10. Kind: assume_spec. Category: core library.
+src/vspec/arena.rs:9. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::load`, which vstd does not specify: any pointer.
@@ -33,7 +32,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
 
 ## `core::sync::atomic::Atomic::<*mut T>::store`
 
-src/vspec/arena.rs:21. Kind: assume_spec. Category: core library.
+src/vspec/arena.rs:20. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::store`, which vstd does not specify.
@@ -52,7 +51,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::store ](
 
 ## `core::sync::atomic::Atomic::<*mut T>::new`
 
-src/vspec/arena.rs:32. Kind: assume_spec. Category: core library.
+src/vspec/arena.rs:31. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::new`, which vstd does not specify.
@@ -63,7 +62,7 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut
 
 ## `core::sync::atomic::Atomic::<*mut T>::swap`
 
-src/vspec/arena.rs:35. Kind: assume_spec. Category: core library.
+src/vspec/arena.rs:34. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::swap`, which vstd does not specify: any previous pointer.
@@ -74,18 +73,4 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
     val: *mut T,
     order: core::sync::atomic::Ordering,
 ) -> *mut T;
-```
-
-## `axiom_arena_stats_lock_inv`
-
-src/vspec/arena.rs:59. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> Assumption (`lock.rs`): the value of an arena's statistics lock keeps the accounting identities (`ArenaStats::identities`) while the lock is free.
-
-```rust
-pub broadcast axiom fn axiom_arena_stats_lock_inv(v: crate::stats::ArenaStats)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == v.identities(),
-;
 ```
