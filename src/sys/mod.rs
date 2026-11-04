@@ -104,6 +104,10 @@ verus! {
 /// it, and so must every trusted body that can reach the kernel. So a
 /// verified function can reach the kernel only if its own `requires` (or
 /// its loop's invariant) carries the fact.
+/// `tests::syscall_capability_only_as_a_clause` checks the source: it
+/// appears only as such a clause, or in the type invariants of
+/// `abort::Stderr` and `api::print::Sink`, which only their `new` builds
+/// under such a clause.
 ///
 /// Opaque, with no meaning: a capability, not a claim about the world.
 /// Closed: no module outside `sys` and its submodules can reveal it.
@@ -132,6 +136,9 @@ pub proof fn grant_syscalls()
 /// ([`may_abort_corrupt`], [`may_abort_kernel`], [`may_abort_pending`]),
 /// so a verified function that neither requires one, nor carries it in a
 /// loop invariant, nor calls [`grant_aborts`] never aborts.
+/// `tests::abort_capabilities_only_as_clauses` checks the source: besides
+/// their definitions, the grant and `abort::relabel` (which turns a narrower
+/// capability into this one), they appear only in `requires`/invariants.
 ///
 /// Opaque, with no meaning: a capability, not a claim about the world.
 /// Closed: no module outside `sys` and its submodules can reveal it.
@@ -1732,6 +1739,566 @@ pub(crate) mod tests {
             ensured.len(),
             2,
             "got = {ensured:?}, want = the grant's own `ensures` and check_zero's"
+        );
+    }
+
+    /// A line of the shipped sources, for the capability tests below.
+    struct Line {
+        /// The file, relative to `src/`.
+        rel: std::string::String,
+        /// `file:line: `text``.
+        at: std::string::String,
+        /// The `fn` item line it belongs to: the nearest one above it.
+        sig: std::string::String,
+        /// The clause it is in (`requires`, `ensures`, `invariant`, ..),
+        /// or `""` from the body's `{` on.
+        kw: &'static str,
+        /// The line, trimmed.
+        t: std::string::String,
+    }
+
+    /// The lines of [`crate::testutil::shipped_sources`], less comment
+    /// lines and `api/restated.rs` (a test module in a file of its own).
+    fn shipped_lines() -> Vec<Line> {
+        let mut out = Vec::new();
+        for (rel, text) in crate::testutil::shipped_sources() {
+            if rel == "api/restated.rs" {
+                continue;
+            }
+            let (mut sig, mut kw) = (std::string::String::new(), "");
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                if t.is_empty() || t.starts_with("//") {
+                    continue;
+                }
+                if crate::testutil::fn_item(t) {
+                    (sig, kw) = (t.into(), "");
+                }
+                if t == "{" || t.ends_with(" {") {
+                    kw = "";
+                }
+                // A clause keyword starts its line, alone or before the
+                // clause (`ensures x,`).
+                if let Some(k) = [
+                    "requires",
+                    "recommends",
+                    "ensures",
+                    "returns",
+                    "invariant",
+                    "invariant_except_break",
+                    "decreases",
+                ]
+                .into_iter()
+                .find(|k| t.split_whitespace().next() == Some(*k))
+                {
+                    kw = k;
+                }
+                out.push(Line {
+                    rel: rel.clone(),
+                    at: format!("{rel}:{}: `{t}`", i + 1),
+                    sig: sig.clone(),
+                    kw,
+                    t: t.into(),
+                });
+            }
+        }
+        assert!(out.len() > 10_000, "the source tree was not found");
+        out
+    }
+
+    /// [`may_syscall`] appears in the shipped sources only as a `requires`
+    /// or loop invariant clause of its own (`crate::sys::may_syscall(),`),
+    /// besides its definition, [`grant_syscalls`]' `ensures` and `reveal`,
+    /// and the type invariants of `abort::Stderr` and of the report's
+    /// `api::print::Sink`, which only their `new` builds, under a
+    /// `requires` of it. So no function or axiom ensures it for its
+    /// caller, and the grants [`syscall_grants_only_at_roots`] pins are
+    /// where it starts.
+    #[test]
+    fn syscall_capability_only_as_a_clause() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let cap = format!("{}{}", "may_", "syscall");
+        let clause = format!("crate::sys::{cap}(),");
+        let grant = format!("pub proof fn {}{}()", "grant_", "syscalls");
+        let own = [
+            (
+                "sys/mod.rs",
+                "pub closed spec fn ",
+                format!("pub closed spec fn {cap}() -> bool {{"),
+            ),
+            ("sys/mod.rs", grant.as_str(), format!("{cap}(),")),
+            ("sys/mod.rs", grant.as_str(), format!("reveal({cap});")),
+            (
+                "sys/abort.rs",
+                "spec fn wf(&self)",
+                format!("self.len <= 512 && crate::sys::{cap}()"),
+            ),
+            (
+                "api/print.rs",
+                "spec fn wf(&self)",
+                format!("self.len < 1024 && crate::sys::{cap}() && self.ord@.top() == 0"),
+            ),
+        ];
+        let mut seen = [0; 5];
+        let mut clauses = 0;
+        for l in shipped_lines() {
+            if !l.t.contains(cap.as_str()) {
+                continue;
+            }
+            if let Some(k) = own
+                .iter()
+                .position(|(f, s, t)| l.rel == *f && l.sig.starts_with(s) && l.t == *t)
+            {
+                seen[k] += 1;
+                continue;
+            }
+            assert!(
+                l.t == clause && (l.kw == "requires" || l.kw.starts_with("invariant")),
+                "{}: `{cap}` used other than as a requires or invariant clause `{clause}` \
+                 (in `{}`, clause `{}`)",
+                l.at,
+                l.sig,
+                l.kw
+            );
+            clauses += 1;
+        }
+        assert_eq!(seen, [1; 5], "got = {seen:?}, want = each of {own:?} once");
+        assert!(clauses > 100, "got = {clauses} clauses, want = the tree's");
+    }
+
+    /// The abort capabilities ([`may_abort`], [`may_abort_corrupt`],
+    /// [`may_abort_kernel`], [`may_abort_pending`], and [`valid_aborts`],
+    /// which stands for two of them) appear in the shipped sources only in
+    /// `requires` and loop invariant clauses, besides their definitions,
+    /// [`grant_aborts`]' `ensures` and `reveal`, and those of
+    /// `abort::relabel`, which only the three narrower sinks call
+    /// (`abort::tests::abort_relabels_only_in_the_sinks`): no other
+    /// function or axiom ensures one for its caller. The uninterpreted
+    /// capabilities ([`integrity_aborts`], [`kernel_aborts`],
+    /// [`pending_aborts`]) appear, besides their definitions and the
+    /// bodies of the capabilities above, only as a `requires` clause of
+    /// their own in a theorem's witness (`fn theorem_`).
+    #[test]
+    fn abort_capabilities_only_as_clauses() {
+        // Spelled in parts, so that this test's own lines match nothing.
+        let cap = format!("{}{}", "may_", "abort");
+        let valid = format!("{}{}", "valid_", "aborts");
+        let grant = format!("pub proof fn {}{}()", "grant_", "aborts");
+        let relabel = format!("proof fn {}{}()", "rel", "abel");
+        let uninterp = ["integrity_", "kernel_", "pending_"].map(|p| format!("{p}{}", "aborts"));
+        // `sys/mod.rs`'s definitions, whose bodies name the others.
+        let defs = [
+            format!("pub closed spec fn {cap}() -> bool {{"),
+            format!("pub open spec fn {cap}_corrupt() -> bool {{"),
+            format!("pub open spec fn {cap}_kernel() -> bool {{"),
+            format!("pub open spec fn {cap}_pending() -> bool {{"),
+            format!("pub open spec fn {valid}() -> bool {{"),
+        ];
+        // Their bodies, each the one line of its definition's.
+        let [i, k, p] = &uninterp;
+        let bodies = [
+            format!("{cap}() || {i}()"),
+            format!("{cap}() || {k}()"),
+            format!("{cap}() || {p}()"),
+            format!("{k}() && {p}()"),
+        ];
+        let decls = uninterp
+            .clone()
+            .map(|u| format!("pub uninterp spec fn {u}() -> bool;"));
+        let (mut clauses, mut witnesses) = (0, 0);
+        for l in shipped_lines() {
+            let names_cap = l.t.contains(cap.as_str()) || l.t.contains(valid.as_str());
+            let names_uninterp = uninterp.iter().any(|u| l.t.contains(u.as_str()));
+            if !names_cap && !names_uninterp {
+                continue;
+            }
+            if l.rel == "sys/mod.rs"
+                && ((defs.contains(&l.sig) && (l.t == l.sig || bodies.contains(&l.t)))
+                    || decls.contains(&l.t)
+                    || (l.sig == grant
+                        && ((l.kw == "ensures" && l.t == format!("{cap}(),"))
+                            || l.t == format!("reveal({cap});"))))
+            {
+                continue;
+            }
+            if l.rel == "sys/abort.rs"
+                && l.sig == relabel
+                && ((l.kw == "ensures" && l.t == format!("crate::sys::{cap}(),"))
+                    || l.t == format!("reveal(crate::sys::{cap});"))
+            {
+                continue;
+            }
+            if names_uninterp {
+                assert!(
+                    uninterp
+                        .iter()
+                        .any(|u| l.t == format!("crate::sys::{u}(),"))
+                        && l.kw == "requires"
+                        && l.sig.contains("fn theorem_"),
+                    "{}: an uninterpreted abort capability outside a witness's requires \
+                     (in `{}`, clause `{}`)",
+                    l.at,
+                    l.sig,
+                    l.kw
+                );
+                witnesses += 1;
+            } else {
+                assert!(
+                    l.kw == "requires" || l.kw.starts_with("invariant"),
+                    "{}: `{cap}` or `{valid}` used other than in a requires or invariant clause \
+                     (in `{}`, clause `{}`)",
+                    l.at,
+                    l.sig,
+                    l.kw
+                );
+                clauses += 1;
+            }
+        }
+        assert!(clauses > 100, "got = {clauses} clauses, want = the tree's");
+        assert!(witnesses > 0, "got = no witness requires");
+    }
+
+    /// A call site: `(file, fn item line start, calls)`, as for
+    /// [`crate::testutil::assert_only_at`].
+    type Site = (&'static str, &'static str, usize);
+
+    /// The abort sinks below `abort_fmt` that take a narrower capability
+    /// than [`may_abort`]: the integrity checks (`abort_integrity` and
+    /// `vspec::check::check`, under [`may_abort_corrupt`]), the resource
+    /// failures (`abort_kernel`, under [`may_abort_kernel`]) and the
+    /// pending checks (`abort_pending`, under [`may_abort_pending`]), each
+    /// as `(name, sites)`.
+    const SINKS: &[(&str, &[Site])] = &[
+        (
+            concat!("abort_", "integrity"),
+            &[("stats.rs", "fn huge_pages_short(", 1)],
+        ),
+        (
+            concat!("chec", "k"),
+            &[
+                ("bitmap.rs", "pub fn allocated(", 1),
+                ("class/table.rs", "pub fn new(", 1),
+            ],
+        ),
+        (
+            concat!("abort_", "kernel"),
+            &[
+                ("heap/slotstate.rs", "pub(super) fn init(", 2),
+                ("heap/slotstate.rs", "pub(crate) fn commit(", 1),
+                ("huge/mod.rs", "pub fn free_run(", 1),
+                ("purge.rs", "fn discard(", 1),
+            ],
+        ),
+        (
+            concat!("abort_", "pending"),
+            &[
+                ("arena.rs", "fn unbind_unbound(", 1),
+                ("class/abort.rs", "pub(super) fn never_committed(", 1),
+                ("class/abort.rs", "pub(super) fn owner_mismatch(", 1),
+                (
+                    "class/abort.rs",
+                    "pub(super) fn release_into_fresh_slab(",
+                    1,
+                ),
+                ("class/decay.rs", "pub(super) fn walk_empty<", 1),
+                ("class/verify.rs", "fn shadow_written(", 1),
+                ("class/verify.rs", "pub(super) fn release_into_fresh(", 1),
+                ("heap/shared.rs", "fn no_such_arena(", 1),
+                ("heap/slotstate.rs", "pub(super) fn free(", 3),
+                ("heap/slotstate.rs", "pub(super) fn claim(", 1),
+                ("heap/slotstate.rs", "pub(super) fn pop(", 1),
+                ("heap/slotstate.rs", "pub(super) fn release(", 1),
+                ("heap/slotstate.rs", "pub(super) fn check_not_cached(", 1),
+                ("huge/mod.rs", "fn huge_count_underflow(", 1),
+                ("huge/table.rs", "pub(super) fn insert(", 1),
+                ("slab.rs", "fn bad_state_byte(", 1),
+                ("slab.rs", "pub fn sub_live(", 1),
+            ],
+        ),
+    ];
+
+    /// The calls in `t` of `name` as a whole name (`x::name(` or
+    /// `name(`, not `may_name(` or `x.name(`), none if `t` declares it.
+    fn sink_calls(t: &str, name: &str) -> usize {
+        if t.contains(&format!("fn {name}(")) {
+            return 0;
+        }
+        let call = format!("{name}(");
+        t.match_indices(call.as_str())
+            .filter(|(j, _)| {
+                t[..*j]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+            })
+            .count()
+    }
+
+    /// The narrower aborts are called only at their check sites
+    /// ([`SINKS`]), with the counts listed. A new call is a new way for a
+    /// holder of the narrower capability to abort, so it fails here until
+    /// it is added to the list. The test does not check that a theorem
+    /// argues for a site: `verus/THEOREMS.md`'s "Valid programs never
+    /// abort" does not list `heap::slotstate`'s.
+    #[test]
+    fn narrow_aborts_only_at_their_check_sites() {
+        let lines = shipped_lines();
+        for &(name, sites) in SINKS {
+            // (file, fn item line) -> calls.
+            let mut found: std::collections::BTreeMap<(&str, &str), usize> =
+                std::collections::BTreeMap::new();
+            for l in &lines {
+                let n = sink_calls(&l.t, name);
+                if n == 0 {
+                    continue;
+                }
+                let Some(&(file, f, _)) = sites
+                    .iter()
+                    .find(|(file, f, _)| l.rel == *file && l.sig.starts_with(f))
+                else {
+                    panic!(
+                        "{}: a call of `{name}` in `{}`, not one of its check sites",
+                        l.at, l.sig
+                    );
+                };
+                *found.entry((file, f)).or_default() += n;
+            }
+            for &(file, f, want) in sites {
+                let got = found.get(&(file, f)).copied().unwrap_or(0);
+                assert_eq!(
+                    got, want,
+                    "{file} `{f}`: got = {got} calls of `{name}`, want = {want}"
+                );
+            }
+        }
+    }
+
+    /// No `use` (of any visibility, over any number of lines) outside
+    /// `sys/` and `vspec/` names one of the narrower aborts ([`SINKS`]),
+    /// and none inside them renames one (`as`), so a call cannot escape
+    /// [`narrow_aborts_only_at_their_check_sites`] under another name. The
+    /// one exception is `class/table.rs`'s import of `vspec::check::check`
+    /// under its own name, whose call that test sees.
+    #[test]
+    fn no_use_of_the_narrow_aborts() {
+        let allowed = [(
+            "class/table.rs",
+            concat!("use crate::vspec::chec", "k::check;"),
+        )];
+        let mut seen = 0;
+        let mut in_use = std::string::String::new();
+        for l in shipped_lines() {
+            let first = l.t.split_whitespace().take(2).any(|w| w == "use");
+            if !first && in_use != l.rel {
+                continue;
+            }
+            in_use = if l.t.ends_with(';') {
+                std::string::String::new()
+            } else {
+                l.rel.clone()
+            };
+            if allowed.iter().any(|(f, t)| l.rel == *f && l.t == *t) {
+                seen += 1;
+                continue;
+            }
+            // A sink's name; for `check`, a common word, the paths
+            // `check::check`, `check::{` and `check::*`, or `check` as a
+            // word of a `use` list's later line.
+            let check = concat!("chec", "k");
+            let paths = [
+                format!("{check}::{check}"),
+                format!("{check}::{{"),
+                format!("{check}::*"),
+            ];
+            let names_sink = SINKS
+                .iter()
+                .any(|(name, _)| *name != check && l.t.contains(name))
+                || paths.iter().any(|p| l.t.contains(p.as_str()))
+                || (!first && l.t.split([' ', ',', '{', '}']).any(|w| w == check));
+            if l.rel.starts_with("sys/") || l.rel.starts_with("vspec/") {
+                assert!(
+                    !(names_sink && l.t.contains(" as ")),
+                    "{}: a `use` that renames a narrower abort",
+                    l.at
+                );
+            } else {
+                assert!(!names_sink, "{}: a `use` of a narrower abort", l.at);
+            }
+        }
+        assert_eq!(
+            seen,
+            allowed.len(),
+            "got = {seen}, want = each of {allowed:?}"
+        );
+    }
+
+    /// Every trusted (`external_body`) exec function in the shipped
+    /// sources that can abort requires a capability for it. "Can abort"
+    /// is read from the text: the function does not return (`-> !`), or
+    /// its body has one of the tokens below (`assert!`, `panic!`, an
+    /// `unwrap`, a call of an abort, the trap instruction). Such a function
+    /// requires the bare clause `crate::sys::may_abort(),` (a line of its
+    /// own after `requires` or a `,`); a header line that names an abort
+    /// capability in any other form fails, unless it is listed here as
+    /// that function's compound clause, by its exact text
+    /// (`assert_flushed`, `assert_refill_empty` and `assert_rekey_flushed`'s
+    /// `may_abort() || *len == 0`, and `vspec::check::check`'s
+    /// `may_abort_corrupt() || c`). Or it is listed as unfailing (its panic
+    /// is its `requires`). Every listed function must still be one. Not
+    /// seen: a panic of an index or a slice (`vspec::print::base_slab_sizes` and
+    /// `layout::regions`' `word` index under their `requires`), and an
+    /// abort only through a function the body calls (Verus checks a call
+    /// against the callee's `requires` only in a verified body).
+    #[test]
+    fn trusted_aborts_require_a_capability() {
+        let cap = format!("{}{}", "may_", "abort");
+        let valid = format!("{}{}", "valid_", "aborts");
+        // The compound clauses, each `(file, fn item line start, clause)`:
+        // the abort is needed only when the asserted fact fails.
+        let len_zero = concat!("crate::sys::may_", "abort() || *len == 0,");
+        let compound = [
+            ("heap/mod.rs", "fn assert_flushed(", len_zero),
+            ("heap/mod.rs", "fn assert_refill_empty(", len_zero),
+            ("heap/mod.rs", "fn assert_rekey_flushed(", len_zero),
+            (
+                "vspec/check.rs",
+                "pub fn check(",
+                concat!("crate::sys::may_", "abort_corrupt() || c,"),
+            ),
+        ];
+        let unfailing = [("heap/others.rs", "fn assert_not_home(")];
+        let aborts = [
+            concat!("abo", "rt("),
+            concat!("abo", "rt!("),
+            concat!("abo", "rt_"),
+            "assert!(",
+            "assert_eq!(",
+            "assert_ne!(",
+            "panic!(",
+            "unreachable!(",
+            "todo!(",
+            "unimplemented!(",
+            ".unwrap()",
+            ".expect(",
+            "trap()",
+            "exit_group(",
+            "\"ud2\"",
+            "\"brk #",
+        ];
+        let (mut trusted, mut bad) = (0, Vec::new());
+        let mut used = std::collections::BTreeSet::new();
+        for (rel, text) in crate::testutil::shipped_sources() {
+            if rel == "api/restated.rs" {
+                continue;
+            }
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            for (i, &t) in lines.iter().enumerate() {
+                if t != concat!("#[verifier::", "external_body]") {
+                    continue;
+                }
+                // The item the attribute is on: the next line that is not
+                // an attribute or a comment.
+                let Some(f) = (i + 1..lines.len())
+                    .find(|&j| !lines[j].starts_with("#[") && !lines[j].starts_with("//"))
+                    .filter(|&j| crate::testutil::fn_item(lines[j]))
+                else {
+                    continue;
+                };
+                // An exec function with a body: not a ghost item, and its
+                // header ends at the body's `{`, not at a `;`.
+                if ["proof ", "spec ", "axiom "]
+                    .iter()
+                    .any(|q| lines[f].contains(&format!("{q}fn ")))
+                {
+                    continue;
+                }
+                let Some(b) = (f..lines.len()).find(|&j| {
+                    let l = lines[j];
+                    !l.starts_with("//") && (l == "{" || l.ends_with('{') || l.ends_with(';'))
+                }) else {
+                    continue;
+                };
+                if lines[b].ends_with(';') {
+                    continue;
+                }
+                let mut depth = 0i32;
+                let mut end = b;
+                for (j, l) in lines.iter().enumerate().skip(b) {
+                    if !l.starts_with("//") {
+                        depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
+                    }
+                    end = j;
+                    if depth <= 0 {
+                        break;
+                    }
+                }
+                let header = lines[f..b].join(" ");
+                let body = lines[b..=end]
+                    .iter()
+                    .filter(|l| !l.starts_with("//"))
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .replace("debug_assert", "");
+                let ends = lines[f..=b].join(" ").contains(") -> !");
+                if !ends && !aborts.iter().any(|a| body.contains(a)) {
+                    continue;
+                }
+                trusted += 1;
+                let at = format!("{rel}:{}: `{}`", f + 1, lines[f]);
+                // Whether `l` names this function; its entry is marked used.
+                let mut listed = |l: &[(&'static str, &'static str)]| {
+                    let hit = l.iter().find(|(p, s)| *p == rel && lines[f].starts_with(s));
+                    if let Some(&e) = hit {
+                        used.insert(e);
+                    }
+                    hit.is_some()
+                };
+                // Each header line that names an abort capability: a bare
+                // clause of `requires`, starting a clause, or the listed
+                // compound clause of this function.
+                let (mut kw, mut prev) = ("", "");
+                let (mut granted, mut other) = (false, false);
+                for &h in lines[f..b].iter().filter(|l| !l.starts_with("//")) {
+                    let word = h.split_whitespace().next();
+                    if let Some(k) = ["requires", "ensures", "recommends", "decreases", "returns"]
+                        .into_iter()
+                        .find(|k| word == Some(*k))
+                    {
+                        kw = k;
+                    }
+                    if h.contains(cap.as_str()) || h.contains(valid.as_str()) {
+                        let fresh = kw == "requires" && (prev == "requires" || prev.ends_with(','));
+                        let ok = (fresh && h == format!("crate::sys::{cap}(),"))
+                            || compound
+                                .iter()
+                                .any(|&(p, s, c)| h == c && listed(&[(p, s)]));
+                        granted |= ok;
+                        other |= !ok;
+                    }
+                    prev = h;
+                }
+                if !((granted && !other) || listed(&unfailing)) {
+                    bad.push(format!(
+                        "{at}: a trusted body that can abort, without a bare `{cap}` clause \
+                         or its listed compound one: `{header}`"
+                    ));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+        for e in unfailing
+            .into_iter()
+            .chain(compound.map(|(p, s, _)| (p, s)))
+        {
+            assert!(
+                used.contains(&e),
+                "{e:?}: listed, but no trusted body that can abort"
+            );
+        }
+        assert!(
+            trusted > 5,
+            "got = {trusted} trusted bodies that abort, want = the tree's"
         );
     }
 
