@@ -24,7 +24,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 broadcast axiom fn axiom_class_lock_inv(v: Inner)
     ensures
-        #[trigger] lock_inv(v) == v.inv(),
+        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
 ;
 ```
 
@@ -38,7 +38,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
     ensures
-        #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
+        #[trigger] crate::lock::assumed_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
             && v.oauth@.id() == init.oauth@.id()),
 ;
 ```

@@ -24,7 +24,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 broadcast axiom fn axiom_state_lock_inv(v: State)
     ensures
-        #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
+        #[trigger] crate::lock::assumed_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
 ;
 ```
 

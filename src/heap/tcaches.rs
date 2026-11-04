@@ -224,7 +224,7 @@ impl Tcaches {
 /// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
     ensures
-        #[trigger] crate::lock::lock_inv(v),
+        #[trigger] crate::lock::assumed_inv(v),
 ;
 
 // Byte offsets of `Tcaches`'s fields: `offset_of!`, which Verus cannot
@@ -1195,6 +1195,22 @@ impl Tcaches {
             theorem_tcache_destroyed_none(id, &w, &*u, found);
         }
         found
+    }
+}
+
+} // verus!
+
+verus! {
+
+/// The explicit-cache table lock's invariant, which
+/// [`axiom_tcaches_lock_inv`] states; its frame is uninterpreted.
+impl crate::lock::LockSpec for () {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
     }
 }
 

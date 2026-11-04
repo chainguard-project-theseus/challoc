@@ -81,7 +81,7 @@ use crate::layout::{CLASSES, Class, MAX_SLAB_WORDS, Regions};
 use crate::layout::{NCLASSES, bit_slots_in, class_table, process_regions, slots_in};
 use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{lock_frame, lock_init, lock_inv, rank_class, rank_meta, rank_sets, rank_table};
+use crate::lock::{lock_init, rank_class, rank_meta, rank_sets, rank_table};
 use crate::meta::Meta;
 #[cfg(verus_keep_ghost)]
 use crate::purge::PurgedZero;
@@ -2170,7 +2170,7 @@ broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
 /// functions that take the guard are the holders named here.
 broadcast axiom fn axiom_class_lock_inv(v: Inner)
     ensures
-        #[trigger] lock_inv(v) == v.inv(),
+        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
 ;
 
 /// Assumption (`lock.rs`): the sets behind a class lock stay over the
@@ -2181,7 +2181,7 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 /// `new` (`take_group` adds to the record, at its location).
 broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
     ensures
-        #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
+        #[trigger] crate::lock::assumed_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
             && v.oauth@.id() == init.oauth@.id()),
 ;
 
@@ -5856,6 +5856,22 @@ pub proof fn gather(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int,
     } else {
         assert(aset(a, lo, hi) =~= VSet::empty());
         assert(bag@ =~= bag@.union(aset(a, lo, hi)));
+    }
+}
+
+} // verus!
+
+verus! {
+
+/// The class lock's invariant and frame, which [`axiom_class_lock_inv`]
+/// and [`axiom_class_lock`] state.
+impl crate::lock::LockSpec for Inner {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
     }
 }
 

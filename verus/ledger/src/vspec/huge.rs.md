@@ -12,7 +12,7 @@ file.
 
 ## `axiom_huge_lock_inv`
 
-src/vspec/huge.rs:32. Kind: axiom. Category: allocator invariant.
+src/vspec/huge.rs:30. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: every holder of the huge lock leaves `huge::Inner::wf` true when it unlocks, so the lock's invariant is `Inner::wf`.
@@ -20,13 +20,13 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
     ensures
-        #[trigger] lock_inv(v) == v.wf(),
+        #[trigger] crate::lock::assumed_inv(v) == v.wf(),
 ;
 ```
 
 ## `axiom_huge_lock_frame`
 
-src/vspec/huge.rs:43. Kind: axiom. Category: allocator invariant.
+src/vspec/huge.rs:41. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: what every value the huge lock holds keeps from the one `Huge::new` created it with is exactly the ghost page count, page shift and `Meta` identity.
@@ -34,6 +34,6 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: crate::huge::Inner)
     ensures
-        #[trigger] lock_frame(a, b) == (a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg() && a.spec_mid() == b.spec_mid()),
+        #[trigger] crate::lock::assumed_frame(a, b) == (a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg() && a.spec_mid() == b.spec_mid()),
 ;
 ```

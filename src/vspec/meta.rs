@@ -3,8 +3,6 @@
 
 use vstd::prelude::*;
 
-use crate::lock::{lock_frame, lock_inv};
-
 verus! {
 
 /// Assumption: every holder of the metadata lock leaves `Inner::wf` true
@@ -32,7 +30,7 @@ verus! {
 /// that take the guard are the holders named here.
 pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
     ensures
-        #[trigger] lock_inv(v) == v.wf(),
+        #[trigger] crate::lock::assumed_inv(v) == v.wf(),
 ;
 
 /// Assumption: what every value the metadata lock holds keeps from the
@@ -44,7 +42,7 @@ pub(crate) broadcast axiom fn axiom_meta_lock_inv(v: crate::meta::Inner)
 /// and the test-only `set_eager_for_test` writes only `eager`.
 pub(crate) broadcast axiom fn axiom_meta_lock_frame(a: crate::meta::Inner, b: crate::meta::Inner)
     ensures
-        #[trigger] lock_frame(a, b) == (a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
+        #[trigger] crate::lock::assumed_frame(a, b) == (a.live_id() == b.live_id() && a.pages_id() == b.pages_id()
             && a.spec_page() == b.spec_page() && a.spec_base() == b.spec_base() && a.spec_len() == b.spec_len()),
 ;
 
