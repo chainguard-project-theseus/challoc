@@ -426,8 +426,8 @@ impl ArenaStats {
     /// parts and `mapped` theirs. Every part is a natural, so they give
     /// `resident >= active + metadata`, `active >= allocated` and
     /// `mapped == resident + retained`. Every stored `ArenaStats`
-    /// satisfies them (the stats lock's invariant,
-    /// `vspec::arena::axiom_arena_stats_lock_inv`).
+    /// satisfies them (the stats lock's invariant, `ArenaStats`'s
+    /// `LockSpec` impl).
     pub open spec fn identities(self) -> bool {
         &&& self.small_allocated <= self.small_active
         &&& self.large_allocated <= self.large_active
@@ -2416,16 +2416,34 @@ proof fn lemma_snapshot_frame_reflexive(v: Snapshot)
 {
 }
 
-/// An arena statistics lock's invariant, which
-/// `vspec::arena::axiom_arena_stats_lock_inv` states, and its frame,
-/// which holds of any two values. Every stored record does keep the
-/// `index` of the `ArenaStats::empty` that `Arena::init` creates the lock
-/// with (`collect_arena_with` ensures it), but `Arena::store_stats` does
-/// not require the record it stores to keep that or any other field, so
-/// no proof needs a constant and `true`, the weakest frame, is enough.
+/// An arena statistics lock's invariant is the accounting identities
+/// ([`ArenaStats::identities`]), and its frame holds of any two values.
+/// Every stored record does keep the `index` of the `ArenaStats::empty`
+/// that `Arena::init` creates the lock with (`collect_arena_with` ensures
+/// it), but `Arena::store_stats` does not require the record it stores to
+/// keep that or any other field, so no proof needs a constant and `true`,
+/// the weakest frame, is enough.
+///
+/// `Arena::init` writes the lock over `ArenaStats::empty` through
+/// `Arena::put_stats`, which is trusted (`external_body`): its bytes are
+/// those of `Lock::new(ArenaStats::empty(index), ..)`, which the test
+/// `put_stats_writes_lock_new_of_empty` compares, and `empty` ensures the
+/// identities. Both are checked at every release: each holder outside the tests
+/// (`Arena::stats_into` and `Arena::add_stats_to`, which only read, and
+/// `Arena::store_stats`, which stores a value it requires them of) ends
+/// with `LockGuard::unlock`, which requires both, on every path to a
+/// return (`api::tests::guards_end_in_unlock`). `Arena::store_stats`'s one
+/// caller, [`collect_into`], stores what [`collect_arena_with`] computes,
+/// whose ensures give the identities. The fork handlers take and release
+/// the raw lock without touching the value, and nothing calls
+/// `get_unlocked` on it. What is left is the mutex contract
+/// (`lock::axiom_acquired`).
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for ArenaStats {
     open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+        self.identities()
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {

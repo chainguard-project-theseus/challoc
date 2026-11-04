@@ -6,7 +6,7 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 30 of those seams that are still seams in the
+*This file lists the 29 of those seams that are still seams in the
 ledger. The others are verified or no longer exist, so their rows are
 left out: among them `axiom_raw_valid`, gone, and `axiom_process_shared`,
 which `lemma_process_shared` (`heap/shared.rs`) now proves from the
@@ -45,7 +45,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 30 seams listed: 10 sound, 13 sound (premise), 7 fixed.
+Totals for the 29 seams listed: 9 sound, 13 sound (premise), 7 fixed.
 
 ## Per seam
 
@@ -75,7 +75,6 @@ Totals for the 30 seams listed: 10 sound, 13 sound (premise), 7 fixed.
 | `axiom_state_lock_inv` | `purge/background.rs` | sound | The initial value meets it; `start` (both holds), `main`'s exit and `fork_child` assert it, including `exited ==> !present`. |
 | `axiom_user_va_limit` | `sys/pac.rs` | sound | Linux's default map window is at most 2^48 on both targets. |
 | `axiom_auth_sign` | `sys/pac.rs` | sound | True for every address below `user_va_limit()` and every modifier, and with the keys disabled. |
-| `axiom_arena_stats_lock_inv` | `vspec/arena.rs` | sound | One axiom for `ArenaStats`; `empty` and `store_stats` keep `identities`. |
 | `axiom_class_table_wf` | `vspec/class.rs` | sound | Sizes and `wf` verified for every page geometry, both quanta. |
 | `axiom_ptr_add_addr` | `vspec/ptr.rs` | sound | True: `add` is `wrapping_add` where it is defined (see "Premises" for the harness's reach). |
 | `axiom_fresh_anon_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for any range; its call sites (`huge/mod.rs`) pass a run's freshly mapped pages. |

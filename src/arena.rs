@@ -49,8 +49,6 @@ use crate::meta::{Meta, MetaClaim};
 use crate::purge::Left;
 use crate::stats::ArenaStats;
 use crate::vspec::addr::addr_to_ptr;
-#[cfg(verus_keep_ghost)]
-use crate::vspec::arena::axiom_arena_stats_lock_inv;
 use crate::vspec::cbuf::CCall;
 use crate::vspec::count::CountPerm;
 #[cfg(verus_keep_ghost)]
@@ -1136,8 +1134,6 @@ impl Arena {
             final(parts).stats.value().rank() == rank_arena_stats(index as int),
             final(parts).last_exit_purge.is_init(),
     {
-        broadcast use axiom_arena_stats_lock_inv;
-
         proof {
             axiom_arena_layout();
         }
@@ -1389,8 +1385,6 @@ impl Arena {
             final(out).identities(),
             *final(ord) == *old(ord),
     {
-        broadcast use axiom_arena_stats_lock_inv;
-
         proof {
             use_type_invariant(self);
         }
@@ -1429,8 +1423,6 @@ impl Arena {
         ensures
             *final(ord) == *old(ord),
     {
-        broadcast use axiom_arena_stats_lock_inv;
-
         proof {
             use_type_invariant(self);
             // The value this holder leaves satisfies the lock's invariant.
@@ -1947,9 +1939,9 @@ unsafe impl Send for SparePerm {
 verus! {
 
 impl Created {
-    /// What [`lock_inv`] states of a creation lock's value
-    /// ([`axiom_arenas_lock_inv`]): `n` is at most [`MAX_ARENAS`], the
-    /// half's count is `n`, and every published entry is below it.
+    /// What [`lock_inv`] states of a creation lock's value (`Created`'s
+    /// `LockSpec` impl): `n` is at most [`MAX_ARENAS`], the half's count is
+    /// `n`, and every published entry is below it.
     pub closed spec fn ok(self) -> bool {
         &&& self.n <= MAX_ARENAS
         &&& self.half@@.0 == self.n
@@ -2109,28 +2101,6 @@ const _: () = assert!(
 );
 
 verus! {
-
-/// The creation lock's invariant ([`Created::ok`]): `n` is at most
-/// [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`,
-/// and no published entry at or above it. Trusted only because `assumed_inv`
-/// is uninterpreted. Its writers are verified and show it:
-/// `Arenas::init`'s `Lock::new` (the automatic count, arena 0 alone),
-/// `Arenas::create`, which publishes entry `n` and then stores `n + 1` for
-/// an `n` below `MAX_ARENAS` (a failed `build` leaves the value as it was,
-/// `build`'s ensures), and `Arenas::materialise`, which publishes an
-/// automatic index, below the count (the frame,
-/// [`axiom_arenas_lock_frame`]).
-///
-/// `Arenas::assign` holds the guard while it reads the per-arena counts
-/// (atomics); it neither reads nor writes the locked value. Each of the
-/// three guard holders ends with `LockGuard::unlock`, which requires this and
-/// the frame, on every path to a return (`api::tests::guards_end_in_unlock`).
-/// `api::tests::lock_holders_match_inv_docs` checks that the functions
-/// that take the guard are the holders named here.
-pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == v.ok(),
-;
 
 /// The permissions to the fields of an `Arenas` under construction but
 /// its two arrays, which are maps of their own, element by element
@@ -2468,8 +2438,6 @@ impl Arenas {
             r@.id() == count_id(&final(parts).count.value()),
             r@.value() == auto,
     {
-        broadcast use axiom_arenas_lock_inv;
-
         proof {
             axiom_arenas_layout();
         }
@@ -3226,12 +3194,7 @@ impl Arenas {
         proof {
             use_type_invariant(self);
         }
-        let r = self.lock.lock_held_perm(Tracked(ord));
-        proof {
-            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
-
-        }
-        r
+        self.lock.lock_held_perm(Tracked(ord))
     }
 
     /// Release the creation lock [`Arenas::lock_held`] took, handing back
@@ -3576,21 +3539,6 @@ impl Arenas {
 
 verus! {
 
-/// Assumption (`lock.rs`): what the creation lock's value keeps from the
-/// value it was created with is exactly the snapshot half's location and
-/// a count at or above the one it was created with (the automatic count,
-/// `Arenas::type_inv`). Its writers are verified against it: the value
-/// `Arenas::init` creates the lock with keeps it trivially, and
-/// `Arenas::create` (which raises `n` by one and updates the half in
-/// place, `GhostVarAuth::update` keeping its location) and
-/// `Arenas::materialise` (whose `build` updates the half in place) assert
-/// it after `build`; their early returns leave the value as it was (for a
-/// failed `build`, by `build`'s ensures).
-broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
-    ensures
-        #[trigger] crate::lock::assumed_frame(init, v) == (v.n >= init.n && v.half@.id() == init.half@.id()),
-;
-
 impl Arenas {
     /// The registry is the process's: its bound-count invariants and its
     /// record of published arenas are those of
@@ -3708,8 +3656,6 @@ impl Arenas {
         #[allow(unused_variables)]
         let c = &mut *g;
         proof {
-            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
-
             assert(c.ok());
         }
         // As in `get`; under the lock, the snapshot's half also says
@@ -3738,8 +3684,6 @@ impl Arenas {
         }
         let r = self.build(shared, index, Tracked(c.half.borrow_mut()), Tracked(&mut under));
         proof {
-            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
-
             // The lock's invariant again: an automatic index is below the
             // count (the frame keeps the count at or above `auto`).
             assert(lock_inv(*c));
@@ -3985,8 +3929,6 @@ impl Arenas {
         // no arena at `index`, the count, yet.
         let c = &mut *g;
         proof {
-            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
-
             assert(c.ok());
         }
         let cost = build_cost(&shared.meta);
@@ -4024,8 +3966,6 @@ impl Arenas {
             }
         });
         proof {
-            broadcast use {axiom_arenas_lock_inv, axiom_arenas_lock_frame};
-
             // The lock's invariant again: arena `index` is below the count.
             assert(lock_inv(*c));
             // And its frame: the count went up, the half kept its location.
@@ -4061,16 +4001,46 @@ impl Arenas {
 
 verus! {
 
-/// The creation lock's invariant and frame, which
-/// [`axiom_arenas_lock_inv`] and [`axiom_arenas_lock_frame`] state.
+/// The creation lock's invariant is [`Created::ok`]: `n` is at most
+/// [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`,
+/// and no published entry at or above it. Its frame is the snapshot
+/// half's location and a count at or above the one the lock was created
+/// with (the automatic count, `Arenas::type_inv`).
+///
+/// `Arenas::init`'s `Lock::new` builds the value (the automatic count,
+/// arena 0 alone; `Lock::new` requires the invariant), and both are
+/// checked at every guard's release: each holder outside the tests
+/// (`Arenas::assign`, which reads only atomics, `Arenas::create`, which
+/// publishes entry `n` and then stores `n + 1`, and
+/// `Arenas::materialise`, which publishes an automatic index below the
+/// count) ends with `LockGuard::unlock`, which requires both, on every
+/// path to a return (`api::tests::guards_end_in_unlock`). The fork
+/// handlers keep the cell's permission from `Arenas::lock_held` to
+/// `Arenas::unlock_held` without writing the value; that release
+/// requires the invariant (`Arenas::frozen`) but not the frame, which the
+/// unwritten value keeps from the acquisition. Nothing calls
+/// `get_unlocked` on it. What is left is the mutex contract
+/// (`lock::axiom_acquired`).
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for Created {
-    open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+    closed spec fn lock_spec_inv(self) -> bool {
+        self.ok()
     }
 
-    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+    closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        v.n >= init.n && v.half@.id() == init.half@.id()
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_arenas_frame_reflexive(v: Created)
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!
