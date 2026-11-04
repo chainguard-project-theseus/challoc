@@ -186,21 +186,22 @@ impl Built {
 /// value.
 pub uninterp spec fn shared_at(p: *mut Shared) -> Shared;
 
-/// Assumption: one `Shared` per process. The process's regions
+/// The process's regions
 /// ([`process_regions`](crate::layout::process_regions)) are those of
 /// the `Shared` in its storage, which `api::init` builds once, before it
 /// publishes `READY`, and [`pac_mode`](super::pac_mode) is whether that
-/// `Shared`'s `push_flags` has [`PUSH_PAC`] set. Both are uninterpreted,
-/// and this defines them. One more trusted fact states the regions'
-/// page: `getauxval`'s specification (`sys::auxv`), which agrees with
-/// this one because `api::init` reserves the regions with that page.
-/// The unit tests build further `Shared`s elsewhere; the assumption is
-/// about the shipped library.
-axiom fn axiom_process_shared()
+/// `Shared`'s `push_flags` has [`PUSH_PAC`] set: their definitions, both
+/// opaque, revealed here. One trusted fact states the regions' page:
+/// `getauxval`'s specification (`sys::auxv`), which agrees with `process_regions`
+/// because `api::init` reserves the regions with that page.
+proof fn lemma_process_shared()
     ensures
         crate::layout::process_regions() == shared_at(shared_storage()).regions,
         super::pac_mode() == (shared_at(shared_storage()).push_flags & PUSH_PAC != 0),
-;
+{
+    reveal(crate::layout::process_regions);
+    reveal(super::pac_mode);
+}
 
 /// Once the allocator is published, the process's regions are the
 /// published `Shared`'s ([`Shared::built`]): well formed, separated, inside
@@ -217,7 +218,7 @@ pub proof fn lemma_process_padded()
         crate::layout::process_regions().padded(),
 {
     let tracked published = crate::api::axiom_published();
-    axiom_process_shared();
+    lemma_process_shared();
     assert(published.shared.value().built());
     reveal(crate::layout::Regions::fenced);
 }
@@ -1531,7 +1532,7 @@ axiom fn axiom_shared_built(
 /// value is the built one. Trusted, as `arena::axiom_arena_assemble` is:
 /// vstd has no way to relate a field's permission to the whole value.
 /// `init` needs it before the build is done (the process's regions,
-/// [`axiom_process_shared`], are the arena's and the tables').
+/// [`lemma_process_shared`], are the arena's and the tables').
 ///
 /// Called only by `Shared::init`. Checked by
 /// `crate::tests::trusted_mint_sites_are_pinned`, which pins its call sites to
@@ -2118,7 +2119,7 @@ impl Shared {
         let ghost regions0 = regions;
         proof {
             assert(crate::config::MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
-            axiom_process_shared();
+            lemma_process_shared();
             crate::meta::lemma_process_live_id();
             crate::meta::lemma_process_pages_id();
             let lg = regions.lg_page;
@@ -2394,7 +2395,7 @@ impl Shared {
                     assert(table_perms.contains_key(d));
                     assert(line_perms.contains_key(d));
                 }
-                axiom_process_shared();
+                lemma_process_shared();
                 let s = shared_at(this);
                 s.arenas.lemma_is_process();
             }

@@ -720,13 +720,16 @@ pub proof fn lemma_huge_fits(p: *mut u8, size: usize, a1: usize, a2: usize)
     }
 }
 
-/// Whether cache entries are stored signed: the process's `Shared` has
-/// [`PUSH_PAC`] set. Uninterpreted; `heap::shared::axiom_process_shared`
-/// ties it to the `push_flags` of the `Shared` in its storage. One value, since a process publishes one `Shared` and
-/// `push_flags` is written once, before the `Shared` is published. The
-/// unit tests build several with different flags, so the spec stands for
-/// the shipped library only.
-pub uninterp spec fn pac_mode() -> bool;
+/// Whether cache entries are stored signed: the `Shared` in the process's
+/// storage has [`PUSH_PAC`] set. One value, since a
+/// process publishes one `Shared` and `push_flags` is written once, before
+/// the `Shared` is published. Opaque; `heap::shared`'s
+/// `lemma_process_shared` reveals it. The unit tests build several with
+/// different flags, so the definition stands for the shipped library only.
+#[verifier::opaque]
+pub open(crate) spec fn pac_mode() -> bool {
+    Shared::built_at(Shared::storage()).push_flags & PUSH_PAC != 0
+}
 
 /// A slot start of class `c` has no other class, so the hint `Some(c)`
 /// names its class.

@@ -155,11 +155,17 @@ pub proof fn lemma_shared_static_len()
 }
 
 /// The process's regions: the `regions` of the one `Shared` a process
-/// publishes. Uninterpreted: the allocation paths that hold no `Shared`
-/// (a cache pop, a slab table's slot address) state their results
-/// against it. The unit tests build several `Shared`s over different
-/// regions; the assumption is about the shipped library.
-pub uninterp spec fn process_regions() -> Regions;
+/// publishes, the one `api::init` builds in its storage
+/// ([`Shared::storage`](crate::heap::Shared::storage)). The allocation
+/// paths that hold no `Shared` (a cache pop, a slab table's slot address)
+/// state their results against it. Opaque; `heap::shared`'s
+/// `lemma_process_shared` reveals it. The unit tests build several
+/// `Shared`s over different regions; the definition is about the shipped
+/// library.
+#[verifier::opaque]
+pub open(crate) spec fn process_regions() -> Regions {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).regions
+}
 
 /// Slab `slab` is a guard slab of a class table whose slabs per page is
 /// `1 << lg` and whose guard mask is `mask` (`SlabTable::is_guard_slab`):

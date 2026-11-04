@@ -1,4 +1,4 @@
-# Seam audit: allocator invariants, axioms and proof seams, the audited seams still trusted at `26f535a9`
+# Seam audit: allocator invariants, axioms and proof seams, the audited seams still trusted
 
 *An adversarial audit of the Verus seams of kind `axiom` or
 `external_body proof` (any category) and of category allocator invariant
@@ -6,9 +6,11 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 41 of those seams that the ledger at `26f535a9`
-still lists. The others are verified at `26f535a9` or no longer exist
-(among them `axiom_raw_valid`, gone), so their rows are left out; seams
+*This file lists the 36 of those seams that are still seams in the
+ledger. The others are verified or no longer exist, so their rows are
+left out: among them `axiom_raw_valid`, gone, and `axiom_process_shared`,
+which `lemma_process_shared` (`heap/shared.rs`) now proves from the
+opaque definitions of `process_regions` and `pac_mode`. Seams
 of this scope that the audit did not cover, such as
 `axiom_set_tables_lock_frame` and `axiom_snapshot_lock_frame`, are not
 listed. Each row names the seam by its item and its ledger file,
@@ -43,7 +45,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 41 seams listed: 20 sound, 14 sound (premise), 7 fixed.
+Totals for the 36 seams listed: 16 sound, 13 sound (premise), 7 fixed.
 
 ## Per seam
 
@@ -58,14 +60,12 @@ Totals for the 41 seams listed: 20 sound, 14 sound (premise), 7 fixed.
 | `axiom_class_lock` | `class/mod.rs` | sound | One `lock_frame` axiom: the slab count, `arena`, `table` and the owned-slab record's id (`oauth`). Nothing writes the first three, and only `take_group` writes the record. |
 | `axiom_fresh_slots_zero` | `class/mod.rs` | fixed | Requires `n <= nslots`, a `Fresh` state ticket for the slab, and the held slot tokens of the slots it covers, so the zero claim stays inside the slab. |
 | `axiom_discarded_slots_zero` | `class/mod.rs` | fixed | As `axiom_fresh_slots_zero`, for a `Purged` slab, with the `PurgedZero` witness of the call site's run-time test (`purged_is_zero`). |
-| `axiom_set_tables_lock_inv` | `class/sets.rs` | sound | `lock_inv(v)` is `forall g. v[g].claimed()`, a premise on the lock's writers: `SetTable::new` proves it and `SetTable::ensure` keeps it through `Lazy::ensure`. |
 | `axiom_table_lock_inv` | `class/table.rs` | sound | The initial value is verified and `take_group` asserts `inv`. `commit_run` and `commit_slab` keep every conjunct but `guards <= next_slab`, which rests on the premise the axiom's doc states: each slab below `next_slab` is reached once, by the cursor of the one arena its group went to. |
 | `axiom_table_lock_frame` | `class/table.rs` | sound | Nothing writes the geometry, the marker authority (`mloc`), the descriptor array or the watermark's ghost location. |
 | `store_owner` | `class/table.rs` | sound (premise) | Uses up the owner-store markers of the group's slabs (`owner_marks`), so a second store of one group does not verify. That holds while every holder of the commit lock restores `TableInner::inv` before releasing it (see "Premises"). |
 | `axiom_slot_loc` | `class/table.rs` | sound (premise) | Takes the class's `SlotLoc(c)` one-shot token, so it runs once per class. |
 | `axiom_fresh_words` | `class/table.rs` | fixed | Requires the words to end below `usize::MAX` and takes the class's `FreshWords(c)` token. Nothing ties `base` to the class's bitmap; a call at another address would give `WordPerm`s that no lemma separates from other permissions, so no `false`. |
 | `axiom_c_claim` | `heap/live.rs` | sound (premise) | The C contract: two claims of one slot start prove `false` through `theorem_apart`, as its doc says. Every C free is its own entry, with no ghost state from the allocation that made the block. |
-| `axiom_process_shared` | `heap/shared.rs` | sound (premise) | One `Shared` per process: its inputs exist once, because `Shared::begin` takes the process's one-shot token. |
 | `axiom_shared_layout` | `heap/shared.rs` | sound | The build's `const` assertion covers every clause. |
 | `axiom_shared_built` | `heap/shared.rs` | sound (premise) | Consumes the field permissions; a second use needs a second `Shared::begin`, which does not verify. |
 | `axiom_shared_regions` | `heap/shared.rs` | sound (premise) | A `'static` permission freezes the field; as `axiom_shared_built`. |
@@ -77,15 +77,12 @@ Totals for the 41 seams listed: 20 sound, 14 sound (premise), 7 fixed.
 | `Reserved::into_unbacked` | `layout/regions.rs` | sound | Consumes the token. |
 | `axiom_acquired` | `lock.rs` | sound (premise) | Private, called on the guard just built; `deref_mut` havocs the guard, so a changed guard cannot meet its `requires` (see "Premises"). |
 | `axiom_state_lock_inv` | `purge/background.rs` | sound | The initial value meets it; `start` (both holds), `main`'s exit and `fork_child` assert it, including `exited ==> !present`. |
-| `axiom_snapshot_lock_inv` | `stats.rs` | sound | `Snapshot::EMPTY` meets it; `collect_into` asserts it. |
 | `axiom_user_va_limit` | `sys/pac.rs` | sound | Linux's default map window is at most 2^48 on both targets. |
 | `axiom_auth_sign` | `sys/pac.rs` | sound | True for every address below `user_va_limit()` and every modifier, and with the keys disabled. |
 | `axiom_arena_stats_lock_inv` | `vspec/arena.rs` | sound | One axiom for `ArenaStats`; `empty` and `store_stats` keep `identities`. |
 | `axiom_class_table_wf` | `vspec/class.rs` | sound | Sizes and `wf` verified for every page geometry, both quanta. |
 | `axiom_huge_lock_inv` | `vspec/huge.rs` | sound | One axiom; `Huge::new` meets `Lock::new`'s `requires`. |
 | `axiom_huge_lock_frame` | `vspec/huge.rs` | sound | Reflexive; nothing writes the page count, the page shift or the `Meta` identity. |
-| `axiom_meta_lock_inv` | `vspec/meta.rs` | sound | As `axiom_huge_lock_inv`. |
-| `axiom_meta_lock_frame` | `vspec/meta.rs` | sound | As `axiom_huge_lock_frame`. |
 | `axiom_ptr_add_addr` | `vspec/ptr.rs` | sound | True: `add` is `wrapping_add` where it is defined (see "Premises" for the harness's reach). |
 | `axiom_fresh_anon_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for any range; its call sites (`huge/mod.rs`) pass a run's freshly mapped pages. |
 | `axiom_discarded_zero` | `huge/mod.rs` | sound (premise) | As `axiom_fresh_anon_zero`, for pages just discarded with `MADV_DONTNEED`. |
@@ -107,7 +104,7 @@ one-shot token) against main's.
 
   A misaligned `this` does the same through `is_aligned`, and two calls
   on one storage through `is_disjoint`. That second-call route would
-  also feed `axiom_process_shared`, `axiom_shared_built` and
+  also feed `axiom_shared_built` and
   `axiom_shared_regions`: a second permission to the `regions` field
   could be frozen with another value. `requires this ==
   shared_storage()` closes the first two; the `Shared` step's `Once`
