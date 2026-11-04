@@ -494,7 +494,7 @@ process statistics lock (`collect_into`, `snapshot`,
 these guards drops without it. For every other lock the invariant and
 frame are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Nine locks'
-holders all end with it. For six of them no axiom states `lock_inv` and
+holders all end with it. For seven of them no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
 left is the mutex contract (`lock::axiom_acquired`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
@@ -510,11 +510,12 @@ The impl for `huge::Inner` (`huge/mod.rs`), the huge lock: `Inner::wf`,
 with the ghost page count, page shift, region base and `Meta` identity
 fixed. The impl for `class::Inner` (`class/mod.rs`), the class lock:
 `Inner::inv`, with the sets' slab count, the arena, the table and the
-owned-slab record's location fixed.
-Two of the other three take them from axioms: the arena creation lock from
-`axiom_arenas_lock_inv` and `axiom_arenas_lock_frame` (`arena.rs`), and the commit lock from
-`table::axiom_table_lock_inv` and `axiom_table_lock_frame`
-(`class/table.rs`).
+owned-slab record's location fixed. The impl for `class::table::TableInner`
+(`class/table.rs`), the slab table's commit lock: `TableInner::inv`,
+with the ghost geometry, the marker authorities, the descriptor array
+and the watermark's ghost location fixed.
+The eighth, the arena creation lock, takes them from
+`axiom_arenas_lock_inv` and `axiom_arenas_lock_frame` (`arena.rs`).
 For the ninth, the per-arena statistics locks, the impl for
 `ArenaStats` (`stats.rs`) defines only the frame, true of any two values, which no release can
 break; its invariant is `axiom_arena_stats_lock_inv`'s. Each other
@@ -707,8 +708,8 @@ turns that into `is_huge_block(p, max(size, 1))`.
   `desc_ok`).
 - Class lock and commit lock invariants for the claim path:
   the class lock's, which `class::Inner`'s `LockSpec` impl
-  (`class/mod.rs`) defines, and `table::axiom_table_lock_inv`,
-  `_frame` (`class/table.rs`), all checked at the release: every
+  (`class/mod.rs`) defines, and the commit lock's, which
+  `table::TableInner`'s (`class/table.rs`) defines, both checked at the release: every
   holder outside the tests ends with `LockGuard::unlock`, which
   requires them (common premises, "Locks"); `next_slab_locked`
   (`class/table.rs`, verified); `bits_unchecked` is verified,
@@ -1207,8 +1208,8 @@ block; the free cores take the token C holds (common premises, "The
   class bitmap's through the permissions of `table::axiom_fresh_words`
   (`class/table.rs`), whose `word_addr` ties them to the word
   invariants.
-- The class lock's `LockSpec` impl (`class/mod.rs`) and the commit
-  lock axioms (`class/table.rs`; the commit lock's
+- The class and commit locks' `LockSpec` impls (`class/mod.rs`,
+  `class/table.rs`; the commit lock's
   value also keeps the owner words' persistent witness markers of the
   slabs below `next_slab`, and the class lock's frame the location of
   the owned-slab record, `Inner::oauth`; the class lock bridge
@@ -2776,8 +2777,8 @@ an owned slab, and ensures its pick's owner; `plan` collects
   fixed by `axiom_slot_loc`) and its commit lock holds from the
   watermark on (`TableInner::inv`), so a second store of a slab's owner
   does not verify, given that every holder of the commit lock restores
-  its invariant before releasing it (`axiom_table_lock_inv`, checked at
-  the release: every holder outside the tests ends with
+  its invariant before releasing it (`TableInner`'s `LockSpec` impl,
+  checked at the release: every holder outside the tests ends with
   `LockGuard::unlock`). "Handed out before read"
   is not checked by Verus: `owner_at` requires only `slab < nslabs`,
   and its callers (`owner`, `check_located`) test the watermark first;
@@ -2815,7 +2816,7 @@ an owned slab, and ensures its pick's owner; `plan` collects
   value because every store to an owner word is `store_owner`'s, which
   the source test `access_bitmap_words_only_through_vspec_word`
   (`tests/loom/tests/access.rs`) checks for `class/table.rs`: its one
-  atomic write is `store_owner`'s store, `axiom_table_lock_inv` (its `seen` and `next_slab`
+  atomic write is `store_owner`'s store, the commit lock's invariant (`TableInner::inv`; its `seen` and `next_slab`
   conjuncts, as the others, checked at the release by `LockGuard::unlock`),
   the class lock's frame (the owned-slab record's location never
   changes, `class::Inner`'s `LockSpec` impl),

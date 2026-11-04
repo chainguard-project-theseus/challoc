@@ -1,6 +1,3 @@
-# The lock contract, as for lock.rs's axiom_acquired and axiom_held.
-axiom_table_lock_inv	allocator invariant	none (assumption)
-axiom_table_lock_frame	allocator invariant	none (assumption)
 # One table per class per process: each uses up its class's one-shot token.
 axiom_slot_loc	allocator invariant	none (assumption)
 axiom_fresh_words	allocator invariant	Kani	trusted (partly checked, Kani: kani_proofs::zero::fresh_words_load_zero; not checked: the provenance clause of `perm_at` in `words_perms_ok` (`cast_provenance()`), which Kani cannot observe, the one-shot token `once` (one table per class per process), and the location identities `WordPerm::addr` and `word_addr`, ghost)
