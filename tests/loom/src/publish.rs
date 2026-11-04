@@ -24,7 +24,7 @@
 //! (`present = thread.is_some()`, without the `exited` test) does in some
 //! execution: `B` sees the withdrawal and exits between `S`'s two holds.
 //! Verus proves the lock-value side (`exited ==> !present` in
-//! `axiom_state_lock_inv`, asserted at each write); that `exited` is set
+//! `axiom_state_lock_inv`, asserted at each guard's write); that `exited` is set
 //! exactly when the created thread exits is read from `main`. The model
 //! adds the interleavings of the three threads, which Verus does not see
 //! (loom stops the control at its first failing one).
