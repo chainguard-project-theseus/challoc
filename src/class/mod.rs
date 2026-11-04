@@ -3898,6 +3898,7 @@ impl ClassState {
                 g@.arena@ == self.arena,
                 g@.table@ == self.spec_table(),
                 g@.oauth@.id() == self.spec_oloc(),
+                g.spec_lock() == self.inner.0,
                 self.published_by(*pubw@),
                 *cls == class_table()[self.spec_class() as int],
                 np <= MAX_PICKS,
@@ -3971,6 +3972,7 @@ impl ClassState {
                 g@.arena@ == self.arena,
                 g@.table@ == self.spec_table(),
                 g@.oauth@.id() == self.spec_oloc(),
+                g.spec_lock() == self.inner.0,
                 self.published_by(*pubw@),
                 *cls == class_table()[self.spec_class() as int],
                 np <= MAX_PICKS,
@@ -4787,6 +4789,7 @@ impl ClassState {
                 g@.arena@ == self.arena,
                 g@.table@ == self.spec_table(),
                 g@.oauth@.id() == self.spec_oloc(),
+                g.spec_lock() == self.inner.0,
                 self.published_by(*pubw@),
 
                 it.seq().len() == reopen.len,

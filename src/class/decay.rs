@@ -180,12 +180,14 @@ proof fn lemma_idle_same(t: SlabTable, s1: Map<nat, State>, s2: Map<nat, State>,
 }
 
 /// What [`ClassState::walk_empty`] and its visitors keep of the lock value
-/// `g` they walk: the invariant, over this state's table, arena and slabs.
+/// `g` they walk: the invariant, over this state's table, arena, slabs and
+/// owned-slab record.
 pub(super) open spec fn walk_ok(cs: &ClassState, g: Inner) -> bool {
     &&& g.inv()
     &&& g.table@ == cs.spec_table()
     &&& g.arena@ == cs.arena
     &&& g.nbits() == cs.spec_nslabs()
+    &&& g.oauth@.id() == cs.spec_oloc()
 }
 
 /// `slab` is the lowest member of `g`'s empty set above `last`: the slab
@@ -1356,6 +1358,7 @@ impl ClassState {
                 g.nbits() == g1.nbits(),
                 g.table == g1.table,
                 g.arena == g1.arena,
+                g.oauth@.id() == g1.oauth@.id(),
                 g.table@ == tb,
                 tb == self.spec_table(),
                 slabs.end == f0 + cnt,
