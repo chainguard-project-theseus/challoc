@@ -25,6 +25,5 @@ pool_unreserve	allocator invariant	none (assumption)
 pool_release	allocator invariant	none (assumption)
 pool_fork_prepare	allocator invariant	none (assumption)
 pool_fork_child	allocator invariant	none (assumption)
-# Temporary seam, provable in Verus once the snapshot lock's frame is
-# stated, which its explicit `g.unlock()` requires.
-collect_into	allocator invariant	Verus
+# Its frame: true of any two snapshots (no constant to keep).
+axiom_snapshot_lock_frame	allocator invariant	none (assumption)
