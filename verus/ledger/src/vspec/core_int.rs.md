@@ -28,6 +28,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_count_ones).
 
 > `u64::count_ones`: the number of set bits.
 
+Hashes: contract 2850801986, body none.
+
 ```rust
 pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
     ensures r as nat == popcount(x),
@@ -40,6 +42,8 @@ src/vspec/core_int.rs:25. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_get_unchecked).
 
 > `get_unchecked` is `index` without the bounds check: its safety contract is that the index is in bounds, so it has `index`'s precondition.
+
+Hashes: contract 2363183819, body none.
 
 ```rust
 pub assume_specification<T, I>[ <[T]>::get_unchecked::<I> ](slice: &[T], i: I) -> (b: &<I as core::slice::SliceIndex<[T]>>::Output)
@@ -54,6 +58,8 @@ pub assume_specification<T, I>[ <[T]>::get_unchecked::<I> ](slice: &[T], i: I) -
 src/vspec/core_int.rs:31. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_trailing_zeros).
 
+Hashes: contract 164998548, body none.
+
 ```rust
 pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
     ensures r == u64_trailing_zeros(x as u64),
@@ -64,6 +70,8 @@ pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
 
 src/vspec/core_int.rs:35. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_leading_zeros).
+
+Hashes: contract 3297159394, body none.
 
 ```rust
 pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
@@ -77,6 +85,8 @@ pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
 src/vspec/core_int.rs:40. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_is_power_of_two).
 
+Hashes: contract 2270565661, body none.
+
 ```rust
 pub assume_specification[ usize::is_power_of_two ](x: usize) -> (r: bool)
     ensures r <==> exists|k: nat| k < 64 && x as nat == #[trigger] pow2(k),
@@ -87,6 +97,8 @@ pub assume_specification[ usize::is_power_of_two ](x: usize) -> (r: bool)
 
 src/vspec/core_int.rs:44. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_is_power_of_two).
+
+Hashes: contract 238422297, body none.
 
 ```rust
 pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
@@ -101,6 +113,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u32_is_power_of_two
 
 > `u32::is_power_of_two`.
 
+Hashes: contract 4242205333, body none.
+
 ```rust
 pub assume_specification[ u32::is_power_of_two ](x: u32) -> (r: bool)
     ensures r <==> exists|k: nat| k < 32 && x as nat == #[trigger] pow2(k),
@@ -113,6 +127,8 @@ src/vspec/core_int.rs:55. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_next_power_of_two).
 
 > `next_power_of_two` panics (debug) or wraps (release) above `2^63`; challoc never asks for that.
+
+Hashes: contract 1420529411, body none.
 
 ```rust
 pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
@@ -132,6 +148,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::i64_wrapping_neg).
 
 > `i64::wrapping_neg`: `-x`, except that `i64::MIN` is its own negation.
 
+Hashes: contract 269586973, body none.
+
 ```rust
 pub assume_specification[ i64::wrapping_neg ](x: i64) -> (r: i64)
     ensures r == if x == i64::MIN { i64::MIN as int } else { -x },
@@ -144,6 +162,8 @@ src/vspec/core_int.rs:70. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_ilog2).
 
 > `usize::ilog2`: the position of the highest set bit; panics for 0.
+
+Hashes: contract 4120845868, body none.
 
 ```rust
 pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
@@ -158,6 +178,8 @@ src/vspec/core_int.rs:86. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u32_rotate_right).
 
 > `u32::rotate_right`: the bits shifted out at the bottom come back in at the top.
+
+Hashes: contract 1134367200, body none.
 
 ```rust
 pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
@@ -174,6 +196,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_rotate_right).
 
 > `u64::rotate_right`: the bits shifted out at the bottom come back in at the top (the count is taken modulo 64, as `core` documents).
 
+Hashes: contract 2671721552, body none.
+
 ```rust
 pub assume_specification[ u64::rotate_right ](x: u64, n: u32) -> (r: u64)
     ensures
@@ -188,6 +212,8 @@ src/vspec/core_int.rs:115. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.
+
+Hashes: contract 1619618750, body none.
 
 ```rust
 pub assume_specification[ core::hint::spin_loop ]();

@@ -11,14 +11,14 @@ env_var	C-program contract	none (assumption)
 # `CStr` literals, which Verus does not take: Verus sees each only as a
 # value of its type (the whole contract). The const asserts pin the
 # spelling of each name in every build.
-THP_NAMES	core library	Kani	discharged (const assert: `THP_NAMES` in src/config.rs)
-PERCPU_ARENA_NAMES	core library	Kani	discharged (const assert: `PERCPU_ARENA_NAMES` in src/config.rs)
+THP_NAMES	core library	Kani	discharged (const assert: `THP_NAMES` in src/config.rs)	contract 2041706674, body none
+PERCPU_ARENA_NAMES	core library	Kani	discharged (const assert: `PERCPU_ARENA_NAMES` in src/config.rs)	contract 2651964696, body none
 # Built from `TABLE`, which holds function pointers; claimed only as a value of its type.
-KEYS	function pointer	Kani	discharged (Kani: config::kani_config::keys_are_the_table_names)
+KEYS	function pointer	Kani	discharged (Kani: config::kani_config::keys_are_the_table_names)	contract 208287259, body none
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-Config::set_listed	function pointer	Kani	discharged (Kani: config::kani_config::set_listed_contract)
-Config::get	function pointer	Kani	trusted (partly checked, Kani: config::kani_config::get_contract; not checked: the real `Thp::name` and `PercpuArena::name`, which the harness stubs (they index the `CStr` tables `THP_NAMES` and `PERCPU_ARENA_NAMES`; Kani 0.68 has no C string literals))
+Config::set_listed	function pointer	Kani	discharged (Kani: config::kani_config::set_listed_contract)	contract 1746912615, body 2364960765
+Config::get	function pointer	Kani	trusted (partly checked, Kani: config::kani_config::get_contract; not checked: the real `Thp::name` and `PercpuArena::name`, which the harness stubs (they index the `CStr` tables `THP_NAMES` and `PERCPU_ARENA_NAMES`; Kani 0.68 has no C string literals))	contract 2444094337, body 4260931877
 # Inline assembly checked with Isla (verus/ISLA.md): run.sh checks
 # each against the contract verus/isla/seams.md quotes.
-malloc_conf_addr	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)
-je_malloc_conf_addr	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)
+malloc_conf_addr	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 235445132, body 2594729634
+je_malloc_conf_addr	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 3550187510, body 2728554437

@@ -18,6 +18,8 @@ Tool: Kani. Status: trusted.
 
 > libc's `FILE`, opaque: `malloc_info` only passes the caller's stream on.
 
+Hashes: contract 2139486100, body none.
+
 ```rust
 pub struct ExFile(libc::FILE);
 ```
@@ -29,6 +31,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::report::base_slab_sizes_retur
 
 > The smallest and largest [`crate::layout::BASE_CLASSES`] slab size of the classes `lo..=hi` (0 for an empty range), the table geometry the report compares a page-raised range with.
 
+Hashes: contract 394246006, body 2274552930.
+
 ```rust
 pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
     requires
@@ -39,6 +43,8 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
 
 src/vspec/print.rs:44. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_percpu_arena).
+
+Hashes: contract 3424993698, body none.
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::PercpuArena {

@@ -18,6 +18,8 @@ Tool: none (assumption). Status: trusted.
 
 > The bytes a [`Zeroed`] token covers read as zero, so a permission's byte state for them is zero.
 
+Hashes: contract 1872853538, body 4028365563.
+
 ```rust
 pub proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
     requires
@@ -34,6 +36,8 @@ Tool: none (assumption). Status: trusted.
 
 > The permission to bytes of challoc's memory, of any provenance, as the permission to them through an integer-to-pointer cast ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr), of [`cast_provenance`](crate::vspec::addr::cast_provenance)), the bytes and their values unchanged.
 
+Hashes: contract 1614243743, body 4028365563.
+
 ```rust
 pub proof fn axiom_cast(tracked m: &mut UserMem)
     ensures
@@ -49,6 +53,8 @@ src/vspec/user.rs:280. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: vspec::user::kani_copy::copy_raw_copies, vspec::user::kani_copy::copy_raw_copies_within).
 
 > `copy_nonoverlapping(src, dst, n)` for `u8` with the permissions to both ranges, and its effect on `d`'s byte state: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.
+
+Hashes: contract 2261514908, body 3828920028.
 
 ```rust
 unsafe fn copy_raw(src: *const u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&UserMem>, Tracked(d): Tracked<&mut UserMem>)

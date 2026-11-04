@@ -20,6 +20,8 @@ Tool: none (assumption). Status: trusted.
 
 > Feed `buf`-sized chunks from `read` to `on_line` one complete line at a time (without the newline), carrying a partial line across chunks; stops early when `on_line` returns `true`, and returns where that line is in `buf` (`None` when no line was taken).
 
+Hashes: contract 2281335006, body 324124794.
+
 ```rust
 pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: Option<(usize, usize)>)
     where
@@ -42,6 +44,8 @@ Tool: none (assumption). Status: trusted.
 
 > The deferred discovery's scratch: one static, used only by the thread that won a [`Deferred`] record's exchange from `PENDING` to `RUNNING`, until its `DONE` store (the process has one record, and the exchange lets one thread through), so no two references are live at once.
 
+Hashes: contract 1688138844, body 141014262.
+
 ```rust
 fn discovery_scratch(Tracked(won): Tracked<&CellPerm>) -> &'static mut Scratch
 ```
@@ -52,6 +56,8 @@ src/sys/cgroup.rs:1100. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > `slot` holds [`Cgroup::untracked`]`(state)`, written in place (the record is about 2.4 KiB; through a value it went by the stack of the thread that discovers).
+
+Hashes: contract 2432176480, body 2334025224.
 
 ```rust
 pub fn untracked_in_place(slot: &mut MaybeUninit<Cgroup>, state: State)
@@ -66,6 +72,8 @@ src/sys/cgroup.rs:1619. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned cell): in the child of a `fork`, a record whose phase the child's reset found `RUNNING` (`before`, the phase's permission just before the reset, and `perm`, just after it, at `PENDING`) was being discovered by a thread of the parent, which holds the cell's permission between its winning exchange and its `DONE` store ([`Deferred::claim`], [`Deferred::publish`]).
+
+Hashes: contract 1324447172, body none.
 
 ```rust
 axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &BytePerm) -> (tracked p: CellPerm)
@@ -86,6 +94,8 @@ src/sys/cgroup.rs:1700. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Run discovery if it has not run: `true` when this call ran it, so the caller sets the policy up from the first figures.
+
+Hashes: contract 244421472, body 3886542385.
 
 ```rust
 pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F, Tracked(seen): Tracked<&mut CellSeen>) -> bool

@@ -21,6 +21,8 @@ Tool: Kani. Status: trusted.
 
 > Opaque: `WriteCallback` holds a function pointer type, which Verus rejects.
 
+Hashes: contract 3845522629, body none.
+
 ```rust
 pub struct ExWriteCallback(WriteCallback);
 ```
@@ -31,6 +33,8 @@ src/api/print.rs:114. Kind: external_body. Category: function pointer.
 Tool: none (assumption). Status: trusted.
 
 > Call the caller's callback `cb`, when it gave one, with `opaque` and the C string in `buf`, which holds a NUL; whether it did.
+
+Hashes: contract 2110597196, body 1036480111.
 
 ```rust
 fn call_back(
@@ -52,6 +56,8 @@ Tool: none (assumption). Status: trusted.
 
 > `fwrite` of `s` to the caller's stream `f`.
 
+Hashes: contract 931825622, body 398941924.
+
 ```rust
 fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
     requires
@@ -66,6 +72,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: api::print::kani_print::word_
 
 > A configuration value's name (`config::Value::Str`, the `thp` key).
 
+Hashes: contract 2777297539, body 2814324046.
+
 ```rust
 fn word(s: &CStr) -> &str
 ```
@@ -76,6 +84,8 @@ src/api/print.rs:972. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
+
+Hashes: contract 3431982733, body 2091081685.
 
 ```rust
 fn hist_line<W: Write>(
@@ -95,6 +105,8 @@ src/api/print.rs:1642. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
+
+Hashes: contract 1752237532, body none.
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

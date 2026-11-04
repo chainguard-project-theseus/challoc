@@ -16,6 +16,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::abort::check_returns_only_if_
 
 > `assert!(c, "{}", msg)`: returns only if `c` holds.
 
+Hashes: contract 1059086586, body 83114680.
+
 ```rust
 pub fn check(c: bool, msg: &'static str)
     requires

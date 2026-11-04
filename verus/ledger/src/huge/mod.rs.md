@@ -18,6 +18,8 @@ Tool: RefinedRust. Status: trusted (requires, checked at every caller: the huge 
 
 > Write a zero to the byte at `addr`, the first byte of a run being placed (`split_guard`), to give its VMA an `anon_vma` by a write fault when `MADV_POPULATE_WRITE` is refused.
 
+Hashes: contract 3039576649, body 2972789721.
+
 ```rust
 fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>)
     requires
@@ -33,6 +35,8 @@ src/huge/mod.rs:2479. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
+
+Hashes: contract 1822803493, body none.
 
 ```rust
 axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
@@ -50,6 +54,8 @@ src/huge/mod.rs:2504. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted (requires, checked at its one caller, zero_run, from Huge::take: some MADV_DONTNEED of exactly these bytes succeeded, `sys::madvise_ok`, at that call site Huge::rediscard's; not checked: that nothing has written them since take's rediscard call).
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
+
+Hashes: contract 320898273, body none.
 
 ```rust
 axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)

@@ -1,2 +1,2 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-core::mem::drop	core library	Kani	discharged (Kani: kani_proofs::atomic::mem_drop)
+core::mem::drop	core library	Kani	discharged (Kani: kani_proofs::atomic::mem_drop)	contract 3832971753, body none

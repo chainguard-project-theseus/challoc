@@ -19,6 +19,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr
 
 > `addr as *mut u8`: a pointer to `addr` (Verus supports only the other direction of the cast), [`addr_ptr`], with [`cast_provenance`].
 
+Hashes: contract 3273012027, body 3586730087.
+
 ```rust
 pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
     ensures
@@ -34,6 +36,8 @@ src/vspec/addr.rs:43. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_copy_nonoverlapping).
 
 > `core::ptr::copy_nonoverlapping`, with the safety contract of the `core` documentation: both pointers are properly aligned and, unless the copy is empty, `src` is valid for reads and `dst` for writes of `count * size_of::<T>()` bytes, and the two ranges do not overlap.
+
+Hashes: contract 3491070697, body none.
 
 ```rust
 pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T, dst: *mut T, count: usize)
@@ -58,6 +62,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_is_null).
 
 > `<*mut T>::is_null`: the address is zero.
 
+Hashes: contract 2851786109, body none.
+
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: *mut T) -> (r: bool)
     ensures
@@ -73,6 +79,8 @@ src/vspec/addr.rs:66. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_is_null).
 
 > `<*const T>::is_null`: the address is zero.
+
+Hashes: contract 544862272, body none.
 
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ <*const T>::is_null ](p: *const T) -> (r: bool)

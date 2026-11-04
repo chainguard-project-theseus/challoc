@@ -18,6 +18,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::en
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
+Hashes: contract 1746040714, body 3052065581.
+
 ```rust
 pub fn store<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): Tracked<&mut EntryPerm<T>>)
     requires
@@ -38,6 +40,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::en
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
+Hashes: contract 3032578775, body 3163496896.
+
 ```rust
 pub fn load<T>(a: &AtomicPtr<T>, ordering: Ordering, Tracked(perm): Tracked<&EntryPerm<T>>) -> (r: *mut T)
     requires
@@ -56,6 +60,8 @@ src/vspec/entry.rs:117. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::entry_swap; not checked: this body under concurrency, which no loom model runs (its one caller is `Tcaches::destroy`); the pointers' provenance (the harness compares addresses); the instance challoc uses, the tcache table's `T = u8` (checked at `T = u64`); the C11 argument above that the permission's value is the entry's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `a.swap(v, ordering)`: the permission's value before, which becomes `v`.
+
+Hashes: contract 1251989958, body 3908961486.
 
 ```rust
 pub fn swap<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): Tracked<&mut EntryPerm<T>>) -> (r: *mut T)

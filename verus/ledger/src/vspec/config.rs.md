@@ -21,6 +21,8 @@ Tool: Kani. Status: trusted.
 
 > `core::ffi::c_void`, opaque: `config::linux` holds the symbol addresses its assembly returns as `*const c_void` and only casts them.
 
+Hashes: contract 331443444, body none.
+
 ```rust
 pub struct ExCVoid(core::ffi::c_void);
 ```
@@ -31,6 +33,8 @@ src/vspec/config.rs:20. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `core::ffi::CStr`, opaque: verified code only passes the static names of `config::Value::Str` on.
+
+Hashes: contract 3079426279, body none.
 
 ```rust
 pub struct ExCStr(core::ffi::CStr);
@@ -43,6 +47,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_cast).
 
 > `<*const T>::cast`: a pointer to `U`; nothing is claimed about it (`config::linux` only tests the result for null before a trusted read).
 
+Hashes: contract 3681771168, body none.
+
 ```rust
 pub assume_specification<T: core::marker::PointeeSized, U>[ <*const T>::cast::<U> ](p: *const T) -> *const U;
 ```
@@ -53,6 +59,8 @@ src/vspec/config.rs:29. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_wrapping_add).
 
 > `<*const T>::wrapping_add`: a pointer; nothing is claimed about it (`config::linux::env_var` walks `environ` with it, and only tests the result for null before a trusted read).
+
+Hashes: contract 2840327990, body none.
 
 ```rust
 pub assume_specification<T>[ <*const T>::wrapping_add ](p: *const T, count: usize) -> *const T;
@@ -65,6 +73,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::cstr_as_ptr).
 
 > `CStr::as_ptr`: the address of the string; nothing is claimed about it.
 
+Hashes: contract 569588339, body none.
+
 ```rust
 pub assume_specification[ core::ffi::CStr::as_ptr ](s: &core::ffi::CStr) -> *const core::ffi::c_char;
 ```
@@ -75,6 +85,8 @@ src/vspec/config.rs:38. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::char_to_digit).
 
 > `char::to_digit` (`core` documentation): the digits are `0`..`9`, then `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count; panics for a radix outside `2..=36`.
+
+Hashes: contract 2455008607, body none.
 
 ```rust
 pub assume_specification[ char::to_digit ](c: char, radix: u32) -> (r: Option<u32>)

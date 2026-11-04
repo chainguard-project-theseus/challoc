@@ -18,6 +18,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a free or a realloc, `vspec::cbuf`): the token of this call from C, which hands over the block at `p` ([`CCall`], [`CEntry::Frees`]), for `heap::live::axiom_c_claim` to use up.
 
+Hashes: contract 3969130002, body none.
+
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
     requires
@@ -34,6 +36,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, `vspec::cbuf`): the token of this call for the C caller's out-pointer `p`, the permission to write the `T` it names: none for a null `p`, and `p` is not null when the contract does not allow null (`nullable` false: `posix_memalign`'s `memptr`).
 
+Hashes: contract 704435470, body none.
+
 ```rust
 axiom fn axiom_c_out<T>(p: *mut T, nullable: bool) -> (tracked o: COut<T>)
     ensures
@@ -49,6 +53,8 @@ src/api/libc.rs:3192. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of an out-pointer argument, as [`axiom_c_out`]): when an export returns, the `T` its C caller reads at out-pointer `p` ([`c_out`]) is what the export's token for `p` holds after its last use.
+
+Hashes: contract 2332668077, body none.
 
 ```rust
 axiom fn axiom_out_at_return<T>(tracked o: COut<T>, p: *mut T)

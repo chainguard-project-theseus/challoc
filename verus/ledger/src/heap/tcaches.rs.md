@@ -20,6 +20,8 @@ file.
 src/heap/tcaches.rs:221. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
+Hashes: contract 2097268554, body none.
+
 ```rust
 const T_TABLE: usize = core::mem::offset_of!(Tcaches, table);
 ```
@@ -29,6 +31,8 @@ const T_TABLE: usize = core::mem::offset_of!(Tcaches, table);
 src/heap/tcaches.rs:223. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
+Hashes: contract 2489631139, body none.
+
 ```rust
 const T_LOCK: usize = core::mem::offset_of!(Tcaches, lock);
 ```
@@ -37,6 +41,8 @@ const T_LOCK: usize = core::mem::offset_of!(Tcaches, lock);
 
 src/heap/tcaches.rs:225. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
+
+Hashes: contract 1448314863, body none.
 
 ```rust
 const T_INV: usize = core::mem::offset_of!(Tcaches, inv);
@@ -48,6 +54,8 @@ src/heap/tcaches.rs:232. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 > `Tcaches`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `inv`) by the size, and a table entry not empty.
+
+Hashes: contract 121335155, body none.
 
 ```rust
 axiom fn axiom_tcaches_layout()
@@ -71,6 +79,8 @@ src/heap/tcaches.rs:369. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Tcaches` at `p` (`Tcaches::split`'s parts and table entries, every one initialised), as the `Tcaches`: the value of each field is what its permission holds.
+
+Hashes: contract 2409023419, body none.
 
 ```rust
 axiom fn axiom_tcaches_assemble(
@@ -107,6 +117,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the C caller's contract): the calling thread uses the heap it is about to reach through [`heap_at`] with no other reference to it live, here or on another thread: an explicit cache is used by one thread at a time and not after `tcache.destroy` (the contract of [`Tcaches::get`]), a destroyed cache is unreachable through the table, a thread's heap reaches its key destructor once, at thread exit, and a heap created and never published has no other reference.
 
+Hashes: contract 3505411415, body none.
+
 ```rust
 pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
     ensures
@@ -121,6 +133,8 @@ src/heap/tcaches.rs:756. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the heap `Heap::destroy` is handed.
+
+Hashes: contract 891042857, body 2351388946.
 
 ```rust
 pub(super) unsafe fn heap_at(p: *mut Heap, Tracked(_u): Tracked<&mut HeapUse>) -> (r: &mut Heap)

@@ -1,13 +1,13 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-u64::count_ones	core library	Kani	discharged (Kani: kani_proofs::core_int::u64_count_ones)
-<[T]>::get_unchecked::<I>	core library	Kani	discharged (Kani: kani_proofs::slice::slice_get_unchecked)
-usize::trailing_zeros	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_trailing_zeros)
-usize::leading_zeros	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_leading_zeros)
-usize::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_is_power_of_two)
-u64::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::u64_is_power_of_two)
-u32::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::u32_is_power_of_two)
-usize::next_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_next_power_of_two)
-i64::wrapping_neg	core library	Kani	discharged (Kani: kani_proofs::core_int::i64_wrapping_neg)
-usize::ilog2	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_ilog2)
-u32::rotate_right	core library	Kani	discharged (Kani: kani_proofs::core_int::u32_rotate_right)
-u64::rotate_right	core library	Kani	discharged (Kani: kani_proofs::core_int::u64_rotate_right)
+u64::count_ones	core library	Kani	discharged (Kani: kani_proofs::core_int::u64_count_ones)	contract 2850801986, body none
+<[T]>::get_unchecked::<I>	core library	Kani	discharged (Kani: kani_proofs::slice::slice_get_unchecked)	contract 2363183819, body none
+usize::trailing_zeros	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_trailing_zeros)	contract 164998548, body none
+usize::leading_zeros	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_leading_zeros)	contract 3297159394, body none
+usize::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_is_power_of_two)	contract 2270565661, body none
+u64::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::u64_is_power_of_two)	contract 238422297, body none
+u32::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::u32_is_power_of_two)	contract 4242205333, body none
+usize::next_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_next_power_of_two)	contract 1420529411, body none
+i64::wrapping_neg	core library	Kani	discharged (Kani: kani_proofs::core_int::i64_wrapping_neg)	contract 269586973, body none
+usize::ilog2	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_ilog2)	contract 4120845868, body none
+u32::rotate_right	core library	Kani	discharged (Kani: kani_proofs::core_int::u32_rotate_right)	contract 1134367200, body none
+u64::rotate_right	core library	Kani	discharged (Kani: kani_proofs::core_int::u64_rotate_right)	contract 2671721552, body none

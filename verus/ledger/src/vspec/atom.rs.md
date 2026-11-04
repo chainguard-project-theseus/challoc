@@ -21,6 +21,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
+Hashes: contract 3684131722, body 3052065581.
+
 ```rust
 pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm): Tracked<&mut UsizePerm>)
     requires
@@ -41,6 +43,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
+Hashes: contract 1353355935, body 3163496896.
+
 ```rust
 pub fn load_usize(a: &AtomicUsize, ordering: Ordering, Tracked(perm): Tracked<&UsizePerm>) -> (r: usize)
     requires
@@ -60,6 +64,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::atom::kani_atom::usize
 
 > `a as *const AtomicUsize`: a pointer to the atomic, which names it ([`usize_id_at`]).
 
+Hashes: contract 1082442458, body 2711750530.
+
 ```rust
 pub(crate) fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
     ensures
@@ -75,6 +81,8 @@ src/vspec/atom.rs:178. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize_at, and loom: watermark::loom_watermark_mirror_follows, watermark::loom_watermark_mirror_installed_concurrently and free::loom_free_after_synchronised_handoff; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; that `p` reaches the copy `usize_ptr` made it from (`usize_ptr`'s provenance, itself trusted); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `(*p).store(v, ordering)` through a pointer to an atomic, with the permission of the atomic it names (it panics for an `Acquire` or `AcqRel` ordering).
+
+Hashes: contract 3281897512, body 2105851067.
 
 ```rust
 pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering, Tracked(perm): Tracked<&mut UsizePerm>)
@@ -98,6 +106,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: watermark::loom_waterma
 
 Body mints Tracked at line 234.
 
+Hashes: contract 3762602297, body 696989655.
+
 ```rust
 pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(
     a: &AtomicUsize,
@@ -120,6 +130,8 @@ src/vspec/atom.rs:260. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_load_u16_at, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the table steps, in the configurations their files state; that every write to the owner word is `class::table::store_owner`'s (itself trusted) or vstd's `AtomicU16::store` spec, apart from the test helper `SlabTable::corrupt_owner_word`, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `(*p).load(ordering)` through `perm`, the permission to the atomic at `p`: the value the permission holds ([`u16_value`]).
+
+Hashes: contract 741036831, body 1754619584.
 
 ```rust
 pub(crate) unsafe fn load_u16_at(p: *const AtomicU16, ordering: Ordering, Tracked(perm): Tracked<&PointsTo<AtomicU16>>) -> (r: u16)

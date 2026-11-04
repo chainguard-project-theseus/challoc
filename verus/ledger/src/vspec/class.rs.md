@@ -16,6 +16,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::mem_drop).
 
 > `core::mem::drop`: runs `x`'s destructor (for a lock guard, the unlock).
 
+Hashes: contract 3832971753, body none.
+
 ```rust
 pub assume_specification<T>[ core::mem::drop ](x: T);
 ```

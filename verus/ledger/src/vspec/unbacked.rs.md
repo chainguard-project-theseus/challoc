@@ -17,6 +17,8 @@ Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes, once they are committed ([`committed_range`]), and the token that they read as zero.
 
+Hashes: contract 1915317840, body 1293528070.
+
 ```rust
 pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
     requires
@@ -35,6 +37,8 @@ src/vspec/unbacked.rs:148. Kind: external_body proof. Category: platform/kernel 
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of a lazily committed table, still uncommitted, and the token that they read as zero.
+
+Hashes: contract 1344647711, body 1293528070.
 
 ```rust
 pub proof fn into_lazy(tracked self) -> (tracked r: (PointsToRaw, Zeroed))

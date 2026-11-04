@@ -20,6 +20,8 @@ Tool: none (assumption). Status: trusted.
 
 > The size-class table in use, indexed by class number: [`BASE_CLASSES`] with the slab geometry of the classes below the kernel page raised to the page by [`adopt_page_geometry`] once at init.
 
+Hashes: contract 2572889232, body none.
+
 ```rust
 pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 ```
@@ -30,6 +32,8 @@ src/layout/mod.rs:1524. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: a [`table_ok`] value that a frozen permission to the storage of [`CLASSES`] holds is [`class_table`], since it is [`classes_after_init`], the contents of [`CLASSES`] after init.
+
+Hashes: contract 375473235, body none.
 
 ```rust
 pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
@@ -47,6 +51,8 @@ pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Clas
 src/layout/mod.rs:1535. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::class_table_new).
 
+Hashes: contract 3932435869, body 785407001.
+
 ```rust
 const fn new(table: [Class; NCLASSES]) -> ClassTable
 ```
@@ -57,6 +63,8 @@ src/layout/mod.rs:1551. Kind: external_body. Category: UnsafeCell/volatile/trans
 Tool: Kani. Status: trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: that a reader sees the table `init` left, which is the `Sync` impl's argument).
 
 > The table, for verified code: [`class_table`], whose entries are well formed and sized [`spec_class_size`] (`vspec::class::lemma_class_table_wf`).
+
+Hashes: contract 3303905810, body 3243834738.
 
 ```rust
 pub fn table(&self) -> (r: &[Class; NCLASSES])
@@ -70,6 +78,8 @@ src/layout/mod.rs:1600. Kind: external_body. Category: UnsafeCell/volatile/trans
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 > The storage of [`CLASSES`]' table, as a raw pointer.
+
+Hashes: contract 3755770132, body 3659477090.
 
 ```rust
 fn classes_ptr() -> (p: *mut [Class; NCLASSES])

@@ -19,6 +19,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: rseq::kani_rseq::read_global_
 
 > One read of a loader global [`symbols`] found.
 
+Hashes: contract 1325462615, body 4072880412.
+
 ```rust
 unsafe fn read_global<T: Copy>(p: *const T) -> T
     requires
@@ -31,6 +33,8 @@ src/rseq.rs:153. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: trusted (partly checked, Kani: rseq::kani_rseq::read_cpu_id_reads_the_field; not checked: that `area` (the thread pointer plus `__rseq_offset`) is this thread's registered rseq area and `size` its registered size, and that the field is 4-byte aligned (the area is 32-byte aligned), the `# Safety` premise the `requires` does not state, which the loader and the rseq ABI provide, and that only the kernel writes the field while the read runs).
 
 > A volatile read of the `cpu_id` field of the rseq area at `area`.
+
+Hashes: contract 1095263007, body 1368553990.
 
 ```rust
 unsafe fn read_cpu_id(area: *mut u8, Ghost(size): Ghost<u32>) -> u32
@@ -45,6 +49,8 @@ Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags` (null when they do not resolve).
 
+Hashes: contract 1031842438, body 2186581197.
+
 ```rust
 fn symbols() -> (*const isize, *const u32, *const u32)
 ```
@@ -55,6 +61,8 @@ src/rseq.rs:210. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > The calling thread's thread pointer: `%fs:0` (the TCB's self pointer) on x86_64, `tpidr_el0` on aarch64.
+
+Hashes: contract 542526640, body 2144560029.
 
 ```rust
 pub fn thread_pointer() -> usize

@@ -28,6 +28,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u8_is_ascii_digit).
 
 > `u8::is_ascii_digit`: `0`..`9`.
 
+Hashes: contract 3326735236, body none.
+
 ```rust
 pub assume_specification[ u8::is_ascii_digit ](b: &u8) -> (r: bool)
     ensures r <==> 48 <= *b <= 57,
@@ -40,6 +42,8 @@ src/vspec/sys.rs:15. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u8_is_ascii_whitespace).
 
 > `u8::is_ascii_whitespace`: space, tab, line feed, form feed and carriage return (not vertical tab).
+
+Hashes: contract 3673945350, body none.
 
 ```rust
 pub assume_specification[ u8::is_ascii_whitespace ](b: &u8) -> (r: bool)
@@ -54,6 +58,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u8_is_ascii_graphic
 
 > `u8::is_ascii_graphic`: `!`..`~`.
 
+Hashes: contract 1906044922, body none.
+
 ```rust
 pub assume_specification[ u8::is_ascii_graphic ](b: &u8) -> (r: bool)
     ensures r <==> 33 <= *b <= 126,
@@ -66,6 +72,8 @@ src/vspec/sys.rs:26. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::isize_wrapping_neg).
 
 > `isize::wrapping_neg`: `-x`, except that `isize::MIN` is its own negation.
+
+Hashes: contract 2978194794, body none.
 
 ```rust
 pub assume_specification[ isize::wrapping_neg ](x: isize) -> (r: isize)
@@ -80,6 +88,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_as_ptr).
 
 > The address of a slice's first element, for a syscall argument; the verified code never dereferences it.
 
+Hashes: contract 250737599, body none.
+
 ```rust
 pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
     ensures
@@ -92,6 +102,8 @@ pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
 src/vspec/sys.rs:41. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_as_ptr).
 
+Hashes: contract 2609362740, body none.
+
 ```rust
 pub assume_specification<T>[ <[T]>::as_ptr ](s: &[T]) -> *const T;
 ```
@@ -103,6 +115,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_from_ref_mut).
 
 > A reference as a raw pointer, for a syscall argument.
 
+Hashes: contract 723909333, body none.
+
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r: &T) -> *const T;
 ```
@@ -111,6 +125,8 @@ pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_ref ](r
 
 src/vspec/sys.rs:46. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_from_ref_mut).
+
+Hashes: contract 595208146, body none.
 
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ core::ptr::from_mut ](r: &mut T) -> *mut T;
@@ -122,6 +138,8 @@ src/vspec/sys.rs:49. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::option_map_or).
 
 > `Option::map_or`: `f` of the value, else `default`.
+
+Hashes: contract 385626731, body none.
 
 ```rust
 pub assume_specification<T, U, F: FnOnce(T) -> U>[ Option::<T>::map_or ](
@@ -144,6 +162,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::result_map_or).
 
 > `Result::map_or`: `f` of the `Ok` value, else `default`.
 
+Hashes: contract 1857037741, body none.
+
 ```rust
 pub assume_specification<T, E, U, F: FnOnce(T) -> U>[ Result::<T, E>::map_or ](
     result: Result<T, E>,
@@ -165,6 +185,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::result_unwrap_or).
 
 > `Result::unwrap_or`: the `Ok` value, else `default`.
 
+Hashes: contract 920930093, body none.
+
 ```rust
 pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>, default: T) -> (r: T)
     ensures
@@ -180,6 +202,8 @@ pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>
 src/vspec/sys.rs:85. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
+Hashes: contract 2656431228, body none.
+
 ```rust
 pub struct ExUtf8Error(core::str::Utf8Error);
 ```
@@ -190,6 +214,8 @@ src/vspec/sys.rs:88. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::misc::str_from_utf8; not checked: the harness checks byte strings up to 4 bytes; `core`'s word-at-a-time ASCII path (16 bytes and longer) is not reached).
 
 > `core::str::from_utf8`: the bytes as a `str` when they are UTF-8.
+
+Hashes: contract 2269075012, body none.
 
 ```rust
 pub assume_specification[ core::str::from_utf8 ](v: &[u8]) -> Result<&str, core::str::Utf8Error>;

@@ -35,10 +35,20 @@
 # proposed discharging tool. Categories and tools come from heuristics on
 # the item's kind, path, name and body. The seams of src/a/b.rs may have
 # an overrides file, verus/ledger/src/a/b.rs.overrides (one
-# `name<TAB>category<TAB>tool[<TAB>status]` per line, `#` comments; the
-# name as printed in that file's ledger, or `name#N` for the Nth seam of
-# that name in the file, in source order), which overrides them and
-# carries every status other than "trusted". --check also fails when a
+# `name<TAB>category<TAB>tool[<TAB>status[<TAB>hashes]]` per line, `#`
+# comments; the name as printed in that file's ledger, or `name#N` for
+# the Nth seam of that name in the file, in source order), which
+# overrides them and carries every status other than "trusted". Each
+# entry shows its hashes, `contract C, body B`: the cksum CRCs of its
+# contract (its attributes and signature with its clauses) and of its
+# body, `//` comments dropped and whitespace runs made one space, so
+# moving, reindenting or recommenting the item keeps them. A status that
+# cites a check (discharged, or trusted and partly checked) records the
+# hashes of the item it checked in a fifth column, `<TAB>contract C, body
+# B`; --check fails when they differ from the item's (its contract or body
+# changed, and --write does not change the overrides), when such a
+# status records none, and when another status records some. --check
+# also fails when a
 # status cites `Kani: <harness>` and no `#[kani::proof]` fn has that path,
 # or `const assert: <label> in <file>` and not exactly one assertion there
 # carries that label, or `Isla: <file>` and that file lists no such seam
@@ -114,6 +124,13 @@ function code(s,    out, i, n, ch, instr, j) {
     return out
 }
 
+# The line raw without its `//` comment, string literals kept (c is
+# code(raw), which blanks the comment and keeps the columns before it).
+function strip(raw, c) { sub(/[ \t]+$/, "", c); return substr(raw, 1, length(c)) }
+
+# The text a hash covers: whitespace runs made one space, the ends trimmed.
+function norm(s) { gsub(/[ \t]+/, " ", s); return trim(s) }
+
 function count(s, ch,    n, i) {
     n = 0
     for (i = index(s, ch); i > 0; i = index(s, ch)) { n++; s = substr(s, i + 1) }
@@ -175,7 +192,7 @@ function begin(kind, name,    ind) {
     n++
     efile[n] = FILE; eline[n] = LN; ekind[n] = kind; ename[n] = name
     eattrs[n] = attrs; edoc[n] = doc; ebody[n] = ""; enote[n] = ""
-    econtract[n] = ""; efmt[n] = ""
+    econtract[n] = ""; efmt[n] = ""; ehc[n] = hattrs; ehb[n] = ""
     ind = $0; sub(/[^ \t].*$/, "", ind); eind[n] = length(ind)
     return n
 }
@@ -187,8 +204,10 @@ function addline(e, raw) {
 
 # Feed one line of an item being captured; returns 1 once the item ends.
 # Phase 1 is the signature and clauses (the contract), phase 2 the body.
-function feed(raw, c,    i, len, ch, t, cut) {
-    len = length(c); t = trim(c)
+# ehc and ehb collect the contract and the body without comments, for
+# their hashes.
+function feed(raw, c,    i, len, ch, t, cut, r) {
+    len = length(c); t = trim(c); r = strip(raw, c)
     if (phase == 1) {
         if (pd == 0 && bd == 0 && t ~ /^(requires|ensures|recommends|returns|decreases|opens_invariants|no_unwind|default_ensures)([ \t]|$)/) clauses = 1
         cut = 0
@@ -201,17 +220,19 @@ function feed(raw, c,    i, len, ch, t, cut) {
                 if (pd == 0 && bd == 0 && !wholebody && (!clauses || trim(substr(c, 1, i - 1)) == "")) { cut = i; break }
                 bd++
             } else if (ch == ";" && pd == 0 && bd == 0) {
-                addline(cur, raw); return 1
+                addline(cur, raw); ehc[cur] = ehc[cur] " " r; return 1
             }
         }
-        if (wholebody && bd == 0 && pd == 0 && t ~ /}$/) { addline(cur, raw); return 1 }
-        if (!cut) { addline(cur, raw); return 0 }
+        if (wholebody && bd == 0 && pd == 0 && t ~ /}$/) { addline(cur, raw); ehc[cur] = ehc[cur] " " r; return 1 }
+        if (!cut) { addline(cur, raw); ehc[cur] = ehc[cur] " " r; return 0 }
         if (trim(substr(raw, 1, cut - 1)) != "") addline(cur, substr(raw, 1, cut - 1))
+        ehc[cur] = ehc[cur] " " substr(r, 1, cut - 1)
         sub(/[ \t]+$/, "", econtract[cur])
-        phase = 2; bodyd = 0; c = substr(c, cut)
+        phase = 2; bodyd = 0; c = substr(c, cut); r = substr(r, cut)
     }
     bodyd += count(c, "{") - count(c, "}")
     ebody[cur] = ebody[cur] " " c
+    ehb[cur] = ehb[cur] " " r
     return bodyd <= 0
 }
 
@@ -221,7 +242,7 @@ function finish_doc(    s) {
 
 newfile {
     newfile = 0
-    depth = 0; nimpl = 0; skip = 0; cap = 0; attrs = ""; doc = ""
+    depth = 0; nimpl = 0; skip = 0; cap = 0; attrs = ""; hattrs = ""; doc = ""
     pendtest = 0; lastfn = ""; pendimpl = ""; inverus = 0
 }
 
@@ -238,7 +259,7 @@ newfile {
     if (cap) {
         if (phase == 2 && c ~ /(Tracked|Ghost)::assume_new\(\)/ && !unchecked(cur)) {
             e = begin(c ~ /Tracked::assume_new/ ? "assume_new" : "ghost_assume_new", ename[cur])
-            econtract[e] = rawt
+            econtract[e] = rawt; ehc[e] = strip(raw, c)
         }
         if (phase == 2 && unchecked(cur)) {
             if (c ~ /Ghost::assume_new\(\)/) enote[cur] = enote[cur] "mints Ghost at line " LN "; "
@@ -257,7 +278,7 @@ newfile {
     }
     if (t == "") next
     if (t ~ /^#!?\[/) {
-        attrs = attrs " " t
+        attrs = attrs " " t; hattrs = hattrs " " strip(raw, c)
         if (t ~ /^#\[cfg\((all\()?test[,)]/) pendtest = 1
         if (t ~ /^#\[cfg\(test\)\]/) pendtest = 1
         next
@@ -267,7 +288,7 @@ newfile {
     # A test-only item is skipped from its first line through its body,
     # which may open lines below a multi-line fn signature (pendtest 2).
     if (pendtest) {
-        attrs = ""; doc = ""
+        attrs = ""; hattrs = ""; doc = ""
         if (opens > closes) { pendtest = 0; skip = 1; skipd = depth; depth += opens - closes }
         else if (pendtest == 1 && t ~ /(^|[ \t])fn [A-Za-z_]/ && t !~ /;$/) pendtest = 2
         else if (pendtest == 1 || t ~ /;$/ || closes > opens) pendtest = 0
@@ -312,7 +333,7 @@ newfile {
 
     if (kind == "" && inverus && c ~ /(Tracked|Ghost)::assume_new\(\)/) {
         e = begin(c ~ /Tracked::assume_new/ ? "assume_new" : "ghost_assume_new", lastfn)
-        econtract[e] = rawt
+        econtract[e] = rawt; ehc[e] = strip(raw, c)
     }
 
     if (kind != "") {
@@ -320,7 +341,7 @@ newfile {
         cap = !feed(raw, c)
         if (kind == "spec_impl" && name ~ /^(Display|Debug|LowerHex|UpperHex|Octal|Binary|LowerExp|UpperExp|Pointer)SpecImpl/) efmt[cur] = trait_key(t)
     }
-    attrs = ""; doc = ""
+    attrs = ""; hattrs = ""; doc = ""
 
     if (t ~ /^(pub(\([a-z]+\))? )?(unsafe )?impl[< ]/) {
         if (inverus && t ~ / for / && t !~ /SpecImpl/) verified_impl[FILE SUBSEP trait_key(t)] = 1
@@ -352,6 +373,8 @@ FILE ~ /^verus\/ledger\/.*\.rs\.overrides$/ {
     # The key is the source file and the name: src/a/b.rs:name[#N].
     k = substr(FILE, 14, length(FILE) - 23) ":" f[1]
     ocat[k] = f[2]; otool[k] = f[3]; ostat[k] = nf >= 4 ? f[4] : ""
+    ohash[k] = nf >= 5 ? f[5] : ""; oname[k] = f[1]
+    if (nf > 5) { print FILE ":" LN ": want at most name<TAB>category<TAB>tool<TAB>status<TAB>hashes" > "/dev/stderr"; bad = 1 }
     oseen[k] = 0; nover++; okey[nover] = k; ofile[k] = FILE
     next
 }
@@ -425,6 +448,7 @@ END {
         efile[m] = efile[e]; eline[m] = eline[e]; ekind[m] = ekind[e]; ename[m] = ename[e]
         eattrs[m] = eattrs[e]; edoc[m] = edoc[e]; ebody[m] = ebody[e]; enote[m] = enote[e]
         econtract[m] = econtract[e]; eind[m] = eind[e]; efmt[m] = efmt[e]
+        ehc[m] = ehc[e]; ehb[m] = ehb[e]
     }
     n = m
     ncat = split("inline asm|FFI/syscall|function pointer|UnsafeCell/volatile/transmute|raw pointer (internal)|raw pointer from C caller|panic/abort|atomics primitive|platform/kernel fact|C-program contract|termination|core library|allocator invariant", cats, "|")
@@ -436,6 +460,7 @@ END {
         key = efile[e] ":" ename[e]
         keyn = key "#" (++nocc[key])
         if (keyn in ocat) ok = keyn; else if (key in ocat) ok = key; else ok = ""
+        eok[e] = ok
         if (ok != "") {
             oseen[ok] = 1; ecat[e] = ocat[ok]; etool[e] = otool[ok]
             estat[e] = ostat[ok] == "" ? "trusted" : ostat[ok]
@@ -449,6 +474,7 @@ END {
         ct[ecat[e] SUBSEP etool[e]]++
     }
     for (i = 1; i <= nover; i++) if (!oseen[okey[i]]) { k = okey[i]; sub(/^[^:]*:/, "", k); print "seams: " ofile[okey[i]] ": " k " matches no seam" > "/dev/stderr"; bad = 1 }
+    if (hashdir != "") hashes()
 
     if (bad) exit 1
     if (mode == "summary") {
@@ -507,6 +533,7 @@ END {
             s = edoc[i]; sub(/\. .*$/, ".", s)
             if (s != "") { print "" > out; print "> " s > out }
             if (enote[i] != "") { s = enote[i]; sub(/; $/, ".", s); print "" > out; print "Body " s > out }
+            if (ehash[i] != "") { print "" > out; print "Hashes: " ehash[i] "." > out }
             print "" > out
             print "```rust" > out
             print econtract[i] > out
@@ -526,6 +553,41 @@ function rel(f,    r, i) {
 function rev(s,    r, i) { r = ""; for (i = length(s); i >= 1; i--) r = r substr(s, i, 1); return r }
 
 function nfiles_with_seams(    e, c, p) { c = 0; p = ""; for (e = 1; e <= n; e++) if (efile[e] != p) { c++; p = efile[e] }; return c }
+
+# ehash[e], entry e's hashes as `contract C, body B`: the POSIX cksum CRCs
+# of its contract (its attributes and the signature with its clauses)
+# and its body, each without `//` comments and with whitespace runs made
+# one space, so a moved, reindented or recommented item keeps them;
+# `body none` for an item with no body. All files go through one cksum
+# call. Then, into the file drift, one line per seam whose overrides line
+# disagrees: a status that cites a check (discharged, or trusted and
+# partly checked) must
+# record, in a fifth column, the hashes of the item it checked, and they
+# must equal the item's now; any other status records none.
+function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, rc, nc, what) {
+    for (e = 1; e <= n; e++) {
+        f = hashdir "/" e ".c"; printf "%s", norm(ehc[e]) > f; close(f)
+        if (norm(ehb[e]) != "") { f = hashdir "/" e ".b"; printf "%s", norm(ehb[e]) > f; close(f) }
+    }
+    cmd = "cd '" hashdir "' && cksum *"
+    while ((cmd | getline l) > 0) { split(l, h, " "); hv[h[3]] = h[1] }
+    close(cmd)
+    for (e = 1; e <= n; e++) {
+        if (!((e ".c") in hv)) { print "seams: cksum gave no hash for " efile[e] ":" eline[e] > "/dev/stderr"; bad = 1 }
+        ehash[e] = "contract " hv[e ".c"] ", body " ((e ".b") in hv ? hv[e ".b"] : "none")
+        ok = eok[e]; rec = ok != "" ? ohash[ok] : ""
+        chk = estat[e] ~ /^discharged/ || estat[e] ~ /^trusted \(partly checked/
+        if (chk && rec == "")
+            print "seams: " ofile[ok] ": " oname[ok] " (" efile[e] ":" eline[e] "): the status cites a check but records no hashes; once it holds for the item as it is, add them as a fifth column: " ehash[e] > drift
+        else if (chk && rec != ehash[e]) {
+            rc = rec; sub(/,.*$/, "", rc); nc = ehash[e]; sub(/,.*$/, "", nc)
+            what = rc != nc ? (substr(rec, length(rc) + 1) != substr(ehash[e], length(nc) + 1) ? "contract and body" : "contract") : "body"
+            print "seams: " ofile[ok] ": " oname[ok] " (" efile[e] ":" eline[e] "): its " what " changed since its status was checked (recorded " rec "; now " ehash[e] "): revisit the status, then record the hashes" > drift
+        } else if (!chk && rec != "")
+            print "seams: " ofile[ok] ": " oname[ok] ": hashes on a status that cites no check" > drift
+    }
+    printf "" > drift; close(drift)
+}
 EOF
 )
 
@@ -538,12 +600,21 @@ stream() {
   done
 }
 
-# gen MODE DIR: the totals on stdout (summary), or the ledger files under DIR.
-gen() {
-  stream | awk -v mode="$1" -v outdir="$2" "$marker
+# scan MODE DIR [HASHDIR]: scan the marked stream on stdin; the totals on
+# stdout (summary), or the ledger files under DIR, with the seams' hashes
+# (computed in HASHDIR, emptied first) and HASHDIR/drift, the overrides
+# lines whose hashes disagree with the items.
+scan() {
+  if [ -n "${3:-}" ]; then rm -rf "$3" && mkdir -p "$3"; fi
+  awk -v mode="$1" -v outdir="$2" -v hashdir="${3:-}" -v drift="${3:+$3/drift}" "$marker
 $overrides
 $prog
 $render"
+}
+
+# gen MODE DIR [HASHDIR]: scan over the tree.
+gen() {
+  stream | scan "$@"
 }
 
 # The checks the overrides statuses cite: one line `<overrides file> <tag>
@@ -901,7 +972,10 @@ case $mode in
   print) gen summary '' ;;
   write)
     tmp=$(mktemp -d) && trap 'rm -rf "$tmp"' EXIT
-    gen write "$tmp/ledger"
+    gen write "$tmp/ledger" "$tmp/hash"
+    # Hashes that disagree fail --check, not --write: the ledger shows the
+    # items' hashes for the overrides line once the status is revisited.
+    cat "$tmp/hash/drift" >&2
     mkdir -p verus/ledger
     find verus/ledger -name '*.rs.md' -exec rm -f {} +
     if [ -d "$tmp/ledger" ]; then (cd "$tmp/ledger" && find . -name '*.rs.md' -print) | while read -r f; do
@@ -910,7 +984,7 @@ case $mode in
     done; fi ;;
   check)
     tmp=$(mktemp -d) && trap 'rm -rf "$tmp"' EXIT
-    gen write "$tmp/ledger"
+    gen write "$tmp/ledger" "$tmp/hash"
     mkdir -p "$tmp/ledger"
     want=$( (cd "$tmp/ledger" && find . -name '*.rs.md') | sort)
     have=$( (cd verus/ledger 2>/dev/null && find . -name '*.rs.md') | sort)
@@ -925,6 +999,47 @@ case $mode in
     # A status cites a check that is gone (renamed or removed), or none.
     # shellcheck disable=SC2086 # one word per overrides file
     cites $ovfiles | while read -r o t c; do checkcite "$o" "$t" "$c"; done > "$tmp/cites"
+    # A status that cites a check records the hashes of the item it
+    # checked, so an edit to the item's contract or body fails here, even
+    # after --write, until the status is revisited and the hashes updated.
+    cat "$tmp/hash/drift" >> "$tmp/cites"
+    # Self-test, through the same scan: hashes recorded for the item pass,
+    # and still pass once the item moves down, is reindented or gains
+    # comments; an edited `requires`, attribute or body fails, as does a checked
+    # status (discharged or partly checked) with no hashes and a trusted
+    # one with some.
+    # hs STATUS HASHES < SOURCE: the drift lines for seam f of SOURCE.
+    hs() {
+      { printf '\001FILE verus/ledger/src/t.rs.overrides\n'
+        printf 'f\tpanic/abort\tKani\t%s%s\n' "$1" "${2:+$tab$2}"
+        printf '\001FILE src/t.rs\n'; cat; } |
+        scan write "$tmp/hs-ledger" "$tmp/hs-hash" > /dev/null 2>&1 || { echo "scan failed"; return 0; }
+      cat "$tmp/hs-hash/drift"
+    }
+    # hsrc REQUIRES BODY: seam f, requiring REQUIRES and returning BODY.
+    hsrc() { printf '%s\n' 'verus! {' '#[verifier::external_body]' 'fn f(x: u8) -> u8' "    requires $1," '{' "    $2" '}' '}'; }
+    hs_dis='discharged (Kani: k::f)'
+    hs_h=$(hsrc 'x < 3' 'x + 1' | hs "$hs_dis" '' | sed -n 's/.*records no hashes.*fifth column: //p')
+    case $hs_h in
+      'contract '[0-9]*', body '[0-9]*) ;;
+      *) echo "seams: self-test: hash: a discharged status with no hashes accepted, or no hashes offered: $hs_h" >> "$tmp/cites" ;;
+    esac
+    r=$(hsrc 'x < 3' 'x + 1' | hs "$hs_dis" "$hs_h")
+    [ -z "$r" ] || echo "seams: self-test: hash: the item's own hashes refused: $r" >> "$tmp/cites"
+    r=$(printf '%s\n' '' '// moved down' '' 'verus! {' '/// f.' '#[verifier::external_body]' \
+      'fn f(x: u8)  ->  u8 // a comment' '        requires x < 3, // and one' '{' '    // and one' '      x + 1' '}' '}' |
+      hs "$hs_dis" "$hs_h")
+    [ -z "$r" ] || echo "seams: self-test: hash: a moved, reindented, recommented item refused: $r" >> "$tmp/cites"
+    r=$(hsrc 'x < 4' 'x + 1' | hs "$hs_dis" "$hs_h")
+    case $r in *'its contract changed'*) ;; *) echo "seams: self-test: hash: an edited requires accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(hsrc 'x < 3' 'x + 1' | sed 's/^#\[verifier::external_body\]$/#[cfg(unix)] &/' | hs "$hs_dis" "$hs_h")
+    case $r in *'its contract changed'*) ;; *) echo "seams: self-test: hash: an added attribute accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(hsrc 'x < 3' 'x + 2' | hs "$hs_dis" "$hs_h")
+    case $r in *'its body changed'*) ;; *) echo "seams: self-test: hash: an edited body accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(hsrc 'x < 3' 'x + 1' | hs 'trusted (partly checked, Kani: k::f; not checked: x)' '')
+    case $r in *'records no hashes'*) ;; *) echo "seams: self-test: hash: a partly checked status with no hashes accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(hsrc 'x < 3' 'x + 1' | hs trusted "$hs_h")
+    case $r in *'hashes on a status that cites no check'*) ;; *) echo "seams: self-test: hash: hashes on a trusted status accepted: $r" >> "$tmp/cites" ;; esac
     # Self-test: a loom citation resolves only for a #[test] that is no
     # control, whose doc or body names the seam's function (a method by
     # `Type::fn`), in a file naming the seam's source file; and a

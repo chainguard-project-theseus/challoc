@@ -20,6 +20,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (Linux's default map window): the limit is at most `2^48`.
 
+Hashes: contract 3922516770, body none.
+
 ```rust
 pub axiom fn axiom_user_va_limit()
     ensures
@@ -33,6 +35,8 @@ src/sys/pac.rs:71. Kind: axiom. Category: platform/kernel fact.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Trusted (Armv8.3 PAuth, and the identity on x86_64): authenticating what signing a plain user address returned, with the same modifier, gives the address back.
+
+Hashes: contract 2618051585, body none.
 
 ```rust
 pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
@@ -50,6 +54,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 > Sign `p` with data key A and `modifier` (`pacda`).
 
+Hashes: contract 4234608999, body 3950422969.
+
 ```rust
 pub fn sign(p: usize, modifier: usize) -> (r: usize)
     requires
@@ -65,6 +71,8 @@ src/sys/pac.rs:245. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past an autda that faults) and K3 (a fixed data key A and EnDA)).
 
 > Authenticate `p`, signed by [`sign`] with the same `modifier` (`autda`): the plain pointer, or, when the two disagree, a fault or a non-canonical pointer (module doc).
+
+Hashes: contract 361455037, body 4273507842.
 
 ```rust
 pub fn auth(p: usize, modifier: usize) -> (r: usize)
@@ -83,6 +91,8 @@ src/sys/pac.rs:285. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Strip the PAC from `p` without authenticating it (`xpacd`): the address a signed or corrupted entry names, for abort messages and tests.
+
+Hashes: contract 2592903648, body 3148561063.
 
 ```rust
 pub fn strip(p: usize) -> usize
