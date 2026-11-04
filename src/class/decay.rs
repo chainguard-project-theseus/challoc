@@ -472,7 +472,10 @@ impl ClassState {
                     requires 0 <= e <= n, p >= 0;
             }
         }
-        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).stats.empty * self.class().slab_size()
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        let r = g.stats.empty * self.class().slab_size();
+        g.unlock();
+        r
     }
 }
 
@@ -959,7 +962,9 @@ impl ClassState {
                 }
             }
         }
-        v.p.t.purged
+        let r = v.p.t.purged;
+        g.unlock();
+        r
     }
 }
 
@@ -1651,6 +1656,7 @@ impl ClassState {
         }
         if h.total <= allow {
             self.gate.set_oldest_empty(h.oldest);
+            g.unlock();
             return 0;
         }
         // The cut-off step: every slab in an older step goes and all but
@@ -1679,7 +1685,9 @@ impl ClassState {
             self.gate.back_off(now);
         }
         self.gate.set_oldest_empty(v.p.t.oldest);
-        v.p.t.purged
+        let r = v.p.t.purged;
+        g.unlock();
+        r
     }
 
     /// Decay step (design 8): the gate lets `purge_curve` run over

@@ -2145,15 +2145,15 @@ broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
 
 /// Assumption (`lock.rs`): the class lock's value keeps the set/count
 /// seam's invariant, ghost link included, while the lock is free.
-/// Verified holders show it through the postconditions of the `Inner`
-/// methods and of `next_slab` and `next_fresh_slab` (with
-/// `SlabTable::take_group` under it); `ClassState::new` proves it of the
-/// value it creates the lock with, `lowest_partial`, `is_partial`,
-/// `bin_stats` and `empty_bytes` (`decay.rs`) only read the value, and
-/// the refill's lock hold (`plan`, with `take`) keeps it by their
-/// postconditions, as do the release path (`reopen`, `on_live_zero`) and
-/// the purge and decay walks (`decay.rs`'s `purge_empty` and
-/// `purge_curve`). The unverified holders are the tests, but for those
+/// `ClassState::new` proves it of the value it creates the lock with.
+/// Each holder outside the tests (`ClassState::plan`, `reopen`,
+/// `on_live_zero`, `bin_stats`, `lowest_partial`, `is_partial`, and
+/// `decay.rs`'s `empty_bytes`, `purge_empty` and `purge_curve`) ends with
+/// `LockGuard::unlock`, which requires `Inner::inv` (this axiom) and the
+/// frame ([`axiom_class_lock`]), on every path to a return
+/// (`api::tests::guards_end_in_unlock`); a guard dropped without it
+/// would release unchecked. A panic aborts (`panic = "abort"`) outside
+/// the tests, so it never releases. The other holders are the tests, but for those
 /// that break the counts on purpose to reach an abort; the test helper
 /// `set_membership` only reads. Each of the others writes an owned slab's
 /// state and stamp only through the bridges (`set_state_locked`,
@@ -2175,10 +2175,11 @@ broadcast axiom fn axiom_class_lock_inv(v: Inner)
 
 /// Assumption (`lock.rs`): the sets behind a class lock stay over the
 /// slab count they were created with, and the value's arena, table and
-/// owned-slab record's location are the ones `new` set. Every `Inner`
-/// method keeps `nbits` and those fields (`same_rest`, `same_sets`),
-/// nothing replaces the sets, and no code writes those ghost fields after
-/// `new` (`take_group` adds to the record, at its location).
+/// owned-slab record's location are the ones `new` set. Each holder
+/// outside the tests checks it at its `LockGuard::unlock`, as for
+/// [`axiom_class_lock_inv`]; in the tests, every `Inner` method keeps
+/// `nbits` and those fields (`same_rest`, `same_sets`) and nothing
+/// replaces the sets.
 broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
     ensures
         #[trigger] crate::lock::assumed_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
@@ -3919,6 +3920,7 @@ impl ClassState {
                 proof {
                     *ex = Ghost((g@, seen));
                 }
+                g.unlock();
                 return np;
             }
             let desc = self.desc(s);
@@ -4021,6 +4023,7 @@ impl ClassState {
             }
             *ex = Ghost((g@, seen));
         }
+        g.unlock();
         np
     }
 
@@ -4810,6 +4813,7 @@ impl ClassState {
             }
         }
         reopen.len = 0;
+        g.unlock();
     }
 
     fn dec_live(&self, slab: usize, n: usize, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)
@@ -4854,43 +4858,43 @@ impl ClassState {
             use_type_invariant(self);
         }
         let mut first = false;
-        {
-            let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-            if purge::check_zero() {
-                self.check_shadow(slab, "on_live_zero");
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        if purge::check_zero() {
+            self.check_shadow(slab, "on_live_zero");
+        }
+        // A slab of another arena is no business of this arena's sets.
+        if self.owner_locked(&*g, slab, pubw) != self.arena {
+            g.unlock();
+            return;
+        }
+        let desc = self.desc(slab);
+        if desc.live() == 0 && self.state_locked(&*g, desc, slab) == State::Active {
+            // Never 0: an `Empty` slab's stamp is not 0
+            // (`Inner::slab_core`).
+            let now = crate::sys::now_coarse_ns().max(1);
+            let ghost g0 = g@;
+            proof {
+                assert(g0.slab_ok(slab as nat));
             }
-            // A slab of another arena is no business of this arena's sets.
-            if self.owner_locked(&*g, slab, pubw) != self.arena {
-                return;
+            self.set_state_locked(&mut *g, desc, slab, State::Empty);
+            self.set_dirty_locked(&mut *g, desc, slab, now);
+            proof {
+                assert forall|s: nat| s != slab implies #[trigger] g@.slab_ok(s) by {
+                    assert(g0.slab_ok(s));
+                }
+                assert(g@.inv_but(slab as int));
             }
-            let desc = self.desc(slab);
-            if desc.live() == 0 && self.state_locked(&*g, desc, slab) == State::Active {
-                // Never 0: an `Empty` slab's stamp is not 0
-                // (`Inner::slab_core`).
-                let now = crate::sys::now_coarse_ns().max(1);
-                let ghost g0 = g@;
-                proof {
-                    assert(g0.slab_ok(slab as nat));
-                }
-                self.set_state_locked(&mut *g, desc, slab, State::Empty);
-                self.set_dirty_locked(&mut *g, desc, slab, now);
-                proof {
-                    assert forall|s: nat| s != slab implies #[trigger] g@.slab_ok(s) by {
-                        assert(g0.slab_ok(s));
-                    }
-                    assert(g@.inv_but(slab as int));
-                }
-                g.clear_partial(slab);
-                g.empty_add(slab);
-                proof {
-                    assert(g@.slab_ok(slab as nat));
-                    g@.lemma_close(slab as nat);
-                }
-                if self.gate.note_first_empty(now) {
-                    first = true;
-                }
+            g.clear_partial(slab);
+            g.empty_add(slab);
+            proof {
+                assert(g@.slab_ok(slab as nat));
+                g@.lemma_close(slab as nat);
+            }
+            if self.gate.note_first_empty(now) {
+                first = true;
             }
         }
+        g.unlock();
         if first {
             purge::note_empty();
         }
@@ -5519,7 +5523,7 @@ impl ClassState {
         let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut s = g.stats;
         let claimed = self.claimed.load(Ordering::Relaxed);
-        drop(g);
+        g.unlock();
         s.guards = self.table().guards(Tracked(ord));
         proof {
             let k = class_table()[self.spec_class() as int].nslots as int;
@@ -5671,11 +5675,10 @@ impl ClassState {
         proof {
             use_type_invariant(self);
         }
-        self.inner
-            .lock(Tracked(ord), Tracked(&mut LockOrder::spare()))
-            .partial
-            .map
-            .lowest_set()
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        let r = g.partial.map.lowest_set();
+        g.unlock();
+        r
     }
 
     /// Whether `slab` is in the partial set (tests and the bins table,
@@ -5693,11 +5696,10 @@ impl ClassState {
         proof {
             use_type_invariant(self);
         }
-        self.inner
-            .lock(Tracked(ord), Tracked(&mut LockOrder::spare()))
-            .partial
-            .map
-            .is_set(slab)
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        let r = g.partial.map.is_set(slab);
+        g.unlock();
+        r
     }
 }
 

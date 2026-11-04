@@ -3123,7 +3123,31 @@ mod tests {
             "arena.rs:Arenas.lock",
             &["arena.rs:assign", "arena.rs:create", "arena.rs:materialise"],
         ),
+        (
+            "class/mod.rs:ClassState.inner",
+            &[
+                "class/mod.rs:plan",
+                "class/mod.rs:reopen",
+                "class/mod.rs:on_live_zero",
+                "class/mod.rs:bin_stats",
+                "class/mod.rs:lowest_partial",
+                "class/mod.rs:is_partial",
+                "class/decay.rs:empty_bytes",
+                "class/decay.rs:purge_empty",
+                "class/decay.rs:purge_curve",
+            ],
+        ),
         ("class/sets.rs:SetTable.tables", &["class/sets.rs:ensure"]),
+        (
+            "class/table.rs:SlabTable.inner",
+            &[
+                "class/table.rs:mirror_watermark",
+                "class/table.rs:guards",
+                "class/table.rs:take_group",
+                "class/table.rs:commit_run",
+                "class/table.rs:commit_slab",
+            ],
+        ),
         (
             "heap/shared.rs:Shared.stats",
             &[
