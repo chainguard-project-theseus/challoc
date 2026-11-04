@@ -2958,12 +2958,9 @@ mod tests {
         );
     }
 
-    /// Every `Lock<..>` (or bare `RawLock`) field and static in `src/`, as
-    /// `file:Owner.field` (`file:static.NAME` for statics), read from the
-    /// source tree so the fork handlers cannot miss a lock added later.
-    /// `lock.rs` defines the types and is skipped; so are the modules
-    /// declared under `#[cfg(test)]` and each file's `mod tests`.
-    fn lock_inventory() -> Vec<String> {
+    /// Every `.rs` file under `src/` but the modules declared under
+    /// `#[cfg(test)]`, as (path relative to `src/`, text), in path order.
+    fn lock_sources() -> Vec<(String, String)> {
         use std::string::ToString;
         /// Every `.rs` file under `dir` as (path relative to `src/`, text).
         fn sources(dir: &std::path::Path, rel: &str, out: &mut Vec<(String, String)>) {
@@ -3025,14 +3022,31 @@ mod tests {
         for (rel, text) in &files {
             test_modules(rel, text, &mut test_only);
         }
-        let mut out = Vec::new();
-        for (rel, text) in &files {
+        files.retain(|(rel, _)| {
             let stem = rel.strip_suffix(".rs").unwrap();
-            if rel == "lock.rs"
-                || test_only
-                    .iter()
-                    .any(|m| stem == m || rel.starts_with(&std::format!("{m}/")))
-            {
+            !test_only
+                .iter()
+                .any(|m| stem == m || rel.starts_with(&std::format!("{m}/")))
+        });
+        files
+    }
+
+    /// Every `Lock<..>` (or bare `RawLock`) field and static in `src/`, as
+    /// `file:Owner.field` (`file:static.NAME` for statics), read from the
+    /// source tree so the fork handlers cannot miss a lock added later.
+    /// `lock.rs` defines the types and is skipped; so are the modules
+    /// declared under `#[cfg(test)]` and each file's `mod tests`.
+    fn lock_inventory() -> Vec<String> {
+        lock_decls().into_iter().map(|(key, _)| key).collect()
+    }
+
+    /// [`lock_inventory`], each lock with whether it is private to its
+    /// module (declared without `pub`).
+    fn lock_decls() -> Vec<(String, bool)> {
+        use std::string::ToString;
+        let mut out = Vec::new();
+        for (rel, text) in &lock_sources() {
+            if rel == "lock.rs" {
                 continue;
             }
             let mut owner = String::new();
@@ -3052,6 +3066,7 @@ mod tests {
                     .strip_prefix("pub(crate) ")
                     .or_else(|| t.strip_prefix("pub "))
                     .unwrap_or(t);
+                let private = decl.len() == t.len();
                 if let Some(rest) = decl.strip_prefix("struct ") {
                     owner = rest
                         .split(['<', '{', '(', ' ', ';'])
@@ -3069,7 +3084,7 @@ mod tests {
                     if let Some((name, ty)) = rest.split_once(':')
                         && is_lock(ty)
                     {
-                        out.push(std::format!("{rel}:static.{}", name.trim()));
+                        out.push((std::format!("{rel}:static.{}", name.trim()), private));
                     }
                     continue;
                 }
@@ -3080,13 +3095,411 @@ mod tests {
                         && is_lock(ty)
                         && !ty.contains("->")
                     {
-                        out.push(std::format!("{rel}:{owner}.{name}"));
+                        out.push((std::format!("{rel}:{owner}.{name}"), private));
                     }
                 }
             }
         }
         out.sort();
         out
+    }
+
+    /// The locks whose holders outside the tests end in an explicit
+    /// [`LockGuard::unlock`](crate::lock::LockGuard::unlock), keyed as in
+    /// [`lock_inventory`]: the unlock's `requires` checks the lock's
+    /// invariant and frame, where a guard that drops releases with nothing
+    /// checked. A lock joins the list, with its holders outside the tests
+    /// (`file:fn`), once every holder unlocks.
+    const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
+        ("class/sets.rs:SetTable.tables", &["class/sets.rs:ensure"]),
+        (
+            "heap/shared.rs:Shared.stats",
+            &[
+                "stats.rs:collect_into",
+                "stats.rs:snapshot",
+                "stats.rs:arena_stats_all_into",
+            ],
+        ),
+        (
+            "heap/tcaches.rs:Tcaches.lock",
+            &["heap/tcaches.rs:create", "heap/tcaches.rs:destroy"],
+        ),
+        (
+            "meta.rs:Meta.inner",
+            &[
+                "meta.rs:alloc",
+                "meta.rs:alloc_raw",
+                "meta.rs:alloc_zeroed",
+                "meta.rs:free",
+                "meta.rs:reserve",
+                "meta.rs:reserve_table",
+                "meta.rs:commit",
+                "meta.rs:reserve_committed_raw",
+                "meta.rs:stats",
+            ],
+        ),
+    ];
+
+    /// Every guard of a lock in [`UNLOCKED_LOCKS`], outside the tests and
+    /// `#[cfg(test)]` items, ends in an explicit `unlock()`. An acquisition
+    /// (`x.field.lock(`, `.try_lock(` or `.lock_t(`, a method chain read as
+    /// one line) is matched to its lock by the field's name, by the files
+    /// that can name the field (a private field: its module and the modules
+    /// under it), and for `self.field` by the type of the enclosing `impl`.
+    /// In each function that acquires one of these locks there is one such
+    /// acquisition, bound at the body's own indentation by a `let` that ends
+    /// with it (a guard chained into a call drops at the end of the
+    /// statement); every `return` after it follows the guard's `unlock();`,
+    /// one more `unlock();` stands at the body's own indentation (so on the
+    /// path to the tail), and no `?` follows it (an early exit). The
+    /// functions so checked are exactly the holders the list names. Nor
+    /// does the owner hand out a reference to such a lock: no `self.field`
+    /// of one is borrowed. Not seen: an acquisition through a reference
+    /// taken elsewhere, UFCS (`Lock::lock(&x, ..)`), and macros. A panic
+    /// aborts outside the tests (`panic = "abort"`), so it never releases.
+    #[test]
+    fn guards_end_in_unlock() {
+        use std::string::ToString;
+        let decls = lock_decls();
+        for (key, _) in UNLOCKED_LOCKS {
+            assert!(
+                decls.iter().any(|(k, _)| k == key),
+                "{key} is not a lock in src/"
+            );
+        }
+        // The module a file is, as a path relative to `src/`.
+        let module = |rel: &str| {
+            let stem = rel.strip_suffix(".rs").unwrap();
+            let stem = stem.strip_suffix("/mod").unwrap_or(stem);
+            String::from(if stem == "lib" { "" } else { stem })
+        };
+        // Each lock as (key, its module, owner, field, private); a static's
+        // owner is `static`.
+        let locks: Vec<(String, String, String, String, bool)> = decls
+            .iter()
+            .map(|(key, private)| {
+                let (rel, path) = key.split_once(':').unwrap();
+                let (owner, name) = path.split_once('.').unwrap();
+                (
+                    key.clone(),
+                    module(rel),
+                    owner.to_string(),
+                    name.to_string(),
+                    *private,
+                )
+            })
+            .collect();
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        // The locks a use of field (or static) `name` through receiver
+        // `recv` ("" for a static, "?" for an expression) may be, in module `m` inside an `impl` of
+        // `owner`.
+        let candidates = |m: &str, owner: &str, recv: &str, name: &str| -> Vec<String> {
+            locks
+                .iter()
+                .filter(|(_, lm, lo, ln, private)| {
+                    ln == name
+                        && (recv.is_empty() == (lo == "static"))
+                        && (recv != "self" || lo == owner)
+                        && (!private
+                            || lm.is_empty()
+                            || m == lm
+                            || m.starts_with(&std::format!("{lm}/")))
+                })
+                .map(|(key, ..)| key.clone())
+                .collect()
+        };
+        // The receiver and name of the path that ends at byte `end` of
+        // `l` (`self.inner` gives ("self", "inner"), `STATE` ("",
+        // "STATE"), `x[i].inner` and `f().inner` ("?", "inner")), and the
+        // byte it starts at.
+        let path_before = |l: &str, end: usize| -> (String, String, usize) {
+            let start = l[..end]
+                .rfind(|c: char| !(ident(c) || c == '.'))
+                .map_or(0, |i| i + 1);
+            let segs: Vec<&str> = l[start..end].split('.').collect();
+            match segs[..] {
+                [.., "", name] => ("?".to_string(), name.to_string(), start),
+                [.., recv, name] => (recv.to_string(), name.to_string(), start),
+                [name] => (String::new(), name.to_string(), start),
+                [] => unreachable!(),
+            }
+        };
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let code = |l: &str| l.split("//").next().unwrap().trim().to_string();
+        let acquire = [".lock(", ".try_lock(", ".lock_t("];
+        let mut checked: Vec<(String, String)> = Vec::new();
+        for (rel, text) in &lock_sources() {
+            if rel == "lock.rs" {
+                continue;
+            }
+            let m = module(rel);
+            // The lines outside `mod tests` and `#[cfg(test)]` items, with
+            // each method chain's continuation lines (`.name`) joined to
+            // the line they continue.
+            let mut lines: Vec<String> = Vec::new();
+            // While skipping a `#[cfg(test)]` item: its bracket depth, and
+            // whether a brace or bracket has opened.
+            let mut skip: Option<(i32, bool)> = None;
+            let mut cfg_test = false;
+            for line in text.lines() {
+                let t = line.trim();
+                if t == "mod tests {" {
+                    break;
+                }
+                if cfg_test && !t.starts_with("#[") && !t.starts_with("//") {
+                    cfg_test = false;
+                    skip = Some((0, false));
+                }
+                if let Some((depth, opened)) = &mut skip {
+                    for c in code(line).chars() {
+                        match c {
+                            '{' | '[' => {
+                                *depth += 1;
+                                *opened = true;
+                            }
+                            '(' => *depth += 1,
+                            '}' | ']' | ')' => *depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    let t = code(line);
+                    if *depth == 0 && (*opened || t.ends_with(';') || t.ends_with(',')) {
+                        skip = None;
+                    }
+                    continue;
+                }
+                if t == "#[cfg(test)]" {
+                    cfg_test = true;
+                    continue;
+                }
+                if t.starts_with('.')
+                    && t[1..].starts_with(ident)
+                    && let Some(prev) = lines.last_mut()
+                {
+                    prev.push_str(t);
+                } else {
+                    lines.push(line.to_string());
+                }
+            }
+            // Each function as (name, indentation, line range of its body),
+            // and the type each line's enclosing `impl` is for.
+            let mut fns: Vec<(String, usize, usize, usize)> = Vec::new();
+            let mut impls: Vec<(String, usize)> = Vec::new();
+            let mut owner_at: Vec<String> = Vec::new();
+            for (k, line) in lines.iter().enumerate() {
+                let t = code(line);
+                if impls
+                    .last()
+                    .is_some_and(|(_, ind)| *line == std::format!("{}}}", " ".repeat(*ind)))
+                {
+                    impls.pop();
+                }
+                let head = t.strip_prefix("unsafe ").unwrap_or(&t);
+                if let Some(rest) = head
+                    .strip_prefix("impl")
+                    .filter(|r| r.starts_with([' ', '<']))
+                {
+                    // Skip the impl's own generics, then take the type after
+                    // `for` (a trait impl) or the type itself.
+                    let mut depth = 0;
+                    let mut at = 0;
+                    for (i, c) in rest.char_indices() {
+                        match c {
+                            '<' => depth += 1,
+                            '>' => depth -= 1,
+                            _ if depth == 0 && !c.is_whitespace() => {
+                                at = i;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let ty = rest[at..].split('{').next().unwrap();
+                    let ty = ty.rsplit_once(" for ").map_or(ty, |(_, t)| t);
+                    let ty = ty.split(['<', ' ']).next().unwrap();
+                    let ty = ty.rsplit("::").next().unwrap();
+                    if !t.ends_with('}') {
+                        impls.push((ty.to_string(), indent(line)));
+                    }
+                }
+                owner_at.push(impls.last().map_or(String::new(), |(o, _)| o.clone()));
+                let open = fns.last().is_some_and(|f| f.3 == usize::MAX);
+                if t.starts_with("fn ") || t.contains(" fn ") {
+                    if open {
+                        fns.last_mut().unwrap().3 = k;
+                    }
+                    let name = t[t.find("fn ").unwrap() + 3..]
+                        .split(['(', '<'])
+                        .next()
+                        .unwrap()
+                        .to_string();
+                    fns.push((name, indent(line), k + 1, usize::MAX));
+                } else if open && t == "}" && indent(line) <= fns.last().unwrap().1 {
+                    fns.last_mut().unwrap().3 = k;
+                }
+            }
+            if let Some(f) = fns.last_mut().filter(|f| f.3 == usize::MAX) {
+                f.3 = lines.len();
+            }
+            // The locks a use of the path ending at byte `end` of line `k`
+            // may be, and the first of them in [`UNLOCKED_LOCKS`], if any.
+            let resolve = |k: usize, end: usize| -> (Vec<String>, Option<String>) {
+                let (recv, name, _) = path_before(&lines[k], end);
+                let found = candidates(&m, &owner_at[k], &recv, &name);
+                let hit = found
+                    .iter()
+                    .find(|key| UNLOCKED_LOCKS.iter().any(|(k, _)| k == key))
+                    .cloned();
+                (found, hit)
+            };
+            // The guarded lock an acquisition ending at byte `end` of line
+            // `k` takes, if any; an acquisition that may be a guarded lock
+            // must be exactly one lock.
+            let guarded = |k: usize, end: usize| -> Option<String> {
+                let (found, hit) = resolve(k, end);
+                assert!(
+                    hit.is_none() || found.len() == 1,
+                    "{rel}: `{}` may be any of {found:?}",
+                    lines[k].trim()
+                );
+                hit
+            };
+            // No reference to a guarded lock escapes through its owner: no
+            // `self.field` of a guarded lock, outside a string literal, is
+            // borrowed (an accessor returning `&self.field` would let other
+            // code acquire it under another name).
+            for (k, line) in lines.iter().enumerate() {
+                let l = line.split("//").next().unwrap();
+                for name in UNLOCKED_LOCKS
+                    .iter()
+                    .map(|(key, _)| key.rsplit('.').next().unwrap())
+                {
+                    for (i, _) in l.match_indices(name) {
+                        let end = i + name.len();
+                        let after = &l[end..];
+                        if (i > 0 && ident(l[..i].chars().next_back().unwrap()))
+                            || after.starts_with(ident)
+                            || after.starts_with('(')
+                            || l[..i].matches('"').count() % 2 == 1
+                        {
+                            continue;
+                        }
+                        let (recv, _, start) = path_before(l, end);
+                        let (_, Some(key)) = resolve(k, end) else {
+                            continue;
+                        };
+                        if recv != "self" {
+                            continue;
+                        }
+                        let before = l[..start].trim_end();
+                        assert!(
+                            !(before.ends_with('&') && !before.ends_with("&&"))
+                                && !before.ends_with("&mut"),
+                            "{rel}: a reference to {key} escapes: `{}`",
+                            l.trim()
+                        );
+                    }
+                }
+            }
+            let mut seen = 0;
+            for (k, line) in lines.iter().enumerate() {
+                for a in acquire {
+                    let l = line.split("//").next().unwrap();
+                    for (i, _) in l.match_indices(a) {
+                        if guarded(k, i).is_some() {
+                            seen += 1;
+                        }
+                    }
+                }
+            }
+            for (name, ind, from, to) in &fns {
+                let body = &lines[*from..*to];
+                let mut hits = Vec::new();
+                for (k, line) in body.iter().enumerate() {
+                    let l = line.split("//").next().unwrap();
+                    for a in acquire {
+                        for (i, _) in l.match_indices(a) {
+                            if let Some(key) = guarded(from + k, i) {
+                                hits.push((k, i + a.len(), key));
+                            }
+                        }
+                    }
+                }
+                seen -= hits.len();
+                let [(a, open, ref key)] = hits[..] else {
+                    assert!(hits.is_empty(), "{rel}: {name}: more than one acquisition");
+                    continue;
+                };
+                // The acquisition ends the statement, which is a `let`.
+                let mut depth = 1;
+                let mut rest = String::new();
+                'outer: for (j, l) in body[a..].iter().enumerate() {
+                    let l = if j == 0 { &l[open..] } else { l.as_str() };
+                    for (i, c) in l.char_indices() {
+                        match c {
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            _ => {}
+                        }
+                        if depth == 0 {
+                            rest = l[i + 1..].trim().to_string();
+                            break 'outer;
+                        }
+                    }
+                }
+                assert!(
+                    rest == ";",
+                    "{rel}: {name}: the guard of {key} is chained into a call"
+                );
+                let decl = body[a].trim();
+                assert!(
+                    decl.starts_with("let ") && indent(&body[a]) == ind + 4,
+                    "{rel}: {name}: the guard of {key} is not bound with `let` at the body's indentation"
+                );
+                let guard = decl
+                    .trim_start_matches("let ")
+                    .trim_start_matches("mut ")
+                    .split([' ', '=', ':'])
+                    .next()
+                    .unwrap();
+                let release = std::format!("{guard}.unlock();");
+                let after = &body[a + 1..];
+                let mut tail_unlock = false;
+                for (k, l) in after.iter().enumerate() {
+                    let t = code(l);
+                    assert!(
+                        !t.contains('?'),
+                        "{rel}: {name}: `?` after the acquisition of {key}"
+                    );
+                    if t.starts_with("return") || t.contains(" return ") {
+                        assert!(
+                            k > 0 && after[k - 1].trim() == release,
+                            "{rel}: {name}: a `return` without `{release}` before it"
+                        );
+                    }
+                    if t == release && indent(l) == ind + 4 {
+                        tail_unlock = true;
+                    }
+                }
+                assert!(
+                    tail_unlock,
+                    "{rel}: {name}: no `{release}` on the path to the tail"
+                );
+                checked.push((key.clone(), std::format!("{rel}:{name}")));
+            }
+            assert_eq!(seen, 0, "{rel}: an acquisition outside a function");
+        }
+        for (key, holders) in UNLOCKED_LOCKS {
+            let mut found: Vec<&str> = checked
+                .iter()
+                .filter(|(k, _)| k == key)
+                .map(|(_, f)| f.as_str())
+                .collect();
+            let mut want = holders.to_vec();
+            found.sort_unstable();
+            want.sort_unstable();
+            assert_eq!(found, want, "{key}: the holders found differ from the list");
+        }
     }
 
     /// The locks `fork_prepare` takes, keyed as in [`lock_inventory`].

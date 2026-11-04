@@ -218,7 +218,8 @@ impl Tcaches {
 /// (`()`), so its invariant is trivially true. Nothing writes the value.
 ///
 /// Its holders, `Tcaches::create` and `Tcaches::destroy`, hold it only to
-/// serialise their table updates.
+/// serialise their table updates, and end in `LockGuard::unlock`
+/// (`api::tests::guards_end_in_unlock`).
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
@@ -843,7 +844,7 @@ impl Tcaches {
             use_type_invariant(self);
         }
         let tracked mut under = LockOrder::spare();
-        let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));
+        let g = self.lock.lock(Tracked(ord), Tracked(&mut under));
         // The first null entry, lowest index first.
         let mut slot = 0;
         while !self.table[slot].load(Ordering::Relaxed).is_null()
@@ -853,11 +854,13 @@ impl Tcaches {
         {
             slot += 1;
             if slot == MAX_TCACHES {
+                g.unlock();
                 return None;
             }
         }
         let (h, _, _) = Heap::create_detached(shared, arena, Tracked(&mut under));
         if h.is_null() {
+            g.unlock();
             return None;
         }
         let hp = h as *mut u8;
@@ -895,6 +898,7 @@ impl Tcaches {
         proof {
             *fx = Ghost(Change::Created);
         }
+        g.unlock();
         Some(slot as u16)
     }
 
@@ -1053,9 +1057,10 @@ impl Tcaches {
             use_type_invariant(self);
         }
         let tracked mut under = LockOrder::spare();
-        let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));
+        let guard = self.lock.lock(Tracked(ord), Tracked(&mut under));
         let i = id as usize;
         if i >= MAX_TCACHES {
+            guard.unlock();
             return false;
         }
         let null = ptr::null_mut();
@@ -1095,6 +1100,7 @@ impl Tcaches {
         }
         let p = p as *mut Heap;
         if p.is_null() {
+            guard.unlock();
             return false;
         }
         // Premise (`axiom_heap_use`): `p` is now unreachable through the
@@ -1104,6 +1110,7 @@ impl Tcaches {
         // SAFETY: `p` came from `create_detached` and is now unreachable
         // through the table.
         unsafe { Heap::destroy(p, shared, Tracked(u), Tracked(&mut under)) };
+        guard.unlock();
         true
     }
 }

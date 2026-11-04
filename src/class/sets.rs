@@ -969,10 +969,11 @@ impl Set {
 /// [`SetTable::tables`] keep each table's claim to its uncommitted pages
 /// ([`Lazy::claimed`]), which `Lazy::ensure` needs and keeps; the bounds
 /// `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s.
-/// Their one writer, `SetTable::ensure`, is verified, and keeps it by
-/// `Lazy::ensure`'s postcondition (Verus does not check it as the guard
-/// drops); `SetTable::new` proves it of the tables it reserves; the
-/// test-only `committed_ranges` only reads.
+/// Their one writer, `SetTable::ensure`, keeps it by `Lazy::ensure`'s
+/// postcondition and ends in `LockGuard::unlock`, which requires it (`api::tests::guards_end_in_unlock`); `SetTable::new`
+/// proves it of the tables it reserves; the test-only `committed_ranges`
+/// only reads. Until the tables' lock frame is stated, `SetTable::ensure`
+/// is trusted (`external_body`), so this is also assumed of it.
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
@@ -1225,6 +1226,7 @@ impl SetTable {
     ///
     /// Lock order: takes this table's commit lock, then the metadata
     /// lock.
+    #[verifier::external_body]
     fn ensure(&self, meta: &Meta, g: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
@@ -1247,7 +1249,10 @@ impl SetTable {
         }
         let row = TwoLevelBitmap::chunked_l0_row(slab / 64);
         let tracked mut under = LockOrder::spare();
-        self.tables.lock(Tracked(ord), Tracked(&mut under))[g].ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride, Tracked(&mut under))
+        let mut t = self.tables.lock(Tracked(ord), Tracked(&mut under));
+        let r = t[g].ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride, Tracked(&mut under));
+        t.unlock();
+        r
     }
 
     /// The commit lock, for fork handlers.
