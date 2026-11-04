@@ -49,11 +49,19 @@ axiom_fork_entry	C-program contract	none (assumption)
 # window serves only those, and the registry the release reads
 # (`count_frozen`, `get_frozen`) is the one prepare locked.
 # The window's record is verified code over two atomics (fork_holder_is_me,
-# in_fork_window, fork_window_open, fork_window_close); the premise above
+# in_fork_window, in_child_fork_window, fork_window_open,
+# fork_window_close); the premise above
 # rests on axiom_acquired, and the thread's identity on sys::pthread_self.
 # The child's single thread before challoc's child handler: what
-# `in_fork_child` stands for (no loom model covers the in-window reset).
-in_child_fork_window	allocator invariant	none (assumption)
+# `in_fork_child` stands for, read from the window's record by
+# `in_child_fork_window` (verified). Platform facts: `pthread_self` tells
+# a process's live threads apart and (glibc) the forking thread keeps it
+# in the child, the child starts with a copy of the parent's memory, and
+# in one PID namespace its `getpid` is not the parent's. The record's
+# writers, this use and its reads are
+# pinned by lock::tests::fork_record_uses_are_listed (no loom model
+# covers the in-window reset).
+axiom_child_window	platform/kernel fact	none (assumption)
 # A field projection: no `requires`, no `ensures`. The harness runs it on
 # pointers to locks at four `T`s; the contract admits any pointer, and a
 # projection through one that points into no lock is not defined in Rust.
