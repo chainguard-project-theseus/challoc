@@ -1929,6 +1929,18 @@ spec fn spares_guards(h: Huge, g: Inner, freed: *mut HugeDesc, addr: int, len: i
     }
 }
 
+/// `[addr, addr + len)` shares no byte with any live run of `g` (`Active`),
+/// its guard page included: bytes of a run being placed, which nobody
+/// holds.
+spec fn apart_from_runs(h: Huge, g: Inner, addr: int, len: int) -> bool {
+    let p = pow2(h.lg_page as nat) as int;
+    forall|d: *mut HugeDesc|
+        #[trigger] g.descs@.contains_key(d) && g.descs@[d].value().state == RunState::Active as u8 ==> {
+            let v = g.descs@[d].value();
+            crate::layout::disjoint(addr, len, h.base + v.start * p, v.pages * p)
+        }
+}
+
 /// `lk` is the permission of `h`'s lock cell ([`Lock::has_perm`]): only
 /// a holder of the lock has it, from its guard
 /// ([`LockGuard::perm`](crate::lock::LockGuard::perm)), so
@@ -1997,7 +2009,8 @@ fn protect_none(addr: usize, len: usize) -> Result<(), Errno>
 ///
 /// The caller holds the huge lock (`lk`, [`held_by`]), and the run's first
 /// page lies in the region apart from every live run's guard
-/// (`spares_guards`); when it populates, the run's first byte is
+/// (`spares_guards`) and from every live run (`apart_from_runs`); when it
+/// populates, the run's first byte is
 /// [`committed`](crate::vspec::unbacked::committed).
 fn split_guard(run: usize, guard: usize, page: usize, populate: bool, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>) -> Result<(), Errno>
     requires
@@ -2005,6 +2018,7 @@ fn split_guard(run: usize, guard: usize, page: usize, populate: bool, Ghost(h): 
         held_by(h, *lk, vstd::raw_ptr::ptr_null_mut()),
         !lk.value().descs@.contains_key(vstd::raw_ptr::ptr_null_mut()),
         spares_guards(h, *lk.value(), vstd::raw_ptr::ptr_null_mut(), run as int, page as int),
+        apart_from_runs(h, *lk.value(), run as int, page as int),
         1 <= page,
         populate ==> crate::vspec::unbacked::committed(run as int),
 {
@@ -2044,28 +2058,26 @@ fn split_guard(run: usize, guard: usize, page: usize, populate: bool, Ghost(h): 
 ///
 /// Trusted only under its `requires`: the caller holds the huge lock
 /// (`lk`, [`held_by`]), `addr` was made read-write at some point
-/// ([`committed`](crate::vspec::unbacked::committed)), and the byte lies
-/// in the region apart from every live run's guard (`spares_guards`). A
-/// zero leaves a page that read as zero reading as zero, so the zero
-/// tokens (`axiom_fresh_anon_zero`, `axiom_discarded_zero`) stay true, and
-/// a dirty `Empty` page's contents are not needed.
+/// ([`committed`](crate::vspec::unbacked::committed)), the byte lies in
+/// the region apart from every live run's guard (`spares_guards`), and it
+/// belongs to no live run (`apart_from_runs`), so nobody holds it. A zero
+/// leaves a page that read as zero reading as zero, so the zero tokens
+/// (`axiom_fresh_anon_zero`, `axiom_discarded_zero`) stay true, and a
+/// dirty `Empty` page's contents are not needed.
 ///
-/// Limits, the trusted part:
-/// - `committed` never expires, so the `requires` does not rule out a
-///   byte made `PROT_NONE` after its commit and outside every live run's
-///   guard. Below the mark in guard-install mode, with no commit in the
-///   same `prepare`, that the byte is read-write rests on
-///   [`Huge::mixed_guards`] being set whenever such a page may exist (a
-///   guard refused its marker, or a guard whose release failed).
-/// - The `requires` does not say the byte belongs to no live run: that
-///   the run is one being placed, which nobody holds yet, is the caller's
-///   (`prepare`'s `runs_apart`).
+/// Limit, the trusted part: `committed` never expires, so the `requires`
+/// does not rule out a byte made `PROT_NONE` after its commit and outside
+/// every live run's guard. Below the mark in guard-install mode, with no
+/// commit in the same `prepare`, that the byte is read-write rests on
+/// [`Huge::mixed_guards`] being set whenever such a page may exist (a
+/// guard refused its marker, or a guard whose release failed).
 #[verifier::external_body]
 fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>)
     requires
         held_by(h, *lk, vstd::raw_ptr::ptr_null_mut()),
         crate::vspec::unbacked::committed(addr as int),
         spares_guards(h, *lk.value(), vstd::raw_ptr::ptr_null_mut(), addr as int, 1),
+        apart_from_runs(h, *lk.value(), addr as int, 1),
 {
     // SAFETY: as above.
     unsafe { core::ptr::write_volatile(addr as *mut u8, 0) };
@@ -2109,6 +2121,37 @@ spec fn runs_apart(g: Inner, s: int, need: int, watermark: int) -> bool {
             &&& v.start + v.pages <= watermark
             &&& (v.start + v.pages <= s || s + need <= v.start)
         }
+}
+
+/// The first page of a placement at `s` ([`runs_apart`]) shares no byte
+/// with any live run of `g` ([`apart_from_runs`]): each such run ends by
+/// `s` or starts at or past `s + need`, with `need` a page or more.
+proof fn lemma_page_apart_from_runs(h: Huge, g: Inner, s: int, need: int, watermark: int)
+    requires
+        h.inv(),
+        0 <= s,
+        1 <= need,
+        runs_apart(g, s, need, watermark),
+    ensures
+        apart_from_runs(h, g, h.base + s * pow2(h.lg_page as nat), pow2(h.lg_page as nat) as int),
+{
+    let p = pow2(h.lg_page as nat) as int;
+    vstd::arithmetic::power2::lemma_pow2_pos(h.lg_page as nat);
+    assert forall|d: *mut HugeDesc|
+        #[trigger] g.descs@.contains_key(d) && g.descs@[d].value().state == RunState::Active as u8 implies {
+            let v = g.descs@[d].value();
+            crate::layout::disjoint(h.base + s * p, p, h.base + v.start * p, v.pages * p)
+        } by {
+        let v = g.descs@[d].value();
+        let (a, n) = (v.start as int, v.pages as int);
+        assert(a * p + n * p == (a + n) * p) by (nonlinear_arith);
+        assert(s * p + p == (s + 1) * p) by (nonlinear_arith);
+        if a + n <= s {
+            vstd::arithmetic::mul::lemma_mul_inequality(a + n, s, p);
+        } else {
+            vstd::arithmetic::mul::lemma_mul_inequality(s + 1, a, p);
+        }
+    }
 }
 
 /// Pages `x..y` of `h`'s region spare the guards ([`spares_guards`]) of
@@ -5713,9 +5756,10 @@ impl Huge {
         let guard = s + usable;
         let end = guard + GUARD_PAGES;
         proof {
-            // The run's first page spares every live run's guard, for
-            // `split_guard`.
+            // The run's first page spares every live run's guard, and
+            // every live run, for `split_guard`.
             lemma_pages_spare_guards(*self, g, vstd::raw_ptr::ptr_null_mut(), s as int, s + 1);
+            lemma_page_apart_from_runs(*self, g, s as int, usable + GUARD_PAGES, watermark as int);
         }
         let r = if self.guard_install {
             if self.mixed_guards.load(Ordering::Relaxed) {
