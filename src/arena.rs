@@ -158,15 +158,6 @@ unsafe impl Send for Arena {}
 #[cfg(test)]
 pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-#[allow(clippy::declare_interior_mutable_const)]
-const NO_COST: (
-    core::sync::atomic::AtomicUsize,
-    core::sync::atomic::AtomicUsize,
-) = (
-    core::sync::atomic::AtomicUsize::new(0),
-    core::sync::atomic::AtomicUsize::new(0),
-);
-
 verus! {
 
 /// The least metadata (bump and reservation sides together) one arena
@@ -181,25 +172,46 @@ const BUILD_COSTS: usize = 64;
 /// largest); an eighth of the tables when that is less.
 const BUILD_SLACK: usize = 16 << 20;
 
+/// An empty [`BUILD_COST`] slot: no key, no sample.
+#[allow(clippy::declare_interior_mutable_const)]
+exec const NO_COST: (
+    core::sync::atomic::AtomicUsize,
+    core::sync::atomic::AtomicUsize,
+) = (
+    core::sync::atomic::AtomicUsize::new(0),
+    core::sync::atomic::AtomicUsize::new(0),
+);
+
+// `BUILD_COSTS` copies of `NO_COST`, spelled out: Verus does not take the
+// array-repeat `[NO_COST; BUILD_COSTS]` for an element type that is not
+// `Copy`.
 exec static BUILD_COST: [(
     core::sync::atomic::AtomicUsize,
     core::sync::atomic::AtomicUsize,
-); BUILD_COSTS] = NO_COSTS;
-
-/// `[NO_COST; BUILD_COSTS]`, which Verus does not take for an element
-/// type that is not `Copy`. Trusted: it claims nothing about the value.
-#[verifier::external_body]
-#[allow(clippy::declare_interior_mutable_const)]
-const NO_COSTS: [(
-    core::sync::atomic::AtomicUsize,
-    core::sync::atomic::AtomicUsize,
-); BUILD_COSTS] = [NO_COST; BUILD_COSTS];
+); BUILD_COSTS] = [
+    NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST,
+    NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST,
+    NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST,
+    NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST,
+    NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST,
+    NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST,
+    NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST,
+    NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST, NO_COST,
+];
 
 /// The `Arena` storage of a build, rounded up to the largest page (a
-/// reservation takes whole pages). Trusted: Verus has no specification of
-/// `usize::next_multiple_of`; it claims nothing about the value.
-#[verifier::external_body]
-const ARENA_STORAGE: usize = core::mem::size_of::<Arena>().next_multiple_of(1 << 16);
+/// reservation takes whole pages).
+exec const ARENA_STORAGE: usize
+    ensures
+        ARENA_STORAGE as int == vstd::std_specs::num::next_multiple_of(size_of::<Arena>() as int, 0x10000),
+{
+    proof {
+        axiom_arena_layout();
+        assert((1usize << 16usize) == 0x10000) by (bit_vector);
+        vstd::arithmetic::div_mod::lemma_mod_pos_bound(size_of::<Arena>() as int, 0x10000);
+    }
+    crate::vspec::next_multiple_of(core::mem::size_of::<Arena>(), 1 << 16)
+}
 
 /// `meta`'s address, [`BUILD_COST`]'s key. Trusted: Verus has no
 /// reference-to-pointer cast; it claims nothing about the value.
