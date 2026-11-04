@@ -529,7 +529,11 @@ The impl for `Created` (`arena.rs`), the arena creation lock:
 `Created::ok`, with the snapshot half's location fixed and the count at
 or above the one the lock was created with. The impl for `ArenaStats`
 (`stats.rs`), the per-arena statistics locks: `ArenaStats::identities`,
-with a frame true of any two values. Each other
+with a frame true of any two values. The impl for
+`purge::background::State` (`purge/background.rs`), the background
+thread's state lock, defines only the frame, true of any two states,
+which no release can break; its invariant is `axiom_state_lock_inv`'s.
+Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it.
 `Tcaches::init` makes each entry null with
@@ -2585,11 +2589,12 @@ axioms below are the other source.
   refuse on `lock::in_fork_window`, which has no specification). Verus
   models neither early return of `RawLock::lock_slow` or
   `RawLock::release`. The order of the window against the hold is
-  proved: `fork_window_open` requires `lock::fork_prepared`, which only
-  `RawLock::lock_held` of the lock at `rank_state` ensures (the state
+  proved: `fork_window_open` requires `lock::fork_prepared` of
+  `fork_prepare`'s one root token (from `lock::axiom_fork_entry`): the
+  root's top is `rank_state`, which only `RawLock::lock_held` and
+  `Lock::lock_held_perm` of the lock at `rank_state` ensure (the state
   lock, taken last; `RawLock::new` ranks no lock above it, so lock order
-  admits no `lock_held` after it on `fork_prepare`'s one root token, from
-  `lock::axiom_fork_entry`), and
+  admits no acquisition after it on that token), and
   `RawLock::unlock_held` and `Lock::unlock_held_perm` require
   `lock::window_closed`, which only `fork_window_close` ensures. So the
   window opens after the last acquisition and closes before the first
@@ -2614,8 +2619,9 @@ axioms below are the other source.
   handoff (whose `axiom_fork_resumed` also restates the cell
   permission as part of the hold, `ForkHeld::wf`).
 - `axiom_state_lock` (`purge/background.rs`, an axiom, used in
-  `STATE`'s initialiser): the static's raw lock is `state_lock()`
-  (Verus does not read statics in specifications); its rank is proved,
+  `STATE`'s initialiser): the static is `state_static()`, whose raw
+  lock is `state_lock()` (Verus does not read statics in
+  specifications); its rank is proved,
   and `purge::background::state` verifies over the static's
   postcondition.
 - The background state's invariant in the child also rests on

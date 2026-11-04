@@ -187,7 +187,7 @@ impl RawLock {
             t@.held() == *self,
             final(ord).root(),
             final(ord).top() == self.rank(),
-            self.rank() == rank_state() ==> fork_prepared(),
+            self.rank() == rank_state() ==> fork_prepared(*final(ord)),
     {
         self.lock();
         proof {
@@ -249,18 +249,21 @@ pub closed spec fn lock_rs_only() -> bool {
     true
 }
 
-/// True, but only inside this module (the body is closed), and ensured
-/// only by [`RawLock::lock_held`] of a lock at [`rank_state`] (the
+/// The root token `ord` has taken the lock of [`rank_state`] (the
 /// background thread's state lock, which `api::fork_prepare` takes last;
 /// the test `purge::tests::state_lock_axiom_names_the_one_state_lock`
 /// checks it is the one lock of that rank): the requirement of
-/// [`fork_window_open`]. After that acquisition the root's top is
-/// `rank_state`, which no lock ranks above ([`RawLock::new`]), so no
-/// `lock_held` follows it on that token, and the window opens only once every lock is
-/// taken: an acquire after the window opened would be served as acquired
-/// ([`fork_holder_is_me`]) without the lock.
-pub closed spec fn fork_prepared() -> bool {
-    true
+/// [`fork_window_open`]. The body is closed, so outside this module only
+/// the postconditions of [`RawLock::lock_held`] and
+/// [`Lock::lock_held_perm`] of a lock at `rank_state` give it; a root's
+/// top is raised only by those two, to the rank they take. After that
+/// acquisition the root's top is `rank_state`, which no lock ranks above
+/// ([`RawLock::new`]), so no acquisition follows it on that token, and
+/// the window opens only once every lock is taken: an acquire after the
+/// window opened would be served as acquired ([`fork_holder_is_me`])
+/// without the lock.
+pub closed spec fn fork_prepared(ord: LockOrder) -> bool {
+    ord.root() && ord.top() == rank_state()
 }
 
 /// True, but only inside this module (the body is closed), and ensured
@@ -563,11 +566,12 @@ fn fork_holder_slow(h: usize) -> bool {
 }
 
 /// Record the calling thread as the fork window's holder; the prepare
-/// handler's last step, with every lock taken ([`fork_prepared`]).
-pub(crate) fn fork_window_open()
+/// handler's last step, with every lock taken on its root token `ord`
+/// ([`fork_prepared`]).
+pub(crate) fn fork_window_open(Tracked(ord): Tracked<&LockOrder>)
     requires
         crate::sys::may_syscall(),
-        fork_prepared(),
+        fork_prepared(*ord),
 {
     FORK_PID.store(crate::sys::getpid() as u32, Ordering::Relaxed);
     FORK_HOLDER.store(crate::sys::pthread_self(), Ordering::Relaxed);
@@ -964,6 +968,8 @@ impl<T> Lock<T> {
     /// a second permission to the cell possible (the lock order already
     /// refuses a guard's scope here, `ord` must be a root). Crate-private,
     /// for the arena registry's creation lock (`Arenas::lock_held`).
+    /// Taking the lock of [`rank_state`] gives [`fork_prepared`] of `ord`,
+    /// as [`RawLock::lock_held`] does.
     ///
     /// Lock order: as [`RawLock::lock_held`].
     #[inline(always)]
@@ -980,6 +986,7 @@ impl<T> Lock<T> {
             lock_frame(lock_init(*self), *r@.1.value()),
             final(ord).root(),
             final(ord).top() == self.rank(),
+            self.rank() == rank_state() ==> fork_prepared(*final(ord)),
     {
         self.raw.lock();
         proof {
@@ -1229,6 +1236,7 @@ mod tests {
             ("crate::heap::tcaches::()", true, true),
             ("crate::huge::Inner", true, true),
             ("crate::meta::Inner", true, true),
+            ("crate::purge::background::State", false, true),
             ("crate::stats::ArenaStats", true, true),
             ("crate::stats::Snapshot", true, true),
         ];
