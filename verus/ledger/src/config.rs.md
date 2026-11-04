@@ -16,12 +16,12 @@ file.
 | `TABLE` | external_body const | function pointer | Kani | trusted |
 | `KEYS` | external_body const | function pointer | Kani | discharged |
 | `conf_buffer` | external_body | raw pointer (internal) | RefinedRust | trusted |
-| `read_slot` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
+| `read_slot` | external_body | raw pointer from C caller | none (assumption) | trusted |
 | `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `je_mall...f_addr` | external_body | inline asm | Islaris/Isla | discharged |
-| `byte_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
-| `bytes_at` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
-| `environ_array` | external_body | raw pointer from C caller | Miri (evidence only) | trusted |
+| `byte_at` | external_body | raw pointer from C caller | none (assumption) | trusted |
+| `bytes_at` | external_body | raw pointer from C caller | none (assumption) | trusted |
+| `environ_array` | external_body | raw pointer from C caller | none (assumption) | trusted |
 | `env_var` | no_decreases | C-program contract | none (assumption) | trusted |
 
 ## `THP_NAMES`
@@ -126,7 +126,7 @@ fn conf_buffer() -> (r: &'static mut [u8; MAX_TEXT + 1])
 ## `read_slot`
 
 src/config.rs:1778. Kind: external_body. Category: raw pointer from C caller.
-Tool: Miri (evidence only). Status: trusted.
+Tool: none (assumption). Status: trusted.
 
 > The `const char *` at `slot` (a symbol, or an `environ` entry).
 
@@ -159,7 +159,7 @@ fn je_malloc_conf_addr() -> *const c_void
 ## `byte_at`
 
 src/config.rs:1877. Kind: external_body. Category: raw pointer from C caller.
-Tool: Miri (evidence only). Status: trusted.
+Tool: none (assumption). Status: trusted.
 
 > The byte at `p + n`.
 
@@ -170,7 +170,7 @@ unsafe fn byte_at(p: *const u8, n: usize) -> u8
 ## `bytes_at`
 
 src/config.rs:1889. Kind: external_body. Category: raw pointer from C caller.
-Tool: Miri (evidence only). Status: trusted.
+Tool: none (assumption). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
 
@@ -183,7 +183,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 ## `environ_array`
 
 src/config.rs:1901. Kind: external_body. Category: raw pointer from C caller.
-Tool: Miri (evidence only). Status: trusted.
+Tool: none (assumption). Status: trusted.
 
 > glibc's `environ`, null before libc has set it up.
 

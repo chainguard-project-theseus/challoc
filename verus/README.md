@@ -392,3 +392,26 @@ the first two. For the third, Verus proves a `c_errno()` clause only
 under the export's `failed`, and the shape test rejects a `failed` other
 than the one `failed_for` gives that export, so what is left to review
 is the 4 conditions and which exports get each.
+
+## Gate history
+
+Main has no merge commits. After the 6 commits that imported the project, every commit on main came from a pull request. [#136](https://github.com/wolfi-dev/challoc/pull/136) landed rebased, as `7a12536a` and `75e665c6`, with the user who merged it as committer, after its head passed `Chainguard Checks (presubmit)`; every other pull request commit has GitHub as committer. [#132](https://github.com/wolfi-dev/challoc/pull/132) moved CI to Chainguard Checks on 2026-10-12. A repository ruleset, created on 2026-10-12 and last changed on 2026-10-29, requires the aggregate `Chainguard Checks (presubmit)` status before a change lands on main; these are its settings as read on 2026-11-02, and its settings before 2026-10-29 are not recorded. It does not require a branch to be up to date with main, so 2 pull requests that each pass presubmit alone can fail together. The postsubmit checks rerun after every landing to catch that; they cannot block a landing, and a failure points at the commit that landed. `codegen` and `codegen-arm64` are advisory, because an executable change is expected to change some functions; review reads their output against the hot set.
+
+The verification checks were added in this order (merge dates in UTC):
+
+| Merged | PR | Checks added |
+| --- | --- | --- |
+| 2026-10-25 | [#141](https://github.com/wolfi-dev/challoc/pull/141) | `verus` presubmit on x86_64 (counter tests, proofs and coverage floor) and `verus-main` postsubmit |
+| 2026-10-25 | [#142](https://github.com/wolfi-dev/challoc/pull/142) | `sh verus/seams.sh --check` as the first step of `make verus` |
+| 2026-10-26 | [#157](https://github.com/wolfi-dev/challoc/pull/157) | `verus-arm64`, natively on arm64 |
+| 2026-10-28 | [#264](https://github.com/wolfi-dev/challoc/pull/264) | quantum 8 proofs in the Verus checks; advisory `codegen` and `codegen-arm64` |
+| 2026-10-30 | [#329](https://github.com/wolfi-dev/challoc/pull/329) | `kani` presubmit on listed paths |
+| 2026-10-31 | [#338](https://github.com/wolfi-dev/challoc/pull/338) | `kani-main` postsubmit over every harness |
+| 2026-11-01 | [#364](https://github.com/wolfi-dev/challoc/pull/364) | `kani-boolcmp` presubmit lint and `kani-ignoring` postsubmit |
+| 2026-11-01 | [#414](https://github.com/wolfi-dev/challoc/pull/414) | `isla` presubmit on aarch64 for listed paths, and `isla-main` postsubmit on arm64 |
+| 2026-11-01 | [#415](https://github.com/wolfi-dev/challoc/pull/415) | x86_64 legs in `isla-main`, which runs them only after a landing |
+| 2026-11-02 | [#459](https://github.com/wolfi-dev/challoc/pull/459) | `kani-main` dropped; `kani-ignoring` runs every harness after every landing |
+| 2026-11-02 | [#423](https://github.com/wolfi-dev/challoc/pull/423) | `perf-budget`: fast-path cost bounds on the x86_64 release binary at both quanta (`scripts/perf-budget.sh`), which checks theorem 45 |
+| 2026-11-03 | [#465](https://github.com/wolfi-dev/challoc/pull/465) | `emptyasm` legs in `.chainguard/ci/isla.yaml` (`make emptyasm`): the empty-template `asm!` register hints add no instruction |
+
+A check could not stop a change that landed before it was added. The `kani` and `isla` presubmit checks run only on pull requests that change their listed paths; `kani-ignoring` and `isla-main` cover the rest after the landing.

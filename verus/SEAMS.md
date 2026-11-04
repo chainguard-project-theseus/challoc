@@ -47,8 +47,8 @@ specification of a `core` function or type, checkable against `core`
 itself) and allocator invariant (a ghost fact about challoc's own
 protocol whose producer is unverified code). The tools are Islaris/Isla,
 RefinedRust, Kani, loom/GenMC, Verus (the fact is provable in Verus
-itself, once its producer states it or a lemma derives it), Miri
-(evidence only) and none (assumption).
+itself, once its producer states it or a lemma derives it) and none
+(assumption).
 
 `seams.sh` picks a category from the kind, the path and the body. The
 seams of `src/a/b.rs` may have an overrides file,

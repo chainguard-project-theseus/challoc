@@ -365,7 +365,7 @@ function tool_of(cat) {
     if (cat == "function pointer") return "Kani"
     if (cat == "UnsafeCell/volatile/transmute") return "RefinedRust"
     if (cat == "raw pointer (internal)") return "RefinedRust"
-    if (cat == "raw pointer from C caller") return "Miri (evidence only)"
+    if (cat == "raw pointer from C caller") return "none (assumption)"
     if (cat == "panic/abort") return "Kani"
     if (cat == "atomics primitive") return "loom/GenMC"
     if (cat == "platform/kernel fact") return "none (assumption)"
@@ -428,7 +428,7 @@ END {
     }
     n = m
     ncat = split("inline asm|FFI/syscall|function pointer|UnsafeCell/volatile/transmute|raw pointer (internal)|raw pointer from C caller|panic/abort|atomics primitive|platform/kernel fact|C-program contract|termination|core library|allocator invariant", cats, "|")
-    ntool = split("Islaris/Isla|RefinedRust|Kani|loom/GenMC|Verus|Miri (evidence only)|none (assumption)", tools, "|")
+    ntool = split("Islaris/Isla|RefinedRust|Kani|loom/GenMC|Verus|none (assumption)", tools, "|")
     nkind = split("external_body|external_body proof|external_body type|external_body const|axiom|assume_spec|ext_type_spec|ext_trait_spec|spec_impl|no_decreases|assume_new|ghost_assume_new", kinds, "|")
     for (i = 1; i <= ncat; i++) catok[cats[i]] = 1
     for (i = 1; i <= ntool; i++) toolok[tools[i]] = 1
