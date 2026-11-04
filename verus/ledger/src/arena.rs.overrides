@@ -30,13 +30,6 @@ AR_SPARE_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` i
 axiom_arenas_layout	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arenas_assemble	raw pointer (internal)	none (assumption)
-# The build-cost table's initialiser: `[NO_COST; BUILD_COSTS]`, an
-# array-repeat expression Verus does not take for an element type that is
-# not `Copy`, and the arena storage rounded up with
-# `usize::next_multiple_of`, which vstd does not specify. Both claim
-# nothing, and both are evaluated at compile time.
-NO_COSTS	core library	none (assumption)
-ARENA_STORAGE	core library	none (assumption)
 # The smallest-sample loop retries a weak compare-and-exchange while other
 # threads store smaller samples, or spuriously: no bound to check.
 note_build_cost	termination	none (assumption)
