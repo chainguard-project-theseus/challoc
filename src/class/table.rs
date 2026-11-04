@@ -75,7 +75,8 @@ pub(crate) struct TableInner {
     /// build, which checks no overflow).
     pub(super) guards: usize,
     /// Ghost: the table's page, hand-out group and slab count, fixed at
-    /// `new` ([`axiom_table_lock_frame`]), for [`TableInner::inv`].
+    /// `new` (the lock's frame, `TableInner`'s `LockSpec` impl), for
+    /// [`TableInner::inv`].
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) page: Ghost<usize>,
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
@@ -240,42 +241,6 @@ impl TableInner {
         &&& self.wm@@ == self.next_slab
     }
 }
-
-/// Assumption (`lock.rs`): the commit lock's value keeps
-/// [`TableInner::inv`] while the lock is free. `new` (verified) builds it
-/// with zero counts, uncommitted tables, every slab's markers and
-/// descriptor permission, and no watermark copy.
-///
-/// Each holder outside the tests (`SlabTable::mirror_watermark`,
-/// `guards`, `take_group`, `commit_run` and `commit_slab`) ends with
-/// `LockGuard::unlock`, which requires [`TableInner::inv`] (this axiom)
-/// and the frame ([`axiom_table_lock_frame`]), on every path to a return
-/// (`api::tests::guards_end_in_unlock`); a guard dropped without it
-/// would release unchecked. A panic aborts (`panic = "abort"`) outside
-/// the tests, so it never releases.
-///
-/// The test helper `corrupt_owner_word` only commits through
-/// `Lazy::ensure`. The fork handlers take the raw lock without touching
-/// the value.
-///
-/// `api::tests::lock_holders_match_inv_docs` checks that the functions
-/// that take the guard are the holders named here.
-pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
-;
-
-/// Assumption (`lock.rs`): the commit lock's ghost geometry, marker
-/// authorities, descriptor array and the location of the watermark's
-/// ghost variable never change. Each holder outside the tests checks it
-/// at its `LockGuard::unlock`, as for [`axiom_table_lock_inv`]; the test
-/// helper `corrupt_owner_word` only commits.
-pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableInner)
-    ensures
-        #[trigger] crate::lock::assumed_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
-            && v.sb == init.sb && v.mloc == init.mloc && v.dbase == init.dbase && v.dstride == init.dstride
-            && v.sloc == init.sloc && v.wloc == init.wloc),
-;
 
 /// Offset of class `class`'s descriptor array, bitmap and owner array
 /// inside their reservations.
@@ -1073,7 +1038,7 @@ unsafe fn load_owner(t: &SlabTable, w: *const AtomicU16, Ghost(slab): Ghost<usiz
 /// lock holds for the slabs from the watermark on ([`TableInner::inv`]).
 /// That last holds because every holder outside the tests ends with
 /// `LockGuard::unlock`, which requires the invariant
-/// (`axiom_table_lock_inv`). It runs inside the word's invariant
+/// (`TableInner`'s `LockSpec` impl). It runs inside the word's invariant
 /// ([`OwnerPred`]), which holds `perm`; every store to an owner word is
 /// this one (the test helper `corrupt_owner_word` aside), so the value
 /// `perm` holds is the word's.
@@ -1685,7 +1650,6 @@ impl SlabTable {
             },
             *final(ord) == *old(ord),
     {
-        broadcast use axiom_table_lock_inv;
         proof {
             // The page and the region end that the geometry needs, from the
             // separation of the class regions.
@@ -3093,7 +3057,6 @@ impl SlabTable {
         ensures
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -4071,7 +4034,6 @@ impl SlabTable {
                 && (forall|x: nat| #[trigger] final(dout).contains_key(x) ==> s <= x < e)
                 && (forall|x: nat| s <= x < e ==> #[trigger] desc_handed(*final(dout), *self, x, arena)),
     {
-        broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
         proof {
             use_type_invariant(self);
             lemma_nslabs_bound(self.nslabs, (usize::MAX - self.base) as usize, class_table()[self.class as int].lg_slab as usize);
@@ -4834,7 +4796,6 @@ impl SlabTable {
             r matches Some(usable) ==> usable == !self.spec_is_guard(s),
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
         if !self.runs() {
             return self.commit_slab(s, Tracked(ord));
         }
@@ -4951,7 +4912,6 @@ impl SlabTable {
             r matches Some(usable) ==> usable == !self.spec_is_guard(s),
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -5164,16 +5124,43 @@ impl SlabTable {
 
 verus! {
 
-/// The slab table lock's invariant and frame, which
-/// [`axiom_table_lock_inv`] and [`axiom_table_lock_frame`] state.
+/// The slab table's commit lock ([`SlabTable::inner`]): its invariant is
+/// [`TableInner::inv`], and its frame is the ghost geometry (page,
+/// hand-out group, slab count, bits per slab), the marker authorities,
+/// the descriptor array and the location of the watermark's ghost
+/// variable, which `SlabTable::new` sets and no holder writes.
+///
+/// `new` (verified) builds the value with zero counts, uncommitted
+/// tables, every slab's markers and descriptor permission, and no
+/// watermark copy (`Lock::new` requires the invariant). Each holder
+/// outside the tests (`SlabTable::mirror_watermark`, `guards`,
+/// `take_group`, `commit_run` and `commit_slab`) ends with
+/// `LockGuard::unlock`, which requires both, on every path to a return
+/// (`api::tests::guards_end_in_unlock`). A panic aborts
+/// (`panic = "abort"`) outside the tests, so it never releases. The test
+/// helper `corrupt_owner_word` only commits through `Lazy::ensure`. The
+/// fork handlers take the raw lock without touching the value.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for TableInner {
-    open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+    closed spec fn lock_spec_inv(self) -> bool {
+        self.inv()
     }
 
-    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+    closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        v.page == init.page && v.group == init.group && v.nslabs == init.nslabs && v.sb == init.sb && v.mloc == init.mloc
+            && v.dbase == init.dbase && v.dstride == init.dstride && v.sloc == init.sloc && v.wloc == init.wloc
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_table_frame_reflexive(v: TableInner)
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!
