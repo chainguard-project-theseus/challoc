@@ -688,6 +688,9 @@ impl Heap {
     {
         let cs = shared.owner(arena).0.class(class);
         let (holes, capacity) = cs.holes(Tracked(ord));
+        proof {
+            crate::vspec::class::lemma_class_table_wf(class as int);
+        }
         holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
             && holes * COMPACT_MIN_RATIO >= capacity
     }
@@ -715,6 +718,9 @@ impl Heap {
         let cs = shared.owner(arena).0.class(class);
         let refilled = cs.refilled() as u32;
         let delta = refilled.wrapping_sub(prev_refilled) as usize;
+        proof {
+            crate::vspec::class::lemma_class_table_wf(class as int);
+        }
         let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots() {
             if Self::fragmented(shared, arena, class, Tracked(ord)) {
                 cs.note_gate_refill();

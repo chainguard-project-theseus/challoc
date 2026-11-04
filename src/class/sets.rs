@@ -419,7 +419,7 @@ impl SetTable {
             r == class_table()[class as int].lg_slab - LG_MIN_SLAB,
     {
         proof {
-            broadcast use crate::vspec::class::axiom_class_table_wf;
+            broadcast use crate::vspec::class::lemma_class_table_wf;
             assert(class_table()[class as int].wf());
         }
         (CLASSES.table()[class].lg_slab as u32 - LG_MIN_SLAB) as usize
@@ -1015,7 +1015,7 @@ impl SetTable {
         {
             let g = Self::group_of(c);
             proof {
-                crate::vspec::class::axiom_class_table_wf(c as int);
+                crate::vspec::class::lemma_class_table_wf(c as int);
                 let (lr, ls) = (regions.lg_region, class_table()[c as int].lg_slab);
                 assert(1 <= (1usize << lr) >> ls <= 0x400_0000) by (bit_vector)
                     requires 22 <= lr <= 38, 12 <= ls <= 22;

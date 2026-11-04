@@ -850,7 +850,7 @@ pub proof fn theorem_nallocx_zero(size: usize, lg_align: u32)
     let align = 1usize << lg_align;
     if spec_class_for(size, align) is Some {
         let c = choose|c: int| super::libc::least_class(c, size as int, align);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
     } else if huge_placeable(size, align) {
         lemma_huge_usable_pos(size as int);
     }
@@ -892,7 +892,7 @@ fn theorem_nallocx_zero_rejects(size: usize, flags: c_int, Tracked(errno): Track
             let r = crate::layout::process_regions();
             if exists|c: int| #![trigger r.is_slot(c, p@.addr)] #![trigger class_table()[c]] r.is_slot(c, p@.addr) && size <= class_table()[c].size {
                 let c = choose|c: int| #![trigger r.is_slot(c, p@.addr)] #![trigger class_table()[c]] r.is_slot(c, p@.addr) && size <= class_table()[c].size;
-                crate::vspec::class::axiom_class_table_wf(c);
+                crate::vspec::class::lemma_class_table_wf(c);
             } else {
                 lemma_huge_usable_pos(size as int);
             }

@@ -2278,7 +2278,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Util
         Kind::Slab { class, slab, slot } => {
             proof {
                 rd.kind = Kind::Slab { class, slab, slot };
-                crate::vspec::class::axiom_class_table_wf(class as int);
+                crate::vspec::class::lemma_class_table_wf(class as int);
             }
             let class = class as usize;
             let t = shared.table(class);
@@ -2613,6 +2613,9 @@ fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
 {
     let j = at(mib, 2);
     if j < NBINS && j < NCLASSES {
+        proof {
+            crate::vspec::class::lemma_class_table_wf(j as int);
+        }
         Ok(CLASSES.table()[j])
     } else {
         Err(ENOENT)

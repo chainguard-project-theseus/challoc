@@ -15,7 +15,7 @@ file.
 
 ## `ClassTable`
 
-src/layout/mod.rs:1352. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1392. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The size-class table in use, indexed by class number: [`BASE_CLASSES`] with the slab geometry of the classes below the kernel page raised to the page by [`adopt_page_geometry`] once at init.
@@ -26,16 +26,17 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ## `axiom_class_table`
 
-src/layout/mod.rs:1363. Kind: axiom. Category: allocator invariant.
+src/layout/mod.rs:1524. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Trusted: what [`class_table`] names, the contents of [`CLASSES`] after init, is what a frozen permission to its storage holds.
+> Trusted: a [`table_ok`] value that a frozen permission to the storage of [`CLASSES`] holds is [`class_table`], since it is [`classes_after_init`], the contents of [`CLASSES`] after init.
 
 ```rust
 pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
     requires
         t.ptr() == classes_storage(),
         t.is_init(),
+        table_ok(t.value()),
     ensures
         class_table() == t.value(),
 ;
@@ -43,7 +44,7 @@ pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Clas
 
 ## `ClassTable::new`
 
-src/layout/mod.rs:1373. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1535. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::class_table_new).
 
 ```rust
@@ -52,22 +53,20 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ## `ClassTable::table`
 
-src/layout/mod.rs:1388. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: Kani. Status: trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: page sizes outside 4 to 64 KiB, and that a reader sees the table `init` left, which is the `Sync` impl's argument).
+src/layout/mod.rs:1551. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+Tool: Kani. Status: trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: that a reader sees the table `init` left, which is the `Sync` impl's argument).
 
-> The table, for verified code.
+> The table, for verified code: [`class_table`], whose entries are well formed and sized [`spec_class_size`] (`vspec::class::lemma_class_table_wf`).
 
 ```rust
 pub fn table(&self) -> (r: &[Class; NCLASSES])
     ensures
         *r == class_table(),
-        forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].wf(),
-        forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].size == spec_class_size(i),
 ```
 
 ## `classes_ptr`
 
-src/layout/mod.rs:1439. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1600. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 > The storage of [`CLASSES`]' table, as a raw pointer.

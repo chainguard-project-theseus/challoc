@@ -1139,6 +1139,7 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
     let base = shared.regions.class_base[class];
     let lg = CLASSES.table()[class].lg_slab as u32;
     proof {
+        crate::vspec::class::lemma_class_table_wf(class as int);
         assert(class_table()[class as int].wf());
     }
     let key = |p: *mut u8| -> (k: usize)

@@ -928,7 +928,7 @@ proof fn lemma_slabs_fit_region(r: Regions, c: int)
     ensures
         r.slab_span(c, r.spec_nslabs(c)).0 <= r.class_base[c] + (1usize << r.lg_region),
 {
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     let (lg, region) = (class_table()[c].lg_slab as usize, 1usize << r.lg_region);
     vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
     vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(region >> lg, lg, region);
@@ -1671,6 +1671,9 @@ impl SlabTable {
             "class: guard interval {guard_interval} is not a power of two"
         );
         let cls = &CLASSES.table()[class];
+        proof {
+            crate::vspec::class::lemma_class_table_wf(class as int);
+        }
         let page = regions.page_size();
         let nslabs = regions.nslabs(class);
         let stagger = desc_stagger(class);

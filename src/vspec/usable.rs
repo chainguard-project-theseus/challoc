@@ -187,7 +187,7 @@ pub proof fn lemma_usable_of_pos(p: *mut u8, n: int)
     let r = process_regions();
     if crate::heap::slot_start(p) {
         let c = choose|c: int| #[trigger] r.is_slot(c, p@.addr);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
     } else {
         let lg = r.lg_page;
         assert((1usize << lg) > 0) by (bit_vector)
@@ -231,7 +231,7 @@ pub proof fn lemma_usable_is_pos(p: *mut u8, size: int, n: int)
     let r = process_regions();
     if exists|c: int| #[trigger] r.is_slot(c, p@.addr) && size <= class_table()[c].size {
         let c = choose|c: int| #[trigger] r.is_slot(c, p@.addr) && size <= class_table()[c].size;
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
     } else {
         let lg = r.lg_page;
         assert((1usize << lg) > 0) by (bit_vector)
