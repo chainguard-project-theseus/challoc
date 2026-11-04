@@ -132,7 +132,9 @@ code on or near the hot paths is justified with evidence.
   container, on the same architecture). The verdict must read
   `changed 0` on the hot set: `malloc`, `free`, `calloc`, `realloc`,
   `sdallocx`, `free_sized` and everything inlined into them. Functions
-  that differ only in relocations (`reloc-only`) are fine. Put the
+  that differ only in relocations (`reloc-only`), in trailing alignment
+  padding (`padding-only`) or by GNU ld's erratum 843419 stub
+  (`erratum-stub`) are fine. Put the
   verdict in the pull request.
 - **Fast-path changes** (`src/heap/`, `src/class/`, `src/slab.rs`,
   `src/api/*.rs`) need two things in the pull request. First, the go/no-go

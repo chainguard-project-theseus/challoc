@@ -1,0 +1,13 @@
+
+hash-old.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000001000 <_RNvCs1a2b3c4d5e6_5crate1f>:
+    1000:	add	x0, x0, x1
+    1004:	ret
+
+0000000000001010 <_RNvCs1a2b3c4d5e6_5crate1g>:
+    1010:	sub	x0, x0, x1
+    1014:	ret

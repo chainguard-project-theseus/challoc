@@ -118,12 +118,13 @@ checks:
 
   codegen-fncmp:
     description: >-
-      ci/codegen-fncmp-test.sh: scripts/codegen-fncmp.py on the dump pairs
-      in scripts/testdata/codegen-fncmp. An AArch64 offset-0 load against
-      the same load at a nonzero offset must count as reloc-only, and a
-      post-indexed load as changed.
+      ci/codegen-fncmp-test.sh: the 16 fixture checks of
+      scripts/codegen-fncmp.py on the dump pairs in
+      scripts/testdata/codegen-fncmp, each pair's verdict line against the
+      expected one; the crate-hash and impl-disambiguator pairs run with
+      c++filt hidden from PATH and the crate-hash pair also with it.
     environment:
-      packages: [python-3.13, busybox]
+      packages: [python-3.13, busybox, binutils]
     timeout: 5m
     cmd: [sh, ci/codegen-fncmp-test.sh]
 

@@ -1,0 +1,17 @@
+
+erratum-far.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000003ff0 <mallinfo>:
+    3ff0:	bl	2000 <collect>
+    3ff4:	adr	x8, 6000 <SHARED>
+    3ff8:	ldr	x13, [x20, #5944]
+    3ffc:	ldr	w10, [x8, #3168]
+    4000:	ret
+    4004:	nop
+    4008:	b	5000 <mallinfo2>
+    400c:	nop
+    4010:	ldr	w10, [x8, #3168]
+    4014:	b	4000 <mallinfo+0x10>

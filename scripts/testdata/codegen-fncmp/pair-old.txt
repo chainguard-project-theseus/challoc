@@ -1,0 +1,13 @@
+
+pair-old.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000001000 <f>:
+    1000:	add	x0, x0, x1
+    1004:	ret
+
+0000000000001010 <g>:
+    1010:	sub	x0, x0, x1
+    1014:	ret
