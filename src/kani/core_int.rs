@@ -4,10 +4,7 @@
 //! machine integers, and every loop below runs at most 65 times). The
 //! `spec_*` functions restate the Verus spec functions the contracts
 //! name, in the same recursion, over `u128` where the spec's `int`
-//! arithmetic could leave 64 bits. `usize::div_ceil` (`vspec/core_int.rs`)
-//! and `<u64>::div_ceil` (`vspec/mod.rs`) have no harness: with symbolic
-//! 64-bit operands CBMC does not finish in hours (it has to show two
-//! 64-bit dividers equal), so those seams stay trusted.
+//! arithmetic could leave 64 bits.
 
 /// vstd's `u64_trailing_zeros`: 64 for 0, else the count of low zero bits,
 /// by its recursion on `i / 2`.
