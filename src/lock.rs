@@ -1212,13 +1212,14 @@ mod tests {
         // (type, defines `inv`, defines `frame`) for each impl that defines
         // either; every other impl delegates both.
         const DEFINED: &[(&str, bool, bool)] = &[
+            ("crate::arena::Created", true, true),
             ("crate::class::Inner", true, true),
             ("crate::class::sets::[Lazy; SET_GROUPS]", true, true),
             ("crate::class::table::TableInner", true, true),
             ("crate::heap::tcaches::()", true, true),
             ("crate::huge::Inner", true, true),
             ("crate::meta::Inner", true, true),
-            ("crate::stats::ArenaStats", false, true),
+            ("crate::stats::ArenaStats", true, true),
             ("crate::stats::Snapshot", true, true),
         ];
         // Spelled in parts, so that this test's own lines match nothing.

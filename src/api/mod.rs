@@ -4191,7 +4191,7 @@ mod tests {
         use std::string::ToString;
         type Holders = &'static [(&'static str, &'static str, &'static str)];
         const HOLDERS: &[(&str, Holders)] = &[
-            // `vspec::arena::axiom_arena_stats_lock_inv`.
+            // `stats::ArenaStats`'s `LockSpec` impl.
             (
                 "arena.rs:Arena.stats",
                 &[
@@ -4200,7 +4200,7 @@ mod tests {
                     ("arena.rs:", "pub fn store_stats(", "stats"),
                 ],
             ),
-            // `arena::axiom_arenas_lock_inv`.
+            // `arena::Created`'s `LockSpec` impl.
             (
                 "arena.rs:Arenas.lock",
                 &[
