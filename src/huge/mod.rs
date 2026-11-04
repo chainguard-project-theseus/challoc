@@ -499,6 +499,8 @@ impl Settle for Tally {
         &&& c.spec_lg() == o.lg_page
         &&& c.spec_base() == o.base
         &&& c.spec_mid() == o.spec_mid()
+        &&& c.spec_rid() == o.spec_run_loc()
+        &&& c.spec_pid() == o.spec_page_loc()
         &&& c.pgs@@ == self.held@
         &&& forall|x: (int, int)| #[trigger] pend(x) ==> has_piece(o, c, self.vis@, x)
         &&& walked(c.elist@, self.rest@, self.vis@)
@@ -756,12 +758,14 @@ pub(crate) struct Inner {
     /// Ghost: the region's first byte (`Huge::base`), fixed at creation.
     #[allow(dead_code)]
     base: Ghost<usize>,
-    /// Ghost: the authority of the `Active` descriptors' extents
-    /// ([`run_loc`]).
+    /// Ghost: the authority of the `Active` descriptors' extents, fixed
+    /// at creation (`spec_rid`); the process's ([`run_loc`]) in the
+    /// process's allocator.
     #[allow(dead_code)]
     runs: Tracked<GhostSetAuth<(int, int)>>,
-    /// Ghost: the authority of the `Active` descriptors' pages
-    /// ([`page_loc`]).
+    /// Ghost: the authority of the `Active` descriptors' pages, fixed at
+    /// creation (`spec_pid`); the process's ([`page_loc`]) in the
+    /// process's allocator.
     #[allow(dead_code)]
     pgs: Tracked<GhostSetAuth<int>>,
 }
@@ -959,11 +963,19 @@ pub open spec fn desc_in_meta(d: *mut HugeDesc) -> bool {
 }
 
 /// The authority of the live runs' extents: one per
-/// process, the huge allocator's.
-pub uninterp spec fn run_loc() -> vstd::resource::Loc;
+/// process, that of the huge allocator of the `Shared` in the process's
+/// storage ([`Huge::spec_run_loc`]). Opaque; `Shared::init` reveals it.
+#[verifier::opaque]
+pub open(crate) spec fn run_loc() -> vstd::resource::Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).huge.spec_run_loc()
+}
 
-/// The authority of the live runs' pages.
-pub uninterp spec fn page_loc() -> vstd::resource::Loc;
+/// The authority of the live runs' pages ([`Huge::spec_page_loc`] of the
+/// stored `Shared`'s huge allocator). Opaque, as [`run_loc`].
+#[verifier::opaque]
+pub open(crate) spec fn page_loc() -> vstd::resource::Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).huge.spec_page_loc()
+}
 
 /// Ghost token of a live huge run: its extent `(start, npages)`, the
 /// run's first page and its page count with the guard, as a singleton of
@@ -1074,23 +1086,6 @@ pub open spec fn free_page_byte(base: int, pg: int, np: int, held: vstd::set::Se
     &&& (b - base) / pg < np
     &&& !held.contains((b - base) / pg)
 }
-
-/// Trusted: outside tests, [`Huge::new`] runs once per process, for the
-/// process's `Shared` (`Shared::init`), so the run authorities it makes
-/// are the process's ([`run_loc`], [`page_loc`]), as
-/// `class::table::axiom_slot_loc` for the slot authorities. Two calls
-/// with two pairs of authorities would prove `false`, so a call uses up
-/// `once`, the process's one token of this step (`vspec::once`), handed
-/// to `Huge::new`.
-// `once` is read only by the requires (ghost).
-#[allow(unused_variables)]
-axiom fn axiom_run_locs(r: vstd::resource::Loc, p: vstd::resource::Loc, tracked once: Once)
-    requires
-        once.step() == Step::Huge,
-    ensures
-        run_loc() == r,
-        page_loc() == p,
-;
 
 /// Two live descriptors are at different addresses: their permissions
 /// are disjoint.
@@ -1572,8 +1567,6 @@ proof fn lemma_run_auths(g0: Inner)
     requires
         g0.wf(),
     ensures
-        g0.runs@.id() == run_loc(),
-        g0.pgs@.id() == page_loc(),
         g0.runs@@ == active_runs(g0.descs@),
         g0.pgs@@ == active_pages(g0.descs@),
 {
@@ -1763,11 +1756,13 @@ proof fn theorem_huge_stats(g: Inner)
     assert(stat(g.stats, 3) == tally(g.all@, g.descs@, 3));
 }
 
-/// A live run is counted: the run authorities hold its token's extent
-/// and pages.
+/// A live run is counted: the run authorities, when they are the
+/// process's, hold its token's extent and pages.
 proof fn theorem_run_counted(tracked g: &Inner, tracked t: &RunToken)
     requires
         g.wf(),
+        g.runs@.id() == run_loc(),
+        g.pgs@.id() == page_loc(),
         t.wf(),
     ensures
         g.runs@@.contains((t.start(), t.npages())),
@@ -3278,8 +3273,6 @@ proof fn lemma_took_wf(g0: Inner, g1: Inner, t: Take)
     requires
         g0.wf(),
         g1.took(g0, t),
-        g1.runs@.id() == run_loc(),
-        g1.pgs@.id() == page_loc(),
         g1.runs@@ == active_runs(g1.descs@),
         g1.pgs@@ == active_pages(g1.descs@),
         t.touch_ok(g0),
@@ -3362,8 +3355,6 @@ impl Inner {
         &&& self.table.spec_count() == tally(self.all@, self.descs@, 6)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) && self.descs@[d].value().state == RunState::Empty as u8
             ==> self.elist@.contains(d)
-        &&& self.runs@.id() == run_loc()
-        &&& self.pgs@.id() == page_loc()
         &&& self.runs@@ == active_runs(self.descs@)
         &&& self.pgs@@ == active_pages(self.descs@)
         &&& coalesced(self.descs@)
@@ -3498,8 +3489,6 @@ impl Inner {
             self.table.spec_mid() == self.mid@,
             self.free.l1_words <= 0x1_0000_0000,
             self.all@.no_duplicates(),
-            self.runs@.id() == run_loc(),
-            self.pgs@.id() == page_loc(),
             self.runs@@ == active_runs(self.descs@),
             self.pgs@@ == active_pages(self.descs@),
     {
@@ -3634,6 +3623,18 @@ impl Inner {
     /// come from ([`Inner::mid`]).
     pub(crate) closed spec fn spec_mid(&self) -> vstd::resource::Loc {
         self.mid@
+    }
+
+    /// The identity of the authority of the `Active` extents
+    /// ([`Inner::runs`]), fixed at creation.
+    pub(crate) closed spec fn spec_rid(&self) -> vstd::resource::Loc {
+        self.runs@.id()
+    }
+
+    /// The identity of the authority of the `Active` extents' pages
+    /// ([`Inner::pgs`]), fixed at creation.
+    pub(crate) closed spec fn spec_pid(&self) -> vstd::resource::Loc {
+        self.pgs@.id()
     }
 
     /// The `Empty` list's entries are live, with a page or more each,
@@ -4208,12 +4209,16 @@ impl Huge {
     /// probed `MADV_GUARD_INSTALL` support and `guards` the `guards` key
     /// (false: no guard page is placed at all, and `guard_install` is
     /// ignored). `None` if the metadata region cannot hold the tables.
+    /// `_once` is the `Huge` step's one-shot token (`vspec::once`), taken
+    /// and used for nothing: the run authorities `new` makes are the
+    /// process's where `Shared::init` stores the allocator ([`run_loc`],
+    /// [`page_loc`]).
     pub fn new(
         meta: &Meta,
         regions: &Regions,
         guard_install: bool,
         guards: bool,
-        Tracked(once): Tracked<Once>,
+        Tracked(_once): Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<Huge>)
         requires
@@ -4225,7 +4230,7 @@ impl Huge {
             meta.is_process(),
             crate::meta::process_page() == (1usize << regions.lg_page),
             old(ord).allows(rank_meta()),
-            once.step() == Step::Huge,
+            _once.step() == Step::Huge,
         ensures
             r matches Some(h) ==> h.spec_npages() == (regions.huge_len >> regions.lg_page) as int
                 && h.spec_page() == (1usize << regions.lg_page) as int
@@ -4259,7 +4264,6 @@ impl Huge {
         let tracked (runs, _) = GhostSetAuth::<(int, int)>::new(vstd::set::Set::empty());
         let tracked (pgs, _) = GhostSetAuth::<int>::new(vstd::set::Set::empty());
         proof {
-            axiom_run_locs(runs.id(), pgs.id(), once);
             assert(active_runs(descs) =~= vstd::set::Set::empty());
             assert(active_pages(descs) =~= vstd::set::Set::empty());
         }
@@ -4442,6 +4446,38 @@ impl Huge {
         lock_init(self.inner).spec_mid()
     }
 
+    /// The identity of this allocator's authority of the live runs'
+    /// extents ([`Inner::spec_rid`], fixed at creation).
+    pub closed spec fn spec_run_loc(&self) -> vstd::resource::Loc {
+        lock_init(self.inner).spec_rid()
+    }
+
+    /// The identity of this allocator's authority of the live runs' pages
+    /// ([`Inner::spec_pid`], fixed at creation).
+    pub closed spec fn spec_page_loc(&self) -> vstd::resource::Loc {
+        lock_init(self.inner).spec_pid()
+    }
+
+    /// The run authorities are the process's ([`run_loc`], [`page_loc`]):
+    /// the run tokens it hands out and takes back are of its own
+    /// authorities.
+    pub open spec fn runs_process(&self) -> bool {
+        &&& self.spec_run_loc() == run_loc()
+        &&& self.spec_page_loc() == page_loc()
+    }
+
+    /// A value of the huge lock has the process's run authorities when the
+    /// allocator does.
+    proof fn lemma_run_ids(&self, g: Inner)
+        requires
+            self.runs_process(),
+            lock_frame(lock_init(self.inner), g),
+        ensures
+            g.runs@.id() == run_loc(),
+            g.pgs@.id() == page_loc(),
+    {
+    }
+
     /// `a` is what [`Huge::alloc_run`] returns for `size` bytes at `align`:
     /// a page start of the region, a multiple of `align`, with `size` bytes
     /// and at least a page of the region from it on.
@@ -4522,8 +4558,9 @@ impl Huge {
 
     /// This is the process's huge allocator: its pages are the process's
     /// huge region's (base, page and page count), its base a page start,
-    /// and the process's regions are well formed and separated
-    /// (`heap::regions_ok`). Closed: [`Huge::lemma_purge_range`] reads it.
+    /// the process's regions are well formed and separated
+    /// (`heap::regions_ok`), and its run authorities are the process's
+    /// ([`Huge::runs_process`]). Closed: [`Huge::lemma_purge_range`] reads it.
     pub closed spec fn is_process(&self) -> bool {
         let r = crate::layout::process_regions();
         &&& crate::heap::regions_ok()
@@ -4531,6 +4568,7 @@ impl Huge {
         &&& self.spec_page() == (1usize << r.lg_page) as int
         &&& self.spec_npages() == (r.huge_len >> r.lg_page) as int
         &&& self.spec_base_aligned()
+        &&& self.runs_process()
     }
 
     /// [`Huge::is_process`] from its parts.
@@ -4541,8 +4579,18 @@ impl Huge {
             self.spec_page() == (1usize << crate::layout::process_regions().lg_page) as int,
             self.spec_npages() == (crate::layout::process_regions().huge_len >> crate::layout::process_regions().lg_page) as int,
             self.spec_base_aligned(),
+            self.runs_process(),
         ensures
             self.is_process(),
+    {
+    }
+
+    /// The process's huge allocator has the process's run authorities.
+    proof fn lemma_process_runs(&self)
+        requires
+            self.is_process(),
+        ensures
+            self.runs_process(),
     {
     }
 
@@ -5192,6 +5240,10 @@ impl Huge {
         let page = self.page_size();
         let tracked mut under = LockOrder::spare();
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
+        proof {
+            self.lemma_process_runs();
+            self.lemma_run_ids(g@);
+        }
         let r = if let Some((s, ext)) = self.find(&g, need, align) {
             let end = s + need;
             // The lock's value at the placement: `prepare`'s commits are apart
@@ -5885,6 +5937,8 @@ impl Huge {
             old(g).spec_np() == self.npages,
             old(g).spec_lg() == self.lg_page,
             old(g).spec_base() == self.base,
+            old(g).spec_rid() == run_loc(),
+            old(g).spec_pid() == page_loc(),
             // `prepare` committed the pages up to the new mark.
             crate::vspec::unbacked::committed_range(
                 self.base as int,
@@ -5909,6 +5963,8 @@ impl Huge {
             final(g).spec_lg() == old(g).spec_lg(),
             final(g).spec_base() == old(g).spec_base(),
             final(g).spec_mid() == old(g).spec_mid(),
+            final(g).spec_rid() == old(g).spec_rid(),
+            final(g).spec_pid() == old(g).spec_pid(),
             final(g).descs@.contains_key(run),
             final(g).descs@[run].value().pages == p.pages,
             final(tok).contains_key(0),
@@ -6794,8 +6850,6 @@ proof fn lemma_freed_wf(g0: Inner, g1: Inner, m: Merge)
     requires
         g0.wf(),
         g1.freed(g0, m),
-        g1.runs@.id() == run_loc(),
-        g1.pgs@.id() == page_loc(),
         g1.runs@@ == active_runs(g1.descs@),
         g1.pgs@@ == active_pages(g1.descs@),
         m.nbrs_ok(g0),
@@ -7130,8 +7184,6 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         g1.free.own_claimed(),
         g1.free.l1_words <= 0x1_0000_0000,
         // The run authorities without the run's token.
-        g1.runs@.id() == run_loc(),
-        g1.pgs@.id() == page_loc(),
         g1.runs@@ == active_runs(g0.descs@).remove((m.vd.start as int, m.vd.pages as int)),
         g1.pgs@@ == active_pages(g0.descs@).difference(vstd::set_lib::set_int_range(m.vd.start as int, m.vd.start + m.vd.pages)),
     ensures
@@ -7509,6 +7561,8 @@ impl Huge {
             // `page` to (as in `lookup`): none of the three checks below
             // can fail.
             let tracked t = &tok;
+            self.lemma_process_runs();
+            self.lemma_run_ids(g@);
             theorem_run_counted(_gi, t);
             lemma_run_auths(g@);
             lemma_active(g@.descs@);
@@ -7557,6 +7611,7 @@ impl Huge {
         let _gm: &mut Inner = &mut g;
         proof {
             lemma_run_auths(g0);
+            self.lemma_run_ids(g0);
             tok.ext.agree(_gm.runs.borrow());
             lemma_token_extent(g0, d, tok.start(), tok.npages());
             assert(n == tok.npages());
@@ -8010,6 +8065,7 @@ impl Huge {
             crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_run(*tok, page as int)),
             crate::sys::may_syscall(),
             page <= self.spec_npages(),
+            self.runs_process(),
         ensures
             page < self.spec_npages(),
             self.spec_run_usable(page, r),
@@ -8026,6 +8082,9 @@ impl Huge {
         let g = self.inner.lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
         let d = g.table.get(page);
         let _gi: &Inner = &g;
+        proof {
+            self.lemma_run_ids(g@);
+        }
         proof {
             // As in `lookup`: the token's run is the `Active` descriptor
             // the table maps `page` to.
@@ -8101,7 +8160,7 @@ impl Huge {
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
-            tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page ==> (r matches Some(i) && i.start == page && i.state == RunState::Active && i.usable == (tok.unwrap().npages() - GUARD_PAGES) * self.spec_page()),
+            self.runs_process() && tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page ==> (r matches Some(i) && i.start == page && i.state == RunState::Active && i.usable == (tok.unwrap().npages() - GUARD_PAGES) * self.spec_page()),
     {
         proof {
             use_type_invariant(self);
@@ -8112,8 +8171,9 @@ impl Huge {
         proof {
             // A token of a run starting at `page` names an `Active`
             // descriptor that starts there, which the table maps `page` to.
-            if tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page {
+            if self.runs_process() && tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page {
                 let tracked t = tok.tracked_borrow();
+                self.lemma_run_ids(g@);
                 theorem_run_counted(_gi, t);
                 lemma_run_auths(g@);
                 lemma_active(g@.descs@);
@@ -8419,6 +8479,7 @@ impl Huge {
             final(g).spec_lg() == old(g).spec_lg(),
             final(g).spec_base() == old(g).spec_base(),
             final(g).spec_mid() == old(g).spec_mid(),
+            final(g).spec_rid() == old(g).spec_rid(),
             final(g).next_page == old(g).next_page,
             final(g).pgs == old(g).pgs,
             r == old(g).descs@[d].value().pages,
@@ -8725,6 +8786,7 @@ impl Huge {
                     &&& g.spec_lg() == g0.spec_lg()
                     &&& g.spec_base() == g0.spec_base()
                     &&& g.spec_mid() == g0.spec_mid()
+                    &&& g.spec_rid() == g0.spec_rid()
                     &&& g.pgs == g0.pgs
                     &&& g.elist@ == g0.elist@.remove(g0.elist@.index_of(dd))
                     &&& g.descs@.dom() == g0.descs@.dom()
@@ -9229,7 +9291,8 @@ fn dirty_zero_run(
 verus! {
 
 /// The huge lock's invariant is `Inner::wf`, and its frame is the
-/// ghost page count, page shift, region base and `Meta` identity, which
+/// ghost page count, page shift, region base, `Meta` identity and the
+/// identities of the run authorities (`Inner::spec_rid`, `spec_pid`), which
 /// `Huge::new` sets and nothing changes. Read the invariant as: the real state always
 /// has a ghost witness (the descriptor permissions and their blocks'
 /// claims, the list of live descriptors, the `Empty` list's order, and the
@@ -9260,6 +9323,8 @@ impl crate::lock::LockSpec for Inner {
         &&& init.spec_lg() == v.spec_lg()
         &&& init.spec_base() == v.spec_base()
         &&& init.spec_mid() == v.spec_mid()
+        &&& init.spec_rid() == v.spec_rid()
+        &&& init.spec_pid() == v.spec_pid()
     }
 }
 
