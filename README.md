@@ -32,9 +32,14 @@ the project stands is under "Status" below.
 
 ## Formal verification
 
-As of 2026-11-01 (main `a1165e7f`), Verus verifies 92.8% of executable
-lines and 82.5% of functions. Counting seams discharged by Kani and
-constant assertions raises those shares to 93.6% and 84.9%.
+Verus verifies 83.4% of challoc's executable functions and 93.5% of its
+executable lines. Counting also the trusted functions whose seams Kani,
+a constant assertion, Isla or `make emptyasm` discharges gives 87.4% of
+functions and 95.3% of lines. Counting instead the trusted functions
+checked by loom models of the atomic protocol gives 85.6% and 94.5%;
+those functions stay partly checked, not verified (main `26f535a9`;
+[verus/RESULTS.md](verus/RESULTS.md#headline-figures) has the figures
+and the commands that measure them).
 
 `theorem_metadata_integrity` proves that an allocated block shares no
 byte with the allocator metadata it covers or the `Shared` static.
@@ -50,42 +55,49 @@ allocators rule out, on those entry points, the size-overflow bug
 classes behind glibc, jemalloc and TCMalloc CVEs such as CVE-2013-4332
 and CVE-2017-17426 ([list](verus/RESULTS.md#vulnerability-classes-ruled-out)).
 
-These results rest on stated trust assumptions. See [Verus
-results](verus/RESULTS.md).
+These results rest on stated trust assumptions: the C caller obeys the
+C allocation contract, and the seams below hold. [Verus
+results](verus/RESULTS.md) groups the guarantees and states their
+boundaries; [verus/THEOREMS.md](verus/THEOREMS.md) gives each theorem
+with its premises.
 
-Three tools do the checking; each covers less than the whole allocator.
-CI runs the Verus proofs and the loom models on every pull request, and
-the Kani harnesses on pull requests that touch what they check and again
-after each merge.
+Each tool covers less than the whole allocator, and CI runs each of
+them ([verus/RESULTS.md](verus/RESULTS.md#check-it-yourself)):
 
 - **Verus proofs.** Functions inside `verus! { ... }` blocks in `src/`
   are checked by [Verus](https://github.com/verus-lang/verus) against
   their stated contracts and for overflow, out-of-bounds indexing,
-  reachable panics and termination. The badge above is the share of
-  functions and lines Verus verifies, and `verus/FLOOR` keeps it from
-  falling. Code outside `verus!` is not verified, and what a verified
-  function relies on without proof (contracts for `core` functions in
-  `src/vspec/`, `external_body` functions such as the syscall wrappers)
-  is a *seam*, listed in a generated ledger. See
-  [verus/README.md](verus/README.md) for what counts as verified and
-  how to run it (`make verus`, which runs on the host with Verus
-  installed rather than in the dev container), and
+  reachable panics and termination, on every pull request. The badge
+  above is the share of functions and lines Verus verifies, and
+  `verus/FLOOR` keeps it from falling. Code outside `verus!` is not
+  verified, and what a verified function relies on without proof
+  (contracts for `core` functions in `src/vspec/`, `external_body`
+  functions such as the syscall wrappers) is a *seam*, listed in a
+  generated ledger. See [verus/README.md](verus/README.md) for what
+  counts as verified and how to run it (`make verus`, which runs on the
+  host with Verus installed rather than in the dev container), and
   [verus/SEAMS.md](verus/SEAMS.md) for the seams and their status.
 - **Kani harnesses.** `src/kani/` (and `kani_*` modules next to the code
   they check) holds bounded model-checking harnesses that check some
   seams' bodies against the contract Verus assumes for them; each states
-  its bounds.
+  its bounds. The `kani` check runs them on pull requests that change the
+  files it lists, and `kani-ignoring` runs every harness after each
+  landing.
+- **Isla and `make emptyasm`.** `make isla` traces the compiled inline
+  assembly (system calls, the TLS slot, pointer authentication, traps,
+  the GOT functions and the rseq symbols) with
+  [Isla](https://github.com/rems-project/isla) on Sail's Arm and x86
+  models, and checks each run against its seam's contract
+  ([verus/ISLA.md](verus/ISLA.md)). `make emptyasm` checks that the
+  empty-template `asm!` register hints add no instruction. Every
+  inline-assembly seam has one of these checks.
 - **loom models.** `tests/loom/` checks copies of the atomics protocols
   (the background thread's wake-up and exit, `RawLock`, the slab bitmap,
   the free path's reads and others) under every interleaving and C11
   weak-memory outcome loom explores. They model the protocols, not the
-  shipped code itself; `tests/loom/tests/pins.rs` fails when the source
-  lines a model copies change.
-
-`make isla` also traces the aarch64 inline assembly (system calls, the
-TLS slot) with [Isla](https://github.com/rems-project/isla) to partly
-check the seams it lists ([verus/ISLA.md](verus/ISLA.md)); it runs by
-hand, not in CI.
+  shipped code itself, so a seam they check stays partly checked;
+  `tests/loom/tests/pins.rs` fails when the source lines a model copies
+  change.
 
 ## Support
 

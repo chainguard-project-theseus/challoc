@@ -360,8 +360,8 @@ constructor names.
   executable relaxes the TLS sequences to local-exec (aarch64
   `movz`/`movk`, x86_64 `mov R, imm32`) and may relax the GOT loads to
   address computations, which need their own jobs.
-- **Islaris** in place of `check.rs`: one Islaris specification per job
-  on the same traces; the relational PAC jobs need Islaris's product
-  construction or a hand proof.
+- **An Islaris proof.** `check.rs` composes the traces;
+  no Islaris proof in Coq/Iris checks them, and the relational PAC jobs
+  have no product construction or hand proof.
 - **The empty templates** (`/* {0} */` register hints): no instruction to
   trace; `make emptyasm` checks that they add none ([README.md](README.md)).

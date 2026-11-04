@@ -78,5 +78,5 @@ it when the repository is public.
 - **Benchmarks on a label** (`bench:quick` / `bench:full`). The same
   identity and `cb launch quick`, as a requested check.
 - **Release**, SBOM, cosign, Pages: nothing is published.
-- **Miri, checked-release `.so`, valgrind** in the extended checks: not
+- **Checked-release `.so`, valgrind** in the extended checks: not
   written yet.
