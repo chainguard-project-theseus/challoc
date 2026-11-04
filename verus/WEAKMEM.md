@@ -19,7 +19,7 @@ and not run.
 
 ## Inventory
 
-377 lines of shipped source carry an `Ordering::` (`grep` over `src/`,
+378 lines of shipped source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/kani/`, `src/model/`,
 inline `#[cfg(test)]` and `#[cfg(kani)]` modules, and comment lines).
 Files that pass an ordering through an imported name or a `vspec`
@@ -42,7 +42,7 @@ a compiler barrier.
 | `slab.rs` | 20 | `SlabDesc`: state, arena, `live`, dirty |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 15 | watermark; bitmap and owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
-| `lock.rs` | 11 | the lock word |
+| `lock.rs` | 12 | the lock word; the fork window's record (`FORK_PID`, `FORK_HOLDER`), `Relaxed` |
 | `heap/slotstate.rs` | 11 | `double_free_scan`'s per-slot state byte |
 | `huge/mod.rs`, `bitmap.rs` | 9, 9 | `retain_max`, `purge_on_free`; `&[AtomicU64]` words |
 | `heap/tcaches.rs` | 5 | `[AtomicPtr<u8>; 1024]` |
