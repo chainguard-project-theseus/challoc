@@ -6,13 +6,13 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 36 of those seams that are still seams in the
+*This file lists the 34 of those seams that are still seams in the
 ledger. The others are verified or no longer exist, so their rows are
 left out: among them `axiom_raw_valid`, gone, and `axiom_process_shared`,
 which `lemma_process_shared` (`heap/shared.rs`) now proves from the
 opaque definitions of `process_regions` and `pac_mode`. Seams
-of this scope that the audit did not cover, such as
-`axiom_set_tables_lock_frame` and `axiom_snapshot_lock_frame`, are not
+of this scope that the audit did not cover, such as `axiom_slot_byte`
+(`heap/slotstate.rs`) and `axiom_ready` (`api/mod.rs`), are not
 listed. Each row names the seam by its item and its ledger file,
 `verus/ledger/src/<file>.md`, which gives the seam's contract, category,
 tool and status.*
@@ -45,7 +45,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 36 seams listed: 16 sound, 13 sound (premise), 7 fixed.
+Totals for the 34 seams listed: 14 sound, 13 sound (premise), 7 fixed.
 
 ## Per seam
 
@@ -81,8 +81,6 @@ Totals for the 36 seams listed: 16 sound, 13 sound (premise), 7 fixed.
 | `axiom_auth_sign` | `sys/pac.rs` | sound | True for every address below `user_va_limit()` and every modifier, and with the keys disabled. |
 | `axiom_arena_stats_lock_inv` | `vspec/arena.rs` | sound | One axiom for `ArenaStats`; `empty` and `store_stats` keep `identities`. |
 | `axiom_class_table_wf` | `vspec/class.rs` | sound | Sizes and `wf` verified for every page geometry, both quanta. |
-| `axiom_huge_lock_inv` | `vspec/huge.rs` | sound | One axiom; `Huge::new` meets `Lock::new`'s `requires`. |
-| `axiom_huge_lock_frame` | `vspec/huge.rs` | sound | Reflexive; nothing writes the page count, the page shift or the `Meta` identity. |
 | `axiom_ptr_add_addr` | `vspec/ptr.rs` | sound | True: `add` is `wrapping_add` where it is defined (see "Premises" for the harness's reach). |
 | `axiom_fresh_anon_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for any range; its call sites (`huge/mod.rs`) pass a run's freshly mapped pages. |
 | `axiom_discarded_zero` | `huge/mod.rs` | sound (premise) | As `axiom_fresh_anon_zero`, for pages just discarded with `MADV_DONTNEED`. |
