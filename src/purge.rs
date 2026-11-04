@@ -2220,6 +2220,9 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
             count <= crate::arena::MAX_ARENAS,
     {
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            proof {
+                shared.lemma_arena_tables(*arena);
+            }
             next = earliest(next, decay_one(shared, arena, now, keep16, Tracked(ord)));
         }
     }
@@ -2242,6 +2245,9 @@ pub fn decay_arena(shared: &Shared, index: u16, now: u64, Tracked(ord): Tracked<
 {
     let arena = shared.arenas.get_existing(index)?;
     let keep16 = shared.policy.keep16();
+    proof {
+        shared.lemma_arena_tables(*arena);
+    }
     decay_one(shared, arena, now, keep16, Tracked(ord));
     if index == 0 {
         decay_huge(shared, now, keep16, Tracked(ord));
@@ -2252,6 +2258,7 @@ pub fn decay_arena(shared: &Shared, index: u16, now: u64, Tracked(ord): Tracked<
 /// One arena's walks on its own period, scaled by the policy's band.
 fn decay_one(shared: &Shared, arena: &Arena, now: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
     requires
+        arena.tables_process(),
         crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
@@ -2369,6 +2376,9 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
         if let Some(arena) = shared.arenas.get_existing(i as u16) {
             let tracked mut la = Ghost(Left::none());
             // At most `NCLASSES * 2^45` slabs an arena.
+            proof {
+                shared.lemma_arena_tables(*arena);
+            }
             n += arena.purge_all(Tracked(&mut la), Tracked(ord));
             proof {
                 let l0 = left@;
@@ -2429,6 +2439,9 @@ pub fn purge_arena(
         Left::lemma_none();
     }
     let arena = shared.arenas.get_existing(index)?;
+    proof {
+        shared.lemma_arena_tables(*arena);
+    }
     let mut n = arena.purge_all(Tracked(&mut *left), Tracked(ord));
     if index == 0 {
         let tracked mut lh = Ghost(Left::none());

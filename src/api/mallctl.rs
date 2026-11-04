@@ -2922,6 +2922,9 @@ fn ctl(
             // `newp` may carry extent hooks, which challoc has no use for.
             // A read that would fail must not leave an arena behind.
             io.verify_read::<c_uint>(Tracked(&*cc))?;
+            proof {
+                shared.lemma_wf_slow();
+            }
             let i = shared.arenas.create(shared, Tracked(&mut *fx), Tracked(&mut ord)).ok_or(EAGAIN)?;
             io.read(i as c_uint, Tracked(cc))
         },

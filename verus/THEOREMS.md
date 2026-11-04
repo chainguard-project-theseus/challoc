@@ -245,8 +245,7 @@ add.
   feature statics' storage and `LINE_STATE`'s permission; `init` writes `FEATURES` through its
   permission and puts it, with the line's and `LINE_STATE`'s, into the line's
   invariant), the rest to `Shared::init`.
-  `Shared::begin`, `table::axiom_slot_loc`, `table::axiom_fresh_words`
-  (one token per class each) and
+  `Shared::begin`, `table::axiom_fresh_words` (one token per class) and
   `axiom_statics` each use up their step's token, so Verus checks that
   each runs at most once per process (a second call does not verify:
   `verus/audit/invariants.md`, "Per seam"). That the exchange
@@ -1172,6 +1171,11 @@ they are held, share no byte. Two slots of one class are two tokens of
 one authority, so different slots, a class size or more apart; slots of
 two classes lie in two class regions; a slot and a run lie in the
 superblock and the huge region; two runs hold disjoint page subsets.
+A class's authority (`class::slot_loc`) is that of the class's table
+in the stored `Shared`, by its opaque definition, which `Shared::init`
+reveals; the claim and release paths reach the table through a class
+state whose table is that one (`ClassState::is_process`, from
+`Shared::lemma_published_tables`).
 `Heap::theorem_uniqueness_live` (`heap/mod.rs`): a slot a
 well-formed heap caches is no live block of its class.
 `Heap::theorem_uniqueness_apart` (`heap/mod.rs`): two well-formed heaps
@@ -1195,11 +1199,6 @@ block; the free cores take the token C holds (common premises, "The
 - `heap::live::axiom_c_claim` (`heap/live.rs`): the `free`
   contract at the C ABI boundary, one call per C call. See "The `free`
   contract" under Common premises.
-- `table::axiom_slot_loc` (`class/table.rs`, one call in
-  `SlabTable::new`): the table `SlabTable::new` builds for a class is
-  the class's (its slot and marker authorities and guard geometry);
-  once per class per process is checked (it uses up the class's
-  `Once` token, common premises).
 - `table::axiom_fresh_words` (`class/table.rs`, one call in
   `SlabTable::new`): a just-reserved table's words read zero, one
   permission each; once per class is checked (its token), that `base`
@@ -1461,7 +1460,8 @@ the cursor are read-write before they are handed out
 not cover them.
 
 `guard_of` (`layout/regions.rs`) is `is_guard_slab`'s formula;
-`guard_geom(c)` is the process's class `c` table's
+`guard_geom(c)` is the process's class `c` table's (the stored
+`Shared`'s, by its opaque definition)
 `(lg_slabs_per_page, guard_mask)`. `is_slot_addr` is `is_slot`
 without the guard exclusion (slot `slot < nslots` of slab
 `slab < nslabs`, guard slabs included); `slab_index` and `guard_of` are opaque: `slab_index` is
@@ -1543,9 +1543,6 @@ nothing per call: the usable pages of a live run
 share no page with the guard pages of any live run, its own included.
 
 **Premises beyond the common ones.**
-- `table::axiom_slot_loc` (`class/table.rs`) also fixes
-  `guard_geom(c)` to the table's geometry: the same one-table-per-class
-  assumption that names the slot tokens' authority.
 - `heap::shared::axiom_shared_built` (`heap/shared.rs`) also states the
   stored class lines, which carry the guard tests, as it states the
   tables.
@@ -2777,13 +2774,12 @@ an owned slab, and ensures its pick's owner; `plan` collects
   `ClassState::new`'s postcondition); `heap::shared::
   axiom_shared_built` states `arena0` as written, as it states the
   tables.
-- `slab_owner` is keyed by class, which rests on one table per class per
-  process: the premise of `table::axiom_slot_loc` (theorem 5), not a new
-  kind.
 - "Written once" is checked, up to the lock premise: `store_owner`
   uses up the owner-store markers (`table::owner_mark`) of its group's
   slabs, which the class's table minted once each (`table::mark_loc`,
-  fixed by `axiom_slot_loc`) and its commit lock holds from the
+  the stored `Shared`'s table's marker authority by its opaque
+  definition, so only that table, `SlabTable::is_process`, can store an
+  owner, and `slab_owner`, keyed by class, names that table's) and its commit lock holds from the
   watermark on (`TableInner::inv`), so a second store of a slab's owner
   does not verify, given that every holder of the commit lock restores
   its invariant before releasing it (`TableInner`'s `LockSpec` impl,
@@ -2829,7 +2825,7 @@ an owned slab, and ensures its pick's owner; `plan` collects
   conjuncts, as the others, checked at the release by `LockGuard::unlock`),
   the class lock's frame (the owned-slab record's location never
   changes, `class::Inner`'s `LockSpec` impl),
-  sequential consistency, and one table per class (`axiom_slot_loc`).
+  and sequential consistency.
 
 **Where the statement is weaker than the code.**
 - The claim side stops at the picks: `plan` states that every slab it
@@ -7243,7 +7239,8 @@ How it is proved:
   most 64 KiB: `Regions::separated`, `layout/regions.rs`, carries
   `lg_page <= 16`, proved from `getauxval`'s specification at
   init), but nothing
-  proves it of the process's table: `guard_geom` is uninterpreted and
+  proves it of the process's table: `guard_geom` is the stored `Shared`'s
+  table's geometry, and
   `class_table()` is not tied to `classes_for_page` (`SlabTable::new`
   computes `slabs_per_page = (page / slab).max(1)`, `class/table.rs`).
   The statement keeps it as the `paged` exception instead.
@@ -7639,7 +7636,8 @@ so through `purge_arena`'s contract).
   over the huge region), which `api::shared_ref` claims of the published
   `Shared` (as every verified function taking a `&Shared`).
 - The guard geometry: a table's guard slabs are the process's
-  (`guard_geom`, `class::table::axiom_slot_loc`), as for theorem 7.
+  (`guard_geom`, by its definition over the stored `Shared`'s tables,
+  `SlabTable::is_process`), as for theorem 7.
 - The class lock's invariant (`class::Inner`'s `LockSpec` impl, checked
   at every release): the value `push_group`
   holds satisfies the lock invariant, which is what makes an empty-set
