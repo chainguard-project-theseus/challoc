@@ -7451,3 +7451,6 @@ mod kani_volatile {
         assert_eq!(h.arena_volatile(), h.arena);
     }
 }
+
+#[cfg(test)]
+pub(crate) mod heap_at_tests;

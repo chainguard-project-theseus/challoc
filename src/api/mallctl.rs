@@ -4740,6 +4740,9 @@ mod tests {
 
     #[test]
     fn thread_and_tcache_keys() {
+        // Its `tcache.destroy` checks that the id names no cache after;
+        // `api::heap_at_tests` creates explicit caches under this guard.
+        let _serial = crate::testutil::global_state();
         let s = shared();
         let h = heap::heap_for_thread(s).unwrap();
         let before = h.stats();

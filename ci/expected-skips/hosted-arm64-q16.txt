@@ -13,3 +13,6 @@ lazy_bg/unshare
 thp/auto
 # resource/{mlockall,map_count} skip where mlockall is refused (no CAP_IPC_LOCK).
 c_resource
+# heap_at/entry_unsigned: checker_fails_each_corrupted_fact skips its pointer-authentication mutant where the CPU has no PAC; the Checks guests, x86_64 and aarch64, print it (run 0318f6d0 at 581490cb).
+# Only that one mutant prints this key.
+heap_at/entry_unsigned
