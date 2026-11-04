@@ -8,7 +8,8 @@ scan_lines	termination	none (assumption)
 # exchange lets one thread through (the fork-child residue aside).
 discovery_scratch	allocator invariant	none (assumption)
 # A raw in-place write, like `Arena::put_stats`: zero bytes are a valid
-# `Cgroup`, then the state and the UNLIMITED stores (the test
-# `untracked_in_place_is_untracked` compares the fields); nothing here is
-# an atomics protocol for loom to check.
-untracked_in_place	raw pointer (internal)	RefinedRust
+# `Cgroup`, then the state and the UNLIMITED stores. The harness runs the
+# body on a slot of arbitrary bytes and checks its writes, the value's
+# validity and the `ensures` (the test `untracked_in_place_is_untracked`
+# compares the fields with `Cgroup::untracked`'s).
+untracked_in_place	raw pointer (internal)	Kani	discharged (Kani: sys::cgroup::kani_in_place::untracked_in_place_is_untracked)	contract 2432176480, body 2334025224

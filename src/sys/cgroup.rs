@@ -3410,6 +3410,63 @@ mod linux_tests {
     }
 }
 
+/// The Kani harness of [`untracked_in_place`], next to the private
+/// fields it reads.
+#[cfg(kani)]
+mod kani_in_place {
+    use super::{Cgroup, FILE_ROOM, PATH_CAP, State, UNLIMITED, untracked_in_place};
+    use core::mem::{MaybeUninit, size_of};
+    use core::sync::atomic::Ordering::Relaxed;
+
+    /// `untracked_in_place`, `ensures final(slot).mem_contents().is_init()`,
+    /// `final(slot).mem_contents().value().layout() == (0, 0)`: for every
+    /// state, on a slot holding arbitrary bytes, the call is defined (Kani
+    /// checks its writes), the slot is then what a read of a `Cgroup`
+    /// needs (`kani::mem::can_dereference`: aligned, in bounds, the bytes
+    /// a valid value, the state and the `bool`s included), `dir_len` and
+    /// `mount_len` (`layout()`) are 0, and so the type invariant `wf`
+    /// holds (`dir_len + FILE_ROOM <= PATH_CAP`, `mount_len <= dir_len`).
+    /// Beyond the contract: the state is the one passed, and `limit`,
+    /// `high` and every level's limit are `UNLIMITED`, as
+    /// `Cgroup::untracked` has them.
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn untracked_in_place_is_untracked() {
+        let states = [
+            State::Disabled,
+            State::NoUnifiedPath,
+            State::NoMount,
+            State::PathTooLong,
+            State::Tracked,
+        ];
+        let s: usize = kani::any();
+        kani::assume(s < states.len());
+        let mut slot = MaybeUninit::<Cgroup>::uninit();
+        // SAFETY: the slot's storage, of `size_of::<Cgroup>()` bytes; a
+        // byte array has alignment 1.
+        unsafe {
+            slot.as_mut_ptr()
+                .cast::<[u8; size_of::<Cgroup>()]>()
+                .write(kani::any())
+        };
+        untracked_in_place(&mut slot, states[s]);
+        let p = slot.as_ptr();
+        assert!(kani::mem::can_dereference(p));
+        // SAFETY: `can_dereference`, checked above.
+        let c = unsafe { &*p };
+        assert_eq!((c.dir_len, c.mount_len), (0, 0));
+        assert!(c.dir_len as usize + FILE_ROOM <= PATH_CAP && c.mount_len <= c.dir_len);
+        assert!(c.state == states[s]);
+        assert_eq!(
+            (c.limit.load(Relaxed), c.high.load(Relaxed)),
+            (UNLIMITED, UNLIMITED)
+        );
+        let l: usize = kani::any();
+        kani::assume(l < c.level_limit.len());
+        assert_eq!(c.level_limit[l].load(Relaxed), UNLIMITED);
+    }
+}
+
 /// Kani harness for the `Display` of `Cgroup`, run under the real
 /// `core::fmt` (Verus checks it against the `Formatter` specifications of
 /// `vspec/fmt.rs`).

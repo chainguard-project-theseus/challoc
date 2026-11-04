@@ -8,8 +8,8 @@
 
 # The arrays' initialiser: an array repeat of an element that is not
 # `Copy`, which Verus does not take. It claims nothing, and it is
-# evaluated at compile time.
-NO_ARRAYS	core library	none (assumption)
+# evaluated at compile time; the harness checks that every entry is zero.
+NO_ARRAYS	core library	Kani	discharged (Kani: heap::slotstate::kani_arrays::no_arrays_are_zero)	contract 2521126641, body none
 
 # The byte at an address `byte` computes: a slot index below the
 # watermark that `commit` precedes, in an array `init` reserved. That

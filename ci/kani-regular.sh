@@ -19,7 +19,10 @@
 # format with `--verbosity 9`, at quantum 16, on an 8 vCPU guest, less the
 # 5 s rebuild of each call (2026-10-31). The `select_ptrs` rows are
 # CBMC's verification times with all eight in one call, run beside the
-# same call at quantum 8 (2026-11-04).
+# same call at quantum 8 (2026-11-04). The `no_arrays_are_zero`,
+# `zero_records_zeroes` and `untracked_in_place_is_untracked` rows are
+# CBMC's verification times, one harness per call at quantum 16 on the
+# 8 vCPU guest (2026-11-04).
 # A harness not listed counts as
 # $default seconds, so a new one lands in some shard without an edit
 # here; add it to the table when it takes more than half a minute.
@@ -69,6 +72,9 @@ weights='
   heap::cache::kani_cache::home_ptr_at_is_the_home_header 28
   config::kani_config::display_issue_unknown_key 26
   config::kani_config::get_contract 25
+  heap::slotstate::kani_arrays::no_arrays_are_zero 10
+  stats::kani_records::zero_records_zeroes 6
+  sys::cgroup::kani_in_place::untracked_in_place_is_untracked 3
 '
 
 set -- -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm \

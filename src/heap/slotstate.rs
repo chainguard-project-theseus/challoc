@@ -618,6 +618,27 @@ unsafe fn byte_at(at: usize) -> &'static AtomicU8 {
 
 } // verus!
 
+/// The Kani harness of [`NO_ARRAYS`], next to the private type.
+#[cfg(kani)]
+mod kani_arrays {
+    use super::{MAX_SHARED, NO_ARRAYS};
+    use crate::layout::NCLASSES;
+    use core::sync::atomic::Ordering::Relaxed;
+
+    /// `NO_ARRAYS`: no `ensures`; the compiler evaluates the constant,
+    /// and (beyond the contract, which claims nothing) the harness checks
+    /// that every entry is unclaimed, all zero: both words of every class
+    /// of every entry load 0.
+    #[kani::proof]
+    fn no_arrays_are_zero() {
+        let a = NO_ARRAYS;
+        let (e, c): (usize, usize) = (kani::any(), kani::any());
+        kani::assume(e < MAX_SHARED && c < NCLASSES);
+        assert_eq!(a[e].class_base[c].load(Relaxed), 0);
+        assert_eq!(a[e].base[c].load(Relaxed), 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// `axiom_slot_byte` mints a permission whose value is the byte's

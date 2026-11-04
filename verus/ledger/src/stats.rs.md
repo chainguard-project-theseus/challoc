@@ -10,9 +10,9 @@ file.
 | `fig_add` | external_body | core library | Kani | discharged |
 | `fig_mul` | external_body | core library | Kani | discharged |
 | `fig_add64` | external_body | core library | Kani | discharged |
-| `zero_records` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `zero_records` | external_body | raw pointer (internal) | Kani | discharged |
 | `pool_take` | external_body | allocator invariant | none (assumption) | trusted |
-| `empty_pool` | external_body | core library | none (assumption) | trusted |
+| `empty_pool` | external_body | core library | Kani | discharged |
 
 ## `fig_add`
 
@@ -62,7 +62,7 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 ## `zero_records`
 
 src/stats.rs:2059. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: discharged (Kani: stats::kani_records::zero_records_zeroes).
 
 > Zero the records at `p` in place: every field of an `ArenaStats` is an integer, for which zero is a value.
 
@@ -99,7 +99,7 @@ fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<Point
 ## `empty_pool`
 
 src/stats.rs:2223. Kind: external_body. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: stats::pool::kani_pool::empty_pool_is_empty).
 
 > `[EMPTY; POOL_SLOTS]`, which Verus does not take for an element type that is not `Copy`.
 
