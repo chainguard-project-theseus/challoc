@@ -1210,7 +1210,12 @@ mod tests {
         use std::string::{String, ToString};
         // (type, defines `inv`, defines `frame`) for each impl that defines
         // either; every other impl delegates both.
-        const DEFINED: &[(&str, bool, bool)] = &[("crate::meta::Inner", true, true)];
+        const DEFINED: &[(&str, bool, bool)] = &[
+            ("crate::class::sets::[Lazy; SET_GROUPS]", true, true),
+            ("crate::heap::tcaches::()", true, true),
+            ("crate::meta::Inner", true, true),
+            ("crate::stats::Snapshot", true, true),
+        ];
         // Spelled in parts, so that this test's own lines match nothing.
         let named = [
             std::format!("{}{}", "lock_", "inv"),

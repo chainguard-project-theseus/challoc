@@ -32,8 +32,6 @@ use crate::lock::{
 use crate::meta::Meta;
 use crate::policy::Policy;
 use crate::stats::Snapshot;
-#[cfg(verus_keep_ghost)]
-use crate::stats::axiom_snapshot_lock_inv;
 use crate::sys::cgroup::{CellSeen, Cgroup, Deferred};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::atom::usize_id;
@@ -2022,7 +2020,6 @@ impl Shared {
     {
         proof {
             axiom_shared_layout();
-            axiom_snapshot_lock_inv(Snapshot::EMPTY);
         }
         // SAFETY: as in `put_head`.
         unsafe {

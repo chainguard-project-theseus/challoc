@@ -10,8 +10,6 @@ file.
 | `fig_add` | external_body | core library | Kani | discharged |
 | `fig_mul` | external_body | core library | Kani | discharged |
 | `fig_add64` | external_body | core library | Kani | discharged |
-| `axiom_s...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
-| `axiom_s..._frame` | axiom | allocator invariant | none (assumption) | trusted |
 | `zero_records` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `stack_mark` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `pool_take` | external_body | allocator invariant | none (assumption) | trusted |
@@ -56,37 +54,9 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
         a + b <= u64::MAX ==> r == a + b,
 ```
 
-## `axiom_snapshot_lock_inv`
-
-src/stats.rs:673. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> The snapshot an `epoch` stores satisfies [`Snapshot::inv`].
-
-```rust
-pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
-;
-```
-
-## `axiom_snapshot_lock_frame`
-
-src/stats.rs:681. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> The snapshot behind `shared.stats` keeps no constant from the one `Shared::init` created it with: the frame its holders' `LockGuard::unlock` requires holds of any two snapshots.
-
-```rust
-pub broadcast axiom fn axiom_snapshot_lock_frame(init: Snapshot, v: Snapshot)
-    ensures
-        #[trigger] crate::lock::assumed_frame(init, v),
-;
-```
-
 ## `zero_records`
 
-src/stats.rs:2087. Kind: external_body. Category: raw pointer (internal).
+src/stats.rs:2059. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Zero the records at `p` in place: every field of an `ArenaStats` is an integer, for which zero is a value.
@@ -102,7 +72,7 @@ fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPai
 
 ## `stack_mark`
 
-src/stats.rs:2106. Kind: external_body. Category: raw pointer (internal).
+src/stats.rs:2078. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The caller's stack position, as the address of a local of this out-of-line function: [`Scratch::new`] records it with a pooled object, and a later call of the same thread from as high on the stack (not deeper, inside the holder's callback) finds the holder's frame gone ([`pool_take`]).
@@ -113,12 +83,12 @@ fn stack_mark() -> usize
 
 ## `pool_take`
 
-src/stats.rs:2123. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2095. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A pooled object for thread `tid` at stack position `mark`, with its permission: one no call holds, one `tid`'s call abandoned (held by `tid` at a mark at or below `mark`: that call's frame is gone, since a call made from inside it would be deeper), or one a thread that has exited held.
 
-Body mints Tracked at line 2129.
+Body mints Tracked at line 2101.
 
 ```rust
 fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)
@@ -130,7 +100,7 @@ fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<Point
 
 ## `empty_pool`
 
-src/stats.rs:2252. Kind: external_body. Category: core library.
+src/stats.rs:2224. Kind: external_body. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > `[EMPTY; POOL_SLOTS]`, which Verus does not take for an element type that is not `Copy`.

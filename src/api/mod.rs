@@ -4176,7 +4176,7 @@ mod tests {
                     ("class/decay.rs:", "fn purge_curve(", "inner"),
                 ],
             ),
-            // `class::sets::axiom_set_tables_lock_inv`.
+            // `class::sets`'s `LockSpec` impl for `[Lazy; SET_GROUPS]`.
             (
                 "class/sets.rs:SetTable.tables",
                 &[
@@ -4204,7 +4204,7 @@ mod tests {
                     ),
                 ],
             ),
-            // `heap::tcaches::axiom_tcaches_lock_inv`.
+            // `heap::tcaches`'s `LockSpec` impl for `()`.
             (
                 "heap/tcaches.rs:Tcaches.lock",
                 &[
@@ -4212,7 +4212,7 @@ mod tests {
                     ("heap/tcaches.rs:", "pub fn destroy(", "lock"),
                 ],
             ),
-            // `stats::axiom_snapshot_lock_inv`.
+            // `stats::Snapshot`'s `LockSpec` impl.
             (
                 "heap/shared.rs:Shared.stats",
                 &[

@@ -3,9 +3,6 @@
 fig_add	core library	Kani	discharged (Kani: kani_proofs::stats::fig_add_exact)
 fig_add64	core library	Kani	discharged (Kani: kani_proofs::stats::fig_add64_exact)
 fig_mul	core library	Kani	discharged (Kani: kani_proofs::stats::fig_mul_exact)
-# A lock's invariant: its writer `Shared::init` (`Snapshot::EMPTY`) is
-# not verified yet; `collect_into` asserts it.
-axiom_snapshot_lock_inv	allocator invariant	none (assumption)
 # The scratch pool hands each object to one call at a time (a slot's
 # holder thread ID, taken by compare-exchange, or the thread's own when its
 # holding frame is gone by the stack mark), the residue of a call from an
@@ -19,8 +16,6 @@ axiom_snapshot_lock_inv	allocator invariant	none (assumption)
 # under its new thread ID (pool_fork_prepare records the old one), so the
 # child's copy of the call keeps its object.
 pool_take	allocator invariant	none (assumption)
-# Its frame: true of any two snapshots (no constant to keep).
-axiom_snapshot_lock_frame	allocator invariant	none (assumption)
 # The empty pool: `[EMPTY; POOL_SLOTS]`, an array-repeat expression Verus
 # does not take for an element type that is not `Copy`. It claims nothing,
 # and runs at compile time (`POOL`'s initialiser).
