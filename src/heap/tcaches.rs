@@ -214,19 +214,6 @@ impl Tcaches {
     }
 }
 
-/// Assumption (`lock.rs`): the explicit-cache table lock guards no value
-/// (`()`), so its invariant is trivially true. Nothing writes the value.
-///
-/// Its holders, `Tcaches::create` and `Tcaches::destroy`, hold it only to
-/// serialise their table updates, and end in `LockGuard::unlock`
-/// (`api::tests::guards_end_in_unlock`).
-/// `api::tests::lock_holders_match_inv_docs` checks that the functions
-/// that take the guard are the holders named here.
-pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
-    ensures
-        #[trigger] crate::lock::assumed_inv(v),
-;
-
 // Byte offsets of `Tcaches`'s fields: `offset_of!`, which Verus cannot
 // evaluate, so their values are opaque to it; `axiom_tcaches_layout`
 // states what verified code relies on, and the build checks it.
@@ -424,8 +411,6 @@ impl Tcaches {
         ensures
             final(slot).perm matches Some(p) && p.ptr() == this && p.is_init(),
     {
-        broadcast use axiom_tcaches_lock_inv;
-
         let tracked (mut parts, mut table, pad) = Tcaches::split(slot.perm.tracked_take());
         // Ghost: each table entry's permission, as `put_entry` returns it
         // from `vspec::entry::new`.
@@ -1202,16 +1187,32 @@ impl Tcaches {
 
 verus! {
 
-/// The explicit-cache table lock's invariant, which
-/// [`axiom_tcaches_lock_inv`] states; its frame is uninterpreted.
+/// A lock that guards no value (`()`): the explicit-cache table lock, and
+/// any other `Lock<()>`. Its invariant and frame are `true`. Nothing
+/// writes the value.
+///
+/// The table lock's holders, `Tcaches::create` and `Tcaches::destroy`,
+/// hold it only to serialise their table updates, and end in
+/// `LockGuard::unlock` (`api::tests::guards_end_in_unlock`).
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for () {
     open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+        true
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+        true
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_unit_lock_frame_reflexive(v: ())
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!

@@ -70,8 +70,8 @@ impl Lazy {
     /// all on the table's side. [`Lazy::reserve`] and `EMPTY` make tables
     /// that keep it, and `ensure` keeps it; each holder of a table keeps
     /// it with the table: in its own invariant ([`SetTable`]'s lock
-    /// invariant, `axiom_set_tables_lock_inv`; the class tables' through
-    /// `class::table::lazy_ok`), and `Set::ensure` requires it
+    /// invariant, the `LockSpec` impl for `[Lazy; SET_GROUPS]`; the class
+    /// tables' through `class::table::lazy_ok`), and `Set::ensure` requires it
     /// (`Set::ensure_ok`). Not a type invariant: `ensure` lends the claim
     /// to `Meta::commit` while the watermark is still the old one.
     pub(crate) closed spec fn claimed(self) -> bool {
@@ -965,33 +965,6 @@ impl Set {
     }
 }
 
-/// Assumption (`lock.rs`): the commit watermarks behind
-/// [`SetTable::tables`] keep each table's claim to its uncommitted pages
-/// ([`Lazy::claimed`]), which `Lazy::ensure` needs and keeps; the bounds
-/// `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s.
-/// Their one writer, `SetTable::ensure`, keeps it by `Lazy::ensure`'s
-/// postcondition and ends in `LockGuard::unlock`, which requires it (`api::tests::guards_end_in_unlock`); `SetTable::new`
-/// proves it of the tables it reserves; the test-only `committed_ranges`
-/// only reads.
-///
-/// `api::tests::lock_holders_match_inv_docs` checks that the functions
-/// that take the guard are the holders named here.
-pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),
-;
-
-/// Assumption (`lock.rs`): what every value behind [`SetTable::tables`]
-/// keeps from the tables `SetTable::new` reserved is each table's base
-/// and length, which `Lazy::ensure` keeps. Its one writer,
-/// `SetTable::ensure`, checks it at its `LockGuard::unlock`, as for
-/// [`axiom_set_tables_lock_inv`].
-pub(crate) broadcast axiom fn axiom_set_tables_lock_frame(a: [Lazy; SET_GROUPS], b: [Lazy; SET_GROUPS])
-    ensures
-        #[trigger] crate::lock::assumed_frame(a, b) == forall|g: int|
-            0 <= g < SET_GROUPS ==> #[trigger] b[g].spec_base() == a[g].spec_base() && b[g].spec_len() == a[g].spec_len(),
-;
-
 impl SetTable {
     /// Reserve the tables (address space only; rows are committed by
     /// `ensure`). `None` if the metadata region cannot hold them. On
@@ -1201,7 +1174,6 @@ impl SetTable {
             let tracked m = split_sets(&mut raws, pos, groups, nslabs, 0);
             *sets = m;
             crate::meta::lemma_pow2_bits(page);
-            broadcast use axiom_set_tables_lock_inv;
         }
         Some(SetTable {
             groups,
@@ -1247,7 +1219,6 @@ impl SetTable {
             *final(ord) == *old(ord),
     {
         proof {
-            broadcast use {axiom_set_tables_lock_inv, axiom_set_tables_lock_frame};
             use_type_invariant(self);
             let w = slab / 64;
             assert(w <= 0x10_0000);
@@ -1297,16 +1268,40 @@ impl SetTable {
 
 verus! {
 
-/// The slab-set tables' lock's invariant and frame, which
-/// [`axiom_set_tables_lock_inv`] and [`axiom_set_tables_lock_frame`] state.
+/// The slab-set tables' lock ([`SetTable::tables`]): its invariant is
+/// that each table keeps its claim to its uncommitted pages
+/// ([`Lazy::claimed`]), which `Lazy::ensure` needs and keeps, and its
+/// frame is each table's base and length, which `SetTable::new` reserved
+/// and `Lazy::ensure` keeps. The bounds `SetTable::ensure` needs are
+/// `Lazy`'s type invariant and `SetTable`'s.
+///
+/// `SetTable::new` proves the invariant of the tables it reserves
+/// (`Lock::new` requires it). The one writer, `SetTable::ensure`, keeps
+/// both by `Lazy::ensure`'s postcondition and ends in
+/// `LockGuard::unlock`, which requires them
+/// (`api::tests::guards_end_in_unlock`); the test-only
+/// `committed_ranges` only reads.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for [Lazy; SET_GROUPS] {
-    open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+    closed spec fn lock_spec_inv(self) -> bool {
+        forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] self[g].claimed()
     }
 
-    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+    closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        forall|g: int|
+            0 <= g < SET_GROUPS ==> #[trigger] v[g].spec_base() == init[g].spec_base() && v[g].spec_len() == init[g].spec_len()
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_set_tables_frame_reflexive(v: [Lazy; SET_GROUPS])
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!

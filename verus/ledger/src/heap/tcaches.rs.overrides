@@ -1,5 +1,3 @@
-# The table lock guards `()`: its invariant is `true`.
-axiom_tcaches_lock_inv	allocator invariant	none (assumption)
 # `Tcaches`'s byte offsets and layout, which the build checks with `fits`.
 T_TABLE	core library	Kani	discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs)
 T_LOCK	core library	Kani	discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs)

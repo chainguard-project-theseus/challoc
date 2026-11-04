@@ -483,24 +483,24 @@ process statistics lock (`collect_into`, `snapshot`,
 (`api/mod.rs`) checks that none of these guards drops without it.
 No other lock's holders call it, so for every other lock the invariant and frame
 are not checked at the release: each verified holder ends with them
-through its last call's postcondition or an `assert`. No axiom states
-the metadata lock's `lock_inv` and `lock_frame`: `meta::Inner`'s
-`LockSpec` impl (`meta.rs`) defines them (`Inner::wf`; the page, the
-region's bounds and the ghost identities fixed), and what is left is
-that every holder reaches `LockGuard::unlock`, which the source test
-`api::tests::guards_end_in_unlock` checks. Each other
+through its last call's postcondition or an `assert`. For the four
+locks whose holders all end with it, no axiom states `lock_inv` and
+`lock_frame`: each type's `LockSpec` impl defines them, and what is
+left is that every holder reaches `LockGuard::unlock`, which the source
+test `api::tests::guards_end_in_unlock` checks. The impl for
+`meta::Inner` (`meta.rs`), the metadata lock: `Inner::wf`, with the
+page, the region's bounds and the ghost identities fixed. The impl for
+`[Lazy; SET_GROUPS]` (`class/sets.rs`), the slab-set tables' lock:
+each table's `Lazy::claimed`, with its base and length fixed. The impl
+for `Snapshot` (`stats.rs`), the process statistics lock:
+`Snapshot::inv`, with a frame true of any two snapshots. The impl for
+`()` (`heap/tcaches.rs`), the explicit-cache table lock: both `true`.
+Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
-type's invariant; the theorems that use one name it. Also:
-`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs`) and its
-frame `axiom_set_tables_lock_frame` (`class/sets.rs`: each table
-keeps its base and length, which `Lazy::ensure` keeps; its one writer,
-`SetTable::ensure`, checks it at its `LockGuard::unlock`),
-`stats::axiom_snapshot_lock_frame` (`stats.rs`: the frame holds of
-any two snapshots, since the snapshot keeps no constant from the one
-`Shared::init` made), and `heap::tcaches::axiom_tcaches_lock_inv` (the
-explicit-cache table lock guards `()`, so its invariant is true). `Tcaches::init` makes each
-entry null with `vspec::entry::new`, over the layout from
-`axiom_tcaches_layout` and `axiom_tcaches_assemble`.
+type's invariant; the theorems that use one name it.
+`Tcaches::init` makes each entry null with
+`vspec::entry::new`, over the layout from `axiom_tcaches_layout` and
+`axiom_tcaches_assemble`.
 
 **Class state accessors.** None trusted: `TablePtr::get` reads the
 class's table through the frozen permissions to every class's table
@@ -4935,17 +4935,17 @@ is counted once and `k` arenas sum below `2^58 + k * 2^55`, which fits
 for `k <= 256`.
 
 **Premises beyond the common ones.**
-- The two `lock_inv` axioms (`axiom_arena_stats_lock_inv`,
-  `vspec/arena.rs`, and `axiom_snapshot_lock_inv`, `stats.rs`)
-  say the stored value satisfies `ArenaStats::identities` and
-  `Snapshot::inv`. Their writers:
-  `Arena` initialisation (`ArenaStats::empty`, which ensures the
-  identities) and `Arena::store_stats` (which requires them);
-  `Shared::init` (`Snapshot::EMPTY`, written in `Shared::put_tail`,
-  `heap/shared.rs`) and
-  `collect_into` (whose body asserts it and ends in `LockGuard::unlock`,
-  which requires it). The process statistics lock's other holders
-  (`snapshot`, `arena_stats_all_into`) also end in `LockGuard::unlock`.
+- The per-arena statistics lock's `lock_inv` axiom
+  (`axiom_arena_stats_lock_inv`, `vspec/arena.rs`) says the stored
+  value satisfies `ArenaStats::identities`. Its writers: `Arena`
+  initialisation (`ArenaStats::empty`, which ensures the identities)
+  and `Arena::store_stats` (which requires them). The process
+  statistics lock's invariant, `Snapshot::inv`, is stated by no axiom:
+  `Snapshot`'s `LockSpec` impl (`stats.rs`) defines it, `Lock::new` in
+  `Shared::put_tail` (`heap/shared.rs`) requires it of
+  `Snapshot::EMPTY`, and every holder (`collect_into`, `snapshot`,
+  `arena_stats_all_into`) ends in `LockGuard::unlock`, which requires
+  it (`api::tests::guards_end_in_unlock`).
   The fork handlers take the raw locks only and write nothing.
   For the per-arena statistics lock, as for every lock whose holders do
   not end with `LockGuard::unlock` (common premises, "Locks"), that each
