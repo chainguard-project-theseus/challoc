@@ -190,10 +190,6 @@ pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into
 
 verus! {
 
-// Since Rust 1.81 the sorts and selections may panic when `Ord` is not a
-// total order; that is not stated, and the one instantiation here
-// (`*mut u8` and `usize` keys) is total.
-
 /// `s.is_sorted()`. Nothing is claimed about the result.
 pub assume_specification<T: PartialOrd>[ <[T]>::is_sorted ](s: &[T]) -> bool;
 
@@ -203,37 +199,51 @@ pub assume_specification<'a, T, F: FnMut(&'a T) -> K, K: PartialOrd>[ <[T]>::is_
         forall|x: &'a T| #[trigger] f.requires((x,)),
 ;
 
-/// `s.select_nth_unstable(index)`: panics unless `index` is in bounds;
-/// permutes `s` and returns it as the `index` elements before position
-/// `index`, the element there and the rest. The permutation is stated of
-/// the three parts' values on return, and `s`'s final value is theirs:
-/// a caller may write through them (the parts reborrow `s`), so a
-/// contract on `final(s)` alone would let a verified caller prove `s`
-/// still a permutation after such a write.
-pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], index: usize) -> (r: (&mut [T], &mut T, &mut [T]))
+/// `s.select_nth_unstable(index)` on a slice of raw pointers, its
+/// returned parts dropped: permutes `s`. Trusted: `core` documents a
+/// panic when `index` is out of bounds and for an `Ord` that is not a
+/// total order, and a thin pointer's `Ord` compares addresses, a total
+/// order that does not panic, so with `index` in bounds the call returns
+/// with `s` a permutation of what it held. A wrapper for `*mut u8`
+/// alone, where an `assume_specification` of
+/// `<[T]>::select_nth_unstable` would cover every `T: Ord`; it returns
+/// nothing, so no caller writes through the parts (reborrows of `s`)
+/// that `select_nth_unstable` hands back, and the contract can state the
+/// permutation of `final(s)`. `#[inline(always)]` leaves the machine code
+/// of the bare call.
+#[inline(always)]
+#[verifier::external_body]
+pub fn select_ptrs(s: &mut [*mut u8], index: usize)
     requires
         index < old(s)@.len(),
     ensures
-        r.0@.len() == index,
-        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
-        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
-        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
-        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
-;
+        final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+{
+    s.select_nth_unstable(index);
+}
 
-/// `s.select_nth_unstable_by_key(index, f)`, as `select_nth_unstable`.
-pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstable_by_key::<K, F> ](s: &mut [T], index: usize, f: F) -> (r: (&mut [T], &mut T, &mut [T]))
+/// `s.select_nth_unstable_by_key(index, f)` on a slice of raw pointers
+/// with a `usize` key, its returned parts dropped: permutes `s`. Trusted
+/// as `select_ptrs`, with `usize`'s `Ord`, a total order that does not
+/// panic, and `f` callable on every entry. A wrapper for `*mut u8`
+/// entries and `usize` keys alone, where an `assume_specification` of
+/// `<[T]>::select_nth_unstable_by_key` would cover every `K: Ord`.
+/// `#[inline(always)]` leaves the machine code of the bare call.
+#[inline(always)]
+#[verifier::external_body]
+pub fn select_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], index: usize, f: F)
     requires
         index < old(s)@.len(),
-        forall|x: &T| #[trigger] f.requires((x,)),
+        forall|x: &*mut u8| #[trigger] f.requires((x,)),
     ensures
-        r.0@.len() == index,
-        r.0@.len() + 1 + r.2@.len() == old(s)@.len(),
-        (r.0@ + seq![*r.1] + r.2@).to_multiset() == old(s)@.to_multiset(),
-        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] (r.0@ + seq![*r.1] + r.2@)[i]),
-        final(s)@ == final(r.0)@ + seq![*final(r.1)] + final(r.2)@,
-;
-
+        final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
+        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
+{
+    s.select_nth_unstable_by_key(index, f);
+}
 
 /// `s.sort_unstable_by_key(f)` on a slice of raw pointers with a `usize`
 /// key: permutes `s`. Trusted: `core` documents panics for an `Ord` that
