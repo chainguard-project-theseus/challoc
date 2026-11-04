@@ -1,9 +1,12 @@
-# The zero tokens of a run `take` hands out (zero_run, their one caller,
-# pinned by huge::tests::zero_axioms_called_from_zero_run_only): kernel
-# zero-fill facts under the allocator's rules.
+# The zero tokens of a run `take` hands out (zero_run, their caller in
+# huge; SlabTable::new is axiom_fresh_anon_zero's other; both pinned by
+# huge::tests::zero_axioms_called_from_listed_sites): kernel zero-fill
+# facts under the allocator's rules.
 # The fresh pages: zero_run's requires tie the premise to the mark, which
-# only `take` raises, so what is left is mmap(2)'s zero fill of a private
-# anonymous mapping that nothing has written since.
+# only `take` raises, and SlabTable::new mints the class region's token
+# once per class, which then goes only with the slabs handed out, so what
+# is left is mmap(2)'s zero fill of a private anonymous mapping that
+# nothing has written since.
 axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 # The Purged pages: zero_run's requires tie the premise to
 # Huge::rediscard's success for the run's pages, so what is left is

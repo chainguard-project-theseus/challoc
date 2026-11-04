@@ -266,7 +266,7 @@ items' docs name the test that checks them. A separate guard,
 | `sys::tests::{syscall,abort}_grants_only_at_roots`, `user_read_grants_only_in_listed_callers`, `user_read_capability_ensured_only_at_grants`, `sys::abort::tests::abort_relabels_only_in_the_sinks` | the syscall, abort and user-read grants; the abort relabel only in the three narrowed sinks; `may_read_user` in an `ensures` only at `grant_user_reads` and `purge::check_zero` |
 | `heap::tcaches::tests::heap_use_axiom_only_at_listed_mint_sites` | `axiom_heap_use` at its 8 listed callers |
 | `api::tests::fork_hold_is_resumed_once`, `fork_child_resets_are_child_only`, `fork_lock_list_matches_the_source_tree` | the fork handlers' premises and lock list |
-| `huge::tests::zero_axioms_called_from_zero_run_only`, `purge::tests::state_lock_axiom_names_the_one_state_lock` | the huge zero axioms; the one state lock |
+| `huge::tests::zero_axioms_called_from_listed_sites`, `purge::tests::state_lock_axiom_names_the_one_state_lock` | the huge zero axioms (in `zero_run`, and `axiom_fresh_anon_zero` in `SlabTable::new`); the one state lock |
 
 The tests check where a premise is used, not that it holds: a new site
 fails a test so that a person reads its argument. The call-site scans

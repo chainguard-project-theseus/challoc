@@ -232,10 +232,6 @@ mod tests {
             ),
             // The zero and fresh-memory facts of a refill's claim.
             (
-                concat!("axiom_", "fresh_slots_zero("),
-                &[("class/mod.rs:", "fn take(", 1)],
-            ),
-            (
                 concat!("axiom_", "discarded_slots_zero("),
                 &[("class/mod.rs:", "fn take(", 1)],
             ),
