@@ -1,6 +1,6 @@
 # challoc
 
-[![Verus: 85.2% of functions, 94.0% of lines](https://img.shields.io/badge/Verus-85.2%25%20of%20functions%2C%2094.0%25%20of%20lines-blue)](verus/README.md#coverage)
+[![Verus: 85.5% of functions, 94.1% of lines](https://img.shields.io/badge/Verus-85.5%25%20of%20functions%2C%2094.1%25%20of%20lines-blue)](verus/README.md#coverage)
 
 A memory-safe, jemalloc-compatible `malloc` for Wolfi and Chainguard OS.
 
