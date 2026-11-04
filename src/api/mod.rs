@@ -3111,6 +3111,18 @@ mod tests {
     /// checked. A lock joins the list, with its holders outside the tests
     /// (`file:fn`), once every holder unlocks.
     const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
+        (
+            "arena.rs:Arena.stats",
+            &[
+                "arena.rs:stats_into",
+                "arena.rs:add_stats_to",
+                "arena.rs:store_stats",
+            ],
+        ),
+        (
+            "arena.rs:Arenas.lock",
+            &["arena.rs:assign", "arena.rs:create", "arena.rs:materialise"],
+        ),
         ("class/sets.rs:SetTable.tables", &["class/sets.rs:ensure"]),
         (
             "heap/shared.rs:Shared.stats",

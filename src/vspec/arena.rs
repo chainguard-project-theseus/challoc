@@ -44,9 +44,12 @@ pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](
 /// `ArenaStats::empty` (verified: `Lock::new` requires the invariant and
 /// `empty` ensures the identities), and `Arena::store_stats` stores a
 /// value it requires them of (verified). `Arena::stats_into` and
-/// `Arena::add_stats_to` only read. The caller Verus does not check is
-/// `stats::collect_into`, which stores what `collect_arena_with`
-/// computes; its sums are exact only when no figure wraps. The fork
+/// `Arena::add_stats_to` only read. Each of the three ends in
+/// `LockGuard::unlock`, which requires this and the frame
+/// (`ArenaStats`'s `LockSpec` impl: true of any two values), on every
+/// path to a return (`api::tests::guards_end_in_unlock`).
+/// `Arena::store_stats`'s one caller, `stats::collect_into`, stores what
+/// `collect_arena_with` computes, whose ensures give the identities. The fork
 /// handlers take and release the raw lock without touching the value,
 /// and nothing calls `get_unlocked` on it. What is left is the claim
 /// that the lock protects the identities.
