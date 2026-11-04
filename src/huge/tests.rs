@@ -112,7 +112,6 @@ impl Env {
             guard_install,
             guards,
             Tracked::assume_new(),
-            Tracked::assume_new(),
         )
         .expect("huge allocator")
     }
@@ -1009,7 +1008,6 @@ fn metadata_exhaustion_is_reported_not_fatal() {
         guard_mode(),
         true,
         Tracked::assume_new(),
-        Tracked::assume_new(),
     ) else {
         return;
     };
@@ -1037,7 +1035,6 @@ fn metadata_exhaustion_is_reported_not_fatal() {
             &tiny.regions,
             guard_mode(),
             true,
-            Tracked::assume_new(),
             Tracked::assume_new(),
         )
         .is_none()
