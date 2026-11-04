@@ -73,7 +73,7 @@ Tool: none (assumption). Status: trusted.
 
 > Whether the caller is the forking thread in the child of a `fork`, inside the window: a child handler registered before challoc's, which runs before challoc's own resets the work other parent threads had under way (the feature line's build, the cgroup discovery).
 
-Hashes: contract 3533832777, body 3112863921.
+Hashes: contract 3533832777, body 3662375523.
 
 ```rust
 pub(crate) fn in_child_fork_window() -> (r: bool)
@@ -85,7 +85,7 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
 
 ## `axiom_acquired`
 
-src/lock.rs:747. Kind: axiom. Category: allocator invariant.
+src/lock.rs:757. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters, at an acquisition: a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -103,7 +103,7 @@ axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ## `Lock::value_ptr`
 
-src/lock.rs:808. Kind: external_body. Category: raw pointer (internal).
+src/lock.rs:818. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names), and `T` other than `u8`, `u64`, `(u64, u8)` and `ArenaStats`).
 
 > The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
@@ -116,12 +116,12 @@ pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
 
 ## `cell_ref`
 
-src/lock.rs:1113. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1123. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 1121.
+Body mints Tracked at line 1131.
 
 Hashes: contract 1530591252, body 1034020046.
 
@@ -137,12 +137,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:1128. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1138. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 1138.
+Body mints Tracked at line 1148.
 
 Hashes: contract 2313273051, body 2927460227.
 
@@ -160,7 +160,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:1148. Kind: external_body. Category: atomics primitive.
+src/lock.rs:1158. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return).
 
 Hashes: contract 3065263068, body 2348458592.
