@@ -7509,6 +7509,7 @@ impl Huge {
         let ghost mut k: int = 0;
         loop
             invariant
+                g.spec_lock() == self.inner,
                 0 <= k <= 2,
                 array_iter_rest(iter) == seq![pred, succ].skip(k),
                 g@ == (Inner { table: g@.table, stats: g@.stats, ..gb }),
@@ -7594,6 +7595,7 @@ impl Huge {
         let ghost mut k2: int = 0;
         loop
             invariant
+                g.spec_lock() == self.inner,
                 under.allows(rank_meta()),
                 0 <= k2 <= 3,
                 array_iter_rest(iter) == seq![d, pred, succ].skip(k2),
@@ -8002,6 +8004,7 @@ impl Huge {
         }
         while !d.is_null()
             invariant
+                g.spec_lock() == self.inner,
                 crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 self.is_process(),
@@ -8633,6 +8636,7 @@ impl Huge {
         }
         while !d.is_null()
             invariant
+                g.spec_lock() == self.inner,
                 g@.wf(),
                 l == g@.elist@,
                 len == l.len(),
@@ -8705,6 +8709,7 @@ impl Huge {
             }
             while !d.is_null() && excess > 0
                 invariant
+                    g.spec_lock() == self.inner,
                     crate::sys::may_abort() || crate::sys::valid_aborts(),
                     crate::sys::may_syscall(),
                     self.is_process(),
