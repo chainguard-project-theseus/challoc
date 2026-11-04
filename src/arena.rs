@@ -89,6 +89,20 @@ pub open spec fn published(w: Published, a: Arena) -> bool {
     &&& w.id() == process_pub_loc()
     &&& w.key() == a.spec_index() as int
     &&& w.value() == a.spec_olocs()
+    &&& same_tables(a, process_arena0())
+}
+
+/// `a`'s class states have `b`'s tables, class by class: every arena of
+/// a registry has its arena 0's ([`entry_ok`]).
+pub open spec fn same_tables(a: Arena, b: Arena) -> bool {
+    forall|c: int| 0 <= c < NCLASSES ==> #[trigger] a.spec_class_state(c).spec_table() == b.spec_class_state(c).spec_table()
+}
+
+/// Arena 0 of the process registry
+/// (`Shared::built_at(Shared::storage())`'s, [`Arenas::spec_arena0`]),
+/// whose tables are the stored `Shared`'s.
+pub open(crate) spec fn process_arena0() -> Arena {
+    Shared::built_at(Shared::storage()).arenas.spec_arena0()
 }
 
 /// The location of the process registry's record of published arenas
@@ -1194,7 +1208,8 @@ impl Arena {
             meta.is_process(),
             crate::class::tables_ok(*tperms, tables),
         ensures
-            r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index),
+            r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index
+                && p.value().tables_from(*tperms)),
             !r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit()),
             *final(ord) == *old(ord),
     {
@@ -1246,6 +1261,8 @@ impl Arena {
                     elems_init(classes, 0, c as int),
                     forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_class() == d,
                     forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_arena() == index,
+                    forall|d: int| 0 <= d < c ==> (#[trigger] classes[d]).value().spec_table() == tperms[d].value(),
+                    c > 0 ==> classes[0].value().spec_tables() == *tperms,
                     parts.index.is_init() && parts.index.value() == index,
                     // `SETS_PER_CLASS` sets per class.
                     forall|d: int, k: int| c <= d < NCLASSES && 0 <= k < 3 ==> #[trigger] sets_perm.value().holds_set(slots, d, k),
@@ -1266,10 +1283,14 @@ impl Arena {
                                 assert(before.contains_key(d));
                             }
                             assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] classes[d]).is_init()
-                                && classes[d].value().spec_class() == d && classes[d].value().spec_arena() == index by {
+                                && classes[d].value().spec_class() == d && classes[d].value().spec_arena() == index
+                                && classes[d].value().spec_table() == tperms[d].value() by {
                                 if d < c {
                                     assert(before[d] == classes[d]);
                                 }
+                            }
+                            if c > 0 {
+                                assert(before[0] == classes[0]);
                             }
                             assert(classes_at(classes, this));
                             assert forall|d: int, k: int| c + 1 <= d < NCLASSES && 0 <= k < 3 implies #[trigger] sets_perm.value().holds_set(slots, d, k) by {
@@ -1487,6 +1508,21 @@ impl Arena {
         Seq::new(NCLASSES as nat, |c: int| self.spec_class_state(c).spec_oloc())
     }
 
+    /// Every class state's table is the process's
+    /// ([`ClassState::is_process`]), as for an arena the process registry
+    /// published (`Shared::lemma_published_tables`).
+    pub open spec fn tables_process(&self) -> bool {
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.spec_class_state(c).is_process()
+    }
+
+    /// The arena's class states were built over the table permissions `m`
+    /// ([`Arena::init`]'s `tperms`): each one's table is its class's in
+    /// `m`, and class 0's state carries `m` ([`ClassState::tables`]).
+    pub open spec fn tables_from(&self, m: Map<int, PointsTo<SlabTable>>) -> bool {
+        &&& self.spec_class_state(0).spec_tables() == m
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.spec_class_state(c).spec_table() == m[c].value()
+    }
+
     /// The decay period in nanoseconds (`purge::NEVER` when purging is off).
     #[inline]
     pub fn decay_ns(&self) -> u64 {
@@ -1577,6 +1613,7 @@ impl Arena {
     /// `None` when nothing is `Empty`; `NEVER` does nothing.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> Option<u64>
         requires
+            self.tables_process(),
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
@@ -1587,13 +1624,20 @@ impl Arena {
             return None;
         }
         let mut next: Option<u64> = None;
-        for cs in self.classes.iter()
+        for cs in it: self.classes.iter()
             invariant
                 crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
+                self.tables_process(),
+                forall|i: int| 0 <= i < it.seq().len() ==> *#[trigger] it.seq()[i] == self.classes@[i],
         {
+            proof {
+                assert(*cs == *it.seq()[it.index() as int]);
+                assert(self.spec_class_state(it.index() as int).is_process());
+                assert(cs.is_process());
+            }
             if let Some(d) = cs.decay_with(now, decay_ns, keep16, Tracked(ord)) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
@@ -1639,6 +1683,7 @@ impl Arena {
     /// ([`Left::clean`]).
     pub fn purge_all(&self, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
+            self.tables_process(),
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
@@ -1673,6 +1718,7 @@ impl Arena {
                 crate::sys::may_abort() || crate::sys::valid_aborts(),
                 crate::sys::may_syscall(),
                 c <= NCLASSES,
+                self.tables_process(),
                 ord.allows(rank_class(0, 0)),
                 *ord == *old(ord),
                 sum <= c * 0x2000_0000_0000,
@@ -1685,6 +1731,9 @@ impl Arena {
             decreases NCLASSES - c,
         {
             let cs = &self.classes[c];
+            proof {
+                assert(self.spec_class_state(c as int).is_process());
+            }
             cs.nslabs_fit();
             let tracked mut lc = Ghost(Left::none());
             sum += cs.purge_empty(u64::MAX, Tracked(&mut lc), Tracked(ord));
@@ -1817,6 +1866,7 @@ pub open spec fn entry_ok(k: RegKey, v: RegVal, i: int) -> bool {
         &&& v.pubs[i].id() == k.pubs
         &&& v.pubs[i].key() == i
         &&& v.pubs[i].value() == v.auth@.1[i].spec_olocs()
+        &&& same_tables(v.auth@.1[i], k.arena0)
     }
 }
 
@@ -3013,7 +3063,7 @@ impl Arenas {
     /// through its frozen permission.
     pub fn get_existing(&self, index: u16) -> (r: Option<&Arena>)
         ensures
-            r matches Some(a) ==> a.spec_index() == index,
+            r matches Some(a) ==> a.spec_index() == index && same_tables(*a, self.spec_arena0()),
     {
         let i = index as usize;
         if i >= MAX_ARENAS {
@@ -3049,7 +3099,7 @@ impl Arenas {
     pub fn get_existing_published(&self, index: u16) -> (r: Option<(&Arena, Tracked<&'static Published>)>)
         ensures
             r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc() && (self.is_process() ==> w@.id() == process_pub_loc())
-                && w@.key() == index as int && w@.value() == a.spec_olocs(),
+                && w@.key() == index as int && w@.value() == a.spec_olocs() && same_tables(*a, self.spec_arena0()),
     {
         let i = index as usize;
         if i >= MAX_ARENAS {
@@ -3552,13 +3602,15 @@ impl Arenas {
 verus! {
 
 impl Arenas {
-    /// The registry is the process's: its bound-count invariants and its
-    /// record of published arenas are those of
+    /// The registry is the process's: its bound-count invariants, its
+    /// record of published arenas and its arena 0 are those of
     /// `Shared::built_at(Shared::storage())`'s registry, so a record it
-    /// hands out is at [`process_pub_loc`].
+    /// hands out is at [`process_pub_loc`] and an arena it hands out has
+    /// [`process_arena0`]'s tables.
     pub closed spec fn is_process(&self) -> bool {
         &&& self.invs == Shared::built_at(Shared::storage()).arenas.invs
         &&& self.spec_pub_loc() == Shared::built_at(Shared::storage()).arenas.spec_pub_loc()
+        &&& self.spec_arena0() == process_arena0()
     }
 
     /// The process registry is [`Arenas::is_process`].
@@ -3567,6 +3619,15 @@ impl Arenas {
             *self == Shared::built_at(Shared::storage()).arenas,
         ensures
             self.is_process(),
+    {
+    }
+
+    /// The process registry's arena 0 is [`process_arena0`].
+    pub(crate) proof fn lemma_process_arena0(&self)
+        requires
+            self.is_process(),
+        ensures
+            self.spec_arena0() == process_arena0(),
     {
     }
 
@@ -3585,11 +3646,12 @@ impl Arenas {
         requires
             crate::sys::may_syscall(),
             shared.wf(),
+            self.spec_arena0() == shared.spec_arena0(),
             old(ord).allows(rank_arenas()),
         ensures
             r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc()
                 && (self.is_process() ==> w@.id() == process_pub_loc()) && w@.key() == index as int
-                && w@.value() == a.spec_olocs(),
+                && w@.value() == a.spec_olocs() && same_tables(*a, self.spec_arena0()),
             *final(ord) == *old(ord),
     {
         let i = index as usize;
@@ -3641,11 +3703,12 @@ impl Arenas {
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
+            self.spec_arena0() == shared.spec_arena0(),
             old(ord).allows(rank_arenas()),
         ensures
             r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc()
                 && (self.is_process() ==> w@.id() == process_pub_loc()) && w@.key() == index as int
-                && w@.value() == a.spec_olocs(),
+                && w@.value() == a.spec_olocs() && same_tables(*a, self.spec_arena0()),
             *final(ord) == *old(ord),
     {
         if index as u32 >= self.auto {
@@ -3734,13 +3797,14 @@ impl Arenas {
             crate::sys::may_syscall(),
             (index as usize) < MAX_ARENAS,
             shared.wf(),
+            self.spec_arena0() == shared.spec_arena0(),
             old(ord).allows(rank_meta()),
             old(h).id() == self.count_inv@.constant().snap,
             !old(h)@.1.contains_key(index as int),
         ensures
             r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc()
                 && (self.is_process() ==> w@.id() == process_pub_loc()) && w@.key() == index as int
-                && w@.value() == a.spec_olocs(),
+                && w@.value() == a.spec_olocs() && same_tables(*a, self.spec_arena0()),
             *final(ord) == *old(ord),
             final(h).id() == old(h).id(),
             final(h)@.0 == old(h)@.0,
@@ -3815,6 +3879,7 @@ impl Arenas {
         // them.
         proof {
             shared.lemma_wf();
+            shared.lemma_tables();
             use_type_invariant(&shared.arena0);
         }
         let (used0, _) = meta_used_free(shared.meta.stats(Tracked(&mut *ord)));
@@ -3914,6 +3979,7 @@ impl Arenas {
         requires
             crate::sys::may_syscall(),
             shared.wf(),
+            self.spec_arena0() == shared.spec_arena0(),
             old(ord).allows(rank_arenas()),
         ensures
             r matches Some(i) ==> (i as usize) < MAX_ARENAS,

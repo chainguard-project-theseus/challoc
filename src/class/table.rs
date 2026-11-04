@@ -579,10 +579,10 @@ pub type OwnerInv = AtomicInvariant<OwnerKey, OwnerVal, OwnerPred>;
 /// ([`OwnerPred`]) names it once the word is stored; the take_group proof
 /// gives the one store (`store_owner`) its contract, which uses up the
 /// group's owner-store markers ([`owner_marks`], minted once per slab by
-/// the class's table at [`mark_loc`]). Keyed by the class alone, which
-/// rests on there being one table per class per process (the premise
-/// [`axiom_slot_loc`] names; tests that build several tables, or corrupt
-/// an owner word, are outside it).
+/// the class's table at [`mark_loc`]). Keyed by the class alone: only the
+/// process's table of the class ([`SlabTable::is_process`]) holds markers
+/// at [`mark_loc`] (tests that build several tables, or corrupt an owner
+/// word, are outside it).
 pub uninterp spec fn slab_owner(c: int, slab: int) -> u16;
 
 /// The arena that owns the slab of class `c`'s region holding address
@@ -592,15 +592,25 @@ pub open spec fn slot_owner(c: int, p: usize) -> u16 {
     slab_owner(c, process_regions().slab_index(c, p))
 }
 
-/// The authority of class `c`'s markers: the one its table made
-/// ([`axiom_slot_loc`]). Every slab's owner-store marker is minted once,
-/// by that table's `new`, so a store that uses it up can run at most once
-/// per slab.
-pub uninterp spec fn mark_loc(c: int) -> Loc;
+/// The authority of class `c`'s markers: the one made by class `c`'s
+/// table in the `Shared` that `api::init` builds in its storage
+/// ([`Shared::storage`](crate::heap::Shared::storage)). Every slab's
+/// owner-store marker is minted once, by that table's `new`, so a store
+/// that uses it up can run at most once per slab. Opaque;
+/// `Shared::init` reveals it where it proves the process's tables hold
+/// it ([`SlabTable::is_process`]).
+#[verifier::opaque]
+pub open(crate) spec fn mark_loc(c: int) -> Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).tables[c].spec_slots().mloc
+}
 
 /// The authority of class `c`'s slot tokens (`bitmap.rs`, "Slot tokens"):
-/// the one its table made ([`axiom_slot_loc`]).
-pub uninterp spec fn slot_loc(c: int) -> Loc;
+/// the one made by class `c`'s table in the stored `Shared`, as for
+/// [`mark_loc`]. Opaque, as [`mark_loc`] is.
+#[verifier::opaque]
+pub open(crate) spec fn slot_loc(c: int) -> Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).tables[c].spec_slots().loc
+}
 
 /// `held` is the token of slot `slot` of slab `slab` of class `c`, as a
 /// live slot's token holds it.
@@ -1203,13 +1213,23 @@ impl SlabTable {
         &&& lock_init(self.inner.0).dstride@ == self.desc_stride as int
         &&& words_wf(*self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
         &&& self.bits_base + 8 * self.spec_nwords() <= usize::MAX
-        &&& self.spec_slots().loc == slot_loc(self.class as int)
-        &&& self.mark_auth@.id() == mark_loc(self.class as int)
-        &&& crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask)
         &&& self.perms_ok()
         &&& self.committed_inv@.constant() == (usize_id(&self.committed_slabs), self.nslabs, self.spec_sloc(), lock_init(self.inner.0).wloc@)
         &&& self.committed_inv@.namespace() == committed_ns()
         &&& regions_held()
+    }
+
+    /// The table is the process's table of its class: its slot-token and
+    /// marker authorities are the class's ([`slot_loc`], [`mark_loc`]) and
+    /// so is its guard geometry
+    /// ([`guard_geom`](crate::layout::guard_geom)). Class `c`'s table in
+    /// the stored `Shared` is (`Shared::built`, which `Shared::init` proves
+    /// by revealing the three); a table built anywhere else is not known
+    /// to be.
+    pub open spec fn is_process(&self) -> bool {
+        &&& self.spec_slots().loc == slot_loc(self.spec_class() as int)
+        &&& self.spec_slots().mloc == mark_loc(self.spec_class() as int)
+        &&& crate::layout::guard_geom(self.spec_class() as int) == (self.spec_slots().glg, self.spec_slots().gmask)
     }
 
     /// The location of the owner words' witness markers ([`OwnerPred`]):
@@ -1434,18 +1454,27 @@ impl SlabTable {
             self.spec_slots().slab_size == (1usize << class_table()[self.spec_class() as int].lg_slab) as int,
             self.spec_slots().base == process_regions().class_base[self.spec_class() as int] as int,
             self.spec_slots().nbits == self.spec_nslabs() * self.spec_slots().sb,
-            self.spec_slots().loc == slot_loc(self.spec_class() as int),
     {
     }
 
-    /// The table's guard slabs are the process's guard slabs of its class
-    /// ([`guard_slab`](crate::layout::guard_slab), which
-    /// `Regions::is_slot` excludes) and its slot tokens' ([`Slots::guard`]).
+    /// The process's guard geometry of the class is the table's fields,
+    /// for the process's table ([`SlabTable::is_process`]).
+    pub(super) proof fn lemma_process_geom(&self)
+        requires
+            self.is_process(),
+        ensures
+            crate::layout::guard_geom(self.class as int) == (self.lg_slabs_per_page, self.guard_mask),
+    {
+    }
+
+    /// The table's guard slabs are its slot tokens' ([`Slots::guard`]): for
+    /// the process's table ([`SlabTable::is_process`]), the process's guard
+    /// slabs of its class ([`guard_slab`](crate::layout::guard_slab), which
+    /// `Regions::is_slot` excludes).
     pub(super) proof fn lemma_guard_slab(&self, slab: int)
         requires
             self.inv(),
         ensures
-            self.spec_is_guard(slab as usize) == crate::layout::guard_slab(self.spec_class() as int, slab),
             self.spec_is_guard(slab as usize) == self.spec_slots().guard(slab),
     {
     }
@@ -1602,10 +1631,11 @@ impl SlabTable {
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
     /// guard (design 5). `ord` is the caller's lock-order token,
-    /// which the reservations take for the metadata lock. `slot_once` and
+    /// which the reservations take for the metadata lock. `_slot_once` and
     /// `words_once` are the one-shot tokens (ghost, `vspec::once`) of the
-    /// steps that fix the class's slot-token authority ([`axiom_slot_loc`])
-    /// and its bitmap words' permissions ([`axiom_fresh_words`]). The table
+    /// class's `Step::SlotLoc` step (only the precondition names it) and of
+    /// the step that makes its bitmap words' permissions
+    /// ([`axiom_fresh_words`]). The table
     /// keeps the permissions of its descriptors and the invariants of its
     /// bitmap words, owner words and watermark ([`SlabTable::perms_ok`]),
     /// and its commit lock the markers and descriptor permissions of every
@@ -1625,7 +1655,7 @@ impl SlabTable {
         regions: &Regions,
         class: usize,
         guard_interval: u32,
-        Tracked(slot_once): Tracked<Once>,
+        Tracked(_slot_once): Tracked<Once>,
         Tracked(words_once): Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<SlabTable>)
@@ -1640,7 +1670,7 @@ impl SlabTable {
             guard_interval != 1,
             guard_interval == 0 || exists|k: nat| k < 32 && guard_interval as nat == #[trigger] pow2(k),
             old(ord).allows(rank_meta()),
-            slot_once.step() == Step::SlotLoc(class as int),
+            _slot_once.step() == Step::SlotLoc(class as int),
             words_once.step() == Step::FreshWords(class as int),
         ensures
             r matches Some(t) ==> {
@@ -1813,9 +1843,6 @@ impl SlabTable {
         let tracked (mark_auth, mut marks) = GhostSetAuth::<int>::new(
             fresh_marks(0, 64 * nwords).union(init_marks(0, 64 * nwords)).union(owner_marks(0, nslabs as int)));
         let tracked imarks = marks.split(init_marks(0, 64 * nwords).union(owner_marks(0, nslabs as int)));
-        proof {
-            axiom_slot_loc(class as int, slot_auth.id(), mark_auth.id(), geo.glg, geo.gmask, slot_once);
-        }
         // The owner words' witness markers: exclusive in each word's
         // invariant until its store (`OwnerPred`), with the word's
         // permission; and the empty persistent sets of them the commit lock,
@@ -1960,9 +1987,6 @@ impl SlabTable {
             assert(lock_init(inner.0).dstride@ == stride as int);
             assert(inner.0.rank() == rank_table(class as int));
             assert(crate::bitmap::words_wf(word_invs, slots, bits_base, nwords));
-            assert(slots.loc == slot_loc(class as int));
-            assert(mark_auth.id() == mark_loc(class as int));
-            assert(crate::layout::guard_geom(class as int) == (geo.glg, geo.gmask));
         }
         // The watermark, with its invariant (0, at most any slab count).
         let tracked committed_inv = WatermarkInv::new((usize_id(&committed_slabs), nslabs, sloc, wloc), (cperm, seen1, wvar), committed_ns());
@@ -2231,6 +2255,7 @@ proof fn lemma_slab_bytes(t: SlabTable, n: usize)
 proof fn lemma_commit_slabs(t: SlabTable, a: usize, b: usize, len: int)
     requires
         t.inv(),
+        t.is_process(),
         a < b <= t.nslabs,
         0 <= len <= (b - a) * ((1usize << class_table()[t.class as int].lg_slab) as int),
         forall|g: int|
@@ -2282,6 +2307,7 @@ proof fn lemma_commit_slabs(t: SlabTable, a: usize, b: usize, len: int)
 /// its first page. `(b - a) << lg_slab` is its length.
 proof fn lemma_run_commit(t: SlabTable, a: usize, b: usize, marked: bool)
     requires
+        t.is_process(),
         t.inv(),
         a < b <= t.nslabs,
         forall|g: usize| a < g < b ==> !#[trigger] t.spec_is_guard(g),
@@ -2318,6 +2344,7 @@ proof fn lemma_run_commit(t: SlabTable, a: usize, b: usize, marked: bool)
 /// group's first page: a page group's slabs are all guard slabs or none.
 proof fn lemma_page_group_commit(t: SlabTable, s: usize, len: usize, addr: usize)
     requires
+        t.is_process(),
         t.inv(),
         addr == t.base + s * ((1usize << class_table()[t.class as int].lg_slab) as int),
         s < t.nslabs,
@@ -2670,34 +2697,13 @@ axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo
         perm_at(r, addr),
 ;
 
-/// Trusted: `SlabTable::new` runs once per class in a process, so the
-/// authority it makes is the class's ([`slot_loc`]), and so is its marker
-/// authority (`mloc`, [`mark_loc`]). Two calls for one class with two
-/// authorities would prove `false`, so each uses up `once`, the token of
-/// class `c`'s step (`vspec::once`). Premise, not checked: one token per
-/// step per process; `Shared::init` (unverified) passes `SlabTable::new`
-/// a token it takes on trust (`Tracked::assume_new()`), and runs once per
-/// process. For the same reason the table's guard geometry (`glg`, its
-/// `lg_slabs_per_page`, and `gmask`, its `guard_mask`) is the class's
-/// ([`guard_geom`](crate::layout::guard_geom)): the guard slabs that
-/// `Regions::is_slot` excludes are this table's.
-// `once` is read only by the requires (ghost).
-#[allow(unused_variables)]
-axiom fn axiom_slot_loc(c: int, loc: Loc, mloc: Loc, glg: u8, gmask: u32, tracked once: Once)
-    requires
-        once.step() == Step::SlotLoc(c),
-    ensures
-        slot_loc(c) == loc,
-        mark_loc(c) == mloc,
-        crate::layout::guard_geom(c) == (glg, gmask);
-
 /// Trusted: the permissions of the `n` words of the class bitmap at
 /// `base`, each holding zero: `z`, the bitmap's reservation from
 /// `Meta::reserve_table`, reads as zero over them. Eight zero bytes are
 /// the word 0 in either byte order; vstd's raw permissions do not track
 /// byte values. One permission per word: `z` is used up, and so is
-/// `once`, the token of class `c`'s step (`vspec::once`; its premises as
-/// for [`axiom_slot_loc`]). The words end in the address space
+/// `once`, the token of class `c`'s step (`vspec::once`; premise, not
+/// checked: one token per step per process). The words end in the address space
 /// (required): a permission's `addr` is a `usize`. With each word's
 /// value permission (`WordPerm`), the permission to borrow the word
 /// itself (`r.1`, as [`axiom_zero_owner`] makes an owner word's: eight
@@ -2995,7 +3001,7 @@ impl SlabTable {
     #[inline]
     pub fn guard_mask(&self) -> (r: u32)
         ensures
-            r == crate::layout::guard_geom(self.spec_class() as int).1,
+            r == self.spec_slots().gmask,
     {
         proof {
             use_type_invariant(self);
@@ -3110,8 +3116,8 @@ impl SlabTable {
             r == self.spec_slabs_per_page(),
             r & sub(r, 1) == 0,
             self.spec_nslabs() & sub(r, 1) == 0,
-            r == 1usize << crate::layout::guard_geom(self.spec_class() as int).0,
-            crate::layout::guard_geom(self.spec_class() as int).0 <= 26,
+            r == 1usize << self.spec_slots().glg,
+            self.spec_slots().glg <= 26,
     {
         proof {
             use_type_invariant(self);
@@ -3373,6 +3379,7 @@ impl SlabTable {
     #[inline(always)]
     pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>) -> (r: bool)
         requires
+            self.is_process(),
             slab < self.spec_nslabs(),
             slot < class_table()[self.spec_class() as int].nslots,
         ensures
@@ -3415,6 +3422,7 @@ impl SlabTable {
     #[inline(always)]
     unsafe fn bit_word_held(&self, bits_base: usize, index: usize, Ghost(slab): Ghost<usize>, Ghost(slot): Ghost<usize>, Ghost(bit): Ghost<usize>, Tracked(held): Tracked<&Option<GhostSingleton<int>>>) -> (x: u64)
         requires
+            self.is_process(),
             bits_base == self.bits_base,
             slab < self.spec_nslabs(),
             slot < class_table()[self.spec_class() as int].nslots,
@@ -3511,6 +3519,7 @@ impl SlabTable {
     ) -> (tracked r: Option<&'static GhostPersistentSubset<int>>)
         requires
             self.inv(),
+            self.is_process(),
             slab < self.spec_nslabs(),
             slot < class_table()[self.spec_class() as int].nslots,
         ensures
@@ -3708,6 +3717,7 @@ impl SlabTable {
     #[inline]
     pub fn is_allocated(&self, slab: usize, slot: usize) -> bool
         requires
+            self.is_process(),
             slot < class_table()[self.spec_class() as int].nslots,
     {
         debug_assert!(slot < self.class().nslots());
@@ -3873,6 +3883,7 @@ impl SlabTable {
     #[inline]
     pub fn check_located(&self, slab: usize, slot: usize, p: usize, held: Tracked<&Option<GhostSingleton<int>>>) -> (r: u16)
         requires
+            self.is_process(),
             crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_slot(*held@, self.spec_class() as int, slab as int, slot as int)),
             slot < class_table()[self.spec_class() as int].nslots,
         ensures
@@ -3918,6 +3929,7 @@ impl SlabTable {
     #[inline(always)]
     pub fn check_live(&self, slab: usize, slot: usize, p: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>)
         requires
+            self.is_process(),
             crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_slot(*held, self.spec_class() as int, slab as int, slot as int)),
             slot < class_table()[self.spec_class() as int].nslots,
         ensures
@@ -4003,6 +4015,7 @@ impl SlabTable {
             crate::sys::may_syscall(),
             old(ord).allows(rank_table(0)),
             meta.is_process(),
+            self.is_process(),
             old(sets).table@ == *self,
             old(sets).arena@ == arena,
             old(sets).base(),
@@ -4792,6 +4805,7 @@ impl SlabTable {
     /// [`run_slabs`]: SlabTable::run_slabs
     pub(super) fn commit_run(&self, s: usize, limit: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
+            self.is_process(),
             crate::sys::may_syscall(),
             s < limit <= self.spec_nslabs(),
             old(ord).allows(rank_table(0)),
@@ -4908,6 +4922,7 @@ impl SlabTable {
     #[allow(clippy::manual_is_multiple_of)]
     pub(super) fn commit_slab(&self, s: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
+            self.is_process(),
             crate::sys::may_syscall(),
             s < self.spec_nslabs(),
             old(ord).allows(rank_table(0)),
@@ -5077,6 +5092,7 @@ impl SlabTable {
         Ghost(bit): Ghost<usize>,
     ) -> (x: u64)
         requires
+            self.is_process(),
             bits_base == self.spec_bits_base(),
             slab < self.spec_nslabs(),
             slot < class_table()[self.spec_class() as int].nslots,

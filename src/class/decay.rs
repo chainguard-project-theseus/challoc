@@ -715,7 +715,8 @@ impl Purger {
     }
 
     /// The tally's invariant over the batch's pieces, with the batch's
-    /// predicate and byte count the tally's, and `pushed` its `end`.
+    /// predicate and byte count the tally's, `pushed` its `end`, and the
+    /// state's table the process's ([`ClassState::is_process`]).
     spec fn inv(&self, cs: &ClassState, g: Inner) -> bool {
         &&& self.spp == self.t.spp@
         &&& self.pushed == self.t.end@
@@ -723,6 +724,7 @@ impl Purger {
         &&& forall|b: int| #[trigger] (self.batch.free())(b) == idle_byte(cs.spec_table(), self.t.states@, b)
         &&& self.batch.sent() == self.t.bytes@
         &&& self.t.inv(cs, g, self.batch.pieces())
+        &&& cs.is_process()
     }
 
     /// `slab` is in a page group already pushed: the walk moves past it.
@@ -865,6 +867,7 @@ impl ClassState {
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
+            self.is_process(),
             old(ord).allows(rank_class(0, 0)),
         ensures
             *final(ord) == *old(ord),
@@ -1091,6 +1094,7 @@ proof fn lemma_page_group_owned(g: Inner, t: SlabTable, slab: usize, spp: usize)
 proof fn lemma_group_well_formed(t: SlabTable, slab: usize, spp: usize, first: usize)
     requires
         t.inv(),
+        t.is_process(),
         spp == t.spec_slabs_per_page(),
         first == slab & !((spp - 1) as usize),
         first + spp <= t.spec_nslabs(),
@@ -1150,6 +1154,7 @@ proof fn lemma_group_well_formed(t: SlabTable, slab: usize, spp: usize, first: u
             requires spp == 1usize << lgs, lgs <= 26, m == sub(spp, 1), first == slab & !m, first <= x,
                 x < first + spp;
         t.lemma_guard_slab(slab as int);
+        t.lemma_process_geom();
         assert(!crate::layout::guard_slab(c, s));
         assert(crate::purge::class_byte(c, b));
     }
@@ -1171,6 +1176,7 @@ impl ClassState {
     /// [`settle`]: ClassState::settle
     fn push_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch, t: &mut Tally) -> (r: usize)
         requires
+            self.is_process(),
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(t).inv(self, *old(g), old(batch).pieces()),
@@ -1623,6 +1629,7 @@ impl ClassState {
     /// survivors. Returns the number purged.
     fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
+            self.is_process(),
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
@@ -1704,6 +1711,7 @@ impl ClassState {
     /// slabs on top of the curve's allowance.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
+            self.is_process(),
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),

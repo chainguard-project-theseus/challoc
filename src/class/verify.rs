@@ -301,6 +301,7 @@ impl ClassState {
     )
         requires
             crate::sys::may_abort(),
+            self.is_process(),
             crate::vspec::user::may_read_user(),
             super::slots_in(slots@, self.spec_class() as int, 0, slots@.len() as int),
             old(toks).holds(self.spec_table(), slots@, key, 0, slots@.len() as int),
@@ -428,6 +429,7 @@ impl ClassState {
         requires
             crate::sys::may_abort(),
             crate::vspec::user::may_read_user(),
+            self.is_process(),
             slab < self.spec_nslabs(),
             !self.spec_table().spec_is_guard(slab),
             m.covers(

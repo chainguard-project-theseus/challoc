@@ -179,9 +179,16 @@ pub open spec fn guard_of(lg: u8, mask: u32, slab: usize) -> bool {
 }
 
 /// The guard geometry of the process's class `c` table: its
-/// `lg_slabs_per_page` and `guard_mask`. Uninterpreted: the process's
-/// one table per class fixes it.
-pub uninterp spec fn guard_geom(c: int) -> (u8, u32);
+/// `lg_slabs_per_page` and `guard_mask`, those of class `c`'s table in
+/// the `Shared` that `api::init` builds in its storage
+/// ([`Shared::storage`](crate::heap::Shared::storage)). Opaque;
+/// `heap::shared`'s `Shared::init` reveals it where it proves the
+/// process's tables hold it (`SlabTable::is_process`).
+#[verifier::opaque]
+pub open(crate) spec fn guard_geom(c: int) -> (u8, u32) {
+    let t = crate::heap::Shared::built_at(crate::heap::Shared::storage()).tables[c];
+    (t.spec_slots().glg, t.spec_slots().gmask)
+}
 
 /// Slab `slab` of class `c`'s region is one of the process's guard slabs
 /// (`SlabTable::is_guard_slab` of the process's class `c` table): never

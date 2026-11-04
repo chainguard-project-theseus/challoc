@@ -135,7 +135,7 @@ use table::{
     slab_owner, words_of,
 };
 #[cfg(verus_keep_ghost)]
-pub use table::{committed_ns, owner_mark, owner_ns, slot_loc, slot_owner};
+pub use table::{committed_ns, mark_loc, owner_mark, owner_ns, slot_loc, slot_owner};
 use verify::{fresh_with_live, release_into_fresh};
 #[cfg(verus_keep_ghost)]
 use vstd::set::Set as VSet;
@@ -732,6 +732,7 @@ proof fn lemma_next_slot_addr(s: Slots, slab: int, k: int)
 proof fn lemma_real_is_slot(t: SlabTable, b: int, p: usize)
     requires
         t.inv(),
+        t.is_process(),
         t.spec_slots().real(b),
         !t.spec_is_guard((b / t.spec_slots().sb) as usize),
         p as int == t.spec_slots().addr(b),
@@ -760,6 +761,7 @@ proof fn lemma_real_is_slot(t: SlabTable, b: int, p: usize)
 #[verifier::spinoff_prover]
 proof fn lemma_holds_real(t: SlabTable, toks: SlotToks, out: Seq<*mut u8>, base: int, n: int)
     requires
+        t.is_process(),
         t.inv(),
         0 <= n <= out.len(),
         toks.holds(t, out, base, 0, n),
@@ -1359,6 +1361,11 @@ mod tptr {
         p.c@
     }
 
+    /// The permissions to every class's table that `p` carries.
+    pub(super) closed spec fn tables_of(p: TablePtr) -> Map<int, PointsTo<SlabTable>> {
+        *p.tables@
+    }
+
     /// The pointer `p` to element `c` of the tables `tables` covers, from
     /// `base` on, as a [`TablePtr`], which [`table_at`] maps to that
     /// table.
@@ -1376,6 +1383,7 @@ mod tptr {
         ensures
             table_at(r) == tables[c].value(),
             index_of(r) == c,
+            tables_of(r) == *tables,
     {
         TablePtr {
             p,
@@ -1407,6 +1415,7 @@ mod tptr {
                 index_of(*self) == 0,
             ensures
                 tables_ok(*r.1@, r.0),
+                *r.1@ == tables_of(*self),
         {
             proof {
                 use_type_invariant(self);
@@ -1422,7 +1431,7 @@ mod tptr {
 
 use tptr::{TablePtr, table_ptr};
 #[cfg(verus_keep_ghost)]
-use tptr::{index_of, table_at};
+use tptr::{index_of, table_at, tables_of};
 
 verus! {
 
@@ -2021,16 +2030,30 @@ impl ClassState {
         table_at(self.table)
     }
 
+    /// The frozen permissions to every class's table that the state's
+    /// table pointer carries ([`tables_ok`]), as [`ClassState::tables`]
+    /// returns them.
+    pub closed spec fn spec_tables(&self) -> Map<int, PointsTo<SlabTable>> {
+        tables_of(self.table)
+    }
+
+    /// The class's table is the process's ([`SlabTable::is_process`]).
+    pub open spec fn is_process(&self) -> bool {
+        self.spec_table().is_process()
+    }
+
     /// Slabs of the class region.
     pub closed spec fn spec_nslabs(&self) -> usize {
         table_at(self.table).spec_nslabs()
     }
 
     /// The class table's slot tokens are of the class's authority
-    /// (`table::slot_loc`). No code: a proof step for callers that hold
-    /// the state by reference.
+    /// (`table::slot_loc`), for the process's table. No code: a proof
+    /// step for callers that hold the state by reference.
     #[inline(always)]
     pub fn slot_tokens_are_the_class_s(&self)
+        requires
+            self.is_process(),
         ensures
             self.spec_table().spec_slots().loc == slot_loc(self.spec_class() as int),
     {
@@ -2078,12 +2101,14 @@ impl ClassState {
     /// registry published at `spec_arena` ([`Published`]). Only the
     /// published states take groups (the callers of `take_group` hold such
     /// a record), and two records of one index agree, so one state per
-    /// (arena index, class) takes groups.
+    /// (arena index, class) takes groups. A published state's table is the
+    /// process's ([`ClassState::is_process`]).
     pub open spec fn published_by(&self, w: Published) -> bool {
         &&& w.id() == process_pub_loc()
         &&& w.key() == self.spec_arena() as int
         &&& w.value().len() == NCLASSES
         &&& w.value()[self.spec_class() as int] == self.spec_oloc()
+        &&& self.is_process()
     }
 }
 
@@ -2177,7 +2202,8 @@ impl ClassState {
             sets_perm.value().over(process_regions()),
             forall|k: int| 0 <= k < sets::SETS_PER_CLASS ==> #[trigger] sets_perm.value().holds_set(*old(slots), c, k),
         ensures
-            r matches Some(s) ==> s.spec_class() == c && s.spec_table() == tables[c].value() && s.spec_arena() == arena,
+            r matches Some(s) ==> s.spec_class() == c && s.spec_table() == tables[c].value() && s.spec_arena() == arena
+                && s.spec_tables() == *tables,
             *final(slots) == old(slots).remove((c, 0)).remove((c, 1)).remove((c, 2)),
     {
         let table = vstd::raw_ptr::ptr_ref(tp, Tracked(tables.tracked_borrow(c)));
@@ -2288,6 +2314,7 @@ impl ClassState {
             self.spec_class() == 0,
         ensures
             tables_ok(*r.1@, r.0),
+            *r.1@ == self.spec_tables(),
     {
         proof {
             use_type_invariant(self);
@@ -2987,6 +3014,7 @@ impl ClassState {
     ) -> (r: usize)
         requires
             crate::sys::may_abort(),
+            self.is_process(),
             picks_ok(picks@, picks@.len() as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
             picks_sum(picks@, picks@.len() as int) <= old(out)@.len(),
             picks_zero(self.spec_table(), picks@, 0, picks@.len() as int, pz),
@@ -3027,6 +3055,7 @@ impl ClassState {
         let ghost mut i: int = 0;
         loop
             invariant
+                self.is_process(),
                 crate::sys::may_abort(),
                 check_zero ==> crate::vspec::user::may_read_user(),
                 0 <= i <= picks@.len(),
@@ -3145,6 +3174,7 @@ impl ClassState {
                 // Bits `0..want` were claimed under the lock (`claim_prefix`).
                 for k in 0..want
                     invariant
+                        self.is_process(),
                         got + want <= out@.len(),
                         out@.len() <= usize::MAX,
                         out@.len() == old(out)@.len(),
@@ -3545,7 +3575,9 @@ axiom fn axiom_discarded_slots_zero(
 /// the caller holds and `g.table` that class's table (which the
 /// descriptor permission alone does not say: the table's commit lock
 /// holds a slab's before the slab is handed out, and `inv` does not tie a
-/// table value to its class's one table), so the bytes are committed, and
+/// table value to the stored `Shared`'s table of its class:
+/// `SlabTable::is_process` ties only its authorities and guard geometry),
+/// so the bytes are committed, and
 /// no other permission to them is held while `held` is borrowed. A slab
 /// is committed (`next_fresh_slab`) before the lock value's ghost
 /// records it so, and
@@ -4007,6 +4039,7 @@ impl ClassState {
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
     )
         requires
+            self.is_process(),
             crate::sys::may_abort(),
             old(g).ready(slab as nat),
             old(g).nbits() == self.spec_nslabs(),

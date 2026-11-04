@@ -592,6 +592,9 @@ impl Heap {
             let out = stack_mut(slots, len, want, Tracked(&mut sl));
             let tracked mut toks = crate::class::SlotToks::empty();
             let (oa, ow) = shared.owner(arena);
+            proof {
+                shared.lemma_published_tables(*ow@, *oa);
+            }
             let (claim, Tracked(mut ztok)) = self.claim(shared, oa.class(class), out, Tracked(&mut toks), ow, Tracked(&mut ord));
             let ghost claimed = out@;
             let n = claim.n;

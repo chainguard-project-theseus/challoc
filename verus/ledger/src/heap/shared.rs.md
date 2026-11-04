@@ -35,7 +35,7 @@ file.
 
 ## `ClassLine::guard_word`
 
-src/heap/shared.rs:758. Kind: external_body. Category: inline asm.
+src/heap/shared.rs:812. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Kani: heap::shared::kani_guard_word::guard_word_is_the_three_fields, const assert: `ClassLine::guard_word`'s word in src/heap/shared.rs, and emptyasm: guard_word in src/heap/shared.rs; not checked: the body itself, since the harness runs a copy of its load without the asm! block (Kani has no model of inline assembly), whose lines `sh verus/seams.sh --check` requires to equal the body's but for the rows verus/kani/pins.txt marks `-only`, today the opening brace and the asm! block, with comment and blank lines not compared).
 
 > `guard_mask | tz << 32 | lg_guard << 40` (the padding above is zero), from one 8-byte load.
@@ -51,7 +51,7 @@ fn guard_word(&self) -> (r: u64)
 
 ## `ThreadKey::create`
 
-src/heap/shared.rs:999. Kind: external_body. Category: function pointer.
+src/heap/shared.rs:1054. Kind: external_body. Category: function pointer.
 Tool: none (assumption). Status: trusted.
 
 > A new key whose destructor is `heap_destructor`; `valid` says whether `pthread_key_create` gave one.
@@ -64,7 +64,7 @@ pub fn create() -> ThreadKey
 
 ## `pthread_setspecific`
 
-src/heap/shared.rs:1080. Kind: external_body. Category: FFI/syscall.
+src/heap/shared.rs:1135. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_setspecific(3)`: stores `value` for the calling thread under `key` without dereferencing it; 0 on success, an error number otherwise (nothing is claimed about it).
@@ -80,7 +80,7 @@ unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tr
 
 ## `S_LINES`
 
-src/heap/shared.rs:1275. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1330. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -89,7 +89,7 @@ const S_LINES: usize = core::mem::offset_of!(Shared, lines);
 
 ## `S_FREE_FLAGS`
 
-src/heap/shared.rs:1277. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1332. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -98,7 +98,7 @@ const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
 
 ## `S_PUSH_FLAGS`
 
-src/heap/shared.rs:1279. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1334. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -107,7 +107,7 @@ const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
 
 ## `S_REGION_HI`
 
-src/heap/shared.rs:1281. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1336. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -116,7 +116,7 @@ const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
 
 ## `S_REGIONS`
 
-src/heap/shared.rs:1283. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1338. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -125,7 +125,7 @@ const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
 
 ## `S_TABLES`
 
-src/heap/shared.rs:1285. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1340. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -134,7 +134,7 @@ const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
 
 ## `S_ARENA0`
 
-src/heap/shared.rs:1287. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1342. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -143,7 +143,7 @@ const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
 
 ## `S_META`
 
-src/heap/shared.rs:1289. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1344. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -152,7 +152,7 @@ const S_META: usize = core::mem::offset_of!(Shared, meta);
 
 ## `S_HUGE`
 
-src/heap/shared.rs:1291. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1346. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -161,7 +161,7 @@ const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
 
 ## `S_GC_INTERVAL_NS`
 
-src/heap/shared.rs:1293. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1348. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -170,7 +170,7 @@ const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
 
 ## `S_POLICY`
 
-src/heap/shared.rs:1295. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1350. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -179,7 +179,7 @@ const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
 
 ## `S_CONFIG`
 
-src/heap/shared.rs:1297. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1352. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -188,7 +188,7 @@ const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
 
 ## `S_KEY`
 
-src/heap/shared.rs:1299. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1354. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -197,7 +197,7 @@ const S_KEY: usize = core::mem::offset_of!(Shared, key);
 
 ## `S_ARENAS`
 
-src/heap/shared.rs:1301. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1356. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -206,7 +206,7 @@ const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
 
 ## `S_TCACHES`
 
-src/heap/shared.rs:1303. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1358. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -215,7 +215,7 @@ const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
 
 ## `S_STATS`
 
-src/heap/shared.rs:1305. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1360. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -224,7 +224,7 @@ const S_STATS: usize = core::mem::offset_of!(Shared, stats);
 
 ## `S_CGROUP`
 
-src/heap/shared.rs:1307. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1362. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 ```rust
@@ -233,7 +233,7 @@ const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 
 ## `axiom_shared_layout`
 
-src/heap/shared.rs:1313. Kind: axiom. Category: core library.
+src/heap/shared.rs:1368. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 > `Shared`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size.
@@ -272,7 +272,7 @@ axiom fn axiom_shared_layout()
 
 ## `axiom_shared_built`
 
-src/heap/shared.rs:1491. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1546. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Shared` at `p` (`Shared::split`'s parts and class lines, every one initialised, and the tables), joined into the permission to the whole value, the value [`shared_at`] names, frozen (`&'static`): readers share it, and nothing can write through it.
@@ -320,7 +320,7 @@ axiom fn axiom_shared_built(
 
 ## `axiom_shared_regions`
 
-src/heap/shared.rs:1543. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1598. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The regions of the `Shared` at `p` are what the permission to its `regions` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`] writes the field): no verified code can write the field again, so the value is the built one.
@@ -337,7 +337,7 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 
 ## `axiom_shared_meta`
 
-src/heap/shared.rs:1565. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1620. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The metadata allocator of the `Shared` at `p` is what the permission to its `meta` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, in [`Shared::put_head`], right after it writes the field), as [`axiom_shared_regions`] states of the regions: no verified code can write the field again, so the value is the built one.
@@ -354,12 +354,12 @@ axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
 
 ## `Shared::begin`
 
-src/heap/shared.rs:1591. Kind: external_body. Category: raw pointer from C caller.
+src/heap/shared.rs:1646. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The permission to `init`'s storage, uninitialised, for `once`, the process's token of this step.
 
-Body mints Tracked at line 1600.
+Body mints Tracked at line 1655.
 
 ```rust
 fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsTo<Shared>>)

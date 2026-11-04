@@ -35,7 +35,7 @@ file.
 
 ## `note_build_cost`
 
-src/arena.rs:236. Kind: no_decreases. Category: termination.
+src/arena.rs:250. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Record a build over `meta` whose tables took `tables` bytes of metadata ([`BUILD_COST`]).
@@ -46,7 +46,7 @@ fn note_build_cost(meta: &Meta, tables: usize)
 
 ## `axiom_array_layout`
 
-src/arena.rs:439. Kind: axiom. Category: core library.
+src/arena.rs:453. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted (partly checked, const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples; not checked: the axiom is generic in `T` and `N`, and these check only the six instances the proofs use and the sampled ones).
 
 > An array of `N` `T`s is `N` `T`s back to back, aligned as one: the size and alignment the Rust reference gives arrays.
@@ -63,7 +63,7 @@ pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
 
 ## `A_INDEX`
 
-src/arena.rs:610. Kind: external_body const. Category: core library.
+src/arena.rs:624. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 ```rust
@@ -72,7 +72,7 @@ const A_INDEX: usize = core::mem::offset_of!(Arena, index);
 
 ## `A_DECAY_NS`
 
-src/arena.rs:612. Kind: external_body const. Category: core library.
+src/arena.rs:626. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 ```rust
@@ -81,7 +81,7 @@ const A_DECAY_NS: usize = core::mem::offset_of!(Arena, decay_ns);
 
 ## `A_SETS`
 
-src/arena.rs:614. Kind: external_body const. Category: core library.
+src/arena.rs:628. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 ```rust
@@ -90,7 +90,7 @@ const A_SETS: usize = core::mem::offset_of!(Arena, sets);
 
 ## `A_SETS_PERM`
 
-src/arena.rs:616. Kind: external_body const. Category: core library.
+src/arena.rs:630. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 ```rust
@@ -99,7 +99,7 @@ const A_SETS_PERM: usize = core::mem::offset_of!(Arena, sets_perm);
 
 ## `A_CLASSES`
 
-src/arena.rs:618. Kind: external_body const. Category: core library.
+src/arena.rs:632. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 ```rust
@@ -108,7 +108,7 @@ const A_CLASSES: usize = core::mem::offset_of!(Arena, classes);
 
 ## `A_LARGE`
 
-src/arena.rs:620. Kind: external_body const. Category: core library.
+src/arena.rs:634. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 ```rust
@@ -117,7 +117,7 @@ const A_LARGE: usize = core::mem::offset_of!(Arena, large);
 
 ## `A_STATS`
 
-src/arena.rs:622. Kind: external_body const. Category: core library.
+src/arena.rs:636. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 ```rust
@@ -126,7 +126,7 @@ const A_STATS: usize = core::mem::offset_of!(Arena, stats);
 
 ## `A_LAST_EXIT_PURGE`
 
-src/arena.rs:624. Kind: external_body const. Category: core library.
+src/arena.rs:638. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 ```rust
@@ -135,7 +135,7 @@ const A_LAST_EXIT_PURGE: usize = core::mem::offset_of!(Arena, last_exit_purge);
 
 ## `axiom_arena_layout`
 
-src/arena.rs:632. Kind: axiom. Category: core library.
+src/arena.rs:646. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 > `Arena`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size, and a class state is not empty (a zero-sized one would leave its array outside any allocation, as far as `in_alloc` knows).
@@ -164,7 +164,7 @@ axiom fn axiom_arena_layout()
 
 ## `axiom_arena_assemble`
 
-src/arena.rs:927. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:941. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arena` at `p` (`Arena::split`'s parts and class states, every one initialised), as the `Arena`: the value of each field is what its permission holds.
@@ -211,7 +211,7 @@ axiom fn axiom_arena_assemble(
 
 ## `Arena::put_stats`
 
-src/arena.rs:1111. Kind: external_body. Category: raw pointer (internal).
+src/arena.rs:1125. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
@@ -228,7 +228,7 @@ unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut Points
 
 ## `key_less`
 
-src/arena.rs:2019. Kind: external_body. Category: core library.
+src/arena.rs:2069. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: arena::kani_key_less::key_less_is_key_lt).
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
@@ -241,7 +241,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
 
 ## `AR_TABLE`
 
-src/arena.rs:2032. Kind: external_body const. Category: core library.
+src/arena.rs:2082. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -250,7 +250,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ## `AR_BOUND`
 
-src/arena.rs:2034. Kind: external_body const. Category: core library.
+src/arena.rs:2084. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -259,7 +259,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ## `AR_LOCK`
 
-src/arena.rs:2036. Kind: external_body const. Category: core library.
+src/arena.rs:2086. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -268,7 +268,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ## `AR_COUNT`
 
-src/arena.rs:2038. Kind: external_body const. Category: core library.
+src/arena.rs:2088. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -277,7 +277,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ## `AR_AUTO`
 
-src/arena.rs:2040. Kind: external_body const. Category: core library.
+src/arena.rs:2090. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -286,7 +286,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ## `AR_SPARE`
 
-src/arena.rs:2042. Kind: external_body const. Category: core library.
+src/arena.rs:2092. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -295,7 +295,7 @@ const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 
 ## `AR_INVS`
 
-src/arena.rs:2044. Kind: external_body const. Category: core library.
+src/arena.rs:2094. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -304,7 +304,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ## `AR_COUNT_INV`
 
-src/arena.rs:2046. Kind: external_body const. Category: core library.
+src/arena.rs:2096. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -313,7 +313,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ## `AR_SPARE_INV`
 
-src/arena.rs:2048. Kind: external_body const. Category: core library.
+src/arena.rs:2098. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 ```rust
@@ -322,7 +322,7 @@ const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 ## `axiom_arenas_layout`
 
-src/arena.rs:2056. Kind: axiom. Category: core library.
+src/arena.rs:2106. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 > `Arenas`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`) by the size, and neither array's element empty (as for `Arena`'s class states).
@@ -353,7 +353,7 @@ axiom fn axiom_arenas_layout()
 
 ## `axiom_arenas_assemble`
 
-src/arena.rs:2263. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:2313. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
