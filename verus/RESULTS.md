@@ -82,7 +82,7 @@ A thread cache never holds a slot twice, never holds a slot another holder has, 
 | `ClassState::theorem_claim_complete` | A refill that reserved nothing leaves no free slot in any committed slab of that arena. | [class/complete.rs](../src/class/complete.rs) | A refill that reserved nothing and the slab-state model. |
 | `theorem_shuffle_permutation` | Slot shuffling loses no slot and duplicates none. | [class/mod.rs](../src/class/mod.rs) | The shuffle’s input and output sequences. |
 | `RunToken::theorem_purge_apart` | A byte a huge purge may discard belongs to no page, including a guard page, of a live run. | [huge/mod.rs](../src/huge/mod.rs) | A run token and live-run authority. |
-| `theorem_run_counted` | A live run’s extent and pages appear in the run authorities. | [huge/mod.rs](../src/huge/mod.rs) | A live run token and huge-region state. |
+| `theorem_run_counted` | A live run’s extent and pages appear in the run authorities. | [huge/mod.rs](../src/huge/mod.rs) | A live run token and huge-region state whose run authorities are the process's. |
 | `Inner::theorem_free_exact` | A huge free-bitmap bit is set exactly for a page in a free extent; none is set past the high-water mark. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state; `Huge::audit` checks the same property at run time. |
 | `Inner::theorem_coalesced` | No 2 free extents touch. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state. |
 | `Inner::theorem_run_guards` | A live run’s usable pages overlap no live run’s guard pages. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state and live runs. |

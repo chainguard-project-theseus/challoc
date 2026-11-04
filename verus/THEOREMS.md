@@ -246,7 +246,7 @@ add.
   permission and puts it, with the line's and `LINE_STATE`'s, into the line's
   invariant), the rest to `Shared::init`.
   `Shared::begin`, `table::axiom_slot_loc`, `table::axiom_fresh_words`
-  (one token per class each), `huge::axiom_run_locs` and
+  (one token per class each) and
   `axiom_statics` each use up their step's token, so Verus checks that
   each runs at most once per process (a second call does not verify:
   `verus/audit/invariants.md`, "Per seam"). That the exchange
@@ -507,8 +507,8 @@ for `Snapshot` (`stats.rs`), the process statistics lock:
 `Snapshot::inv`, with a frame true of any two snapshots. The impl for
 `()` (`heap/tcaches.rs`), the explicit-cache table lock: both `true`.
 The impl for `huge::Inner` (`huge/mod.rs`), the huge lock: `Inner::wf`,
-with the ghost page count, page shift, region base and `Meta` identity
-fixed. The impl for `class::Inner` (`class/mod.rs`), the class lock:
+with the ghost page count, page shift, region base, `Meta` identity and
+run authorities' identities fixed. The impl for `class::Inner` (`class/mod.rs`), the class lock:
 `Inner::inv`, with the sets' slab count, the arena, the table and the
 owned-slab record's location fixed. The impl for `class::table::TableInner`
 (`class/table.rs`), the slab table's commit lock: `TableInner::inv`,
@@ -1188,9 +1188,6 @@ block; the free cores take the token C holds (common premises, "The
   the class's (its slot and marker authorities and guard geometry);
   once per class per process is checked (it uses up the class's
   `Once` token, common premises).
-- `huge::axiom_run_locs` (`huge/mod.rs`, one call in `Huge::new`): its
-  run authorities are the process's; once per process is checked (it
-  uses up the `Huge` step's token).
 - `table::axiom_fresh_words` (`class/table.rs`, one call in
   `SlabTable::new`): a just-reserved table's words read zero, one
   permission each; once per class is checked (its token), that `base`
@@ -3733,9 +3730,10 @@ run authority stay those the batch's `free` was made from. The makers:
 
 **Premises beyond the common ones.**
 - Huge: none beyond the huge lock's holders reaching
-  `LockGuard::unlock` (`huge::Inner`'s `LockSpec` impl) and
-  `huge::axiom_run_locs` (one huge allocator per process), which
-  theorem 5's run tokens already use.
+  `LockGuard::unlock` (`huge::Inner`'s `LockSpec` impl). The run
+  tokens' authorities are the process's huge allocator's by the opaque
+  definitions of `huge::run_loc` and `huge::page_loc`, which
+  `Shared::init` reveals.
 - Class: none; the class lock's invariant and frame are
   `class::Inner`'s `LockSpec` impl's, checked at every release.
   `page_group_is_idle`
@@ -7591,8 +7589,9 @@ How it is proved:
   not one (`Inner::slab_core`: an owned guard slab is `Fresh`).
 - **Huge purges.** `Huge::is_process` (`huge/mod.rs`, closed): the
   allocator's base, page and page count are the process's huge
-  region's, its base a page start, and the regions well formed and
-  separated. `Shared::lemma_huge_process` (`heap/shared.rs`) proves
+  region's, its base a page start, the regions well formed and
+  separated, and its run authorities the process's
+  (`Huge::runs_process`). `Shared::lemma_huge_process` (`heap/shared.rs`) proves
   it from `Shared::wf`; `purge_empty`, `purge_curve`, `decay`,
   `decay_with` and `free_run` require it, and `push_extent` has it
   through the purge tally's invariant (`Tally::inv`), and `purge::purge_all`,

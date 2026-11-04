@@ -284,6 +284,7 @@ impl Shared {
         &&& self.arenas.wf()
         &&& self.arenas.is_process()
         &&& self.arenas.spec_arena0() == self.arena0
+        &&& self.huge.runs_process()
     }
 
     /// The value is as `Shared::init` built it ([`Shared::built`]), and the
@@ -305,6 +306,7 @@ impl Shared {
             self.regions == crate::layout::process_regions(),
             self.regions.separated(),
             self.meta.is_process(),
+            self.huge.runs_process(),
     {
     }
 
@@ -2398,6 +2400,10 @@ impl Shared {
                 lemma_process_shared();
                 let s = shared_at(this);
                 s.arenas.lemma_is_process();
+                // The run authorities' identities are the stored `Shared`'s
+                // huge allocator's: their definitions.
+                reveal(crate::huge::run_loc);
+                reveal(crate::huge::page_loc);
             }
         }
         true

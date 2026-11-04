@@ -1,7 +1,7 @@
 //! One-shot tokens for the steps of building the allocator that happen
 //! once per process. An axiom that fixes a process-wide ghost fact (the
-//! permission to the `Shared` storage, a class's slot-token authority,
-//! the huge allocator's run authorities) is true only if it runs once:
+//! permission to the `Shared` storage, a class's slot-token authority)
+//! is true only if it runs once:
 //! a second run would fix the fact a second way and prove `false`. Each
 //! such axiom uses up a [`Once`] token for its step, so a second run no
 //! longer verifies. The process's tokens, one per step, are in `api::STATE`'s
@@ -19,8 +19,9 @@ pub ghost enum Step {
     /// `heap::shared::Shared::begin`: the permission to the process's
     /// `Shared` storage.
     Shared,
-    /// The huge allocator's run authorities (`huge::axiom_run_locs`,
-    /// `Huge::new`).
+    /// `huge::Huge::new`, which takes the token and uses it for nothing:
+    /// its run authorities are the process's by the definitions of
+    /// `huge::run_loc` and `huge::page_loc`.
     Huge,
     /// Class `c`'s slot-token authority (`class::table`,
     /// `SlabTable::new`).
