@@ -4,18 +4,18 @@ challoc's executable Rust source is checked by [Verus](README.md) against the co
 
 ## Headline figures
 
-Measured on main at `26f535a9` with the commands in [Check it yourself](#check-it-yourself).
+Measured on main at `8b2b5353` with the commands in [Check it yourself](#check-it-yourself).
 
 | Measure | Figure |
 | --- | --- |
-| Executable functions Verus verifies | 1363 of 1634 (83.4%) |
-| Executable lines Verus verifies | 41466 of 44343 (93.5%) |
-| Functions Verus verifies, plus trusted functions whose seam Kani, a constant assertion, Isla or `make emptyasm` discharges | 1429 of 1634 (87.4%) |
-| Lines Verus verifies, plus trusted lines whose seam Kani, a constant assertion, Isla or `make emptyasm` discharges | 42282 of 44343 (95.3%) |
-| Functions Verus verifies, plus trusted functions also checked by loom models of the atomic protocol | 1400 of 1634 (85.6%) |
-| Lines Verus verifies, plus trusted lines also checked by loom models of the atomic protocol | 41920 of 44343 (94.5%) |
+| Executable functions Verus verifies | 1380 of 1619 (85.2%) |
+| Executable lines Verus verifies | 41742 of 44401 (94.0%) |
+| Functions Verus verifies, plus trusted functions whose seam Kani, a constant assertion, Isla or `make emptyasm` discharges | 1446 of 1619 (89.3%) |
+| Lines Verus verifies, plus trusted lines whose seam Kani, a constant assertion, Isla or `make emptyasm` discharges | 42558 of 44401 (95.8%) |
+| Functions Verus verifies, plus trusted functions also checked by loom models of the atomic protocol | 1417 of 1619 (87.5%) |
+| Lines Verus verifies, plus trusted lines also checked by loom models of the atomic protocol | 42196 of 44401 (95.0%) |
 | Theorems | 64 `theorem_*` functions: 49 proof functions and 15 verification-only executable functions |
-| Seams | 433 in 65 source files: 152 discharged, 18 discharged on platform premises, 83 partly checked, 180 trusted with no check |
+| Seams | 406 in 61 source files: 152 discharged, 18 discharged on platform premises, 83 partly checked, 153 trusted with no check |
 | Kani harnesses | 168 `#[kani::proof]` harnesses under `src/` |
 | loom tests | 85 `#[test]` functions in `tests/loom`: 63 models in `tests/loom/src` and 22 source checks in `tests/loom/tests` |
 
@@ -186,49 +186,49 @@ These bug classes are outside the guarantees, by design or by the scope of the t
 
 The [counter](count) includes executable functions under `src/` and excludes test code. It counts a function as Verus-verified when it is inside `verus!`, is neither `external_body` nor `external`, and has no `assume`, `admit`, or `Tracked::assume_new` in its body. It counts ghost functions separately. Shares are rounded down to a tenth of a percent.
 
-| Coverage at `26f535a9` | Functions | Lines |
+| Coverage at `8b2b5353` | Functions | Lines |
 | --- | ---: | ---: |
-| Verus-verified | 1363 of 1634 (83.4%) | 41466 of 44343 (93.5%) |
-| Trusted inside `verus!` | 262 | 2756 |
-| Outside `verus!` | 9 | 121 |
+| Verus-verified | 1380 of 1619 (85.2%) | 41742 of 44401 (94.0%) |
+| Trusted inside `verus!` | 237 | 2653 |
+| Outside `verus!` | 2 | 6 |
 | Trusted functions with a discharged seam (18 functions and 304 lines of them discharged on platform premises) | 66 | 816 |
-| Verified plus discharged | 1429 of 1634 (87.4%) | 42282 of 44343 (95.3%) |
+| Verified plus discharged | 1446 of 1619 (89.3%) | 42558 of 44401 (95.8%) |
 | Partly checked, excluded from combined coverage | 67 | 835 |
 | Partly checked by a loom model of the atomic protocol (among the partly checked) | 37 | 454 |
-| Trusted with no check | 129 | 1105 |
-| Ghost functions, counted separately | 2159 | — |
+| Trusted with no check | 104 | 1002 |
+| Ghost functions, counted separately | 2205 | — |
 
-The combined row adds only trusted functions whose seam is discharged, on platform premises included. The [FLOOR](FLOOR) file holds `functions 82.2`, `lines 92.7`, `combined-functions 85.1` and `combined-lines 93.8`; the counter at `26f535a9` measures 83.4, 93.5, 87.4 and 95.3. The file lags the measurement: a raise to the measured figures lands in its own pull request. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
+The combined row adds only trusted functions whose seam is discharged, on platform premises included. The [FLOOR](FLOOR) file holds `functions 82.2`, `lines 92.7`, `combined-functions 85.1` and `combined-lines 93.8`; the counter at `8b2b5353` measures 85.2, 94.0, 89.3 and 95.8. The file lags the measurement: a raise to the measured figures lands in its own pull request. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
 
 ## Trust base
 
 The proofs rest on two kinds of assumption. The first is the C allocation contract: a C caller passes only pointers it owns and frees only live blocks. The C-boundary seams `axiom_c_call`, `axiom_c_claim`, `axiom_c_out` and `axiom_c_writes` state it, and `axiom_errno_at_return` and `axiom_out_at_return` hand `errno` and out-pointer results back to the caller; a shape test, not Verus, checks where the exports call them. The second is the seams: items Verus takes on trust, each listed with its contract, category, proposed tool and status in the [seam ledger](SEAMS.md) ([ledger/src](ledger/src)).
 
-The ledger records 433 seams in 65 source files. These are items, not coverage lines: `external_body` declarations, axioms, specifications of external code or types, specification implementations, and functions whose termination is assumed.
+The ledger records 406 seams in 61 source files. These are items, not coverage lines: `external_body` declarations, axioms, specifications of external code or types, specification implementations, and functions whose termination is assumed.
 
 | Ledger view | Counts |
 | --- | --- |
-| Status | 152 discharged: 101 by Kani harnesses, 43 by compile-time constant assertions, 7 by Isla runs and 1 by `make emptyasm`; 18 discharged on platform premises by Isla runs; 83 partly checked; 180 trusted |
-| Kind | 160 `external_body`; 11 `external_body` proofs; 7 `external_body` types; 45 `external_body` constants; 91 axioms; 79 assumed specifications; 15 external type specifications; 1 external trait specification; 8 specification implementations; 16 functions without decreases checks |
-| Category | 165 core library; 59 allocator invariant; 43 atomics primitive; 31 inline assembly; 29 internal raw pointer; 18 function pointer; 17 platform or kernel fact; 17 C-program contract; 15 termination; 14 `UnsafeCell`, volatile, or transmute; 12 FFI or syscall; 7 panic or abort; 6 raw pointer from a C caller |
-| Proposed tool | 212 Kani; 127 none (assumption); 51 loom or GenMC; 32 Islaris or Isla; 8 RefinedRust; 3 Verus |
+| Status | 152 discharged: 101 by Kani harnesses, 43 by compile-time constant assertions, 7 by Isla runs and 1 by `make emptyasm`; 18 discharged on platform premises by Isla runs; 83 partly checked; 153 trusted |
+| Kind | 153 `external_body`; 11 `external_body` proofs; 7 `external_body` types; 45 `external_body` constants; 73 axioms; 77 assumed specifications; 15 external type specifications; 1 external trait specification; 8 specification implementations; 16 functions without decreases checks |
+| Category | 164 core library; 42 atomics primitive; 34 allocator invariant; 31 inline assembly; 29 internal raw pointer; 18 function pointer; 17 platform or kernel fact; 17 C-program contract; 15 termination; 14 `UnsafeCell`, volatile, or transmute; 12 FFI or syscall; 7 panic or abort; 6 raw pointer from a C caller |
+| Proposed tool | 210 Kani; 103 none (assumption); 50 loom or GenMC; 32 Islaris or Isla; 8 RefinedRust; 3 Verus |
 
 Each of the 31 inline-assembly seams has a check: 25 are discharged (6 by Isla, 18 by Isla on platform premises, 1 by `make emptyasm`) and 6 are partly checked (3 by Isla, 2 by `make emptyasm`, 1 by Kani). The platform premises, such as the kernel's side of a system call (K1), the kernel keeping the pointer-authentication key fixed (K3) and the loader's fill of a GOT entry (P8), are stated with their sources in [isla/seams.md](isla/seams.md#platform-premises); each seam's ledger status names the ones it rests on, and the counter fails on a label that file does not define.
 
-The 129 trusted functions with no check account for 1105 executable lines:
+The 104 trusted functions with no check account for 1002 executable lines:
 
 | Category | Lines | Functions | What the seams assume |
 | --- | ---: | ---: | --- |
-| Allocator invariant | 350 | 54 | Lock invariants and frames, the lock acquisition and entry premises, initialization and publication tokens, facts that fresh memory reads zero, the slot-state byte (`axiom_slot_byte`), and the statistics pair pool (`stats::pool_*`). |
 | Internal raw pointer | 247 | 15 | Pointer and storage contracts, including the struct-assembly axioms for `Shared`, the arenas and the explicit-cache table. |
+| Allocator invariant | 244 | 29 | The purge thread's state-lock invariant (`axiom_state_lock_inv`), the lock acquisition and entry premises, initialization and publication tokens, facts that fresh memory reads zero, the slot-state byte (`axiom_slot_byte`), and the statistics pair pool (`stats::pool_*`). |
 | FFI or syscall | 167 | 10 | Contracts for `pthread_join`, `pthread_self`, `pthread_setspecific`, `sigprocmask`, `try_reserve`, `spawn`, errno access and `write_file`. |
 | Platform or kernel fact | 110 | 15 | `mmap` disjointness, fork resume, user virtual-address limits, I/O and `getrandom` counts, and memory commits. |
 | Function pointer | 89 | 8 | Indirect-call contracts for callbacks, handlers, hooks and `pthread_atfork`. |
 | C-program contract | 68 | 16 | The C caller's duties: `axiom_c_call`, `axiom_c_claim`, `axiom_c_out`, `axiom_c_writes`, the `errno` and out-pointer hand-backs, `axiom_heap_use`, and the C buffers it passes (`vspec::cbuf`). |
 | Raw pointer from a C caller | 38 | 6 | Caller-owned pointer validity. |
-| `UnsafeCell`, volatile, or transmute | 26 | 3 | The lock cell's borrows and one zeroing write, which Verus does not check directly. |
-| Atomics primitive | 6 | 1 | `purge::purged_zero`: one load of the flag that says purged slabs read zero, and the witness of a true read. |
+| `UnsafeCell`, volatile, or transmute | 32 | 3 | The lock cell's borrows and one zeroing write, which Verus does not check directly. |
 | Panic or abort | 4 | 1 | The panic message's format requirement. |
+| Core library | 3 | 1 | `stats::empty_pool`: the statistics pool's initial array, which Verus does not build for an element type that is not `Copy`; it claims nothing. |
 
 Kani `0.68.0` with CBMC `6.11.0` runs the 168 harnesses; each harness comment names its seam and bounds. The source also has 55 top-level `const _: () = assert!(..)` assertions, which the compiler evaluates on both quanta and targets. The loom models check copies of the atomic protocols, so a loom citation makes a seam partly checked, never discharged; `tests/loom/tests/pins.rs` fails when a line a model copies changes.
 
