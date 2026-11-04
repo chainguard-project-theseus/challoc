@@ -440,7 +440,7 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
 ///
 /// `shared` is the process's `Shared` as a raw pointer, at its storage
 /// (the precondition: `api::shared_ptr`, `api::shared_base`, or
-/// [`shared_ptr`](super::paths::shared_ptr) of a well-formed `&Shared`),
+/// [`shared_ptr`](super::paths::shared_ptr), the static's in the library),
 /// read only after the slot proved a heap exists: its `push_flags` byte
 /// says whether the slot value is signed ([`PUSH_PAC`]), and a thread
 /// that created a heap did so under a `&Shared`, after init wrote that
