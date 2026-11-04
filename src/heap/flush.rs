@@ -366,8 +366,9 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
-    // Hot free path: the body's source is as written, except that its two
-    // sorts go through the `#[inline(always)]` wrappers `sort_ptrs_by_key`
+    // Hot free path: the body's source is as written, except that its
+    // selection and its two sorts go through the `#[inline(always)]`
+    // wrappers `select_ptrs_by_key`, `select_ptrs`, `sort_ptrs_by_key`
     // and `sort_ptrs`, and its three header writes pass the header's own
     // permission (`Tracked(..)`). Each erased `Tracked(..)` argument is a
     // closure instance, and the three put `flush_arena` past rustc's
@@ -506,9 +507,9 @@ impl Heap {
                 kept_max = if rest_len > 0 {
                     // `all[..rest_len - 1] <= all[rest_len - 1] <= all[rest_len..]`.
                     if pac {
-                        all.select_nth_unstable_by_key(rest_len - 1, key);
+                        crate::vspec::slice::select_ptrs_by_key(all, rest_len - 1, key);
                     } else {
-                        all.select_nth_unstable(rest_len - 1);
+                        crate::vspec::slice::select_ptrs(all, rest_len - 1);
                     }
                     proof {
                         assert(all@.to_multiset() == a0.to_multiset());

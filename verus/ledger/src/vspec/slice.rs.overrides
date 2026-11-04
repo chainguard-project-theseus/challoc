@@ -1,6 +1,8 @@
 array_get_unchecked	core library	Kani	discharged (Kani: kani_proofs::ptr::array_get_unchecked)
 sort_ptrs	core library	Kani	trusted (partly checked, Kani: kani_proofs::slice::sort_ptrs_short, kani_proofs::slice::sort_ptrs_10, kani_proofs::slice::sort_ptrs_11, kani_proofs::slice::sort_ptrs_12; not checked: every length above 12: `core`'s `sort_unstable` sorts by insertion up to 20 elements and by a small sort and a quicksort past that, and the flush paths sort up to a cache's 1024 slots)
 sort_ptrs_by_key	core library	Kani	trusted (partly checked, Kani: kani_proofs::slice::sort_ptrs_by_key_short, kani_proofs::slice::sort_ptrs_by_key_10, kani_proofs::slice::sort_ptrs_by_key_11, kani_proofs::slice::sort_ptrs_by_key_12; not checked: every length above 12, as for `sort_ptrs`, and every key but `L - addr`)
+select_ptrs	core library	Kani
+select_ptrs_by_key	core library	Kani
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 <[T]>::swap	core library	Kani	discharged (Kani: kani_proofs::slice::slice_swap)
 core::slice::from_ref	core library	Kani	discharged (Kani: kani_proofs::slice::slice_from_ref)

@@ -566,7 +566,7 @@ run's permission from the run token `take` just made
 permission dropped (`Live::into_run`).
 
 **`core` and `vstd`.** The `assume_specification`s in `src/vspec/`
-(77, mostly `vspec/core_int.rs`, `slice.rs` and `sys.rs`; one of
+(74, mostly `vspec/core_int.rs`, `slice.rs` and `sys.rs`; one of
 them, `<*const T>::wrapping_add` in `vspec/config.rs`, claims nothing
 about the pointer, for `env_var`'s walk of `environ`),
 `getauxval`'s in `sys/auxv.rs`, and vstd's
