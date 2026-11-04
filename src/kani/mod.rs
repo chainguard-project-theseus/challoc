@@ -31,8 +31,8 @@
 //! for one). Not every seam the ledger gives to Kani has a harness: some
 //! private items, the layout constants (`arena.rs`'s `A_*` and `AR_*`,
 //! `heap/shared.rs`'s `S_*` and others), `hint::spin_loop`, the `panic`
-//! accessors of `vspec/panic.rs`, the `ExWrite`
-//! trait specification and the two `div_ceil`s (`core_int`) have none.
+//! accessors of `vspec/panic.rs` and the `ExWrite` trait specification
+//! have none.
 
 mod abort;
 mod atomic;

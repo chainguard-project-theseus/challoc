@@ -4,6 +4,8 @@
 //! seam (`verus/SEAMS.md`): Verus takes it on trust, so each states only
 //! what the `core` documentation promises. Ordinary builds compile the
 //! wrappers; the specifications are ghost and vanish there.
+//! [`div_ceil`] and [`div_ceil_u64`] are not seams: they repeat `core`'s
+//! `div_ceil` bodies, and Verus checks them.
 
 use vstd::prelude::*;
 
@@ -58,13 +60,73 @@ verus! {
 // crate. `Curve::allowance` casts a `u64` to `usize`.
 global size_of usize == 8;
 
-/// `u64::div_ceil`: the quotient rounded up; panics when `rhs == 0`
-/// (core docs), and cannot overflow otherwise.
-pub assume_specification[<u64>::div_ceil](lhs: u64, rhs: u64) -> (q: u64)
+/// `usize::div_ceil`, with `core`'s body: the quotient rounded up.
+/// Verified, so the verified code calls this in place of `usize::div_ceil`,
+/// which vstd does not specify. `#[track_caller]`, as on `core`'s, reports a
+/// division by zero at the caller.
+#[inline(always)]
+#[track_caller]
+pub(crate) const fn div_ceil(x: usize, d: usize) -> (r: usize)
     requires
-        rhs > 0,
+        d > 0,
     ensures
-        q == (lhs + rhs - 1) / rhs as int,
-;
+        r as int == (x as int + d as int - 1) / d as int,
+{
+    proof {
+        lemma_div_ceil(x as int, d as int);
+    }
+    let q = x / d;
+    let r = x % d;
+    if r > 0 { q + 1 } else { q }
+}
+
+/// `u64::div_ceil`, with `core`'s body, as [`div_ceil`].
+#[inline(always)]
+#[track_caller]
+pub(crate) const fn div_ceil_u64(x: u64, d: u64) -> (r: u64)
+    requires
+        d > 0,
+    ensures
+        r == (x + d - 1) / d as int,
+{
+    proof {
+        lemma_div_ceil(x as int, d as int);
+    }
+    let q = x / d;
+    let r = x % d;
+    if r > 0 { q + 1 } else { q }
+}
+
+/// `x / d`, plus one when `d` leaves a remainder, is `(x + d - 1) / d`;
+/// the plus one stays at or below `x`, so it cannot overflow.
+proof fn lemma_div_ceil(x: int, d: int)
+    requires
+        0 <= x,
+        0 < d,
+    ensures
+        x % d > 0 ==> x / d < x && x / d + 1 == (x + d - 1) / d,
+        x % d == 0 ==> x / d == (x + d - 1) / d,
+{
+    let (q, r) = (x / d, x % d);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(x, d);
+    vstd::arithmetic::div_mod::lemma_mod_pos_bound(x, d);
+    vstd::arithmetic::div_mod::lemma_div_pos_is_pos(x, d);
+    if r > 0 {
+        assert(q < x && x + d - 1 == (q + 1) * d + (r - 1)) by (nonlinear_arith)
+            requires
+                x == d * q + r,
+                0 < r < d,
+                0 <= q,
+        ;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(x + d - 1, d, q + 1, r - 1);
+    } else {
+        assert(x + d - 1 == q * d + (d - 1)) by (nonlinear_arith)
+            requires
+                x == d * q + r,
+                r == 0,
+        ;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(x + d - 1, d, q, d - 1);
+    }
+}
 
 } // verus!

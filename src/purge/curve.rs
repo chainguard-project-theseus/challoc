@@ -369,7 +369,7 @@ impl Curve {
         proof {
             weight_one_value();
         }
-        weighted.div_ceil(WEIGHT_ONE) as usize
+        crate::vspec::div_ceil_u64(weighted, WEIGHT_ONE) as usize
     }
 }
 
