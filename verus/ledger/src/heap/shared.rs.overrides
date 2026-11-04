@@ -20,8 +20,6 @@ S_TCACHES	core library	Kani	discharged (const assert: `axiom_shared_layout` in s
 S_STATS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
 S_CGROUP	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
 axiom_shared_layout	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-# One `Shared` per process: defines `process_regions`.
-axiom_process_shared	allocator invariant	none (assumption)
 # A field fixed once its permission is frozen: no vstd counterpart.
 axiom_shared_regions	raw pointer (internal)	none (assumption)
 axiom_shared_meta	raw pointer (internal)	none (assumption)

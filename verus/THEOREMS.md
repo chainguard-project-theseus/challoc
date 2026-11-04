@@ -100,10 +100,10 @@ leave out (theorem 33). Remaining work is tracked in
 | Cache mode | thread caches (challoc has no per-CPU mode) |
 | Quantum | `quantum16` (default) and `quantum8` |
 | Target | x86_64 and aarch64, each with both quanta |
-| PAC | on or off: `heap::pac_mode()` is uninterpreted |
+| PAC | on or off: `heap::pac_mode()` reads the uninterpreted `shared_at(shared_storage())` |
 | Build | `cfg(not(test))`; test-only items (`Meta::new`, `*_t`) excluded |
 
-Because `pac_mode()` (`heap/mod.rs`) is uninterpreted, every proof
+Because `pac_mode()` (`heap/mod.rs`) reads the uninterpreted `shared_at(shared_storage())`, every proof
 holds for both values.
 
 Every combination runs in CI: the `verus` and `verus-arm64` checks
@@ -118,10 +118,11 @@ add.
 
 **One process, one `Shared`.**
 - `layout::process_regions` (`layout/regions.rs`) and
-  `heap::pac_mode` (`heap/mod.rs`) are uninterpreted;
-  `heap::shared::axiom_process_shared` (`heap/shared.rs`) defines
-  them as the regions and `PUSH_PAC` bit of
-  `shared_at(shared_storage())` (`heap/shared.rs`).
+  `heap::pac_mode` (`heap/mod.rs`) are opaque, defined as the
+  regions and `PUSH_PAC` bit of `shared_at(shared_storage())`
+  (`heap/shared.rs`), which is uninterpreted;
+  `heap::shared::lemma_process_shared` (`heap/shared.rs`) reveals
+  them.
 - The kernel's page, `getauxval(AT_PAGESZ)` (the `getauxval`
   specifications, `sys/auxv.rs`), is `1 << process_regions().lg_page`:
   init reserves the regions with `sys::features::page_size()`
@@ -203,7 +204,7 @@ add.
   through it and the `Shared` the caller works through are one object
   is unverified: it rests on the exec code building one `Shared`, at
   its storage (`Shared::init(shared_storage_ptr(), ..)` in `api::init`,
-  `api/mod.rs`), the premise `axiom_process_shared` states for the
+  `api/mod.rs`), the same fact the opaque `process_regions` and `pac_mode` rest on for the
   regions and the PAC mode. The unit tests build other `Shared`s and
   take the `cfg(test)` `shared_ptr`, `ptr::from_ref(shared)`; the
   premise is about the shipped library.
