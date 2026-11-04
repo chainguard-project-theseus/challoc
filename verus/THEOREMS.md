@@ -1761,11 +1761,11 @@ call (`malloc_slow`, `malloc_slow_class`, `free_slow`,
   returns; a panic, a failed `vspec::check` included, reaches it through
   the `#[panic_handler]` (`lib.rs:98`). Outside tests, no Rust code
   calls an `extern "C"` function of the crate.
-  `sys::tests::syscall_grants_only_at_roots` (`sys/mod.rs:1652`)
+  `sys::tests::syscall_grants_only_at_roots` (`sys/mod.rs:1617`)
   checks the source: every grant is in an `extern "C"` function or in
-  `abort_fmt`. That `may_syscall` appears only as a `requires` or loop
-  invariant clause, or in `Stderr`'s and `Sink`'s type invariants, is
-  read from the source (in #138 the test checked it).
+  `abort_fmt`. `sys::tests::syscall_capability_only_as_a_clause` checks
+  that `may_syscall` appears only as a `requires` or loop invariant
+  clause, or in `Stderr`'s and `Sink`'s type invariants.
 - The later theorems' code follows the same discipline (merged after
   this section's commit). Fork-handler lock handoff (theorem 13):
   `RawLock::lock_held` and `unlock_held`, `purge::background::fork_lock`
@@ -1875,8 +1875,9 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
 `integrity_aborts()`, so a fast path may abort at a corrupt PAC-signed
 cache entry or slot value, and that abort writes and raises `SIGABRT`
 (in #138 it required no abort capability). The grant test is
-`sys::tests::syscall_grants_only_at_roots`, and it no longer checks
-where `may_syscall` appears as a clause. The source test
+`sys::tests::syscall_grants_only_at_roots`; as in #138, a source test
+(`sys::tests::syscall_capability_only_as_a_clause`) checks where
+`may_syscall` appears as a clause. The source test
 `api::restated::fast_path_restatements_match_their_bodies` is new; it
 ties the restated paths to their bodies by call names. The
 `sys/raw.rs` wrappers, Isla-discharged in #138, are discharged on
@@ -6133,12 +6134,13 @@ paths of `malloc`, `free`, `free_sized` and `challoc_free_usable` it
 calls abort at most at an integrity check; their checks that
 fail leave the fast path for the slow one, which requires `may_abort()`.
 
-The integrity checks the covered calls reach (read from the code; at
-#138 `api::tests::abort_grants_only_at_roots` listed the callers
-of `check` and `abort_integrity` and the trusted bodies that require
-`may_abort_corrupt()` alone):
-- `stats::huge_usable_pages` (`stats.rs:521`, abort in
-  `huge_pages_short`, `:542`): an arena's `large` word holding fewer
+The integrity checks the covered calls reach
+(`sys::tests::narrow_aborts_only_at_their_check_sites` pins the callers
+of `check` and `abort_integrity`, and
+`sys::tests::trusted_aborts_require_a_capability` pins `check`, the
+one trusted body among them, to its clause `may_abort_corrupt() || c`):
+- `stats::huge_usable_pages` (`stats.rs:582`, abort in
+  `huge_pages_short`, `:603`): an arena's `large` word holding fewer
   pages than its runs' guards. The word is a plain `AtomicU64` that
   `note_huge_alloc`/`note_huge_free` update together, so it fails only
   on a corrupt counter. Reached by `mallinfo`/`mallinfo2`
@@ -6232,9 +6234,11 @@ bounds, and `Sink::write_str` (verified) keeps it.
   `call_throw_bad_alloc`; `owner_locked` until package OWNER) and those
   that `assert!` or
   `panic!` (`check`, `assert_flushed`, `assert_refill_empty`;
-  `assert_not_home`'s `assert_ne!` is its `requires`). This is read off
-  the code; in #138 a source test flagged a trusted body that
-  aborts without the capability. (Since theorem 44 `owner_locked`
+  `assert_not_home`'s `assert_ne!` is its `requires`).
+  `sys::tests::trusted_aborts_require_a_capability` checks the
+  `external_body` functions whose text shows an abort, a panic macro or
+  an `unwrap` (not an index panic) for the capability. (Since theorem 44
+  `owner_locked`
   requires `may_abort_pending()`, which no witness of this theorem
   holds.)
 - `may_abort` is closed and `integrity_aborts` uninterpreted, so a verified function
@@ -6249,12 +6253,13 @@ bounds, and `Sink::write_str` (verified) keeps it.
   export: 42 grants) and in the `#[panic_handler]`, which the panic
   runtime calls and no Rust code does; never in `abort_fmt` or another
   `-> !` helper, unlike `grant_syscalls`.
-  `sys::tests::abort_grants_only_at_roots` (`sys/mod.rs:1668`) checks the
-  grants' sites; the rest (`may_abort*` only as `requires`/invariant
-  clauses, `integrity_aborts` only in the witnesses' `requires`, the
-  integrity checks only in the functions listed above, the trusted
-  bodies) is read from the code (in #138 a source test checked
-  it).
+  `sys::tests::abort_grants_only_at_roots` (`sys/mod.rs:1633`) checks the
+  grants' sites; `abort_capabilities_only_as_clauses` checks that
+  `may_abort*` appear only as `requires`/invariant clauses and
+  `integrity_aborts` only in the witnesses' `requires`,
+  `narrow_aborts_only_at_their_check_sites` that the integrity checks are
+  only in the functions listed above, and
+  `trusted_aborts_require_a_capability` the trusted bodies.
   Outside tests no Rust code calls an `extern "C"` function of the
   crate.
 - `mallctl`'s readers are named by the `Reader` enum and called by the
@@ -6408,8 +6413,10 @@ main, as in #138 (since wolfi-dev/challoc#421); the witness restates
 `mallinfo2`'s calls, which
 `api::restated::read_only_restatements_match_their_bodies` checks.
 Weaker on main: `theorem_no_syscall_on_fast_paths` requires
-`integrity_aborts()`; the source test checks only the grant sites (the
-integrity-check callers and trusted bodies are read off the code).
+`integrity_aborts()`. As in #138, source tests check the
+integrity-check callers (`sys::tests::narrow_aborts_only_at_their_check_sites`)
+and the trusted bodies (`sys::tests::trusted_aborts_require_a_capability`),
+besides the grant sites.
 Stronger or simpler:
 `RunState::from_u8` and `HugeDesc::state` require their condition
 alone; `alloc_sets` and `Sink::flush` have no `check`;
@@ -8644,10 +8651,13 @@ are named below), or at one of the checks named below as pending,
 which fire for a valid program only if allocator state no verified
 invariant constrains is corrupt (or, for `unbind_unbound`, a count
 exceeds a bound no invariant states). Which aborts are resource failures or
-pending checks, and that the trusted bodies on these paths abort only
-as their capability says, rests on reading the code (below): on main
-no source test checks the two sinks (`sys::tests::abort_grants_only_at_roots`,
-`sys/mod.rs:1668`, checks only where `grant_aborts` is called). Covered, after init (`shared.wf()`; the prefix before it is
+pending checks rests on reading the code (below).
+`sys::tests::narrow_aborts_only_at_their_check_sites` checks that the
+two sinks are called only at its listed sites,
+`sys::tests::trusted_aborts_require_a_capability` that the trusted
+bodies whose text shows an abort require a capability for it, and
+`sys::tests::abort_grants_only_at_roots` (`sys/mod.rs:1633`) where
+`grant_aborts` is called. Covered, after init (`shared.wf()`; the prefix before it is
 not): the free through no cache (`heap::free_direct`: a thread with no
 heap, `MALLOCX_TCACHE_NONE`), slot and run (first tranche); a free on a
 heap (`Heap::free`: the push onto the home or the `FOREIGN` cache, the
@@ -8902,8 +8912,9 @@ allow, these cannot fire:
   which Verus checks against the compiler's), and it requires no abort
   capability.
 
-The resource failures the covered paths reach (`abort_kernel`; its
-callers are read from the code):
+The resource failures the covered paths reach (`abort_kernel`;
+`sys::tests::narrow_aborts_only_at_their_check_sites` checks that it is
+called only at the test's listed sites):
 - `Huge::free_run`'s `madvise(MADV_GUARD_REMOVE)` of the run's guard,
   with `guard_install`.
 - `purge::discard`, the `madvise` of the purged pages: of a huge run
@@ -8975,14 +8986,17 @@ invalid free, and on a valid one only if that state is corrupt:
   reads 0 only with a multiple of `2^32` heaps homed there, which no
   verified invariant bounds.
 
-On main no source test checks these capabilities:
-`sys::tests::abort_grants_only_at_roots` (`sys/mod.rs:1668`) checks only
-where `grant_aborts` is called. That `kernel_aborts` and
-`pending_aborts` appear only in their definitions, in `valid_aborts`'
-and in the witnesses' `requires`, and that `abort_kernel` and
-`abort_pending` are called only in the functions listed above, is read
-from the code (in #138 `api::tests::abort_grants_only_at_roots`
-checked it).
+`sys::tests::abort_capabilities_only_as_clauses` checks that
+`kernel_aborts` and `pending_aborts` appear only in their definitions,
+in `valid_aborts`' and in the witnesses' `requires`.
+`sys::tests::narrow_aborts_only_at_their_check_sites` checks that
+`abort_kernel` and `abort_pending` are called only at its listed sites.
+Its list also has `heap::slotstate`'s `init` and `commit`
+(`abort_kernel`) and `free`, `claim`, `pop`, `release` and
+`check_not_cached` (`abort_pending`), the `double_free_scan` slot
+state. This section does not argue for the checks in those 7
+functions: it does not show that each fires on an invalid free, and on
+a valid one only if its state is corrupt.
 
 **Premises beyond the common ones.**
 - The C contract of a free (`axiom_c_claim`, "Bad input"): the witnesses
@@ -9013,8 +9027,12 @@ checked it).
   `*top.sub(k) == e`, `k` in `1..=4`, or the iterator over `1..=len`,
   each an entry below `len`; pointer `==` compares addresses).
 - The trusted bodies on these paths abort only as their capability says
-  (read off the code; `owner_locked`, verified,
-  requires `may_abort_pending()` for its call of `SlabTable::owner`).
+  (`owner_locked`, verified, requires `may_abort_pending()` for its call
+  of `SlabTable::owner`).
+  `sys::tests::trusted_aborts_require_a_capability` checks that each
+  `external_body` function whose text shows an abort, a panic macro or
+  an `unwrap` requires `may_abort()`, or its listed compound clause; it
+  does not see an index panic or an abort through a callee.
 - The shipped release profile (overflow checks and debug assertions off),
   as in theorem 32.
 

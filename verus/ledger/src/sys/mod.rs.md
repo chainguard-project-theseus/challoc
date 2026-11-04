@@ -21,7 +21,7 @@ file.
 
 ## `axiom_thread_mask`
 
-src/sys/mod.rs:260. Kind: axiom. Category: platform/kernel fact.
+src/sys/mod.rs:267. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the calling thread's mask): the token stands for the signal mask of the thread that calls this.
@@ -35,7 +35,7 @@ pub(crate) axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
 
 ## `axiom_getrandom_count`
 
-src/sys/mod.rs:803. Kind: axiom. Category: platform/kernel fact.
+src/sys/mod.rs:810. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`getrandom(2)`, Linux's `drivers/char/random.c`): a `getrandom` that does not fail returns the number of bytes it stored, at most `buflen`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
@@ -51,7 +51,7 @@ pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: u
 
 ## `getrandom_exact`
 
-src/sys/mod.rs:841. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:848. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Fill `buf` completely from `getrandom`, retrying short reads and `EINTR`.
@@ -64,7 +64,7 @@ pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
 
 ## `axiom_read_count`
 
-src/sys/mod.rs:1011. Kind: axiom. Category: platform/kernel fact.
+src/sys/mod.rs:1018. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`read(2)`, Linux's `fs/read_write.c`): a `read` that does not fail returns the number of bytes it stored, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result or a driver returns more than it was asked for (the VFS does not clamp it), all assumed absent.
@@ -80,7 +80,7 @@ pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: 
 
 ## `read_full`
 
-src/sys/mod.rs:1046. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:1053. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Read as much of `buf` as the file yields, retrying `EINTR`.
@@ -96,7 +96,7 @@ pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
 
 ## `axiom_write_count`
 
-src/sys/mod.rs:1094. Kind: axiom. Category: platform/kernel fact.
+src/sys/mod.rs:1101. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`write(2)`, Linux's `fs/read_write.c`): a `write` that does not fail returns the number of bytes it took, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
@@ -112,7 +112,7 @@ pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r:
 
 ## `write_all`
 
-src/sys/mod.rs:1129. Kind: no_decreases. Category: termination.
+src/sys/mod.rs:1136. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > Write all of `buf`, retrying short writes and `EINTR`.
@@ -125,7 +125,7 @@ pub fn write_all(fd: i32, buf: &[u8])
 
 ## `pthread_self`
 
-src/sys/mod.rs:1185. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1192. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The calling thread's `pthread_self`: the forking thread keeps it in the child of a `fork`, where its kernel thread ID (`gettid`) is new.
@@ -136,7 +136,7 @@ pub fn pthread_self() -> usize
 
 ## `sigprocmask_block`
 
-src/sys/mod.rs:1472. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1479. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the syscall's word.
@@ -157,7 +157,7 @@ unsafe fn sigprocmask_block(
 
 ## `sigprocmask_setmask`
 
-src/sys/mod.rs:1505. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1512. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the syscall's word.
@@ -172,7 +172,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 
 ## `trap`
 
-src/sys/mod.rs:1553. Kind: external_body. Category: inline asm.
+src/sys/mod.rs:1560. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past the trap)).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
