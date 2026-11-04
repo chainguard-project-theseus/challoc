@@ -35,6 +35,7 @@
 //! `copy_nonoverlapping` likewise), which would hide a write past the
 //! range.
 
+use crate::api::mallctl::Utilization;
 use core::mem::size_of;
 
 /// `T`'s `is_null` (both pointer kinds) on a pointer to `x` and on
@@ -216,8 +217,8 @@ fn ptr_add() {
 
 /// The bytes of `T`s.
 fn bytes_of<T>(a: &[T]) -> &[u8] {
-    // SAFETY: the `T`s of these harnesses (integers, `bool` and pointers)
-    // have no padding.
+    // SAFETY: the `T`s of these harnesses (integers, `bool`, pointers and
+    // `Utilization`, `repr(C)` with six word-sized fields) have no padding.
     unsafe { core::slice::from_raw_parts(a.as_ptr().cast::<u8>(), size_of::<T>() * a.len()) }
 }
 
@@ -262,9 +263,10 @@ fn write_bytes_on<T: Copy + kani::Arbitrary, const N: usize>() {
 /// it is defined and returns (and writes what `core` documents), at a
 /// byte and a word. The contract's `c_apart`, `blocks_apart` and
 /// `c_writes` conjuncts say whose memory it is, not whether the call is
-/// defined, and are not checked here. (Not at a zero-sized type: Kani
-/// 0.68 reports an empty fill through a pointer to an array of `()` as
-/// a write to a region that is not writeable.)
+/// defined, and are not checked here. The contract requires a `T` that is
+/// not zero-sized, so it says nothing of a zero-sized fill (which Kani
+/// 0.68 rejects at any nonzero count as a write to a region that is not
+/// writeable).
 #[kani::proof]
 #[kani::unwind(41)]
 fn ptr_write_bytes() {
@@ -669,10 +671,11 @@ fn write_unaligned_on<T: Copy, const N: usize>(any: fn() -> T) {
 /// `core::ptr::write_unaligned::<T>` and `<*mut T>::write_unaligned`: no
 /// `ensures`; under the `requires` the call is defined and returns, at
 /// the word-sized types `mallctl` writes (`bool`, `u32`, `u64`, `usize`,
-/// `isize`, pointers), from every offset of a 12-byte buffer. Not at
-/// `mallctl`'s 48-byte `Utilization`.
+/// `isize`, pointers), from every offset of a 12-byte buffer, and at
+/// `mallctl`'s 48-byte `Utilization`, from every offset of a 56-byte
+/// buffer (every misalignment of its words).
 #[kani::proof]
-#[kani::unwind(14)]
+#[kani::unwind(57)]
 fn ptr_write_unaligned() {
     write_unaligned_on::<bool, 12>(kani::any);
     write_unaligned_on::<u32, 12>(kani::any);
@@ -681,6 +684,14 @@ fn ptr_write_unaligned() {
     write_unaligned_on::<isize, 12>(kani::any);
     write_unaligned_on::<*mut u8, 12>(|| core::ptr::without_provenance_mut(kani::any()));
     write_unaligned_on::<*const u64, 12>(|| core::ptr::without_provenance(kani::any()));
+    write_unaligned_on::<Utilization, 56>(|| Utilization {
+        slabcur_addr: core::ptr::without_provenance_mut(kani::any()),
+        nfree: kani::any(),
+        nregs: kani::any(),
+        size: kani::any(),
+        bin_nfree: kani::any(),
+        bin_nregs: kani::any(),
+    });
 }
 
 /// `<*mut T>::sub` on an array of `N` `T`s: from element `i` (`i <= N`),

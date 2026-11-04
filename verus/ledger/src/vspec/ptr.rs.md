@@ -14,7 +14,7 @@ file.
 | `axiom_plain_u32` | axiom | core library | Kani | discharged |
 | `axiom_plain_ptr` | axiom | core library | Kani | discharged |
 | `ptr::read_volatile::<T>` | assume_spec | core library | Kani | trusted |
-| `ptr::write_bytes::<T>` | assume_spec | core library | Kani | trusted |
+| `ptr::write_bytes::<T>` | assume_spec | core library | Kani | discharged |
 | `axiom_r...adable` | external_body proof | raw pointer (internal) | none (assumption) | trusted |
 | `axiom_ptr_add_addr` | external_body proof | core library | Kani | trusted |
 | `<*mut T>::sub` | assume_spec | core library | Kani | trusted |
@@ -25,8 +25,8 @@ file.
 | `ref_ptr` | external_body | raw pointer (internal) | Kani | discharged |
 | `ptr::read_unaligned::<T>` | assume_spec | core library | Kani | trusted |
 | `<*const T>::read_unaligned` | assume_spec | core library | Kani | trusted |
-| `ptr::write_unaligned::<T>` | assume_spec | core library | Kani | trusted |
-| `<*mut T>::write_unaligned` | assume_spec | core library | Kani | trusted |
+| `ptr::write_...igned::<T>` | assume_spec | core library | Kani | discharged |
+| `<*mut T>::w..._unaligned` | assume_spec | core library | Kani | discharged |
 
 ## `axiom_plain_u64`
 
@@ -131,14 +131,15 @@ pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
 
 ## `core::ptr::write_bytes::<T>`
 
-src/vspec/ptr.rs:165. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_bytes; not checked: zero-sized `T`, which the harness leaves out because Kani 0.68 reports an empty fill there as a write to a region that is not writeable (every caller fills bytes)).
+src/vspec/ptr.rs:166. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_bytes).
 
 > `core::ptr::write_bytes`, with the safety contract of the `core` documentation: `dst` is non-null and properly aligned and, unless the fill is empty, valid for writes of `count * size_of::<T>()` bytes.
 
 ```rust
 pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8, count: usize)
     requires
+        vstd::layout::size_of::<T>() > 0,
         dst@.addr != 0,
         dst@.addr as int % vstd::layout::align_of::<T>() as int == 0,
         count as int * vstd::layout::size_of::<T>() == 0 || {
@@ -152,7 +153,7 @@ pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8,
 
 ## `axiom_raw_readable`
 
-src/vspec/ptr.rs:201. Kind: external_body proof. Category: raw pointer (internal).
+src/vspec/ptr.rs:203. Kind: external_body proof. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > A permission to the `len` bytes from `p`, of `p`'s provenance, makes them valid for reads through `p` and, when there are some, puts them inside the allocation `p` is derived from ([`in_alloc`]).
@@ -170,7 +171,7 @@ pub proof fn axiom_raw_readable(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mu
 
 ## `axiom_ptr_add_addr`
 
-src/vspec/ptr.rs:222. Kind: external_body proof. Category: core library.
+src/vspec/ptr.rs:224. Kind: external_body proof. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
 
 > The address [`ptr_add`] stands for: `count` elements past `p`, when that stays inside the allocation `p` points into (the only case in which `<*mut T>::add` is defined, and so the only one verified code reaches), and the address does not wrap (the caller shows it: no allocation does, but `alloc_len` is not tied to the address space).
@@ -188,7 +189,7 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 
 ## `<*mut T>::sub`
 
-src/vspec/ptr.rs:240. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:242. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani observes only through a dereference, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`)).
 
 > `<*mut T>::sub`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize` and is at most `p`'s address, and, when it is not zero, the whole range from the result to `p` is inside the allocation `p` points into ([`in_alloc`] of the result).
@@ -207,7 +208,7 @@ pub assume_specification<T>[ <*mut T>::sub ](p: *mut T, count: usize) -> (r: *mu
 
 ## `<*mut T>::add`
 
-src/vspec/ptr.rs:254. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:256. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
 
 > `<*mut T>::add`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize`, and, when it is not zero, the whole range from `p` to the result is inside the allocation `p` points into ([`in_alloc`]).
@@ -225,7 +226,7 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
 
 ## `<*const T>::add`
 
-src/vspec/ptr.rs:266. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:268. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
 
 > `<*const T>::add`, with the safety contract of `<*mut T>::add`: the result is [`ptr_add`] of the pointer as a `*mut T`, back as a `*const T` (`axiom_ptr_add_addr` gives its address).
@@ -243,7 +244,7 @@ pub assume_specification<T>[ <*const T>::add ](p: *const T, count: usize) -> (r:
 
 ## `axiom_array_elem`
 
-src/vspec/ptr.rs:285. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:287. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: the provenance clause of the element pointers, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table, which is this axiom's instance in `layout::regions`)).
 
 > Element `i` of a frozen array: a `'static` shared permission to a `[T; N]` gives one to each of its elements, holding that element, at [`ptr_add`] of the array's address as a `*mut T`; and the array's first `i` elements lie inside the allocation it is in, in fewer than `isize::MAX` bytes, so `<*mut T>::add(i)` is defined on that pointer.
@@ -264,7 +265,7 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
 
 ## `axiom_array_view`
 
-src/vspec/ptr.rs:322. Kind: axiom. Category: core library.
+src/vspec/ptr.rs:324. Kind: axiom. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: its one verified instance, `heap::others`' `[CacheHeader; NCLASSES]`, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table)).
 
 > A shared view of the `[T; N]` at `a` lent by its elements' permissions: `perms` holds an initialised permission to each element ([`array_elem_ptr`]), so it holds the array, whose value is theirs, for as long as they stay borrowed.
@@ -287,7 +288,7 @@ pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut
 
 ## `ref_ptr`
 
-src/vspec/ptr.rs:350. Kind: external_body. Category: raw pointer (internal).
+src/vspec/ptr.rs:352. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_ref_ptr).
 
 > `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
@@ -301,7 +302,7 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
 
 ## `core::ptr::read_unaligned::<T>`
 
-src/vspec/ptr.rs:384. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:386. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes)).
 
 > `core::ptr::read_unaligned`.
@@ -317,7 +318,7 @@ pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> 
 
 ## `<*const T>::read_unaligned`
 
-src/vspec/ptr.rs:392. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:394. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes)).
 
 > `<*const T>::read_unaligned`.
@@ -333,8 +334,8 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
 
 ## `core::ptr::write_unaligned::<T>`
 
-src/vspec/ptr.rs:400. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_unaligned; not checked: `mallctl`'s 48-byte `Utilization`, the one type it writes that is wider than a word).
+src/vspec/ptr.rs:402. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_unaligned).
 
 > `core::ptr::write_unaligned`.
 
@@ -350,8 +351,8 @@ pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src:
 
 ## `<*mut T>::write_unaligned`
 
-src/vspec/ptr.rs:409. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_unaligned; not checked: `mallctl`'s 48-byte `Utilization`, the one type it writes that is wider than a word).
+src/vspec/ptr.rs:411. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_unaligned).
 
 > `<*mut T>::write_unaligned`.
 

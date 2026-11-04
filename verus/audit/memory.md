@@ -61,7 +61,7 @@ Totals for the 37 seams listed: 33 sound, 4 fixed.
 | `read_global` | `rseq.rs` | trusted (partly checked) | sound | No `ensures`; instantiated at `isize` and `u32`, which have no type invariant. |
 | `read_cpu_id` | `rseq.rs` | trusted (partly checked) | sound | No `ensures`; the caller checks the area size, which the `requires` names. |
 | `addr_to_ptr` | `vspec/addr.rs` | trusted (partly checked) | sound | `addr_ptr` and `cast_provenance` are uninterpreted, one value per address. The `ensures` pins the address, that value and the shared cast provenance. |
-| `core::ptr::write_bytes::<T>` | `vspec/ptr.rs` | trusted (partly checked) | sound | `core`'s safety contract. Its effect is unstated (see the model notes). |
+| `core::ptr::write_bytes::<T>` | `vspec/ptr.rs` | discharged | sound | `core`'s safety contract, for a `T` that is not zero-sized. Its effect is unstated (see the model notes). |
 | `core::ptr::copy_nonoverlapping::<T>` | `vspec/addr.rs` | discharged | sound | `core`'s safety contract, overlap included. |
 | `<*mut T>::is_null` | `vspec/addr.rs` | discharged | sound | The data address is zero, wide pointers included. |
 | `<*const T>::is_null` | `vspec/addr.rs` | discharged | sound | As `<*mut T>::is_null`. |
