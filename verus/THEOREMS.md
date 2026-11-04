@@ -47,10 +47,9 @@ lock invariant, rests on a source test or on the C-boundary assumption
   that the statement does not claim.
 - **Proof sketch:** how the proof goes.
 
-Citations name an item and its file; a line number, where given, is the
-line of the item's definition at main `26f535a9`. Facts marked
-**unconfirmed** are read from comments and not checked against the
-proof. Verification-only functions are `cfg(verus_keep_ghost)` and absent
+Citations name an item and its file. Facts marked **unconfirmed** are
+read from comments and not checked against the proof. Verification-only
+functions are `cfg(verus_keep_ghost)` and absent
 from the shipped build. A function that takes a lock also takes
 `Tracked<&mut LockOrder>` arguments, which the abridged signatures below
 leave out (theorem 33). Remaining work is tracked in
@@ -65,7 +64,7 @@ leave out (theorem 33). Remaining work is tracked in
   environment is a source test (`environment_has_one_reader`,
   `config.rs`), not Verus. The theorem does not state that the loaded
   `Config` equals the one with neither variable set.
-- **Overflow reach** (`heap::theorem_overflow_reach`, `heap/mod.rs:300`):
+- **Overflow reach** (`heap::theorem_overflow_reach`, `heap/mod.rs`):
   between any byte of a block that `fits` and any byte of the metadata
   region, the `Shared` static, another class region or the huge region,
   above or below it, lies a `MAX_SLAB` (4 MiB) run of challoc's own
@@ -104,7 +103,7 @@ leave out (theorem 33). Remaining work is tracked in
 | PAC | on or off: `heap::pac_mode()` is uninterpreted |
 | Build | `cfg(not(test))`; test-only items (`Meta::new`, `*_t`) excluded |
 
-Because `pac_mode()` (`heap/mod.rs:730`) is uninterpreted, every proof
+Because `pac_mode()` (`heap/mod.rs`) is uninterpreted, every proof
 holds for both values.
 
 Every combination runs in CI: the `verus` and `verus-arm64` checks
@@ -118,9 +117,9 @@ Every theorem below rests on these. Later sections list only what they
 add.
 
 **One process, one `Shared`.**
-- `layout::process_regions` (`layout/regions.rs:162`) and
-  `heap::pac_mode` (`heap/mod.rs:730`) are uninterpreted;
-  `heap::shared::axiom_process_shared` (`heap/shared.rs:201`) defines
+- `layout::process_regions` (`layout/regions.rs`) and
+  `heap::pac_mode` (`heap/mod.rs`) are uninterpreted;
+  `heap::shared::axiom_process_shared` (`heap/shared.rs`) defines
   them as the regions and `PUSH_PAC` bit of
   `shared_at(shared_storage())` (`heap/shared.rs`).
 - The kernel's page, `getauxval(AT_PAGESZ)` (the `getauxval`
@@ -186,12 +185,12 @@ add.
   handler that forks while its own thread builds (discovers) leaves
   the permission twice in the child.
 - One more trusted source of `Shared::wf`:
-  `purge::background::shared_arg` (`purge/background.rs:786`, the
+  `purge::background::shared_arg` (`purge/background.rs`, the
   background thread's argument, `external_body`). `heap::paths::shared_of`,
   a heap's `&Shared`, reads the heap's `shared` field through the
   frozen permission, and `api::mallctl::shared`, the readers' accessor,
   requires `api::marks_ready(*mark)` and reads through
-  `api::shared_marked` (`api/mod.rs:912`); neither is trusted.
+  `api::shared_marked` (`api/mod.rs`); neither is trusted.
 - One `Shared`, at its storage: a well-formed `&Shared` is
   the one at `Shared::storage()`, the only place `Shared::init` builds
   one. Assumed where a reference becomes a pointer:
@@ -201,7 +200,7 @@ add.
   recorded by `FreshHeap::shared`, which `Heap::wf` states is the
   storage. The unit tests build other `Shared`s; the
   premise is about the shipped library, as `axiom_process_shared`'s.
-- `Shared::init` (`heap/shared.rs:2068`) proves
+- `Shared::init` (`heap/shared.rs`) proves
   `r ==> shared_at(this).built()`, using the tracked `Built` token,
   the trusted `begin` (`external_body`: the
   permission to the storage, for `Step::Shared`'s token), and verified
@@ -213,7 +212,7 @@ add.
   `put_huge`, `arena0_ptr`, `put_registries`,
   `put_cgroup`, `put_policy` and
   `put_tail`. Arena 0 is built the same way, verified:
-  `put_head`, `put_sets`, `put_class` and `put_tail` (`arena.rs:1125`).
+  `put_head`, `put_sets`, `put_class` and `put_tail` (`arena.rs`).
 - `api::shared_storage_ptr`, `features_ptr`, `line_ptr` and
   `layout::classes_ptr` (`external_body`): raw-pointer projections of
   the statics, at `Shared::storage()`, `features_storage()`,
@@ -283,7 +282,7 @@ above requires its token's block to be its `p`. Once per body, for that
 body's `p`, and no other maker of a free's token rest on convention
 (`axiom_c_call`'s doc comment), not on Verus and not on a source test.
 That no Rust code calls a minting export is checked by a line scan:
-`api::tests::exports_return_their_callees_result` (`api/mod.rs:5432`)
+`api::tests::exports_return_their_callees_result` (`api/mod.rs`)
 fails if a line outside a comment names an `exports` module (a path
 through one, or a `use` of one). A double free, or a free of a slot or
 huge page start that is not a live block, gives C a token it does not
@@ -293,11 +292,11 @@ that is neither a slot start nor a huge page start gets no token and
 the call does not return (theorem 3, which is not voided for it).
 
 **Every heap a verified path is handed is `Heap::wf`.**
-- `Heap::wf` (`heap/mod.rs:3323`): `CachePerms::wf`, `tracks`,
+- `Heap::wf` (`heap/mod.rs`): `CachePerms::wf`, `tracks`,
   `zero_ok`, `tokened`, `claimed`, `regions_ok()`, `list_ok`, `home_ok`
   and `homed_ok` (the arena ticket); also `ready()` and that
   its `shared` field is the process's `Shared` at its storage.
-- Assumed by `tcaches::heap_at` (`heap/tcaches.rs:771`, with its home
+- Assumed by `tcaches::heap_at` (`heap/tcaches.rs`, with its home
   headers at the pointer, `Heap::home_at`, and its
   nodes' block permissions and claims, `others::block_ok`;
   `external_body`; it also takes the caller's `HeapUse` token,
@@ -317,7 +316,7 @@ the call does not return (theorem 3, which is not voided for it).
   states what `init_fields`, `mark_bound` and `mark_rehome` stored).
 - Heap creation is verified, the stores to `bound` and `rehome`
   included (`mark_bound`, `mark_rehome`, `heap/fresh.rs`, and
-  `init_fields` are verified): `Heap::create` (`heap/mod.rs:5164`),
+  `init_fields` are verified): `Heap::create` (`heap/mod.rs`),
   `create_detached`. Teardown, `destroy`, is verified
   (its heap block over `heap::axiom_heap_block`).
 - No writer escapes the permissions: `Heap::set_arena`
@@ -329,7 +328,7 @@ the call does not return (theorem 3, which is not voided for it).
   `stack_mut` (`vspec::slice::slice_mut_elems`, the slice over exactly
   its entries' `PointsTo`s, which the verified `slice_mut_from_perms`
   carves out of the stack's; `stack_mut` itself is verified over it),
-  `Heap::home_ptr_at` (`heap/cache.rs:321`, the home header's address,
+  `Heap::home_ptr_at` (`heap/cache.rs`, the home header's address,
   `heap + 128 + 64 * class`, under the verified `cache_ptr`, on
   the `malloc` and `free` fast paths, which proves from `wf` that the
   header is owned and caches `class`; partly checked by Kani,
@@ -369,16 +368,16 @@ the call does not return (theorem 3, which is not voided for it).
   happens after `init` (what the `api::ready()` in `Shared::wf` stands
   for, under "One process, one `Shared`" above). With `Shared::wf` the
   byte's `PUSH_PAC` bit is `pac_mode()` and its `PUSH_ZERO` bit is
-  `flags()`'s (`Shared::lemma_route_flags`, `heap/shared.rs:3626`, which
+  `flags()`'s (`Shared::lemma_route_flags`, `heap/shared.rs`, which
   states both); both are what `heap_from_slot` and the push need.
-- TLS asm: `sys::tls::get` (`sys/tls.rs:345`), `get_tp` (aarch64; the x86_64
+- TLS asm: `sys::tls::get` (`sys/tls.rs`), `get_tp` (aarch64; the x86_64
   one is verified and returns 0) and `set`: a read returns the `TlsSlot` token's value
   (and the aarch64 `get_tp` the token's thread pointer,
   `TlsSlot::tp`) and `set` makes the written value the token's and
   leaves its ghost fields alone (theorem 15), nothing more.
 
 **Class table.**
-- `ClassTable::table` (`layout/mod.rs:1388`, `external_body`): entries
+- `ClassTable::table` (`layout/mod.rs`, `external_body`): entries
   are `class_table()`, `wf`, sized `spec_class_size`. (Its readers
   include `Shared::init`, before `READY`, and the `Deref` impl, which
   can state no precondition, so it does not read through the frozen
@@ -394,7 +393,7 @@ the call does not return (theorem 3, which is not voided for it).
   `make emptyasm` shows it assembles to no instruction, and the
   pointer's provenance is not checked,
   `verus/ledger/src/layout/regions.rs.md`).
-- `vspec::class::axiom_class_table_wf` (`vspec/class.rs:12`), the same
+- `vspec::class::axiom_class_table_wf` (`vspec/class.rs`), the same
   fact for proofs; `adopt_page_geometry` (verified) writes the table
   through the permission `api::axiom_statics` gives and keeps
   `table_ok`, which `api::Published` freezes at `READY`.
@@ -441,12 +440,12 @@ trusted only in how it is reached:
   (written by `init`, stated by `Shared::wf`) are proved.
 
 **Kernel `mmap`.**
-- `linux::try_reserve` (`layout/regions.rs:2174`): a reservation is
+- `linux::try_reserve` (`layout/regions.rs`): a reservation is
   non-zero and ends below `sys::pac::user_va_limit()`.
-- `Reserved::is_disjoint` (`layout/regions.rs:2135`), `into_unbacked`
+- `Reserved::is_disjoint` (`layout/regions.rs`), `into_unbacked`
  : live reservations are apart; the metadata range is minted
   once as `Unbacked`.
-- `Unbacked::commit` (`vspec/unbacked.rs:115`, `external_body`): a
+- `Unbacked::commit` (`vspec/unbacked.rs`, `external_body`): a
   committed range becomes a `PointsToRaw` (the `mprotect` contract); the
   source of every metadata permission (`meta.rs`,
   the last a table carved from a committed reservation; also
@@ -455,7 +454,7 @@ trusted only in how it is reached:
   table's deferred part after `Inner::flush` in
   `Inner::reserve_committed`), with `Unbacked::into_lazy` for the
   tables committed by their owners.
-- `sys::pac::axiom_user_va_limit` (`sys/pac.rs:61`): the limit is at
+- `sys::pac::axiom_user_va_limit` (`sys/pac.rs`): the limit is at
   most `2^48`.
 
 **Locks.** `lock::axiom_acquired`: an acquisition takes the permission
@@ -464,8 +463,8 @@ and the value satisfies `lock_inv` and `lock_frame`; the other entry is
 `lock::axiom_held`, behind `Lock::get_unlocked`. The guard's `deref` and
 `deref_mut` are verified, over two trusted restatements of vstd's
 `PCell::borrow` and `borrow_mut` (`cell_ref`, `cell_mut`, kept for the
-machine code); `drop` (`lock.rs:1122`) is `external_body` and checks
-nothing. `LockGuard::unlock` (`lock.rs:1022`, verified, empty body: the
+machine code); `drop` (`lock.rs`) is `external_body` and checks
+nothing. `LockGuard::unlock` (`lock.rs`, verified, empty body: the
 release is the guard's drop at its end) requires `lock_inv` and
 `lock_frame` of the value. Every holder of the metadata lock outside the tests ends with it, on every path to a
 return (`Meta::alloc`, `alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
@@ -480,11 +479,11 @@ are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Each
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it. Also:
-`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:979`) and its
-frame `axiom_set_tables_lock_frame` (`class/sets.rs:989`: each table
+`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs`) and its
+frame `axiom_set_tables_lock_frame` (`class/sets.rs`: each table
 keeps its base and length, which `Lazy::ensure` keeps; its one writer,
 `SetTable::ensure`, checks it at its `LockGuard::unlock`),
-`stats::axiom_snapshot_lock_frame` (`stats.rs:681`: the frame holds of
+`stats::axiom_snapshot_lock_frame` (`stats.rs`: the frame holds of
 any two snapshots, since the snapshot keeps no constant from the one
 `Shared::init` made), and `heap::tcaches::axiom_tcaches_lock_inv` (the
 explicit-cache table lock guards `()`, so its invariant is true). `Tcaches::init` makes each
@@ -551,14 +550,14 @@ writes the message and raises `SIGABRT` (`sys/abort.rs`). The panic
 handler (`lib.rs`) aborts. An abort satisfies every postcondition.
 
 **Termination not proved** (`exec_allows_no_decreases_clause`):
-`lock::RawLock::lock_slow` (`lock.rs:125`), `claim_with` (`class/mod.rs:2881`),
+`lock::RawLock::lock_slow` (`lock.rs`), `claim_with` (`class/mod.rs`),
 `api::init_slow`, `api::line_ready` and `api::wait_line` (the wait for
 another thread's build of the feature line), `api::init_gate_enter` and
 `api::fork_gate_enter` (the waits for another thread's init or fork),
 `sys::cgroup::Deferred::discover` (a waiting discovery's wait for
 another thread's), `api/cxx.rs` `oom`, `purge/background.rs` `main`,
-`getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs:1136`),
-`sys::cgroup::scan_lines`, `arena::note_build_cost` (`arena.rs:228`, a
+`getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`),
+`sys::cgroup::scan_lines`, `arena::note_build_cost` (`arena.rs`, a
 compare-and-exchange retry loop), and `config.rs` `env_var` (its walk ends at
 the null pointer that ends `environ`, a fact about the C program). The theorems are
 partial correctness: they say what holds if the call returns. None of
@@ -604,11 +603,11 @@ pub proof fn theorem_region_separation(p: *mut u8, size: int, align: int)
 
 (Line breaks added; the code has the ensures on fewer lines.)
 `regions_ok()` is `process_regions().wf() && .separated()`
-(`heap/mod.rs`); `Regions::user_block` (`layout/regions.rs:536`) is
+(`heap/mod.rs`); `Regions::user_block` (`layout/regions.rs`) is
 a slot start of a class at least `size` bytes (`is_slot`), or a
 page start of the huge region with `max(size, 1)` bytes of the region
 after it (`is_huge_block`). The proof is
-`Regions::lemma_user_block_separated` (`layout/regions.rs:1460`).
+`Regions::lemma_user_block_separated` (`layout/regions.rs`).
 
 **Entry points.** Each ensures `fits`; the theorem is a separate lemma
 over that postcondition, not called by them. Rust-level functions; the
@@ -619,14 +618,14 @@ they also restate the core's `fits` in their own `ensures`.
 | Function (file) | Size, align in `fits` |
 |---|---|
 | `malloc` (`api/libc.rs`) | `size`, `QUANTUM` |
-| `calloc`, `calloc_zeroed` (`api/libc.rs:530`) | `n * m`, `QUANTUM` |
+| `calloc`, `calloc_zeroed` (`api/libc.rs`) | `n * m`, `QUANTUM` |
 | `realloc` (`api/libc.rs`) | `size`, `QUANTUM` |
 | `reallocarray` (`api/libc.rs`) | `n * m`, `QUANTUM` |
-| `aligned_alloc` = `memalign` (`api/libc.rs:3238`) | `size`, `align` (pow2) |
+| `aligned_alloc` = `memalign` (`api/libc.rs`) | `size`, `align` (pow2) |
 | `valloc`, `pvalloc` (`api/libc.rs`) | `size`, the page |
-| `malloc_usable` (`api/libc.rs:1853`) | `size`, `QUANTUM` |
-| `calloc_usable` (`api/libc.rs:2041`) | `n * m`, `QUANTUM` |
-| `realloc_usable` (`api/libc.rs:2205`) | `size`, `QUANTUM` |
+| `malloc_usable` (`api/libc.rs`) | `size`, `QUANTUM` |
+| `calloc_usable` (`api/libc.rs`) | `n * m`, `QUANTUM` |
+| `realloc_usable` (`api/libc.rs`) | `size`, `QUANTUM` |
 | `mallocx` (`api/jemalloc.rs`) | `size`, `1 << (flags & 0x3f)` |
 | `rallocx` (`api/jemalloc.rs`) | as `mallocx` |
 | `cxx::new`, `new_nothrow` (`api/cxx.rs`) | `size`, `QUANTUM` |
@@ -646,12 +645,12 @@ and the guard inside the region); `vspec::usable::lemma_run_bytes_block`
 turns that into `is_huge_block(p, max(size, 1))`.
 
 **Premises beyond the common ones.**
-- Slab results: `CachePerms::tracks` (`heap/mod.rs:1627`), part of the
+- Slab results: `CachePerms::tracks` (`heap/mod.rs`), part of the
   assumed `Heap::wf`; the cache entries' `is_slot` comes from verified
   refills and frees.
-- With PAC: `sys::pac::axiom_auth_sign` (`sys/pac.rs:71`, used at
+- With PAC: `sys::pac::axiom_auth_sign` (`sys/pac.rs`, used at
   `heap/mod.rs`): `spec_auth(spec_sign(p, m), m) == p` below the VA
-  limit; `sign`, `auth` (`sys/pac.rs:245`) are `external_body`
+  limit; `sign`, `auth` (`sys/pac.rs`) are `external_body`
   and equal `spec_sign`/`spec_auth`, one function per process (no
   `PR_PAC_RESET_KEYS`). The ledger (`verus/ledger/src/sys/pac.rs.md`)
   lists `sign` and `auth` as
@@ -706,9 +705,9 @@ page start, and its address is a multiple of the requested alignment.
 **Statement.** No theorem function: `fits` itself (above). Its
 `user_block` conjunct puts `size` bytes in one slot of a class at least
 `size` bytes, or in the huge region from a page start; its last conjunct
-is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/mod.rs:629`),
+is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/mod.rs`),
 `lemma_slot_fits_quantum`, `lemma_huge_fits`,
-`Regions::lemma_slot_aligned` (`layout/regions.rs:1681`),
+`Regions::lemma_slot_aligned` (`layout/regions.rs`),
 `layout::lemma_class_size_quantum`.
 
 **Entry points.** Those of theorem 1, with the alignment column above.
@@ -724,11 +723,11 @@ is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/mod.rs:629`),
 - Huge alignment: `Huge::alloc_run`'s placement, under the huge lock
   axioms; small alignments fall back to the page, at least 4 KiB
   (`Regions::separated`).
-- `api::page_size` (`api/libc.rs:2826`) is verified from `Shared::wf`.
+- `api::page_size` (`api/libc.rs`) is verified from `Shared::wf`.
 
 **Where the statement is weaker than the code.**
 - The huge fit is `size` bytes of the region, not the descriptor's
-  `usable` bytes (`Huge::spec_usable`, `huge/mod.rs:4454`), which the
+  `usable` bytes (`Huge::spec_usable`, `huge/mod.rs`), which the
   code hands out.
 - The slab fit is `size <= class size`, true but not "the class size is
   usable": `fits` does not say it. The size-returning entry points do
@@ -772,9 +771,9 @@ guard slabs, so a call with a pointer into one does not return either
 |---|---|
 | `free` (`api/libc.rs`) | `p` non-null |
 | `free_sized`, `free_aligned_sized` (`api/libc.rs`) | non-null |
-| `realloc`, `realloc_usable` (`api/libc.rs:2205`) | non-null |
+| `realloc`, `realloc_usable` (`api/libc.rs`) | non-null |
 | `reallocarray` (`api/libc.rs`) | non-null, `n * m` no overflow |
-| `free_usable` (`api/libc.rs:2417`) | non-null |
+| `free_usable` (`api/libc.rs`) | non-null |
 | `malloc_usable_size` (`api/libc.rs`) | non-null |
 | `dallocx`, `sdallocx` (`api/jemalloc.rs`) | non-null |
 | `rallocx` (`api/jemalloc.rs`) | non-null |
@@ -782,19 +781,19 @@ guard slabs, so a call with a pointer into one does not return either
 | `cxx::delete`, `delete_sized` (`api/cxx.rs`) | non-null |
 | `cxx::delete_sized_aligned` (`api/cxx.rs`) | non-null |
 
-Below them, `heap::free` and `free_direct` (`heap/paths.rs:1199`),
+Below them, `heap::free` and `free_direct` (`heap/paths.rs`),
 `Heap::free`, and the fast paths `free_fast_slot` and
 `free_fast_tail` (on their `Some` result) and
 `free_sized_fast` (on its `true` result) ensure it. `free_fast` and
 `free_fast_class` are `#[cfg(test)]` helpers outside
 `verus!` that ensure nothing; the cache pushes and
-`Shared::free_direct` (`heap/shared.rs:3034`) require `is_slot` of their
+`Shared::free_direct` (`heap/shared.rs`) require `is_slot` of their
 class, `Shared::free_huge` a page index from
 `Shared::classify_free`.
 
 **Premises beyond the common ones.**
 - Every abort ends in `sys::abort_fmt`, which never returns: the abort
-  helpers (`heap::paths::invalid_free`, `heap/paths.rs:1511`, and the
+  helpers (`heap::paths::invalid_free`, `heap/paths.rs`, and the
   class and huge abort helpers) verify and call it.
 - `Shared::classify_free` and `Regions::classify` are verified; the
   `Regions::slab_slot` reads the class table through `class_entry`
@@ -816,7 +815,7 @@ class, `Shared::free_huge` a page index from
 - The run-time guarantee for non-live block starts, read from the code
   and not proved: an unsized free, `realloc`, `malloc_usable_size`,
   `sallocx` or `challoc_free_usable` of a slot whose bitmap bit is clear
-  at the load (`SlabTable::is_set_unchecked`, `class/table.rs:3415`)
+  at the load (`SlabTable::is_set_unchecked`, `class/table.rs`)
   aborts; a sized free pushes without a bit test, and the cache flush catches it
   unless a `malloc` pops the slot first (a pop tests no bit), except
   under the opt-in `exact_sized_free` key, which sends it through plain
@@ -914,11 +913,11 @@ value; they reach the real heaps and the huge lock's value only through
 the assumed `Heap::wf` and the huge lock axiom.
 
 **Premises beyond the common ones.**
-- `vspec::ptr::axiom_ptr_add_addr` (`vspec/ptr.rs:222`): `p.add(i)` is
+- `vspec::ptr::axiom_ptr_add_addr` (`vspec/ptr.rs`): `p.add(i)` is
   `i` elements on, inside its allocation; used for stack entries
   (`heap/mod.rs`), `others` nodes, huge table slots and bitmap
   words.
-- `vspec::ptr::axiom_raw_readable` (`vspec/ptr.rs:201`): a `PointsToRaw`
+- `vspec::ptr::axiom_raw_readable` (`vspec/ptr.rs`): a `PointsToRaw`
   makes its bytes valid for reads and, when there are some, in one
   allocation (`in_alloc`). It is the only such axiom, and it gives no
   `valid_writes`.
@@ -926,8 +925,8 @@ the assumed `Heap::wf` and the huge lock axiom.
   (`vspec/meta.rs`): the metadata lock protects `Inner::wf`;
   bounds and ghost identities fixed. Both are checked at the release:
   every holder outside the tests ends with
-  `LockGuard::unlock` (`lock.rs:1022`), which requires them, and
-  `api::tests::guards_end_in_unlock` (`api/mod.rs:3161`) checks the
+  `LockGuard::unlock` (`lock.rs`), which requires them, and
+  `api::tests::guards_end_in_unlock` (`api/mod.rs`) checks the
   source for a guard that drops without it (common premises, "Locks").
   `Meta::commit` is verified: its caller gives the claim to the range that `reserve` or
   `reserve_table` handed out, which each lazily committed table keeps
@@ -944,9 +943,9 @@ the assumed `Heap::wf` and the huge lock axiom.
   `CachePerms::blocks`, the nodes' from `Heap::heads`) and the heap
   block's from its home headers' permissions (`heap::axiom_heap_block`).
 - `Shared::put_head` and `put_table` store what they are given
-  (common premise); `SlabTable::new` (`class/table.rs:1669`) proves
-  `meta_ok` from the reservations `Meta::reserve_table` (`meta.rs:900`)
-  and `Lazy::reserve` (`class/sets.rs:134`) hand out.
+  (common premise); `SlabTable::new` (`class/table.rs`) proves
+  `meta_ok` from the reservations `Meta::reserve_table` (`meta.rs`)
+  and `Lazy::reserve` (`class/sets.rs`) hand out.
 - The class table accessors `desc_unchecked`, `bits_unchecked`,
   `is_set_unchecked`, `owner_word` and `owner_at` read through
   permissions carved from the three reservations
@@ -958,7 +957,7 @@ the assumed `Heap::wf` and the huge lock axiom.
   `Inner::flush`) its part past `committed` through
   `Unbacked::into_lazy` of the token `reserve_eager` carved into the
   same `Carve`, and a reservation's through
-  `Unbacked::into_lazy` (`vspec/unbacked.rs:148`, which uses up the token),
+  `Unbacked::into_lazy` (`vspec/unbacked.rs`, which uses up the token),
   `table::axiom_zero_desc`, `axiom_zero_owner`, `axiom_fresh_words`
   (`class/table.rs`: zero bytes, from the
   `ZeroRaw` `reserve_table` returns, are an initialised descriptor,
@@ -970,7 +969,7 @@ the assumed `Heap::wf` and the huge lock axiom.
   (`vspec::atom::load_usize`, inside the watermark's invariant, which
   bounds it by the slab count). Premise: only committed pages are read (the
   accessors' `# Safety`).
-- `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs:2324`) are
+- `TwoLevelBitmap::from_raw`, `from_raw_chunked` (`bitmap.rs`) are
   verified: they build each word's permission, holding 0, from the
   words' `ZeroRaw` each takes (a table's bytes, or a `SetTable` slot's,
   which `SetTable::new` carves once per slot from its groups'
@@ -986,22 +985,22 @@ the assumed `Heap::wf` and the huge lock axiom.
   (four pairings: three in `meta.rs`, and one in `huge/table.rs`,
   `Table::storage`'s binned branch, which pairs the permission and token
   `Meta::alloc_zeroed` returns for one object).
-- `CachePerms::lemma_fresh_stack` (`heap/mod.rs:1507`, proved): a stack
+- `CachePerms::lemma_fresh_stack` (`heap/mod.rs`, proved): a stack
   `Meta::alloc_raw` just returned is fresh (it uses up the block's permission);
-  `Heap::lemma_caches_in_meta` (`heap/mod.rs:3713`) needs `cell_in_meta`,
-  which `ensure_cache` (`heap/cache.rs:941`) proves for each stack.
+  `Heap::lemma_caches_in_meta` (`heap/mod.rs`) needs `cell_in_meta`,
+  which `ensure_cache` (`heap/cache.rs`) proves for each stack.
 - Huge lock axioms (`vspec/huge.rs`) for `huge::Inner`.
 - The `Shared` static: `Reserved::is_apart_from_static`
   (`layout/regions.rs`, trusted, the kernel's `mmap` contract): each of
   the three reservations is apart from the loaded object's data, which
   `from_parts` turns into `Regions::outside`.
-- `huge::table::Table::storage` (`huge/table.rs:523`, verified): zeroed storage for the descriptor table, every entry empty,
+- `huge::table::Table::storage` (`huge/table.rs`, verified): zeroed storage for the descriptor table, every entry empty,
   each with its permission, in the metadata region. It cuts the block's
   zero permission (`Meta::reserve_committed_raw`'s `ZeroRaw` for a
   reserved table; for a binned one, `Meta::alloc_zeroed`'s permission and
   zero token paired by `ZeroRaw::axiom_new`, above) into the entries'
-  permissions (`entry_slots`, `huge/table.rs:402`), each empty by
-  `huge::table::axiom_zero_entry` (`huge/table.rs:381`: 16 zero bytes at
+  permissions (`entry_slots`, `huge/table.rs`), each empty by
+  `huge::table::axiom_zero_entry` (`huge/table.rs`: 16 zero bytes at
   a non-null, 8-aligned pointer are an initialised entry with a null
   descriptor), discharged by Kani
   (`huge::table::kani_table::zero_entry_is_empty`). It requires a page
@@ -1027,7 +1026,7 @@ the assumed `Heap::wf` and the huge lock axiom.
   block, and so challoc's heap pointer slot, inside that buffer.
 - Writes through `&` atomics (descriptors, owner words, `AtomicBitmap`
   words) are located, not tied to permissions. Bitmap words have
-  `WordPerm`s inside `bitmap::WordPred` (`bitmap.rs:3535`), but the
+  `WordPerm`s inside `bitmap::WordPred` (`bitmap.rs`), but the
   theorem does not use them.
 - Arenas' slab-set tables (`SetTable::new`, `Set::in_table`,
   `class/sets.rs`): no placement stated.
@@ -1085,24 +1084,24 @@ class name different slots; a slot whose token any other holder has
 cached. The rest of the theorem is the token protocol every verified
 writer keeps:
 
-- Authority per class: `table::slot_loc` (`class/table.rs:648`),
+- Authority per class: `table::slot_loc` (`class/table.rs`),
   minted by `SlabTable::new`.
 - Free slots: tokens in each word's `AtomicInvariant`,
-  `bitmap::WordPred` (`bitmap.rs:3535`): the word's `WordPerm` and the
+  `bitmap::WordPred` (`bitmap.rs`): the word's `WordPerm` and the
   tokens of exactly its clear bits.
-- Claimed: `AtomicBitmap::claim_word`, `claim_from` (`bitmap.rs:1182`)
+- Claimed: `AtomicBitmap::claim_word`, `claim_from` (`bitmap.rs`)
   move out the tokens of the bits their `fetch_or` won;
-  `ClassState::claim_with` (`class/mod.rs:2881`) returns them by index.
-- Cached: `CachePerms::tokened` (`heap/mod.rs:1650`), a conjunct of
+  `ClassState::claim_with` (`class/mod.rs`) returns them by index.
+- Cached: `CachePerms::tokened` (`heap/mod.rs`), a conjunct of
   `Heap::wf` and `Heap::keeps`.
-- Released: `ClassState::release_owned` (`class/mod.rs:5070`) takes a
+- Released: `ClassState::release_owned` (`class/mod.rs`) takes a
   `GhostSubset` of the batch; `AtomicBitmap::release`
   (`bitmap.rs`) hands each word's back, so its double-free abort is
   unreachable under the contract.
 - Live: the program's. A `heap::live::Live` token (`heap/live.rs`)
   holds the slot's token while the program holds the block: the
   allocation paths move the popped, refilled, compacted or directly
-  claimed slot's token into it (`heap::hand_out`, `heap/mod.rs:757`;
+  claimed slot's token into it (`heap::hand_out`, `heap/mod.rs`;
   `Heap::pop_compact_run`; `Shared::alloc_direct`), and the free paths
   take it back out (`Live::take_slot`) for the cache push
   or the release. Huge runs have the same shape: a `huge::RunToken`
@@ -1120,45 +1119,45 @@ they are held, share no byte. Two slots of one class are two tokens of
 one authority, so different slots, a class size or more apart; slots of
 two classes lie in two class regions; a slot and a run lie in the
 superblock and the huge region; two runs hold disjoint page subsets.
-`Heap::theorem_uniqueness_live` (`heap/mod.rs:4090`): a slot a
+`Heap::theorem_uniqueness_live` (`heap/mod.rs`): a slot a
 well-formed heap caches is no live block of its class.
-`Heap::theorem_uniqueness_apart` (`heap/mod.rs:4117`): two well-formed heaps
+`Heap::theorem_uniqueness_apart` (`heap/mod.rs`): two well-formed heaps
 never cache the same slot, since a slot both held would have two tokens
 of one authority, so cached entries of one class in two heaps stand for
 different slots.
 
 **Entry points.** The allocating entry points' cores return the token
 of the block they hand out, with at least the request's usable bytes
-(`Live::gives`, `heap/live.rs:218`): `malloc_block`, `calloc_zeroed`,
+(`Live::gives`, `heap/live.rs`): `malloc_block`, `calloc_zeroed`,
 `alloc_aligned`, `aligned_alloc_block`, `posix_memalign_block`,
 `valloc_block`, `pvalloc_block`, `malloc_usable_stored`,
 `calloc_usable_zeroed`, `realloc_block`, `realloc_usable_stored`
 (`api/libc.rs`), `mallocx_zeroed`, `rallocx_zeroed`
-(`api/jemalloc.rs`), `new_block`, `new_aligned_block` (`api/cxx.rs:406`).
+(`api/jemalloc.rs`), `new_block`, `new_aligned_block` (`api/cxx.rs`).
 The exported functions call them and hand the token to C with the
 block; the free cores take the token C holds (common premises, "The
 `free` contract").
 
 **Premises beyond the common ones.**
-- `heap::live::axiom_c_claim` (`heap/live.rs:913`): the `free`
+- `heap::live::axiom_c_claim` (`heap/live.rs`): the `free`
   contract at the C ABI boundary, one call per C call. See "The `free`
   contract" under Common premises.
-- `table::axiom_slot_loc` (`class/table.rs:2730`, one call in
+- `table::axiom_slot_loc` (`class/table.rs`, one call in
   `SlabTable::new`): the table `SlabTable::new` builds for a class is
   the class's (its slot and marker authorities and guard geometry);
   once per class per process is checked (it uses up the class's
   `Once` token, common premises).
-- `huge::axiom_run_locs` (`huge/mod.rs:1085`, one call in `Huge::new`): its
+- `huge::axiom_run_locs` (`huge/mod.rs`, one call in `Huge::new`): its
   run authorities are the process's; once per process is checked (it
   uses up the `Huge` step's token).
-- `table::axiom_fresh_words` (`class/table.rs:2753`, one call in
+- `table::axiom_fresh_words` (`class/table.rs`, one call in
   `SlabTable::new`): a just-reserved table's words read zero, one
   permission each; once per class is checked (its token), that `base`
   is the class bitmap's first word is not. Kani partly checks it
   (`kani_proofs::zero::fresh_words_load_zero`: the words load zero); the
   provenance clause, the one-shot token and the ghost location
   identities are not checked.
-- `vspec::word::word_addr` (`vspec/word.rs:36`) is a word's identity;
+- `vspec::word::word_addr` (`vspec/word.rs`) is a word's identity;
   `fetch_or`, `store`, `fetch_and` are single
   atomic steps whose result is the permission's value (ordering
   ignored; trusted, partly checked by Kani on one thread and by the
@@ -1198,7 +1197,7 @@ block; the free cores take the token C holds (common premises, "The
 
 What is proved is zero-token coverage at return: the zeroing entry
 points return a ghost `Zeroed` token that covers the bytes the API
-promises zero. `vspec::zero::theorem_zeroed_memory` (`vspec/zero.rs:390`)
+promises zero. `vspec::zero::theorem_zeroed_memory` (`vspec/zero.rs`)
 concludes `z.has(a)` for every byte `a` from `from` to the usable end,
 and `Zeroed::has` is interval membership. That a load of such a byte
 reads zero is the token's meaning, not a proved fact: it rests on the
@@ -1219,10 +1218,10 @@ end (the class size, or `huge_usable(size)`). Postconditions:
 
 | Function (file) | Token on a non-null result |
 |---|---|
-| `calloc_zeroed` (`api/libc.rs:530`) | `covers(r.0, n * m)` only |
-| `calloc_usable_zeroed` (`api/libc.rs:2067`) | `n * m`, and `covers_usable(.., 0, n * m)` |
-| `mallocx_zeroed` (`api/jemalloc.rs:426`) | with `MALLOCX_ZERO`: `size`, and `covers_usable(.., 0, size)` |
-| `rallocx_zeroed` (`api/jemalloc.rs:486`) | `size - k` bytes from `r + k`, and `covers_usable(.., k, size)` |
+| `calloc_zeroed` (`api/libc.rs`) | `covers(r.0, n * m)` only |
+| `calloc_usable_zeroed` (`api/libc.rs`) | `n * m`, and `covers_usable(.., 0, n * m)` |
+| `mallocx_zeroed` (`api/jemalloc.rs`) | with `MALLOCX_ZERO`: `size`, and `covers_usable(.., 0, size)` |
+| `rallocx_zeroed` (`api/jemalloc.rs`) | `size - k` bytes from `r + k`, and `covers_usable(.., k, size)` |
 
 `rallocx_zeroed`'s clause, for a moved or new block with
 `MALLOCX_ZERO`:
@@ -1264,24 +1263,24 @@ the known-zero hand-outs the byte state is as strong as the token's
 meaning, and no stronger.
 
 **Token sources.**
-- `vspec::zero::zero_raw` (`vspec/zero.rs:458`, `external_body`,
+- `vspec::zero::zero_raw` (`vspec/zero.rs`, `external_body`,
   discharged by the Kani harness `zero_raw_fills`; it takes the bytes'
   permission):
   `write_bytes(p, 0, n)` makes `n` zero bytes.
 - Never-written anonymous memory reads zero: for class slabs,
-  `class::axiom_fresh_slots_zero` (`class/mod.rs:3506`, called in
+  `class::axiom_fresh_slots_zero` (`class/mod.rs`, called in
   `ClassState::take`, for a `Fresh` slab, with the slab's
   descriptor state ticket); for huge runs, `huge::axiom_fresh_anon_zero`
   (`huge/mod.rs`, private to `huge`, called in `zero_run`,
   pages at or past the mark); for metadata, the `Zeroed` that
   `Unbacked::commit` and `into_lazy` return (`vspec/unbacked.rs`,
-  `external_body`), under `alloc_zeroed` (`meta.rs:717`) and
-  `reserve_committed_raw` (`meta.rs:1031`).
+  `external_body`), under `alloc_zeroed` (`meta.rs`) and
+  `reserve_committed_raw` (`meta.rs`).
 - `MADV_DONTNEED` memory reads zero: `class::axiom_discarded_slots_zero`
   (`class/mod.rs`, called in `take`, for a `Purged` slab,
   with the state ticket and the `PurgedZero` witness of a
   `purge::purged_zero` read, `purge.rs`) and
-  `huge::axiom_discarded_zero` (`huge/mod.rs:2412`, called in
+  `huge::axiom_discarded_zero` (`huge/mod.rs`, called in
   `zero_run`).
 - The huge pair is private to `huge`; the class pair takes the slab
   descriptor's state ticket.
@@ -1292,14 +1291,14 @@ meaning, and no stronger.
   run; a `Purged` slab or extent was discarded in the lock hold that
   set the state (`class/decay.rs` sets it whatever the advice) and
   has no allocated slot or run since; and `take` makes a zero claim of a
-  `Purged` one only while `purge::purged_is_zero` (`purge.rs:249`, a
+  `Purged` one only while `purge::purged_is_zero` (`purge.rs`, a
   `Relaxed` load of `LAZY_EVER`) reads true under the lock
   (`class/mod.rs`, through `purge::purged_zero`, whose witness the
   axiom requires), that is, no batch has used `MADV_FREE`. The
   axioms take any range; the call sites check the recorded state, not
   the history.
-- Cache path: `CachePerms::zero_ok` (`heap/zero.rs:59`), part of the
-  assumed `Heap::wf`; `Heap::take_handed` (`heap/zero.rs:518`).
+- Cache path: `CachePerms::zero_ok` (`heap/zero.rs`), part of the
+  assumed `Heap::wf`; `Heap::take_handed` (`heap/zero.rs`).
 - Class and huge lock axioms, for the state `take` reads.
 - The fills and the copy are valid because they take the block's
   permission (`vspec::user`, from `heap::live::axiom_hand_out` or
@@ -1375,7 +1374,7 @@ pub proof fn theorem_guard_free(p: *mut u8, c: int, slab: int)
 lies in a guard slab of any class region, and a free that returns acted
 on no address in one. A guard slab is what `SlabTable::is_guard_slab`
 (`class/table.rs`) names: every `guard_interval`-th page group,
-counted from 1. `commit_slab` and `commit_run` (`class/table.rs:4829`,
+counted from 1. `commit_slab` and `commit_run` (`class/table.rs`,
 below) put the guard on it: `MADV_GUARD_INSTALL` on the page group's
 first page, or the whole slab or page group left `PROT_NONE` when the
 advice fails, or (under `thp:always` with PMD chunks) no marker, the
@@ -1391,7 +1390,7 @@ guard slab always starts a run (`SlabTable::starts_run` ensures
 refused the guard slab stays `PROT_NONE` and only the slabs after it are
 committed. Page groups above a slab and `thp:always` chunks use
 `commit_slab`. The statement is about where blocks lie, and
-`next_fresh_slab` (`class/fresh.rs:127`) hands out only a slab that is not a
+`next_fresh_slab` (`class/fresh.rs`) hands out only a slab that is not a
 guard slab. `starts_run` ensures only `!r ==> !spec_is_guard(s)`,
 `run_end` only `s < r <= limit` (with `lemma_run_slabs`); that a run
 holds no guard slab past its first slab and that every slab of a group
@@ -1410,38 +1409,38 @@ the cursor are read-write before they are handed out
 (`docs/hardening.md`); they are not guard slabs, so this theorem does
 not cover them.
 
-`guard_of` (`layout/regions.rs:170`) is `is_guard_slab`'s formula;
+`guard_of` (`layout/regions.rs`) is `is_guard_slab`'s formula;
 `guard_geom(c)` is the process's class `c` table's
 `(lg_slabs_per_page, guard_mask)`. `is_slot_addr` is `is_slot`
 without the guard exclusion (slot `slot < nslots` of slab
 `slab < nslabs`, guard slabs included); `slab_index` and `guard_of` are opaque: `slab_index` is
 revealed only in `Regions::lemma_slab_index`, and `guard_of` in
-`SlabTable::is_guard_slab`, `lemma_guard_test` (`class/table.rs:2216`),
-`ClassLine::lemma_sized_ok` (`heap/shared.rs:651`) and
-`lemma_group_well_formed` (`class/decay.rs:1084`). `is_slot` is in
+`SlabTable::is_guard_slab`, `lemma_guard_test` (`class/table.rs`),
+`ClassLine::lemma_sized_ok` (`heap/shared.rs`) and
+`lemma_group_well_formed` (`class/decay.rs`). `is_slot` is in
 `user_block`, so in `fits` (theorem 1), and in `slot_start`, so in
 `free_target` (theorem 3): every row of the interface contract whose R
 or B cell cites them carries the guard exclusion through those
 predicates. The proofs are
-`Regions::lemma_user_block_not_guard` (`layout/regions.rs:1508`): a slot
+`Regions::lemma_user_block_not_guard` (`layout/regions.rs`): a slot
 lies inside its own slab, which `is_slot` puts outside the guard slabs,
 and inside its class region, apart from every other class region and
 from the huge region (`separated`); a huge block lies in the huge
 region.
 
 **Where `is_slot` is established.**
-- Claims: `lemma_real_is_slot` (`class/mod.rs:732`) takes the bit's
+- Claims: `lemma_real_is_slot` (`class/mod.rs`) takes the bit's
   slab from `SlotToks::entry`, which records that the slab
   is not a guard slab. `finish` gets it from `picks_marks`,
   which `take` ensures from the class lock's `ready`
   (`!spec_is_guard`). The zero picks' slots get `is_slot` in `finish`
   itself, from the same premise: `Regions::lemma_is_slot` at the call
-  (`class/mod.rs`); `SlabTable::slot_ptr` (`class/table.rs:3792`)
+  (`class/mod.rs`); `SlabTable::slot_ptr` (`class/table.rs`)
   ensures only the slot's address.
-- Unsized frees: `SlabTable::is_set_unchecked` (`class/table.rs:3415`)
+- Unsized frees: `SlabTable::is_set_unchecked` (`class/table.rs`)
   ensures `r ==> !guard_slab(class, slab)`. It reads the word through
-  `vspec::word::load` (`vspec/word.rs:96`) inside the word's invariant,
-  where `bitmap::guards_ok` (`bitmap.rs:3511`) holds: a guard slab's bits
+  `vspec::word::load` (`vspec/word.rs`) inside the word's invariant,
+  where `bitmap::guards_ok` (`bitmap.rs`) holds: a guard slab's bits
   keep their fresh markers, so `marks_ok` makes them clear
   (`lemma_guard_clear`). `check_live` and `check_located`
   (`class/table.rs`) re-export it; `Shared::classify_free`,
@@ -1458,11 +1457,11 @@ region.
   table's slab count, the region's (`ClassLine::wf`,
   `heap/shared.rs`, which states that the table's slab count is the
   region's), and its bit test
-  `SlabTable::bit_word` (`class/table.rs:5105`, a wrapper of
+  `SlabTable::bit_word` (`class/table.rs`, a wrapper of
   `bit_word_held`, the word load `is_set_unchecked` calls), which
   ensures `!guard_slab` of a set bit; so `set_slot` ensures
   `is_slot`, and that the slab is below the slab count.
-- Sized frees: `Shared::sized_slot` (`heap/shared.rs:3742`) through the
+- Sized frees: `Shared::sized_slot` (`heap/shared.rs`) through the
   class line's `ClassLine::sized_ok`. The guard test and the
   slot-start test are the class line's; the region bound and the
   slot-start test are one 64-bit exact-division test:
@@ -1481,22 +1480,22 @@ region.
 
 `bitmap::guards_ok` is kept by every word writer: `fresh_word_invs`
 starts every bit fresh, claims and releases leave the markers alone,
-and `AtomicBitmap::init` (`bitmap.rs:680`) requires a slab that is
+and `AtomicBitmap::init` (`bitmap.rs`) requires a slab that is
 not a guard slab (`lemma_guards_move`); `take_group` calls it
 only past the `is_guard_slab` test.
 
 **Huge runs (at the huge lock invariant).** Each run's guard follows
 its usable pages inside its extent, and live extents are pairwise apart
-(`huge::Inner::wf`). `Inner::theorem_run_guards` (`huge/mod.rs:3441`)
+(`huge::Inner::wf`). `Inner::theorem_run_guards` (`huge/mod.rs`)
 states the consequence for every value the huge lock admits, and for
 nothing per call: the usable pages of a live run
 share no page with the guard pages of any live run, its own included.
 
 **Premises beyond the common ones.**
-- `table::axiom_slot_loc` (`class/table.rs:2730`) also fixes
+- `table::axiom_slot_loc` (`class/table.rs`) also fixes
   `guard_geom(c)` to the table's geometry: the same one-table-per-class
   assumption that names the slot tokens' authority.
-- `heap::shared::axiom_shared_built` (`heap/shared.rs:1490`) also states the
+- `heap::shared::axiom_shared_built` (`heap/shared.rs`) also states the
   stored class lines, which carry the guard tests, as it states the
   tables.
 - The class lines' premises ("Class lines", common premises): the
@@ -1560,7 +1559,7 @@ entry points call them:
   `class_of_small` and `layout::small_class`, whose `assert_unchecked`
   is the table's postcondition), and a larger one tail-calls
   `malloc_medium` (`class_index`); both pop through `malloc_class`:
-  `api::shared_ptr`, `heap::existing_heap` (`heap/thread.rs:449`: the TLS
+  `api::shared_ptr`, `heap::existing_heap` (`heap/thread.rs`: the TLS
   read and `heap_from_slot`), `heap::fast_flags` and `Heap::alloc_fast`
   (`heap/paths.rs`), whose body is `pop_fast`. `calloc`'s cache pop is
   the same `pop_fast`, and `operator new`'s fast path is `malloc_fast`
@@ -1586,7 +1585,7 @@ entry points call them:
   (`ClassLine::sized_ok`, over the guard word `ClassLine::guard_word`
   and `is_guard`).
 - `challoc_free_usable`: `tls_heap_slot`, `shared_base`,
-  `shared_deref`, `free_fast_slot` and `class_size` (`api/libc.rs:1834`).
+  `shared_deref`, `free_fast_slot` and `class_size` (`api/libc.rs`).
   `heap::free_fast_class` is test-only.
 
 `theorem_no_syscall_on_fast_paths`, a verification-only function
@@ -1622,16 +1621,16 @@ sizes above the small table), which requires
 - Every trusted body or specification that can reach the kernel, by a
   syscall, a libc call, a call through a function pointer or a verified
   function it calls unchecked, `requires may_syscall()` too:
-  `linux::try_reserve` (`layout/regions.rs:2174`), `ThreadKey::create`
-  (`heap/shared.rs`), `atfork_handlers` (`api/mod.rs:1518`),
-  `background::spawn` and `pthread_join` (`purge/background.rs:508`;
+  `linux::try_reserve` (`layout/regions.rs`), `ThreadKey::create`
+  (`heap/shared.rs`), `atfork_handlers` (`api/mod.rs`),
+  `background::spawn` and `pthread_join` (`purge/background.rs`;
   `init_fields`, with its `tid()` and `now_ns()`, `Meta::commit` and
   `Heap::destroy` are verified), `print::call_back`, `print::write_file`
   and `jemalloc::call_hook` (the report's call-outs, theorem 16;
   `print::emit` is verified), the
   C++ `call_handler` and `call_handler_caught` (the `nothrow_t` forms'
   call through `cxx_handler.cpp`'s catch),
-  `call_get_new_handler`, `call_throw_bad_alloc` (`api/cxx.rs:181`), the
+  `call_get_new_handler`, `call_throw_bad_alloc` (`api/cxx.rs`), the
   `pthread_setspecific` wrapper (which may allocate; `heap/shared.rs`,
   theorem 15).
   (`shared::seed`, which reads `getrandom`, is verified: its syscalls
@@ -1649,11 +1648,11 @@ sizes above the small table), which requires
   is outside the proofs). It is also closed: no module outside `sys` can
   reveal it.
 - `grant_syscalls` is called only in the bodies of `extern "C"`
-  functions and of `sys::abort_fmt` (`sys/abort.rs:139`), which never
+  functions and of `sys::abort_fmt` (`sys/abort.rs`), which never
   returns; a panic, a failed `vspec::check` included, reaches it through
   the `#[panic_handler]` (`lib.rs`). Outside tests, no Rust code
   calls an `extern "C"` function of the crate.
-  `sys::tests::syscall_grants_only_at_roots` (`sys/mod.rs:1617`)
+  `sys::tests::syscall_grants_only_at_roots` (`sys/mod.rs`)
   checks the source: every grant is in an `extern "C"` function or in
   `abort_fmt`. `sys::tests::syscall_capability_only_as_a_clause` checks
   that `may_syscall` appears only as a `requires` or loop invariant
@@ -1680,8 +1679,8 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
 - The trusted bodies the fast paths reach make no system call:
   `sys::tls::get` and `get_tp` (a TLS load, `mrs`), `pac::auth` and
   `sign` (PAC instructions), `heap::thread::slot_heap_ref` (a cast),
-  `Heap::home_ptr_at` (`heap/cache.rs:321`, address arithmetic),
-  `arena_volatile` (`heap/mod.rs:7270`, a volatile read),
+  `Heap::home_ptr_at` (`heap/cache.rs`, address arithmetic),
+  `arena_volatile` (`heap/mod.rs`, a volatile read),
   `vspec::atom::load_u16_at` (an atomic load, under the verified
   `load_owner` and the fast path's `owner_from`), the watermark's loads
   (`vspec::atom::load_usize` and `load_usize_seen`, atomic loads; the
@@ -1707,7 +1706,7 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   (`lock.rs`). `Sink`'s `fmt::Write::write_str` (verified, with
   `may_syscall()` in `Sink`'s type invariant; reached through
   `core::fmt`) flushes, and a sink comes only from
-  `Sink::new` (`api/print.rs:202`). Both require `may_syscall()`, and no
+  `Sink::new` (`api/print.rs`). Both require `may_syscall()`, and no
   fast-path function takes either as an argument.
 - The test checks where the grants are, not who calls the functions
   that make them: that no verified code calls an `extern "C"` function
@@ -1843,14 +1842,14 @@ path. Each C entry point mints or claims its block's token (theorem 5's
 `free_sized_block`, `free_usable_block`), which holds the fast branch;
 the cores are unmasked for the same reason. Their fast branches call
 only the functions named here:
-- `malloc` (`malloc_block`, `api/libc.rs:323`): for a size of at most
+- `malloc` (`malloc_block`, `api/libc.rs`): for a size of at most
   `SMALL_MAX`, `class_index_small`, then `malloc_class`:
   `api::shared_ptr`, `existing_heap`, `fast_flags`, `Heap::alloc_fast`.
   A declined pop tail-calls `malloc_slow_class`; a larger size
   tail-calls `malloc_medium`. `malloc_fast` is the same branch as one
   masked function (`class_index`, then the same calls); it is also the
   C++ `operator new` family's fast path.
-- `free` (`free_block`, `api/libc.rs:627`): `tls_heap_slot` (on a ghost
+- `free` (`free_block`, `api/libc.rs`): `tls_heap_slot` (on a ghost
   `TlsSlot::entry()`), `shared_base`, `shared_deref`, `free_fast_slot`;
   then `free_slow`, which returns at once for null (the fast branch has
   no null test of its own: null is in no class region).
@@ -1939,7 +1938,7 @@ no mask.
     slab, through the markers; partly checked by loom, ledger
     `verus/ledger/src/class/table.rs.md`), which the owner word's
     invariant rests on.
-- **Wrappers.** `load_owner` (`class/table.rs:1028`, a `Relaxed` load)
+- **Wrappers.** `load_owner` (`class/table.rs`, a `Relaxed` load)
   declares the owner namespace. `vspec::slice::array_get_unchecked`
   stands for `get_unchecked` on an array.
 - **Masks on existing specifications.**
@@ -1947,7 +1946,7 @@ no mask.
     `usize::leading_zeros`, `u32::rotate_right` and `u64::rotate_right`
     (`vspec/core_int.rs`), `<*mut T>::add` (`vspec/ptr.rs`) and
     `core::hint::assert_unchecked` (`vspec/misc.rs`).
-  - Also declared: `vspec::word::load` (`vspec/word.rs:96`, the bit test's
+  - Also declared: `vspec::word::load` (`vspec/word.rs`, the bit test's
     load), `<*mut T>::is_null` (`vspec/addr.rs`), and vstd's `ptr_ref`,
     `ptr_mut_ref`, `ptr_mut_write` and `wrapping_*`.
 - **Destructors.** Verus requires every `Drop` impl to declare
@@ -1977,14 +1976,14 @@ no mask.
   push under `double_free_scan` (`PUSH_STATE`) decline to the slow path,
   so they are outside the fast path by construction.
 - **The `exec_allows_no_decreases_clause` functions** (common premises)
-  are all off these paths: `RawLock::lock_slow` (`lock.rs:125`),
+  are all off these paths: `RawLock::lock_slow` (`lock.rs`),
   `ClassState::claim_with`'s retry (`class/mod.rs`), `api::init_slow`,
   `line_ready`, `wait_line`, `init_gate_enter` and `fork_gate_enter`
   (`api/mod.rs`), the OOM handler loop `api::cxx::oom`, the purge
-  thread's `main` (`purge/background.rs:802`), `sys::cgroup::scan_lines` and
+  thread's `main` (`purge/background.rs`), `sys::cgroup::scan_lines` and
   `Deferred::discover` (`sys/cgroup.rs`), the kernel retry loops
-  `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs:1136`), and
-  `config::linux::env_var` (`config.rs:1924`). They need a liveness model.
+  `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`), and
+  `config::linux::env_var` (`config.rs`). They need a liveness model.
   Theorem 45 checks the compiled fast paths for back-edges (none).
 
 **Where the statement is weaker than the code.**
@@ -2016,7 +2015,7 @@ Two claims, of which only the first is proved. (a) When a heap's
 thread-exit destructor runs, the flush it runs first returns every slot
 the heap's caches held to the release path: proved, below. (b) Every
 heap gets a destructor: not proved, and not true in every run. A heap is
-registered for one by `ThreadKey::set` (`heap/shared.rs:1037`), which
+registered for one by `ThreadKey::set` (`heap/shared.rs`), which
 returns at once, registering nothing, when the key is invalid
 (`pthread_key_create` failed at init); the heap is still created and
 published in TLS, so its cached slots are stranded when its thread
@@ -2073,18 +2072,18 @@ cache memory `destroy` frees next (`free_caches_in` over the home array and
 each node), so the thread-exit destructor (`heap_destructor`,
 `heap/thread.rs`, through `Heap::destroy`, `heap/mod.rs`)
 strands no cached block when it runs (claim (a); whether it runs is
-(b)). `tcache.flush` (`Tcaches::flush`, `heap/tcaches.rs:984`), `malloc_trim` (`api/libc.rs`), the mallctl
-purge's `flush_caller` (`api/mallctl.rs:2763`) and
+(b)). `tcache.flush` (`Tcaches::flush`, `heap/tcaches.rs`), `malloc_trim` (`api/libc.rs`), the mallctl
+purge's `flush_caller` (`api/mallctl.rs`) and
 `thread.tcache.enabled` off (`Heap::set_tcache_enabled`,
 `heap/mod.rs`) run the same function.
 
-The released log (`CachePerms::released`, `heap/mod.rs:3812`, ghost) is
+The released log (`Heap::released`, `heap/mod.rs`, ghost) is
 appended to by `Heap::flush` alone (by inspection: no spec keeps it
 fixed elsewhere; the theorem's `ensures` are relative, so this does not
 weaken them), with the batch it hands to `Shared::release_routed` and
 the same tokens. The chain that makes an entry of the log a release:
 
-- `Heap::flush` (`heap/flush.rs:385`) also ensures, for any `n`:
+- `Heap::flush` (`heap/flush.rs`) also ensures, for any `n`:
   every other owned header holds what it held, the cache holds a subset
   of what it held, and `log_adds(final.released(), old.released(),
   old.held(cache).to_set() - final.held(cache).to_set())`: the slots
@@ -2092,20 +2091,20 @@ the same tokens. The chain that makes an entry of the log a release:
   (`heap/flush.rs`) proves the split by counting (the cached,
   kept and released addresses are distinct, the kept are cached, the
   released are cached and not kept, and their numbers add up), and
-  `Heap::lemma_flush_accounting` (`heap/mod.rs:4306`) lifts it to the
+  `Heap::lemma_flush_accounting` (`heap/mod.rs`) lifts it to the
   pairs.
-- `Shared::release_routed` (`heap/shared.rs:3460`) takes the bag of the
+- `Shared::release_routed` (`heap/shared.rs`) takes the bag of the
   batch's tokens by `&mut` and ensures `final(bag)@ == old(bag)@ -
   aset(ptr_addrs(ptrs@), 0, ptrs@.len())`: the bag lost exactly the
   batch's tokens. That each went to a `ClassState::release_owned` call
   (`class/mod.rs`), which passes it, slab by slab, through
-  `release_slab` to `AtomicBitmap::release` (`bitmap.rs:1241`), whose
-  word invariant (`bitmap::WordPred`, `bitmap.rs:3535`) must take the
+  `release_slab` to `AtomicBitmap::release` (`bitmap.rs`), whose
+  word invariant (`bitmap::WordPred`, `bitmap.rs`) must take the
   token of every bit it clears, is read from the verified bodies, not
   stated by an `ensures`. The `FOREIGN` cache's and a home cache's
   other-arena slots are released the same way through the owner arena's
   class (`release_routed`'s routing); there is no other "remote" path.
-- `Heap::flush_arena` (`heap/mod.rs:6362`) flushes one array whole and
+- `Heap::flush_arena` (`heap/mod.rs`) flushes one array whole and
   ensures its headers empty, the log gained what they held, and every
   other header unchanged; `flush_all` composes the home array and every
   node, using `lemma_home_apart` and `lemma_nodes_apart`
@@ -2122,7 +2121,7 @@ the same tokens. The chain that makes an entry of the log a release:
   consumes: `heap_destructor` and `create_heap_for_thread` each make
   one. The heap `heap_destructor` hands it is the TLS slot's heap, whose
   `wf` `heap_at` assumes (common premise). After the flush
-  `free_caches_in` (`heap/mod.rs:6202`) frees each array; it requires
+  `free_caches_in` (`heap/mod.rs`) frees each array; it requires
   every header of the array empty and reads each header through its
   permission, so its `assert_flushed` abort is proved unreachable.
 - Slot uniqueness (theorem 5): each cached slot's token is held once,
@@ -2192,13 +2191,13 @@ and is verified with the same `ensures`.
 
 **Proof.** The Fisher-Yates loop (`for i in (1..len).rev()`, swap `i`
 with `j = xorshift(rng) % (i + 1)`) keeps `permutes(out@, old(out)@)` as
-an invariant; `lemma_swap_permutes` (`class/mod.rs:334`) shows one `<[T]>::swap`
+an invariant; `lemma_swap_permutes` (`class/mod.rs`) shows one `<[T]>::swap`
 leaves the multiset unchanged (the update-twice spec of `swap` in
 `vspec/slice.rs`, with vstd's `to_multiset_update`). `j <= i < len` is
 also checked (the `swap` precondition and the `%`), so the swap is in bounds and the remainder by `i + 1` never
 divides by zero. Nothing about `xorshift`'s output is used.
 
-**Where it applies.** `ClassState::claim_random_zero` (`class/mod.rs:2787`) is the
+**Where it applies.** `ClassState::claim_random_zero` (`class/mod.rs`) is the
 only caller outside tests: with `slot_randomize`, `Heap::claim`
 (`heap/flush.rs`) calls it for every refill and run rebuild, and it
 shuffles `out[..n]` right after `claim_with` writes the batch. Inside
@@ -2219,7 +2218,7 @@ discharged by Kani, ledger `verus/ledger/src/vspec/slice.rs.md`) and vstd's mult
 **Scope.**
 - Randomness is out of scope: nothing is claimed about the distribution
   of the permutation, the quality of `xorshift`, or the seed from
-  `Heap::rng` (`heap/flush.rs:115`; `seed` is a `getrandom` read, or a
+  `Heap::rng` (`heap/flush.rs`; `seed` is a `getrandom` read, or a
   clock read when that fails, and claims nothing about the value). The theorem holds for every `rng` value, including a stuck or
   adversarial one.
 - The random start word of each pick that scans the bitmap in `finish`
@@ -2296,7 +2295,7 @@ a freed slot's bytes are zero before it can be handed out again, on the
 premise below that nothing writes them in between.
 
 **Paths that honour it, and why every slot free is one of them.**
-- `Heap::free_slow_in` (`heap/paths.rs:717`): `zero_slot` first (after
+- `Heap::free_slow_in` (`heap/paths.rs`): `zero_slot` first (after
   the rehome test only: a young heap's `FOREIGN` free may
   first go to `rehome_on_free`, whose push declines under `PUSH_ZERO`
   and reaches `free_slow_in` for the home arena, which zeroes it), then
@@ -2304,18 +2303,18 @@ premise below that nothing writes them in between.
   `push_cache`. It is reached from `Heap::free_slow` (the
   home-arena push of `Heap::free`) and `Heap::free_other` (another
   arena's slot).
-- `heap::free_direct` (`heap/paths.rs:1199`), for a thread with no heap
+- `heap::free_direct` (`heap/paths.rs`), for a thread with no heap
   and `MALLOCX_TCACHE_NONE`: `zero_slot` before `Shared::free_direct`,
   `zero_huge` before `free_huge`.
-- `Heap::free_huge` (`heap/paths.rs:391`): `zero_huge` before
+- `Heap::free_huge` (`heap/paths.rs`): `zero_huge` before
   `free_huge`.
 - `Shared::free_direct` and `Shared::free_huge` have no other callers
   outside tests, and `push_cache` is called only by `push_cache_flags`
   and `free_slow_in`.
 - Every other free of a slot is a cache push, and every push declines
-  under `PUSH_ZERO`: `Heap::push_cache_flags` (`heap/cache.rs:755`) and
+  under `PUSH_ZERO`: `Heap::push_cache_flags` (`heap/cache.rs`) and
   `push_fast` ensure `flags & PUSH_ZERO != 0 ==> !r`, so
-  `free_sized_fast` (`heap/paths.rs:1016`) ensures the same and falls
+  `free_sized_fast` (`heap/paths.rs`) ensures the same and falls
   back to the exact `heap::free` (`free_fast` and `free_fast_class` are
   `#[cfg(test)]` helpers outside `verus!`); every push is handed
   `Shared::push_flags()` (`api/libc.rs` `free`, `free_sized_block`,
@@ -2329,9 +2328,9 @@ premise below that nothing writes them in between.
   `push_flags()`; `free_fast_tail` takes the heap from the slot value and
   passes `push_fast` 0 for the bytes 0 and `FREE_ROUTE` and the byte
   without `FREE_ROUTE` otherwise, so it declines whenever the byte has
-  `PUSH_ZERO` (`lemma_free_route_bits`, `heap/paths.rs:988`, states the
+  `PUSH_ZERO` (`lemma_free_route_bits`, `heap/paths.rs`, states the
   `PUSH_PAC` and `PUSH_ZERO` bit facts). `free_fast_slot` and
-  `free_fast_tail` (`heap/paths.rs:909`) ensure
+  `free_fast_tail` (`heap/paths.rs`) ensure
   `zero_on_free(shared) ==> r is None`, where `zero_on_free`
   (`heap/zero.rs`) is the `PUSH_ZERO` bit of `flags()`, and
   `free_fast_tail` also ensures `flags & PUSH_ZERO != 0 ==> r is None`.
@@ -2469,7 +2468,7 @@ through `Shared` reaches, with `arenas[i]` standing for the arena that
 
 `fork_release` is the body of `fork_parent` and `fork_child`. It starts
 from that hold and hands every token back through
-`RawLock::unlock_held` (`lock.rs:202`), which requires the token of the
+`RawLock::unlock_held` (`lock.rs`), which requires the token of the
 lock it unlocks and consumes it. A token is not `Copy`, and the map is
 empty at the end, so each listed lock is released once, by its holder.
 `fork_child` first rewrites the background state through
@@ -2488,7 +2487,7 @@ handler then sums the dirty bytes it inherited
 from a lock-order token of its own (`axiom_entry`, theorem 33), so outside this
 statement.
 
-The tokens: `RawLock::lock_held` (`lock.rs:181`) is `lock` plus a
+The tokens: `RawLock::lock_held` (`lock.rs`) is `lock` plus a
 `LockHeld` whose `held()` is the lock. The field is private to
 `lock.rs`, so outside it only `lock_held` builds a token; the handoff
 axioms below are the other source.
@@ -2498,7 +2497,7 @@ axioms below are the other source.
   no other thread holds it until `unlock`. This is `RawLock`'s futex
   contract; Verus does not check it (atomics return any value). The
   token records the calls; the mutex turns them into exclusive holds.
-- *The handoff* (`axiom_fork_resumed_state`, `api/mod.rs:2048`, and
+- *The handoff* (`axiom_fork_resumed_state`, `api/mod.rs`, and
   `axiom_fork_resumed`; axioms). Ghost state does not cross the
   C calls, so the hold `fork_prepare` ends with is restated where the
   release begins: `axiom_fork_resumed` ensures `fork_holds` at the
@@ -2520,7 +2519,7 @@ axioms below are the other source.
   inside the blockable signals (theorem 39). Each handler calls each axiom once. For
   `axiom_fork_resumed` a second call would prove `false` (the creation
   lock cell's permission it restates is exclusive), and the test
-  `fork_hold_is_resumed_once` (`api/mod.rs:3602`) checks that its
+  `fork_hold_is_resumed_once` (`api/mod.rs`) checks that its
   wrapper `resume::resumed` has one call site; for
   `axiom_fork_resumed_state` the same test counts the call sites (one
   per handler), and nothing enforces the run-time count.
@@ -2546,11 +2545,11 @@ axioms below are the other source.
   window opens after the last acquisition and closes before the first
   release.
 - *The lock-order root.* `fork_prepare` takes its lock-order token from
-  its own axiom, `lock::axiom_fork_entry` (`lock.rs:524`), the one root
-  token; `axiom_entry` (`lock.rs:505`), every other entry point's, ensures
+  its own axiom, `lock::axiom_fork_entry` (`lock.rs`), the one root
+  token; `axiom_entry` (`lock.rs`), every other entry point's, ensures
   `!o.root()`.
 - *The arena table* is not a premise: `arena_held` and
-  `count_held` (`api/mod.rs:2111`) verify. `fork_prepare` takes the creation
+  `count_held` (`api/mod.rs`) verify. `fork_prepare` takes the creation
   lock with `Arenas::lock_held`, which also hands it the permission of
   the lock's cell (`Lock::lock_held_perm`); the hold keeps it
   (`ForkHeld::created`). The lock's value (`arena::Created`) carries a
@@ -2564,18 +2563,18 @@ axioms below are the other source.
   second arena scan cover the same arenas as its first scan, given the
   handoff (whose `axiom_fork_resumed` also restates the cell
   permission as part of the hold, `ForkHeld::wf`).
-- `axiom_state_lock` (`purge/background.rs:902`, an axiom, used in
+- `axiom_state_lock` (`purge/background.rs`, an axiom, used in
   `STATE`'s initialiser): the static's raw lock is `state_lock()`
   (Verus does not read statics in specifications); its rank is proved,
   and `purge::background::state` verifies over the static's
   postcondition.
 - The background state's invariant in the child also rests on
-  `axiom_state_lock_inv` (`purge/background.rs:71`) and on
+  `axiom_state_lock_inv` (`purge/background.rs`) and on
   `axiom_held`, behind `get_unlocked` (the value a holder left).
 - *Completeness of the list.* That `listed` names every `Lock` in the
   crate is not proved. The test `fork_lock_list_matches_the_source_tree`
   checks the `Lock` fields and statics in the source tree against the
-  test's `FORK_LOCKS` (`api/mod.rs:3508`); that `FORK_LOCKS`, `ForkLock`
+  test's `FORK_LOCKS` (`api/mod.rs`); that `FORK_LOCKS`, `ForkLock`
   and the handlers' bodies name the same locks is by inspection.
 
 **Where the statement is weaker than the code.**
@@ -2639,7 +2638,7 @@ slot is released only into the arena that owns its slab, the arena whose
 // slab a refill or claim reserves slots in is this arena's.
 ensures picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
 
-// class/mod.rs:3704
+// class/mod.rs
 spec fn picks_owned(c: int, a: u16, p: Seq<Pick>, lo: int, hi: int) -> bool {
     forall|j: int| lo <= j < hi ==> slab_owner(c, (#[trigger] p[j]).slab as int) == a
 }
@@ -2655,13 +2654,13 @@ ensures
     forall|i: int| 0 <= i < ptrs@.len() ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[i]@.addr) == self.spec_arena(),
 ```
 
-`spec_arena` (`class/mod.rs:2066`) is the class state's `arena` field;
-`Arena::inv` (`arena.rs:1302`) states that `classes[c]` has arena
+`spec_arena` (`class/mod.rs`) is the class state's `arena` field;
+`Arena::inv` (`arena.rs`) states that `classes[c]` has arena
 `index`, so `Arena::class` ensures `r.spec_arena() ==
 self.spec_index()`, and the lookups by index ensure the arena they
 return has that index: `Shared::owner` and `Shared::arena`
 (`heap/shared.rs`), `Arenas::get`, `materialise`, `build`
-and `get_existing` (`arena.rs:3030`). `Shared::wf` includes `arena0.spec_index()
+and `get_existing` (`arena.rs`). `Shared::wf` includes `arena0.spec_index()
 == 0`, proved by `Shared::init` from `Arena::init`'s postcondition.
 
 **Per free path.** Every slab free reaches an arena's class state only
@@ -2669,10 +2668,10 @@ through `release_owned`, from one of two places:
 
 | Path | What is proved |
 |---|---|
-| `Shared::free_direct(arena, class, p)` (`heap/shared.rs`), from `heap::free_direct` (`heap/paths.rs:1199`: `MALLOCX_TCACHE_NONE`, a thread without a heap) and `Heap::free_slow_in` (no cache for the class) | ensures `self.wf() ==> slot_owner(class, p) == arena`: it releases through `owner(arena).class(class)`, of arena `arena`, and `release_with` aborts (`wrong_arena`) otherwise. Both callers pass the owner: `heap::free_direct` the arena of `classify_free`, which ensures it is `slot_owner(c, p)` given the block's `Live` token (`heap/shared.rs`, from `check_located`, `class/table.rs`), and `free_slow_in` that of `arena_of_slot` (`heap/shared.rs:3411`); so by their contracts `wrong_arena` cannot fire from them (Verus does not state it at the abort site). |
-| `Shared::release_routed(arena, class, ptrs)` (`heap/shared.rs`), from `Heap::flush` (`heap/flush.rs:385`): every cache, home or `FOREIGN` | each run goes through `owner(a).class(class)` (arena `a`), whose `release_owned` releases only `a`'s slots and stops at the first slot of another arena; the next run starts at `arena_of_slot` of that slot, which ensures `slot_owner` (`class/table.rs:636`). Termination is proved (`decreases 2 * left + [next slot not a's]`): with owners fixed, the `changed arena during a flush` abort is unreachable, which its branch asserts (`assert(false)` in a proof block). |
+| `Shared::free_direct(arena, class, p)` (`heap/shared.rs`), from `heap::free_direct` (`heap/paths.rs`: `MALLOCX_TCACHE_NONE`, a thread without a heap) and `Heap::free_slow_in` (no cache for the class) | ensures `self.wf() ==> slot_owner(class, p) == arena`: it releases through `owner(arena).class(class)`, of arena `arena`, and `release_with` aborts (`wrong_arena`) otherwise. Both callers pass the owner: `heap::free_direct` the arena of `classify_free`, which ensures it is `slot_owner(c, p)` given the block's `Live` token (`heap/shared.rs`, from `check_located`, `class/table.rs`), and `free_slow_in` that of `arena_of_slot` (`heap/shared.rs`); so by their contracts `wrong_arena` cannot fire from them (Verus does not state it at the abort site). |
+| `Shared::release_routed(arena, class, ptrs)` (`heap/shared.rs`), from `Heap::flush` (`heap/flush.rs`): every cache, home or `FOREIGN` | each run goes through `owner(a).class(class)` (arena `a`), whose `release_owned` releases only `a`'s slots and stops at the first slot of another arena; the next run starts at `arena_of_slot` of that slot, which ensures `slot_owner` (`class/table.rs`). Termination is proved (`decreases 2 * left + [next slot not a's]`): with owners fixed, the `changed arena during a flush` abort is unreachable, which its branch asserts (`assert(false)` in a proof block). |
 
-Upstream of those, `Heap::free` (`heap/paths.rs:239`) pushes a slot onto
+Upstream of those, `Heap::free` (`heap/paths.rs`) pushes a slot onto
 the home cache when `classify_free`'s arena, `slot_owner(c, p)`, is
 the heap's, and onto the `FOREIGN` cache otherwise; the sized paths push
 untested onto the home cache and leave the routing to the flush (design
@@ -2690,23 +2689,23 @@ the only caller of `release_routed`, and these two the only callers of
 contracts are the statement, as `fits` is theorem 2's.
 
 **Huge runs.** The huge allocator is one per process; an arena only
-counts its runs. `Shared::free_huge` (`heap/shared.rs:3289`) credits
+counts its runs. `Shared::free_huge` (`heap/shared.rs`) credits
 `owner(run.arena)`, which provably has index `run.arena`, the arena
 `Huge::free_run` read from the run's descriptor, which `alloc_run`
 wrote from its `arena` argument.
 
-**How the claim side is proved.** `Inner::base` (`class/mod.rs:1601`), part
+**How the claim side is proved.** `Inner::base` (`class/mod.rs`), part
 of the class lock invariant, includes `owns(s) ==> slab_owner(c, s) ==
 arena`. Slabs join an arena's ghost only in `next_fresh_slab`, as the
-group `take_group` just returned, and `take_group` (`class/table.rs:4031`)
+group `take_group` just returned, and `take_group` (`class/table.rs`)
 ensures that every slab of that group has `slab_owner` the taking
 arena, from its owner-word store (`lemma_fresh_group`,
-`class/fresh.rs`). `take` (`class/mod.rs:4038`) requires `ready`, so
+`class/fresh.rs`). `take` (`class/mod.rs`) requires `ready`, so
 an owned slab, and ensures its pick's owner; `plan` collects
 `picks_owned`.
 
 **Premises beyond the common ones.**
-- `class::table::store_owner` (`class/table.rs:1100`, `external_body`):
+- `class::table::store_owner` (`class/table.rs`, `external_body`):
   `take_group`'s `Relaxed` store of the owner
   word fixes `slab_owner` for the group's slabs, and a `Relaxed` load
   of a handed-out group's word returns it. Together: each group's word
@@ -2714,10 +2713,10 @@ an owned slab, and ensures its pick's owner; `plan` collects
   the group, and never again (the only other writer is the test-only
   `corrupt_owner_word`). `owner_at`, `owner`, `check_located`,
   `arena_of_slot` and `load_owner` itself are verified.
-- `ClassState::owner_locked` (`class/mod.rs:2491`, verified) ensures its result is
+- `ClassState::owner_locked` (`class/mod.rs`, verified) ensures its result is
   `slab_owner` and that a result naming this arena means the slab is
   owned (see "Owner words in their invariants", below).
-- `stats::arena_at` (`stats.rs:955`, verified) ensures the arena it
+- `stats::arena_at` (`stats.rs`, verified) ensures the arena it
   returns has index `i`, from `get_existing`'s postcondition; not a
   premise.
 - `arena::axiom_arena_assemble` requires every class state's arena
@@ -2791,7 +2790,7 @@ an owned slab, and ensures its pick's owner; `plan` collects
   postcondition (the huge lock's ghost descriptors carry it, but no
   token survives between the calls).
 - The `free` fast path's owner test only picks the cache:
-  `free_fast_tail` (`heap/paths.rs:909`) calls `Shared::home_owns`
+  `free_fast_tail` (`heap/paths.rs`) calls `Shared::home_owns`
   (`heap/shared.rs`) when the `free_flags` byte has `FREE_ROUTE`
   (several arenas), and skips it with one arena. `home_owns` reads the
   owner word through the class line (`ClassLine::owner`,
@@ -2811,11 +2810,13 @@ the sentinels it returns the published heap and writes nothing.
 slot holds and whose `creates()` counts the `Heap::create` calls made
 with it. `get`, `get_tp` (`sys/tls.rs`) take it
 shared and return its value; `set` takes it `&mut` and makes
-the written value its value. `Heap::create` (`heap/mod.rs:5164`) takes
-it `&mut`, leaves the value alone and adds one to `creates`; it is the
-only caller of `TlsSlot::note_create` (`sys/tls.rs:166`), the only
-writer of `creates`. A function handed only `&TlsSlot` can therefore
-neither write the slot nor create a thread heap through that token, and
+the written value its value. `heap::thread::create_heap_for_thread`
+(`heap/thread.rs`) takes it `&mut` and adds one to `creates` right after
+each of its `Heap::create` calls; it is the only caller of
+`TlsCell::note_create` (`sys/tls.rs`), the only writer of `creates`.
+`Heap::create` itself does not take the cell, so the count is a
+convention of that caller. A function handed only `&TlsSlot` can therefore
+neither write the slot nor add to its create count, and
 one handed `&mut TlsSlot` states what it does to both in its `ensures`.
 The token pairs the slot's value (`TlsCell`) with the heap loan
 (`HeapLoan`), and `heap::thread::slot_ok` ties the two.
@@ -2825,16 +2826,16 @@ are the four top-level users of the slot named in the premises below
 (checked by inspection).
 
 The public readers keep their signatures: `heap_for_thread` and
-`existing_heap` (`heap/thread.rs:449`) make the token at entry
-(`TlsSlot::entry`, `sys/tls.rs:316`, value unconstrained until read)
+`existing_heap` (`heap/thread.rs`) make the token at entry
+(`TlsSlot::entry`, `sys/tls.rs`, value unconstrained until read)
 and run the cores `heap_for_thread_in` and `existing_heap_in`
 (`heap/thread.rs`), which carry the contracts.
 
-`ThreadKey::set` (`heap/shared.rs:1037`) is the call that may re-enter:
+`ThreadKey::set` (`heap/shared.rs`) is the call that may re-enter:
 glibc's `pthread_setspecific` `calloc`s a second-level block of 32 keys
 the first time a thread sets a non-null value for a key in it (keys from
 index 32 up; the first 32 live in the thread descriptor). Its wrapper
-`heap::shared::pthread_setspecific` (`heap/shared.rs:1079`,
+`heap::shared::pthread_setspecific` (`heap/shared.rs`,
 `external_body`) models every nested allocator entry as a core holding
 the token the outer call lends it: it requires `reentry_benign` of the
 slot and ensures the token unchanged, which is what the cores guarantee
@@ -2941,7 +2942,7 @@ it).
   unconstrained value at each top-level user of the slot:
   `heap_for_thread`, `existing_heap`, `heap_destructor`
   (`heap/thread.rs`, writes `TLS_EXITED`) and the background thread's
-  `create` (`purge/background.rs:545`). An entry nested in another
+  `create` (`purge/background.rs`). An entry nested in another
   stands for the outer token lent to it, which the nested call leaves
   unchanged when the value is benign. Writers of the slot are
   `create_heap_for_thread` (only on an empty slot), `heap_destructor`
@@ -2956,7 +2957,7 @@ it).
   still empty may create the heap too, and `create` does not read its
   token after that call, so the premise holds. `create`'s contract
   states the result for the slot's value: `TlsCell::kept`
-  (`sys/tls.rs`), which `create` (`purge/background.rs:545`)
+  (`sys/tls.rs`), which `create` (`purge/background.rs`)
   ensures, as do `pthread_join` and `spawn` (both
   `external_body`, so assumed there) and the callers up to the slow
   paths that may start the thread, says a non-empty slot ends as it was
@@ -2989,7 +2990,7 @@ it).
   pointer.
 - `Heap::create` makes no call that can allocate (above).
 - Explicit caches reach a heap through `tcaches::heap_at` with a
-  `HeapUse` token (`tcaches::axiom_heap_use`, `heap/tcaches.rs:726`): one
+  `HeapUse` token (`tcaches::axiom_heap_use`, `heap/tcaches.rs`): one
   token per call that reaches an existing heap.
 - `Heap::destroy` (verified, theorem 10), on the heapless path:
   it takes no slot token and writes no slot (no call in it does; the slot
@@ -3040,12 +3041,12 @@ on the caller's stream, and `write(2)` to stderr. A callback, a hook or
 write), so a lock held across one deadlocks the allocation.
 
 `emit` is verified. It hands the buffer to one of three trusted functions, which
-make the calls out: `call_back` (`api/print.rs:114`, the caller's
+make the calls out: `call_back` (`api/print.rs`, the caller's
 callback), `write_file` (`fwrite` on the caller's stream) and,
-for the `malloc_message` hook, `call_hook` (`api/jemalloc.rs:145`,
+for the `malloc_message` hook, `call_hook` (`api/jemalloc.rs`,
 called only by the verified `malloc_write`, whose only caller is
 `emit`); or, for `malloc_stats` and a `malloc_write` with no hook, to
-the verified `sys::write_all` (`sys/mod.rs:1136`, raw `write(2)`, which
+the verified `sys::write_all` (`sys/mod.rs`, raw `write(2)`, which
 allocates nothing). `emit`, the three trusted functions and
 `malloc_write` each require the token at top 0:
 
@@ -3110,7 +3111,7 @@ reaches them.
 
 **Run-time check.** The tests
 `a_report_callback_may_reenter_the_allocator` and
-`a_malloc_info_stream_may_reenter_the_allocator` (`api/print.rs:2401`)
+`a_malloc_info_stream_may_reenter_the_allocator` (`api/print.rs`)
 re-enter the allocator from every call out of a text report, a JSON
 report and `malloc_info` (through an unbuffered `fopencookie` stream), and
 fail when a call does not finish within a bound: the run-time evidence
@@ -3175,7 +3176,7 @@ every postcondition, so each one says what holds of a call that
 returns):
 
 ```rust
-// heap/mod.rs:547 (theorem 3's target; the size hint's class)
+// heap/mod.rs (theorem 3's target; the size hint's class)
 pub open spec fn free_target(p: *mut u8) -> bool {
     ||| slot_start(p)
     ||| process_regions().is_huge_block(p@.addr, 1)
@@ -3259,7 +3260,7 @@ and for an error-result row, that a returning call returns that result:
 | Free of a block that was freed and reallocated (ABA) | every free | frees the new block | undetectable by any allocator |
 
 *(C)*: a pointer that is a slot start or a huge page start but not a live
-block is excluded by `heap::live::axiom_c_claim` (`heap/live.rs:913`,
+block is excluded by `heap::live::axiom_c_claim` (`heap/live.rs`,
 the `free` contract in the common premises): the free cores take C's
 `Live` token for the pointer and give it back to the allocator, and for
 such a pointer C holds no token, so the axiom's token makes the proof
@@ -3294,15 +3295,15 @@ C token and hold unconditionally.
   outside the huge region (`lemma_slot_run_apart`).
   `lemma_run_interior`: page starts of the huge region are a whole
   number of pages apart.
-- Size hint: `check_size_hint` (`heap/shared.rs:3329`) aborts when
+- Size hint: `check_size_hint` (`heap/shared.rs`) aborts when
   `Regions::classify` says `Slab { class }` and `hint != Some(class)`.
-  `classify` and `slab_slot` (`layout/regions.rs:977`) also
+  `classify` and `slab_slot` (`layout/regions.rs`) also
   ensure that with separated regions they find every slot start in its
   class, guard slabs included (`lemma_slot_addr_found`: the
   stride shift gives the class, the offset is inside the region, and
   the slot test of `Class::slot_of_offset` accepts it), so `hint_ok`
   holds whenever `check_size_hint` returns. The fast path
-  (`free_sized_fast`, `heap/paths.rs:1016`) pushes only when
+  (`free_sized_fast`, `heap/paths.rs`) pushes only when
   `Shared::sized_slot` found `p` a slot of the hinted class, and a slot
   has one class (`lemma_hint_ok`, from `vspec::zero::lemma_slot_unique`).
   `class_index` ensures `r == spec_class_for(n, 1)`, so the hints
@@ -3321,15 +3322,15 @@ C token and hold unconditionally.
   (`free_sized_block`, `sdallocx_block`, `sdallocx_flags`,
   `sdallocx_routed`, `free_sized_slow`, `free_sized_unhinted`) ensure
   `huge_hint_ok` of C's token.
-- Flags: `Tcaches::get` (`heap/tcaches.rs:921`) ensures `None` for an
+- Flags: `Tcaches::get` (`heap/tcaches.rs`) ensures `None` for an
   id of `MAX_TCACHES` or more; `mallocx::alloc`, `alloc_huge` (without
-  an explicit arena) and `free` (`heap/mallocx.rs:559`)
+  an explicit arena) and `free` (`heap/mallocx.rs`)
   then reach `invalid_tcache`.
 - `new_aligned`: `new_aligned_block` tests `align.is_power_of_two()`
   (whose specification is `is_pow2`) before any allocation or handler
   call: a non-power-of-two alignment, 0 included, returns NULL for the
   `nothrow` forms and leaves through `throw_bad_alloc` (`-> !`) for the
-  others; `oom` (`api/cxx.rs:256`) is reached only with a power of two.
+  others; `oom` (`api/cxx.rs`) is reached only with a power of two.
 
 **Premises beyond the common ones.** None new. The size-hint rows rest
 on the class table premises (`class_entry`, `axiom_class_table_wf`)
@@ -3421,7 +3422,7 @@ coalesced: in every value the huge lock admits, no free extent
 existing `wf` conjuncts (live extents pairwise apart, inside
 `next_page`), every maximal stretch of pages covered by free extents is
 exactly one descriptor. This is the "adjacent free extents" check of
-`Huge::audit` (`huge/mod.rs:8880`, the assert in its loop), stated as a
+`Huge::audit` (`huge/mod.rs`, the assert in its loop), stated as a
 conjunct of `Inner::wf`, the huge lock's invariant.
 
 **How it is kept.** `wf` has two conjuncts for it: `coalesced`, and
@@ -3459,11 +3460,11 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
 `Purged` neighbours are coalesced: `free_run` merges both states.
 
 **Premises beyond the common ones.**
-- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:32`): the lock
+- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs`): the lock
   protects `Inner::wf`, including `coalesced`, `free_marked` and
-  `free_exact` (theorem 29). `axiom_huge_lock_frame` (`vspec/huge.rs:43`)
+  `free_exact` (theorem 29). `axiom_huge_lock_frame` (`vspec/huge.rs`)
   states the lock's frame as an equivalence (`==`).
-- `class::Set::ensure` (`class/sets.rs:944`) leaves the bitmap view
+- `class::Set::ensure` (`class/sets.rs`) leaves the bitmap view
   unchanged (verified, as is the commit it makes); `alloc_aligned`
   calls it between `find` and `take`. The view's `set_range`,
   `clear_range` and `lowest_set_from` are verified (`bitmap.rs`).
@@ -3507,7 +3508,7 @@ policy's table (`policy.rs` module doc) is therefore monotone: as
 linearly to 1 s across 70% to 90%, then drops to 0, and never goes back
 up while usage keeps rising.
 
-`Band::le` (`policy.rs:329`) is the table's row order `Low` < `Scaled`
+`Band::le` (`policy.rs`) is the table's row order `Low` < `Scaled`
 < `Immediate`, by position within `Scaled`; `Unlimited` compares only
 with itself (for `limit == 0` or `UNLIMITED` both bands are
 `Unlimited` and the periods are equal). Band monotonicity alone is
@@ -3535,10 +3536,10 @@ severe (`most_severe`, `Band`'s derived order spelled out over
 `severity`), and which `evaluate` (from `purge::on_tick` and the
 background thread, and from the deferred cgroup discovery,
 `Shared::discover_cgroup`; a no-op until the record is discovered) and
-`Shared::init` (`heap/shared.rs:2068`; only for a record discovered at init,
+`Shared::init` (`heap/shared.rs`; only for a record discovered at init,
 `thp:always`, else the `Unlimited` band)
 call through `cgroup_band`; and `effective_decay_ns`, which
-`Policy::effective_decay_ns` (`policy.rs:868`) applies to the stored band for
+`Policy::effective_decay_ns` (`policy.rs`) applies to the stored band for
 the decay walks (`purge.rs`), `stats.cgroup.decay_ms`
 (`api/mallctl.rs`) and the reports (`api/print.rs`).
 
@@ -3561,7 +3562,7 @@ either.
 - Pure functions only. `Policy` stores the band as atomics
   (`scaled16`, one more than the position in the scaled band so that
   `Scaled(0)` at the 70% edge is told from `Low`, 0 outside it;
-  `immediate`, `limited`; `Policy::apply`) and `Policy::band` (`policy.rs:831`)
+  `immediate`, `limited`; `Policy::apply`) and `Policy::band` (`policy.rs`)
   rebuilds it: that round trip is not proved. `Policy::position` reads
   `scaled16` inside its atomic invariant (`FracPred`: at most
   `FRAC_ONE + 1`), which bounds the value but does not say which store
@@ -3603,7 +3604,7 @@ fn discard(addr: usize, len: usize, advice: Advice, Ghost(free): Ghost<spec_fn(i
     requires
         frees(free, addr as int, len as int),
 
-// huge/mod.rs:1070
+// huge/mod.rs
 pub open spec fn free_page_byte(base: int, pg: int, np: int, held: Set<int>, b: int) -> bool {
     &&& base <= b
     &&& (b - base) / pg < np
@@ -3621,7 +3622,7 @@ pub proof fn theorem_purge_huge(tracked &self, tracked auth: &GhostSetAuth<int>,
     ensures
         !(self.addr() <= b < self.addr() + self.len()),
 
-// class/decay.rs:156 (closed; unfolded)
+// class/decay.rs (closed; unfolded)
 pub closed spec fn idle_byte(t: SlabTable, states: Map<nat, State>, b: int) -> bool {
     let sz = (1usize << class_table()[t.spec_class() as int].lg_slab) as int;
     let s = (b - t.base) / sz;
@@ -3632,7 +3633,7 @@ pub closed spec fn idle_byte(t: SlabTable, states: Map<nat, State>, b: int) -> b
 }
 ```
 
-(Line breaks added.) A `purge::Batch` (`purge.rs:339`) carries a ghost
+(Line breaks added.) A `purge::Batch` (`purge.rs`) carries a ghost
 predicate `free` that its maker fixes (`Batch::new`); `push`
 takes only ranges of bytes `free` admits (`frees`),
 `Batch::wf` keeps that of every range held (`range_ok`),
@@ -3668,7 +3669,7 @@ run authority stay those the batch's `free` was made from. The makers:
   live block: a run's usable bytes are inside its pages, and a slot lies
   in the class superblock, which `Regions::separated` keeps apart from
   the huge region. The huge allocator's base, page and page count are
-  the process regions' under `Shared::wf` (`heap/shared.rs:294`), so the
+  the process regions' under `Shared::wf` (`heap/shared.rs`), so the
   batches' predicate is the theorem's.
 - **Class purges** (`ClassState::purge_empty`, `purge_curve`,
   through `Purger` and `push_group`, with `ClassState::settle` as the
@@ -3704,7 +3705,7 @@ run authority stay those the batch's `free` was made from. The makers:
   class lock's ghost state, not the slot tokens: nothing proves that no
   slot of an idle slab is live, cached or claimed, so the class half
   stops at the lock state, plus the run-time check in
-  `ClassState::walk_empty` (`class/decay.rs:487`, its abort)
+  `ClassState::walk_empty` (`class/decay.rs`, its abort)
   that an empty-set slab's descriptor reads `Empty` with `live() == 0`.
   The link the proof lacks is the descriptor's `live` counter, which is
   not modelled. **Unconfirmed** (read from the code and its comments, not
@@ -3712,7 +3713,7 @@ run authority stay those the batch's `free` was made from. The makers:
   reservations, a claimer reserves under the class lock
   (`ClassState::take`) before it sets bits, and a releaser clears bits
   before it subtracts without the lock
-  (`ClassState::dec_live`, `class/mod.rs:4812`; `SlabDesc::sub_live`,
+  (`ClassState::dec_live`, `class/mod.rs`; `SlabDesc::sub_live`,
   `slab.rs`, verified, which ensures only that the count it read
   was at least `n`), so `live == 0` read under the lock
   means every bit of the slab is clear and every slot token is in its
@@ -3743,7 +3744,7 @@ run authority stay those the batch's `free` was made from. The makers:
   (wolfi-dev/challoc#397, fresh-slab zero facts).
 - `MADV_FREE` and `MADV_DONTNEED` are treated alike: the theorem is
   about which bytes are discarded, not what they read afterwards.
-- `SlabDesc::sub_live` (`slab.rs:500`) is verified; it requires
+- `SlabDesc::sub_live` (`slab.rs`) is verified; it requires
   `may_abort_pending()` and ensures only that the count it read was at
   least `n`.
 
@@ -3808,19 +3809,19 @@ pub proof fn lemma_caches_same(&self, old: Heap, p: *mut CacheHeader, i: int)
 ```
 
 The direct paths are:
-- **allocation**: `mallocx::alloc` (`heap/mallocx.rs:346`) on
-  `Tcache::None` calls `existing_heap` (`heap/thread.rs:449`) at most
+- **allocation**: `mallocx::alloc` (`heap/mallocx.rs`) on
+  `Tcache::None` calls `existing_heap` (`heap/thread.rs`) at most
   twice: once for the home arena when the flags name none
   (`Heap::arena`, `&self`), and once after a successful claim for
   `count_direct_alloc`, whose `ensures` gives `caches_same` of that
   reference. The slot comes from
-  `alloc_direct` (`heap/mallocx.rs:468`) and `Shared::alloc_direct`
+  `alloc_direct` (`heap/mallocx.rs`) and `Shared::alloc_direct`
   (`heap/shared.rs`), which take no heap: `ClassState::claim_tokens`
   takes it out of the class's bitmap words, with its token, and the
   token goes into the caller's `Live` (`Live::from_slot`).
-- **deallocation**: `mallocx::free` (`heap/mallocx.rs:559`) on
-  `Tcache::None` calls `heap::free_direct` (`heap/paths.rs:1199`):
-  `Shared::classify_free` (`heap/shared.rs:3076`), `zero_slot` under
+- **deallocation**: `mallocx::free` (`heap/mallocx.rs`) on
+  `Tcache::None` calls `heap::free_direct` (`heap/paths.rs`):
+  `Shared::classify_free` (`heap/shared.rs`), `zero_slot` under
   `zero_on_free`, then `Shared::free_direct`, which hands the
   slot's token (from the caller's `Live`, `take_slot`) to
   `ClassState::release_with` and so back to the bitmap word; then
@@ -4071,15 +4072,15 @@ class size of every slot in a thread cache. Three layers:
    locals); to a caller they are only values for which the ensures hold
    (see "Scope").
    The figures are added with `fig_add`/`fig_mul`, whose spec is `+`/`*`
-   when the result fits; `ArenaStats::add` (`stats.rs:695`) and
-   `Totals::add_arena` (`stats.rs:513`) state each needed sum alone, so an
+   when the result fits; `ArenaStats::add` (`stats.rs`) and
+   `Totals::add_arena` (`stats.rs`) state each needed sum alone, so an
    unrelated figure's overflow does not hide it. `collect` and `epoch`
    call `collect_into`; `collect_arena` and `malloc_stats` add no
    contract of their own.
 
 2. **The counters track the blocks** (ghost model, `stats/ledger.rs`).
    `Books` has one step per counter update and per slot move:
-   `reserve` (`ClassState::take`, `class/mod.rs:4038`: `claimed += n`
+   `reserve` (`ClassState::take`, `class/mod.rs`: `claimed += n`
    under the class lock), `claim` (one bit won by `finish`, or by
    `claim_prefix` in the same lock hold as the reservation; the slot's
    token leaves its word, so no arena has it out), `move_slot` between
@@ -4094,7 +4095,7 @@ class size of every slot in a thread cache. Three layers:
    `materialise` (`Arenas::build` of an automatic index); every counter
    step names a built arena, and an unbuilt index keeps zero counters
    (`unbuilt_fresh`; these and `start(auto)` are in theorem 36).
-   `Books::inv` (`stats/ledger.rs:212`) holds at `Books::start`
+   `Books::inv` (`stats/ledger.rs`) holds at `Books::start`
    (`lemma_start`) and after every step (`lemma_step_*`), in any
    interleaving:
    `claimed - released` of each `(arena, class)` is its out slots plus
@@ -4105,7 +4106,7 @@ class size of every slot in a thread cache. Three layers:
    those retired and not yet subtracted; live runs share no page.
    `note` and `unnote` take any page count within the pending total, not
    the run's own: only the totals matter, and quiescence zeroes them.
-   `Books::theorem_quiescent` (`stats/ledger.rs:1202`): when no update is in progress
+   `Books::theorem_quiescent` (`stats/ledger.rs`): when no update is in progress
    (`quiescent`), `Σ_arenas (claimed - released)` of a class is
    its cached plus live slots, each arena's `claimed - released` is its
    out slots, each arena's word is its live runs and pages, and the words
@@ -4132,7 +4133,7 @@ pub proof fn theorem_exact_stats(b: Books, tracked live: Map<int, Live>, n: int,
 
 (Abridged.) `live_bytes` is `Σ live[i].len()`, each block's usable bytes
 (`Live::len`: its class size, or its run's pages before the guard). The
-tokens count once each: `heap::live::lemma_all_apart` (`heap/live.rs:803`)
+tokens count once each: `heap::live::lemma_all_apart` (`heap/live.rs`)
 shows two tokens held at once stand for different slots, or for runs
 whose pages are apart (`lemma_keys_apart`, from the slot tokens'
 and run tokens' authorities), so the per-class slot sets and the run
@@ -4323,15 +4324,15 @@ placement (or NULL) over 2,000 random steps (allocations, frees and
 purges) against a brute-force lowest fit over the live runs.
 
 **Premises beyond the common ones.**
-- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:32`): the lock
+- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs`): the lock
   protects `Inner::wf`, with `coalesced`, `free_marked` and (for
   `extent_at`'s abort) `free_exact`.
-- `TwoLevelBitmap::lowest_set_from` (`bitmap.rs:2969`) is verified: the
+- `TwoLevelBitmap::lowest_set_from` (`bitmap.rs`) is verified: the
   lowest set bit at or past `from`, or none.
 
 **Where the statement is weaker than the code.**
 - It is `find`'s contract under the lock; no entry point exports it.
-  `alloc_aligned` (`api/libc.rs:2619`) returns NULL before `find` when the size
+  `alloc_aligned` (`api/libc.rs`) returns NULL before `find` when the size
   overflows or the run or the alignment exceeds the region, and after
   it when a descriptor, the table or bitmap growth, or the kernel
   commit fails, so "huge `malloc` returns NULL only when nothing fits"
@@ -4357,7 +4358,7 @@ are at two addresses; and a throwing `operator new` never returns NULL.
 &&& forall|c: int| 0 <= c < NCLASSES ==> { ... &&& 0 < self.class_base[c] ... }
 &&& 0 < self.huge_base
 
-// layout/regions.rs:1393
+// layout/regions.rs
 pub proof fn lemma_block_nonzero(self, c: int, p: usize, len: int, size: int)
     requires self.wf(), self.separated(),
     ensures
@@ -4365,7 +4366,7 @@ pub proof fn lemma_block_nonzero(self, c: int, p: usize, len: int, size: int)
         self.is_huge_block(p, len) ==> p != 0,
         self.user_block(p, size) ==> p != 0,
 
-// heap/mod.rs:610
+// heap/mod.rs
 pub proof fn theorem_no_block_at_zero(p: *mut u8, c: int, size: int)
     requires regions_ok(),
     ensures
@@ -4374,7 +4375,7 @@ pub proof fn theorem_no_block_at_zero(p: *mut u8, c: int, size: int)
         process_regions().user_block(p@.addr, size) ==> p@.addr != 0,
         free_target(p) ==> p@.addr != 0,
 
-// heap/live.rs:1019
+// heap/live.rs
 pub proof fn lemma_nonnull(&self)                                  // Live
     requires regions_ok(), self.wf(),
     ensures self.addr() != 0, 0 < self.len(),
@@ -4382,7 +4383,7 @@ pub proof fn theorem_distinct(tracked &mut self, tracked other: &Live)
     requires regions_ok(), old(self).wf(), other.wf(),
     ensures final(self).addr() != 0, final(self).addr() != other.addr(), /* and theorem_apart's frame */
 
-// vspec/usable.rs:179
+// vspec/usable.rs
 pub proof fn lemma_usable_of_pos(p: *mut u8, n: int)
     requires regions_ok(), free_target(p), usable_of(p, n),
     ensures 0 < n,
@@ -4394,7 +4395,7 @@ pub proof fn theorem_stored_zero_iff_null(p: *mut u8, size: int, align: int, n: 
         p@.addr != 0 ==> usable_is(p, size, n), p@.addr == 0 ==> n == 0,
     ensures n == 0 <==> p@.addr == 0,
 
-// api/libc.rs:1066 (usable_size), api/jemalloc.rs (sallocx, xallocx)
+// api/libc.rs (usable_size), api/jemalloc.rs (sallocx, xallocx)
 fn usable_size(shared, p, blk)        ensures p@.addr != 0, 0 < r, /* and its U ensures */
 fn sallocx(p, flags), xallocx(p, ..)  ensures p@.addr != 0, 0 < r,
 // api/libc.rs
@@ -4419,7 +4420,7 @@ address. The fast
 pops (`malloc_block`, `malloc_fast`, `malloc_usable_stored`, `api/libc.rs`)
 prove their non-null results with it.
 
-**Proof.** `from_parts` (`layout/regions.rs:548`) proves `0 <
+**Proof.** `from_parts` (`layout/regions.rs`) proves `0 <
 class_base[c]` from `0 < superblock` (`class_base[c]` is at least
 `superblock + c * stride`), and requires `0 < huge.0`; `reserve`
 proves `0 < superblock` and `0 < huge.0` from the reserved
@@ -4538,7 +4539,7 @@ maps to `p`'s class (`class_of(size)` is `p`'s class: `size` lies in
 `(size of the class below, size of p's class]`), or when `p` is a huge run
 start, `size > MEDIUM_MAX` and `size` rounded up to whole pages is the
 run's usable size; otherwise it moves (or fails, returning null).
-`kept` (`api/libc.rs:1219`) is the forward half: a kept block fits.
+`kept` (`api/libc.rs`) is the forward half: a kept block fits.
 `rallocx` adds the alignment: a slot of the class `class_for(size, align)`
 picks, or a run start that is a multiple of `align`. The move case is
 `r != p` because the new block's token and `p`'s are apart
@@ -4565,7 +4566,7 @@ returns a different pointer. The test
 `api::libc::tests::realloc_to_usable_size_keeps` checks the kept cases
 for every class and three run sizes.
 
-**Proof.** `lemma_keeps_slot` (`api/libc.rs:1251`) and `lemma_keeps_run`
+**Proof.** `lemma_keeps_slot` (`api/libc.rs`) and `lemma_keeps_run`
 reduce `keeps` to its slot or run half (one class per slot,
 `vspec::zero::lemma_slot_unique`; no slot is a huge page start,
 `lemma_slot_not_huge`). The slot half is the test the code makes:
@@ -4585,10 +4586,10 @@ class exactly above `MEDIUM_MAX` (`lemma_class_for_one`, finds
 a serving class below the last, whose size is `MEDIUM_MAX`).
 
 **Premises beyond the common ones.**
-- The C contract `heap::live::axiom_c_claim` (`heap/live.rs:913`): the
+- The C contract `heap::live::axiom_c_claim` (`heap/live.rs`): the
   token `realloc` takes for `p` is the live block's, so `blk.len()` is the
   usable size `malloc_usable_size` reads.
-- `vspec::class::axiom_class_table_wf` (`vspec/class.rs:12`): the class
+- `vspec::class::axiom_class_table_wf` (`vspec/class.rs`): the class
   table holds `spec_class_size`.
 - Nothing else: `class_of`, `class_for`, `Huge::usable_for` and
   `Huge::usable_size` are verified.
@@ -4628,11 +4629,11 @@ field of `list[i]`: the arena whose cache the node is (an explicit
 `MALLOCX_ARENA` arena, or a home arena `thread.arena` moved away from),
 or `FOREIGN` (`u16::MAX`, `heap/mod.rs`) for the one flush-only node
 that plain frees of other arenas' slots go onto (design 6.3 step 4).
-`Heap::list_ok` (`heap/mod.rs:3423`, part of `Heap::wf` and
+`Heap::list_ok` (`heap/mod.rs`, part of `Heap::wf` and
 `Heap::keeps`) states that the keys are pairwise distinct and none
 is the home arena; `Heap::keeps` adds that the keys keep their places
 counted from the end, as the nodes do, and that the home arena is
-unchanged. A pop is a call of `Heap::pop_top` (`heap/cache.rs:550`), the
+unchanged. A pop is a call of `Heap::pop_top` (`heap/cache.rs`), the
 one function that takes an entry off a cache stack to hand it out; its
 callers are `Heap::pop_fast`, `Heap::pop`, `Heap::pop_compact` and
 `Heap::pop_compact_run`. An explicit tcache (`MALLOCX_TCACHE`) is a
@@ -4699,7 +4700,7 @@ other's. The pop sites:
   arena, arena 0 (a shared class) or `alloc_in`'s/`alloc_other`'s
   `arena`.
 - `Heap::alloc_slow`: the home header (the scheduled compacting pop).
-- `Heap::pop_fast` (`heap/paths.rs:123`, the `malloc`/`calloc` fast
+- `Heap::pop_fast` (`heap/paths.rs`, the `malloc`/`calloc` fast
   path): `cache_ptr(class)`, the home header (`cache_ptr`'s `ensures`,
   `heap/cache.rs`). This one is read off its body: `pop_top` takes
   the header's permissions, not the heap, so it carries no requires.
@@ -4713,14 +4714,14 @@ other's. The pop sites:
   visited keys are not `arena`, so a creation adds at the head a key no
   node has. `assert_not_home`, discharged by `other_caches`' requires
   `create ==> arena != home`, makes the new key not the home arena.
-- `Heap::set_arena` (`heap/mod.rs:4844`): `other_caches(arena, true)`
+- `Heap::set_arena` (`heap/mod.rs`): `other_caches(arena, true)`
   returns the node keyed `arena`, the only one; after the header
   exchange (`swap_hdrs`, which keeps `same_shape`, with the keys and
   the home arena) the node's key becomes the old home, which no node
   had, and the home becomes `arena`, which no other node has. When no
   node could be had, `other_caches` ensures no node is keyed `arena`,
   and `drop_home_caches` ensures `same_shape`.
-- `Heap::try_rehome` (`heap/mod.rs:5012`:
+- `Heap::try_rehome` (`heap/mod.rs`:
   a young thread heap moves its home onto the arena of a slot it frees
   on the `FOREIGN` slow path): it moves only when `other_caches(to,
   false)` returned null, so no node is keyed `to` (`other_caches`
@@ -4736,7 +4737,7 @@ other's. The pop sites:
   `keeps` for the home arena (`free_slow`, the home push's slow path).
 - Creation starts with no keys (`thread::create_heap_for_thread`,
   `Heap::lemma_fresh_wf`).
-- `Flags::decode` (`heap/mallocx.rs:267`) ensures an explicit arena
+- `Flags::decode` (`heap/mallocx.rs`) ensures an explicit arena
   is below `0xfff`, so `mallocx::alloc` (`requires arena matches
   Some(a) ==> a != FOREIGN`) and `api::jemalloc::alloc_with`
   (`api/jemalloc.rs`) discharge `alloc_in`'s requires.
@@ -4812,7 +4813,7 @@ construction (read from the code, not stated as an `ensures`).
 
 1. **Identities** (proved). Every `ArenaStats` an arena stores, and
    every one `collect_arena`, `collect_into` and `collect_all` compute,
-   satisfies `ArenaStats::identities` (`stats.rs:431`):
+   satisfies `ArenaStats::identities` (`stats.rs`):
 
    ```rust
    small_allocated <= small_active && large_allocated <= large_active
@@ -4891,32 +4892,32 @@ retained,mapped}` and `stats.arenas.<i>.*` (from `snapshot` and
 `mallinfo2` and `malloc_stats` (`collect_all`); `mallinfo2` also ensures
 glibc's identities `arena >= uordblks` and `fordblks == arena - uordblks`
 when the arenas' `mapped` sum fits. Not covered:
-`stats.arenas.4096.*` (`arena_stats_all_into`, `stats.rs:1407`) sums stored figures
+`stats.arenas.4096.*` (`arena_stats_all_into`, `stats.rs`) sums stored figures
 that each satisfy the identities, but carries no bound on how many it
 sums or ghost record of them, so its result has no identity contract.
 
 **Why no figure wraps.** The figures are added with `fig_add`/`fig_mul`,
 exact only when the result fits (theorem 22). Each sum is bounded:
-- per bin, `collect_bin` (`stats.rs:881`) ensures `BinStats::fits` (`stats.rs:216`):
+- per bin, `collect_bin` (`stats.rs`) ensures `BinStats::fits` (`stats.rs`):
   `curregs * size <= curslabs * slab_size`, from the clamp
-  (`ClassState::bin_stats`, `class/mod.rs:5499`, ensures
+  (`ClassState::bin_stats`, `class/mod.rs`, ensures
   `curregs <= curslabs * nslots`) and `nslots * size <= slab_size`
   (`Class::wf`); and `(curslabs + empty + purged) * slab_size <= 2^38`,
   the slabs being among the class region's
   (`ClassState::nslabs_are_the_region_s`, `lg_region <= 38`);
 - over at most 64 classes, the slab bytes are at most `2^44`;
 - a huge run count and page count come from the halves of the `large`
-  word, below `2^32` (`Arena::large`, `arena.rs:1366`, ensures it),
+  word, below `2^32` (`Arena::large`, `arena.rs`, ensures it),
   and a page is at most `2^22` (`lg_page <= 22`,
   `Regions::separated`), so an arena's
   huge bytes are below `2^54`;
 - arena 0 adds the free extents' pages, at most `u32::MAX`
-  (`Huge::stats`, `huge/mod.rs:8841`, ensures it from the huge lock
+  (`Huge::stats`, `huge/mod.rs`, ensures it from the huge lock
   invariant), and the committed metadata, at most the region's length,
-  below `meta::va_limit() = 2^57` (`Meta::stats`, `meta.rs:1059`,
+  below `meta::va_limit() = 2^57` (`Meta::stats`, `meta.rs`,
   ensures it).
 So arena 0's `mapped` is below `2^58` and any other's below `2^55`
-(`arena_mapped_max`, `stats.rs:446`); every per-arena sum fits. The scan visits
+(`arena_mapped_max`, `stats.rs`); every per-arena sum fits. The scan visits
 arena `i` at index `i` (`arena_at`, ensures it), so arena 0
 is counted once and `k` arenas sum below `2^58 + k * 2^55`, which fits
 for `k <= 256`.
@@ -4975,7 +4976,7 @@ stack left), and a cache GC step leaves each cache one of two stated
 lengths (`gc_arena` states the exact one per array).
 
 ```rust
-// heap/mod.rs:6488 (theorem 10's contract, with `tcache_on`)
+// heap/mod.rs (theorem 10's contract, with `tcache_on`)
 pub fn flush_all(&mut self, shared: &Shared)
     ensures
         final(self).keeps(*old(self)),
@@ -4984,7 +4985,7 @@ pub fn flush_all(&mut self, shared: &Shared)
         final(self).drained(),
         log_adds(final(self).released(), old(self).released(), old(self).held_all()),
 
-// heap/mod.rs:4673
+// heap/mod.rs
 pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool)
     ensures
         final(self).wf(),
@@ -4995,7 +4996,7 @@ pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool)
         !on ==> final(self).drained(),
         !on ==> log_adds(final(self).released(), old(self).released(), old(self).held_all()),
 
-// heap/mod.rs:6646
+// heap/mod.rs
 pub fn gc(&mut self, shared: &Shared)
     ensures
         final(self).keeps(*old(self)),
@@ -5010,7 +5011,7 @@ fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches)
         // every other header: same value, same slots
         ...
 
-// heap/cache.rs:941
+// heap/cache.rs
 pub(super) fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> (r: *mut CacheHeader)
     ensures
         ...,
@@ -5054,7 +5055,7 @@ In words:
   `MAX_TCACHES` or more.
 - **Caches off.** `set_tcache_enabled(false)` (`thread.tcache.enabled`
   written false, `ThreadTcacheEnabled`, `api/mallctl.rs`) runs `flush_all`, then
-  `free_caches_in` (`heap/mod.rs:6202`) over the home array and every
+  `free_caches_in` (`heap/mod.rs`) over the home array and every
   node, which requires the array flushed (so its `assert_flushed`
   abort is proved unreachable there) and ensures each of the array's
   headers has no stack and no other header changed. So afterwards every
@@ -5178,10 +5179,10 @@ past `from` from its loop's `ends_by(from)`: a free extent starting in
 invariant `find` never reaches that abort (theorem 23).
 
 **How it is kept.**
-- `Huge::new`: `class::Set::new` (`class/sets.rs:794`)
+- `Huge::new`: `class::Set::new` (`class/sets.rs`)
   ensures the fresh bitmap's view is empty (from `lemma_fresh`, already
   called), and there are no descriptors.
-- `Huge::take` (`huge/mod.rs:5674`): `took_free` is an equivalence:
+- `Huge::take` (`huge/mod.rs`): `took_free` is an equivalence:
   after a take the set is exactly the old set outside the run plus the
   alignment hole `[mark, run start)`. Its `==>` direction needs no old bit
   in the run's pages outside the cleared range `[max(s, a), min(end,
@@ -5206,7 +5207,7 @@ Without `free_exact`, the invariant would admit an extra free bit on an
 bit.
 
 **Premises beyond the common ones.**
-- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs:32`): the lock
+- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs`): the lock
   protects `Inner::wf`, including `free_exact`.
 - `class::Set::ensure` (verified) leaves the bitmap view unchanged, as
   in theorem 17. The view's `set_range`, `clear_range`,
@@ -5240,7 +5241,7 @@ background thread wakes at the deadline (the futex wait,
 **Statement** (`purge.rs`, over `Decayer::spec_decay`):
 
 ```rust
-// purge.rs:1836
+// purge.rs
 pub fn due(&self, now: u64, decay_ns: u64) -> (r: Due)
     ensures
         match r {
@@ -5256,7 +5257,7 @@ pub fn due(&self, now: u64, decay_ns: u64) -> (r: Due)
             },
         },
 
-// purge.rs:1891
+// purge.rs
 pub fn finish(&self, now: u64, step: u64, Ghost(decay_ns): Ghost<u64>, Ghost(seen): Ghost<(u64, u64, u64)>)
     -> (r: Option<u64>)
     requires
@@ -5290,7 +5291,7 @@ before the walk, `next` the `next_walk` load, `after` the
 after it; a load the call does
 not make is a free variable of the existential. `spec_step(d)` is
 `d / STEPS`, `Curve::step_ns`'s exact spec (`purge/curve.rs`) for
-`Curve::new(d)`. `spec_walks` (`purge.rs:1934`) is the walk's condition:
+`Curve::new(d)`. `spec_walks` (`purge.rs`) is the walk's condition:
 something `Empty`, its first step over, and `next` not within one step
 after `now`. `spec_decay` is the code's branches with
 `saturating_add` spelled as `sat_add`; it is `closed` (only
@@ -5303,7 +5304,7 @@ after a walk) returns `None` exactly when the oldest-`Empty` load is
 0 or a walk ran and the load after it reads 0. A deadline is at most
 `max(oldest, now) + step`, so, with the oldest member stamped no later
 than `now`, at most one step past `now`. That is the period-change case
-of `due` (`next - now <= step`): after `set_decay_ms` (`arena.rs:1554`) or
+of `due` (`next - now <= step`): after `set_decay_ms` (`arena.rs`) or
 a pressure band (theorem 18) lowers the period, the next call does not
 return a deadline computed with the old step: it returns the end of the
 oldest member's first (new) step, or walks and returns one new step from
@@ -5339,19 +5340,19 @@ pub proof fn theorem_decay_deadline_under_pressure(base: u64, limit: u64, c1: u6
 
 At one limit and configured period, higher usage never gives a longer
 step, so the deadline bound under it is no later than under lower usage.
-`Policy::effective_decay_ns` (`policy.rs:868`), the period
+`Policy::effective_decay_ns` (`policy.rs`), the period
 `purge::decay` and `purge::decay_arena` pass to every gate, ensures
 `ns <= base`: the stored
 band never lengthens a configured step either.
 
-**Covers.** Both gates: `ClassState::decay_with` (`class/decay.rs:1694`)
-and `Huge::decay_with` (`huge/mod.rs:8788`) ensure the gate's contract
+**Covers.** Both gates: `ClassState::decay_with` (`class/decay.rs`)
+and `Huge::decay_with` (`huge/mod.rs`) ensure the gate's contract
 for the `decay_ns` they are given. `mallctl
 arena.<i>.decay` (`purge::decay_arena`) gives them the periods
 `purge::decay` does, through the same `decay_one` and `decay_huge`
 (the policy-scaled `effective_decay_ns`, and for the huge extents the
 huge tier's own period). `Arena::decay_with`
-and `purge::decay` (`purge.rs:2192`, through `earliest`) take the minimum
+and `purge::decay` (`purge.rs`, through `earliest`) take the minimum
 of the per-gate deadlines; the background thread (`purge/background.rs`)
 sleeps until `purge::decay`'s result, and `on_tick` keeps only whether it
 is `Some` (dirty memory still waiting, which runs
@@ -5442,7 +5443,7 @@ spec fn empty_nbr_at(v0: Inner, page: int, n: int, t: u64) -> bool {
             || v0.descs@[y].value().start == page + n)
 }
 
-// purge.rs:2534 (closed): the kernel's answer to some discard advice.
+// purge.rs (closed): the kernel's answer to some discard advice.
 spec fn discard_taken(addr: int, len: int) -> bool {
     &&& 0 <= addr <= usize::MAX
     &&& 0 <= len <= usize::MAX
@@ -5512,7 +5513,7 @@ What is proved and what is not:
   `!r ==> discard_refused` of its range, verified from the `One`
   settler's invariant (the pushed range pending alone, or settled with
   `discarded` the kernel's answer), `Settle::settle`'s `requires` on
-  `done`, `discard` (`purge.rs:2613`) and `sys::madvise`
+  `done`, `discard` (`purge.rs`) and `sys::madvise`
   (`sys/mod.rs`), whose `ensures` names the word `raw::syscall3`
   returned for the call.
 - Not proved: that the answer was to this free's call. `discard_taken`
@@ -5540,7 +5541,7 @@ token).
 
 **Premises beyond the common ones.**
 - The cap and flag are the configured ones: `retain_max` and
-  `purge_on_free` (`huge/mod.rs:4536`) are `Relaxed` loads of
+  `purge_on_free` (`huge/mod.rs`) are `Relaxed` loads of
   std atomics, whose values vstd leaves unconstrained, so the theorem
   is over the values read. By inspection, `set_retain_max` and
   `set_purge_on_free` are called only in `Shared::init`
@@ -5655,7 +5656,7 @@ functions and of the panic handler. The integrity checks, the aborts
 that test allocator state no verified invariant constrains, accept the
 narrower `may_abort_corrupt()`
 instead: `vspec::check` (`requires may_abort_corrupt() || c`) and
-`sys::abort_integrity` (`sys/abort.rs:186`). The first witness holds
+`sys::abort_integrity` (`sys/abort.rs`). The first witness holds
 only `integrity_aborts()`, which nothing grants, the other two hold no
 abort capability at all; all hold `may_syscall()` (the read-only paths
 take locks) and a well-formed `Shared` (the readers require the
@@ -5681,14 +5682,14 @@ as the premises below say), and only `mallinfo`/`mallinfo2` reach one:
   `may_abort()` for their `shared()`;
   `api::restated::read_only_restatements_match_their_bodies`
   checks that the witness and `mallinfo2`'s body make the same calls). Only the integrity check below.
-- `challoc_features` (`api/mod.rs:1191`) after `shared()`: the feature
+- `challoc_features` (`api/mod.rs`) after `shared()`: the feature
   line's build at the first request
   (`api::line_ready`: the per-size THP probe and `FeatureLine::build`,
   through the verified `build_line`, which requires only
   `may_syscall()`) or the wait for another thread's (termination not
   claimed), then the static line; never aborts.
 - `mallctl` and `mallctlbymib` after their `super::shared()`: `cstr`,
-  `name_to_mib`, `mib_in`, `mib_to_node` and `ctl` (`api/mallctl.rs:2833`)
+  `name_to_mib`, `mib_in`, `mib_to_node` and `ctl` (`api/mallctl.rs`)
   for every node where `ctl_never_aborts` holds: an interior
   node, a read whose reader is not one of `thread.*`'s four
   (`Reader::aborts`): every key under `opt`, `arenas` and `stats`,
@@ -5718,7 +5719,7 @@ as the premises below say), and only `mallinfo`/`mallinfo2` reach one:
   `miblenp` that keep their C contract.
 
 A corollary needs no new witness: theorem 8's
-`theorem_no_syscall_on_fast_paths` (`api/libc.rs:686`) requires only
+`theorem_no_syscall_on_fast_paths` (`api/libc.rs`) requires only
 `integrity_aborts()` (and its call's block token), so the cache fast
 paths of `malloc`, `free`, `free_sized` and `challoc_free_usable` it
 calls abort at most at an integrity check; their checks that
@@ -5729,7 +5730,7 @@ The integrity checks the covered calls reach
 of `check` and `abort_integrity`, and
 `sys::tests::trusted_aborts_require_a_capability` pins `check`, the
 one trusted body among them, to its clause `may_abort_corrupt() || c`):
-- `stats::huge_usable_pages` (`stats.rs:582`, abort in
+- `stats::huge_usable_pages` (`stats.rs`, abort in
   `huge_pages_short`): an arena's `large` word holding fewer
   pages than its runs' guards. The word is a plain `AtomicU64` that
   `note_huge_alloc`/`note_huge_free` update together, so it fails only
@@ -5746,7 +5747,7 @@ waiting `Deferred::discover` ensures it has one), so neither the seven
 `Acquire` load).
 
 The arena count has no integrity check either: it is an atomic
-invariant (`NarenasPred`, `arena.rs:1823`): the counter's permission
+invariant (`NarenasPred`, `arena.rs`): the counter's permission
 (`vspec::count::CountPerm`) has a value at most `MAX_ARENAS`.
 `Arenas::init` (verified) makes it with the permission
 `vspec::count::new` mints for the clamped automatic count,
@@ -5782,7 +5783,7 @@ no covered path. (Theorem 44's pending checks have their own capability,
 bounds, and `Sink::write_str` (verified) keeps it.
 
 **Why the capability can be trusted.**
-- Every abort goes through `abort_fmt` (`sys/abort.rs:139`): `abort`,
+- Every abort goes through `abort_fmt` (`sys/abort.rs`): `abort`,
   every `-> !` helper, and the `#[panic_handler]`
   (`lib.rs`) that a `panic!` in a trusted body reaches. `abort_fmt`
   and `abort` require `may_abort()`; `abort_integrity` (verified, a call
@@ -5796,10 +5797,10 @@ bounds, and `Sink::write_str` (verified) keeps it.
 - Every function that can reach an abort names `may_abort()` or
   `may_abort_corrupt()` in a `requires` or loop-invariant clause.
   Abort-site specs that the caller can discharge say so:
-  `RunState::from_u8` and `HugeDesc::state` (`huge/mod.rs:251`)
+  `RunState::from_u8` and `HugeDesc::state` (`huge/mod.rs`)
   require `v <= 2` (`spec_state() <= 2`) with no abort capability, which
   the huge lock invariant (`desc_ok`) gives `Huge::lookup`;
-  `assert_flushed` and `assert_refill_empty` (`heap/mod.rs:4569`) require
+  `assert_flushed` and `assert_refill_empty` (`heap/mod.rs`) require
   `may_abort() || *len == 0`; `huge_usable_pages` requires
   `may_abort_corrupt()` or its condition, and `arena_at` its condition
   alone.
@@ -5825,7 +5826,7 @@ bounds, and `Sink::write_str` (verified) keeps it.
   export) and in the `#[panic_handler]`, which the panic
   runtime calls and no Rust code does; never in `abort_fmt` or another
   `-> !` helper, unlike `grant_syscalls`.
-  `sys::tests::abort_grants_only_at_roots` (`sys/mod.rs:1633`) checks the
+  `sys::tests::abort_grants_only_at_roots` (`sys/mod.rs`) checks the
   grants' sites; `abort_capabilities_only_as_clauses` checks that
   `may_abort*` appear only as `requires`/invariant clauses and
   `integrity_aborts` only in the witnesses' `requires`,
@@ -5857,11 +5858,11 @@ bounds, and `Sink::write_str` (verified) keeps it.
   (`cbuf::c_ro_apart`); nor for an overstated `*miblenp` or a `mib`
   shorter than `miblen`, even where challoc fails the call without
   reading it (`miblen > MAX_MIB`, a capacity below the MIB's length).
-- Init is complete. `shared()` (`api/mod.rs:854`) runs init the first
+- Init is complete. `shared()` (`api/mod.rs`) runs init the first
   time, and init aborts (`init_slow`: re-entrant init; `init`
   and below: a metadata region too small or a refused table
   commit, a failed reservation, a region with less than `MAX_SLAB` of
-  slack (`slack_broken`, `layout/regions.rs:2526`), `getrandom` or
+  slack (`slack_broken`, `layout/regions.rs`), `getrandom` or
   page-size probe, ...), so `shared()` requires
   `may_abort()`. The witness takes `shared: &Shared` with `shared.wf()`
   and calls what `nallocx`, `mallinfo`, `mallinfo2`, `challoc_features`,
@@ -5906,9 +5907,9 @@ bounds, and `Sink::write_str` (verified) keeps it.
 - `malloc_trim` (`api/libc.rs`) requires `may_abort()`, by two
   paths. `Heap::flush_all` returns the thread's cached slots, and the
   release aborts on a double free that sat in the cache
-  (`straddling_double_free`, `heap/flush.rs:1921`; the class release's
+  (`straddling_double_free`, `heap/flush.rs`; the class release's
   `double_free`/`invalid_free`), the program's earlier invalid free
-  detected late. `purge::purge_all` (`purge.rs:2331`) discards through
+  detected late. `purge::purge_all` (`purge.rs`) discards through
   `discard`, which aborts when `madvise` fails.
 - The first call of `nallocx`, `mallinfo`, `mallinfo2` or
   `challoc_features`, and of `mallctl` or `mallctlbymib` with a name or
@@ -6036,7 +6037,7 @@ below):
 | purge `purge_all`, `purge_arena`, `decay` and `decay_arena` (through `decay_one`, `decay_huge`) → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main`; the lazy start: `on_tick` → `auto_tick` (`policy::empty_bytes`: class and huge locks, then state, then, on an allocation's tick, `start_requested`), `start_requested` (`start`, then state), `request` (state; from `ctl`'s `background_thread` write) | class, huge, state locks one at a time |
 | statistics `epoch`, `collect` (`collect_into`, with its exact-stats ghost outputs) and `arena_stats_all_into`, under the process statistics lock held across the scan | Stats < Class(i, c) < Table(c), and Stats < Huge, Meta, ArenaStats(i), each released before the next is taken; `arena_stats_all_into`: Stats < ArenaStats(i) |
 | statistics `collect_all`, `snapshot`, `arena_stats` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
-| `fork_prepare` (`api/mod.rs:2150`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Sets(i) (arenas ascending) < Huge < Meta < ArenaStats(i) < State, through one root token; before them the deferred cgroup discovery's `policy::evaluate` from the same root token, each class lock with nothing above it held, all released on return (`*final(ord) == *old(ord)`) |
+| `fork_prepare` (`api/mod.rs`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Sets(i) (arenas ascending) < Huge < Meta < ArenaStats(i) < State, through one root token; before them the deferred cgroup discovery's `policy::evaluate` from the same root token, each class lock with nothing above it held, all released on return (`*final(ord) == *old(ord)`) |
 | `fork_child` after `fork_release` (under the lazy start: `policy::empty_bytes`, the inherited dirty bytes) | class and huge locks one at a time, from a token of its own |
 
 `fork_prepare` proves it with loop invariants `ord.top() <
@@ -6054,14 +6055,14 @@ the Sets locks after all the Table locks, in arena order, through
 states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
 
 **Premises beyond the common ones.**
-- *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs:505`;
+- *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs`;
   ledger category "allocator invariant"). The roots: `alloc_slow_in`,
   `free_slow_in`, `alloc_huge_in`, `Heap::free_huge`, `paths::free_direct`
   and the no-heap `alloc_direct` arms of `paths::alloc`,
   `alloc_declined`, `alloc_zeroed` (`heap/paths.rs`); `pop_compact`,
-  `pop_compact_run`, `rebuild_run` (`heap/compact.rs:521`); the `mallocx`
+  `pop_compact_run`, `rebuild_run` (`heap/compact.rs`); the `mallocx`
   routes (`heap/mallocx.rs`); `libc::alloc_huge`,
-  `malloc_trim` (`api/libc.rs`); `Huge::usable_size` (`huge/mod.rs:7803`,
+  `malloc_trim` (`api/libc.rs`); `Huge::usable_size` (`huge/mod.rs`,
   called from the `api::libc` and `api::jemalloc` entry points and
   `Shared::zero_huge` on the free paths); `Shared::check_size_hint`
   (`heap/shared.rs`, the sized frees' slow paths); `ctl`,
@@ -6069,14 +6070,14 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
   `stats::Scratch` record), and the named readers
   `cgroup_empty_bytes`, `tracked` (the seven `stats.cgroup.*` readers'
   cgroup discovery) and
-  `stats_allocated` to `stats_retained` (`api/mallctl.rs:809`; `mallctl`
+  `stats_allocated` to `stats_retained` (`api/mallctl.rs`; `mallctl`
   calls them through its node table); `get_defrag_hint`; `mallinfo2`
   (`api/glibc.rs`; its lock-order premise is listed in `axiom_entry`'s
   doc); the report call sites (`api/print.rs`), and the same
   call in theorem 32's verification-only witness
-  `theorem_read_only_never_aborts` (`api/mod.rs:1227`);
+  `theorem_read_only_never_aborts` (`api/mod.rs`);
   `Shared::init` (no lock exists yet); `create_heap_for_thread` and
-  `heap_destructor` (`heap/thread.rs:235`); the background thread's `main`;
+  `heap_destructor` (`heap/thread.rs`); the background thread's `main`;
   `fork_prepare`; and `fork_child` once
   `fork_release` has handed back every token of the fork hold. The fast paths take no lock (theorem 9), and no
   allocator entry point is re-entered while a lock is held: allocator
@@ -6084,7 +6085,7 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
   the reports' calls out, by inspection elsewhere), and a signal
   handler that allocates is outside the C contract (the fork handlers
   block signals).
-- *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs:524`):
+- *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs`):
   the one root token; every other entry point's `axiom_entry` token is
   not a root.
 - *Functions that state the lowest rank they take*: `assign_home`,
@@ -6135,7 +6136,7 @@ for its home arena while it is counted there (`Heap::bound`), none
 otherwise.
 
 ```rust
-// arena.rs:3288
+// arena.rs
 pub fn assign(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u16, Tracked<Homed>, Ghost<Seq<(u32, bool)>>))
     requires
         crate::sys::may_syscall(),
@@ -6148,7 +6149,7 @@ pub fn assign(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u16, Tracked
         self.spec_auto() > 1 ==> picks_least(r.2@, self.spec_auto(), r.0 as int),
         *final(ord) == *old(ord),
 
-// arena.rs:1982
+// arena.rs
 pub open spec fn key_lt(a: (u32, bool), b: (u32, bool)) -> bool {
     a.0 < b.0 || (a.0 == b.0 && !a.1 && b.1)
 }
@@ -6173,7 +6174,7 @@ impl InvariantPredicate<BoundKey, BoundVal> for BoundPred {
     }
 }
 
-// arena.rs:2984
+// arena.rs
 pub fn unbind(&self, index: u16, Tracked(t): Tracked<Homed>)
     requires crate::sys::may_abort_pending(), (index as usize) < MAX_ARENAS, self.wf(), self.ticket_of(t, index as int),
     // body: assert(held >= 1 && prev == wrap32(held));
@@ -6181,7 +6182,7 @@ pub fn unbind(&self, index: u16, Tracked(t): Tracked<Homed>)
 pub fn bind(&self, index: u16) -> (r: Tracked<Homed>)
     requires index < MAX_ARENAS, self.wf(),
     ensures self.ticket_of(r@, index as int),
-// arena.rs:3469 (Heap::try_rehome's bind)
+// arena.rs (Heap::try_rehome's bind)
 pub fn try_bind_idle(&self, index: u16) -> (r: (bool, Tracked<Homed>))
     requires index < MAX_ARENAS, self.wf(),
     ensures r.0 ==> self.ticket_of(r.1@, index as int),
@@ -6232,12 +6233,12 @@ In words:
   do `bound` and `try_bind_idle`'s first load; that is proved
   at the read and not exported, since no `ensures` can name the instant
   of a read.
-- **Who holds the tickets.** `Heap::create` (`heap/mod.rs:5164`) gets the
+- **Who holds the tickets.** `Heap::create` (`heap/mod.rs`) gets the
   ticket with the arena from `assign_home` (verified) and
   either gives it back (`unbind`, when the metadata region is exhausted)
   or returns it with the heap; `create_heap_for_thread`
   (`heap/thread.rs`) installs it in the heap's ghost `homed` field
-  with the permissions, which `Heap::lemma_fresh_wf` (`heap/mod.rs:3457`)
+  with the permissions, which `Heap::lemma_fresh_wf` (`heap/mod.rs`)
   turns into `homed_ok`; when `ThreadKey::set` refuses the heap
   (theorem 15's heapless path) it drops the ticket and hands the heap to
   `destroy`, which unbinds it. `set_arena` (`thread.arena`) hands the
@@ -6269,7 +6270,7 @@ best)` and `best_key == snap[best]` once a key is read, with `snap.len()`
 the loop index except at the `break` (`invariant_except_break`), and its
 `ensures` gives the `(0, false)` case at the `break`. `count_in` and
 `unbind` open the arena's invariant around the counter operation:
-`new_ticket` (`arena.rs:2675`) inserts the bound `v.2` as a fresh ticket
+`new_ticket` (`arena.rs`) inserts the bound `v.2` as a fresh ticket
 and raises it, `delete_singleton` removes the caller's (which `agree`
 places in the set, so the set shrinks by one), and `lemma_wrap_step`
 moves the wrapped count by the same one. `Shared::init` gets
@@ -6279,7 +6280,7 @@ moves the wrapped count by the same one. `Shared::init` gets
 
 **Findings.** None: the code matches the statement. The tests
 `automatic_arenas_are_assigned_least_loaded_and_built_lazily` and
-`heap_churn_reuses_the_vacated_arena` (`heap/tests.rs:2809`) exercise the
+`heap_churn_reuses_the_vacated_arena` (`heap/tests.rs`) exercise the
 order and the counts; `rehoming_only_takes_an_idle_automatic_arena`
 and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
 `try_bind_idle` and the moved binding.
@@ -6311,7 +6312,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `PAtomicPtr`, whose permission vstd mints, and holds no bound count.
   Nothing writes a bound count outside the wrappers afterwards (by
   inspection).
-- `key_less` (`arena.rs:2013`, `external_body`, discharged by Kani,
+- `key_less` (`arena.rs`, `external_body`, discharged by Kani,
   `verus/ledger/src/arena.rs.md`): `core`'s `<` on `(u32,
   bool)` is lexicographic with `false < true`. vstd specifies no order on
   `bool`; a verified spelling of the comparison changes
@@ -6334,7 +6335,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   builds, takes apart or changes one but `mark_bound` (and
   `mark_rehome`, which stores `rehome` through the token's permission
   and keeps what the token records), both verified.
-  `mark_bound` (`heap/fresh.rs:242`) needs the permission and hands back
+  `mark_bound` (`heap/fresh.rs`) needs the permission and hands back
   one to the same bytes (`heap_head`), and records `bound` (its body
   stores `true` there through a permission carved from
   the token's); `tcaches::heap_new`
@@ -6361,7 +6362,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   another heap may be homed on (and win, through `try_bind_idle`) the
   same arena: "the tickets out are the counted heaps" holds throughout.
 - `homed_ok`'s `rehome ==> bound`: a new thread heap is
-  counted, so it holds whatever `mark_rehome` (`heap/fresh.rs:278`,
+  counted, so it holds whatever `mark_rehome` (`heap/fresh.rs`,
   verified) stored;
   an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
   storing `false` (verified) and on `create` being the one writer that
@@ -6375,7 +6376,7 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `updates` keep `bound` and `homed`); an explicit cache is not
   counted and holds none. One reference at a time (their safety
   contracts) is what keeps a ticket from being spent twice.
-- `axiom_shared_built` (`heap/shared.rs:1490`) also says the built
+- `axiom_shared_built` (`heap/shared.rs`) also says the built
   `Shared`'s `arenas` is the value its permission holds.
 
 **Scope.** Thread heap creation (`heap_for_thread`), `thread.arena`
@@ -6426,7 +6427,7 @@ size; `activeDefragAlloc` moves an object when the hint is 1).
 **Statement.** Over the values each call loaded (a ghost record its body
 fills in from the loaded locals; Verus does not constrain the loads,
 so "exact" is over those values, as in layer 1 of theorem 22):
-`experimental.utilization.query` (`utilization`, `api/mallctl.rs:2248`)
+`experimental.utilization.query` (`utilization`, `api/mallctl.rs`)
 and every triple `batch_query` stores report, for a live slot
 (bitmap bit set, slab below the watermark) of a bin class, `(nslots -
 live, nslots, nslots * size)`, plus, verbose and with the owning arena
@@ -6450,13 +6451,13 @@ Each function proves this in its body: at every `return` it asserts
 can use is weaker (see "Where the statement is weaker than the code").
 
 ```rust
-// api/mallctl.rs:2248
+// api/mallctl.rs
 pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Utilization)
     requires crate::sys::may_syscall(), shared.wf(),
     ensures
         exists|rd: UtilRead| #[trigger] util_read(crate::layout::process_regions(), p as usize, verbose, rd, u),
 
-// api/mallctl.rs:2199 (opaque, revealed in utilization; abridged; c = class_table()[class])
+// api/mallctl.rs (opaque, revealed in utilization; abridged; c = class_table()[class])
 pub open spec fn util_from(rg: Regions, p: usize, verbose: bool, rd: UtilRead, u: Utilization) -> bool {
     match rd.kind {
         Kind::Slab { class, .. } =>
@@ -6482,7 +6483,7 @@ pub open spec fn util_from(rg: Regions, p: usize, verbose: bool, rd: UtilRead, u
 // postcondition), the bin_stats bounds on rd.st and rd.curregs
 // (curregs <= curslabs * nslots), rd.lowest a slab of the class, and util_from.
 
-// api/mallctl.rs:2462 (verified over vspec::cbuf; the util_triple precondition is checked at the call)
+// api/mallctl.rs (verified over vspec::cbuf; the util_triple precondition is checked at the call)
 unsafe fn store_triple(out: *mut usize, i: usize, nfree: usize, nregs: usize, size: usize,
     Ghost(oldlen): Ghost<usize>, Ghost(q): Ghost<*const c_void>)
     requires
@@ -6580,7 +6581,7 @@ cannot carry a trigger of its own; it is a goal (proved from
 elsewhere.
 
 **Findings.** None: the code matches the statement. The tests
-`utilization_queries_answer_valkeys_defragmenter` (`api/mallctl.rs:4852`)
+`utilization_queries_answer_valkeys_defragmenter` (`api/mallctl.rs`)
 and `get_defrag_hint_follows_the_utilization_data`
 (`api/jemalloc.rs`) exercise the shapes and the rule at run time.
 
@@ -6668,7 +6669,7 @@ holds IDs 0 and 2 and nothing at 1.
    every earlier read's ID below `i`. The `ensures` (and `mallinfo2`'s,
    `api/glibc.rs`, from `collect_all`'s) export what a caller can
    name: the IDs of the reads handed out through the ghost `rd` ascend,
-   so no arena is read twice (`ids_ascending`, `stats.rs:1624`), and each is
+   so no arena is read twice (`ids_ascending`, `stats.rs`), and each is
    below `MAX_ARENAS`:
 
    ```rust
@@ -6738,7 +6739,7 @@ with their own `curregs` (1 and 2), and the totals are their sum.
 **Covers / stated in.** `collect_into` (so `epoch`, `collect`,
 `malloc_stats_print`'s totals and the `stats.*` snapshot), `collect_all`
 (`mallinfo`, `mallinfo2`, `malloc_stats`), and `theorem_exact_stats`.
-`Arenas::create` (`arena.rs:3950`) also ensures the ID it returns is
+`Arenas::create` (`arena.rs`) also ensures the ID it returns is
 below `MAX_ARENAS`. `mallinfo2` (`api/glibc.rs`, verified) ensures
 `summed`, `ids_ascending` and the `< MAX_ARENAS` bound of its reads.
 
@@ -6764,7 +6765,7 @@ below `MAX_ARENAS`. `mallinfo2` (`api/glibc.rs`, verified) ensures
   IDs are below `MAX_ARENAS`, not below the count the scan loaded (a
   local the `ensures` cannot name); `reads_keyed` requires `< k`.
 - `Arenas::init` is verified, and the registry's entries are under its
-  invariant (`NarenasPred`, `arena.rs:1823`): `build` requires
+  invariant (`NarenasPred`, `arena.rs`): `build` requires
   that the creation lock's snapshot has no arena at the index, so each
   index is published at most once (proved), and `create`'s index is at
   or above `auto` by `axiom_arenas_lock_frame` (the lock's `n`
@@ -6797,7 +6798,7 @@ none had an unreserved free slot either. Two layers.
 1. **The code's half: what a dry hold saw** (`class/mod.rs`, verified).
 
 ```rust
-// class/mod.rs:2881
+// class/mod.rs
 fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>,
     Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
     pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
@@ -6805,14 +6806,14 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
         ...
         r.0.n == 0 && old(out)@.len() > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
 
-// class/mod.rs:3848
+// class/mod.rs
 fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], ...,
     Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (np: usize)
     ensures
         np == 0 && want > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
         ...
 
-// class/mod.rs:3786
+// class/mod.rs
 spec fn exhausted(&self, g: Inner, seen: Map<nat, usize>) -> bool {
     &&& g.inv()
     &&& g.nbits() == self.spec_nslabs()
@@ -6835,7 +6836,7 @@ spec fn exhausted(&self, g: Inner, seen: Map<nat, usize>) -> bool {
    (every partial slab's `live` load was `nslots` or more; the slabs it
    cleared as full left the set) and `next_slab` then returned `None`,
    which ensures both idle sets empty and the partial set unchanged
-   (`class/fresh.rs`). `lemma_exhausted` (`class/mod.rs:3808`) draws
+   (`class/fresh.rs`). `lemma_exhausted` (`class/mod.rs`) draws
    the consequence in the lock value: every committed slab is owned, not a
    guard and `Active` (neither idle set holds it, and a committed slab is
    never `Fresh`, a conjunct of `Inner::slab_core`,
@@ -6886,7 +6887,7 @@ spec fn exhausted(&self, g: Inner, seen: Map<nat, usize>) -> bool {
 The two layers meet in:
 
 ```rust
-// class/complete.rs:915
+// class/complete.rs
 pub(super) proof fn theorem_claim_complete(&self, b: Proto, g: Inner, seen: Map<nat, usize>, s: nat)
     requires
         self.exhausted(g, seen),
@@ -6915,13 +6916,13 @@ nslots`) at a quiescent hold, the claim does not return zero.
 
 **Covers.** Verified, in the code layer: `ClassState::claim_with`
 (`class/mod.rs`), `plan`, `take`, `next_slab`
-and `next_fresh_slab` (`class/fresh.rs:127`). Modelled, as
+and `next_fresh_slab` (`class/fresh.rs`). Modelled, as
 steps of `Proto` (the code's `protocol::Refill`, `Release` and `Purge`
 steps, `class/mod.rs`), and related to the code by premise: `finish`,
-`claim_prefix`, `release_word` (`class/mod.rs:4692`), `reopen`,
+`claim_prefix`, `release_word` (`class/mod.rs`), `reopen`,
 `dec_live`, `on_live_zero`, `push_group` and
 `settle` (`class/decay.rs`)
-and `take_group`. `claim_tokens` (`class/mod.rs:2760`) and
+and `take_group`. `claim_tokens` (`class/mod.rs`) and
 `claim_random_zero` call `claim_with` with a local `ex`,
 return its claim count unchanged and do not export the ensures (their
 signatures are the heap's interface). `claim` (which calls
@@ -7047,7 +7048,7 @@ pub ghost struct Left {
 // purge.rs: class `c` has several slabs per page.
 pub open spec fn paged(c: int) -> bool { crate::layout::guard_geom(c).0 != 0 }
 
-// purge.rs:2128
+// purge.rs
 pub open spec fn clean(self) -> bool {
     &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> paged(t.1) || self.refused.contains(t)
     &&& forall|a: int| #[trigger] self.extents.contains(a) ==> self.refused_extents.contains(a)
@@ -7058,7 +7059,7 @@ pub open spec fn covers(self) -> bool {
         <==> self.arenas.contains(a) && 0 <= c < NCLASSES
 }
 
-// purge.rs:2331
+// purge.rs
 pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>,
     Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
     ensures
@@ -7068,7 +7069,7 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>,
         final(left)@.huge,
         final(left)@.clean(),
 
-// purge.rs:2404
+// purge.rs
 pub fn purge_arena(shared: &Shared, index: u16, Tracked(left): ..., Tracked(ord): ...)
     -> (r: Option<usize>)
     ensures
@@ -7147,7 +7148,7 @@ How it is proved:
   `Empty` extent, which the settle makes `Purged`. After each purge's
   final flush, `sent()` is its `bytes` and the tally's `purged` the
   count returned.
-- **Composition.** `Arena::purge_all` (`arena.rs:1634`) joins its
+- **Composition.** `Arena::purge_all` (`arena.rs`) joins its
   classes' records (`Left::join`, `lemma_join`, `purge.rs`), with the
   arena invariant giving `classes[c]` class `c` and the arena's index;
   `purge_all` and `purge_arena` join the arenas' and the huge records;
@@ -7172,7 +7173,7 @@ How it is proved:
   stays `Empty`, and the next explicit purge retries it.
 - One slab per page, for the class half: `paged(c)` is false exactly
   when `slabs_per_page` is 1. That holds for every class on every
-  supported page size (`layout::lg_slab_at`, `layout/mod.rs:1204`,
+  supported page size (`layout::lg_slab_at`, `layout/mod.rs`,
   raises every slab to the page up to 64 KiB, and the process page is at
   most 64 KiB: `Regions::separated`, `layout/regions.rs`, carries
   `lg_page <= 16`, proved from `getauxval`'s specification at
@@ -7241,12 +7242,12 @@ thread's mask; only `block_all_signals` and `set_signal_mask` change it
 acquisition or release.
 
 ```rust
-// sys/mod.rs:227
+// sys/mod.rs
 pub open spec fn effective(m: u64) -> u64 { m & !unblockable() }   // less SIGKILL, SIGSTOP
 pub open spec fn all_blocked() -> u64 { effective(BLOCKABLE_SIGNALS) }   // every bit but 8, 18 (SIGKILL, SIGSTOP), 31 and 32
 pub open spec fn wf(self) -> bool { effective(self.mask()) == self.mask() && self.mask() & !BLOCKABLE_SIGNALS == 0 }   // SigMask
 
-// sys/mod.rs:1416
+// sys/mod.rs
 pub fn block_all_signals(Tracked(sig): Tracked<&mut SigMask>) -> (r: u64)
     requires ..., old(sig).wf(),
     ensures r == old(sig).mask(), final(sig).mask() == all_blocked(), final(sig).wf(),
@@ -7254,7 +7255,7 @@ pub fn set_signal_mask(mask: u64, Tracked(sig): Tracked<&mut SigMask>)
     requires ..., mask & !BLOCKABLE_SIGNALS == 0,
     ensures final(sig).mask() == effective(mask), final(sig).wf(),
 
-// api/mod.rs:2058
+// api/mod.rs
 pub(crate) open spec fn fork_sig_holds(sig: SigMask, held: ForkHeld, orig: u64) -> bool {
     &&& sig.wf()
     &&& sig.mask() == all_blocked()
@@ -7307,7 +7308,7 @@ release's last unlock, which the loop invariants restate at each
 acquisition and release. `save_sigmask` is called after the last
 acquisition, so its requirement (`fork_holds`, every listed lock and the
 state lock) holds; it stores `orig` and records it in the hold, and
-`ForkHeld::lemma_with_saved` (`api/mod.rs:1945`) keeps `fork_holds`
+`ForkHeld::lemma_with_saved` (`api/mod.rs`) keeps `fork_holds`
 across the store. `saved_sigmask` is called before the release's first
 unlock (`fork_unlock(state)` consumes the state token, so a later call
 could not meet the requirement); it loads through the hold's slot
@@ -7316,7 +7317,7 @@ permission, so `word::load`'s `r == perm.value()` and `has_slot` give
 `SIGSETXID` clear (`fork_sig_holds`, from the handoff), as
 `set_signal_mask` requires. Restoring with `set_signal_mask` leaves
 `effective(saved)`, which is `saved` because the slot holds a mask the
-kernel held (`lemma_effective_idempotent`, `sys/mod.rs:240`, a
+kernel held (`lemma_effective_idempotent`, `sys/mod.rs`, a
 bit-vector fact).
 
 Two threads forking at once with different masks (`FORK_SIGMASK` is one
@@ -7328,10 +7329,10 @@ premise, a second thread's write happens only after the first thread's
 release has read the slot and unlocked: each release reads its own
 prepare's mask. glibc serialises the handlers with its atfork lock
 anyway; the unit tests do not, and
-`concurrent_fork_handlers_restore_each_threads_mask` (`api/mod.rs:5171`)
+`concurrent_fork_handlers_restore_each_threads_mask` (`api/mod.rs`)
 runs two threads with different masks through the prepare and parent
 handlers 200 times each and checks each gets its own mask back;
-`fork_handlers_block_signals_while_locked` (`api/mod.rs:5111`) checks both sides
+`fork_handlers_block_signals_while_locked` (`api/mod.rs`) checks both sides
 for one thread.
 
 **Findings.** None: the code matches the statement.
@@ -7352,7 +7353,7 @@ handoff premises).
   `api/mod.rs`, checks there is one call site of each of the thread-mask
   and handoff axioms). `SigMask`'s field is private to a module of its own
   (`sys::sigmask`), so no code builds a token.
-- *The kernel's `rt_sigprocmask`* (`sigprocmask_block`, `sys/mod.rs:1479`, and
+- *The kernel's `rt_sigprocmask`* (`sigprocmask_block`, `sys/mod.rs`, and
   `sigprocmask_setmask`, in `sys::linux`, private;
   `external_body`, each the one `raw::syscall4` call its caller made
   before). A successful `SIG_BLOCK` of `BLOCKABLE_SIGNALS`, every
@@ -7447,7 +7448,7 @@ re-issue of a refused range's pieces.
 **Statement.**
 
 ```rust
-// purge.rs:392 (opaque; the private `lemma_well_formed` unfolds it)
+// purge.rs (opaque; the private `lemma_well_formed` unfolds it)
 pub open spec fn well_formed(addr: int, len: int) -> bool {
     &&& page_bytes() > 0                      // `1 << process_regions().lg_page`
     &&& len > 0
@@ -7456,7 +7457,7 @@ pub open spec fn well_formed(addr: int, len: int) -> bool {
     &&& forall|b: int| addr <= b < addr + len ==> #[trigger] discardable(b)
 }
 
-// purge.rs:382
+// purge.rs
 pub open spec fn discardable(b: int) -> bool {
     ||| huge_byte(b)                          // huge_base <= b < huge_base + huge_len
     ||| exists|c: int| 0 <= c < NCLASSES && #[trigger] class_byte(c, b)
@@ -7474,7 +7475,7 @@ fn discard(addr: usize, len: usize, advice: Advice, Ghost(free): Ghost<spec_fn(i
         frees(free, addr as int, len as int),
         well_formed(addr as int, len as int),
 
-// purge.rs:481
+// purge.rs
 pub proof fn theorem_purge_well_formed(addr: int, len: int, b: int, c: int, s: int)
     requires
         crate::heap::regions_ok(),
@@ -7500,7 +7501,7 @@ last and middle pieces); `theorem_purge_well_formed` reads it
 out: the range is non-empty and page-aligned at both ends, and each
 byte is in the huge region or a class region, outside the metadata
 region (`Regions::in_meta`), and in no guard slab `s` of any class `c`
-(for every `c` and `s`, as its arguments). A `Batch` (`purge.rs:339`)
+(for every `c` and `s`, as its arguments). A `Batch` (`purge.rs`)
 also records the ranges it handed over, in call order (a ghost `gone`,
 `Batch::discarded`): each `discard` call appends its range, `push` and
 `flush` only extend the record. `Batch::wf` keeps `well_formed` of
@@ -7519,7 +7520,7 @@ How it is proved:
   two adjacent page-aligned ranges of discardable bytes are
   one). `well_formed` is opaque, so the batch's invariant carries one
   fact per range.
-- **Class purges.** `push_group` (`class/decay.rs:1165`) pushes the page
+- **Class purges.** `push_group` (`class/decay.rs`) pushes the page
   group of `slab` (`spp` slabs from `first = slab & !(spp - 1)`) and
   requires `slab` in the empty set and `spp` the table's slabs per page,
   which `Purger::visit` has. `lemma_group_well_formed`
@@ -7534,15 +7535,15 @@ How it is proved:
   (`x >> lg_spp == slab >> lg_spp`), so none is a guard slab
   (`guard_of` reads only the page group) because `slab`, `Empty`, is
   not one (`Inner::slab_core`: an owned guard slab is `Fresh`).
-- **Huge purges.** `Huge::is_process` (`huge/mod.rs:4380`, closed): the
+- **Huge purges.** `Huge::is_process` (`huge/mod.rs`, closed): the
   allocator's base, page and page count are the process's huge
   region's, its base a page start, and the regions well formed and
-  separated. `Shared::lemma_huge_process` (`heap/shared.rs:2464`) proves
+  separated. `Shared::lemma_huge_process` (`heap/shared.rs`) proves
   it from `Shared::wf`; `purge_empty`, `purge_curve`, `decay`,
   `decay_with` and `free_run` require it, and `push_extent` has it
   through the purge tally's invariant (`Tally::inv`), and `purge::purge_all`,
   `purge_arena`, `decay` and `decay_arena` require `shared.wf()` (every caller has
-  it). `Huge::lemma_purge_range` (`huge/mod.rs:4407`): pages `start..start
+  it). `Huge::lemma_purge_range` (`huge/mod.rs`): pages `start..start
   + pages` (at least one) of the region are a well-formed range, since
   `npages * page <= huge_len`. `push_extent` pushes an `Empty` extent
   (at least a page, `desc_ok`) and `free_run` the freed run, guard page
@@ -7613,7 +7614,7 @@ or reprotects in, or lies outside the address space challoc reserved.
 **Statement.**
 
 ```rust
-// layout/regions.rs:345 (opaque; each proof that needs it reveals it, such as `lemma_superblock_gap`)
+// layout/regions.rs (opaque; each proof that needs it reveals it, such as `lemma_superblock_gap`)
 pub open spec fn seal_target(self, m: Mapping) -> bool {
     let region = (1usize << self.lg_region) as int;
     &&& m.len > 0
@@ -7628,7 +7629,7 @@ pub open spec fn seal_target(self, m: Mapping) -> bool {
 // layout/regions.rs: inside `superblock_map`, `huge_map` or `meta_map`.
 pub open spec fn in_mapping(self, a: int, len: int) -> bool
 
-// layout/regions.rs:883
+// layout/regions.rs
 pub fn never_committed(&self) -> (r: ([Mapping; MAX_SEALED], usize))
     requires
         self.wf(),
@@ -7671,7 +7672,7 @@ How it is proved:
 - **The class gaps.** `never_committed`'s loop keeps, for separated and
   mapped regions, `superblock_map.addr <= start <= superblock + c *
   stride`, every class below `c` ending at or before `start`, and
-  `seal_target` of every range pushed so far (`push_range`, `layout/regions.rs:2058`,
+  `seal_target` of every range pushed so far (`push_range`, `layout/regions.rs`,
   ensures exactly what it appends and that it keeps the earlier
   entries). A gap `start..class_base[c]` lies inside the superblock's
   mapping (`lemma_class_in_strides`) and before every class
@@ -7724,7 +7725,7 @@ stops the sweep.
   tests the cover; it is not verified code).
 - That every region keeps `MAX_SLAB` of its reservation below and above
   it is a run-time check, not part of the statement: `reserve_owning`
-  checks `Regions::slack_ok` (`layout/regions.rs:2571`: `never_committed`
+  checks `Regions::slack_ok` (`layout/regions.rs`: `never_committed`
   returns `MAX_SEALED` ranges, each at least `MAX_SLAB` long) and aborts
   if it fails (`slack_broken`). For the huge and metadata
   regions `reserve_owning` also proves the slack, from `slab_multiple`'s
@@ -7847,7 +7848,7 @@ cannot fail. `mallctl` and `mallctlbymib` (`api/mallctl.rs`) pass
 verified `mallctl` and `mallctlbymib` with a fresh, unwritten token.
 
 **Premises beyond the common ones.**
-- `CCall::sized` and `CCall::counted` (`vspec/cbuf.rs:514`,
+- `CCall::sized` and `CCall::counted` (`vspec/cbuf.rs`,
   trusted, the C contract of a sized buffer and a counted array)
   also ensure that the `size_t` read holds the token's view
   `CCall::len(lenp)`: C does not change `*oldlenp` (or
@@ -7927,7 +7928,7 @@ pub open spec fn huge_hint_ok(blk: Live, p: *mut u8, size: usize) -> bool {
     }
 }
 
-// api/jemalloc.rs:908
+// api/jemalloc.rs
 pub proof fn theorem_sized_slot_nallocx(p: *mut u8, size: usize, lg_align: u32, c: int)
     requires
         hint_ok(p, spec_class_for(size, 1usize << lg_align)),
@@ -7943,7 +7944,7 @@ pub proof fn theorem_sized_run_nallocx(blk: Live, p: *mut u8, size: usize, lg_al
     ensures
         nalloc_usable(size, lg_align) == blk.len(),
 
-// vspec/zero.rs:238
+// vspec/zero.rs
 pub open spec fn run_placeable(base: int, pg: int, np: int, size: int, align: int) -> bool {
     &&& size + pg - 1 <= usize::MAX
     &&& align <= np * pg
@@ -7951,7 +7952,7 @@ pub open spec fn run_placeable(base: int, pg: int, np: int, size: int, align: in
 }
 pub open spec fn huge_placeable(size: usize, align: usize) -> bool  // the process's huge region
 
-// api/jemalloc.rs:215
+// api/jemalloc.rs
 pub open spec fn nalloc_usable(size: usize, lg_align: u32) -> int {
     match spec_class_for(size, 1usize << lg_align) {
         Some(c) => class_table()[c as int].size as int,
@@ -7967,7 +7968,7 @@ pub proof fn theorem_nallocx_zero(size: usize, lg_align: u32)
 fn theorem_nallocx_zero_rejects(size: usize, flags: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)   // body: n = nallocx; p = mallocx;
     requires may_abort(), may_syscall(),                       // assert(n == 0 ==> p@.addr == 0)
 
-// huge/mod.rs:4829
+// huge/mod.rs
 proof fn theorem_placeable_fits_empty(&self, g: &Inner, size: usize, align: usize)
     requires g.next_page == 0, self.spec_placeable(size, align),
     ensures exists|q: int| self.fits(g, q, run_need(self.spec_page(), size as int), align),
@@ -7996,9 +7997,9 @@ is `nalloc_usable` (`usable_is`). In words:
   allocator's state: a non-NULL block is a slot or a run, whose usable
   size `mallocx` states is `nalloc_usable`, positive. Conversely
   `huge_placeable` is exactly a placement in the empty region:
-  `Huge::placeable` (`huge/mod.rs:4784`) ensures it is
+  `Huge::placeable` (`huge/mod.rs`) ensures it is
   `spec_placeable`, `run_placeable` over the huge allocator's own
-  region (`Shared::lemma_huge_placeable`, `heap/shared.rs:2612`, ties
+  region (`Shared::lemma_huge_placeable`, `heap/shared.rs`, ties
   the two), and `theorem_placeable_fits_empty` gives a fit
   (`Huge::fits`) under a lock value with nothing placed, which `find`
   (`huge/mod.rs`) then returns (its `None` means no page fits). A
@@ -8007,12 +8008,12 @@ is `nalloc_usable` (`usable_is`). In words:
   `alloc_huge` layers carry that up to `mallocx`.
 
 How it is proved:
-- `Huge::run_pages` (`huge/mod.rs:4739`) ensures
+- `Huge::run_pages` (`huge/mod.rs`) ensures
   its result is `run_need(page, size)` and that `None` means not
   placeable; `placeable` compares the first aligned page `align_page(0,
   align)` (which ensures no lower page is aligned) plus the run's pages
   with the region: any placement starts at or after it.
-- `check_size_hint` (`heap/shared.rs:3329`): for a huge page start it
+- `check_size_hint` (`heap/shared.rs`): for a huge page start it
   looks the run up with the caller's run token (`Huge::lookup`,
   `huge/mod.rs`, ensures that with a token of a run starting
   at `page` the result is that run's `Active` descriptor with the
@@ -8020,10 +8021,10 @@ How it is proved:
   authority, which names one `Active` descriptor starting there, and
   the table keys it at `page`) and aborts (`huge_hint_mismatch`,
   `heap/shared.rs`) unless `Huge::usable_for(size)` is the run's
-  usable size. `Regions::classify` (`layout/regions.rs:1121`) also
+  usable size. `Regions::classify` (`layout/regions.rs`) also
   ensures that with separated regions every huge page start is `Huge`
   (a hit of `in_superblock` lies in the strides), so no run is passed over.
-- The fast path (`free_sized_fast`, `heap/paths.rs:1016`) ensures a
+- The fast path (`free_sized_fast`, `heap/paths.rs`) ensures a
   push is a slot start's, and a declined push keeps the token's claim
   and length, so `huge_hint_ok` of the token reaches the cores.
 - `free_sized` claims C's token itself and hands it
@@ -8082,7 +8083,7 @@ pending checks rests on reading the code (below).
 two sinks are called only at its listed sites,
 `sys::tests::trusted_aborts_require_a_capability` that the trusted
 bodies whose text shows an abort require a capability for it, and
-`sys::tests::abort_grants_only_at_roots` (`sys/mod.rs:1633`) where
+`sys::tests::abort_grants_only_at_roots` (`sys/mod.rs`) where
 `grant_aborts` is called. Covered, after init (`shared.wf()`; the prefix before it is
 not): the free through no cache (`heap::free_direct`: a thread with no
 heap, `MALLOCX_TCACHE_NONE`), slot and run; a free on a
@@ -8235,7 +8236,7 @@ or it is a resource failure (`abort_kernel`) or a pending check
 token, whatever the allocator's state that the proofs' invariants
 allow, these cannot fire:
 
-- **Not an allocation** (`Shared::classify_free`, `heap/shared.rs:3076`,
+- **Not an allocation** (`Shared::classify_free`, `heap/shared.rs`,
   `invalid_free`; `rehome_on_free`'s own `invalid_free` after the move,
   `heap/mod.rs`; and the lookups' `not_an_allocation` in
   `usable_size`, `api/libc.rs`, and `old_size_or_keep`'s and
@@ -8246,14 +8247,14 @@ allow, these cannot fire:
   `class/table.rs`, `not_live`: `invalid_free` or `guard_free`):
   the bit test `is_set_unchecked` reads the word through
   `bit_word_held` with the caller's slot token
-  (`Live::slot_ref`, `heap/live.rs:504`; `holds_slot`,
+  (`Live::slot_ref`, `heap/live.rs`; `holds_slot`,
   `class/table.rs`). Inside the word's invariant, which holds the
   tokens of exactly its clear bits (`bitmap::WordPred`), the token is
   disjoint from the word's (`GhostSubset::disjoint_singleton`), so the
   bit is set. `classify_free`, and the lookups (`usable_size`,
   `old_size_or_keep`, `realloc_old`), hand `check_live` the token of the
   live slot at the address `classify` located
-  (`Live::lemma_block_slot_addr`, `heap/live.rs:516`: a live block at a
+  (`Live::lemma_block_slot_addr`, `heap/live.rs`: a live block at a
   slot address of class `c`, a guard slab's too, is the slot of class
   `c`, so `is_slot`; for it `vspec::zero::lemma_slot_unique` takes slot
   addresses).
@@ -8262,13 +8263,13 @@ allow, these cannot fire:
   `invalid_pointer`): neither fires for a slot address
   (`Regions::lemma_slot_addr_found`); both require `may_abort()` or that
   (with the regions well formed), and need no capability then.
-  `Shared::arena_of_slot` (`heap/shared.rs:3411`) requires `may_abort()`
+  `Shared::arena_of_slot` (`heap/shared.rs`) requires `may_abort()`
   or a slot address with `valid_aborts()`.
 - **Released through another arena** (`ClassState::release_with`,
   `class/mod.rs`, `wrong_arena`): `free_direct` passes the owner
   `classify_free` read (`slot_owner`), so the batch is `owned_slots`
   (`class/mod.rs`) and `release_owned` leaves no slot of another
-  arena. `release_routed` (`heap/shared.rs:3460`) follows the owner
+  arena. `release_routed` (`heap/shared.rs`) follows the owner
   words, and its "changed arena" abort is unreachable.
 - **Guard slab, double free in the batch** (`release_owned`,
   `class/mod.rs`: `guard_free`, the scratch bit's `double_free`):
@@ -8277,8 +8278,8 @@ allow, these cannot fire:
   tokens hold, disjoint from the one split off for this pointer (for
   every caller: the batch's tokens are distinct). A flush's batch is
   `live_slots`: every cached entry holds a slot of its header's class
-  (`lemma_released`, `heap/flush.rs:872`).
-- **Double free at the word** (`release_word`, `class/mod.rs:4692`,
+  (`lemma_released`, `heap/flush.rs`).
+- **Double free at the word** (`release_word`, `class/mod.rs`,
   `double_free`): `AtomicBitmap::release` ensures the released bits
   were set (their tokens were not in the word), so the check fails for
   no caller.
@@ -8289,16 +8290,16 @@ allow, these cannot fire:
   the cache's entries stand for distinct slots (their tokens are
   distinct), so the compare fails for every caller (`lemma_released`).
 - **A size hint that does not name the block**
-  (`Shared::check_size_hint`, `heap/shared.rs:3329`, `hint_mismatch` and
+  (`Shared::check_size_hint`, `heap/shared.rs`, `hint_mismatch` and
   `huge_hint_mismatch`): with the sized free's contract (the premise
   below) the hint names `p`'s class and `size` rounds to the run's
   pages.
 - **Re-keying a cache that still holds slots** (`CacheHeader::rekey`,
   `heap/cache.rs`, the trusted `assert_rekey_flushed`,
-  `heap/mod.rs`): `try_rehome` (`heap/mod.rs:5012`) re-keys the
+  `heap/mod.rs`): `try_rehome` (`heap/mod.rs`) re-keys the
   home headers after the home flush emptied them and the `FOREIGN`
   flush kept them.
-- **Not a run, already free** (`Huge::free_run`, `huge/mod.rs:7272`, two
+- **Not a run, already free** (`Huge::free_run`, `huge/mod.rs`, two
   `not_a_run` and `already_free`; `Huge::usable_size`, which
   `zero_on_free`'s `Shared::zero_huge`, `heap/shared.rs`, and the
   lookups reach): the run token's extent is in the lock's run
@@ -8319,7 +8320,7 @@ allow, these cannot fire:
 - **An extent count below zero** (`huge_count_underflow`,
   `huge/mod.rs`, through `HugeStats::sub` in `drop_extent`, which
   `requires false`): `sub` requires the extent counted (`can_sub`).
-- `Arena::alloc_sets` (`arena.rs:996`) has no size check: the
+- `Arena::alloc_sets` (`arena.rs`) has no size check: the
   table fits an object by `global layout SetTable` (`arena.rs`,
   which Verus checks against the compiler's), and it requires no abort
   capability.
@@ -8359,20 +8360,20 @@ requires `may_abort_pending()`; the helpers' other callers
 require `may_abort()`). Each tests
 state no verified invariant constrains as the check needs; each fires on an
 invalid free, and on a valid one only if that state is corrupt:
-- `class::abort::never_committed` (`class/abort.rs:17`), through
+- `class::abort::never_committed` (`class/abort.rs`), through
   `SlabTable::check_live`, `desc`, `owner` and `bits`: the slab at or
   above its class's watermark. A live slot's slab was handed out, but
   no invariant ties the watermark to the tokens.
-- `owner_mismatch` and `release_into_fresh_slab` (`class/abort.rs:89`), in `release_owned`: the descriptor's arena against the owner
+- `owner_mismatch` and `release_into_fresh_slab` (`class/abort.rs`), in `release_owned`: the descriptor's arena against the owner
   word, and a `Fresh` slab (one nothing was claimed from).
-- `SlabDesc::sub_live` (`slab.rs:500`), through
+- `SlabDesc::sub_live` (`slab.rs`), through
   `dec_live`: the live count would go below zero.
-- `slab::bad_state_byte` (`slab.rs:45`), through `State::from_u8`,
+- `slab::bad_state_byte` (`slab.rs`), through `State::from_u8`,
   `SlabDesc::state` and `state_held` (`ClassState::state_locked`,
   `class/mod.rs`: the class lock holder's reads in
   `reopen`, `on_live_zero` and the decay walks): a slab state byte that
   is no state.
-- `heap::shared::no_such_arena` (`heap/shared.rs:3962`), through
+- `heap::shared::no_such_arena` (`heap/shared.rs`), through
   `Shared::owner`: the owner word names an arena that was never built.
   (`alloc_huge`'s call, of its caller's arena index, holds `may_abort()`;
   on the free paths `ensure_cache` reads the home arena's and `try_rehome`
@@ -8386,7 +8387,7 @@ invalid free, and on a valid one only if that state is corrupt:
   the empty set whose descriptor is not `Empty` with no live slot (the
   walk reads the state byte raw, not through `state_locked`, and no
   invariant relates the live count to the sets); and
-  `arena::unbind_unbound` (`arena.rs:2666`), through
+  `arena::unbind_unbound` (`arena.rs`), through
   `Arenas::unbind` in `try_rehome`: the heap holds its arena's ticket,
   so the bound count reads the tickets out as a `u32` wraps it, and
   reads 0 only with a multiple of `2^32` heaps homed there, which no
@@ -8403,9 +8404,9 @@ invalid free, and on a valid one only if that state is corrupt:
   (`Heap::free_slow_in` and `free_direct`, `heap/paths.rs`), which
   aborts on a slab past the watermark, a `CACHED` slot or a `FREE`
   slot; `slotstate::release` in `free_slow_in` and `release_all` in a
-  flush's release (`Heap::flush`, `heap/flush.rs:385`), which abort on a
+  flush's release (`Heap::flush`, `heap/flush.rs`), which abort on a
   slot that is not `CACHED`; and `check_not_cached` in the lookups
-  (`Shared::check_not_cached`, `heap/shared.rs:3667`), which aborts on a
+  (`Shared::check_not_cached`, `heap/shared.rs`), which aborts on a
   `CACHED` slot. Each check's step is verified, over `vspec::byte` on a
   permission `axiom_slot_byte` mints; the state the byte holds is that
   axiom's premise ([double-free window](#double-free-window-under-double_free_scan-rests-on-the-slot-state-premise)),
@@ -8439,7 +8440,7 @@ listed above.
   creates a heap, and may abort when that fails), come before the calls
   the witnesses make, and are not covered; nor is `mallocx::free`'s
   `invalid_tcache` (a bad `MALLOCX_TCACHE` is "Bad input").
-- `abort_kernel` and `abort_pending` (`sys/abort.rs:219`, verified): the
+- `abort_kernel` and `abort_pending` (`sys/abort.rs`, verified): the
   relabels of `abort_fmt`'s capability, as `abort_integrity`'s. Each
   body calls `abort_fmt` after `relabel`, a proof private to
   `sys/abort.rs` that reveals `may_abort()` (opaque, and `true`). The
@@ -8547,7 +8548,7 @@ library and fails unless every row's maxima equal its `budget` line in
   `mov`s: `free`'s watermark copy (`class::load_mirror`), bitmap word
   (`SlabTable::is_set_unchecked`), `Shared::free_flags`
   (`heap/shared.rs`) and, routed, the owner word
-  (`class::load_owner`, `class/table.rs:1028`). `malloc`, `free_sized` and
+  (`class::load_owner`, `class/table.rs`). `malloc`, `free_sized` and
   `sdallocx` read no atomic on x86_64: `push_flags` is a plain `u8`, and
   `malloc`'s `fast_flags` load is dead off aarch64 (`PUSH_PAC` is never
   set). Theorems 8 and 9 state the source-level half (no syscall
@@ -8574,9 +8575,9 @@ library and fails unless every row's maxima equal its `budget` line in
   `heap/cache.rs`), so `Heap` is 64-byte aligned and
   `caches[c]` is `heap + 128 + 64 * c`; `ClassLine` is
   `repr(C, align(64))` and `CLASS_STRIDE` (64) bytes, at offset 0 of
-  `Shared` (`heap/shared.rs:88`, the `const` asserts after it);
+  `Shared` (`heap/shared.rs`, the `const` asserts after it);
   `SMALL_LOOKUP`'s entries are multiples of `CLASS_STRIDE`
-  (`small_entry_ok`, `layout/mod.rs:1656`, proved).
+  (`small_entry_ok`, `layout/mod.rs`, proved).
 
 **Measured table** (the `budget` lines of `verus/perf-budget.txt`;
 rustc 1.98.1, `quantum16`, `cargo build --release --locked`). `-` is every
@@ -8728,23 +8729,23 @@ fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8
 as theorem 8's `may_syscall()` is. Every primitive that reads bytes of
 a user block requires it:
 
-- `UserMem::lemma_valid_reads` (`vspec/user.rs:143`), the one way
+- `UserMem::lemma_valid_reads` (`vspec/user.rs`), the one way
   verified code outside `vspec::user` gets a read bound (`valid_reads`)
   on bytes a `UserMem` covers;
-- `copy_user` (`vspec/user.rs:304`), the `copy_nonoverlapping` out of
+- `copy_user` (`vspec/user.rs`), the `copy_nonoverlapping` out of
   the old block;
-- and, through them, `class::verify::read_word` (`class/verify.rs:145`,
-  a slot's word), `Huge::read_run_word` (`huge/mod.rs:5333`, a run's
+- and, through them, `class::verify::read_word` (`class/verify.rs`,
+  a slot's word), `Huge::read_run_word` (`huge/mod.rs`, a run's
   word, through the permission the hand-out will mint) and
-  `libc::copy_moved` (`api/libc.rs:1602`, realloc's copy over the two
+  `libc::copy_moved` (`api/libc.rs`, realloc's copy over the two
   blocks' `Live` tokens). The `check_zero` walks that call the word
   reads require it too: `ClassState::check_zero` and
-  `check_fresh_slab_is_zero` (`class/verify.rs:427`), and
-  `Huge::check_zero` (`huge/mod.rs:5183`).
+  `check_fresh_slab_is_zero` (`class/verify.rs`), and
+  `Huge::check_zero` (`huge/mod.rs`).
 
 It is granted in two places:
 
-- the realloc cores `libc::realloc_block` (`api/libc.rs:1637`),
+- the realloc cores `libc::realloc_block` (`api/libc.rs`),
   `libc::realloc_usable_stored` and `jemalloc::rallocx_zeroed`
   (`api/jemalloc.rs`), in the proof block just before their
   `copy_moved`. By then the move is decided: the keep test
@@ -8752,10 +8753,10 @@ It is granted in two places:
   byte of `p`.
 - `purge::check_zero()`, whose `true` (the `check_zero` config key is
   on) grants it. Its callers that read are the class claim's pick loop
-  (`ClassState::finish`, `class/mod.rs:3018`, under a
+  (`ClassState::finish`, `class/mod.rs`, under a
   loop invariant `check_zero ==> may_read_user()`), the class take's
   `Fresh`-slab check (`ClassState::take`) and
-  the huge allocation (`Huge::alloc_aligned`, `huge/mod.rs:5011`,
+  the huge allocation (`Huge::alloc_aligned`, `huge/mod.rs`,
   under the `prior` that is `Some` only when `check_zero()`
   returned `true`). `check_zero`'s body calls the grant unconditionally;
   only its `ensures` (`r ==>`) passes the capability on, so a caller
@@ -8784,7 +8785,7 @@ only `check_zero()`'s `true` grants it.
   from `vspec::ptr::ref_ptr` (a Rust reference, which verified code makes
   only through a permission).
 - The only permissions to a user block's bytes are `UserMem`s. They are
-  minted at hand-out (`heap::live::axiom_hand_out`, `heap/live.rs:663`),
+  minted at hand-out (`heap::live::axiom_hand_out`, `heap/live.rs`),
   at the C boundary (`axiom_c_claim`) and, lent for reads, to a
   `Fresh` slab's slots (`class::axiom_fresh_slab_mem`,
   `class/mod.rs`, whose one caller is the `check_zero` branch of
@@ -8794,7 +8795,7 @@ only `check_zero()`'s `true` grants it.
   or to the `Shared` static.
 - A `UserMem`'s `PointsToRaw` is a private field of `vspec::user`, so
   only that module turns it into a bound. The read bound is
-  `lemma_valid_reads` (`vspec/user.rs:143`, through
+  `lemma_valid_reads` (`vspec/user.rs`, through
   `vspec::ptr::axiom_raw_readable`), which requires the capability, and
   the private `lemma_raw_range` gives the permission's raw
   range to `zero_raw` and `copy_raw`. Its callers are `zero_user`,
@@ -8805,7 +8806,7 @@ only `check_zero()`'s `true` grants it.
   there, from `grant_user_reads`, or from a `true` that
   `purge::check_zero()` returned.
   `sys::tests::user_read_grants_only_in_listed_callers`
-  (`sys/mod.rs:1652`) checks the source: each of the four grant sites
+  (`sys/mod.rs`) checks the source: each of the four grant sites
   calls `grant_user_reads` exactly once, and nothing else calls it. That
   `may_read_user` appears in an `ensures` only as `check_zero`'s
   `r ==> may_read_user()` and in the grant's own `ensures`, and
@@ -8913,7 +8914,7 @@ pub proof fn lemma_exited_final(old: usize, new: usize)
     requires old == TLS_EXITED, slot_step(old, new),
     ensures new == TLS_EXITED,
 
-// sys/tls.rs:430 (trusted asm; the requires binds its verified callers)
+// sys/tls.rs (trusted asm; the requires binds its verified callers)
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
     requires crate::heap::slot_step(old(slot).value(), value as usize),
     ensures final(slot).set_to(*old(slot), value as usize),
@@ -8921,7 +8922,7 @@ pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
 // heap/thread.rs, in heap_destructor after the store, before Heap::destroy
 assert(tls.value() == TLS_EXITED && tls.loan.heap() is None && slot_ok(tls.cell, tls.loan));
 
-// heap/thread.rs:509 (verification only, cfg(verus_keep_ghost))
+// heap/thread.rs (verification only, cfg(verus_keep_ghost))
 fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tracked<&mut TlsSlot>)
     requires may_abort(), may_syscall(), shared.wf(), sp == Shared::storage() as *const Shared,
         slot_ok(old(tls).cell, old(tls).loan), old(tls).value() == TLS_EXITED,
@@ -8939,10 +8940,10 @@ fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tra
 ```
 
 **Covers.** Every verified slot write: `heap_destructor` (any phase to
-`Exited`), `create_heap_for_thread` (`heap/thread.rs:370`: empty to
+`Exited`), `create_heap_for_thread` (`heap/thread.rs`: empty to
 `Creating` after `Heap::create`; `Creating` to the heap value, or to
 null when the thread-exit key cannot take the heap), and the background
-thread's `create` (`purge/background.rs:545`: a heap value parked on
+thread's `create` (`purge/background.rs`: a heap value parked on
 `Creating` across `pthread_join` and `pthread_create`, then put back).
 The readers: `existing_heap` and `tls_heap_slot` (the `malloc`, `free`,
 `free_sized` and `challoc_free_usable` fast paths), `heap_for_thread`
@@ -8963,7 +8964,7 @@ unchanged). The theorem follows from the readers' `ensures`: at a
 `reentry_benign` value both return `None` with the token unchanged.
 
 **Premises.**
-- The slot premise (`TlsSlot::entry`, `sys/tls.rs:316`): each top-level
+- The slot premise (`TlsSlot::entry`, `sys/tls.rs`): each top-level
   user's token holds the slot as the last verified writer left it.
   Ghost state does not cross from one C call to the next, so the step
   from "`heap_destructor` left `TLS_EXITED`" to "every later entry's
@@ -8972,7 +8973,7 @@ unchanged). The theorem follows from the readers' `ensures`: at a
 - One token per user: two `TlsSlot::entry` calls in one verified
   function would give two tokens, and a write through a stale one would
   be checked against a value the slot no longer holds. The source test
-  `sys::tls::tests::tls_entry_only_at_listed_users` (`sys/tls.rs:484`)
+  `sys::tls::tests::tls_entry_only_at_listed_users` (`sys/tls.rs`)
   checks that only the listed users call it, once each (twice in
   `heap::mallocx::alloc` and in `theorem_no_syscall_on_fast_paths`, one
   per `match` arm). Not checked: that a nested user (the allocator
@@ -8982,7 +8983,7 @@ unchanged). The theorem follows from the readers' `ensures`: at a
   slow paths).
 - The nested-entry specs, trusted: `pthread_setspecific`
   (`heap/shared.rs`) leaves a sentinel unchanged; `pthread_join`
-  and `spawn` (`purge/background.rs:696`) keep a non-empty cell
+  and `spawn` (`purge/background.rs`) keep a non-empty cell
   (`TlsCell::kept`).
 - The slot accessors (`get`, `get_tp`, `set`): inline asm, partly
   checked by Isla (`verus/isla/seams.md`); that only these sequences
@@ -9022,7 +9023,7 @@ token finds no cache, and so does not reach the freed heap, until
 
 **Statement.** Each table entry carries a ghost generation, even while
 the entry is null and odd while it holds a cache, which never moves
-back: the table's invariant (`TablePred`, `heap/tcaches.rs:126`) holds one
+back: the table's invariant (`TablePred`, `heap/tcaches.rs`) holds one
 `vspec::entry` permission per entry, and every lower bound it has
 issued for an entry is at most that entry's generation. `destroy`
 swaps the entry to null inside the invariant, before the heap is freed,
@@ -9039,7 +9040,7 @@ cache. `destroy_then_get` (verification only) calls `destroy`,
 premises.
 
 ```rust
-// heap/tcaches.rs:1156
+// heap/tcaches.rs
 pub proof fn theorem_tcache_destroyed_none(id: u16, tracked w: &TableWrite, tracked u: &HeapUse, found: bool)
     requires
         (id as usize) < MAX_TCACHES,
@@ -9113,7 +9114,7 @@ frees check the slot at the call through plain `free`'s exact path.
 pointer and leaves the heap and the caller's token unchanged, so a
 sized free goes on to the size check and the exact free, whose
 `Shared::classify_free` tests the slot's slab and bit
-(`SlabTable::check_live`, `class/table.rs:3960`) before anything is cached
+(`SlabTable::check_live`, `class/table.rs`) before anything is cached
 or released. Verus checks the decline and the unchanged heap and token
 (the assertion) and the composed route's `ensures`, which are the same
 as without the key; that the exact free's test aborts on a clear bit is
@@ -9123,17 +9124,17 @@ read from the code.
 // heap/shared.rs, in Shared::built (part of Shared::wf; Shared::init makes it from ClassLine::of)
 self.lines[c].guard_mask == if self.config.exact_sized_free { 0 } else { crate::layout::guard_geom(c).1 }
 
-// heap/shared.rs:3742 (a guard mask of 0 makes the guard test match every slab)
+// heap/shared.rs (a guard mask of 0 makes the guard test match every slab)
 pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> (r: Option<usize>)
     ensures self.exact_sized_free() ==> r is None, ...
 
-// heap/paths.rs:1016
+// heap/paths.rs
 pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>, flags: u8,
     Tracked(blk): Tracked<&mut Live>) -> (r: bool)
     ensures shared.exact_sized_free() ==> !r,
         shared.exact_sized_free() ==> *final(h) == *old(h) && *final(blk) == *old(blk), ...
 
-// heap/paths.rs:1465 (verification only, cfg(verus_keep_ghost))
+// heap/paths.rs (verification only, cfg(verus_keep_ghost))
 fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>,
     Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
     requires may_abort(), may_syscall(), shared.wf(), shared.exact_sized_free(), old(h).wf(),
@@ -9166,7 +9167,7 @@ push and reaches the same check through `free_direct` or
 - The C-boundary assumption (`axiom_c_claim`): the caller's token
   claims `p`, as for every free path.
 - The key is the configuration `init` applied: `Shared::wf` names it
-  (`Shared::exact_sized_free`, `heap/shared.rs:3598`); `Shared::init` proves
+  (`Shared::exact_sized_free`, `heap/shared.rs`); `Shared::init` proves
   each class line's guard mask from it (`ClassLine::of`), and
   `Shared::built` states it.
 
@@ -9193,7 +9194,7 @@ slab not handed out aborts is read from `SlabTable::check_live`
 `double_free_scan` is an opt-in hardening key, off by default
 ([docs/hardening.md](../docs/hardening.md), (1)): one state byte per
 slot, `FREE`, `CACHED` or `LIVE`, which every transition of the slot
-moves with one `step` (`heap/slotstate.rs:376`). This section states how
+moves with one `step` (`heap/slotstate.rs`). This section states how
 long a slot's second free is caught at the call.
 
 **Statement.** Given the slot-state premise below, after a free of a
@@ -9212,7 +9213,7 @@ The byte operations are `vspec::byte`'s wrappers (`load`, `store`,
 `compare_exchange`), on a permission one axiom mints for the byte.
 
 ```rust
-// heap/slotstate.rs:152
+// heap/slotstate.rs
 pub open spec fn transition(from: u8, to: u8) -> bool {
     ||| from == FREE && (to == CACHED || to == LIVE)    // claim
     ||| from == CACHED && (to == LIVE || to == FREE)    // pop, release
@@ -9226,7 +9227,7 @@ pub open spec fn hands_out(s: u8, ops: Seq<(u8, u8)>) -> bool {
     exists|i: int| 0 <= i < ops.len() && ops[i].1 == LIVE && run(s, ops.take(i)) == ops[i].0
 }
 
-// heap/slotstate.rs:206
+// heap/slotstate.rs
 pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
     requires
         to == CACHED || to == FREE,
@@ -9265,10 +9266,10 @@ not proved: that `step` is the only code that reads or writes a state
 byte (the module keeps the arrays private); that only
 `Shared::alloc_direct_state` claims to `LIVE` (`heap/shared.rs`);
 and that every free route calls `free` first under the key: the cached
-free's slow path (`Heap::free_slow_in`, `heap/paths.rs:717`, before the slot
+free's slow path (`Heap::free_slow_in`, `heap/paths.rs`, before the slot
 reaches a cache or its slab) and the direct free (`free_direct`,
 `heap/paths.rs`). The fast push declines under the key by its `ensures`
-(`Heap::push_cache_flags`, `heap/cache.rs:755`).
+(`Heap::push_cache_flags`, `heap/cache.rs`).
 
 **Proof.** `step` follows from the `vspec::byte` wrappers' contracts on
 the minted permission; each entry point's assertion follows from
@@ -9281,7 +9282,7 @@ from `NONE`, which no byte holds).
 
 **Premises.**
 - The slot-state premise: at each step the slot's byte holds a state
-  (`axiom_slot_byte`, `heap/slotstate.rs:247`, whose contract says only
+  (`axiom_slot_byte`, `heap/slotstate.rs`, whose contract says only
   this), the one the last step on that slot left (`FREE` before the
   first: the array is zero-filled). Each step mints a fresh permission;
   ghost state does not cross from one call to the next, so the step from
@@ -9353,7 +9354,7 @@ restates part of the Rust function's, and the nullable `api::libc`
 exports state its `errno` failure values as the `errno` the C caller
 reads (`c_errno()`); glibc's exports (`api/glibc.rs`) and the
 `mallctl` exports (`api/mallctl.rs`) state none of their own.
-`api::tests::exports_return_their_callees_result` (`api/mod.rs:5432`)
+`api::tests::exports_return_their_callees_result` (`api/mod.rs`)
 checks that every export body in `api::libc`, `api::cxx` and
 `api::jemalloc` is that setup, one call of its Rust entry point, and
 that call's result returned unchanged. So the Rust function's `ensures`
@@ -9382,7 +9383,7 @@ cells.
 
 Properties:
 
-- **R**: the result fits and is aligned (`heap::fits`, `heap/mod.rs:202`);
+- **R**: the result fits and is aligned (`heap::fits`, `heap/mod.rs`);
   a slab result is never in a guard slab (theorem 7).
 - **D**: the result is disjoint from every other live block: the core
   returns the token of the block (`Live::gives`), and two live tokens
@@ -9472,7 +9473,7 @@ Notes that recur below:
 - *(D)*: the entry point's `_block` core ensures `final(blk).gives(r,
   size)`: for a non-null result, `blk` is the token of the live block at
   `r` (`Live::block`) with at least the request's usable bytes. Two live
-  tokens are disjoint (`Live::theorem_apart`, `heap/live.rs:969`), and a
+  tokens are disjoint (`Live::theorem_apart`, `heap/live.rs`), and a
   cached slot is no live block (`Heap::theorem_uniqueness_live`,
   `heap/mod.rs`), so the result shares no byte with any other
   block the program holds, under the `free` contract for C's blocks.
@@ -9499,7 +9500,7 @@ Notes that recur below:
   null an allocating entry point returns is a failure that set `errno`,
   and every non-null one is a block (`fits`). The exports of rows 1-8
   and 12-14 restate the failure values as the `errno` the C caller
-  reads: `axiom_errno_at_return` (`vspec/errno.rs:91`, trusted, a
+  reads: `axiom_errno_at_return` (`vspec/errno.rs`, trusted, a
   C-program contract) uses up the lent token right after the call and,
   when the export's own `failed` condition holds, ensures `c_errno()`
   (uninterpreted: `errno` as C reads it after this return) is
@@ -9532,7 +9533,7 @@ Notes that recur below:
   export that passed `true` would get the claim on every path), and no
   verified code calls an export, so no proof sees two returns
   (`c_errno` names one). The source test
-  `api::tests::exports_return_their_callees_result` (`api/mod.rs:5432`)
+  `api::tests::exports_return_their_callees_result` (`api/mod.rs`)
   checks these by reading the source: every `lend` call is in an export
   body, at most one per body in `api::libc`, `api::cxx` and
   `api::jemalloc`; every `axiom_errno_at_return` call is in one of the
@@ -9557,7 +9558,7 @@ Notes that recur below:
   restores it with `set_errno` around its calls, under the caller's
   token, and ensures `final(errno).val() == old(errno).val()`
   (`purge/background.rs`).
-- *(live)*: `free_target` (`heap/mod.rs:547`, theorem 3) is proved. A
+- *(live)*: `free_target` (`heap/mod.rs`, theorem 3) is proved. A
   call with a pointer that is not a slot start or a huge page start does
   not return. A free core takes the caller's token for `p` (`Live::claims`) and ensures
   `p@.addr != 0 ==> blk.block(p)`: what it freed was a live block, whose
@@ -9565,7 +9566,7 @@ Notes that recur below:
   authorities (runs). A non-live pointer that is a slot or huge page
   start has no token in C's hands; the boundary's `axiom_c_claim` (the
   `free` contract) makes such a call's context inconsistent, and the
-  run-time checks (`SlabTable::check_live`, `class/table.rs:3960`, the
+  run-time checks (`SlabTable::check_live`, `class/table.rs`, the
   cache flush's release, `Huge::free_run`) stay in the code for it. So
   the cell stays `p`: a non-live free is excluded by the C-boundary
   assumption, not proved to abort.
@@ -9630,7 +9631,7 @@ alone):
    ensures that a moved block's first `min(blk.len(), size)` bytes read
    as `p`'s did when the copy was made (`Live::copied_from`, over the
    byte states). The copy's effect on the byte states is the trusted
-   `vspec::user::copy_raw` (`vspec/user.rs:280`, `external_body`,
+   `vspec::user::copy_raw` (`vspec/user.rs`, `external_body`,
    discharged by Kani); its safety is
    verified. F:
    `p != 0 && size == 0 ==> r@.addr == 0` with `errno` unchanged (the
@@ -9642,7 +9643,7 @@ alone):
    proves `n * m > usize::MAX ==> r@.addr == 0 && final(errno).val() ==
    ENOMEM`. B: `free_target(p)` only when `n * m` does not overflow (an
    overflowing call returns NULL without looking at `p`).
-5. `aligned_alloc`, `memalign` (`api/libc.rs:3238`). R:
+5. `aligned_alloc`, `memalign` (`api/libc.rs`). R:
    `is_pow2(align) ==> fits(r, size, align)`. B:
    `!is_pow2(align) ==> r@.addr == 0 && final(errno).val() == EINVAL`.
    challoc's `memalign` rejects a non-power-of-two alignment, unlike
@@ -9707,7 +9708,7 @@ alone):
     proved over `free_sized_slow`, `heap::free` and `background::start`
     (a fast-path push takes no token); the export states nothing about
     `errno`, and the premises are row 10's.
-12. `challoc_malloc_usable` (`api/libc.rs:3371`, `.0` of
+12. `challoc_malloc_usable` (`api/libc.rs`, `.0` of
     `malloc_usable_stored`). R, D, F: as `malloc`. U: the `Stored` token
     of the last store through `usable` has `ptr() == usable` and, for a
     non-null result, `usable_is(r, size, val())`: the class's size, or
@@ -9718,7 +9719,7 @@ alone):
     block's usable size is positive, "No block at address 0"). That the
     class is `nallocx(size, 0)`'s (the smallest that holds `size` bytes)
     is true of `class_index` but not exported here.
-13. `challoc_calloc_usable` (`api/libc.rs:3392`, `calloc_usable_zeroed`). R, F: as `calloc`. Z: the token covers `n * m` bytes and
+13. `challoc_calloc_usable` (`api/libc.rs`, `calloc_usable_zeroed`). R, F: as `calloc`. Z: the token covers `n * m` bytes and
     `covers_usable(r.1, r.0, 0, n * m)`, the whole usable size the doc
     promises and the code zeroes (`zero_user(p, u)`, `api/libc.rs`, or the known-zero
     token of `heap::alloc_zeroed` or `alloc_huge`). For a huge run the
@@ -9726,20 +9727,20 @@ alone):
     (`usable_size` with the token `alloc_huge` returned,
     `huge_usable(n * m)`), so no trusted premise remains. U: as row 12, for `n * m`, and the null
     result's 0 is stated (0 exactly for NULL, as row 12).
-14. `challoc_realloc_usable` (`api/libc.rs:3414`, `.0` of
+14. `challoc_realloc_usable` (`api/libc.rs`, `.0` of
     `realloc_usable_stored`). R, D, C, F, B: as `realloc` (the keep
     decision is `realloc_old`). U: as row 12. A kept block's
     size is `realloc_old`'s, which ensures `usable_of(p, old)` and, when
     kept, `usable_is(p, size, old)` (for a run, `usable_for(size) ==
     Some(old)` is the keep test); a moved block's is
     `malloc_usable_stored`'s.
-15. `challoc_free_usable` (`api/libc.rs:3437`). F: `p == 0 ==> r == 0`
+15. `challoc_free_usable` (`api/libc.rs`). F: `p == 0 ==> r == 0`
     and `p != 0 ==> 0 < r`, so 0 exactly for NULL ("No block at address
     0").
     B: as `free` (`free_usable_block`). U: `p != 0 ==> usable_of(p, r)`,
     *(U)*, and `r == blk.len()`, the freed block's usable bytes (the
     class size, or the run's usable pages, from its token on both paths):
-    the class size from `heap::free_fast_slot` (`heap/paths.rs:852`),
+    the class size from `heap::free_fast_slot` (`heap/paths.rs`),
     which ensures `is_slot(c, p)`, or from `free_usable_slow`'s classification
     (`api/libc.rs`), or `Huge::usable_size` there. The `r == blk.len()` half
     is the core's; at the export `blk` is the token `axiom_c_claim` gives
@@ -9817,7 +9818,7 @@ alone):
     `r == nalloc_usable(size, flags & 0x3f)` (`api/jemalloc.rs`), the
     size of `spec_class_for(size, 1 << (flags & 0x3f))`, or
     `huge_usable(size)` when the run has a placement in the empty huge
-    region at the alignment (`huge_placeable`, `vspec/zero.rs:269`: the page
+    region at the alignment (`huge_placeable`, `vspec/zero.rs`: the page
     rounding does not overflow, the alignment is at most the region's
     length, and the run and its guard page fit from some aligned page;
     `Huge::placeable` ensures it is `Huge::spec_placeable`, the same
@@ -9943,7 +9944,7 @@ alone):
     requires no `may_abort()`, which an abort would need, and the
     theorem's witness calls it without (`theorem_read_only_never_aborts`,
     `api/mod.rs`). The body is verified.
-36. `challoc_version` (`api/mod.rs:152`), `challoc_features`:
+36. `challoc_version` (`api/mod.rs`), `challoc_features`:
     verified, no contract.
 37. Data symbols `malloc_conf`, `malloc_message`, `je_malloc_message`
     (`api/jemalloc.rs`): no code. `message_hook`, which
@@ -9974,7 +9975,7 @@ alone):
 - I4: theorem 7. For slabs, `Regions::is_slot`
   excludes the guard slabs, so every `fits` (the R column) and every
   `free_target` (the B column) states it per result: `theorem_guard_pages` and
-  `theorem_guard_free` (`heap/mod.rs:265`). For huge runs it is
+  `theorem_guard_free` (`heap/mod.rs`). For huge runs it is
   stated only of the huge lock's values (`Inner::theorem_run_guards`,
   `huge/mod.rs`): `alloc_run` returns the run's token, but
   no lemma states the guard exclusion per result over it, and
