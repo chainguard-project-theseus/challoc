@@ -1631,11 +1631,9 @@ impl SlabTable {
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
     /// guard (design 5). `ord` is the caller's lock-order token,
-    /// which the reservations take for the metadata lock. `_slot_once` and
-    /// `words_once` are the one-shot tokens (ghost, `vspec::once`) of the
-    /// class's `Step::SlotLoc` step (only the precondition names it) and of
-    /// the step that makes its bitmap words' permissions
-    /// ([`axiom_fresh_words`]). The table
+    /// which the reservations take for the metadata lock. `words_once` is
+    /// the one-shot token (ghost, `vspec::once`) of the step that makes the
+    /// class's bitmap words' permissions ([`axiom_fresh_words`]). The table
     /// keeps the permissions of its descriptors and the invariants of its
     /// bitmap words, owner words and watermark ([`SlabTable::perms_ok`]),
     /// and its commit lock the markers and descriptor permissions of every
@@ -1655,7 +1653,6 @@ impl SlabTable {
         regions: &Regions,
         class: usize,
         guard_interval: u32,
-        Tracked(_slot_once): Tracked<Once>,
         Tracked(words_once): Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<SlabTable>)
@@ -1670,7 +1667,6 @@ impl SlabTable {
             guard_interval != 1,
             guard_interval == 0 || exists|k: nat| k < 32 && guard_interval as nat == #[trigger] pow2(k),
             old(ord).allows(rank_meta()),
-            _slot_once.step() == Step::SlotLoc(class as int),
             words_once.step() == Step::FreshWords(class as int),
         ensures
             r matches Some(t) ==> {

@@ -2255,17 +2255,14 @@ impl Shared {
                     forall|d: int| 0 <= d < c ==> (#[trigger] table_perms[d]).value().meta_ok(),
                     ord.allows(rank_meta()),
                     ord.allows(rank_table(0)),
-                    forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::SlotLoc(d)),
                     forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::FreshWords(d)),
             {
-                let tracked slot_once = once::take(&mut steps, Step::SlotLoc(c as int));
                 let tracked words_once = once::take(&mut steps, Step::FreshWords(c as int));
                 match SlabTable::new(
                     meta,
                     regions,
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
-                    Tracked(slot_once),
                     Tracked(words_once),
                     Tracked(&mut ord),
                 ) {
