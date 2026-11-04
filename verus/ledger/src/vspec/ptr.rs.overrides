@@ -13,7 +13,7 @@ axiom_plain_u32	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_byte
 # The value carries no usable provenance: a restriction on the proofs, not checked.
 axiom_plain_ptr	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-core::ptr::write_bytes::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_bytes; not checked: zero-sized `T`, which the harness leaves out because Kani 0.68 reports an empty fill there as a write to a region that is not writeable (every caller fills bytes))
+core::ptr::write_bytes::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_bytes)
 <*mut T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences)
 <*const T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences)
 ref_ptr	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::ptr_ref_ptr)
@@ -23,5 +23,5 @@ core::ptr::read_volatile::<T>	core library	Kani	trusted (partly checked, Kani: k
 <*mut T>::sub	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani observes only through a dereference, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`))
 core::ptr::read_unaligned::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes))
 <*const T>::read_unaligned	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes))
-core::ptr::write_unaligned::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_unaligned; not checked: `mallctl`'s 48-byte `Utilization`, the one type it writes that is wider than a word)
-<*mut T>::write_unaligned	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_write_unaligned; not checked: `mallctl`'s 48-byte `Utilization`, the one type it writes that is wider than a word)
+core::ptr::write_unaligned::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_unaligned)
+<*mut T>::write_unaligned	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_unaligned)
