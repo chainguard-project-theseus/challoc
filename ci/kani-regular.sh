@@ -17,7 +17,10 @@
 # up; the rest go longest first, each to the shard with the least time so
 # far, by the seconds below: one harness per `cargo kani` call, in regular
 # format with `--verbosity 9`, at quantum 16, on an 8 vCPU guest, less the
-# 5 s rebuild of each call (2026-10-31). A harness not listed counts as
+# 5 s rebuild of each call (2026-10-31). The `select_ptrs` rows are
+# CBMC's verification times with all eight in one call, run beside the
+# same call at quantum 8 (2026-11-04).
+# A harness not listed counts as
 # $default seconds, so a new one lands in some shard without an edit
 # here; add it to the table when it takes more than half a minute.
 #
@@ -34,21 +37,29 @@ esac
 default=2
 weights='
   kani_proofs::misc::formatter_write_fmt 1261 alone
+  kani_proofs::slice::select_ptrs_by_key_12 416
+  kani_proofs::slice::select_ptrs_12 380
   sys::cgroup::kani_fmt::display_cgroup 355
+  kani_proofs::slice::select_ptrs_short 349
   config::kani_config::display_bytes 342
+  kani_proofs::slice::select_ptrs_by_key_short 322
   config::kani_config::set_listed_contract 304
   api::print::kani_print::word_returns 296
   kani_proofs::slice::slice_is_sorted 249
   kani_proofs::slice::sort_ptrs_by_key_12 216
+  kani_proofs::slice::select_ptrs_by_key_11 195
   kani_proofs::slice::sort_ptrs_12 171
   api::print::kani_print::hist_line_returns 171
+  kani_proofs::slice::select_ptrs_11 140
   kani_proofs::slice::sort_ptrs_by_key_short 132
   kani_proofs::slice::sort_ptrs_short 130
   config::kani_config::display_issue_rounded 125
+  kani_proofs::slice::select_ptrs_10 115
   kani_proofs::ptr::ptr_copy_nonoverlapping 104
   kani_proofs::slice::sort_ptrs_11 98
   kani_proofs::ptr::ptr_write_unaligned 71
   kani_proofs::slice::sort_ptrs_by_key_11 70
+  kani_proofs::slice::select_ptrs_by_key_10 67
   layout::kani_classes::class_table_entries 58
   kani_proofs::slice::sort_ptrs_10 57
   config::kani_config::display_issue_bad_value 57
