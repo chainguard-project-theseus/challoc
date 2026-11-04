@@ -1,0 +1,14 @@
+
+pad-new.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000002040 <fmt>:
+    2040:	ldrb	w8, [x0]
+    2044:	adrp	x1, 5000 <fmt+0x2fc0>
+    2048:	add	x1, x1, #0x50
+    204c:	b	3040 <pad>
+    2050:	nop
+    2054:	nop
+    2058:	nop

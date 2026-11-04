@@ -1,0 +1,12 @@
+
+erratum-out.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000003ff8 <mallinfo>:
+    3ff8:	bl	2000 <collect>
+    3ffc:	adrp	x8, 6000 <SHARED>
+    4000:	ldr	x13, [x20, #5944]
+    4004:	b	9000 <other>
+    4008:	ret

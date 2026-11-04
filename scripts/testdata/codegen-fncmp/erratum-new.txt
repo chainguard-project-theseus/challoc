@@ -1,0 +1,17 @@
+
+erratum-new.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000003ff8 <mallinfo>:
+    3ff8:	bl	2000 <collect>
+    3ffc:	adr	x8, 6000 <SHARED>
+    4000:	ldr	x13, [x20, #5944]
+    4004:	ldr	w10, [x8, #3168]
+    4008:	ret
+    400c:	nop
+    4010:	b	5000 <mallinfo2>
+    4014:	nop
+    4018:	ldr	w10, [x8, #3168]
+    401c:	b	4008 <mallinfo+0x10>
