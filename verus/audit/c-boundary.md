@@ -84,7 +84,7 @@ Totals for the 51 seams listed: 49 sound, 2 fixed.
 | `set_errno` | `vspec/errno.rs` | sound | Writes `errno` through `__errno_location`. |
 | `libc::FILE` | `vspec/print.rs` | sound | An opaque type. |
 | `axiom_fresh_anon_zero` | `huge/mod.rs` | sound | `mmap(2)`; the premise is named, not checked (see "Notes"). |
-| `axiom_discarded_zero` | `huge/mod.rs` | sound | `madvise(2)` with `MADV_DONTNEED`; the premise is named, not checked (see "Notes"). |
+| `axiom_discarded_zero` | `huge/mod.rs` | sound | `madvise(2)` with `MADV_DONTNEED`; the call's success is required (`sys::madvise_ok`), and that nothing has written the bytes since is named, not checked (see "Notes"). |
 | `Unbacked::commit` | `vspec/unbacked.rs` | sound | `mprotect(2)` or `mmap(2)`; the premise is named, not checked (see "Notes"). |
 
 ## Details
@@ -142,8 +142,9 @@ does not promise; that is Rust's side, outside the Verus contract.
    user memory and guard slabs, which hold no typed permission. The
    stubs' "changes nothing tracked" holds as a property of the call
    sites, not of a contract.
-3. **Zero axioms with unchecked premises.** `axiom_fresh_anon_zero` and
-   `axiom_discarded_zero` mint a `Zeroed` token for any range, and
+3. **Zero axioms with unchecked premises.** `axiom_fresh_anon_zero`
+   mints a `Zeroed` token for any range, `axiom_discarded_zero` for any
+   range whose `MADV_DONTNEED` succeeded (`sys::madvise_ok`), and
    `Unbacked::commit` a `PointsToRaw` and a `Zeroed` for any `Unbacked`,
    with the kernel-state premise left to the call site. None can prove
    `false`: the tokens carry no exclusivity, and `Unbacked` tokens are

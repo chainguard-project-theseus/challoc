@@ -82,7 +82,7 @@ Totals for the 26 seams listed: 8 sound, 11 sound (premise), 7 fixed.
 | `axiom_auth_sign` | `sys/pac.rs` | sound | True for every address below `user_va_limit()` and every modifier, and with the keys disabled. |
 | `axiom_ptr_add_addr` | `vspec/ptr.rs` | sound | True: `add` is `wrapping_add` where it is defined (see "Premises" for the harness's reach). |
 | `axiom_fresh_anon_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for any range; its call sites (`huge/mod.rs`) pass a run's freshly mapped pages. |
-| `axiom_discarded_zero` | `huge/mod.rs` | sound (premise) | As `axiom_fresh_anon_zero`, for pages just discarded with `MADV_DONTNEED`. |
+| `axiom_discarded_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for a range whose `MADV_DONTNEED` the kernel answered with success (`sys::madvise_ok`, required; `huge::zero_run` passes `Huge::rediscard`'s); that nothing has written it since is the premise. |
 | `Unbacked::commit` | `vspec/unbacked.rs` | sound (premise) | Called after a successful `mprotect` (`committed_range`); non-empty tokens come only from reservations, which start above 0. |
 
 ## Derivations of `false` the contracts rule out
@@ -169,10 +169,11 @@ These seams are sound under a premise worth naming.
 - **Zero tokens are snapshots** (`axiom_zero_entry`,
   `axiom_fresh_anon_zero`, `axiom_discarded_zero`, `Unbacked::commit`).
   Writes do not consume a `Zeroed` or `ZeroRaw`, and
-  `axiom_fresh_anon_zero` and `axiom_discarded_zero` mint one for any
-  range. With vstd's `PointsTo::leak_contents`, an initialised, occupied
-  entry can be made uninitialised, and with a zero token for its bytes
-  `axiom_zero_entry` then calls it empty. That is no `false`, but an
+  `axiom_fresh_anon_zero` mints one for any range, `axiom_discarded_zero`
+  for any range whose `MADV_DONTNEED` succeeded. With vstd's
+  `PointsTo::leak_contents`, an initialised, occupied entry can be made
+  uninitialised, and with a zero token for its bytes `axiom_zero_entry`
+  then calls it empty. That is no `false`, but an
   untrue fact about memory. The one call of `axiom_zero_entry`
   (`huge/table.rs`, building the table's storage) passes bytes straight
   from the reservation's `ZeroRaw`.
