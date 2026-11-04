@@ -3043,7 +3043,36 @@ mod tests {
     /// [`lock_inventory`], each lock with whether it is private to its
     /// module (declared without `pub`).
     fn lock_decls() -> Vec<(String, bool)> {
+        lock_decls_typed()
+            .into_iter()
+            .map(|(key, private, _)| (key, private))
+            .collect()
+    }
+
+    /// [`lock_decls`], each lock also with the type it protects as written
+    /// in its declaration (`T` of `Lock<T>`, inside any wrapper such as
+    /// `Padded<..>`), empty for a bare `RawLock`.
+    fn lock_decls_typed() -> Vec<(String, bool, String)> {
         use std::string::ToString;
+        // `T` of the first `Lock<T>` in `ty`, up to its matching `>`.
+        let elem = |ty: &str| -> String {
+            let Some(at) = ty.find("Lock<") else {
+                return String::new();
+            };
+            let rest = &ty[at + "Lock<".len()..];
+            let mut depth = 1;
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '<' => depth += 1,
+                    '>' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    return rest[..i].trim().to_string();
+                }
+            }
+            String::new()
+        };
         let mut out = Vec::new();
         for (rel, text) in &lock_sources() {
             if rel == "lock.rs" {
@@ -3084,7 +3113,11 @@ mod tests {
                     if let Some((name, ty)) = rest.split_once(':')
                         && is_lock(ty)
                     {
-                        out.push((std::format!("{rel}:static.{}", name.trim()), private));
+                        out.push((
+                            std::format!("{rel}:static.{}", name.trim()),
+                            private,
+                            elem(ty),
+                        ));
                     }
                     continue;
                 }
@@ -3095,7 +3128,7 @@ mod tests {
                         && is_lock(ty)
                         && !ty.contains("->")
                     {
-                        out.push((std::format!("{rel}:{owner}.{name}"), private));
+                        out.push((std::format!("{rel}:{owner}.{name}"), private, elem(ty)));
                     }
                 }
             }
@@ -3548,6 +3581,131 @@ mod tests {
             found.sort_unstable();
             want.sort_unstable();
             assert_eq!(found, want, "{key}: the holders found differ from the list");
+        }
+    }
+
+    /// The rule of `lock::LockSpec`'s doc: an impl that defines its lock
+    /// invariant, or a frame other than `true`, is for a type whose every
+    /// lock is in [`UNLOCKED_LOCKS`], so each release checks both
+    /// ([`guards_end_in_unlock`]); a frame of `true` is exempt, since no
+    /// release can break it. The impls are the scan that
+    /// `lock::tests::lock_axioms_state_assumed_specs` reads too
+    /// ([`crate::testutil::lock_spec_impls`]): an impl defines what it does
+    /// not delegate to `assumed_inv` or `assumed_frame`, and its frame is
+    /// `true` when the body of its `lock_spec_frame` is that one word. A
+    /// lock's type is the `T` of its declaration ([`lock_decls_typed`]),
+    /// named through a `use crate::..` or `use super::..` of it in the
+    /// declaring file or else in that file's module. Every lock's type must
+    /// be some impl's (`Lock::new` needs `T: LockSpec`), so a spelling the
+    /// test misreads fails instead of escaping.
+    #[test]
+    fn defined_lock_specs_are_unlocked_locks() {
+        use std::string::ToString;
+        let sources = lock_sources();
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        let module = crate::testutil::module_of;
+        let name = crate::testutil::type_key;
+        // The type `ty`, written in file `rel` with text `text`, by its
+        // full path: through a `use crate::..` or `use super::..` of it
+        // (one path or one flat group, possibly over several lines) before
+        // the file's `mod tests`, else in the file's module.
+        let resolve = |rel: &str, text: &str, ty: &str| -> String {
+            let m = module(rel);
+            if !ty.is_empty() && ty.chars().all(ident) {
+                let mut uses = Vec::new();
+                let mut open: Option<String> = None;
+                for line in text.lines() {
+                    let t = line.trim();
+                    if t == "mod tests {" {
+                        break;
+                    }
+                    if let Some(mut s) = open.take() {
+                        s.push_str(t);
+                        if t.ends_with(';') {
+                            uses.push(s);
+                        } else {
+                            open = Some(s);
+                        }
+                        continue;
+                    }
+                    let t = ["pub(crate) ", "pub(super) ", "pub "]
+                        .iter()
+                        .find_map(|p| t.strip_prefix(p))
+                        .unwrap_or(t);
+                    if let Some(rest) = t.strip_prefix("use ") {
+                        if rest.ends_with(';') {
+                            uses.push(rest.to_string());
+                        } else {
+                            open = Some(rest.to_string());
+                        }
+                    }
+                }
+                let parent = m.rsplit_once("::").map_or("crate", |(p, _)| p).to_string();
+                for u in &uses {
+                    let path: String = u.trim_end_matches(';').split_whitespace().collect();
+                    let full = if let Some(p) = path.strip_prefix("crate::") {
+                        std::format!("crate::{p}")
+                    } else if let Some(p) = path.strip_prefix("super::") {
+                        std::format!("{parent}::{p}")
+                    } else {
+                        continue;
+                    };
+                    if full.ends_with(std::format!("::{ty}").as_str()) {
+                        return full;
+                    }
+                    if let Some((base, group)) = full.split_once("::{")
+                        && group
+                            .strip_suffix('}')
+                            .is_some_and(|g| g.split(',').any(|n| n == ty))
+                    {
+                        return std::format!("{base}::{ty}");
+                    }
+                }
+            }
+            name(&m, ty)
+        };
+        let locks: Vec<(String, String)> = lock_decls_typed()
+            .into_iter()
+            .filter(|(_, _, ty)| !ty.is_empty())
+            .map(|(key, _, ty)| {
+                let rel = key.split_once(':').unwrap().0;
+                let text = &sources.iter().find(|(r, _)| r == rel).unwrap().1;
+                (key.clone(), resolve(rel, text, &ty))
+            })
+            .collect();
+        let impls = crate::testutil::lock_spec_impls();
+        assert!(!impls.is_empty(), "no `LockSpec` impl was found in src/");
+        // Fail closed: `Lock::new` needs `T: LockSpec`, so a lock whose
+        // type names no scanned impl is a spelling this test misread, and
+        // would otherwise escape the rule below.
+        for (key, ty) in &locks {
+            assert!(
+                impls.iter().any(|s| s.ty == *ty),
+                "{key}: its type reads as `{ty}`, which no `LockSpec` impl in src/ is for; spell it so it resolves (`use crate::..::T;` or `Lock<crate::..::T>`)"
+            );
+        }
+        for s in &impls {
+            if !s.inv && !(s.frame && !s.true_frame) {
+                continue;
+            }
+            let at = std::format!("{}:{}", s.rel, s.start + 1);
+            let of: Vec<&String> = locks
+                .iter()
+                .filter(|(_, t)| *t == s.ty)
+                .map(|(k, _)| k)
+                .collect();
+            assert!(
+                !of.is_empty(),
+                "{at}: no lock of `{}` was found in src/",
+                s.ty
+            );
+            for key in of {
+                assert!(
+                    UNLOCKED_LOCKS.iter().any(|(k, _)| k == key),
+                    "{at}: `{}` defines its lock invariant or a frame other than `true`, but its lock {key} is not in UNLOCKED_LOCKS: its holders' releases check nothing (`lock::LockSpec`)",
+                    s.ty
+                );
+            }
         }
     }
 

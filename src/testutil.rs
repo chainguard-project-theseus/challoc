@@ -4,7 +4,7 @@
 //! process-wide allocator's settings, [`mlock_or_skip`] for the tests of
 //! purges that fail on locked memory, and the source scans of the guard
 //! tests and other source checks ([`grant_sites`], [`assert_only_at`],
-//! [`shipped_sources`]).
+//! [`shipped_sources`], [`lock_spec_impls`]).
 
 use core::mem::MaybeUninit;
 use std::boxed::Box;
@@ -492,6 +492,109 @@ pub(crate) fn shipped_sources() -> std::vec::Vec<(std::string::String, std::stri
             }
         }
         out.push((rel.to_string(), kept));
+    }
+    out
+}
+
+/// The module a file under `src/` is, as a path (`crate::class::table` for
+/// `class/table.rs`, `crate::class` for `class/mod.rs`).
+pub(crate) fn module_of(rel: &str) -> std::string::String {
+    let stem = rel.strip_suffix(".rs").unwrap();
+    let stem = stem.strip_suffix("/mod").unwrap_or(stem);
+    std::format!("crate::{}", stem.replace('/', "::"))
+}
+
+/// The type `ty`, written in module `m`, by its path: as written when it
+/// starts with `crate::`, else as an item of `m`.
+pub(crate) fn type_key(m: &str, ty: &str) -> std::string::String {
+    use std::string::ToString;
+    let ty = ty.trim();
+    if ty.starts_with("crate::") {
+        ty.to_string()
+    } else {
+        std::format!("{m}::{ty}")
+    }
+}
+
+/// One `LockSpec` impl in [`shipped_sources`] ([`lock_spec_impls`]).
+pub(crate) struct LockSpecImpl {
+    /// The file, relative to `src/`.
+    pub(crate) rel: std::string::String,
+    /// The `impl` line and its closing line, as 0-based line indices
+    /// (equal for an impl on one line).
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    /// The implementing type by its path ([`type_key`] in the file's
+    /// module).
+    pub(crate) ty: std::string::String,
+    /// It defines `lock_spec_inv` (does not delegate to `assumed_inv`).
+    pub(crate) inv: bool,
+    /// It defines `lock_spec_frame` (does not delegate to `assumed_frame`).
+    pub(crate) frame: bool,
+    /// The body of its `lock_spec_frame` is the one word `true`.
+    pub(crate) true_frame: bool,
+}
+
+/// Every `LockSpec` impl in [`shipped_sources`] outside `lock.rs` (which
+/// defines the trait; its own impls are in its tests), read from each
+/// `impl .. LockSpec for T` line through the next line at that line's
+/// indentation that is `}`. An impl defines a method when its body never
+/// calls the matching `assumed_*` function.
+pub(crate) fn lock_spec_impls() -> std::vec::Vec<LockSpecImpl> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    // Spelled in parts, so that this file's own lines match nothing.
+    let for_ = std::format!("{}{}", "LockSpec", " for ");
+    let assumed_inv = std::format!("{}{}", "assumed_", "inv(");
+    let assumed_frame = std::format!("{}{}", "assumed_", "frame(");
+    let frame_fn = std::format!("{}{}", "fn lock_spec_", "frame");
+    // A use of `name`, not the tail of a longer name.
+    let calls = |t: &str, name: &str| t.match_indices(name).any(|(i, _)| !t[..i].ends_with(ident));
+    let mut out = std::vec::Vec::new();
+    for (rel, text) in shipped_sources() {
+        if rel == "lock.rs" {
+            continue;
+        }
+        let m = module_of(&rel);
+        let lines: std::vec::Vec<&str> = text.lines().collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let t = lines[i].trim_start();
+            if t.starts_with("impl") && t.contains(for_.as_str()) {
+                let start = i;
+                let rest = &t[t.find(for_.as_str()).unwrap() + for_.len()..];
+                let ty = rest.split(" where").next().unwrap().trim_end();
+                let ty = ty.trim_end_matches('}').trim_end_matches('{').trim_end();
+                let indent = &lines[i][..lines[i].len() - t.len()];
+                let mut body = std::vec::Vec::new();
+                if !t.trim_end().ends_with('}') {
+                    i += 1;
+                    while lines[i] != std::format!("{indent}}}") {
+                        body.push(lines[i]);
+                        i += 1;
+                    }
+                }
+                let text = body.join("\n");
+                // The body of `lock_spec_frame`, its lines trimmed.
+                let frame: std::vec::Vec<&str> = body
+                    .iter()
+                    .skip_while(|l| !l.contains(frame_fn.as_str()))
+                    .skip(1)
+                    .map(|l| l.trim())
+                    .take_while(|l| *l != "}")
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                out.push(LockSpecImpl {
+                    rel: rel.clone(),
+                    start,
+                    end: i,
+                    ty: type_key(&m, ty),
+                    inv: !calls(&text, &assumed_inv),
+                    frame: !calls(&text, &assumed_frame),
+                    true_frame: frame == ["true"],
+                });
+            }
+            i += 1;
+        }
     }
     out
 }
