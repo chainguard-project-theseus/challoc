@@ -1,10 +1,11 @@
 TABLE	function pointer	Kani
 Parse	function pointer	Kani
 Read	function pointer	Kani
-read_slot	raw pointer from C caller	Miri (evidence only)
-byte_at	raw pointer from C caller	Miri (evidence only)
-bytes_at	raw pointer from C caller	Miri (evidence only)
-environ_array	raw pointer from C caller	Miri (evidence only)
+# The C program's `environ` memory: no tool checks the caller's pointers; their validity is assumed.
+read_slot	raw pointer from C caller	none (assumption)
+byte_at	raw pointer from C caller	none (assumption)
+bytes_at	raw pointer from C caller	none (assumption)
+environ_array	raw pointer from C caller	none (assumption)
 # Termination of the `environ` walk: the C program ends the array with a null pointer.
 env_var	C-program contract	none (assumption)
 # `CStr` literals, which Verus does not take: Verus sees each only as a

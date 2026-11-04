@@ -1,74 +1,38 @@
 # Verus results
 
-Figures as of main `a1165e7f` (2026-11-01).
+challoc's executable Rust source is checked by [Verus](README.md) against the contracts written on its functions: every verified function (inside `verus!` and not trusted) is proved free of arithmetic overflow, out-of-bounds indexing, reachable panics and non-termination, and to meet its `requires` and `ensures`. On top of those contracts, 64 `theorem_*` functions and the properties in [THEOREMS.md](THEOREMS.md) state what the allocator guarantees: returned blocks never overlap each other or the allocator's metadata, valid frees never hit the corruption checks, the fast paths make no system call and take no lock, and more. The proofs cover both quanta (`quantum16`, `quantum8`) on x86_64 and aarch64, with pointer authentication on or off. What Verus takes on trust is a *seam*, listed in the [seam ledger](SEAMS.md); seams are checked outside Verus with Kani (bounded model checking of a seam's body against its contract), Isla (traces of the compiled inline assembly on Sail's Arm and x86 models), `make emptyasm` (empty `asm!` templates add no instruction), compile-time constant assertions, and loom (copies of the atomic protocols under C11 weak memory). Every guarantee assumes that the C caller obeys the C allocation contract, for example that it frees only live blocks.
 
-## Headline
+## Headline figures
 
-challoc is a memory-safe, jemalloc-compatible malloc for Wolfi and Chainguard OS, written in `no_std` Rust. It exports the C allocation functions, glibc extras, and jemalloc’s extended API, including `mallocx`, `sdallocx`, `mallctl`, and `malloc_stats_print`.
+Measured on main at `26f535a9` with the commands in [Check it yourself](#check-it-yourself).
 
-Verus verifies **92.8% of executable lines** and **82.5% of executable functions**. Counting trusted functions whose full contracts are checked outside Verus raises coverage to **93.6% of lines** and **84.9% of functions**.
+| Measure | Figure |
+| --- | --- |
+| Executable functions Verus verifies | 1363 of 1634 (83.4%) |
+| Executable lines Verus verifies | 41466 of 44343 (93.5%) |
+| Functions Verus verifies, plus trusted functions whose seam Kani, a constant assertion, Isla or `make emptyasm` discharges | 1429 of 1634 (87.4%) |
+| Lines Verus verifies, plus trusted lines whose seam Kani, a constant assertion, Isla or `make emptyasm` discharges | 42282 of 44343 (95.3%) |
+| Functions Verus verifies, plus trusted functions also checked by loom models of the atomic protocol | 1400 of 1634 (85.6%) |
+| Lines Verus verifies, plus trusted lines also checked by loom models of the atomic protocol | 41920 of 44343 (94.5%) |
+| Theorems | 64 `theorem_*` functions: 49 proof functions and 15 verification-only executable functions |
+| Seams | 433 in 65 source files: 152 discharged, 18 discharged on platform premises, 83 partly checked, 180 trusted with no check |
+| Kani harnesses | 168 `#[kani::proof]` harnesses under `src/` |
+| loom tests | 85 `#[test]` functions in `tests/loom`: 63 models in `tests/loom/src` and 22 source checks in `tests/loom/tests` |
 
-`theorem_metadata_integrity` proves that the bytes of a returned block (its requested size, at least 1) are separate from the metadata ranges named in its contract and the process’s `Shared` static, subject to its [stated exclusions](../src/heap/mod.rs).
+Shares are rounded down to a tenth of a percent. A *discharged* seam has a check outside Verus that covers its whole contract; a seam *discharged on platform premises* has an Isla check that covers its whole contract except for named facts about the kernel, loader or CPU, which stay assumed, and the counter counts it as discharged; a *partly checked* seam has a check for part of its contract, and its ledger entry names the rest ([SEAMS.md](SEAMS.md#status)). The loom rows add the 37 trusted functions whose ledger status cites a loom model: each model runs a copy of the function's atomic sequence under every interleaving loom explores, so these seams stay partly checked, not verified, and no loom-checked seam is discharged. [Coverage](#coverage) and [Trust base](#trust-base) break these figures down.
 
-`Live::theorem_apart` and `Live::theorem_distinct` prove that 2 live blocks have disjoint usable bytes and different non-null addresses, including when an allocation requested 0 bytes.
+## What the proofs guarantee
 
-`theorem_no_syscall_on_fast_paths` proves that the named allocation and free fast paths make no system call, except the write and `SIGABRT` of an integrity abort on a corrupt PAC-signed cache entry.
+The guarantees fall into eight groups. Each group links to its sections in [THEOREMS.md](THEOREMS.md), which give every statement with its entry points, premises and proof sketch. The tables name each `theorem_*` function; the "Assumes" column lists its main premises and does not replace the function's full `requires`. Verification-only theorems are `cfg(verus_keep_ghost)` and absent from the shipped build.
 
-The 5 `theorem_valid_*_free_never_aborts` proofs show that freeing a live block through their covered paths never reaches a not-an-allocation, invalid-free, or double-free check; resource failures and integrity checks remain possible.
+### Returned blocks and allocator metadata
 
-`theorem_no_user_reads` proves that the named allocation and free cores do not read a user block’s bytes, except for opt-in debug zero checks.
-
-`theorem_read_only_never_aborts` proves that its covered read-only entry points abort at most at an integrity check. `theorem_mallctl_reads_never_abort` and `theorem_mallctlbymib_reads_never_abort` prove that `mallctl` and `mallctlbymib` never abort for read-only keys other than the 4 `thread.*` readers.
-
-`theorem_zeroed_memory`, `theorem_zero_on_free`, and `theorem_zero_on_free_huge` cover zeroed results and zero-on-free over the whole usable size.
-
-`theorem_exact_stats` proves that, at a quiescent state, reported allocated bytes equal the usable bytes of live blocks plus cached slots.
-
-`theorem_guard_pages`, `theorem_guard_free`, and `Inner::theorem_run_guards` keep the covered blocks and free targets out of guard slabs and huge-run usable pages out of live-run guard pages.
-
-Every theorem is conditional on the [trust base](#trust-base) and the caller obeying the C allocation contract. Executable theorems marked “Verification only” use `cfg(verus_keep_ghost)` and are absent from the shipped build.
-
-## Theorems
-
-The 64 `theorem_*` functions comprise 49 proof functions and 15 verification-only executable functions. The count takes every function definition under `src/` whose name starts with `theorem_`, including methods such as `Live::theorem_apart`; it leaves out the 4 `fn theorem_` strings that the restated-body tests in `src/api/restated.rs` search for. The “Assumes” column names the main premises for each result; it is not a substitute for the function’s full `requires` contract. In particular, C entry points rely on the caller’s contract, and proofs about allocator state rely on the state invariants and trusted seams they use.
-
-### API and C boundary
-
-| Theorem | Statement | File | Assumes |
-| --- | --- | --- | --- |
-| `theorem_no_syscall_on_fast_paths` | The covered `malloc` and operator-new, `free`, `free_sized` or flagless `sdallocx`, and `challoc_free_usable` fast paths make no syscall except an integrity abort’s write and `SIGABRT`. | [api/libc.rs](../src/api/libc.rs) | `integrity_aborts`; a block token from `axiom_c_claim`; a restatement of the fast paths. |
-| `theorem_no_user_reads` | The covered allocation and free cores do not read user block bytes, except opt-in debug zero checks. | [api/libc.rs](../src/api/libc.rs) | `may_abort`, `may_syscall`, and the caller’s block token. |
-| `theorem_read_only_never_aborts` | Covered calls to `nallocx`, `challoc_features`, `mallinfo2`, `get_defrag_hint`, `malloc_usable_size(NULL)`, and `experimental.utilization` abort at most at an integrity check. | [api/mod.rs](../src/api/mod.rs) | `may_syscall`, `integrity_aborts`, `shared.wf`, and a restatement of covered calls. Read-only `mallctl` and `mallctlbymib` keys are covered by `theorem_mallctl_reads_never_abort` and `theorem_mallctlbymib_reads_never_abort`. |
-| `theorem_realloc_to_usable_size` | `realloc(p, malloc_usable_size(p))` returns `p` exactly when `p` is a slot or a run with more than `MEDIUM_MAX` usable bytes. | [api/libc.rs](../src/api/libc.rs) | A live block token. |
-| `theorem_valid_lookups_never_abort` | Lookups of a live block by `malloc_usable_size` and `realloc` avoid the not-an-allocation, invalid-free, and double-free checks. | [api/libc.rs](../src/api/libc.rs) | A live block token; excludes allocation after a move and freeing the old block. |
-| `theorem_nallocx_zero` | `nallocx(size, flags)` is 0 exactly when no class serves the requested size and alignment and no huge run can be placed. | [api/jemalloc.rs](../src/api/jemalloc.rs) | `regions_ok`. |
-| `theorem_nallocx_zero_rejects` | A request for which `nallocx` returns 0 makes `mallocx` return `NULL` in every allocator state. | [api/jemalloc.rs](../src/api/jemalloc.rs) | `may_abort` and `may_syscall`. |
-| `theorem_sized_slot_nallocx` | A normally returning sized free of a slot received a size whose `nallocx` equals the slot’s class size. | [api/jemalloc.rs](../src/api/jemalloc.rs) | A valid slot and size hint. |
-| `theorem_sized_run_nallocx` | The same size agreement holds for huge runs at alignments that leave the size huge and placeable. | [api/jemalloc.rs](../src/api/jemalloc.rs) | A live huge run and the stated alignment conditions. |
-| `theorem_mib_round_trip` | A mallctl name maps to a management information base (MIB) and back to the same node; the split is unique, and numeric levels contain their component’s decimal value. | [api/mallctl.rs](../src/api/mallctl.rs) | The name, components, MIB, and node contracts. |
-| `theorem_mallctl_reads_never_abort` | A `mallctl` call for a read-only key other than the 4 `thread.*` readers, or for a utilization query, never aborts. | [api/mallctl.rs](../src/api/mallctl.rs) | `may_syscall`, `shared.wf`, a `ReadyMark` for a `READY` the caller saw, the call’s C token, and a restatement of the body after `shared_published`. |
-| `theorem_mallctlbymib_reads_never_abort` | A `mallctlbymib` call for a MIB of a key or query that `theorem_mallctl_reads_never_abort` covers never aborts. | [api/mallctl.rs](../src/api/mallctl.rs) | The same premises, with the `mallctlbymib` call’s C token and a restatement of its body. |
-
-### Free paths
-
-The 5 never-abort proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_syscall`, `kernel_aborts`, `pending_aborts`, `shared.wf`, and a live block token. The direct paths also assume `integrity_aborts`.
-
-| Theorem | Statement | File | Assumes |
-| --- | --- | --- | --- |
-| `theorem_valid_free_never_aborts` | Freeing a live block without a cache avoids the not-an-allocation, invalid-free, and double-free checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises; direct-path integrity premise. |
-| `theorem_valid_run_free_never_aborts` | Freeing a live huge run on a thread with a heap avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises and a heap. |
-| `theorem_valid_cache_free_never_aborts` | Freeing through caches, including garbage collection, decay, purge, arena build, and flush slow paths, avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises and a heap. |
-| `theorem_valid_sized_free_never_aborts` | A sized free with a correct size hint avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises, a heap, and a correct hint. |
-| `theorem_valid_sized_direct_free_never_aborts` | A sized free without a cache and with a correct size hint avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises, a correct hint, and the direct-path integrity premise. |
-| `theorem_exact_sized_free` | With the opt-in `exact_sized_free` key, a sized free’s hinted fast push declines every pointer and changes neither the heap nor the caller’s token, so the free reaches the size check and the exact free, which runs plain `free`’s slab and bit test before it caches or releases a slot. | [heap/paths.rs](../src/heap/paths.rs) | `may_abort`, `may_syscall`, `shared.wf`, a heap, the caller’s block token, and `exact_sized_free` set. |
-| `theorem_double_free_window` | With the opt-in `double_free_scan` key, after a free of a slot returns, every later free of that slot aborts until a cache pop or `alloc_direct` hands the slot out again. Verified: `free`, `claim`, `pop` and `release` return only when their step found the state their transition starts from, and the lemma over the code's transitions on one byte. | [heap/slotstate.rs](../src/heap/slotstate.rs) | Unencoded: each entry point finds the value the last step on that slot left. Trusted: the byte holds a state (`axiom_slot_byte`, which mints a `BytePerm` for it), and `vspec::byte`'s `load`, `store` and `compare_exchange` on it. Read from the code: every free route calls the check first. |
-
-### Blocks and metadata
+Every block an allocation returns fits its request and alignment, lies wholly in a class region or the huge region, and shares no byte with the allocator's metadata or the process's `Shared` static. Two live blocks have disjoint usable bytes and different addresses, no block or free target is at address 0 or in a guard slab, and no class or huge commit makes a live guard page accessible again. Between any block and any other region lies 4 MiB of challoc's own never-committed reservation, so a linear overflow faults before it reaches metadata or another region. Details: THEOREMS.md [1](THEOREMS.md#1-region-separation), [2](THEOREMS.md#2-fit-and-alignment), [4](THEOREMS.md#4-user-blocks-are-disjoint-from-allocator-metadata), [5](THEOREMS.md#5-uniqueness), [7](THEOREMS.md#7-guard-pages), [24](THEOREMS.md#24-no-block-at-address-0), [41](THEOREMS.md#41-seal-targets-stay-inside-challocs-reservations), and [Unnumbered theorems](THEOREMS.md#theorems-outside-the-numbered-sections).
 
 | Theorem | Statement | File | Assumes |
 | --- | --- | --- | --- |
 | `theorem_region_separation` | An allocated block lies wholly in a class region or the huge region, outside the metadata region. | [heap/mod.rs](../src/heap/mod.rs) | Region layout and a valid block. |
-| `theorem_metadata_integrity` | A returned non-null block shares no byte with the covered metadata ranges or the process’s `Shared` static. | [heap/mod.rs](../src/heap/mod.rs) | Published `Shared::wf`, 3 kernel `mmap` reservations, Meta lock axioms, the zero-entry axiom and `ZeroRaw::axiom_new` for descriptor-table storage, and trusted bitmap constructors; see its exclusions in [Known limits and open work](#known-limits-and-open-work). |
+| `theorem_metadata_integrity` | A returned non-null block shares no byte with the covered metadata ranges or the process’s `Shared` static. | [heap/mod.rs](../src/heap/mod.rs) | Published `Shared::wf`, 3 kernel `mmap` reservations, Meta lock axioms, the zero-entry axiom and `ZeroRaw::axiom_new` for descriptor-table storage, and trusted bitmap constructors; see its exclusions in [What the proofs do not cover](#what-the-proofs-do-not-cover). |
 | `theorem_guard_pages` | No allocated block lies in a guard slab. | [heap/mod.rs](../src/heap/mod.rs) | A valid block and the class-region layout. |
 | `theorem_guard_free` | No valid free target lies in a guard slab. | [heap/mod.rs](../src/heap/mod.rs) | A valid free target and the class-region layout. |
 | `theorem_slab_commit_avoids_guards` | Every `mprotect` read-write commit of a class region stays in the region and shares no byte with a guard slab, except one starting in the range’s first page for which an `MADV_GUARD_INSTALL` of that page succeeded (in the code, the call just before on the same path; the marker stays and the rest of the slab is committed); so it touches no other region either. Every commit of a class in `Mode::Chunks` (`thp:always` PMD chunks and their plain fallback) is only held in the region: that mode places no guards and commits its guard slabs read-write. | [class/table.rs](../src/class/table.rs) | `regions_ok`; the commit wrapper’s `requires`, which every caller proves; the wrapper is the region’s only read-write `mprotect` (read from the code). Trusted: `mprotect` keeps a guard marker and nothing removes one; a class’s `thp` mode is fixed before its first commit (read from the code), and the ghost `chunk` flag follows it. |
@@ -81,7 +45,27 @@ The 5 never-abort proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_sy
 | `Live::theorem_interior` | An interior pointer into a live block is not a free target, except a page start inside a huge run. | [heap/live.rs](../src/heap/live.rs) | A live block; the C caller contract excludes freeing the huge-run exception. |
 | `Live::theorem_purge_huge` | A huge purge does not discard the usable bytes of a live block. | [heap/live.rs](../src/heap/live.rs) | A live block and the huge-run authority. |
 
-### Caches
+### Free paths and bad input
+
+A free or a lookup that returns normally was given `NULL` where that is allowed, a slot start or a huge page start, and a sized free was given a size that names the block. A free of a live block, through a thread cache or without one, sized or not, never reaches the not-an-allocation, invalid-free or double-free checks the proofs rule out; resource failures, integrity checks and the checks theorem 44 names as pending (`pending_aborts`) stay possible. `realloc` keeps a block in place exactly when the class or page keep rule says so. Two theorems cover opt-in hardening keys ([docs/hardening.md](../docs/hardening.md#1-invalid-and-double-frees)): under `exact_sized_free`, a sized free runs plain `free`'s slab and bit test; under `double_free_scan`, a slot's second free aborts until the slot is handed out again, given the slot-state premise. Details: THEOREMS.md [3](THEOREMS.md#3-invalid-free-pointer-shape), [25](THEOREMS.md#25-realloc-follows-the-classpage-keep-rule), [43](THEOREMS.md#43-jemalloc-size-contracts), [44](THEOREMS.md#44-valid-programs-never-abort-the-frees-after-init-through-the-caches-or-none-sized-or-not-and-the-lookups-of-realloc-and-malloc_usable_size-up-to-resource-failures-and-named-pending-checks), [Bad input](THEOREMS.md#bad-input), [exact sized frees](THEOREMS.md#sized-frees-run-plain-frees-check-under-exact_sized_free-rests-on-the-c-boundary-assumption) and [the double-free window](THEOREMS.md#double-free-window-under-double_free_scan-rests-on-the-slot-state-premise).
+
+| Theorem | Statement | File | Assumes |
+| --- | --- | --- | --- |
+| `theorem_valid_free_never_aborts` | Freeing a live block without a cache avoids the not-an-allocation, invalid-free, and double-free checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises; direct-path integrity premise. |
+| `theorem_valid_run_free_never_aborts` | Freeing a live huge run on a thread with a heap avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises and a heap. |
+| `theorem_valid_cache_free_never_aborts` | Freeing through caches, including garbage collection, decay, purge, arena build, and flush slow paths, avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises and a heap. |
+| `theorem_valid_sized_free_never_aborts` | A sized free with a correct size hint avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises, a heap, and a correct hint. |
+| `theorem_valid_sized_direct_free_never_aborts` | A sized free without a cache and with a correct size hint avoids those checks. | [heap/paths.rs](../src/heap/paths.rs) | Common free-path premises, a correct hint, and the direct-path integrity premise. |
+| `theorem_valid_lookups_never_abort` | Lookups of a live block by `malloc_usable_size` and `realloc` avoid the not-an-allocation, invalid-free, and double-free checks. | [api/libc.rs](../src/api/libc.rs) | A live block token; excludes allocation after a move and freeing the old block. |
+| `theorem_realloc_to_usable_size` | `realloc(p, malloc_usable_size(p))` returns `p` exactly when `p` is a slot or a run with more than `MEDIUM_MAX` usable bytes. | [api/libc.rs](../src/api/libc.rs) | A live block token. |
+| `theorem_sized_slot_nallocx` | A normally returning sized free of a slot received a size whose `nallocx` equals the slot’s class size. | [api/jemalloc.rs](../src/api/jemalloc.rs) | A valid slot and size hint. |
+| `theorem_sized_run_nallocx` | The same size agreement holds for huge runs at alignments that leave the size huge and placeable. | [api/jemalloc.rs](../src/api/jemalloc.rs) | A live huge run and the stated alignment conditions. |
+| `theorem_exact_sized_free` | With the opt-in `exact_sized_free` key, a sized free’s hinted fast push declines every pointer and changes neither the heap nor the caller’s token, so the free reaches the size check and the exact free, which runs plain `free`’s slab and bit test before it caches or releases a slot. Verification only. | [heap/paths.rs](../src/heap/paths.rs) | `may_abort`, `may_syscall`, `shared.wf`, a heap, the caller’s block token, and `exact_sized_free` set. |
+| `theorem_double_free_window` | With the opt-in `double_free_scan` key, after a free of a slot returns, every later free of that slot aborts until a cache pop or `alloc_direct` hands the slot out again. Verus checks that `free`, `claim`, `pop` and `release` return only when their step found the state their transition starts from, and the lemma over the code’s transitions on one byte. | [heap/slotstate.rs](../src/heap/slotstate.rs) | Each entry point finds the value the last step on that slot left (not encoded); the byte holds a state (`axiom_slot_byte`) and `vspec::byte`’s `load`, `store` and `compare_exchange` on it (trusted); every free route calls the check first (read from the code). |
+
+### Caches, slabs and huge runs
+
+A thread cache never holds a slot twice, never holds a slot another holder has, and routes each cached slot to at most one arena. Slab claims never miss free capacity at quiescence, slot shuffling is a permutation, and each slab slot stays with the arena its group was handed to. At the huge lock's invariant, the huge region's free extents are maximally coalesced and its free-page bitmap is exact, and placement takes the lowest fitting address. A lookup of a destroyed explicit cache that holds the destroy's bound finds no cache. Details: THEOREMS.md [5](THEOREMS.md#5-uniqueness), [11](THEOREMS.md#11-shuffle-is-a-permutation), [14](THEOREMS.md#14-arena-isolation-slab-ownership-and-release-routing), [17](THEOREMS.md#17-huge-coalescing-at-the-huge-lock-invariant), [20](THEOREMS.md#20-mallocx_tcache_none-bypasses-thread-caches), [23](THEOREMS.md#23-lowest-address-huge-placement), [26](THEOREMS.md#26-cache-routing), [28](THEOREMS.md#28-cache-flush-completeness), [29](THEOREMS.md#29-huge-free-bitmap-is-exact-at-the-huge-lock-invariant), [34](THEOREMS.md#34-balanced-arena-assignment-bound-counts-at-their-invariants), [36](THEOREMS.md#36-arena-ids-survive-enumeration-holes-with-a-stable-registry), [37](THEOREMS.md#37-slab-claim-never-misses-free-capacity-at-quiescence), and [explicit-cache destroy](THEOREMS.md#a-lookup-holding-destroys-bound-finds-no-destroyed-explicit-cache-rests-on-vspecentrys-write-list).
 
 | Theorem | Statement | File | Assumes |
 | --- | --- | --- | --- |
@@ -92,10 +76,56 @@ The 5 never-abort proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_sy
 | `Heap::theorem_uniqueness_live` | A cached slot is not a live block. | [heap/mod.rs](../src/heap/mod.rs) | A well-formed heap and live-block authority. |
 | `Heap::theorem_uniqueness_apart` | 2 heaps never cache the same slot. | [heap/mod.rs](../src/heap/mod.rs) | Well-formed heaps and cache authorities. |
 | `Heap::theorem_cache_routing` | Cache routing keys are distinct, a header routes to at most 1 arena, and pops do not take from the `FOREIGN` node. | [heap/mod.rs](../src/heap/mod.rs) | A well-formed heap and its routing state. |
-| `theorem_exit_no_rebuild` | At a TLS slot holding `TLS_EXITED`, which the thread’s heap destructor stores before freeing the heap, the slot readers hand out no heap and create none, and every value a slot write may store over it (`slot_step`, required by `tls::set`) is `TLS_EXITED`. Verification only. | [heap/thread.rs](../src/heap/thread.rs) | The slot premise of `TlsSlot::entry`, whose call sites a source test checks; trusted nested-entry specs. |
-| `theorem_tcache_destroyed_none` | After `tcache.destroy` of an id, a `Tcaches::get` of that id whose token holds destroy’s lower bound (`HeapUse::watch_from`) reads at least the entry generation destroy left; a get that finds a cache read a later generation, so one at destroy’s generation finds none. The `MALLOCX_TCACHE` paths’ tokens hold no such bound. | [heap/tcaches.rs](../src/heap/tcaches.rs) | `vspec::entry`’s trusted list of the table’s writes (only `Tcaches::create` stores a non-null entry, so a later generation means a `create` of the id) and its atomic specs, which model sequential consistency; `axiom_tcaches_assemble` (and `axiom_tcaches_layout`, discharged by a const assertion); the caller contract that an explicit cache is not used concurrently with its `tcache.destroy`. |
+| `theorem_tcache_destroyed_none` | After `tcache.destroy` of an id, a `Tcaches::get` of that id whose token holds destroy’s lower bound (`HeapUse::watch_from`) reads at least the entry generation destroy left; a get that finds a cache read a later generation, so one at destroy’s generation finds none. The `MALLOCX_TCACHE` paths’ tokens hold no such bound. | [heap/tcaches.rs](../src/heap/tcaches.rs) | `vspec::entry`’s trusted list of the table’s writes (only `Tcaches::create` stores a non-null entry) and its atomic specs, which model sequential consistency; `axiom_tcaches_assemble` (and `axiom_tcaches_layout`, discharged by a const assertion); the caller contract that an explicit cache is not used concurrently with its `tcache.destroy`. |
+| `Proto::theorem_quiescent` | At a quiescent state, the live count equals the set bits; an Active slab outside the partial set is full. | [class/complete.rs](../src/class/complete.rs) | A quiescent slab state. |
+| `Proto::theorem_dry` | If idle sets are empty and partial slabs are full, every committed slab is Active and full. | [class/complete.rs](../src/class/complete.rs) | The stated idle and partial-set conditions. |
+| `ClassState::theorem_claim_complete` | A refill that reserved nothing leaves no free slot in any committed slab of that arena. | [class/complete.rs](../src/class/complete.rs) | A refill that reserved nothing and the slab-state model. |
+| `theorem_shuffle_permutation` | Slot shuffling loses no slot and duplicates none. | [class/mod.rs](../src/class/mod.rs) | The shuffle’s input and output sequences. |
+| `RunToken::theorem_purge_apart` | A byte a huge purge may discard belongs to no page, including a guard page, of a live run. | [huge/mod.rs](../src/huge/mod.rs) | A run token and live-run authority. |
+| `theorem_run_counted` | A live run’s extent and pages appear in the run authorities. | [huge/mod.rs](../src/huge/mod.rs) | A live run token and huge-region state. |
+| `Inner::theorem_free_exact` | A huge free-bitmap bit is set exactly for a page in a free extent; none is set past the high-water mark. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state; `Huge::audit` checks the same property at run time. |
+| `Inner::theorem_coalesced` | No 2 free extents touch. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state. |
+| `Inner::theorem_run_guards` | A live run’s usable pages overlap no live run’s guard pages. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state and live runs. |
+| `Huge::theorem_placeable_fits_empty` | A placeable request fits an empty huge region; an unplaceable request fails in every state. | [huge/mod.rs](../src/huge/mod.rs) | The request’s placeability conditions and region geometry. |
 
-### Zero and usable size
+### Purge and decay
+
+A purge never discards live data: every range handed to `madvise` is non-empty, page-aligned, inside a huge or class region and outside metadata and guard slabs. Memory pressure never lengthens the decay period, a decay deadline is never stale, and an explicit purge leaves no empty slab behind. At each huge free, the run is kept or discarded as the retain cap requires. Details: THEOREMS.md [18](THEOREMS.md#18-pressure-never-lengthens-decay-at-a-fixed-limit), [19](THEOREMS.md#19-purge-never-discards-live-data-huge-runs-slabs-at-the-class-lock), [30](THEOREMS.md#30-decay-deadline-soundness-per-gate-over-the-loaded-values), [31](THEOREMS.md#31-huge-retain-cap-at-the-frees-lock-release), [38](THEOREMS.md#38-explicit-purge-leaves-no-empty-slabs-at-each-lock-release-one-slab-per-page), and [40](THEOREMS.md#40-purge-batches-are-well-formed).
+
+| Theorem | Statement | File | Assumes |
+| --- | --- | --- | --- |
+| `theorem_purge_well_formed` | A purge range is non-empty, page-aligned, inside a huge or class region, and outside metadata and guard slabs. | [purge.rs](../src/purge.rs) | A valid purge range and region layout. |
+| `Decayer::theorem_decay_deadline` | A deadline is no earlier than now and no more than 1 step of the current period away; it does not return a stale, longer `next_walk`. | [purge.rs](../src/purge.rs) | The decayer’s current period and timing state. |
+| `Decayer::theorem_decay_deadline_under_pressure` | Higher usage cannot produce a later deadline bound. | [purge.rs](../src/purge.rs) | Comparable usage states and the pressure-period rule. |
+| `theorem_pressure_never_lengthens_decay` | Higher usage cannot lower the pressure band or lengthen the decay period. | [policy.rs](../src/policy.rs) | Comparable usage at the stated limit. |
+
+### Locks, fork and threads
+
+The fast paths of `malloc`, `free`, `free_sized`, flagless `sdallocx` and `challoc_free_usable` take no lock and terminate. Every blocking lock acquisition follows one acyclic order, calls out to user code hold no allocator lock up to the premise section 16 states, and the fork handlers hand over every lock of the fork lock list and restore the signal mask. When a thread's heap destructor runs it flushes the thread's caches, so nothing leaks, and once the thread's TLS slot holds `TLS_EXITED` no reader hands out or creates a heap. These properties are proved through the functions' contracts; `theorem_exit_no_rebuild` is the one `theorem_*` function among them. Details: THEOREMS.md [9](THEOREMS.md#9-fast-paths-take-no-lock-and-terminate), [10](THEOREMS.md#10-no-leak-on-thread-exit-when-the-destructor-runs), [13](THEOREMS.md#13-fork-handler-lock-handoff), [15](THEOREMS.md#15-re-entrant-heap-registration), [16](THEOREMS.md#16-no-allocator-lock-across-external-calls-partly-premised), [33](THEOREMS.md#33-lock-order-is-acyclic), [39](THEOREMS.md#39-fork-handlers-restore-the-signal-mask), and [Thread exit](THEOREMS.md#thread-exit-never-reuses-a-destroyed-heap-rests-on-the-slot-premise).
+
+| Theorem | Statement | File | Assumes |
+| --- | --- | --- | --- |
+| `theorem_exit_no_rebuild` | At a TLS slot holding `TLS_EXITED`, which the thread’s heap destructor stores before freeing the heap, the slot readers hand out no heap and create none, and every value a slot write may store over it (`slot_step`, required by `tls::set`) is `TLS_EXITED`. Verification only. | [heap/thread.rs](../src/heap/thread.rs) | The slot premise of `TlsSlot::entry`, whose call sites a source test checks; trusted nested-entry specs. |
+
+### The C boundary and system calls
+
+The covered fast paths make no system call except an integrity abort's write and `SIGABRT`, and allocation and free decisions never read the bytes of a user block. The covered read-only entry points abort at most at an integrity check, `mallctl` reads of read-only keys other than the 4 `thread.*` readers never abort, `nallocx` agrees with what `mallocx` can serve, and a mallctl name and its MIB round-trip. Each export's contract, including `errno` and out-pointer results, is listed in the interface contract, and a secure-execution process reads no allocator configuration from the environment. Details: THEOREMS.md [8](THEOREMS.md#8-no-syscall-on-the-fast-path), [21](THEOREMS.md#21-mib-round-trip), [32](THEOREMS.md#32-read-only-apis-never-abort), [42](THEOREMS.md#42-mallctl-writeread-contract-settings-and-objects), [45](THEOREMS.md#45-fast-path-cost-bounds-machine-level-pinned-build), [46](THEOREMS.md#46-allocator-decisions-never-depend-on-user-memory-contents-verified-code-trusted-bodies-read-from-the-code), and [Interface contract](THEOREMS.md#interface-contract).
+
+| Theorem | Statement | File | Assumes |
+| --- | --- | --- | --- |
+| `theorem_no_syscall_on_fast_paths` | The covered `malloc` and operator-new, `free`, `free_sized` or flagless `sdallocx`, and `challoc_free_usable` fast paths make no syscall except an integrity abort’s write and `SIGABRT`. | [api/libc.rs](../src/api/libc.rs) | `integrity_aborts`; a block token from `axiom_c_claim`; a restatement of the fast paths. |
+| `theorem_no_user_reads` | The covered allocation and free cores do not read user block bytes, except opt-in debug zero checks. | [api/libc.rs](../src/api/libc.rs) | `may_abort`, `may_syscall`, and the caller’s block token. |
+| `theorem_read_only_never_aborts` | Covered calls to `nallocx`, `challoc_features`, `mallinfo2`, `get_defrag_hint`, `malloc_usable_size(NULL)`, and `experimental.utilization` abort at most at an integrity check. | [api/mod.rs](../src/api/mod.rs) | `may_syscall`, `integrity_aborts`, `shared.wf`, and a restatement of covered calls. Read-only `mallctl` and `mallctlbymib` keys are covered by `theorem_mallctl_reads_never_abort` and `theorem_mallctlbymib_reads_never_abort`. |
+| `theorem_nallocx_zero` | `nallocx(size, flags)` is 0 exactly when no class serves the requested size and alignment and no huge run can be placed. | [api/jemalloc.rs](../src/api/jemalloc.rs) | `regions_ok`. |
+| `theorem_nallocx_zero_rejects` | A request for which `nallocx` returns 0 makes `mallocx` return `NULL` in every allocator state. | [api/jemalloc.rs](../src/api/jemalloc.rs) | `may_abort` and `may_syscall`. |
+| `theorem_mib_round_trip` | A mallctl name maps to a management information base (MIB) and back to the same node; the split is unique, and numeric levels contain their component’s decimal value. | [api/mallctl.rs](../src/api/mallctl.rs) | The name, components, MIB, and node contracts. |
+| `theorem_mallctl_reads_never_abort` | A `mallctl` call for a read-only key other than the 4 `thread.*` readers, or for a utilization query, never aborts. | [api/mallctl.rs](../src/api/mallctl.rs) | `may_syscall`, `shared.wf`, a `ReadyMark` for a `READY` the caller saw, the call’s C token, and a restatement of the body after `shared_published`. |
+| `theorem_mallctlbymib_reads_never_abort` | A `mallctlbymib` call for a MIB of a key or query that `theorem_mallctl_reads_never_abort` covers never aborts. | [api/mallctl.rs](../src/api/mallctl.rs) | The same premises, with the `mallctlbymib` call’s C token and a restatement of its body. |
+| `theorem_secure_conf` | In a process started with `AT_SECURE` set, no call of `env_var` returns, so `config::load` reads neither `MALLOC_CONF` nor `CHALLOC_CONF`. | [config.rs](../src/config.rs) | `getauxval(AT_SECURE)` and `env_var`'s contract; a source test checks that `env_var` is the only reader of the environment. |
+
+### Zeroing and usable size
+
+A calloc-style result reads zero over its whole usable size, and zero-on-free covers a slot's or a huge run's whole usable size before the memory is given up. The usable size a slot reports is the one stored for it, and the stored size is 0 exactly for `NULL`. Details: THEOREMS.md [6](THEOREMS.md#6-zeroed-memory-zero-token-coverage-at-return) and [12](THEOREMS.md#12-zero-on-free-at-release).
 
 | Theorem | Statement | File | Assumes |
 | --- | --- | --- | --- |
@@ -105,46 +135,19 @@ The 5 never-abort proofs in [heap/paths.rs](../src/heap/paths.rs) assume `may_sy
 | `theorem_usable_consistent` | A slot’s `malloc_usable_size` equals the usable size stored by `challoc_malloc_usable`. | [vspec/usable.rs](../src/vspec/usable.rs) | A valid slot and its stored size. |
 | `theorem_stored_zero_iff_null` | The stored usable size is 0 exactly when the pointer is `NULL`. | [vspec/usable.rs](../src/vspec/usable.rs) | The stored-size contract. |
 
-### Slabs
-
-| Theorem | Statement | File | Assumes |
-| --- | --- | --- | --- |
-| `Proto::theorem_quiescent` | At a quiescent state, the live count equals the set bits; an Active slab outside the partial set is full. | [class/complete.rs](../src/class/complete.rs) | A quiescent slab state. |
-| `Proto::theorem_dry` | If idle sets are empty and partial slabs are full, every committed slab is Active and full. | [class/complete.rs](../src/class/complete.rs) | The stated idle and partial-set conditions. |
-| `ClassState::theorem_claim_complete` | A refill that reserved nothing leaves no free slot in any committed slab of that arena. | [class/complete.rs](../src/class/complete.rs) | A refill that reserved nothing and the slab-state model. |
-| `theorem_shuffle_permutation` | Slot shuffling loses no slot and duplicates none. | [class/mod.rs](../src/class/mod.rs) | The shuffle’s input and output sequences. |
-
-### Huge runs
-
-| Theorem | Statement | File | Assumes |
-| --- | --- | --- | --- |
-| `RunToken::theorem_purge_apart` | A byte a huge purge may discard belongs to no page, including a guard page, of a live run. | [huge/mod.rs](../src/huge/mod.rs) | A run token and live-run authority. |
-| `theorem_huge_stats` | `stats.runs` and `run_pages` equal the live runs and their pages. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state. |
-| `theorem_run_counted` | A live run’s extent and pages appear in the run authorities. | [huge/mod.rs](../src/huge/mod.rs) | A live run token and huge-region state. |
-| `Inner::theorem_free_exact` | A huge free-bitmap bit is set exactly for a page in a free extent; none is set past the high-water mark. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state; `Huge::audit` checks the same property at run time. |
-| `Inner::theorem_coalesced` | No 2 free extents touch. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state. |
-| `Inner::theorem_run_guards` | A live run’s usable pages overlap no live run’s guard pages. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state and live runs. |
-| `Huge::theorem_placeable_fits_empty` | A placeable request fits an empty huge region; an unplaceable request fails in every state. | [huge/mod.rs](../src/huge/mod.rs) | The request’s placeability conditions and region geometry. |
-
-### Purge and decay
-
-| Theorem | Statement | File | Assumes |
-| --- | --- | --- | --- |
-| `theorem_purge_well_formed` | A purge range is non-empty, page-aligned, inside a huge or class region, and outside metadata and guard slabs. | [purge.rs](../src/purge.rs) | A valid purge range and region layout. |
-| `Decayer::theorem_decay_deadline` | A deadline is no earlier than now and no more than 1 step of the current period away; it does not return a stale, longer `next_walk`. | [purge.rs](../src/purge.rs) | The decayer’s current period and timing state. |
-| `Decayer::theorem_decay_deadline_under_pressure` | Higher usage cannot produce a later deadline bound. | [purge.rs](../src/purge.rs) | Comparable usage states and the pressure-period rule. |
-| `theorem_pressure_never_lengthens_decay` | Higher usage cannot lower the pressure band or lengthen the decay period. | [policy.rs](../src/policy.rs) | Comparable usage at the stated limit. |
-
 ### Statistics
 
+At a quiescent state, reported allocated bytes equal the usable bytes of live blocks plus cached slots. Stored arena statistics satisfy their identities, huge-run counts match the live runs, and the utilization query and defragmentation hint report exactly the values they read. Details: THEOREMS.md [22](THEOREMS.md#22-exact-stats-ledger-model-at-quiescence), [27](THEOREMS.md#27-stats-identities), and [35](THEOREMS.md#35-utilization-and-defrag-hint-are-exact-over-the-values-read).
+
 | Theorem | Statement | File | Assumes |
 | --- | --- | --- | --- |
+| `theorem_huge_stats` | `stats.runs` and `run_pages` equal the live runs and their pages. | [huge/mod.rs](../src/huge/mod.rs) | A well-formed huge-region state. |
 | `Books::theorem_quiescent` | At a quiescent state, each class’s claimed minus released slots equals cached plus live slots; large words equal live runs and pages. | [stats/ledger.rs](../src/stats/ledger.rs) | A quiescent ledger and allocator state. |
 | `theorem_exact_stats` | Reported allocated bytes equal live blocks’ usable bytes plus cached slots’ bytes at a quiescent state. | [stats/ledger.rs](../src/stats/ledger.rs) | A quiescent ledger and the accounting invariants. |
 
 ## Vulnerability classes ruled out
 
-Each row names a bug class motivated by real CVEs in other allocators and the entry-point contracts on main that exclude it for the named entry points; challoc never had these bugs. As with every theorem here, these claims depend on the [trust base](#trust-base) and callers obeying the C allocation contract. `heap::fits(r, size, align)` means a non-null result is a slot start of a class at least `size` bytes large, or a huge-region page start with `size` bytes of the region from it, at an address that is a multiple of `align`; `size` is an unbounded specification integer, so `n * m` does not wrap.
+Each row names a bug class motivated by real CVEs in other allocators and the entry-point contracts that exclude it for the named entry points; challoc never had these bugs. As with every theorem here, these claims depend on the [trust base](#trust-base) and callers obeying the C allocation contract. `heap::fits(r, size, align)` means a non-null result is a slot start of a class at least `size` bytes large, or a huge-region page start with `size` bytes of the region from it, at an address that is a multiple of `align`; `size` is an unbounded specification integer, so `n * m` does not wrap.
 
 | Class | Ruled out by | Entry points covered | Motivating CVEs |
 | --- | --- | --- | --- |
@@ -156,85 +159,129 @@ In a secure-execution process (started with `AT_SECURE` set: setuid, setgid, fil
 
 ### Exploit techniques
 
-These heap-exploitation techniques have no CVE of their own. Each turns an application bug, a use-after-free write or an overflow, which challoc does not prevent, into control of the allocator. Under the same trust base and C allocation contract, the theorems rule out the allocator behavior each technique relies on, for writes into a block’s bytes. A linear write that leaves a block is the last row below; one that stays in the block’s own region is the same-region item in [Not ruled out yet](#not-ruled-out-yet).
+These heap-exploitation techniques have no CVE of their own. Each turns an application bug, a use-after-free write or an overflow, which challoc does not prevent, into control of the allocator. Under the same trust base and C allocation contract, the theorems rule out the allocator behavior each technique relies on, for writes into a block’s bytes. A linear write that leaves a block is the last row below; one that stays in the block’s own region is the same-region item in [Outside these guarantees](#outside-these-guarantees).
 
 | Technique | Ruled out by | Entry points covered | Write-ups |
 | --- | --- | --- | --- |
 | Free-list poisoning through a freed block: tcache poisoning, House of Lore, unsorted bin attack | These techniques write a forged next or bk link into a freed block’s bytes and rely on `malloc` reading it. `theorem_no_user_reads` proves the covered allocation and free cores read no user block bytes, except opt-in debug zero checks, so those cores never read the forged link ([api/libc.rs](../src/api/libc.rs)). `theorem_metadata_integrity` proves cache stack entries and the metadata allocator’s free-list link words share no byte with a returned block ([heap/mod.rs](../src/heap/mod.rs)). | `malloc`, `calloc`, `aligned_alloc`, `mallocx`, `free`, `free_sized`, `challoc_free_usable`, `dallocx`, `sdallocx`, `malloc_usable_size` | [tcache poisoning](https://github.com/shellphish/how2heap/blob/master/glibc_2.35/tcache_poisoning.c), [House of Lore](https://github.com/shellphish/how2heap/blob/master/glibc_2.35/house_of_lore.c), [unsorted bin attack](https://github.com/shellphish/how2heap/blob/master/glibc_2.27/unsorted_bin_attack.c), and [Safe-Linking](https://research.checkpoint.com/2020/safe-linking-eliminating-a-20-year-old-malloc-exploit-primitive/) (which masks the link but can be bypassed with a heap leak). |
 | Overlapping chunks: a forged chunk size makes `malloc` return a block that overlaps a live one | `Live::theorem_apart` proves that the usable bytes of 2 live blocks are disjoint ([heap/live.rs](../src/heap/live.rs)). `theorem_region_separation` proves an allocated block lies wholly in 1 class region or the huge region, outside the metadata region ([heap/mod.rs](../src/heap/mod.rs)). Both rely on callers freeing only live blocks. A slot’s size comes from its class region, not from bytes next to it, and `theorem_no_user_reads` proves the covered cores read no block bytes, so a size written into a neighboring block is never read ([api/libc.rs](../src/api/libc.rs)). | All allocations, for any 2 live blocks; region separation for results satisfying `heap::fits`. | [Overlapping chunks](https://github.com/shellphish/how2heap/blob/master/glibc_2.27/overlapping_chunks.c) (an overflow overwrites a freed chunk’s size). |
-| Corrupting allocator metadata stored among user blocks: inline chunk headers, in-slot free-list pointers | `theorem_metadata_integrity` proves a returned block’s bytes share no byte with the metadata ranges its contract names: metadata region ranges, the metadata allocator’s link words, the `Shared` static, class-table descriptors, owner and bitmap words, cache headers and stack entries, huge descriptors, descriptor-table slots, and free-page bitmap words. Its [exclusions](#known-limits-and-open-work) remain. [heap/mod.rs](../src/heap/mod.rs) | Results satisfying `heap::fits` (the allocation entry points in the CVE table). | [PartitionAlloc](https://chromium.googlesource.com/chromium/src/+/main/base/allocator/partition_allocator/PartitionAlloc.md) (free-list pointers are the only inline metadata and are encoded and shadowed because overruns can reach them); [musl mallocng design notes](https://openwall.com/lists/musl/2020/05/13/1) (oldmalloc’s in-band headers versus mallocng’s out-of-band metadata). |
-| Use of a thread’s heap after thread-exit teardown: a cache rebuilt after the thread’s destructor ran, or the freed heap reached again through TLS | `heap_destructor` stores `TLS_EXITED` in the thread’s TLS slot before `Heap::destroy` frees the heap (the order is read off the code). Every slot write requires `slot_step`, under which `TLS_EXITED` is final, and `theorem_exit_no_rebuild` proves that at `TLS_EXITED` the fast and slow slot readers hand out no heap and make no `Heap::create` call ([heap/thread.rs](../src/heap/thread.rs)). A signal handler or another key’s destructor that allocates on the exiting thread is served without the thread’s cache. Trusted: the slot premise (a top-level user’s token holds the slot as the last write left it; a source test checks which functions make tokens and how many, not that a nested user is lent the outer token), the specs of the `pthread_*` calls that can re-enter the allocator, and the slot’s asm accessors (partly checked by Isla). Explicit caches (`tcache.destroy`) are not reached through the slot; for them, `theorem_tcache_destroyed_none` (Caches above) proves that a lookup holding destroy’s lower bound finds no cache at the generation destroy left. Not covered: the `MALLOCX_TCACHE` paths, whose tokens come from `axiom_heap_use` with no bound, so that they do not use a destroyed cache stays that premise. | Every entry that reads the slot: the `malloc`, `free`, `free_sized`, and `challoc_free_usable` fast paths, and every path through `heap_for_thread` | glibc [BZ 22111](https://sourceware.org/bugzilla/show_bug.cgi?id=22111) and [BZ 28028](https://sourceware.org/bugzilla/show_bug.cgi?id=28028) (thread exit rebuilt the tcache after shutdown and leaked it). |
-| A linear overflow or underflow off a block into allocator metadata or another region: House of Force’s top-chunk size, House of Einherjar’s metadata step, jemalloc run-header corruption | `theorem_overflow_reach` proves that between any byte of an allocated block and any byte of the metadata region, the `Shared` static, another class region or the huge region, above or below it, lies a 4 MiB (`MAX_SLAB`) run of challoc’s own reservation outside every region, so the write faults first; a stride under 4 MiB cannot skip the run. Not covered: neighbors in the block’s own region (see [Not ruled out yet](#not-ruled-out-yet)), allocator statics outside `Shared`, and the TLS heap-pointer slot. Trusted: the reservations are mapped `PROT_NONE`; where `mseal` is unavailable, nothing else maps or reprotects over the slack; the kernel faults on `PROT_NONE`. [heap/mod.rs](../src/heap/mod.rs) | Results satisfying `heap::fits` (the allocation entry points in the CVE table). | [House of Force](https://github.com/shellphish/how2heap/blob/master/glibc_2.27/house_of_force.c), [House of Einherjar](https://github.com/shellphish/how2heap/blob/master/glibc_2.35/house_of_einherjar.c). |
-| A guard bypass: an overflow off a slab or a huge run that passes its guard page because the allocator made that page accessible again (a commit over a `PROT_NONE` guard, or a marker removed while its run is live) | `theorem_slab_commit_avoids_guards` proves that every read-write commit of a class region stays in it and shares no byte with a guard slab, except one starting in the range’s first page for which an `MADV_GUARD_INSTALL` of that page succeeded (in the code, the same path’s call just before), a marker the `mprotect` keeps ([class/table.rs](../src/class/table.rs)). `theorem_huge_commit_avoids_guards` proves that every huge commit and `MADV_GUARD_REMOVE` shares no byte with the guard page of a live run other than the one being freed ([huge/mod.rs](../src/huge/mod.rs)). Together with region separation, no commit reopens a live guard anywhere, and class and huge commits stay inside their regions, which `theorem_overflow_reach` relies on. Not covered: a freed run's guard (made read-write again so its VMA merges back; #397), that each guard is placed where the proofs name it (read from the code), the slot-state table's own commits (`double_free_scan`, its own mapping), and every commit of a class in `thp:always`’s PMD-chunk mode, which places no guards and commits its guard slabs read-write. Trusted: `mprotect` keeps a guard marker; `mprotect` and `madvise` change only the range they are given; a class's `thp` mode is fixed before its first commit; purges (`MADV_DONTNEED`, `MADV_FREE`) change no protection and keep markers. | Every path that commits class or huge memory: slab refills (`SlabTable::commit_run`, `SlabTable::commit_slab`) and huge allocation and free (`Huge::alloc_run`, `Huge::free_run`). | No CVE found. [hardened_malloc](https://github.com/GrapheneOS/hardened_malloc) (guard slabs between slab regions), [madvise(2)](https://man7.org/linux/man-pages/man2/madvise.2.html) (`MADV_GUARD_INSTALL`). |
+| Corrupting allocator metadata stored among user blocks: inline chunk headers, in-slot free-list pointers | `theorem_metadata_integrity` proves a returned block’s bytes share no byte with the metadata ranges its contract names: metadata region ranges, the metadata allocator’s link words, the `Shared` static, class-table descriptors, owner and bitmap words, cache headers and stack entries, huge descriptors, descriptor-table slots, and free-page bitmap words. Its [exclusions](#what-the-proofs-do-not-cover) remain. [heap/mod.rs](../src/heap/mod.rs) | Results satisfying `heap::fits` (the allocation entry points in the CVE table). | [PartitionAlloc](https://chromium.googlesource.com/chromium/src/+/main/base/allocator/partition_allocator/PartitionAlloc.md) (free-list pointers are the only inline metadata and are encoded and shadowed because overruns can reach them); [musl mallocng design notes](https://openwall.com/lists/musl/2020/05/13/1) (oldmalloc’s in-band headers versus mallocng’s out-of-band metadata). |
+| Use of a thread’s heap after thread-exit teardown: a cache rebuilt after the thread’s destructor ran, or the freed heap reached again through TLS | `heap_destructor` stores `TLS_EXITED` in the thread’s TLS slot before `Heap::destroy` frees the heap (the order is read off the code). Every slot write requires `slot_step`, under which `TLS_EXITED` is final, and `theorem_exit_no_rebuild` proves that at `TLS_EXITED` the fast and slow slot readers hand out no heap and make no `Heap::create` call ([heap/thread.rs](../src/heap/thread.rs)). A signal handler or another key’s destructor that allocates on the exiting thread is served without the thread’s cache. Trusted: the slot premise (a top-level user’s token holds the slot as the last write left it; a source test checks which functions make tokens and how many, not that a nested user is lent the outer token), the specs of the `pthread_*` calls that can re-enter the allocator, and the slot’s asm accessors (partly checked by Isla). Explicit caches (`tcache.destroy`) are not reached through the slot; for them, `theorem_tcache_destroyed_none` ([Caches](#caches-slabs-and-huge-runs)) proves that a lookup holding destroy’s lower bound finds no cache at the generation destroy left. Not covered: the `MALLOCX_TCACHE` paths, whose tokens come from `axiom_heap_use` with no bound, so that they do not use a destroyed cache stays that premise. | Every entry that reads the slot: the `malloc`, `free`, `free_sized`, and `challoc_free_usable` fast paths, and every path through `heap_for_thread` | glibc [BZ 22111](https://sourceware.org/bugzilla/show_bug.cgi?id=22111) and [BZ 28028](https://sourceware.org/bugzilla/show_bug.cgi?id=28028) (thread exit rebuilt the tcache after shutdown and leaked it). |
+| A linear overflow or underflow off a block into allocator metadata or another region: House of Force’s top-chunk size, House of Einherjar’s metadata step, jemalloc run-header corruption | `theorem_overflow_reach` proves that between any byte of an allocated block and any byte of the metadata region, the `Shared` static, another class region or the huge region, above or below it, lies a 4 MiB (`MAX_SLAB`) run of challoc’s own reservation outside every region, so the write faults first; a stride under 4 MiB cannot skip the run. Not covered: neighbors in the block’s own region (see [Outside these guarantees](#outside-these-guarantees)), allocator statics outside `Shared`, and the TLS heap-pointer slot. Trusted: the reservations are mapped `PROT_NONE`; where `mseal` is unavailable, nothing else maps or reprotects over the slack; the kernel faults on `PROT_NONE`. [heap/mod.rs](../src/heap/mod.rs) | Results satisfying `heap::fits` (the allocation entry points in the CVE table). | [House of Force](https://github.com/shellphish/how2heap/blob/master/glibc_2.27/house_of_force.c), [House of Einherjar](https://github.com/shellphish/how2heap/blob/master/glibc_2.35/house_of_einherjar.c). |
+| A guard bypass: an overflow off a slab or a huge run that passes its guard page because the allocator made that page accessible again (a commit over a `PROT_NONE` guard, or a marker removed while its run is live) | `theorem_slab_commit_avoids_guards` proves that every read-write commit of a class region stays in it and shares no byte with a guard slab, except one starting in the range’s first page for which an `MADV_GUARD_INSTALL` of that page succeeded (in the code, the same path’s call just before), a marker the `mprotect` keeps ([class/table.rs](../src/class/table.rs)). `theorem_huge_commit_avoids_guards` proves that every huge commit and `MADV_GUARD_REMOVE` shares no byte with the guard page of a live run other than the one being freed ([huge/mod.rs](../src/huge/mod.rs)). Together with region separation, no commit reopens a live guard anywhere, and class and huge commits stay inside their regions, which `theorem_overflow_reach` relies on. Not covered: a freed run's guard (made read-write again so its VMA merges back), that each guard is placed where the proofs name it (read from the code), the slot-state table's own commits (`double_free_scan`, its own mapping), and every commit of a class in `thp:always`’s PMD-chunk mode, which places no guards and commits its guard slabs read-write. Trusted: `mprotect` keeps a guard marker; `mprotect` and `madvise` change only the range they are given; a class's `thp` mode is fixed before its first commit; purges (`MADV_DONTNEED`, `MADV_FREE`) change no protection and keep markers. | Every path that commits class or huge memory: slab refills (`SlabTable::commit_run`, `SlabTable::commit_slab`) and huge allocation and free (`Huge::alloc_run`, `Huge::free_run`). | No CVE found. [hardened_malloc](https://github.com/GrapheneOS/hardened_malloc) (guard slabs between slab regions), [madvise(2)](https://man7.org/linux/man-pages/man2/madvise.2.html) (`MADV_GUARD_INSTALL`). |
 
-### Not ruled out yet
+### Outside these guarantees
 
-These stated limits and open work remain on main. [Issue #397](https://github.com/wolfi-dev/challoc/issues/397) tracks the open work.
+These bug classes are outside the guarantees, by design or by the scope of the theorems:
 
-- Double and invalid frees — stated limit: the proofs assume the C contract. [hardening.md](../docs/hardening.md#1-invalid-and-double-frees) documents that a second free of a slot still held in a thread cache is left to a flush, which catches it only if the slot is still unclaimed then (a `malloc` pop or any refill in between makes it live twice), and that a plain free of a slot start a refill claimed into a cache but `malloc` has not handed out passes the bit test; `double_free_scan` closes it at the call on every free route with a per-slot state byte (its indexing and arithmetic verified, and, given the bytes' values as a premise, `theorem_double_free_window`: a second free aborts until the slot is handed out again; the bytes' values and the address-to-byte cast trusted: `verus/ledger/src/heap/slotstate.rs.md`), simultaneous frees included (one compare-and-exchange).
-- Use after free with same-class reuse — stated limit: challoc has no quarantine or type isolation, by design.
-- A linear overflow into a neighboring block of the same region — stated limit: `theorem_overflow_reach` covers metadata and other regions only. Inside a class region, guard slabs are the only barrier, and no theorem bounds the reach to them; inside the huge region, run guard pages hold under the huge lock’s invariant (`Inner::theorem_run_guards`), and no theorem bounds an overflow’s reach to them. No commit reopens a live guard of either kind (`theorem_slab_commit_avoids_guards`, `theorem_huge_commit_avoids_guards`), outside a class in `thp:always`’s PMD-chunk mode, which places no guards; a freed run’s guard is made read-write again by design.
-- Allocator state after `fork` — open work: lock state after `fork` rests on `axiom_fork_entry`, tracked under #397’s “Theorem 33”. Thread exit is covered by `theorem_exit_no_rebuild` (exploit techniques above) up to the slot premise, which a source test checks only in part.
+- Double and invalid frees: the proofs assume the C contract. [hardening.md](../docs/hardening.md#1-invalid-and-double-frees) documents that a second free of a slot still held in a thread cache is left to a flush, which catches it only if the slot is still unclaimed then (a `malloc` pop or any refill in between makes it live twice), and that a plain free of a slot start a refill claimed into a cache but `malloc` has not handed out passes the bit test; the opt-in `double_free_scan` key (off by default) closes it at the call on every free route with a per-slot state byte, simultaneous frees included (one compare-and-exchange). Its steps are verified, and `theorem_double_free_window` proves that a second free aborts until the slot is handed out again, given the bytes' values as a premise; the bytes' values and the address-to-byte cast are trusted (`verus/ledger/src/heap/slotstate.rs.md`).
+- Use after free with same-class reuse: challoc has no quarantine or type isolation, by design.
+- A linear overflow into a neighboring block of the same region: `theorem_overflow_reach` covers metadata and other regions only. Inside a class region, guard slabs are the only barrier, and no theorem bounds the reach to them; inside the huge region, run guard pages hold under the huge lock’s invariant (`Inner::theorem_run_guards`), and no theorem bounds an overflow’s reach to them. No commit reopens a live guard of either kind (`theorem_slab_commit_avoids_guards`, `theorem_huge_commit_avoids_guards`), outside a class in `thp:always`’s PMD-chunk mode, which places no guards; a freed run’s guard is made read-write again by design.
+- Allocator state after `fork`: the lock state after `fork` rests on `axiom_fork_entry`. Thread exit is covered by `theorem_exit_no_rebuild` (exploit techniques above) up to the slot premise, which a source test checks only in part.
+
 
 ## Coverage
 
-[Verus](README.md) release `0.2026.10.18.7d82994` checks every operation in a `verus!` function for arithmetic overflow, division by zero, out-of-bounds indexing, reachable panics, and loop and recursion termination. It also checks the function’s `requires` and `ensures` contract. Ghost code is erased from ordinary builds.
+[Verus](README.md) release `0.2026.10.18.7d82994` checks every operation in a `verus!` function for arithmetic overflow, division by zero, out-of-bounds indexing, reachable panics, and loop and recursion termination. It also checks the function's `requires` and `ensures` contract. Ghost code is erased from ordinary builds.
 
 The [counter](count) includes executable functions under `src/` and excludes test code. It counts a function as Verus-verified when it is inside `verus!`, is neither `external_body` nor `external`, and has no `assume`, `admit`, or `Tracked::assume_new` in its body. It counts ghost functions separately. Shares are rounded down to a tenth of a percent.
 
-| Coverage at `a1165e7f` | Functions | Lines |
+| Coverage at `26f535a9` | Functions | Lines |
 | --- | ---: | ---: |
-| Verus-verified | 1272 of 1541 (82.5%) | 38906 of 41901 (92.8%) |
-| Trusted inside `verus!` | 251 | 2744 |
-| Outside `verus!` | 18 | 251 |
-| Trusted functions with a discharged seam | 37 | 346 |
-| Verified plus discharged | 1309 of 1541 (84.9%) | 39252 of 41901 (93.6%) |
-| Partly checked, excluded from combined coverage | 21 | 204 |
-| Trusted with no check | 193 | 2194 (5.2% of lines) |
-| Ghost functions, counted separately | 2062 | — |
+| Verus-verified | 1363 of 1634 (83.4%) | 41466 of 44343 (93.5%) |
+| Trusted inside `verus!` | 262 | 2756 |
+| Outside `verus!` | 9 | 121 |
+| Trusted functions with a discharged seam (18 functions and 304 lines of them discharged on platform premises) | 66 | 816 |
+| Verified plus discharged | 1429 of 1634 (87.4%) | 42282 of 44343 (95.3%) |
+| Partly checked, excluded from combined coverage | 67 | 835 |
+| Partly checked by a loom model of the atomic protocol (among the partly checked) | 37 | 454 |
+| Trusted with no check | 129 | 1105 |
+| Ghost functions, counted separately | 2159 | — |
 
-A *discharged* seam has an outside check that covers its whole contract, under every input admitted by `requires`, within the check’s stated bounds, while running the item’s own body. A *partly checked* seam has a check for only part of its contract; the [seam ledger](SEAMS.md#status) states what remains unchecked. The combined row adds only discharged trusted functions.
-
-For inline assembly checked with Isla, *discharged* also covers a seam whose status is `discharged on premises (Isla: verus/isla/seams.md; premises: ...)`: the Isla runs check the contract except for platform premises that the runs do not reach, such as the kernel’s side of a system call (K1) or the loader’s fill of a GOT entry (P8). Those premises remain assumed. Only the P and K premises of [isla/seams.md](isla/seams.md#platform-premises) qualify, and the counter resolves each label in a status against that file’s list, so a label it does not define fails the run; a seam that also rests on a premise of Verus’s own model, as the TLS accessors `get`, `get_tp` and `set` do, is partly checked. Each seam’s ledger status names its premises, and isla/seams.md states each one with its source. The rule applies only to Isla; for other tools, *discharged* means a check of the whole contract.
-
-The [FLOOR](FLOOR) on main is `functions 82.3`, `lines 92.7`, `combined-functions 84.8`, and `combined-lines 93.6`. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
-
-On 2026-10-25, the reference code in tracking PR [#138](https://github.com/wolfi-dev/challoc/pull/138) reported 1274 of 1519 functions (83.8%) and 37648 of 40796 lines (92.2%) verified. Its counter could not parse 1 file, `src/api/mod.rs`, so that comparison excludes part of the reference code. Main verifies 1258 more lines. Its function share is 1.3 points lower, alongside a rise from 221 to 251 trusted functions as more small seams were split out.
+The combined row adds only trusted functions whose seam is discharged, on platform premises included. The [FLOOR](FLOOR) file holds `functions 82.2`, `lines 92.7`, `combined-functions 85.1` and `combined-lines 93.8`; the counter at `26f535a9` measures 83.4, 93.5, 87.4 and 95.3. The file lags the measurement: a raise to the measured figures lands in its own pull request. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
 
 ## Trust base
 
-The [seam ledger](SEAMS.md) records 408 items in 67 source files that Verus takes on trust. These are items, not coverage lines: `external_body` declarations, axioms, specifications of external code or types, specification implementations, and functions whose termination is assumed.
+The proofs rest on two kinds of assumption. The first is the C allocation contract: a C caller passes only pointers it owns and frees only live blocks. The C-boundary seams `axiom_c_call`, `axiom_c_claim`, `axiom_c_out` and `axiom_c_writes` state it, and `axiom_errno_at_return` and `axiom_out_at_return` hand `errno` and out-pointer results back to the caller; a shape test, not Verus, checks where the exports call them. The second is the seams: items Verus takes on trust, each listed with its contract, category, proposed tool and status in the [seam ledger](SEAMS.md) ([ledger/src](ledger/src)).
+
+The ledger records 433 seams in 65 source files. These are items, not coverage lines: `external_body` declarations, axioms, specifications of external code or types, specification implementations, and functions whose termination is assumed.
 
 | Ledger view | Counts |
 | --- | --- |
-| Status | 129 discharged: 92 by Kani harnesses and 37 by compile-time constant assertions; 34 partly checked; 245 trusted |
-| Kind | 152 `external_body`; 12 `external_body` proofs; 7 `external_body` types; 40 `external_body` constants; 86 axioms; 77 assumed specifications; 14 external type specifications; 1 external trait specification; 8 specification implementations; 11 functions without decreases checks |
-| Category | 151 core library; 52 allocator invariant; 47 atomics primitive; 31 inline assembly; 21 internal raw pointer; 18 function pointer; 14 panic or abort; 14 C-program contract; 17 platform or kernel fact; 13 FFI or syscall; 13 `UnsafeCell`, volatile, or transmute; 11 termination; 6 raw pointer from a C caller |
-| Proposed tool | 196 Kani; 113 none (assumption); 51 loom or GenMC; 31 Islaris or Isla; 13 Verus; 4 Miri (evidence only) |
+| Status | 152 discharged: 101 by Kani harnesses, 43 by compile-time constant assertions, 7 by Isla runs and 1 by `make emptyasm`; 18 discharged on platform premises by Isla runs; 83 partly checked; 180 trusted |
+| Kind | 160 `external_body`; 11 `external_body` proofs; 7 `external_body` types; 45 `external_body` constants; 91 axioms; 79 assumed specifications; 15 external type specifications; 1 external trait specification; 8 specification implementations; 16 functions without decreases checks |
+| Category | 165 core library; 59 allocator invariant; 43 atomics primitive; 31 inline assembly; 29 internal raw pointer; 18 function pointer; 17 platform or kernel fact; 17 C-program contract; 15 termination; 14 `UnsafeCell`, volatile, or transmute; 12 FFI or syscall; 7 panic or abort; 6 raw pointer from a C caller |
+| Proposed tool | 212 Kani; 127 none (assumption); 51 loom or GenMC; 32 Islaris or Isla; 8 RefinedRust; 3 Verus |
 
-The 193 trusted functions with no check account for 2194 executable lines. Their ledger categories show where proof work remains:
+Each of the 31 inline-assembly seams has a check: 25 are discharged (6 by Isla, 18 by Isla on platform premises, 1 by `make emptyasm`) and 6 are partly checked (3 by Isla, 2 by `make emptyasm`, 1 by Kani). The platform premises, such as the kernel's side of a system call (K1), the kernel keeping the pointer-authentication key fixed (K3) and the loader's fill of a GOT entry (P8), are stated with their sources in [isla/seams.md](isla/seams.md#platform-premises); each seam's ledger status names the ones it rests on, and the counter fails on a label that file does not define.
 
-| Category | Lines | Functions | Why the seam remains |
+The 129 trusted functions with no check account for 1105 executable lines:
+
+| Category | Lines | Functions | What the seams assume |
 | --- | ---: | ---: | --- |
-| Inline assembly | 582 | 31 | Instruction semantics; Isla is proposed. |
-| Atomics primitive | 465 | 39 | Atomic protocol behavior; loom or GenMC is proposed. |
-| Allocator invariant | 369 | 49 | Lock invariants and frames, initialization and publication tokens, and facts that fresh memory reads zero. |
-| Internal raw pointer | 199 | 11 | Pointer and storage contracts. |
-| FFI or syscall | 174 | 11 | Contracts for calls including `pthread_join`, `pthread_setspecific`, `sigprocmask`, `try_reserve`, `spawn`, futex wait and wake, errno access, and `emit`. |
-| Platform or kernel fact | 115 | 16 | `mmap` disjointness, fork resume, user virtual-address limits, I/O counts, and PAC sign and authenticate facts. |
-| Function pointer | 89 | 8 | Indirect-call contracts. |
-| Panic or abort | 62 | 5 | Abort behavior. |
-| Raw pointer from a C caller | 61 | 6 | Caller-owned pointer validity. |
-| C-program contract | 53 | 14 | `axiom_c_call`, `axiom_c_claim`, `axiom_c_out`, and `axiom_c_writes` assume, among other duties, that callers free only live blocks. |
-| `UnsafeCell`, volatile, or transmute | 22 | 2 | Operations Verus does not check directly. |
+| Allocator invariant | 350 | 54 | Lock invariants and frames, the lock acquisition and entry premises, initialization and publication tokens, facts that fresh memory reads zero, the slot-state byte (`axiom_slot_byte`), and the statistics pair pool (`stats::pool_*`). |
+| Internal raw pointer | 247 | 15 | Pointer and storage contracts, including the struct-assembly axioms for `Shared`, the arenas and the explicit-cache table. |
+| FFI or syscall | 167 | 10 | Contracts for `pthread_join`, `pthread_self`, `pthread_setspecific`, `sigprocmask`, `try_reserve`, `spawn`, errno access and `write_file`. |
+| Platform or kernel fact | 110 | 15 | `mmap` disjointness, fork resume, user virtual-address limits, I/O and `getrandom` counts, and memory commits. |
+| Function pointer | 89 | 8 | Indirect-call contracts for callbacks, handlers, hooks and `pthread_atfork`. |
+| C-program contract | 68 | 16 | The C caller's duties: `axiom_c_call`, `axiom_c_claim`, `axiom_c_out`, `axiom_c_writes`, the `errno` and out-pointer hand-backs, `axiom_heap_use`, and the C buffers it passes (`vspec::cbuf`). |
+| Raw pointer from a C caller | 38 | 6 | Caller-owned pointer validity. |
+| `UnsafeCell`, volatile, or transmute | 26 | 3 | The lock cell's borrows and one zeroing write, which Verus does not check directly. |
+| Atomics primitive | 6 | 1 | `purge::purged_zero`: one load of the flag that says purged slabs read zero, and the witness of a true read. |
+| Panic or abort | 4 | 1 | The panic message's format requirement. |
 
-Among these, the allocator-invariant category includes 14 `axiom_*_lock_inv` and `axiom_*_lock_frame` seams, `axiom_ready`, `axiom_published`, `axiom_state`, `axiom_statics`, `axiom_process_shared`, and fresh-memory facts such as `axiom_fresh_slots_zero`, `axiom_fresh_anon_zero`, and `axiom_discarded_zero`.
+Kani `0.68.0` with CBMC `6.11.0` runs the 168 harnesses; each harness comment names its seam and bounds. The source also has 55 top-level `const _: () = assert!(..)` assertions, which the compiler evaluates on both quanta and targets. The loom models check copies of the atomic protocols, so a loom citation makes a seam partly checked, never discharged; `tests/loom/tests/pins.rs` fails when a line a model copies changes.
 
-The counter also warns about 1 function without a ledger entry: the 3-line `#[verifier::external]` `Default for Stderr` implementation in [sys/abort.rs](../src/sys/abort.rs).
+## What the proofs do not cover
 
-On main, 134 `#[kani::proof]` harnesses under `src/` check bounded seam contracts with Kani `0.68.0` and CBMC `6.11.0`. Each harness comment names its seam and bounds. The source also has 50 top-level `const _: () = assert!(..)` assertions; the compiler evaluates them on both quanta and targets. The 61 loom model tests in `tests/loom` provide evidence for atomic protocols, but no seam status cites loom yet. `make emptyasm` checks the 4 empty-template `asm!` register hints: `word_index` is discharged, and `shared_base`, `entry_barrier` and `ClassLine::guard_word` are partly checked.
+Each limit below is part of the stated scope; [issue #397](https://github.com/wolfi-dev/challoc/issues/397) tracks the work that would narrow it.
 
-CI keeps this evidence connected to the ledger. `sh verus/seams.sh --check` fails if the ledger is stale, a seam lacks a classification, a discharged Kani citation names no proof harness, or a constant-assertion citation fails to identify exactly 1 assertion; for an `emptyasm:` citation it also fails unless the seam's item holds one `asm!` call with the empty template, and it fails when a source line `verus/kani/pins.txt` pins moves. The presubmit `kani` check runs for changes to `src/kani/`, `src/vspec/`, and listed source files. The postsubmit `kani-ignoring` check runs every harness at quantum 16 and quantum 8, in 4 shards per quantum, and fails if one does not verify or CBMC prints a `warning: ignoring` line.
+- **Lock release:** the holders of 4 locks release through the explicit `LockGuard::unlock`, which requires the lock invariant and frame: the metadata lock, the explicit-cache table lock, the slab-set tables' lock and the process statistics lock (`api::tests::guards_end_in_unlock` checks that none of their guards drops without it). Every holder of those 4 locks is verified, its frame stated by the lock's `lock_frame` axiom (`axiom_set_tables_lock_frame` and `axiom_snapshot_lock_frame` for the slab-set and statistics locks). Every other lock is released by dropping its guard, and its next acquisition (`axiom_acquired`) assumes the invariant holds again. `unlock_held_perm` and `get_unlocked` rest on the same assumption.
+- **Restated paths:** the no-syscall and read-only theorems restate fast-path bodies instead of calling them, and the 2 `mallctl` theorems restate the bodies of `mallctl` and `mallctlbymib`. The restated-body tests check the names and order of the calls, not their arguments or control flow.
+- **Seam drift:** `seams.sh` does not hash contracts or bodies, so an edit to a seam's body does not by itself reset a discharged or partly checked status.
+- **Theorem scope:** the theorems do not cover `mallctl` and `mallctlbymib` calls for the 4 `thread.*` readers or for operations other than utilization queries, `realloc`'s move path, or `mallinfo2` arithmetic, which wraps in the release build. `theorem_metadata_integrity` does not tie atomic descriptor and owner writes or table bitmap-word permissions to their addresses, cover the last bitmap word when its bit count is not a multiple of 64, cover arenas' slab-set bitmaps, or exclude TLS in a program-allocated thread stack.
+- **C-boundary and cache premises:** verified code that uses `Arenas::get_frozen`'s `&Created` relies on its holder keeping the creation lock, which is not checked. Authenticating a cache entry takes an integrity-abort capability on the free path, because nothing records that the entry was signed. `api::shared_base` and `api::shared_ptr` have no specification of the TLS value they publish. The no-abort theorems do not separate an uncorrupted run from the fault expected on a corrupted pointer-authenticated TLS slot.
+
+## Check it yourself
+
+Run these at the revision you want to check:
+
+```sh
+make verus                          # seam ledger check, Verus proofs (quantum 16), coverage floor
+cargo verus verify --locked --no-default-features --features quantum8   # Verus proofs, quantum 8
+sh verus/seams.sh --check           # the ledger matches the source
+sh verus/seams.sh                   # seam totals by category, tool and kind
+grep -rh 'Status: ' verus/ledger    # each seam's status
+(cd verus/count && cargo run --release -- --floor ../FLOOR ../..)   # coverage
+(cd verus/count && cargo run --release -- --list ../..)             # one line per function
+cargo kani -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm \
+    --no-default-features --features quantum16                      # Kani harnesses (or quantum8)
+make isla                           # Isla runs over the inline-assembly seams
+make emptyasm                       # empty asm! templates add no instruction
+sh tests/loom/run.sh                # loom models and source checks
+sh scripts/perf-budget.sh q16       # theorem 45's fast-path cost table (or q8)
+cargo test --release --locked restated                              # restated-body call lists
+git grep -nE '^\s*(pub(\([a-z]+\))? )?(proof )?fn theorem_' src    # the theorem_* functions
+git grep -n '#\[kani::proof\]' src  # the Kani harnesses
+```
+
+[README.md](README.md) says what each tool needs installed. In the `git grep` of theorems, a line with `proof fn` is a proof function and the rest are verification-only executable functions.
+
+CI runs the same checks on Chainguard Checks:
+
+| Check | Runs | What it runs |
+| --- | --- | --- |
+| `verus`, `verus-arm64` | every pull request, x86_64 and native arm64 | counter tests, `make verus` against the pull request's base, quantum 8 proofs |
+| `verus-main` | after each landing | the same against the commit before |
+| `kani` | pull requests that change `src/kani/`, `src/vspec/` or listed files | every harness at quantum 16 and 8 |
+| `kani-ignoring` | after each landing | every harness, one at a time in regular format; fails on a CBMC `warning: ignoring` line |
+| `kani-boolcmp` | every pull request (lint) | rejects ordering comparisons on Booleans in Kani code, which CBMC `6.11` ignores |
+| `isla` | pull requests that change the checked assembly, the harness or the build | `make isla` on arm64 at both quanta |
+| `isla-main` | after each landing | `make isla` on each architecture natively, at both quanta |
+| `emptyasm`, `emptyasm-main` | pull requests that change `src/` or the build; after each landing | `make emptyasm` on each architecture at both quanta |
+| `loom`, `loom-count` | every pull request (lint); `loom-count` on changes to the loom crate or the code its count model copies | `sh tests/loom/run.sh` under loom 0.7.2 with the DPOR patch |
+| `perf-budget`, `perf-budget-main` | every pull request; after each landing | `scripts/perf-budget.sh q16` and `q8` |
+| `codegen`, `codegen-arm64` | every pull request (advisory) | `scripts/codegen-diff.sh` base against head |
 
 ## Process guarantees
 
@@ -242,102 +289,35 @@ A rewrite made only for Verus must preserve behavior and leave the release machi
 
 A specification change gets a mutation check: change the code in the way the specification should reject, then confirm that Verus rejects it.
 
-Guard tests constrain where trusted permissions and copied proof bodies can be used:
+Guard tests (`cargo test`) pin where trusted items whose premise is about their caller may be used: each such item's doc names its call sites or holders, and a test scans `src/` and fails when a site appears that the list does not name. [README.md](README.md#guard-tests) lists them with what each pins. Three more tests pin copies and lists the checks rely on:
 
 | Guard | What it checks |
 | --- | --- |
-| [sys/mod.rs](../src/sys/mod.rs) | `grant_syscalls` appears only in an `extern "C"` body or `abort_fmt`; `grant_aborts` appears only in an `extern "C"` body or the panic handler; `grant_user_reads` appears once each in `purge::check_zero`, `api/libc`’s `realloc_block` and `realloc_usable_stored`, and `api/jemalloc`’s `rallocx_zeroed`. |
-| [lock.rs](../src/lock.rs) | `axiom_acquired` appears only in `Lock::lock` and `try_lock`, where they build a guard, and in `Lock::lock_held_perm`; and `axiom_held` only in `Lock::get_unlocked`. |
-| [heap/tcaches.rs](../src/heap/tcaches.rs) | `axiom_heap_use` appears once in each of the 8 documented mint sites. |
 | [api/restated.rs](../src/api/restated.rs) | The 3 restated-body tests compare names and order of executable calls with their source bodies. They do not compare arguments or control flow. |
-| [tests/loom/tests/pins.rs](../tests/loom/tests/pins.rs) | 258 copied source lines stay pinned; every atomic ordering, fence, or futex line in a pinned function is pinned or waived with a reason. |
+| [tests/loom/tests/pins.rs](../tests/loom/tests/pins.rs) | The source lines the loom models copy stay pinned; every atomic ordering, fence, or futex line in a pinned function is pinned or waived with a reason. |
 | [tests/loom/tests/kani_trigger.rs](../tests/loom/tests/kani_trigger.rs) | Every file with a `kani_*` module appears in the Kani presubmit list or `kani-ignoring`. |
 
-The `verus` presubmit check (x86_64) runs the seam check, quantum 16 proofs, counter tests, the coverage floor against the PR base, and quantum 8 proofs; `verus-arm64` runs the same steps, without the counter tests, natively on arm64. `verus-main` runs postsubmit against the preceding main commit. The `lint` checks include rustfmt, clippy, loom, shellcheck, the codegen function-comparison self-test, `kani-boolcmp`, and an MSRV build. `kani-boolcmp` rejects ordering comparisons on Booleans in Kani code because CBMC `6.11` ignores them and could let a harness pass without checking that comparison.
+The `verus` presubmit check (x86_64) runs the seam check, quantum 16 proofs, counter tests, the coverage floor against the PR base, and quantum 8 proofs; `verus-arm64` runs the same steps natively on arm64. `verus-main` runs postsubmit against the preceding main commit. The `lint` checks include rustfmt, clippy, loom, shellcheck, the codegen function-comparison self-test, `kani-boolcmp`, and an MSRV build. `kani-boolcmp` rejects ordering comparisons on Booleans in Kani code because CBMC `6.11` ignores them and could let a harness pass without checking that comparison.
 
 Verus, codegen, and Linux tests run natively on both x86_64 and arm64 in CI. The postsubmit floor checks also run `make test` and `make fuzz` on AlmaLinux 9’s 5.14 kernel on GCE VMs for both architectures.
 
-### Gate history
+The repository ruleset that gates landings, and the order in which the verification checks were added, are in [README.md](README.md#gate-history).
 
-Main has no merge commits. After the 6 commits that imported the project, every commit on main came from a pull request. [#136](https://github.com/wolfi-dev/challoc/pull/136) landed rebased, as `7a12536a` and `75e665c6`, with the user who merged it as committer, after its head passed `Chainguard Checks (presubmit)`; every other pull request commit has GitHub as committer. [#132](https://github.com/wolfi-dev/challoc/pull/132) moved CI to Chainguard Checks on 2026-10-12. A repository ruleset, created on 2026-10-12 and last changed on 2026-10-29, requires the aggregate `Chainguard Checks (presubmit)` status before a change lands on main; these are its settings as read on 2026-11-02, and its settings before 2026-10-29 are not recorded. It does not require a branch to be up to date with main, so 2 pull requests that each pass presubmit alone can fail together. The postsubmit checks rerun after every landing to catch that; they cannot block a landing, and a failure points at the commit that landed. `codegen` and `codegen-arm64` are advisory, because an executable change is expected to change some functions; review reads their output against the hot set.
+## Bugs the proofs found
 
-The verification checks were added in this order (merge dates in UTC):
+Writing the proofs found these bugs, each fixed or closed upstream:
 
-| Merged | PR | Checks added |
-| --- | --- | --- |
-| 2026-10-25 | [#141](https://github.com/wolfi-dev/challoc/pull/141) | `verus` presubmit on x86_64 (counter tests, proofs and coverage floor) and `verus-main` postsubmit |
-| 2026-10-25 | [#142](https://github.com/wolfi-dev/challoc/pull/142) | `sh verus/seams.sh --check` as the first step of `make verus` |
-| 2026-10-26 | [#157](https://github.com/wolfi-dev/challoc/pull/157) | `verus-arm64`, natively on arm64 |
-| 2026-10-28 | [#264](https://github.com/wolfi-dev/challoc/pull/264) | quantum 8 proofs in the Verus checks; advisory `codegen` and `codegen-arm64` |
-| 2026-10-30 | [#329](https://github.com/wolfi-dev/challoc/pull/329) | `kani` presubmit on listed paths |
-| 2026-10-31 | [#338](https://github.com/wolfi-dev/challoc/pull/338) | `kani-main` postsubmit over every harness |
-| 2026-11-01 | [#364](https://github.com/wolfi-dev/challoc/pull/364) | `kani-boolcmp` presubmit lint and `kani-ignoring` postsubmit |
-| 2026-11-01 | [#414](https://github.com/wolfi-dev/challoc/pull/414) | `isla` presubmit on aarch64 for listed paths, and `isla-main` postsubmit on arm64, after `a1165e7f`, the revision the figures above describe |
-| 2026-11-01 | [#415](https://github.com/wolfi-dev/challoc/pull/415) | x86_64 legs in `isla-main`, which runs them only after a landing |
-| 2026-11-02 | [#459](https://github.com/wolfi-dev/challoc/pull/459) | `kani-main` dropped; `kani-ignoring` runs every harness after every landing |
+- [#1](https://github.com/chainguard-dev/challoc/pull/1), a batch query length wrap and out-of-bounds write; [#2](https://github.com/chainguard-dev/challoc/pull/2), an abort sink UTF-8 split; [#3](https://github.com/chainguard-dev/challoc/pull/3), a cpuset count overflow; and [#4](https://github.com/chainguard-dev/challoc/pull/4), a per-CPU `push_batch` zero-prefix error, were merged.
+- [#5](https://github.com/chainguard-dev/challoc/pull/5), an x86_64 pop that read the zero prefix outside its rseq section, and [#6](https://github.com/chainguard-dev/challoc/pull/6), its model, were approved and then closed when upstream removed the per-CPU mode.
+- [#71](https://github.com/chainguard-dev/challoc/pull/71), a report sink UTF-8 split, was merged; the sink’s character-boundary cut (`api::print::char_cut`) is verified.
 
-A check could not stop a change that landed before it was added. The `kani` and `isla` presubmit checks run only on pull requests that change their listed paths; `kani-ignoring` and `isla-main` cover the rest after the landing.
+A background purge wake-up could also be lost at startup: `start` published `PRESENT` after the thread’s first scan, and a free in that window did not kick the thread, which could then sleep without a timeout. [#72](https://github.com/chainguard-dev/challoc/pull/72), merged, has `start` kick the thread once it is published.
 
-## Known limits and open work
+## Further reading
 
-[Issue #397](https://github.com/wolfi-dev/challoc/issues/397) tracks the remaining proof and audit work.
-
-- **Lock release:** Unlock is verified to restore the lock invariant for the metadata, explicit-cache table, slab-set table, and process statistics locks; the background state lock follows, then arena, class, huge, and table. `unlock_held_perm` and `get_unlocked` have the same gap.
-- **Instruction semantics:** On main, the 31 inline-assembly seams (582 lines) have no check. `make emptyasm` covers the 4 empty-template register hints among them: 1 discharged and 3 partly checked. The Isla PRs in progress would cite Isla on 28 seams, 7 discharged, 18 discharged on premises and 3 partly checked; the premises and unchecked parts include the kernel side of syscalls, PAC fixed data key A and EnDA for sign and authenticate, failure to resume past a trap, and TLS or GOT entry contents.
-- **C boundary:** The `errno` of nullable exports ([#394](https://github.com/wolfi-dev/challoc/pull/394)) and the out-pointer results of `posix_memalign` and the allocating `challoc_*_usable` exports reach the C caller through trusted hand-back axioms, `axiom_errno_at_return` and `axiom_out_at_return`. A shape test, not Verus, checks where the exports call them and each export’s `failed` condition.
-- **Seam drift:** `seams.sh` does not hash contracts or bodies. An edit could leave a stale discharged or partly checked status. Audit test 8 adds the hashes, after the other seam PRs land.
-- **Remaining contracts:** `TlsCell::kept` needs a stronger empty-slot contract, and the R2c mutation that restores 0 remains a stated limit. Draft [#400](https://github.com/wolfi-dev/challoc/pull/400) replaces `axiom_raw_valid` with an `in_alloc`-only axiom.
-- **Restated paths:** G17’s no-syscall and read-only theorems restate fast-path bodies instead of calling them, and the 2 `mallctl` theorems restate the bodies of `mallctl` and `mallctlbymib`. The restated-body tests guard call names and order; for the fast-path theorem, the split that would let it call the real bodies is held back by hot-path codegen risk.
-- **Deferred audit rows:** G4 covers the creation lock while verified code uses `Arenas::get_frozen`’s `&Created`; G7 records whether cache entries were signed; G9 specifies `api::shared_base` and `shared_ptr`; G10 removes `hdr_mut`; G13 separates a no-abort claim from the expected fault on a corrupt PAC-signed TLS slot. Guard tests remain to be added for other convention-audit rows.
-- **Theorem scope:** The stated theorems do not cover `mallctl` and `mallctlbymib` calls for the 4 `thread.*` readers or for operations other than utilization queries, `realloc`’s move path, or `mallinfo2` arithmetic, which wraps in the release build. `theorem_metadata_integrity` does not tie atomic descriptor and owner writes or table bitmap-word permissions to their addresses, cover the last bitmap word when its bit count is not a multiple of 64, cover arenas’ slab-set bitmaps, or exclude TLS in a program-allocated thread stack.
-
-## In progress
-
-These PRs are drafts and are **not merged**:
-
-- [#389](https://github.com/wolfi-dev/challoc/pull/389): Isla I1 checks aarch64 syscalls and `tls::get_tp`: of its 8 seams, the 7 aarch64 syscall stubs are discharged on premises (K1) and `get_tp` is partly checked. Across #389 and the unopened I2, I3 and I4, 28 seams cite Isla: 7 discharged, 18 discharged on premises and 3 partly checked. Native arm64 runs passed at quantum 16 and quantum 8.
-- [#394](https://github.com/wolfi-dev/challoc/pull/394): State nullable exports’ errno at the C boundary.
-- [#396](https://github.com/wolfi-dev/challoc/pull/396): Verify that unlock restores the Meta lock invariant.
-- [#400](https://github.com/wolfi-dev/challoc/pull/400): Remove `axiom_raw_valid`.
-- [#401](https://github.com/wolfi-dev/challoc/pull/401): Add Kani checks for zero axioms and mallctl’s root; 2 seams discharged and 3 partly checked.
-- [#402](https://github.com/wolfi-dev/challoc/pull/402): Verify bitmap-allocation and refill aborts; add 77 verified lines.
-- [#413](https://github.com/wolfi-dev/challoc/pull/413): Verify `env_var`, `emit` and `parse_from` at the C boundary (W1c).
-- [#391](https://github.com/wolfi-dev/challoc/pull/391): Re-park a heap created during `pthread_join`.
-
-Isla I2 (x86_64), I3 (trap, TLS, GOT, and rseq), I4 (pointer authentication), and Isla CI are not yet opened.
-
-## Summary for slides
-
-- 92.8% of executable lines and 82.5% of executable functions are Verus-verified.
-- 93.6% of lines and 84.9% of functions count when fully discharged Kani and constant-assertion seams are included.
-- 64 theorems cover metadata integrity, live-block separation, overflow reach, guard pages, commits that spare guards, zeroing, free paths, the sized frees’ opt-in exact check, the double-free scan's window, thread exit, explicit-cache destroy, and accounting.
-- `theorem_metadata_integrity` separates returned blocks from the metadata ranges named in its contract, subject to stated trust assumptions and exclusions.
-- The covered fast paths make no syscall except an integrity abort’s write and `SIGABRT`; valid frees avoid invalid-free and double-free checks.
-- 134 Kani harnesses check bounded contracts; 61 loom tests model atomic protocols.
-- The proof-change rule requires unchanged hot-path machine code, with `changed 0` in codegen comparisons.
-- Verus, codegen, and tests run on x86_64 and native arm64.
-
-| Measure at `a1165e7f` | Count |
-| --- | ---: |
-| Verus-verified executable lines / functions | 38906 of 41901 (92.8%) / 1272 of 1541 (82.5%) |
-| Verified plus discharged lines / functions | 39252 of 41901 (93.6%) / 1309 of 1541 (84.9%) |
-| Theorems | 64: 49 proof, 15 verification-only executable |
-| Seams | 408: 129 discharged, 34 partly checked, 245 trusted |
-| Kani proof harnesses | 134 |
-| Trusted functions with no check | 193 functions, 2194 lines |
-
-## Regenerating these numbers
-
-Run these commands at the revision whose figures you want to report:
-
-```sh
-make verus
-(cd verus/count && cargo run --release -- --floor ../FLOOR ../..)
-(cd verus/count && cargo run --release -- --list ../..)
-sh verus/seams.sh
-grep -rh 'Status: ' verus/ledger
-cargo test --release --locked restated
-git grep -nE '^\s*(pub(\([a-z]+\))? )?(proof )?fn theorem_' src
-```
-
-`make verus` runs the seam check, proofs, and coverage floor. The counter prints verified and combined coverage; `--list` shows individual functions. `sh verus/seams.sh` prints seam totals by category, proposed tool, and kind, with entries under [ledger/src](ledger/src). `cargo test ... restated` checks the restated-body call lists. The `git grep` lists the `theorem_*` definitions; a line with `proof fn` is a proof function, and the rest are verification-only executable functions.
+- [THEOREMS.md](THEOREMS.md): every theorem with its statement, entry points, premises and proof sketch.
+- [SEAMS.md](SEAMS.md) and the [seam ledger](ledger/src): what Verus takes on trust and how each seam is checked.
+- [README.md](README.md): running Verus, Kani, Isla and `make emptyasm`, and the conventions for proof changes.
+- [ISLA.md](ISLA.md) and [WEAKMEM.md](WEAKMEM.md): the inline-assembly checks and the weak-memory scope of the loom models.
+- [audit/](audit): adversarial audits of the seam contracts, made during [#138](https://github.com/wolfi-dev/challoc/pull/138), for the audited seams the ledger still lists.
+- [Issue #397](https://github.com/wolfi-dev/challoc/issues/397): the remaining proof, check and audit work.
