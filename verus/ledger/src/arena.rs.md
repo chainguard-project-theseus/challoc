@@ -19,7 +19,7 @@ file.
 | `A_LAST_..._PURGE` | external_body const | core library | Kani | discharged |
 | `axiom_arena_layout` | axiom | core library | Kani | discharged |
 | `axiom_a...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
-| `Arena::put_stats` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `Arena::put_stats` | external_body | raw pointer (internal) | Kani | trusted |
 | `key_less` | external_body | core library | Kani | discharged |
 | `AR_TABLE` | external_body const | core library | Kani | discharged |
 | `AR_BOUND` | external_body const | core library | Kani | discharged |
@@ -236,7 +236,7 @@ axiom fn axiom_arena_assemble(
 ## `Arena::put_stats`
 
 src/arena.rs:1125. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own).
 
 > The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
 

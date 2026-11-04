@@ -639,6 +639,36 @@ mod kani_arrays {
     }
 }
 
+/// The Kani harness of [`byte_at`], next to the private function.
+#[cfg(kani)]
+mod kani_byte_at {
+    use super::byte_at;
+    use core::sync::atomic::AtomicU8;
+    use core::sync::atomic::Ordering::Relaxed;
+
+    /// `byte_at`: no `ensures`; with `at` a byte of the harness's own
+    /// 4-byte array, standing in for the `# Safety` contract's slot-state
+    /// array, its address cast to an integer as `byte` computes it, the
+    /// call is defined, the reference is that byte (`core::ptr::eq`;
+    /// `kani::mem::can_dereference`: non-null, in bounds, a valid
+    /// `AtomicU8`), and a store through it is the byte's. Not checked:
+    /// the `# Safety` contract itself.
+    #[kani::proof]
+    fn byte_at_is_the_byte() {
+        let bytes: [AtomicU8; 4] = [const { AtomicU8::new(0) }; 4];
+        let i: usize = kani::any();
+        kani::assume(i < bytes.len());
+        // SAFETY: `bytes[i]` is a byte of the harness's array, which
+        // outlives every use of the reference.
+        let b = unsafe { byte_at(bytes.as_ptr() as usize + i) };
+        assert!(core::ptr::eq(b, &bytes[i]));
+        assert!(kani::mem::can_dereference(b as *const AtomicU8));
+        let v: u8 = kani::any();
+        b.store(v, Relaxed);
+        assert_eq!(bytes[i].load(Relaxed), v);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// `axiom_slot_byte` mints a permission whose value is the byte's

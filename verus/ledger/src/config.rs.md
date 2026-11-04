@@ -15,7 +15,7 @@ file.
 | `Read` | ext_type_spec | function pointer | Kani | trusted |
 | `TABLE` | external_body const | function pointer | Kani | trusted |
 | `KEYS` | external_body const | function pointer | Kani | discharged |
-| `conf_buffer` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `conf_buffer` | external_body | raw pointer (internal) | Kani | trusted |
 | `read_slot` | external_body | raw pointer from C caller | none (assumption) | trusted |
 | `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `je_mall...f_addr` | external_body | inline asm | Islaris/Isla | discharged |
@@ -131,7 +131,7 @@ pub exec const KEYS: &'static [&'static str] = &NAMES;
 ## `conf_buffer`
 
 src/config.rs:1654. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: config::linux::kani_conf_buffer::conf_buffer_is_conf_buf; not checked: that no two references are live at once, which rests on `load`'s one caller, `api::init`, running once (its exchange on `STATE` lets one thread through)).
 
 > The buffer [`load`] reads `/etc/challoc.conf` into: a static, so init's frame does not carry 4 KiB of it (design 13.8: init's frame is capped, though challoc initialises before `main`, so init does not normally run on a program's small thread).
 
