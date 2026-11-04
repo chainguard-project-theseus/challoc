@@ -752,6 +752,9 @@ pub(crate) struct Inner {
     /// Ghost: the region's page shift (`Huge::lg_page`), fixed at creation.
     #[allow(dead_code)]
     lg: Ghost<u32>,
+    /// Ghost: the region's first byte (`Huge::base`), fixed at creation.
+    #[allow(dead_code)]
+    base: Ghost<usize>,
     /// Ghost: the authority of the `Active` descriptors' extents
     /// ([`run_loc`]).
     #[allow(dead_code)]
@@ -1986,7 +1989,7 @@ fn protect_none(addr: usize, len: usize) -> Result<(), Errno>
 /// 2 MiB page for a PMD-aligned run under host THP `always`). `populate`
 /// may be false for a run inside the mark in the fallback mode: every VMA
 /// there was split off one populated this way, so it has its `anon_vma`.
-fn split_guard(run: usize, guard: usize, page: usize, populate: bool) -> Result<(), Errno>
+fn split_guard(run: usize, guard: usize, page: usize, populate: bool, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>) -> Result<(), Errno>
     requires
         crate::sys::may_syscall(),
 {
@@ -2000,7 +2003,7 @@ fn split_guard(run: usize, guard: usize, page: usize, populate: bool) -> Result<
             // meet again as a fault, so the run is not handed out
             // (design 14.1).
             if e.0 == Errno::EINVAL.0 || e.0 == Errno::EPERM.0 || e.0 == Errno::ENOSYS.0 {
-                write_zero(run);
+                write_zero(run, Ghost(h), Tracked(lk));
             } else {
                 return Err(e);
             }
@@ -2020,7 +2023,7 @@ fn split_guard(run: usize, guard: usize, page: usize, populate: bool) -> Result<
 /// zero tokens (`axiom_fresh_anon_zero`, `axiom_discarded_zero`) stay
 /// true, and a dirty `Empty` page's contents are not needed.
 #[verifier::external_body]
-fn write_zero(addr: usize) {
+fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>) {
     // SAFETY: as above.
     unsafe { core::ptr::write_volatile(addr as *mut u8, 0) };
 }
@@ -4202,6 +4205,7 @@ impl Huge {
                     all: Ghost(Seq::empty()),
                     np: Ghost(npages),
                     lg: Ghost(regions.lg_page),
+                    base: Ghost(regions.huge_base),
                     runs: Tracked(runs),
                     pgs: Tracked(pgs),
                 },
@@ -5613,7 +5617,7 @@ impl Huge {
                 // which works there, so the run is guarded all the same.
                 // If that fails too the run is not handed out (design
                 // 14.1).
-                split_guard(self.addr(s), self.addr(guard), page, true)?;
+                split_guard(self.addr(s), self.addr(guard), page, true, Ghost(*self), Tracked(lk))?;
                 self.mixed_guards.store(true, Ordering::Relaxed);
             }
             Ok(())
@@ -5641,7 +5645,7 @@ impl Huge {
                 commit(self.addr(lo), (end - lo) * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
             }
             if self.guards {
-                split_guard(self.addr(s), self.addr(guard), page, fresh)?;
+                split_guard(self.addr(s), self.addr(guard), page, fresh, Ghost(*self), Tracked(lk))?;
             }
             Ok(())
         };
