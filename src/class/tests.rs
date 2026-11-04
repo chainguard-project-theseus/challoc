@@ -160,7 +160,6 @@ impl Env {
                 guard_interval,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
-                Tracked::assume_new(),
             )
             .expect("slab table"),
         ))
@@ -1286,7 +1285,6 @@ fn metadata_exhaustion_is_reported_not_fatal() {
             &regions,
             0,
             0,
-            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
         )

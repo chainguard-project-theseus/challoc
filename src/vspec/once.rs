@@ -19,11 +19,6 @@ pub ghost enum Step {
     /// `heap::shared::Shared::begin`: the permission to the process's
     /// `Shared` storage.
     Shared,
-    /// `class::table::SlabTable::new` for class `c`, which takes the token
-    /// and uses it for nothing: its slot-token and marker authorities and
-    /// guard geometry are the process's by the definitions of
-    /// `class::slot_loc`, `class::mark_loc` and `layout::guard_geom`.
-    SlotLoc(int),
     /// The word permissions of class `c`'s bitmap (`class::table`,
     /// `SlabTable::new`).
     FreshWords(int),
