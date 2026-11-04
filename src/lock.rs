@@ -654,6 +654,7 @@ pub struct Lock<T> {
 /// with those holders (`api::tests::guards_end_in_unlock`). Otherwise
 /// the impl keeps them uninterpreted ([`assumed_inv`], [`assumed_frame`])
 /// and the owner states them by an axiom that names the holders. A frame
+/// of `true` may be defined either way: no release can break it. A frame
 /// an impl defines must hold of every value with itself: [`Lock::new`]
 /// does not check it of the initial value, and [`axiom_acquired`] claims
 /// it at the first acquisition. The two method names are defined nowhere
@@ -1215,6 +1216,7 @@ mod tests {
             ("crate::heap::tcaches::()", true, true),
             ("crate::huge::Inner", true, true),
             ("crate::meta::Inner", true, true),
+            ("crate::stats::ArenaStats", false, true),
             ("crate::stats::Snapshot", true, true),
         ];
         // Spelled in parts, so that this test's own lines match nothing.
