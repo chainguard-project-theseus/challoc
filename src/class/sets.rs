@@ -972,14 +972,24 @@ impl Set {
 /// Their one writer, `SetTable::ensure`, keeps it by `Lazy::ensure`'s
 /// postcondition and ends in `LockGuard::unlock`, which requires it (`api::tests::guards_end_in_unlock`); `SetTable::new`
 /// proves it of the tables it reserves; the test-only `committed_ranges`
-/// only reads. Until the tables' lock frame is stated, `SetTable::ensure`
-/// is trusted (`external_body`), so this is also assumed of it.
+/// only reads.
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
 pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
     ensures
         #[trigger] crate::lock::lock_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),
+;
+
+/// Assumption (`lock.rs`): what every value behind [`SetTable::tables`]
+/// keeps from the tables `SetTable::new` reserved is each table's base
+/// and length, which `Lazy::ensure` keeps. Its one writer,
+/// `SetTable::ensure`, checks it at its `LockGuard::unlock`, as for
+/// [`axiom_set_tables_lock_inv`].
+pub(crate) broadcast axiom fn axiom_set_tables_lock_frame(a: [Lazy; SET_GROUPS], b: [Lazy; SET_GROUPS])
+    ensures
+        #[trigger] crate::lock::lock_frame(a, b) == forall|g: int|
+            0 <= g < SET_GROUPS ==> #[trigger] b[g].spec_base() == a[g].spec_base() && b[g].spec_len() == a[g].spec_len(),
 ;
 
 impl SetTable {
@@ -1226,7 +1236,6 @@ impl SetTable {
     ///
     /// Lock order: takes this table's commit lock, then the metadata
     /// lock.
-    #[verifier::external_body]
     fn ensure(&self, meta: &Meta, g: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
@@ -1238,7 +1247,7 @@ impl SetTable {
             *final(ord) == *old(ord),
     {
         proof {
-            broadcast use axiom_set_tables_lock_inv;
+            broadcast use {axiom_set_tables_lock_inv, axiom_set_tables_lock_frame};
             use_type_invariant(self);
             let w = slab / 64;
             assert(w <= 0x10_0000);
