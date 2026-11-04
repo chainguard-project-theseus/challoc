@@ -467,18 +467,18 @@ does every holder of the explicit-cache table lock (`Tcaches::create`,
 `destroy`), the slab-set tables' lock (`SetTable::ensure`) and the
 process statistics lock (`collect_into`, `snapshot`,
 `arena_stats_all_into`); the source test `api::tests::guards_end_in_unlock`
-checks that none of these guards drops without it. `SetTable::ensure`
-and `collect_into` are trusted (`external_body`) until their locks'
-frames are stated, so neither the acquisitions nor the releases inside
-them are checked yet (theorem 33 names both as trusted). No other
+checks that none of these guards drops without it. No other
 lock's holders call it, so for every other lock the invariant and frame
 are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Each
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it. Also:
-`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:980`) and
-`heap::tcaches::axiom_tcaches_lock_inv` (the explicit-cache table lock
-guards `()`, so its invariant is true). `Tcaches::init` makes each entry null with
+`class::sets::axiom_set_tables_lock_inv` (`class/sets.rs:979`) and its
+frame `axiom_set_tables_lock_frame` (`:989`: each table keeps its base
+and length), `stats::axiom_snapshot_lock_frame` (`stats.rs:681`: true of
+any two snapshots), and `heap::tcaches::axiom_tcaches_lock_inv` (the
+explicit-cache table lock guards `()`, so its invariant is true).
+`Tcaches::init` makes each entry null with
 `vspec::entry::new`, over the layout from `axiom_tcaches_layout` and
 `axiom_tcaches_assemble`.
 
@@ -4541,13 +4541,6 @@ and subtract from the `large` word are the token's
   is `allocated`; `max mmap bytes` is `large.allocated`.
 
 **Premises beyond the common ones.**
-- `collect_into` is trusted (`external_body`) until the process
-  statistics lock's frame is stated, which its closing
-  `LockGuard::unlock` needs. Layer 1's ensures for `collect_into`
-  (`totals_exact` and the ghost `rd`), and so the figures `epoch`,
-  `collect` and the stored snapshot that `mallctl` reads rest on, are
-  assumed at this commit; `collect_all`'s (`mallinfo`, `mallinfo2`,
-  `malloc_stats`) are proved.
 - Quiescence: no allocation, free, flush or `epoch` runs during the scan
   or between the last counter update and it; then each `Relaxed` load in
   `bin_stats` and `Arena::large` reads the last store, and the scan's
@@ -5320,12 +5313,9 @@ for `k <= 256`.
   `Shared::init` (`Snapshot::EMPTY`, written in `Shared::put_tail`,
   `heap/shared.rs:1961`) and
   `collect_into` (whose body asserts it and ends in `LockGuard::unlock`,
-  which requires it). `collect_into` is trusted (`external_body`) until
-  the process statistics lock's frame is stated, so at this commit its
-  part-1 identities and the invariant of the snapshot it stores are
-  assumed. The process statistics lock's other holders (`snapshot`,
-  `arena_stats_all_into`) also end in `LockGuard::unlock` and are
-  verified. The fork handlers take the raw locks only and write
+  which requires it). The process statistics lock's other holders
+  (`snapshot`, `arena_stats_all_into`) also end in `LockGuard::unlock`.
+  The fork handlers take the raw locks only and write
   nothing. For the per-arena statistics lock, as for every lock whose
   holders do not end with `LockGuard::unlock` (see "Locks"), that each
   holder leaves the invariant true is checked at the holder's last
@@ -6495,9 +6485,7 @@ arena `arena`), `SlabTable`, `SetTable` (a slab-set rank), `Huge`, `Meta`,
 (the process statistics lock). The fork accessors (`raw_lock`,
 `stats_raw_lock`, `Arena::sets`, `Shared::*_lock`) state the rank.
 
-**What is threaded** (every acquisition below is checked, except those
-inside `SetTable::ensure` and `collect_into`, trusted under the premises
-below):
+**What is threaded** (every acquisition below is checked):
 
 | Path | Nesting checked |
 |---|---|
@@ -6576,16 +6564,6 @@ range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`) instead of
   is verified since it became an index loop over `Arenas::get_existing`);
   `purge::background::state`, which names `STATE`'s rank, verifies over
   the static's postcondition, which its initialiser proves.
-  Also `SetTable::ensure` (`class/sets.rs:1230`) and `stats::collect_into`
-  (`stats.rs:1202`), `external_body` until their locks' frames are
-  stated: Verus checks only the lowest rank each states for its callers
-  (`old(ord).allows(rank_sets(0))`, `old(ord).allows(rank_stats())`), not
-  the acquisitions inside them. `SetTable::ensure` takes Sets(i), then
-  Meta through `Lazy::ensure` (the slow-allocation row's Sets(i) step);
-  `collect_into` takes Stats, then the class, slab table, huge, metadata
-  and per-arena statistics locks (the statistics row). Until their proof
-  lands, those two rows rest on these bodies taking their locks in rank
-  order.
 - *Ranks set in constructors*: none is trusted. `Tcaches::init` is
   verified (one write of the whole value, whose lock it creates with
   the rank the type invariant states), and so is `Arenas::init`
@@ -7257,9 +7235,6 @@ premise.
 below `MAX_ARENAS`.
 
 **Premises beyond theorem 22's.**
-- `collect_into`'s `ids_ascending` and `MAX_ARENAS` ensures are trusted
-  with its body (theorem 22's first premise) until the process
-  statistics lock's frame is stated; `collect_all`'s are proved.
 - A stable registry during the scan: the `arenas.count()` the scan
   loads is the ledger's `k`, and each entry load in `get_existing` sees
   the entry as published (non-null exactly for the built indices).

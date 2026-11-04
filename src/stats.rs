@@ -665,8 +665,7 @@ impl Snapshot {
 /// each holder ([`collect_into`], [`snapshot`], [`arena_stats_all_into`]) ends
 /// in `LockGuard::unlock`, which requires it
 /// (`api::tests::guards_end_in_unlock`); the fork handlers take only the
-/// raw lock. Until the snapshot's lock frame is stated, `collect_into`
-/// is trusted (`external_body`), so this is also assumed of it.
+/// raw lock.
 ///
 /// `snapshot` only reads it, and `arena_stats_all_into` leaves it unchanged.
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
@@ -674,6 +673,14 @@ impl Snapshot {
 pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
     ensures
         #[trigger] crate::lock::lock_inv(v) == v.inv(),
+;
+
+/// The snapshot behind `shared.stats` keeps no constant from the one
+/// `Shared::init` created it with: the frame its holders'
+/// `LockGuard::unlock` requires holds of any two snapshots.
+pub broadcast axiom fn axiom_snapshot_lock_frame(init: Snapshot, v: Snapshot)
+    ensures
+        #[trigger] crate::lock::lock_frame(init, v),
 ;
 
 } // verus!
@@ -1198,7 +1205,6 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// snapshot never sees the arenas of a collection whose totals are not
 /// stored yet. It nests outside the class, slab table, huge, metadata and
 /// per-arena statistics locks the collection takes (design 9).
-#[verifier::external_body]
 fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_abort_corrupt(),
@@ -1216,7 +1222,7 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
         r.inv(),
         *final(ord) == *old(ord),
 {
-    broadcast use axiom_snapshot_lock_inv;
+    broadcast use {axiom_snapshot_lock_inv, axiom_snapshot_lock_frame};
 
     proof {
         shared.lemma_ranks();

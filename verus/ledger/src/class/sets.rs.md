@@ -8,11 +8,11 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `axiom_s...ck_inv` | axiom | allocator invariant | none (assumption) | trusted |
-| `SetTable::ensure` | external_body | allocator invariant | Verus | trusted |
+| `axiom_s..._frame` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `axiom_set_tables_lock_inv`
 
-src/class/sets.rs:980. Kind: axiom. Category: allocator invariant.
+src/class/sets.rs:979. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the commit watermarks behind [`SetTable::tables`] keep each table's claim to its uncommitted pages ([`Lazy::claimed`]), which `Lazy::ensure` needs and keeps; the bounds `SetTable::ensure` needs are `Lazy`'s type invariant and `SetTable`'s.
@@ -24,21 +24,17 @@ pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
 ;
 ```
 
-## `SetTable::ensure`
+## `axiom_set_tables_lock_frame`
 
-src/class/sets.rs:1230. Kind: external_body. Category: allocator invariant.
-Tool: Verus. Status: trusted.
+src/class/sets.rs:989. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted.
 
-> Commit the rows of group `g` up to the level-0 word of `slab` (and so its chunk's level-1 word and every row before).
+> Assumption (`lock.rs`): what every value behind [`SetTable::tables`] keeps from the tables `SetTable::new` reserved is each table's base and length, which `Lazy::ensure` keeps.
 
 ```rust
-fn ensure(&self, meta: &Meta, g: usize, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Result<(), Errno>)
-    requires
-        crate::sys::may_syscall(),
-        g < SET_GROUPS,
-        slab < self.nslabs[g as int],
-        old(ord).allows(rank_sets(0)),
-        meta.is_process(),
+pub(crate) broadcast axiom fn axiom_set_tables_lock_frame(a: [Lazy; SET_GROUPS], b: [Lazy; SET_GROUPS])
     ensures
-        *final(ord) == *old(ord),
+        #[trigger] crate::lock::lock_frame(a, b) == forall|g: int|
+            0 <= g < SET_GROUPS ==> #[trigger] b[g].spec_base() == a[g].spec_base() && b[g].spec_len() == a[g].spec_len(),
+;
 ```
