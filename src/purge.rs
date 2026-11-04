@@ -262,8 +262,9 @@ pub tracked struct PurgedZero {
 }
 
 /// [`purged_is_zero`], with the witness of a true read (`Some` exactly
-/// when it returns true). Trusted: it is the one load of the flag, and the
-/// witness stands for its result.
+/// when it returns true). The witness records only that this read
+/// returned true; what that means for a `Purged` slab's memory is
+/// `class::axiom_discarded_slots_zero`'s premise.
 ///
 /// Read only in `class::ClassState::take`, in the lock hold that claims
 /// the slots the witness is for. Checked by
@@ -271,12 +272,13 @@ pub tracked struct PurgedZero {
 /// the one named here: a new one is named here, with its premise, and
 /// added to that test's list in the same change.
 #[inline]
-#[verifier::external_body]
 pub fn purged_zero() -> (r: (bool, Tracked<Option<PurgedZero>>))
     ensures
         r.0 <==> r.1@ is Some,
 {
-    (purged_is_zero(), Tracked::assume_new())
+    let zero = purged_is_zero();
+    let tracked w = if zero { Some(PurgedZero { _read: () }) } else { None };
+    (zero, Tracked(w))
 }
 
 /// Ghost: a set of bytes by address, such as those a [`Batch`] may

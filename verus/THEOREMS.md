@@ -3769,8 +3769,9 @@ run authority stay those the batch's `free` was made from. The makers:
 - Theorem 6's purge premise rests on trust: `axiom_discarded_zero`
   takes any range, and `class::axiom_discarded_slots_zero` any
   `Purged` slab whose claim holds a `purge::PurgedZero` witness. That
-  witness comes from `purge::purged_zero`, a trusted (`external_body`)
-  read of `purge::LAZY_EVER`, a plain `Relaxed` atomic; that the slab
+  witness comes from `purge::purged_zero` (`purge.rs`, verified: `Some`
+  exactly when `purge::purged_is_zero`, a plain `Relaxed` load of
+  `purge::LAZY_EVER`, returns true); that the slab
   was discarded with `MADV_DONTNEED` in the hold that set `Purged` and
   is untouched since is a premise. `Batch::flush` mints no `Zeroed`
   token, and no lock value holds one per `Purged` slab or extent
