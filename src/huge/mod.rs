@@ -65,9 +65,6 @@ use crate::lock::{axiom_entry, lock_frame, lock_init, rank_huge, rank_meta};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, Due, Settle};
 use crate::sys::{self, Errno};
-use crate::vspec::once::Once;
-#[cfg(verus_keep_ghost)]
-use crate::vspec::once::Step;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::slice::array_iter_rest;
 
@@ -4209,16 +4206,13 @@ impl Huge {
     /// probed `MADV_GUARD_INSTALL` support and `guards` the `guards` key
     /// (false: no guard page is placed at all, and `guard_install` is
     /// ignored). `None` if the metadata region cannot hold the tables.
-    /// `_once` is the `Huge` step's one-shot token (`vspec::once`), taken
-    /// and used for nothing: the run authorities `new` makes are the
-    /// process's where `Shared::init` stores the allocator ([`run_loc`],
-    /// [`page_loc`]).
+    /// The run authorities `new` makes are the process's where
+    /// `Shared::init` stores the allocator ([`run_loc`], [`page_loc`]).
     pub fn new(
         meta: &Meta,
         regions: &Regions,
         guard_install: bool,
         guards: bool,
-        Tracked(_once): Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<Huge>)
         requires
@@ -4230,7 +4224,6 @@ impl Huge {
             meta.is_process(),
             crate::meta::process_page() == (1usize << regions.lg_page),
             old(ord).allows(rank_meta()),
-            _once.step() == Step::Huge,
         ensures
             r matches Some(h) ==> h.spec_npages() == (regions.huge_len >> regions.lg_page) as int
                 && h.spec_page() == (1usize << regions.lg_page) as int
