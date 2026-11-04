@@ -476,8 +476,8 @@ trusted only in how it is reached:
 
 **Locks.** `lock::axiom_acquired`: an acquisition takes the permission
 of the lock's cell (a vstd `PCell`) out of the free lock's invariant,
-and the value satisfies `lock_inv` and `lock_frame`; the other entry is
-`lock::axiom_held`, behind `Lock::get_unlocked`. The guard's `deref` and
+and the value satisfies `lock_inv` and `lock_frame`, for a guard or for
+a holder with no guard (`Lock::lock_held_perm`). The guard's `deref` and
 `deref_mut` are verified, over two trusted restatements of vstd's
 `PCell::borrow` and `borrow_mut` (`cell_ref`, `cell_mut`, kept for the
 machine code); `drop` (`lock.rs`) is `external_body` and checks
@@ -511,13 +511,12 @@ holders all end with it. For all but the state lock (whose invariant
 left is the mutex contract (`lock::axiom_acquired`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
 test `api::tests::guards_end_in_unlock` checks. The arena creation lock
-is also held by the fork handlers, whose release,
+and the state lock are also held by the fork handlers, whose release,
 `Lock::unlock_held_perm`, requires the invariant and frame as
-`LockGuard::unlock` does. The state lock is held by the fork handlers
-too, and that hold still rests on `axiom_state_lock_inv`:
-`purge::background::fork_child` writes the value through
-`Lock::get_unlocked`, and `fork_unlock` releases it through
-`RawLock::unlock_held`, which checks nothing. The one exception is the
+`LockGuard::unlock` does. For the state lock that release checks the
+invariant `axiom_state_lock_inv` states: `purge::background::fork_child`
+writes the value through `Lock::value_held_mut` and proves it of the state
+it stores (`StateHold::wf`). The one exception is the
 initial value: eight of those nine take it from `Lock::new`, which
 requires the invariant, but the per-arena statistics locks take theirs
 from the trusted `Arena::put_stats`, which the test
@@ -545,8 +544,9 @@ or above the one the lock was created with. The impl for `ArenaStats`
 with a frame true of any two values. The impl for
 `purge::background::State` (`purge/background.rs`), the background
 thread's state lock, defines only the frame, true of any two states,
-which no release can break; its invariant is `axiom_state_lock_inv`'s.
-Each other
+which no release can break; its invariant is `axiom_state_lock_inv`'s,
+which the fork handlers' hold (`purge::background::StateHold`) also
+keeps. Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it.
 `Tcaches::init` makes each entry null with
@@ -2513,10 +2513,10 @@ pub open spec fn all(self) -> bool {                       // ForkHeld
     forall|k: ForkLock| self.keys().contains(k) <==> listed(k, self.arenas().dom())
 }
 
-pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -> bool {
+pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: StateHold) -> bool {
     &&& held.wf(s)
     &&& held.all()
-    &&& state.held() == purge::background::state_lock()
+    &&& state.wf()
 }
 
 // end of fork_prepare (api/mod.rs):
@@ -2542,12 +2542,13 @@ from that hold and hands every token back through
 `RawLock::unlock_held` (`lock.rs`), which requires the token of the
 lock it unlocks and consumes it. A token is not `Copy`, and the map is
 empty at the end, so each listed lock is released once, by its holder.
-`fork_child` first rewrites the background state through
-`Lock::get_unlocked`, which requires the state lock's token
-(`lock.rs`); `purge::background::fork_child`
-(`purge/background.rs`) proves the state's lock invariant on the
-value it leaves (the invariant includes `exited ==> !present`, and the
-child clears both). After either handler
+The state lock's hold is a `purge::background::StateHold`
+(`purge/background.rs`): the token with the permission of the lock's
+cell (`Lock::lock_held_perm`), handed back by `fork_unlock` through
+`Lock::unlock_held_perm` (`lock.rs`). `fork_child` first rewrites the
+background state through that permission (`Lock::value_held_mut`, in
+`purge::background::fork_child`), leaving no thread present or being
+created and the stack kept. After either handler
 no listed lock is held.
 In the child, no lock is owned by a thread that no longer exists: at
 the fork the forking thread held every listed lock (the mutex premise
@@ -2560,8 +2561,8 @@ statement.
 
 The tokens: `RawLock::lock_held` (`lock.rs`) is `lock` plus a
 `LockHeld` whose `held()` is the lock. The field is private to
-`lock.rs`, so outside it only `lock_held` builds a token; the handoff
-axioms below are the other source.
+`lock.rs`, so outside it only `lock_held` and `Lock::lock_held_perm`
+build a token; the handoff axioms below are the other source.
 
 **Premises beyond the common ones.**
 - *The mutex.* `lock` returns only once this thread holds the lock, and
@@ -2641,9 +2642,13 @@ axioms below are the other source.
   specifications); its rank is proved,
   and `purge::background::state` verifies over the static's
   postcondition.
-- The background state's invariant in the child also rests on
-  `axiom_state_lock_inv` (`purge/background.rs`) and on
-  `axiom_held`, behind `get_unlocked` (the value a holder left).
+- The background state's invariant in the child is checked over the
+  formula `axiom_state_lock_inv` (`purge/background.rs`) names:
+  `purge::background::fork_child` proves it of the value it stores
+  (`StateHold::wf`), and `fork_unlock`'s `Lock::unlock_held_perm`
+  requires it at the release. The value `fork_child` starts from is the
+  one `axiom_fork_resumed_state` restates, which prepare's
+  `Lock::lock_held_perm` read.
 - *Completeness of the list.* That `listed` names every `Lock` in the
   crate is not proved. The test `fork_lock_list_matches_the_source_tree`
   checks the `Lock` fields and statics in the source tree against the

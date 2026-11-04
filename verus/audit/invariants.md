@@ -58,8 +58,8 @@ Totals for the 26 seams listed: 8 sound, 11 sound (premise), 7 fixed.
 
 | seam | ledger file | verdict | reason |
 |---|---|---|---|
-| `axiom_fork_resumed_state` | `api/mod.rs` | sound (premise) | One call per fork handler. A second call gives a second token for the state lock (a double unlock); no lemma separates two `LockHeld`s, so no `false`. See "Premises". |
-| `axiom_fork_resumed` | `api/mod.rs` | fixed | Requires `state.held() == state_lock()`, so a token of another lock cannot become the state lock's hold; the one caller, `fork_release`, has it. Rests on the same handoff premise as `axiom_fork_resumed_state`. |
+| `axiom_fork_resumed_state` | `api/mod.rs` | sound (premise) | One call per fork handler. A second call gives a second `StateHold`, whose permission of the state lock's cell contradicts the first's (vstd's `PointsTo::is_exclusive`; the contradiction is derivable where `Lock::has_perm` unfolds, in `lock.rs`). See "Premises". |
+| `axiom_fork_resumed` | `api/mod.rs` | fixed | Requires `state.wf()`, so a hold of another lock cannot become the state lock's hold; the one caller, `fork_release`, has it. Rests on the same handoff premise as `axiom_fork_resumed_state`. |
 | `axiom_array_layout` | `arena.rs` | sound | Requires `N * size_of::<T>() <= isize::MAX`, which every array with a layout meets (`library-control.md`). |
 | `axiom_arena_layout` | `arena.rs` | sound | The build's `const` assertion covers every clause, on every target and quantum. |
 | `axiom_arena_assemble` | `arena.rs` | sound (premise) | Consumes the field permissions and the padding (`pad_covers`), so the assembled permission covers exactly the bytes it is given (`memory.md`). |
@@ -118,9 +118,10 @@ one-shot token) against main's.
   Here `r[1].addr()` is a `usize` equal to `usize::MAX + 8`. The
   `requires base + 8 * n <= usize::MAX` rules this out; `SlabTable::new`
   proves it from the bitmap reservation's end.
-- **`axiom_fork_resumed` for any token.** An `ensures`
-  `state.held() == state_lock()` for any `state` token would let a token
-  of any lock become the state lock's. The contract requires it instead.
+- **`axiom_fork_resumed` for any hold.** An `ensures` `state.wf()` for
+  any `state` hold would let a hold of any lock become the state lock's.
+  The contract requires it instead (at `26f535a9`, as
+  `state.held() == state_lock()` of a `LockHeld`).
 - **The class zero axioms past the slab.** With `n` unbounded, a caller
   that holds the next slab's slot tokens would get a zero claim running
   past the slab. `n <= nslots` rules it out.

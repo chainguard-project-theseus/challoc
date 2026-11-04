@@ -62,12 +62,14 @@ struct State {
 /// sets only to `thread.is_some() && !exited`, and clears `exited` only
 /// while nothing is present), `main` its exit's `present` false and
 /// `exited` true, and `request`, `start_requested` and `auto_tick` write
-/// nothing under it. `fork_child` (the fork child's writer through
-/// `Lock::get_unlocked`) asserts it after clearing both, but the fork
-/// handlers' release (`RawLock::unlock_held`) checks nothing, so for
-/// that hold this is the claim. The test-only readers (`join_exited`,
-/// `stack`, `thread`), whose guards drop, never write `stack`, `present`
-/// or `exited`, and no other code touches the value.
+/// nothing under it. The fork handlers hold the lock with its cell's
+/// permission ([`StateHold`]), whose value keeps it ([`StateHold::wf`]):
+/// [`fork_child`], the fork child's writer, clears `present`, `creating`
+/// and `exited` through `Lock::value_held_mut`, keeping `stack`, and
+/// proves it of that state; [`fork_unlock`]'s
+/// release (`Lock::unlock_held_perm`) requires it. The test-only readers
+/// (`join_exited`, `stack`, `thread`), whose guards drop, never write
+/// `stack`, `present` or `exited`, and no other code touches the value.
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
@@ -937,34 +939,65 @@ fn state() -> (r: &'static Lock<State>)
     &STATE
 }
 
+/// The fork handlers' hold of the state lock, from `fork_prepare` to the
+/// release: the token of the hold and the permission of [`STATE`]'s cell
+/// (`Lock::lock_held_perm`), through which [`fork_child`] reads and
+/// writes the value. Built only by [`fork_lock`] (the fields are private
+/// to this module) and by the fork handlers' handoff
+/// (`api::axiom_fork_resumed_state`). The permission is exclusive
+/// (vstd's `PointsTo::is_exclusive`), so two holds alive at once are a
+/// contradiction, derivable where `Lock::has_perm` unfolds, in `lock.rs`
+/// (in this module, where it is closed, it is not).
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct StateHold {
+    tracked tok: LockHeld,
+    tracked perm: vstd::cell::pcell::PointsTo<State>,
+}
+
+impl StateHold {
+    /// The hold is of the state lock, with the permission of its cell,
+    /// whose value satisfies the lock invariant.
+    pub closed spec fn wf(self) -> bool {
+        &&& self.tok.held() == state_lock()
+        &&& state_static().has_perm(self.perm)
+        &&& lock_inv(*self.perm.value())
+    }
+}
+
 /// Take the state lock (fork prepare, last: after the arena statistics
-/// locks); the token is the hold, and `ord` (a root) is raised to its
-/// rank. The last acquisition, after which the fork window may open
+/// locks), with the permission of its cell; `ord` (a root) is raised to
+/// its rank. The last acquisition, after which the fork window may open
 /// (`lock::fork_prepared`).
-pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>)
+pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (h: Tracked<StateHold>)
     requires
         crate::sys::may_syscall(),
         old(ord).root(),
         old(ord).allows(rank_state()),
     ensures
-        t@.held() == state_lock(),
+        h@.wf(),
         final(ord).root(),
         final(ord).top() == rank_state(),
         crate::lock::fork_prepared(*final(ord)),
 {
-    state().raw().lock_held(Tracked(ord))
+    let Tracked(r) = state().lock_held_perm(Tracked(ord));
+    let tracked (tok, perm) = r;
+    Tracked(StateHold { tok, perm })
 }
 
 /// Release the state lock (fork parent and child, before the others),
-/// handing back the token of the hold, once the fork window has closed
-/// (`lock::window_closed`).
-pub fn fork_unlock(Tracked(t): Tracked<LockHeld>)
+/// handing back the hold's token and cell permission, once the fork
+/// window has closed (`lock::window_closed`). The hold's value keeps the
+/// lock invariant ([`StateHold::wf`]), which that release
+/// (`Lock::unlock_held_perm`) requires.
+pub fn fork_unlock(Tracked(h): Tracked<StateHold>)
     requires
         crate::sys::may_syscall(),
-        t.held() == state_lock(),
+        h.wf(),
         crate::lock::window_closed(),
 {
-    state().raw().unlock_held(Tracked(t))
+    let tracked StateHold { tok, perm } = h;
+    state().unlock_held_perm(Tracked(tok), Tracked(perm))
 }
 
 } // verus!
@@ -982,18 +1015,20 @@ verus! {
 /// enough dirty memory of its own: the dirty bytes at the fork are the
 /// baseline ([`set_fork_base`], after the locks are released). Called
 /// with the state lock held by this thread (`fork_prepare` took it;
-/// `held` is the hold). Leaves the state's lock invariant true, so the
-/// value the child's next locker reads is consistent.
-pub fn fork_child(Tracked(held): Tracked<&mut LockHeld>)
+/// `hold` is the hold, with the permission of the lock's cell). Writes
+/// the state through `Lock::value_held_mut`, keeping the stack, and
+/// leaves the state's lock invariant true ([`StateHold::wf`]), so the
+/// value the child's next locker reads is consistent and describes no
+/// thread.
+pub fn fork_child(Tracked(hold): Tracked<&mut StateHold>)
     requires
-        old(held).held() == state_lock(),
+        old(hold).wf(),
     ensures
-        *final(held) == *old(held),
+        final(hold).wf(),
 {
-    // SAFETY: the forking thread holds the lock; the child is single
-    // threaded.
-    let st = unsafe { state().get_unlocked(Tracked(held)) };
-    let ghost before = *st;
+    broadcast use axiom_state_lock_inv;
+
+    let st = state().value_held_mut(Tracked(&mut hold.perm));
     st.present = false;
     st.creating = false;
     st.exited = false;
@@ -1002,11 +1037,6 @@ pub fn fork_child(Tracked(held): Tracked<&mut LockHeld>)
     // kernel never clears in this process); the stack is kept and is
     // free to reuse, nothing runs on the child's copy of it.
     st.thread = None;
-    proof {
-        axiom_state_lock_inv(before);
-        axiom_state_lock_inv(*st);
-        assert(lock_inv(*st));
-    }
     PRESENT.store(false, Ordering::Relaxed);
     REQUESTED.store(false, Ordering::Relaxed);
     AUTO_NEXT.store(0, Ordering::Relaxed);

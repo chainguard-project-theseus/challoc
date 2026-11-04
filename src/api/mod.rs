@@ -120,6 +120,7 @@ use crate::lock::LockHeld;
 #[cfg(verus_keep_ghost)]
 use crate::lock::{RawLock, axiom_entry, rank_arena_stats, rank_class, rank_sets, rank_table};
 use crate::purge;
+use crate::purge::background::StateHold;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
 #[cfg(verus_keep_ghost)]
@@ -2013,12 +2014,13 @@ impl ForkHeld {
 
 /// Fork safety's hold: `held` holds every lock of the fork lock list of
 /// `s` ([`listed`], for the arenas it found) and nothing else, and
-/// `state` the background thread's state lock. `fork_prepare` ends with
-/// it, and the release starts from it.
-pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -> bool {
+/// `state` the background thread's state lock, with its cell's
+/// permission ([`StateHold`]). `fork_prepare` ends with it, and the
+/// release starts from it.
+pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: StateHold) -> bool {
     &&& held.wf(s)
     &&& held.all()
-    &&& state.held() == purge::background::state_lock()
+    &&& state.wf()
 }
 
 /// Premise (the fork handler handoff): the parent and child handlers
@@ -2037,17 +2039,29 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: LockHeld) -
 /// (`lock::fork_holder_is_me`, whose premise is that the forking thread
 /// has no allocator critical section open in the window). Ghost
 /// state does not cross the C calls, so the hold is handed over here:
-/// the state lock's token, then [`resume::axiom_fork_resumed`] for the rest, at
+/// the state lock's hold, then [`resume::axiom_fork_resumed`] for the rest, at
 /// the `&Shared` the release reads, which must be the process's one
 /// value (`Shared::built_at(Shared::storage())`, what `shared` ensures).
-/// Each handler calls them once, which nothing
-/// enforces: a second call would hand out a second token for a held
-/// lock, so no lemma may claim that two tokens of one lock are apart,
-/// and two tokens would also let `Lock::get_unlocked` hand out two
-/// `&mut` to one value, which Verus would take as independent.
-axiom fn axiom_fork_resumed_state() -> (tracked state: LockHeld)
+/// The state lock's hold has the permission of its cell that
+/// `fork_prepare` took (`purge::background::fork_lock`, through
+/// [`StateHold::wf`]): restated, as the tokens are, and still the only
+/// one, since the prepare's hold kept it. Its value keeps the state's
+/// lock invariant, restated too: it is the value prepare's
+/// `Lock::lock_held_perm` read, which that call ensures of it, and
+/// nothing wrote it since (only the hold can, through
+/// `purge::background::fork_child`, which runs after this call, and the
+/// window's holders of the state lock write nothing under it: `start`
+/// and `start_requested` refuse there, and `request` and `auto_tick`
+/// store only atomics; each of them ends in a `LockGuard::unlock`,
+/// which checks the invariant). Each handler calls them once, which
+/// nothing enforces: that permission is exclusive (vstd's
+/// `PointsTo::is_exclusive`), so a second call would give two
+/// permissions of one cell, a contradiction that is derivable where
+/// `Lock::has_perm` unfolds, in `lock.rs` (it is closed here and in
+/// `purge::background`).
+axiom fn axiom_fork_resumed_state() -> (tracked state: StateHold)
     ensures
-        state.held() == purge::background::state_lock(),
+        state.wf(),
 ;
 
 /// The signal half of the fork hold: `sig` (the calling thread's mask)
@@ -2400,7 +2414,7 @@ fn save_sigmask(
     mask: u64,
     Ghost(s): Ghost<Shared>,
     Tracked(held): Tracked<&mut ForkHeld>,
-    Tracked(state): Tracked<&LockHeld>,
+    Tracked(state): Tracked<&StateHold>,
 )
     requires
         fork_holds(s, *old(held), *state),
@@ -2430,7 +2444,7 @@ fn saved_sigmask(
     w: &AtomicU64,
     Ghost(s): Ghost<Shared>,
     Tracked(held): Tracked<&ForkHeld>,
-    Tracked(state): Tracked<&LockHeld>,
+    Tracked(state): Tracked<&StateHold>,
 ) -> (r: u64)
     requires
         fork_holds(s, *held, *state),
@@ -2447,7 +2461,7 @@ fn saved_sigmask(
 /// signals through again.
 ///
 /// Fork safety, second half: it starts from the hold `fork_prepare`
-/// ended with ([`fork_holds`]; `state` is the state lock's token) and
+/// ended with ([`fork_holds`]; `state` is the state lock's hold) and
 /// releases each listed lock once, by handing its token back to
 /// `RawLock::unlock_held`; it ends holding none (asserted at the end).
 ///
@@ -2455,11 +2469,11 @@ fn saved_sigmask(
 /// starts from [`fork_sig_holds`], reads the slot under every lock, keeps
 /// every blockable signal blocked through its last unlock, and ends with
 /// the thread's mask the slot's content (asserted at the end).
-fn fork_release(Tracked(state): Tracked<LockHeld>)
+fn fork_release(Tracked(state): Tracked<StateHold>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        state.held() == purge::background::state_lock(),
+        state.wf(),
 {
     // The window ends before the first release, which must then unlock
     // (`lock::window_closed`, which every token release requires).
@@ -2762,9 +2776,9 @@ mod resume {
     use super::fork_holds;
     use super::{ForkHeld, fork_slot};
     use crate::heap::Shared;
-    use crate::lock::LockHeld;
+    use crate::purge::background::StateHold;
     #[cfg(verus_keep_ghost)]
-    use crate::{purge, sys::effective, vspec::word::word_addr};
+    use crate::{sys::effective, vspec::word::word_addr};
     use core::sync::atomic::AtomicU64;
     #[cfg(verus_keep_ghost)]
     use vstd::prelude::*;
@@ -2788,21 +2802,22 @@ mod resume {
     /// the hold, through which `saved_sigmask` reads (no other permission
     /// to the slot exists). `save_sigmask`'s store is unchecked, so that
     /// the word holds the `saved` the prepare's hold recorded is part of
-    /// this premise too. `state` must be the state lock's token: a fact
-    /// about a token the caller already has is a requirement, never a
-    /// conclusion (ensured, a token of any other lock would prove
-    /// `false`). The hold also has the permission of the creation lock's
-    /// cell that `fork_prepare` took (`Arenas::lock_held`, through
-    /// [`ForkHeld::wf`]): restated, as the tokens are, and still the only
-    /// one, since the prepare's hold kept it and no one wrote the value.
+    /// this premise too. `state` must be the state lock's hold
+    /// ([`StateHold::wf`]): a fact about a hold the caller already has is a
+    /// requirement, never a conclusion (ensured, a hold of any other lock
+    /// would prove `false`). The hold also has the permission of the
+    /// creation lock's cell that `fork_prepare` took (`Arenas::lock_held`,
+    /// through [`ForkHeld::wf`]): restated, as the tokens are, and still
+    /// the only one, since the prepare's hold kept it and no one wrote the
+    /// value.
     /// That permission is exclusive (vstd's `PointsTo::is_exclusive`), so a
     /// second call would prove `false`, not just restate a token: the one
     /// caller is [`resumed`], called once per handler (the test
     /// `fork_hold_is_resumed_once` checks there is one call site).
-    axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &LockHeld) -> (tracked held: ForkHeld)
+    axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &StateHold) -> (tracked held: ForkHeld)
         requires
             *s == Shared::built_at(Shared::storage()),
-            state.held() == purge::background::state_lock(),
+            state.wf(),
         ensures
             fork_holds(*s, held, *state),
             held.has_slot(),
@@ -2817,10 +2832,10 @@ mod resume {
     // `s` is only named by the specification and the ghost call.
     #[allow(unused_variables)]
     #[inline(always)]
-    pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&LockHeld>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>))
+    pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&StateHold>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>))
         requires
             *s == Shared::built_at(Shared::storage()),
-            state.held() == purge::background::state_lock(),
+            state.wf(),
         ensures
             fork_holds(*s, r.1@, *state),
             r.1@.has_slot(),
@@ -3253,7 +3268,7 @@ mod tests {
     /// The functions so checked are exactly the holders the list names. Nor
     /// does the owner hand out a reference to such a lock: no `self.field`
     /// of one is borrowed, nor a static of one outside its accessor, whose
-    /// result is used at once (`.lock(`, `.raw()`, ..). Not seen: an
+    /// result is used at once (`.lock(`, `.value_held_mut(`, ..). Not seen: an
     /// acquisition through a reference taken elsewhere, a path-qualified
     /// or raw borrow (`&self::NAME`, `&raw const NAME`), a path-qualified
     /// accessor call (`self::state().lock(`), a static used directly
@@ -3542,8 +3557,9 @@ mod tests {
                 ".lock(",
                 ".try_lock(",
                 ".lock_t(",
-                ".raw()",
-                ".get_unlocked(",
+                ".lock_held_perm(",
+                ".unlock_held_perm(",
+                ".value_held_mut(",
             ];
             for line in &lines {
                 let l = line.split("//").next().unwrap();
@@ -3964,7 +3980,7 @@ mod tests {
         assert_eq!(calls(&axiom), 1, "calls of the resume axiom");
         assert_eq!(calls(&resumed), 1, "calls of resume::resumed");
         assert_eq!(calls(&release), 2, "calls of fork_release");
-        // The other once-per-handler premises: the state lock's token, in
+        // The other once-per-handler premises: the state lock's hold, in
         // the parent and the child handler, and the mask's, in the release;
         // the prepare's lock-order root and the thread's mask, in the
         // prepare.
@@ -3972,7 +3988,7 @@ mod tests {
         let sig = std::format!("{}{}(", "axiom_fork_resumed_", "sig");
         let entry = std::format!("{}{}(", "axiom_fork_", "entry");
         let mask = std::format!("{}{}(", "axiom_thread_", "mask");
-        assert_eq!(calls(&state), 2, "calls of the state token's premise");
+        assert_eq!(calls(&state), 2, "calls of the state hold's premise");
         assert_eq!(calls(&sig), 1, "calls of the mask token's premise");
         let lock = include_str!("../lock.rs");
         let sys = include_str!("../sys/mod.rs");
@@ -4481,10 +4497,11 @@ mod tests {
     /// holder matches a row by file, function and receiver name, not by
     /// the lock's type, so a row filed under the wrong lock is not caught
     /// when the field names agree. Raw
-    /// access, which skips the value, is only the fork handlers':
-    /// `lock_held` and `unlock_held` in `fork_prepare`, `fork_release` and
-    /// the arena and background-thread helpers they call, and
-    /// `get_unlocked` once, in the background thread's `fork_child`
+    /// access, which skips the guard, is only the fork handlers':
+    /// `lock_held` and `unlock_held` (and their `_perm` forms) in
+    /// `fork_prepare`, `fork_release` and the arena and background-thread
+    /// helpers they call, and a write through a hold's permission,
+    /// `value_held_mut`, once, in the background thread's `fork_child`
     /// (`RawLock::lock` is not scanned). `lock.rs`, which defines the calls,
     /// is skipped, as are test files and modules.
     #[test]
@@ -4638,7 +4655,7 @@ mod tests {
             concat!(".lock_", "t()"),
         ];
         let raw = [concat!(".lock_", "held"), concat!(".unlock_", "held")];
-        let unlocked = concat!(".get_", "unlocked(");
+        let writes = concat!(".value_", "held_mut(");
         // The field, static or accessor call (`state()`) a call is made on.
         let receiver = |before: &str| {
             let (stem, call) = match before.strip_suffix("()") {
@@ -4652,7 +4669,7 @@ mod tests {
         };
         let mut holders = Vec::new();
         let mut raws = Vec::new();
-        let mut gets = Vec::new();
+        let mut sets = Vec::new();
         for (rel, text) in crate::testutil::shipped_sources() {
             if rel == "lock.rs" {
                 continue;
@@ -4683,8 +4700,8 @@ mod tests {
                 if raw.iter().any(|r| t.contains(r)) {
                     raws.push((rel.clone(), sig.clone(), at.clone()));
                 }
-                if t.contains(unlocked) {
-                    gets.push((rel.clone(), sig.clone(), at.clone()));
+                if t.contains(writes) {
+                    sets.push((rel.clone(), sig.clone(), at.clone()));
                 }
                 if !t.is_empty() {
                     prev = t.to_string();
@@ -4737,10 +4754,10 @@ mod tests {
             );
         }
         assert!(
-            gets.len() == 1
-                && gets[0].0 == "purge/background.rs"
-                && gets[0].1.starts_with("pub fn fork_child("),
-            "get_unlocked is called once, in the background thread's fork_child: {gets:?}"
+            sets.len() == 1
+                && sets[0].0 == "purge/background.rs"
+                && sets[0].1.starts_with("pub fn fork_child("),
+            "value_held_mut is called once, in the background thread's fork_child: {sets:?}"
         );
     }
 
@@ -4888,6 +4905,10 @@ mod tests {
         // The child checks with atomics and the state lock only and
         // answers through its exit status.
         assert!(purge::background::thread().is_some(), "no thread record");
+        // The child keeps the stack reservation, for its own thread to
+        // reuse: a fresh one per fork generation would leak.
+        let stack = purge::background::stack();
+        assert!(stack != 0, "no stack reservation");
         // SAFETY: the test binary is multithreaded; the child uses only atomics
         // and challoc's state lock, which its fork handlers keep consistent,
         // and leaves through `_exit`.
@@ -4899,6 +4920,7 @@ mod tests {
                 purge::background::requested(),
                 purge::background::is_locked(),
                 purge::background::thread().is_some(),
+                purge::background::stack() != stack,
             ];
             let code = bad
                 .iter()
@@ -4917,7 +4939,7 @@ mod tests {
         assert_eq!(
             ::libc::WEXITSTATUS(status),
             0,
-            "fork child still sees (bit 0) present, (1) requested, (2) the state lock held, (3) a thread record"
+            "fork child still sees (bit 0) present, (1) requested, (2) the state lock held, (3) a thread record, or (4) a stack other than the parent's"
         );
         assert!(
             purge::background::present() && purge::background::requested(),

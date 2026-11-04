@@ -154,7 +154,8 @@ impl RawLock {
     /// [`RawLock::unlock_held`], which takes the hold's token back, or a
     /// guard's drop. A public release without a token would let a caller
     /// release and re-take the lock, holding two [`LockHeld`] tokens for
-    /// one lock and so two [`Lock::get_unlocked`] references.
+    /// one lock and, through [`Lock::lock_held_perm`], two permissions of
+    /// its cell.
     #[inline]
     fn release(&self)
         requires
@@ -632,12 +633,13 @@ fn wake(state: &AtomicU32)
 /// [`PointsTo`] permission (ghost). The raw lock's invariant holds that
 /// permission while the lock is free: [`Lock::new`] hands it over, an
 /// acquisition takes it out ([`axiom_acquired`]) and the guard's drop,
-/// the release, puts it back; a holder of the raw lock with no guard
-/// borrows it for as long as it borrows its token ([`axiom_held`]).
-/// That a free lock's invariant owns the permission, and that the futex
-/// mutex hands it to one holder at a time, is the mutex's contract,
-/// which Verus does not check (the atomics return any value); the two
-/// axioms state it. A `PCell` is a `ManuallyDrop<UnsafeCell<T>>`: the
+/// the release, puts it back; a holder with no guard
+/// ([`Lock::lock_held_perm`]) keeps it until it hands it back with its
+/// token ([`Lock::unlock_held_perm`]). That a free lock's invariant owns
+/// the permission, and that the futex mutex hands it to one holder at a
+/// time, is the mutex's contract, which Verus does not check (the atomics
+/// return any value); [`axiom_acquired`] states it. A `PCell` is a
+/// `ManuallyDrop<UnsafeCell<T>>`: the
 /// layout and the code of the `UnsafeCell` it replaces, except that
 /// dropping a `Lock` does not drop the value (no lock is dropped outside
 /// the tests).
@@ -692,8 +694,7 @@ pub trait LockSpec: Sized {
 /// permission again. The owner of each locked type states what it means
 /// for that type ([`LockSpec`]), and, where an axiom states it, lists its
 /// unverified holders and the verified ones that rest on a premise. The
-/// assumption enters at [`axiom_acquired`], and at [`axiom_held`] for a
-/// holder of the raw lock.
+/// assumption enters at [`axiom_acquired`].
 pub open spec fn lock_inv<T: LockSpec>(v: T) -> bool {
     <T as LockSpec>::lock_spec_inv(v)
 }
@@ -721,10 +722,9 @@ pub open spec fn lock_frame<T: LockSpec>(init: T, v: T) -> bool {
 /// axiom, stated as for [`assumed_inv`].
 pub uninterp spec fn assumed_frame<T>(init: T, v: T) -> bool;
 
-/// The lock invariant's assumption where it enters for a guard (the other
-/// entry is [`axiom_held`], for a holder of the raw lock): a thread that
-/// has just acquired the raw lock of `l` takes the permission of `l`'s
-/// cell out of the raw lock's invariant, and the value in the cell
+/// The lock invariant's assumption where it enters, at an acquisition: a
+/// thread that has just acquired the raw lock of `l` takes the permission
+/// of `l`'s cell out of the raw lock's invariant, and the value in the cell
 /// satisfies [`lock_inv`] (every earlier holder restored it) and keeps
 /// [`lock_frame`] of the value the lock was created with. Private, and
 /// used only right after an acquire: by [`Lock::lock`] and
@@ -736,36 +736,17 @@ pub uninterp spec fn assumed_frame<T>(init: T, v: T) -> bool;
 /// one cell, and nothing but that discipline stops such a call. In the
 /// fork window ([`fork_holder_is_me`]) an acquire the window serves is
 /// also followed by this call, for a cell whose permission the fork
-/// handlers' hold (`api::ForkHeld`) already has: the second permission
-/// stands for that hold, used by the one thread that runs allocator code
-/// there until the release, on the window's premise that the hold's data
-/// is as the last holder left it. Every lock the window serves is one the
-/// prepare handler took: no arena (and so no lock) is built there
-/// (`Arenas::create`, `Arenas::materialise`).
+/// handlers' hold already has (`api::ForkHeld` for the arena creation
+/// lock's, `purge::background::StateHold` for the state lock's): the
+/// second permission stands for that hold, used by the one thread that
+/// runs allocator code there until the release, on the window's premise
+/// that the hold's data is as the last holder left it. Every lock the
+/// window serves is one the prepare handler took: no arena (and so no
+/// lock) is built there (`Arenas::create`, `Arenas::materialise`).
 ///
 /// Checked by `lock::tests::permission_axioms_are_called_only_at_acquisitions`.
 axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
     ensures
-        p.id() == l.value.id(),
-        lock_inv(*p.value()),
-        lock_frame(lock_init(l), *p.value()),
-;
-
-/// The lock invariant's assumption where it enters for a holder of the
-/// raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token
-/// lends the permission of `l`'s cell for as long as the token stays
-/// borrowed, and the value satisfies [`lock_inv`] and keeps
-/// [`lock_frame`], as at [`axiom_acquired`]. Private, and used only by
-/// `get_unlocked`, which hands out the value, never the permission: a
-/// permission moved out of the borrow (`tracked_swap`) would outlive it,
-/// and the next call would give a second one to the same cell.
-///
-/// Checked by `lock::tests::permission_axioms_are_called_only_at_acquisitions`.
-axiom fn axiom_held<'a, T: LockSpec>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (tracked p: &'a mut PointsTo<T>)
-    requires
-        old(held).held() == l.raw,
-    ensures
-        *final(held) == *old(held),
         p.id() == l.value.id(),
         lock_inv(*p.value()),
         lock_frame(lock_init(l), *p.value()),
@@ -920,56 +901,25 @@ impl<T> Lock<T> {
         self.raw
     }
 
-    /// Access the value without locking.
-    ///
-    /// # Safety
-    /// The caller must hold the raw lock, taken through [`Lock::raw`],
-    /// with no guard alive, so no other thread can touch the value. In a
-    /// fork child that holds when the forking thread took the raw lock in
-    /// the prepare handler; a fork child alone is not enough, since the
-    /// parent's holder may have been mid-update.
-    ///
-    /// The value is the cell's, read through the permission the hold's
-    /// token lends ([`axiom_held`]): as at [`axiom_acquired`] for
-    /// [`Lock::lock`], the value is one a holder left, so it satisfies
-    /// [`lock_inv`] and keeps [`lock_frame`]. The caller is a holder like
-    /// any other and must leave the invariant true; a verified caller ends
-    /// with an explicit `assert(lock_inv(*r))`. The caller shows its hold
-    /// with the raw lock's [`LockHeld`] token (ghost), borrowed mutably for
-    /// as long as the reference lives: two references to the value at once
-    /// would be two values to Verus, each with the invariant's ghost state.
-    #[inline]
-    // Exclusivity is the caller's promise (`# Safety`).
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_unlocked<'a>(&'a self, Tracked(held): Tracked<&'a mut LockHeld>) -> (r: &'a mut T)
-        where T: LockSpec
-        requires
-            old(held).held() == self.spec_raw(),
-        ensures
-            *final(held) == *old(held),
-            lock_inv(*r),
-            lock_frame(lock_init(*self), *r),
-    {
-        let tracked perm = axiom_held(*self, held);
-        self.value.borrow_mut(Tracked(perm))
-    }
-
     /// [`RawLock::lock_held`] for a holder that also keeps the value:
     /// acquire, and return the hold's token with the permission of the
     /// cell, taken out of the free lock's invariant as [`Lock::lock`]
     /// takes it for its guard ([`axiom_acquired`]). The holder reads the
-    /// value through it ([`Lock::value_held`]), and nothing can write the
-    /// value while it keeps it: the fork handlers keep the creation
-    /// lock's (`arena::Created`) from `fork_prepare` to the release, which
-    /// hands the permission back with the token ([`Lock::unlock_held_perm`]).
-    /// The caller must not take a guard of this lock (or call
-    /// [`Lock::get_unlocked`]) while it keeps the permission, nor release
-    /// the lock through `RawLock::unlock_held` instead: either would leave
-    /// a second permission to the cell possible (the lock order already
-    /// refuses a guard's scope here, `ord` must be a root). Crate-private,
-    /// for the arena registry's creation lock (`Arenas::lock_held`).
-    /// Taking the lock of [`rank_state`] gives [`fork_prepared`] of `ord`,
-    /// as [`RawLock::lock_held`] does.
+    /// value through it ([`Lock::value_held`]) and writes it through it
+    /// ([`Lock::value_held_mut`]), and nothing else can touch the value while it
+    /// keeps it: the fork handlers keep the creation lock's
+    /// (`arena::Created`) and the background state lock's
+    /// (`purge::background::StateHold`) from `fork_prepare` to the release,
+    /// which hands the permission back with the token
+    /// ([`Lock::unlock_held_perm`]). The caller must not take a guard of
+    /// this lock while it keeps the permission, nor release the lock
+    /// through `RawLock::unlock_held` instead: either would leave a second
+    /// permission to the cell possible (the lock order already refuses a
+    /// guard's scope here, `ord` must be a root). Crate-private, for the
+    /// arena registry's creation lock (`Arenas::lock_held`) and the state
+    /// lock (`purge::background::fork_lock`). Taking the lock of
+    /// [`rank_state`] gives [`fork_prepared`] of `ord`, as
+    /// [`RawLock::lock_held`] does.
     ///
     /// Lock order: as [`RawLock::lock_held`].
     #[inline(always)]
@@ -1005,6 +955,22 @@ impl<T> Lock<T> {
             *r == *perm@.value(),
     {
         self.value.borrow(perm)
+    }
+
+    /// The value, borrowed for writing through the permission `perm` of
+    /// the cell, which a holder keeps ([`Lock::lock_held_perm`]): the write
+    /// counterpart of [`Lock::value_held`]. The permission's final value is
+    /// the reference's, as [`LockGuard`]'s `deref_mut` gives a guard's.
+    #[inline(always)]
+    pub(crate) fn value_held_mut<'a>(&'a self, Tracked(perm): Tracked<&'a mut PointsTo<T>>) -> (r: &'a mut T)
+        requires
+            self.has_perm(*old(perm)),
+        ensures
+            *r == *old(perm).value(),
+            *final(r) == *final(perm).value(),
+            self.has_perm(*final(perm)),
+    {
+        self.value.borrow_mut(Tracked(perm))
     }
 
     /// `p` is the permission of this lock's cell.
@@ -1218,11 +1184,11 @@ mod tests {
     /// of the module whose file names it. Not seen: an `assumed_*` call
     /// spelled with a space before `(`, a `use .. as` rename, a trusted
     /// fact outside an `axiom fn` (an `external_body` proof, an `assume`),
-    /// and a type named only inside `ensures`. `lock.rs`, whose axioms
-    /// (`axiom_acquired`, `axiom_held`) are generic over `T`, is not
-    /// scanned. What the scan reads each impl to define is what `DEFINED`
-    /// lists, so a lock whose axioms were retired is one the scan sees,
-    /// and a leftover axiom on it fails here.
+    /// and a type named only inside `ensures`. `lock.rs`, whose axiom
+    /// `axiom_acquired` is generic over `T`, is not scanned. What the scan
+    /// reads each impl to define is what `DEFINED` lists, so a lock whose
+    /// axioms were retired is one the scan sees, and a leftover axiom on it
+    /// fails here.
     #[test]
     fn lock_axioms_state_assumed_specs() {
         use std::string::String;
@@ -1376,22 +1342,21 @@ mod tests {
         }
     }
 
-    /// `axiom_acquired` and `axiom_held` mint a permission of a lock's
-    /// cell, and two alive at once would prove `false` (vstd's
-    /// `PointsTo::is_exclusive`): the first is called only where
-    /// `Lock::lock` and `Lock::try_lock` build their guard, the second
-    /// only in `Lock::get_unlocked`. Both are private to this file.
+    /// `axiom_acquired` mints a permission of a lock's cell, and two alive
+    /// at once would prove `false` (vstd's `PointsTo::is_exclusive`): it is
+    /// called only where `Lock::lock` and `Lock::try_lock` build their
+    /// guard and where `Lock::lock_held_perm` hands the permission to its
+    /// holder, each right after an acquire. It is private to this file.
     #[test]
     fn permission_axioms_are_called_only_at_acquisitions() {
         // Spelled in parts, so that this test's own lines match nothing.
         // A call is the name then `(` or a turbofish `::`.
         let acquired = std::format!("{}{}", "axiom_", "acquired");
-        let held = std::format!("{}{}", "axiom_", "held");
         let calls = |t: &str, name: &str| {
             t.contains(std::format!("{name}(").as_str())
                 || t.contains(std::format!("{name}::").as_str())
         };
-        let (mut a, mut h) = (Vec::new(), Vec::new());
+        let mut a = Vec::new();
         let mut func = "";
         for line in include_str!("lock.rs").lines() {
             let t = line.trim();
@@ -1404,12 +1369,8 @@ mod tests {
             if calls(t, &acquired) && !t.starts_with("axiom fn") {
                 a.push(func);
             }
-            if calls(t, &held) && !t.starts_with("axiom fn") {
-                h.push(func);
-            }
         }
         assert_eq!(a, ["lock", "try_lock", "lock_held_perm"]);
-        assert_eq!(h, ["get_unlocked"]);
     }
 
     /// `axiom_entry` asserts that no allocator lock is held where it is
