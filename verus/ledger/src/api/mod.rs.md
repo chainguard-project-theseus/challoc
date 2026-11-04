@@ -439,7 +439,7 @@ fn fork_gate_enter()
 
 ## `axiom_fork_resumed_state`
 
-src/api/mod.rs:2062. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2063. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between (the handlers call this only when `FORK_LOCKED` says this fork's prepare took the locks: glibc serialises one fork's handlers under its atfork lock and runs them on the forking thread, so a `true` read there is this fork's; a stale `true` would mint a hold that does not exist): signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) release none: an allocation of theirs takes the held locks as acquired and its releases do nothing (`lock::fork_holder_is_me`, whose premise is that the forking thread has no allocator critical section open in the window).
@@ -455,7 +455,7 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: StateHold)
 
 ## `axiom_fork_resumed_sig`
 
-src/api/mod.rs:2090. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2091. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -471,7 +471,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ## `axiom_line_orphaned`
 
-src/api/mod.rs:2758. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:2768. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, `LINE_STATE`'s permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
@@ -492,7 +492,7 @@ axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm, tracked 
 
 ## `axiom_fork_resumed`
 
-src/api/mod.rs:2817. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2827. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address; passed any other word, it would mint a second permission to it, which is why it is private to this module.

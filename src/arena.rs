@@ -3163,16 +3163,27 @@ impl Arenas {
     /// is sound because of its requirement: `cp` is the cell's
     /// permission, which [`Arenas::lock_held`] hands out with the creation
     /// lock held and [`Arenas::unlock_held`] takes back as it releases
-    /// the lock. While the caller keeps `cp` the lock stays held, so no
-    /// lock guard, and no `&mut` into the cell (`Arenas::create`,
-    /// `Arenas::materialise`), exists. The proof does not check two parts
-    /// of that: that the holder takes no guard of the creation lock and
-    /// releases it no other way (`Arenas::raw_lock` is test-only), and
-    /// that unverified code makes no `cp` with `Tracked::assume_new`. So
-    /// this stays crate-private.
+    /// the lock (for the release, `api::resume::axiom_fork_resumed`
+    /// restates it). The caller also lends the lock's token, `t`, which
+    /// [`Arenas::lock_held`] hands out with `cp` (restated the same way)
+    /// and which only a release consumes, so every use of the `&Created`
+    /// is checked to hold the creation lock's token. No lock guard, and
+    /// no `&mut` into the cell (`Arenas::create`, `Arenas::materialise`),
+    /// exists then. The proof does not check that the holder takes no
+    /// guard of the creation lock while it holds the token (that rests on
+    /// `lock::axiom_entry`'s premise), nor that unverified code makes no
+    /// `cp` or `t` with `Tracked::assume_new`. So this stays crate-private.
+    // `t` is only named by the specification.
+    #[allow(unused_variables)]
     #[inline(always)]
-    pub(crate) fn get_frozen<'a>(&'a self, index: u16, cp: Tracked<&CreatedPerm>) -> (r: Option<&'a Arena>)
+    pub(crate) fn get_frozen<'a>(
+        &'a self,
+        index: u16,
+        t: Tracked<&LockHeld>,
+        cp: Tracked<&CreatedPerm>,
+    ) -> (r: Option<&'a Arena>)
         requires
+            t@.held() == self.spec_raw_lock(),
             self.frozen(*cp@),
         ensures
             r is Some <==> cp@.value().snap().1.contains_key(index as int),
@@ -3208,12 +3219,16 @@ impl Arenas {
     }
 
     /// [`Arenas::count`] for a holder of the creation lock that keeps the
-    /// permission of its cell, `cp`, as in [`Arenas::get_frozen`]: the
-    /// count in the lock value's half of the snapshot. It forms the same
-    /// `&Created`, sound for the same reasons.
+    /// permission of its cell, `cp`, and lends the lock's token, `t`, as
+    /// in [`Arenas::get_frozen`]: the count in the lock value's half of
+    /// the snapshot. It forms the same `&Created`, sound for the same
+    /// reasons.
+    // `t` is only named by the specification.
+    #[allow(unused_variables)]
     #[inline(always)]
-    pub(crate) fn count_frozen(&self, cp: Tracked<&CreatedPerm>) -> (r: u32)
+    pub(crate) fn count_frozen(&self, t: Tracked<&LockHeld>, cp: Tracked<&CreatedPerm>) -> (r: u32)
         requires
+            t@.held() == self.spec_raw_lock(),
             self.frozen(*cp@),
         ensures
             r == cp@.value().snap().0,

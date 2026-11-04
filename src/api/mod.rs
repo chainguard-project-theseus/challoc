@@ -1865,10 +1865,11 @@ pub open spec fn lock_at(s: Shared, arenas: Map<int, Arena>, k: ForkLock) -> Raw
 /// It also keeps the permission of the creation lock's cell (`created`,
 /// from `Arenas::lock_held`), whose value's half of the registry's
 /// snapshot is `n` and `arenas` ([`ForkHeld::wf`]), so the count and the
-/// table cannot change while it is kept ([`arena_held`], [`count_held`]).
-/// Built, by convention, only by `fork_prepare` as it takes the locks
-/// and by [`resume::axiom_fork_resumed`] for the release: the fields are
-/// private to `api` (its submodules can see them too).
+/// table cannot change while it is kept ([`arena_held`], [`count_held`],
+/// which lend the creation lock's token with it). Built, by convention,
+/// only by `fork_prepare` as it takes the locks and by
+/// [`resume::axiom_fork_resumed`] for the release: the fields are private
+/// to `api` (its submodules can see them too).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct ForkHeld {
@@ -2099,9 +2100,9 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 /// ([`ForkHeld::wf`]); `Arenas::create` and `Arenas::build` change the
 /// count and the table only with that half, so a read now returns what
 /// that read did (`Arenas::get_frozen`). The hold must also have the
-/// creation lock's token (required), so a scan runs only while the lock
-/// is held, before the release hands the token and the cell permission
-/// back together (`Arenas::unlock_held`).
+/// creation lock's token (required), which it lends to `get_frozen`, so
+/// a scan runs only while the lock is held, before the release hands the
+/// token and the cell permission back together (`Arenas::unlock_held`).
 #[inline(always)]
 fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) -> (r: Option<&'a Arena>)
     requires
@@ -2115,8 +2116,9 @@ fn arena_held<'a>(s: &'a Shared, i: usize, Tracked(held): Tracked<&ForkHeld>) ->
 {
     proof {
         s.arenas.lemma_frozen(held.created);
+        s.lemma_arenas_lock();
     }
-    s.arenas.get_frozen(i as u16, Tracked(&held.created))
+    s.arenas.get_frozen(i as u16, Tracked(held.toks.tracked_borrow(ForkLock::Arenas)), Tracked(&held.created))
 }
 
 /// `s.arenas.count()` while `held` holds the creation lock: the count
@@ -2130,7 +2132,10 @@ fn count_held(s: &Shared, Tracked(held): Tracked<&ForkHeld>) -> (r: u32)
     ensures
         r as int == held.n(),
 {
-    s.arenas.count_frozen(Tracked(&held.created))
+    proof {
+        s.lemma_arenas_lock();
+    }
+    s.arenas.count_frozen(Tracked(held.toks.tracked_borrow(ForkLock::Arenas)), Tracked(&held.created))
 }
 
 /// Block signals, then take every allocator lock so the child inherits a
@@ -2223,7 +2228,7 @@ extern "C" fn fork_prepare() {
     // makes, through `Arenas::get_frozen` (`get_existing` with the
     // creation lock's half; Verus does not specify the iterator), and
     // `a.classes[c]` as `Arena::class`, as in `fork_release`.
-    let n = s.arenas.count_frozen(Tracked(&cp)) as usize;
+    let n = s.arenas.count_frozen(Tracked(toks.tracked_borrow(ForkLock::Arenas)), Tracked(&cp)) as usize;
     for i in 0..n
         invariant
             crate::sys::may_syscall(),
@@ -2244,7 +2249,12 @@ extern "C" fn fork_prepare() {
             ord.root(),
             ord.top() < rank_class(i as int, 0),
     {
-        if let Some(a) = s.arenas.get_frozen(i as u16, Tracked(&cp)) {
+        proof {
+            s.lemma_arenas_lock();
+            assert(toks.contains_key(ForkLock::Arenas));
+            assert(toks[ForkLock::Arenas].held() == s.arenas.spec_raw_lock());
+        }
+        if let Some(a) = s.arenas.get_frozen(i as u16, Tracked(toks.tracked_borrow(ForkLock::Arenas)), Tracked(&cp)) {
             let ghost before = arenas;
             proof {
                 arenas = arenas.insert(i as int, *a);
