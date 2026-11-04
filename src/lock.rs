@@ -672,7 +672,9 @@ pub trait LockSpec: Sized {
 /// Verified code that takes a lock relies on it: [`Lock::new`] requires it
 /// of the initial value, and [`Lock::lock`] hands the value out with it.
 /// A holder that ends with [`LockGuard::unlock`] is checked, since the
-/// unlock requires it. Nothing checks a guard that drops instead, so for
+/// unlock requires it, and so is a [`Lock::lock_held_perm`] holder, whose
+/// release ([`Lock::unlock_held_perm`]) requires it of the value it hands
+/// back. Nothing checks a guard that drops instead, so for
 /// those this is an assumption about the holder: a verified holder
 /// ends with the value satisfying it, through the postcondition of the
 /// last call that changes the value or an explicit `assert` before the
@@ -1003,7 +1005,10 @@ impl<T> Lock<T> {
     /// [`RawLock::unlock_held`] for a [`Lock::lock_held_perm`] holder:
     /// release, handing back the token and the permission of the cell,
     /// which the free lock's invariant holds again, once the fork window
-    /// has closed ([`window_closed`]).
+    /// has closed ([`window_closed`]). Like [`LockGuard::unlock`], it
+    /// requires the value it hands back to keep [`lock_inv`] and
+    /// [`lock_frame`], so the next acquisition's claim of them
+    /// ([`axiom_acquired`]) is checked here.
     #[inline(always)]
     pub(crate) fn unlock_held_perm(&self, Tracked(t): Tracked<LockHeld>, Tracked(perm): Tracked<PointsTo<T>>)
         where T: LockSpec
@@ -1011,6 +1016,8 @@ impl<T> Lock<T> {
             crate::sys::may_syscall(),
             t.held() == self.spec_raw(),
             self.has_perm(perm),
+            lock_inv(*perm.value()),
+            lock_frame(lock_init(*self), *perm.value()),
             window_closed(),
     {
         self.raw.release();

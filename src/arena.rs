@@ -3211,13 +3211,15 @@ impl Arenas {
     }
 
     /// `cp` is the permission of the creation lock's cell, whose value
-    /// keeps the lock's invariant and has the snapshot's half
+    /// keeps the lock's invariant and frame and has the snapshot's half
     /// ([`Created`]) of this registry: what [`Arenas::lock_held`] hands
-    /// the fork handlers.
+    /// the fork handlers, and what [`Arenas::unlock_held`]'s release
+    /// (`Lock::unlock_held_perm`) requires back.
     pub closed spec fn frozen(&self, cp: CreatedPerm) -> bool {
         &&& self.lock.has_perm(cp)
         &&& cp.value().ok()
         &&& cp.value().half@.id() == self.count_inv@.constant().snap
+        &&& lock_frame(lock_init(self.lock), *cp.value())
     }
 
     /// The snapshot of an [`Arenas::frozen`] permission: a count of at most
@@ -4009,16 +4011,16 @@ verus! {
 ///
 /// `Arenas::init`'s `Lock::new` builds the value (the automatic count,
 /// arena 0 alone; `Lock::new` requires the invariant), and both are
-/// checked at every guard's release: each holder outside the tests
+/// checked at every release: each holder outside the tests
 /// (`Arenas::assign`, which reads only atomics, `Arenas::create`, which
 /// publishes entry `n` and then stores `n + 1`, and
 /// `Arenas::materialise`, which publishes an automatic index below the
 /// count) ends with `LockGuard::unlock`, which requires both, on every
 /// path to a return (`api::tests::guards_end_in_unlock`). The fork
 /// handlers keep the cell's permission from `Arenas::lock_held` to
-/// `Arenas::unlock_held` without writing the value; that release
-/// requires the invariant (`Arenas::frozen`) but not the frame, which the
-/// unwritten value keeps from the acquisition. Nothing calls
+/// `Arenas::unlock_held` without writing the value; that release,
+/// `Lock::unlock_held_perm`, requires both too (`Arenas::frozen` carries
+/// them from the acquisition). Nothing calls
 /// `get_unlocked` on it. What is left is the mutex contract
 /// (`lock::axiom_acquired`).
 ///
