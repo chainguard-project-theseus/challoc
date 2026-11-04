@@ -13,8 +13,7 @@
 #
 # A Checks run is limited to 50 minutes, so no check here may take longer.
 #
-# Not covered by any check yet: a checked-release .so, Miri on the
-# pure-logic modules, valgrind.
+# Not covered by any check yet: a checked-release .so, valgrind.
 version: 1
 
 environment:
