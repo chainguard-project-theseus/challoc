@@ -461,7 +461,7 @@ impl ClassState {
             *final(ord) == *old(ord),
             r <= 0x200_0000_0000_0000,
     {
-        broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv, super::lemma_inv_counts};
+        broadcast use super::lemma_inv_counts;
         proof {
             use_type_invariant(self);
             super::lemma_slots_fit(super::table_at(self.table));
@@ -879,7 +879,7 @@ impl ClassState {
             final(left)@.extents == ISet::<int>::empty(),
             cutoff == u64::MAX ==> final(left)@.clean(),
     {
-        broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv, super::lemma_inv_counts};
+        broadcast use super::lemma_inv_counts;
         proof {
             use_type_invariant(self);
         }
@@ -1629,7 +1629,7 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
     {
-        broadcast use {super::axiom_class_lock, super::axiom_class_lock_inv, super::lemma_inv_counts};
+        broadcast use super::lemma_inv_counts;
         proof {
             use_type_invariant(self);
         }
