@@ -97,8 +97,11 @@ meaning a check outside Verus (a Kani harness, a const assertion, an
 Isla run or `make emptyasm`) covers its whole contract, as
 [SEAMS.md](SEAMS.md) ("Status") defines it, or "discharged on premises
 (Isla: ...; premises: ...)", meaning an Isla run covers it but for the
-platform premises (P and K labels) the status names. A function whose
-status is "trusted (partly checked, ...)" is shown in its own column and
+platform premises (P and K labels) the status names, or "discharged on
+premises (Kani: ...; premises: ...)", meaning a Kani harness covers it
+but for the C premises (C labels, [kani/premises.md](kani/premises.md))
+the status names. A function whose status is "trusted (partly checked,
+...)" is shown in its own column and
 not counted in the combined share, since part of its contract is still
 assumed. Discharged seams that are not functions
 (constants, types, `assume_specification`s) do not enter either share.

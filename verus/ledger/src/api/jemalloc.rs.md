@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `Hook` | ext_type_spec | function pointer | Kani | trusted |
-| `message_hook` | external_body | UnsafeCell/volatile/transmute | Kani | trusted |
+| `message_hook` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `call_hook` | external_body | function pointer | Kani | trusted |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
@@ -26,7 +26,7 @@ pub struct ExHook(Hook);
 ## `message_hook`
 
 src/api/jemalloc.rs:127. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: Kani. Status: trusted (partly checked, Kani: api::jemalloc::kani_hook::message_hook_picks_first_set; not checked: that the C program stores only null or a function in the two hook slots, and never while the volatile reads run, which is its contract).
+Tool: Kani. Status: discharged on premises (Kani: api::jemalloc::kani_hook::message_hook_picks_first_set; premises: C1 (the program stores only null or a hook function in the two slots, and never while the volatile reads run)).
 
 > The installed hook, if any: `malloc_message`, else `je_malloc_message`.
 
