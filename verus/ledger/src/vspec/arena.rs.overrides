@@ -1,5 +1,5 @@
 # A lock's invariant: its writers are `Arena::init` (`ArenaStats::empty`)
-# and `Arena::store_stats`; `stats::collect_into` is the unverified caller.
+# and `Arena::store_stats`, whose one caller, `stats::collect_into`, is verified.
 axiom_arena_stats_lock_inv	allocator invariant	none (assumption)
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 core::sync::atomic::Atomic::<*mut T>::load	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)

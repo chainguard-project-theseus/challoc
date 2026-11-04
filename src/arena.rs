@@ -1396,6 +1396,7 @@ impl Arena {
         }
         let g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         *out = *g;
+        g.unlock();
     }
 
     /// Add the statistics stored by the last `epoch` to `out`
@@ -1416,6 +1417,7 @@ impl Arena {
         }
         let g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         out.add(&*g);
+        g.unlock();
     }
 
     /// Store the statistics of an `epoch`.
@@ -1434,7 +1436,9 @@ impl Arena {
             // The value this holder leaves satisfies the lock's invariant.
             assert(crate::lock::lock_inv(*s));
         }
-        *self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare())) = *s;
+        let mut g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        *g = *s;
+        g.unlock();
     }
 
     /// The statistics lock, for the fork handlers (a leaf: no lock is
@@ -2118,7 +2122,9 @@ verus! {
 /// [`axiom_arenas_lock_frame`]).
 ///
 /// `Arenas::assign` holds the guard while it reads the per-arena counts
-/// (atomics); it neither reads nor writes the locked value.
+/// (atomics); it neither reads nor writes the locked value. Each of the
+/// three guard holders ends with `LockGuard::unlock`, which requires this and
+/// the frame, on every path to a return (`api::tests::guards_end_in_unlock`).
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
@@ -3304,7 +3310,7 @@ impl Arenas {
         proof {
             use_type_invariant(self);
         }
-        let _g = self.lock.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        let g = self.lock.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut best = 0usize;
         // (bound heaps, not yet built): the smallest wins.
         let mut best_key = (u32::MAX, true);
@@ -3338,6 +3344,7 @@ impl Arenas {
             }
         }
         let t = self.count_in(best);
+        g.unlock();
         (best as u16, t, Ghost(snap))
     }
 
@@ -3725,10 +3732,9 @@ impl Arenas {
         });
         if !p.is_null() {
             // SAFETY: as in `get`.
-            return Some((
-                unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) },
-                Tracked(pw.tracked_unwrap()),
-            ));
+            let a = unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) };
+            g.unlock();
+            return Some((a, Tracked(pw.tracked_unwrap())));
         }
         let r = self.build(shared, index, Tracked(c.half.borrow_mut()), Tracked(&mut under));
         proof {
@@ -3740,6 +3746,7 @@ impl Arenas {
             // And its frame: `build` kept the half's location.
             assert(lock_frame(lock_init(self.lock), *c));
         }
+        g.unlock();
         r
     }
 
@@ -3971,6 +3978,7 @@ impl Arenas {
         let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));
         let index = g.n;
         if index as usize >= MAX_ARENAS {
+            g.unlock();
             return None;
         }
         // The lock's value, with its half of the snapshot ([`Created`]):
@@ -3989,10 +3997,14 @@ impl Arenas {
             let unbuilt = self.unbuilt_auto();
             let keep = if unbuilt < AUTO_HEADROOM { unbuilt } else { AUTO_HEADROOM };
             if free / cost <= keep as usize {
+                g.unlock();
                 return None;
             }
         }
-        self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under))?;
+        if self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under)).is_none() {
+            g.unlock();
+            return None;
+        }
         c.n = index + 1;
         // Inside the count's invariant ([`NarenasPred`]): `index + 1` is at
         // most `MAX_ARENAS`, and the snapshot's count moves with it.
@@ -4022,6 +4034,7 @@ impl Arenas {
         proof {
             *fx = Ghost(Change::Created);
         }
+        g.unlock();
         Some(index as u16)
     }
 }
