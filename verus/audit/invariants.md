@@ -6,13 +6,16 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 28 of those seams that are still seams in the
+*This file lists the 27 of those seams that are still seams in the
 ledger. The others are verified or no longer exist, so their rows are
 left out: among them `axiom_raw_valid`, gone; `axiom_process_shared`,
-which `lemma_process_shared` (`heap/shared.rs`) now proves from the
-opaque definitions of `process_regions` and `pac_mode`; and
-`axiom_run_locs`, gone, its facts now following from the opaque
-definitions of `run_loc` and `page_loc` (`huge/mod.rs`). Seams
+which `lemma_process_shared` (`heap/shared.rs`) proves from the
+opaque definitions of `process_regions` and `pac_mode`;
+`axiom_run_locs`, gone, its facts following from the opaque
+definitions of `run_loc` and `page_loc` (`huge/mod.rs`); and
+`axiom_class_table_wf`, which `lemma_class_table_wf` (`vspec/class.rs`)
+proves from the opaque definition of `class_table`
+(`layout/mod.rs`). Seams
 of this scope that the audit did not cover, such as `axiom_slot_byte`
 (`heap/slotstate.rs`) and `axiom_ready` (`api/mod.rs`), are not
 listed. Each row names the seam by its item and its ledger file,
@@ -47,7 +50,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 28 seams listed: 9 sound, 12 sound (premise), 7 fixed.
+Totals for the 27 seams listed: 8 sound, 12 sound (premise), 7 fixed.
 
 ## Per seam
 
@@ -76,7 +79,6 @@ Totals for the 28 seams listed: 9 sound, 12 sound (premise), 7 fixed.
 | `axiom_state_lock_inv` | `purge/background.rs` | sound | The initial value meets it; `start` (both holds), `main`'s exit and `fork_child` assert it, including `exited ==> !present`. |
 | `axiom_user_va_limit` | `sys/pac.rs` | sound | Linux's default map window is at most 2^48 on both targets. |
 | `axiom_auth_sign` | `sys/pac.rs` | sound | True for every address below `user_va_limit()` and every modifier, and with the keys disabled. |
-| `axiom_class_table_wf` | `vspec/class.rs` | sound | Sizes and `wf` verified for every page geometry, both quanta. |
 | `axiom_ptr_add_addr` | `vspec/ptr.rs` | sound | True: `add` is `wrapping_add` where it is defined (see "Premises" for the harness's reach). |
 | `axiom_fresh_anon_zero` | `huge/mod.rs` | sound (premise) | Mints a `Zeroed` for any range; its call sites (`huge/mod.rs`) pass a run's freshly mapped pages. |
 | `axiom_discarded_zero` | `huge/mod.rs` | sound (premise) | As `axiom_fresh_anon_zero`, for pages just discarded with `MADV_DONTNEED`. |

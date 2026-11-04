@@ -456,7 +456,7 @@ proof fn lemma_slab_in_stride(c: int, s: int)
     let r = crate::layout::process_regions();
     let stride = (1usize << r.lg_stride) as int;
     let (lo, sz) = r.slab_span(c, s);
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     let lg = crate::layout::class_table()[c].lg_slab;
     vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
     vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
@@ -511,7 +511,7 @@ pub proof fn theorem_purge_well_formed(addr: int, len: int, b: int, c: int, s: i
         let c2 = choose|c2: int| 0 <= c2 < crate::layout::NCLASSES && #[trigger] class_byte(c2, b);
         let sz = (1usize << crate::layout::class_table()[c2].lg_slab) as int;
         let base = r.class_base[c2] as int;
-        crate::vspec::class::axiom_class_table_wf(c2);
+        crate::vspec::class::lemma_class_table_wf(c2);
         let lg = crate::layout::class_table()[c2].lg_slab;
         vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
         vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);

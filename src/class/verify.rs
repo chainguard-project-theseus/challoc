@@ -61,7 +61,7 @@ impl ClassState {
     {
         proof {
             use_type_invariant(self);
-            broadcast use crate::vspec::class::axiom_class_table_wf;
+            broadcast use crate::vspec::class::lemma_class_table_wf;
             assert(class_table()[self.spec_class() as int].wf());
         }
         let cls = self.class();
@@ -154,7 +154,7 @@ unsafe fn read_word(p: *mut u8, off: usize, Ghost(c): Ghost<int>, Tracked(m): Tr
 {
     proof {
         broadcast use {vstd::layout::layout_of_primitives, vstd::layout::group_align_properties, vstd::layout::align_nonzero};
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         process_regions().lemma_slot_in_region(c, p@.addr);
         // The word is inside the allocation, which `add` needs.
         m.lemma_valid_reads(p, off + 8);
@@ -199,7 +199,7 @@ proof fn lemma_slot_size(c: int)
         class_table()[c].size as int % 8 == 0,
         class_table()[c].size >= 8,
 {
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     crate::layout::lemma_class_size_quantum(c);
     assert(crate::QUANTUM as int % 8 == 0);
     crate::layout::lemma_aligned_down(class_table()[c].size as int, crate::QUANTUM as int, 8);

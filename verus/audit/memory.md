@@ -54,7 +54,7 @@ Totals for the 37 seams listed: 33 sound, 4 fixed.
 | `axiom_zero_entry` | `huge/table.rs` | discharged | sound | Consumes the uninitialised permission and a 16-byte zero token; all-zero bytes are an empty entry (null `desc`). |
 | `ClassTable` | `layout/mod.rs` | trusted | sound | Opaque type with one private constructor. |
 | `ClassTable::new` | `layout/mod.rs` | discharged | sound | No contract. |
-| `ClassTable::table` | `layout/mod.rs` | trusted (partly checked) | sound | One spec constant over memory that `adopt_page_geometry` rewrites once at init. No verified read of the geometry precedes the rewrite, and `wf` and the sizes hold before and after. The `wf` and size clauses repeat `axiom_class_table_wf`'s. |
+| `ClassTable::table` | `layout/mod.rs` | trusted (partly checked) | sound | One spec constant over memory that `adopt_page_geometry` rewrites once at init. No verified read of the geometry precedes the rewrite, and `wf` and the sizes hold before and after. |
 | `LockGuard::drop` | `lock.rs` | trusted (partly checked) | sound | No `ensures`. Its futex wake is a syscall under no `may_syscall`; no fast path drops a guard. |
 | `Explicit::drop` | `purge.rs` | discharged | sound | No `ensures`. |
 | `shared_arg` | `purge/background.rs` | trusted | sound | Ensures `wf` for any argument. True for its one caller: the thread `spawn` starts with the process's `Shared`, a C-program contract on `pthread_create`. |

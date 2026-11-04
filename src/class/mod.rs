@@ -3012,7 +3012,7 @@ impl ClassState {
         let tracked mut pm = pm;
         proof {
             use_type_invariant(self);
-            broadcast use crate::vspec::class::axiom_class_table_wf;
+            broadcast use crate::vspec::class::lemma_class_table_wf;
             assert(class_table()[self.spec_class() as int].wf());
             broadcast use vstd::slice::axiom_spec_len;
             assert(out@.len() == out.len());
@@ -4049,7 +4049,7 @@ impl ClassState {
     {
         proof {
             use_type_invariant(self);
-            broadcast use crate::vspec::class::axiom_class_table_wf;
+            broadcast use crate::vspec::class::lemma_class_table_wf;
             assert(class_table()[self.spec_class() as int].wf());
             // The slab is owned.
             assert(g.states@.contains_key(slab as nat));
@@ -4261,7 +4261,7 @@ impl ClassState {
         let ghost f = slab * s.sb;
         proof {
             use_type_invariant(self);
-            broadcast use crate::vspec::class::axiom_class_table_wf;
+            broadcast use crate::vspec::class::lemma_class_table_wf;
             assert(class_table()[self.spec_class() as int].wf());
             self.spec_table().lemma_slots_wf();
             self.spec_table().lemma_seen_view(bm, slab, *seen);
@@ -4673,7 +4673,7 @@ impl ClassState {
         let ghost sb = class_table()[self.spec_class() as int].slab_bits as usize;
         proof {
             use_type_invariant(self);
-            broadcast use crate::vspec::class::axiom_class_table_wf;
+            broadcast use crate::vspec::class::lemma_class_table_wf;
             assert(class_table()[self.spec_class() as int].wf());
         }
         let t = self.table();
@@ -5063,7 +5063,7 @@ impl ClassState {
         let tracked mut ltoks = _t.empty_tokens();
         proof {
             use_type_invariant(self);
-            broadcast use crate::vspec::class::axiom_class_table_wf;
+            broadcast use crate::vspec::class::lemma_class_table_wf;
             assert(class_table()[self.spec_class() as int].wf());
             _t.lemma_slots_wf();
             assert(local@.len() == MAX_SLAB_WORDS);

@@ -1689,7 +1689,7 @@ pub proof fn lemma_class_bytes_bound(n: Seq<int>, lo: int, hi: int, c: int)
         n[c] <= class_bytes(n, lo, hi),
     decreases hi - lo,
 {
-    broadcast use crate::vspec::class::axiom_class_table_wf;
+    broadcast use crate::vspec::class::lemma_class_table_wf;
 
     lemma_class_bytes_nonneg(n, lo, hi - 1);
     let z = class_table()[hi - 1].size as int;

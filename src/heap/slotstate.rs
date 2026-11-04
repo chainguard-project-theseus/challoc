@@ -293,6 +293,7 @@ pub(super) fn init(regions: &Regions)
         proof {
             // The array fits well inside the address space: at most
             // 2^38 slabs (the region) of at most 2^13 bits each.
+            crate::vspec::class::lemma_class_table_wf(c as int);
             assert(crate::layout::class_table()[c as int].wf());
             let (lr, ls) = (regions.lg_region, crate::layout::class_table()[c as int].lg_slab);
             let (lru, lsu) = (lr as usize, ls as usize);
@@ -576,6 +577,7 @@ fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8>
 {
     let cls = &CLASSES.table()[class];
     proof {
+        crate::vspec::class::lemma_class_table_wf(class as int);
         assert(cls.wf());
     }
     let class_base = shared.regions.class_base[class];

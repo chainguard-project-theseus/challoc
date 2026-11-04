@@ -240,7 +240,7 @@ impl Live {
             self.len() > 0,
     {
         if self.run is None {
-            crate::vspec::class::axiom_class_table_wf(self.class);
+            crate::vspec::class::lemma_class_table_wf(self.class);
         }
     }
 
@@ -1026,7 +1026,7 @@ impl Live {
     {
         process_regions().lemma_block_nonzero(self.class, self.addr, self.len(), 0);
         if self.run is None {
-            crate::vspec::class::axiom_class_table_wf(self.class);
+            crate::vspec::class::lemma_class_table_wf(self.class);
         }
     }
 
@@ -1106,7 +1106,7 @@ impl Live {
             let c = self.class;
             let stride = (1usize << r.lg_stride) as int;
             r.lemma_slot_in_region(c, self.addr);
-            crate::vspec::class::axiom_class_table_wf(c);
+            crate::vspec::class::lemma_class_table_wf(c);
             assert(r.superblock + c * stride <= r.class_base[c]);
             assert(r.class_base[c] + (1usize << r.lg_region) <= r.superblock + (c + 1) * stride);
             assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
@@ -1178,10 +1178,10 @@ proof fn lemma_slot_interior(c: int, a: usize, b: usize)
         !process_regions().is_huge_block(b, 1),
 {
     let r = process_regions();
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     assert forall|d: int| !#[trigger] r.is_slot(d, b) by {
         if r.is_slot(d, b) {
-            crate::vspec::class::axiom_class_table_wf(d);
+            crate::vspec::class::lemma_class_table_wf(d);
             if d == c {
                 lemma_slots_apart(c, a, b);
             } else {
@@ -1209,7 +1209,7 @@ proof fn lemma_run_interior(a: usize, len: int, b: usize)
     let r = process_regions();
     assert forall|d: int| !#[trigger] r.is_slot(d, b) by {
         if r.is_slot(d, b) {
-            crate::vspec::class::axiom_class_table_wf(d);
+            crate::vspec::class::lemma_class_table_wf(d);
             lemma_slot_run_apart(d, b, a, len);
         }
     }
@@ -1243,7 +1243,7 @@ proof fn lemma_slot_end(c: int, a: usize)
     let r = process_regions();
     r.lemma_block_nonzero(c, a, 0, 0);
     r.lemma_slot_in_region(c, a);
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     assert(r.class_base[c] + (1usize << r.lg_region) <= usize::MAX);
 }
 
@@ -1313,7 +1313,7 @@ proof fn lemma_slots_apart(c: int, a: usize, b: usize)
         disjoint(a as int, class_table()[c].size as int, b as int, class_table()[c].size as int),
 {
     let r = process_regions();
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     let cls = class_table()[c];
     let (sa, ia) = choose|slab: int, slot: int|
         0 <= slab < r.spec_nslabs(c) && 0 <= slot < cls.nslots && a as int == #[trigger] r.slot_at(c, slab, slot);
@@ -1422,7 +1422,7 @@ proof fn lemma_slot_run_apart(c: int, a: usize, b: usize, len: int)
     let r = process_regions();
     let stride = (1usize << r.lg_stride) as int;
     r.lemma_slot_in_region(c, a);
-    crate::vspec::class::axiom_class_table_wf(c);
+    crate::vspec::class::lemma_class_table_wf(c);
     assert(r.superblock + c * stride <= r.class_base[c]);
     assert(r.class_base[c] + (1usize << r.lg_region) <= r.superblock + (c + 1) * stride);
     assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)

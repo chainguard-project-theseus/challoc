@@ -44,7 +44,7 @@ axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
 
 ## `byte_at`
 
-src/heap/slotstate.rs:611. Kind: external_body. Category: raw pointer (internal).
+src/heap/slotstate.rs:613. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > The `AtomicU8` at address `at`.

@@ -476,7 +476,7 @@ impl Regions {
             self.slab_index(c, p) == slab,
     {
         reveal(Regions::slab_index);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         let cls = class_table()[c];
         let lg = cls.lg_slab;
         vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
@@ -518,7 +518,7 @@ impl Regions {
         ensures
             self.spec_nslabs(c) <= 0x400_0000,
     {
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         let (lr, ls) = (self.lg_region, class_table()[c].lg_slab);
         assert(LG_REGION_PREFERRED == 38 && super::LG_MIN_SLAB == 12);
         assert((1usize << lr) >> ls <= 0x400_0000) by (bit_vector)
@@ -676,7 +676,7 @@ impl Regions {
                 let jj = j as usize;
                 vstd::arithmetic::mul::lemma_mul_nonnegative(j, stride);
                 lemma_shl_mul(jj, lg_stride);
-                crate::vspec::class::axiom_class_table_wf(j);
+                crate::vspec::class::lemma_class_table_wf(j);
                 let o = offsets[j];
                 let ls = class_table()[j].lg_slab as u32;
                 assert(o & sub(1usize << 16u32, 1) == 0) by (bit_vector)
@@ -747,6 +747,7 @@ impl Regions {
     {
         let table = CLASSES.table();
         proof {
+            crate::vspec::class::lemma_class_table_wf(class as int);
             assert(table[class as int].wf());
         }
         self.region_len() >> table[class].lg_slab
@@ -771,6 +772,7 @@ impl Regions {
     {
         let table = CLASSES.table();
         proof {
+            crate::vspec::class::lemma_class_table_wf(class as int);
             assert(table[class as int].wf());
         }
         let lg = table[class].lg_slab;
@@ -1222,7 +1224,7 @@ impl Regions {
             p as int == self.slot_at(c, (p.wrapping_sub(self.class_base[c]) >> class_table()[c].lg_slab) as int, slot as int),
             (p.wrapping_sub(self.class_base[c]) >> class_table()[c].lg_slab) < self.spec_nslabs(c),
     {
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         let b = self.class_base[c];
         let rel = p.wrapping_sub(b);
         let lg = class_table()[c].lg_slab;
@@ -1283,7 +1285,7 @@ impl Regions {
         let (slab, slot) = choose|slab: int, slot: int|
             0 <= slab < self.spec_nslabs(c) && 0 <= slot < class_table()[c].nslots
                 && p as int == #[trigger] self.slot_at(c, slab, slot);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         let cls = class_table()[c];
         let lg = cls.lg_slab;
         let lgu = lg as usize;
@@ -1426,7 +1428,7 @@ impl Regions {
         let (slab, slot) = choose|slab: int, slot: int|
             0 <= slab < self.spec_nslabs(c) && 0 <= slot < class_table()[c].nslots
                 && p as int == #[trigger] self.slot_at(c, slab, slot);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         let cls = class_table()[c];
         let lg = cls.lg_slab;
         let lr = self.lg_region;
@@ -1480,7 +1482,7 @@ impl Regions {
         if exists|c: int| #[trigger] self.is_slot(c, p) && size <= class_table()[c].size {
             let c = choose|c: int| #[trigger] self.is_slot(c, p) && size <= class_table()[c].size;
             self.lemma_slot_in_region(c, p);
-            crate::vspec::class::axiom_class_table_wf(c);
+            crate::vspec::class::lemma_class_table_wf(c);
             assert(self.superblock + c * stride <= self.class_base[c]);
             assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
                 requires
@@ -1527,7 +1529,7 @@ impl Regions {
         let stride = (1usize << self.lg_stride) as int;
         let region = (1usize << self.lg_region) as int;
         let (lo, s) = self.slab_span(c, slab);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         let lg = class_table()[c].lg_slab;
         vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
         vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
@@ -1552,7 +1554,7 @@ impl Regions {
             let (slab2, slot2) = choose|slab2: int, slot2: int|
                 0 <= slab2 < self.spec_nslabs(c2) && 0 <= slot2 < class_table()[c2].nslots
                     && p as int == #[trigger] self.slot_at(c2, slab2, slot2);
-            crate::vspec::class::axiom_class_table_wf(c2);
+            crate::vspec::class::lemma_class_table_wf(c2);
             let cls2 = class_table()[c2];
             vstd::bits::lemma_usize_pow2_no_overflow(cls2.lg_slab as nat);
             vstd::bits::lemma_usize_shl_is_mul(1, cls2.lg_slab as usize);
@@ -1882,7 +1884,7 @@ impl Regions {
         let (slab, slot) = choose|slab: int, slot: int|
             0 <= slab < self.spec_nslabs(c) && 0 <= slot < class_table()[c].nslots
                 && p as int == #[trigger] self.slot_at(c, slab, slot);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         let cls = class_table()[c];
         let lg = cls.lg_slab;
         vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
@@ -2804,7 +2806,7 @@ mod linux {
                 if coloured {
                     let lg_slab = CLASSES.table()[c].lg_slab as u32;
                     proof {
-                        crate::vspec::class::axiom_class_table_wf(c as int);
+                        crate::vspec::class::lemma_class_table_wf(c as int);
                     }
                     offsets[c] += colour(c, lg_slab, lg_page);
                     proof {
@@ -2829,7 +2831,7 @@ mod linux {
                     assert!(offsets[c] & ((1usize << lg_slab) - 1) == 0);
                 } else {
                     proof {
-                        crate::vspec::class::axiom_class_table_wf(c as int);
+                        crate::vspec::class::lemma_class_table_wf(c as int);
                         let (ls, lp) = (class_table()[c as int].lg_slab as u32, lg_page);
                         assert(a & 0xffff == 0 && a & sub(1usize << ls, 1) == 0 && a & sub(1usize << lp, 1) == 0) by (bit_vector)
                             requires a & 0x3f_ffff == 0, ls <= 22, lp <= 22;
@@ -3201,7 +3203,7 @@ impl Regions {
     {
         let stride = (1usize << self.lg_stride) as int;
         self.lemma_slot_in_region(c, p);
-        crate::vspec::class::axiom_class_table_wf(c);
+        crate::vspec::class::lemma_class_table_wf(c);
         assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
             requires
                 c < NCLASSES,
