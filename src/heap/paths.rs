@@ -1488,21 +1488,24 @@ fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usi
 }
 
 /// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`
-/// stores in a new heap: the process's `Shared`, at its storage. Trusted:
-/// a reference-to-pointer conversion, whose address Verus does not model;
-/// a well-formed `Shared` is the one at [`Shared::storage`], the only
-/// place one is built (`Shared::init` requires it; one `Shared` per
-/// process; the unit tests build others, and the claim is about the
-/// shipped library).
+/// stores in a new heap: the process's `Shared`, at its storage. In the
+/// library that is the only `Shared` there is, so the pointer is the
+/// static's ([`crate::api::shared_ptr`]) and `shared` itself is not read.
+#[cfg(not(test))]
 #[inline(always)]
-#[verifier::external_body]
-pub(crate) fn shared_ptr(shared: &Shared) -> (r: *const Shared)
-    requires
-        shared.wf(),
+pub(crate) fn shared_ptr(_shared: &Shared) -> (r: *const Shared)
     ensures
         r == Shared::storage() as *const Shared,
     opens_invariants none
 {
+    crate::api::shared_ptr()
+}
+
+/// [`shared_ptr`] for the unit tests, which build their own `Shared`s
+/// away from the storage: the pointer to `shared`.
+#[cfg(test)]
+#[inline(always)]
+pub(crate) fn shared_ptr(shared: &Shared) -> *const Shared {
     ptr::from_ref(shared)
 }
 
