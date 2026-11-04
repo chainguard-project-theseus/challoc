@@ -168,3 +168,7 @@ where `<check>` is `Kani: <harness path>`, `const assert: <label> in
 <file>`, `Isla: <file>`, `emptyasm: <fn> in <file>`, `loom:
 <mod>::<test>`, or several joined by `, and`. A list separates
 its items with `, ` or ` and `, and ends at `;`, `)` or the next tag.
+A trusted body whose `requires` Verus checks at every caller (no tool
+checks the body) keeps the status "trusted", with a note that names
+what the `requires` states and what it leaves out: `trusted (requires,
+checked at every caller: <what>; not checked: <what>)`.
