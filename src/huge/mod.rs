@@ -9339,7 +9339,7 @@ verus! {
 /// (`panic = "abort"`) outside the tests, so it never releases. The
 /// test-only `oldest_dirty_at` and `audit` only read. The fork handlers
 /// take and release the raw lock without touching the value, and nothing
-/// calls `get_unlocked` on it. What is left is the mutex contract
+/// reads it without a guard. What is left is the mutex contract
 /// (`lock::axiom_acquired`).
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions

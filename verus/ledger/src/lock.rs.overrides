@@ -5,7 +5,6 @@
 # arena, and so no lock, is built in the window), used by the forking
 # thread alone until the release.
 axiom_acquired	allocator invariant	none (assumption)
-axiom_held	allocator invariant	none (assumption)
 cell_ref	UnsafeCell/volatile/transmute	Verus
 cell_mut	UnsafeCell/volatile/transmute	Verus
 # loom (verus/WEAKMEM.md, P2): `LockGuard::drop`'s body is

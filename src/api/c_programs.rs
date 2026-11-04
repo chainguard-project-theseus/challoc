@@ -912,6 +912,11 @@ ctests! {
     /// window and gets EAGAIN with nothing changed; afterwards the child
     /// turns the thread on and off and never has two.
     c_fork_window => [ CTest { prog: "fork_window", ..BASE } ];
+    /// `tests/c/fork_bg_start.c`: a fork child of a process with a
+    /// background thread has none, and turning `background_thread` on
+    /// there starts exactly one (the child handler's reset of the state,
+    /// `purge::background::fork_child`).
+    c_fork_bg_start => [ CTest { prog: "fork_bg_start", ..BASE } ];
     /// `tests/c/fork_window_lazy.c`: a child atfork handler registered
     /// before challoc's frees a 96 MiB burst and keeps allocating past the
     /// lazy start's threshold in the fork window: no `challoc-bg` thread
