@@ -2113,13 +2113,16 @@ fn stack_mark() -> usize {
 /// `tid` at a mark at or below `mark`: that call's frame is gone, since
 /// a call made from inside it would be deeper), or one a thread that has
 /// exited held. `None` when every pooled object is held by a live call.
-/// Trusted: the pool's protocol (`pool`) hands each object to one call
-/// at a time, but for the residue that a call from a signal handler on an
-/// alternate stack or another context (`swapcontext`) above the holder's
-/// may take the holder's object, so both collect into it: wrong figures,
-/// never freed memory.
+/// Trusted: the pool's protocol (`pool`, verified for its own operations:
+/// no panic, every loop ends) hands each object to one call at a time,
+/// but for the residue that a call from a signal handler on an alternate
+/// stack or another context (`swapcontext`) above the holder's may take
+/// the holder's object, so both collect into it: wrong figures, never
+/// freed memory.
 #[verifier::external_body]
 fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)
+    requires
+        crate::sys::may_syscall(),
     ensures
         r matches Some((p, perm)) ==> perm@.ptr() == p && perm@.is_init(),
 {
@@ -2127,38 +2130,42 @@ fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<Point
 }
 
 /// An empty slot of the pool, held by `tid` for the object the caller
-/// allocates next; `None` when every slot has an object. Trusted, as
-/// [`pool_take`].
-#[verifier::external_body]
-fn pool_reserve(tid: u32) -> Option<usize> {
+/// allocates next; `None` when every slot has an object.
+fn pool_reserve(tid: u32) -> (r: Option<usize>)
+    ensures
+        r matches Some(i) ==> i < pool::POOL_SLOTS,
+{
     pool::reserve(tid)
 }
 
 /// Put `p` in the reserved `slot`, held at `mark`: `true` (the object is
-/// then the pool's, never freed; `false` only in the unit tests). Trusted,
-/// as [`pool_take`].
-#[verifier::external_body]
-fn pool_fill(slot: usize, p: *mut StatsPair, mark: usize) -> bool {
+/// then the pool's, never freed; `false` only in the unit tests).
+fn pool_fill(slot: usize, p: *mut StatsPair, mark: usize) -> bool
+    requires
+        slot < pool::POOL_SLOTS,
+{
     pool::fill(slot, p, mark)
 }
 
-/// Give back a reserved `slot` the caller could not fill. Trusted, as
-/// [`pool_take`].
-#[verifier::external_body]
-fn pool_unreserve(slot: usize) {
+/// Give back a reserved `slot` the caller could not fill.
+fn pool_unreserve(slot: usize)
+    requires
+        slot < pool::POOL_SLOTS,
+{
     pool::unreserve(slot)
 }
 
-/// Give the pooled `p` back. Trusted, as [`pool_take`].
-#[verifier::external_body]
+/// Give the pooled `p` back.
 fn pool_release(p: *mut StatsPair) {
     pool::release(p)
 }
 
 /// The fork prepare handler records the forking thread for
-/// [`pool_fork_child`]. Trusted, as [`pool_take`].
-#[verifier::external_body]
-pub fn pool_fork_prepare() {
+/// [`pool_fork_child`].
+pub fn pool_fork_prepare()
+    requires
+        crate::sys::may_syscall(),
+{
     pool::fork_prepare(crate::sys::gettid() as u32)
 }
 
@@ -2166,9 +2173,11 @@ pub fn pool_fork_prepare() {
 /// (a `fork` from inside a statistics callback holds one, which the
 /// callback's caller still uses after the fork returns) are held under
 /// its ID in the child, so that no call of the child takes them as an
-/// exited thread's. Trusted, as [`pool_take`].
-#[verifier::external_body]
-pub fn pool_fork_child() {
+/// exited thread's.
+pub fn pool_fork_child()
+    requires
+        crate::sys::may_syscall(),
+{
     pool::fork_child(crate::sys::gettid() as u32)
 }
 
@@ -2182,28 +2191,9 @@ mod pool {
     #![cfg_attr(test, allow(dead_code))]
     use super::StatsPair;
     use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
-
-    pub const POOL_SLOTS: usize = 64;
-
-    struct Slot {
-        rec: AtomicPtr<StatsPair>,
-        owner: AtomicU32,
-        mark: AtomicUsize,
-    }
-
-    #[allow(clippy::declare_interior_mutable_const)]
-    const EMPTY: Slot = Slot {
-        rec: AtomicPtr::new(core::ptr::null_mut()),
-        owner: AtomicU32::new(0),
-        mark: AtomicUsize::new(FREE),
-    };
-
-    static POOL: [Slot; POOL_SLOTS] = empty_pool();
-
-    /// `[EMPTY; POOL_SLOTS]`.
-    const fn empty_pool() -> [Slot; POOL_SLOTS] {
-        [EMPTY; POOL_SLOTS]
-    }
+    use vstd::prelude::verus;
+    #[cfg(verus_keep_ghost)]
+    use vstd::prelude::*;
 
     // The unit tests build many `Shared`s, each with its own metadata,
     // which a process-wide pool would mix: there every scratch is
@@ -2213,6 +2203,9 @@ mod pool {
         None
     }
 
+    // No slot of the pool: the stubs of `fill` and `unreserve` ignore it
+    // (Verus checks the pool's own `reserve`, which hands out an index of
+    // `POOL`).
     #[cfg(test)]
     pub fn reserve(_tid: u32) -> Option<usize> {
         Some(usize::MAX)
@@ -2226,13 +2219,50 @@ mod pool {
     #[cfg(test)]
     pub fn unreserve(_slot: usize) {}
 
+    #[cfg(test)]
+    pub fn fork_prepare(_tid: u32) {}
+
+    #[cfg(test)]
+    pub fn fork_child(_tid: u32) {}
+
+    // The empty slot, outside `verus!`: Verus has no `const` specification of
+    // `AtomicPtr::new`.
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY: Slot = Slot {
+        rec: AtomicPtr::new(core::ptr::null_mut()),
+        owner: AtomicU32::new(0),
+        mark: AtomicUsize::new(FREE),
+    };
+
+    verus! {
+
+    pub const POOL_SLOTS: usize = 64;
+
+    struct Slot {
+        rec: AtomicPtr<StatsPair>,
+        owner: AtomicU32,
+        mark: AtomicUsize,
+    }
+
+    exec static POOL: [Slot; POOL_SLOTS] = empty_pool();
+
+    /// `[EMPTY; POOL_SLOTS]`, which Verus does not take for an element type
+    /// that is not `Copy`. Trusted: it claims nothing (no `ensures`).
+    #[verifier::external_body]
+    const fn empty_pool() -> [Slot; POOL_SLOTS] {
+        [EMPTY; POOL_SLOTS]
+    }
+
     /// A mark no call holds a slot at: a released slot's, so a call that
     /// read the slot before the release (in the gap a signal handler on
     /// its stack used and released it) fails its `compare_exchange`.
     const FREE: usize = usize::MAX;
 
     #[cfg(not(test))]
-    pub fn take(mark: usize, tid: u32) -> Option<*mut StatsPair> {
+    pub fn take(mark: usize, tid: u32) -> Option<*mut StatsPair>
+        requires
+            crate::sys::may_syscall(),
+    {
         // The thread's own abandoned objects: their holders' frames are
         // gone. The first is this call's; the rest go back to the pool.
         let mut got = None;
@@ -2267,7 +2297,10 @@ mod pool {
         // first. Between the owner's exchange and the mark's store a
         // handler on this stack sees this thread's slot at FREE and
         // leaves it.
-        for s in POOL.iter() {
+        for s in POOL.iter()
+            invariant
+                crate::sys::may_syscall(),
+        {
             let p = s.rec.load(Ordering::Acquire);
             if !p.is_null() {
                 let o = s.owner.load(Ordering::Relaxed);
@@ -2294,7 +2327,7 @@ mod pool {
     }
 
     /// The forking thread's ID, recorded by the fork prepare handler.
-    static FORK_TID: AtomicU32 = AtomicU32::new(0);
+    exec static FORK_TID: AtomicU32 = AtomicU32::new(0);
 
     #[cfg(not(test))]
     pub fn fork_prepare(tid: u32) {
@@ -2317,17 +2350,15 @@ mod pool {
         }
     }
 
-    #[cfg(test)]
-    pub fn fork_prepare(_tid: u32) {}
-
-    #[cfg(test)]
-    pub fn fork_child(_tid: u32) {}
-
+    /// An empty slot, held by `tid`: an index of [`POOL`].
     // The indexed loop stands for `POOL.iter().enumerate()`: Verus does not
     // specify `Enumerate`.
     #[allow(clippy::needless_range_loop)]
     #[cfg(not(test))]
-    pub fn reserve(tid: u32) -> Option<usize> {
+    pub fn reserve(tid: u32) -> (r: Option<usize>)
+        ensures
+            r matches Some(i) ==> i < POOL_SLOTS,
+    {
         for i in 0..POOL_SLOTS {
             let s = &POOL[i];
             if s.rec.load(Ordering::Relaxed).is_null()
@@ -2346,7 +2377,10 @@ mod pool {
     }
 
     #[cfg(not(test))]
-    pub fn fill(slot: usize, p: *mut StatsPair, mark: usize) -> bool {
+    pub fn fill(slot: usize, p: *mut StatsPair, mark: usize) -> bool
+        requires
+            slot < POOL_SLOTS,
+    {
         let s = &POOL[slot];
         s.mark.store(mark, Ordering::Relaxed);
         s.rec.store(p, Ordering::Release);
@@ -2354,7 +2388,10 @@ mod pool {
     }
 
     #[cfg(not(test))]
-    pub fn unreserve(slot: usize) {
+    pub fn unreserve(slot: usize)
+        requires
+            slot < POOL_SLOTS,
+    {
         POOL[slot].mark.store(FREE, Ordering::Relaxed);
         POOL[slot].owner.store(0, Ordering::Release);
     }
@@ -2368,6 +2405,8 @@ mod pool {
             }
         }
     }
+
+    } // verus!
 }
 
 verus! {

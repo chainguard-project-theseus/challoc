@@ -2616,9 +2616,9 @@ axioms below are the other source.
   background state); the child also resets the deferred cgroup record
   and the feature line (`cgroup_fork_child`, `feature_line_fork_child`),
   which no listed lock guards, hands the statistics pool's objects the
-  forking thread held to its new thread ID (`stats::pool_fork_child`,
-  trusted), and reopens the init/fork gate (`fork_gate_exit`, plain
-  atomics with no specification). The handlers do not touch the other locked values,
+  forking thread held to its new thread ID (`stats::pool_fork_child`),
+  and reopens the init/fork gate (`fork_gate_exit`), both plain atomics
+  with no specification. The handlers do not touch the other locked values,
   which keep the invariant their last holder left, as the lock axioms
   assume for every acquire.
 - The signal mask's save and restore are not part of this statement;
