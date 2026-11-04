@@ -360,8 +360,7 @@ pub proof fn theorem_overflow_reach(p: *mut u8, size: int, align: int, a: int, b
 /// invariant and `api::axiom_published`); the kernel's `mmap` contract for the three
 /// reservations (`layout::regions::linux::try_reserve`,
 /// `Reserved::is_disjoint` and `Reserved::is_apart_from_static`);
-/// `Meta`'s lock axioms (`vspec::meta::axiom_meta_lock_inv`,
-/// `axiom_meta_lock_frame`) and the `Unbacked` token for the metadata
+/// the `Unbacked` token for the metadata
 /// region (`Reserved::into_unbacked`, handed to `Meta::owning`);
 /// `vspec::ptr::axiom_ptr_add_addr`; the descriptor table's empty entries
 /// (`huge::table::axiom_zero_entry`, on bytes `ZeroRaw::axiom_new`

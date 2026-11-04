@@ -1202,10 +1202,15 @@ mod tests {
     /// fact outside an `axiom fn` (an `external_body` proof, an `assume`),
     /// and a type named only inside `ensures`. `lock.rs`, whose axioms
     /// (`axiom_acquired`, `axiom_held`) are generic over `T`, is not
-    /// scanned.
+    /// scanned. What the scan reads each impl to define is what `DEFINED`
+    /// lists, so a lock whose axioms were retired is one the scan sees,
+    /// and a leftover axiom on it fails here.
     #[test]
     fn lock_axioms_state_assumed_specs() {
         use std::string::{String, ToString};
+        // (type, defines `inv`, defines `frame`) for each impl that defines
+        // either; every other impl delegates both.
+        const DEFINED: &[(&str, bool, bool)] = &[("crate::meta::Inner", true, true)];
         // Spelled in parts, so that this test's own lines match nothing.
         let named = [
             std::format!("{}{}", "lock_", "inv"),
@@ -1299,6 +1304,24 @@ mod tests {
         }
         assert!(!impls.is_empty(), "no `LockSpec` impl found");
         assert!(!axioms.is_empty(), "no lock axiom found");
+        for (k, imp, inv, frame) in &impls {
+            let want = DEFINED
+                .iter()
+                .find(|d| d.0 == k.as_str())
+                .map_or((false, false), |d| (d.1, d.2));
+            assert!(
+                (*inv, *frame) == want,
+                "{imp}: `{k}`'s `LockSpec` impl defines (inv, frame) {:?}; `DEFINED` says {want:?}",
+                (*inv, *frame)
+            );
+        }
+        for d in DEFINED {
+            assert!(
+                impls.iter().any(|(k, ..)| k == d.0),
+                "`DEFINED` names `{}`, which has no `LockSpec` impl",
+                d.0
+            );
+        }
         for (at, m, item) in &axioms {
             for n in &named {
                 assert!(

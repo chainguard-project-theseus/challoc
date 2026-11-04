@@ -476,7 +476,12 @@ process statistics lock (`collect_into`, `snapshot`,
 (`api/mod.rs`) checks that none of these guards drops without it.
 No other lock's holders call it, so for every other lock the invariant and frame
 are not checked at the release: each verified holder ends with them
-through its last call's postcondition or an `assert`. Each
+through its last call's postcondition or an `assert`. No axiom states
+the metadata lock's `lock_inv` and `lock_frame`: `meta::Inner`'s
+`LockSpec` impl (`meta.rs`) defines them (`Inner::wf`; the page, the
+region's bounds and the ghost identities fixed), and what is left is
+that every holder reaches `LockGuard::unlock`, which the source test
+`api::tests::guards_end_in_unlock` checks. Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it. Also:
 `class::sets::axiom_set_tables_lock_inv` (`class/sets.rs`) and its
@@ -921,13 +926,12 @@ the assumed `Heap::wf` and the huge lock axiom.
   makes its bytes valid for reads and, when there are some, in one
   allocation (`in_alloc`). It is the only such axiom, and it gives no
   `valid_writes`.
-- `vspec::meta::axiom_meta_lock_inv`, `axiom_meta_lock_frame`
-  (`vspec/meta.rs`): the metadata lock protects `Inner::wf`;
-  bounds and ghost identities fixed. Both are checked at the release:
-  every holder outside the tests ends with
-  `LockGuard::unlock` (`lock.rs`), which requires them, and
-  `api::tests::guards_end_in_unlock` (`api/mod.rs`) checks the
-  source for a guard that drops without it (common premises, "Locks").
+- The metadata lock's holders reach `LockGuard::unlock` (`lock.rs`):
+  every holder outside the tests ends with it, which requires the invariant
+  (`Inner::wf`) and frame (bounds and ghost identities fixed) that
+  `meta::Inner`'s `LockSpec` impl (`meta.rs`) defines; the source test
+  `api::tests::guards_end_in_unlock` (`api/mod.rs`) checks it (common
+  premises, "Locks").
   `Meta::commit` is verified: its caller gives the claim to the range that `reserve` or
   `reserve_table` handed out, which each lazily committed table keeps
   for its pages past its watermark (`class::sets::Lazy::claimed`, over
@@ -4962,8 +4966,9 @@ for `k <= 256`.
   process statistics lock) may see it from a newer collection than the
   `stats.*` totals it read before.
 - The lock-frame axioms it rests on (`axiom_arenas_lock_frame`,
-  `axiom_huge_lock_frame`, `axiom_meta_lock_frame`) state the frame as
-  an equivalence (`==`).
+  `axiom_huge_lock_frame`) state the frame as an equivalence (`==`);
+  the metadata lock's frame is defined by `meta::Inner`'s `LockSpec`
+  impl.
 
 ## 28. Cache flush completeness
 
