@@ -583,10 +583,10 @@ pub(crate) fn fork_window_open(Tracked(ord): Tracked<&LockOrder>)
 /// under way (the feature line's build, the cgroup discovery). A wait for
 /// that work there would never end (the threads are not in the child,
 /// and every signal is blocked), so the waits reset it early, as the
-/// child handler would, and do it themselves. Trusted: the capability
+/// child handler would, and do it themselves. The capability
 /// [`crate::sys::cgroup::in_fork_child`] stands for exactly this state
-/// (the child's single thread, before any other runs).
-#[verifier::external_body]
+/// (the child's single thread, before any other runs), which the window's
+/// record read back shows ([`axiom_child_window`]).
 pub(crate) fn in_child_fork_window() -> (r: bool)
     requires
         crate::sys::may_syscall(),
@@ -603,8 +603,50 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
     }
     let pid = FORK_PID.load(Ordering::Relaxed);
     let now = crate::sys::getpid() as u32;
+    proof {
+        if pid != now {
+            axiom_child_window(h, me, pid, now);
+        }
+    }
     pid != now
 }
+
+/// Premise (`fork(2)`, `getpid(2)`, glibc's `pthread_self`; design 9):
+/// the fork window's record, read back by the thread that opened it,
+/// shows that thread in the child of its `fork`. `h` and `pid` are what
+/// the caller read from [`FORK_HOLDER`] and then [`FORK_PID`], `me` its
+/// `pthread_self` and `now` its `getpid` (as a `u32`), read after them;
+/// the one use is [`in_child_fork_window`].
+///
+/// The record's writers are [`fork_window_open`], which stores the
+/// opener's `getpid` and then its `pthread_self`, and
+/// [`fork_window_close`], which stores 0
+/// (`lock::tests::fork_record_uses_are_listed` pins them, this use and
+/// its reads). So `h == me` (not 0) says the caller opened the window
+/// and has not closed it, and the `pid` it then read is the one it stored
+/// (both stores are its own, so its relaxed loads see them). The platform
+/// facts: `pthread_self` tells the live threads of a process apart, and
+/// in glibc the forking thread keeps its value in the child of a `fork`
+/// (the thread descriptor is copied with the memory); the child starts
+/// with a copy of the parent's memory, these atomics included; and in
+/// one PID namespace the child's `getpid` is not the parent's. So
+/// `pid != now` says the caller is the forking thread in a child of the
+/// fork whose window it opened, before the child handler closed the
+/// window. A child in a new PID namespace may read its parent's
+/// `getpid` (both 1): then the caller gets `false`, which claims nothing.
+///
+/// Not covered (design 9, residuals): a process `_Fork`ed, `vfork`ed or
+/// cloned inside the window, which runs no child handler, inherits the
+/// record as its own, and so passes for the child of the fork (a `vfork`
+/// child shares the memory of the parent's live threads).
+axiom fn axiom_child_window(h: usize, me: usize, pid: u32, now: u32)
+    requires
+        h != 0,
+        h == me,
+        pid != now,
+    ensures
+        crate::sys::cgroup::in_fork_child(),
+;
 
 /// End the fork window; the parent and child handlers' step before their
 /// release, which it allows ([`window_closed`]).
@@ -1385,6 +1427,123 @@ mod tests {
             }
         }
         assert_eq!(a, ["lock", "try_lock", "lock_held_perm"]);
+    }
+
+    /// `in_child_fork_window` passes `axiom_child_window` the window's
+    /// record as its writers leave it: the axiom's one use is that
+    /// function, the record's statics are named only in the functions
+    /// listed, `fork_window_open` stores the opener's `getpid` and then its
+    /// `pthread_self`, `fork_window_close` stores 0, and the axiom's
+    /// arguments are the reads its doc names, each bound once.
+    #[test]
+    fn fork_record_uses_are_listed() {
+        use crate::testutil::{assert_only_at, grant_sites};
+        // Spelled in parts, so that this test's lines match nothing.
+        let window = concat!("pub(crate) fn in_child_", "fork_window(");
+        let open = concat!("pub(crate) fn fork_window_", "open(");
+        let close = concat!("pub(crate) fn fork_window_", "close(");
+        assert_only_at(
+            concat!("axiom_", "child_window("),
+            &[("lock.rs:", window, 1)],
+        );
+        // Every line that names one of the two statics, but their
+        // declarations, is in a listed function, as many times as listed:
+        // no reference to them leaves these functions.
+        let named = |name: &str, fns: &[(&str, usize)]| {
+            let mut n = std::vec![0; fns.len()];
+            for (sig, at) in grant_sites(name) {
+                if at.contains("exec static ") {
+                    continue;
+                }
+                let i = fns
+                    .iter()
+                    .position(|(f, _)| at.starts_with("lock.rs:") && sig.starts_with(f))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{at}: got = `{name}` in `{sig}`, want = only in the listed functions"
+                        )
+                    });
+                n[i] += 1;
+            }
+            for ((f, want), got) in fns.iter().zip(n) {
+                assert_eq!(
+                    got, *want,
+                    "`{f}`: got = {got} lines naming `{name}`, want = {want}"
+                );
+            }
+        };
+        named(
+            concat!("FORK_", "HOLDER"),
+            &[
+                (concat!("fn fork_holder_", "is_me("), 1),
+                (open, 1),
+                (window, 1),
+                (close, 1),
+            ],
+        );
+        named(concat!("FORK_", "PID"), &[(open, 1), (window, 1)]);
+        // A function's code, from its item line to its closing brace,
+        // without comment lines.
+        let src = include_str!("lock.rs");
+        let body = |item: &str| -> std::string::String {
+            let at: Vec<_> = src.match_indices(item).map(|(i, _)| i).collect();
+            assert_eq!(
+                at.len(),
+                1,
+                "`{item}`: got = {} matches, want = 1",
+                at.len()
+            );
+            let b = &src[at[0]..];
+            b[..b.find("\n}\n").unwrap()]
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let o = body(open);
+        let pid = o.find(concat!("FORK_", "PID.store(crate::sys::getpid() as u32, "));
+        let holder = o.find(concat!(
+            "FORK_",
+            "HOLDER.store(crate::sys::pthread_self(), "
+        ));
+        assert!(
+            matches!((pid, holder), (Some(p), Some(h)) if p < h),
+            "fork_window_open: got = {pid:?} and {holder:?}, want = the pid stored, then the holder"
+        );
+        assert!(
+            body(close).contains(concat!("FORK_", "HOLDER.store(0, ")),
+            "fork_window_close: got = no store of 0, want = one"
+        );
+        let w = body(window);
+        let reads = [
+            concat!("let h = FORK_", "HOLDER.load(Ordering::Relaxed);"),
+            "let me = crate::sys::pthread_self();",
+            concat!("let pid = FORK_", "PID.load(Ordering::Relaxed);"),
+            "let now = crate::sys::getpid() as u32;",
+            concat!("axiom_", "child_window(h, me, pid, now);"),
+        ];
+        let mut from = 0;
+        for r in reads {
+            let i = w[from..].find(r).unwrap_or_else(|| {
+                panic!("in_child_fork_window: got = no `{r}` after the reads before it, want = one")
+            });
+            from += i + r.len();
+        }
+        // No other binding shadows a read, and none is mutable.
+        assert!(
+            !w.contains("let mut "),
+            "in_child_fork_window: got = a `let mut`, want = none"
+        );
+        for n in ["h", "me", "pid", "now"] {
+            let k = [" ", ":", "="]
+                .iter()
+                .map(|c| w.matches(&std::format!("let {n}{c}")).count())
+                .sum::<usize>();
+            assert_eq!(
+                k, 1,
+                "in_child_fork_window: got = {k} bindings of `{n}`, want = 1"
+            );
+        }
     }
 
     /// `axiom_entry` asserts that no allocator lock is held where it is
