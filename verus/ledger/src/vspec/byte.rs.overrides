@@ -1,8 +1,10 @@
 # Kani runs each wrapper on a real atomic, one thread (src/kani/atomic.rs).
 # loom and C11 (verus/WEAKMEM.md): a deferred record's phase
 # (`Deferred::phase`, sys/cgroup.rs) is written only through these
-# wrappers, which no other file calls, and this file mints one BytePerm
-# per atomic, in `new` (tests/loom/tests/access.rs). C++20's coherence
+# wrappers, which no other file calls but heap/slotstate.rs's `step` (the
+# slot-state bytes, whose permission `axiom_slot_byte` mints there), and
+# this file mints one BytePerm per atomic, in `new`
+# (tests/loom/tests/access.rs). C++20's coherence
 # rules ([intro.races]) give a load the permission's value at its place in
 # the byte's modification order; the exchange is a read-modify-write,
 # which reads the last value for every ordering ([atomics.order] p10), in
