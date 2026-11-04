@@ -90,16 +90,16 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:902. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:907. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Assumption: [`state_lock`] is the raw lock of [`STATE`].
+> Assumption: [`state_static`] is [`STATE`].
 
 ```rust
 axiom fn axiom_state_lock(l: Lock<State>)
     requires
         l.rank() == rank_state(),
     ensures
-        l.spec_raw() == state_lock(),
+        l == state_static(),
 ;
 ```
