@@ -500,7 +500,9 @@ for `Snapshot` (`stats.rs`), the process statistics lock:
 `()` (`heap/tcaches.rs`), the explicit-cache table lock: both `true`.
 The impl for `huge::Inner` (`huge/mod.rs`), the huge lock: `Inner::wf`,
 with the ghost page count, page shift and `Meta` identity fixed.
-Each other
+The impl for `ArenaStats` (`stats.rs`), the per-arena statistics locks,
+defines only the frame, true of any two values, which no release can
+break; its invariant is `axiom_arena_stats_lock_inv`'s. Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it.
 `Tcaches::init` makes each entry null with
@@ -4952,7 +4954,8 @@ for `k <= 256`.
   (`axiom_arena_stats_lock_inv`, `vspec/arena.rs`) says the stored
   value satisfies `ArenaStats::identities`. Its writers: `Arena`
   initialisation (`ArenaStats::empty`, which ensures the identities)
-  and `Arena::store_stats` (which requires them). The process
+  and `Arena::store_stats` (which requires them). Its frame is true of
+  any two values (`ArenaStats`'s `LockSpec` impl, `stats.rs`). The process
   statistics lock's invariant, `Snapshot::inv`, is stated by no axiom:
   `Snapshot`'s `LockSpec` impl (`stats.rs`) defines it, `Lock::new` in
   `Shared::put_tail` (`heap/shared.rs`) requires it of
