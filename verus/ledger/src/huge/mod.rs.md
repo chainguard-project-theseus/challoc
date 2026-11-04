@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `write_zero` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 | `axiom_f...n_zero` | axiom | platform/kernel fact | none (assumption) | trusted |
-| `axiom_d...d_zero` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_d...d_zero` | axiom | platform/kernel fact | none (assumption) | trusted |
 
 ## `write_zero`
 
@@ -46,7 +46,7 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:2504. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:2504. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted (requires, checked at its one caller, zero_run, from Huge::take: some MADV_DONTNEED of exactly these bytes succeeded, `sys::madvise_ok`, at that call site Huge::rediscard's; not checked: that nothing has written them since take's rediscard call).
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
