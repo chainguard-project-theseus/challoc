@@ -4955,7 +4955,7 @@ impl SlabTable {
             r matches Some(usable) ==> usable == !self.spec_is_guard(s),
             *final(ord) == *old(ord),
     {
-        broadcast use axiom_table_lock_inv;
+        broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
         proof {
             use_type_invariant(self);
         }
