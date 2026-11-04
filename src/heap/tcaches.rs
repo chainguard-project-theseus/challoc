@@ -1218,6 +1218,15 @@ proof fn lemma_unit_lock_frame_reflexive(v: ())
 } // verus!
 
 #[cfg(test)]
+impl Tcaches {
+    /// The pointer entry `id` holds (null for no cache), as
+    /// [`Tcaches::get`] loads it and hands it to [`heap_at`].
+    pub(crate) fn entry(&self, id: u16) -> *mut Heap {
+        self.table[id as usize].load(Ordering::Acquire) as *mut Heap
+    }
+}
+
+#[cfg(test)]
 mod tests {
     /// `axiom_heap_use` is called once in each of the 8 functions its doc
     /// lists, and nowhere else: each call rests on that doc's premise for
