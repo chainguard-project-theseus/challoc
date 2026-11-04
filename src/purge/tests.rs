@@ -271,11 +271,12 @@ pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// `background::axiom_state_lock` names the raw lock of every
-/// `Lock<State>` of rank `rank_state` as `state_lock()`, which is sound
-/// only while `STATE` is the one such lock: the axiom is called once (in
-/// `STATE`'s initialiser), `STATE` is the only `Lock<State>`, and the only
-/// lock created with that rank. The axiom is trusted, not proved, and
+/// `background::axiom_state_lock` names every `Lock<State>` of rank
+/// `rank_state` as `state_static()` (whose raw lock is `state_lock()`),
+/// which is sound only while `STATE` is the one such lock: the axiom is
+/// called once (in `STATE`'s initialiser), `STATE` is the only
+/// `Lock<State>` (besides its specification name), and the only lock
+/// created with that rank. The axiom is trusted, not proved, and
 /// this source count is its only guard: if a count changes, re-audit the
 /// axiom's soundness before updating the expected numbers.
 #[test]
@@ -284,6 +285,10 @@ fn state_lock_axiom_names_the_one_state_lock() {
     let code = || src.lines().filter(|l| !l.trim_start().starts_with("//"));
     let count = |s: &str| code().filter(|l| l.contains(s)).count();
     assert_eq!(count("axiom_state_lock("), 2, "the axiom and its one call");
-    assert_eq!(count("Lock<State>"), 3, "STATE, the axiom and state()");
+    assert_eq!(
+        count("Lock<State>"),
+        4,
+        "STATE, the axiom, state_static and state()"
+    );
     assert_eq!(count("Ghost(rank_state())"), 1);
 }

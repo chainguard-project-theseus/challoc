@@ -2376,9 +2376,9 @@ extern "C" fn fork_prepare() {
     // this thread with every lock held (their prepare after this, their
     // parent and child handlers before our release), and their allocations
     // take the held locks as acquired (`lock::fork_holder_is_me`). It
-    // opens after the last acquisition (`lock::fork_prepared`, which only
-    // the state lock's `lock_held` gives).
-    crate::lock::fork_window_open();
+    // opens after the last acquisition (`lock::fork_prepared` of `ord`,
+    // which only the state lock's acquisition on this root gives).
+    crate::lock::fork_window_open(Tracked(&ord));
     proof {
         before.lemma_with_saved(*s, mask, held.slot_addr());
         assert(fork_holds(*s, held, state));

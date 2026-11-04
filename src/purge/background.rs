@@ -75,7 +75,7 @@ broadcast axiom fn axiom_state_lock_inv(v: State)
 
 exec static STATE: Lock<State>
     ensures
-        STATE.spec_raw() == state_lock(),
+        STATE == state_static(),
         STATE.rank() == rank_state(),
 {
     proof {
@@ -887,30 +887,36 @@ fn detach_from_starter()
     }
 }
 
-/// The state lock, as [`fork_lock`] takes it: [`STATE`]'s raw lock.
-/// Uninterpreted (Verus does not read statics in specifications);
-/// `STATE`'s postcondition pins it ([`axiom_state_lock`]).
-pub uninterp spec fn state_lock() -> RawLock;
+/// [`STATE`], for specifications. Uninterpreted (Verus does not read
+/// statics in specifications); `STATE`'s postcondition pins it
+/// ([`axiom_state_lock`]).
+uninterp spec fn state_static() -> Lock<State>;
 
-/// Assumption: [`state_lock`] is the raw lock of [`STATE`]. Called once,
-/// in `STATE`'s initialiser, for the lock it builds: a static is one
-/// object, initialised once (at compile time), so every read of it
-/// returns that lock. Private: in this module `STATE` is the only
-/// `Lock<State>` (`State` is private too) and the only lock of rank
-/// [`rank_state`], which the requirement pins (`purge::tests::
-/// state_lock_axiom_names_the_one_state_lock` checks the three by name).
+/// The state lock, as [`fork_lock`] takes it: [`STATE`]'s raw lock.
+pub closed spec fn state_lock() -> RawLock {
+    state_static().spec_raw()
+}
+
+/// Assumption: [`state_static`] is [`STATE`]. Called once, in `STATE`'s
+/// initialiser, for the lock it builds: a static is one object,
+/// initialised once (at compile time), so every read of it returns that
+/// lock. Private: in this module `STATE` is the only `Lock<State>`
+/// (`State` is private too) and the only lock of rank [`rank_state`],
+/// which the requirement pins (`purge::tests::
+/// state_lock_axiom_names_the_one_state_lock` checks them by name).
 axiom fn axiom_state_lock(l: Lock<State>)
     requires
         l.rank() == rank_state(),
     ensures
-        l.spec_raw() == state_lock(),
+        l == state_static(),
 ;
 
-/// `&STATE`: its raw lock is [`state_lock`] and its rank the one `STATE`
-/// is created with (the static's postcondition).
+/// `&STATE`: [`state_static`], whose raw lock is [`state_lock`] and rank
+/// the one `STATE` is created with (the static's postcondition).
 #[inline(always)]
 fn state() -> (r: &'static Lock<State>)
     ensures
+        *r == state_static(),
         r.spec_raw() == state_lock(),
         r.rank() == rank_state(),
 {
@@ -930,7 +936,7 @@ pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (t: Tracked<LockHeld>
         t@.held() == state_lock(),
         final(ord).root(),
         final(ord).top() == rank_state(),
-        crate::lock::fork_prepared(),
+        crate::lock::fork_prepared(*final(ord)),
 {
     state().raw().lock_held(Tracked(ord))
 }
@@ -1003,16 +1009,26 @@ pub fn set_fork_base(inherited: u64) {
 
 verus! {
 
-/// The state lock's invariant, which [`axiom_state_lock_inv`] states; its
-/// frame is uninterpreted.
+/// The state lock's invariant, which [`axiom_state_lock_inv`] states, and
+/// its frame: the state keeps no constant from the value [`STATE`] is
+/// created with, so the frame holds of any two states.
 impl crate::lock::LockSpec for State {
     open spec fn lock_spec_inv(self) -> bool {
         crate::lock::assumed_inv(self)
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+        true
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_state_frame_reflexive(v: State)
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!
