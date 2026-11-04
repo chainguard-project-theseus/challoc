@@ -4,8 +4,8 @@
 //! seam (`verus/SEAMS.md`): Verus takes it on trust, so each states only
 //! what the `core` documentation promises. Ordinary builds compile the
 //! wrappers; the specifications are ghost and vanish there.
-//! [`div_ceil`] and [`div_ceil_u64`] are not seams: they repeat `core`'s
-//! `div_ceil` bodies, and Verus checks them.
+//! [`div_ceil`], [`div_ceil_u64`] and [`next_multiple_of`] are not seams:
+//! they repeat `core`'s bodies, and Verus checks them.
 
 use vstd::prelude::*;
 
@@ -91,6 +91,26 @@ pub(crate) const fn div_ceil_u64(x: u64, d: u64) -> (r: u64)
     let q = x / d;
     let r = x % d;
     if r > 0 { q + 1 } else { q }
+}
+
+/// `usize::next_multiple_of`, with `core`'s body: `x` rounded up to a
+/// multiple of `m`. Verified, as [`div_ceil`]; the `requires` is `core`'s
+/// condition for no panic: a nonzero `m` and no overflow.
+#[inline(always)]
+pub(crate) const fn next_multiple_of(x: usize, m: usize) -> (r: usize)
+    requires
+        m > 0,
+        vstd::std_specs::num::next_multiple_of(x as int, m as int) <= usize::MAX,
+    ensures
+        r as int == vstd::std_specs::num::next_multiple_of(x as int, m as int),
+{
+    proof {
+        vstd::arithmetic::div_mod::lemma_mod_pos_bound(x as int, m as int);
+    }
+    match x % m {
+        0 => x,
+        r => x + (m - r),
+    }
 }
 
 /// `x / d`, plus one when `d` leaves a remainder, is `(x + d - 1) / d`;
