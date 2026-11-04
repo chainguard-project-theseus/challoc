@@ -56,8 +56,6 @@ use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::addr::cast_provenance;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::layout::{layout_align, layout_ok, layout_size};
-#[cfg(verus_keep_ghost)]
-use crate::vspec::meta::{axiom_meta_lock_frame, axiom_meta_lock_inv};
 use crate::vspec::unbacked::Unbacked;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::unbacked::committed_range;
@@ -561,7 +559,7 @@ impl Meta {
     /// The lock is the metadata lock of the lock order, and the region
     /// ends below [`va_limit`], with a page that is a power of two of at
     /// least [`MIN_ALIGN`] bytes (`owning`'s requirements, which no value
-    /// the lock holds changes, `vspec/meta.rs`).
+    /// the lock holds changes: the lock's frame, `Inner`'s `LockSpec` impl).
     #[verifier::type_invariant]
     pub open spec fn inv(self) -> bool {
         &&& self.lock_rank() == rank_meta()
@@ -589,7 +587,6 @@ impl Meta {
             r.spec_len() == len,
             r.page() == page,
     {
-        broadcast use axiom_meta_lock_inv;
         proof {
             lemma_pow2_bits(page);
         }
@@ -636,7 +633,6 @@ impl Meta {
             p as usize != 0 ==> self.holds(p as usize as int, layout_size(layout) as int),
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -680,7 +676,6 @@ impl Meta {
             r.0 as usize != 0 ==> r.1@.1.of(self.live_id(), r.0, layout),
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -733,7 +728,6 @@ impl Meta {
             r.0 as usize != 0 ==> r.2@.addr() == r.0@.addr && r.2@.len() == layout_size(layout),
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -801,7 +795,6 @@ impl Meta {
         ensures
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -854,7 +847,6 @@ impl Meta {
             r matches Some(s) ==> forall|a: int| #[trigger] final(claim)@.dom().contains(a) ==> final(claim)@[a],
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -919,7 +911,6 @@ impl Meta {
             r.0 matches Some(s) ==> forall|a: int| #[trigger] final(claim)@.dom().contains(a) ==> final(claim)@[a] == final(claim)@[s as int],
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -992,7 +983,6 @@ impl Meta {
             r is Err ==> final(claim)@ == old(claim)@,
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -1045,7 +1035,6 @@ impl Meta {
             r.1@.provenance() == cast_provenance(),
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
         proof {
             use_type_invariant(self);
         }
@@ -1065,7 +1054,6 @@ impl Meta {
             r.len <= va_limit(),
             *final(ord) == *old(ord),
     {
-        broadcast use axiom_meta_lock_inv;
         proof {
             use_type_invariant(self);
         }
@@ -1082,7 +1070,7 @@ impl Meta {
     }
 
     /// The ghost identity of the live-object records ([`Inner::live_id`];
-    /// the same in every value the lock holds, `vspec/meta.rs`).
+    /// the same in every value the lock holds: `Inner`'s `LockSpec` frame).
     pub closed spec fn live_id(&self) -> Loc {
         lock_init(self.inner).live_id()
     }
@@ -1116,8 +1104,8 @@ impl Meta {
     }
 
     /// `v` is a value the metadata lock may hold: its invariant
-    /// ([`Inner::wf`], `vspec::meta::axiom_meta_lock_inv`) over this
-    /// allocator's region (`axiom_meta_lock_frame`). Every guard of the lock
+    /// ([`Inner::wf`], `Inner`'s `LockSpec` impl) over this
+    /// allocator's region (its frame). Every guard of the lock
     /// reads and writes one.
     pub(crate) closed spec fn admits(&self, v: Inner) -> bool {
         &&& crate::lock::lock_inv(v)
@@ -1139,8 +1127,6 @@ impl Meta {
         ensures
             self.holds(a, 8),
     {
-        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
-
         let v = choose|v: Inner| self.admits(v) && #[trigger] v.is_link(a);
         v.lemma_link_in_region(a);
     }
@@ -2598,8 +2584,6 @@ impl Inner {
             r ==> len <= EAGER_MAX,
             *final(self) == (Inner { eager: final(self).eager, ..*old(self) }),
     {
-        broadcast use axiom_meta_lock_frame;
-
         if len > EAGER_MAX {
             return false;
         }
@@ -2675,8 +2659,6 @@ impl Inner {
                 })
             },
     {
-        broadcast use axiom_meta_lock_frame;
-
         let ghost align0 = align;
         let ghost (b0, lo0) = (self.bump as int, self.fresh_end() as int);
         proof {
@@ -2787,8 +2769,6 @@ impl Inner {
                     && res.1@.2.len() == bin_size(bin as int)
             } }),
     {
-        broadcast use axiom_meta_lock_frame;
-
         proof {
             lemma_bin(bin as int);
             lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
@@ -2933,8 +2913,6 @@ impl Inner {
             final(self).wf(),
             final(self).live_id() == old(self).live_id(),
     {
-        broadcast use axiom_meta_lock_frame;
-
         let addr = p as usize;
         let node = p as *mut FreeNode;
         let ghost m0 = self.live@@;
@@ -3058,8 +3036,6 @@ impl Inner {
                 })
             },
     {
-        broadcast use axiom_meta_lock_frame;
-
         let ghost align0 = align;
         proof {
             lemma_pow2_bits(align);
@@ -3147,8 +3123,6 @@ impl Inner {
             r is Ok && old(self).top <= addr ==> final(self).top_committed == old(self).top_committed + len,
             r is Ok ==> committed_range(addr as int, len as int),
     {
-        broadcast use axiom_meta_lock_frame;
-
         let ghost m = self.pages@@;
         let ghost range = set_int_range(addr as int, addr + len);
         // The range's part of the claim, which a success takes.
@@ -3235,8 +3209,6 @@ impl Inner {
             r.0 matches Some(s) ==> committed_range(s as int, words_up(len as int)),
             r.1@.provenance() == cast_provenance(),
     {
-        broadcast use axiom_meta_lock_frame;
-
         let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         if self.eager_ok(len) {
             let (bump, frontier, stats) = (self.bump, self.frontier, self.stats);
@@ -3648,16 +3620,51 @@ impl MetaClaim {
 
 verus! {
 
-/// The metadata lock's invariant and frame, which `vspec::meta`'s
-/// `axiom_meta_lock_inv` and `axiom_meta_lock_frame` state.
+/// The metadata lock's invariant is [`Inner::wf`], and its frame is what
+/// every value the lock holds keeps from the one `Meta::owning` created
+/// it with: the page size, the region's bounds and the identities of the
+/// ghost records (live objects, unclaimed reserved bytes). Read the
+/// invariant as: the real state always has a ghost witness (free lists,
+/// the permissions to free blocks and to the committed bytes above the
+/// bump pointer, the uncommitted address space, and the records of live
+/// objects and of unclaimed reserved bytes) that makes `wf` true.
+///
+/// `Meta::owning` builds the value (`Lock::new` requires `wf`), and both
+/// are checked at every release: each holder outside the tests
+/// (`Meta::alloc`, `alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
+/// `reserve_table`, `commit`, `reserve_committed_raw` and `stats`) ends
+/// with `LockGuard::unlock`, which requires both, on every path to a
+/// return (`api::tests::guards_end_in_unlock`). A panic aborts
+/// (`panic = "abort"`) outside the tests, so it never releases. Nothing
+/// replaces the value (`Inner::new` is called only by `Meta::owning`).
+///
+/// Holders not verified: the test-only `set_eager_for_test` and
+/// `eager_allowed`, which touch only `eager`, which neither `Inner::wf` nor the frame
+/// mentions, and `base` and `top`, which only read. The fork handlers
+/// take and release the raw lock without touching the value, and nothing
+/// calls `get_unlocked` on it. What is left is the mutex contract
+/// (`lock::axiom_acquired`).
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for Inner {
-    open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+    closed spec fn lock_spec_inv(self) -> bool {
+        self.wf()
     }
 
-    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+    closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        init.live_id() == v.live_id() && init.pages_id() == v.pages_id() && init.spec_page() == v.spec_page()
+            && init.spec_base() == v.spec_base() && init.spec_len() == v.spec_len()
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_meta_frame_reflexive(v: Inner)
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!

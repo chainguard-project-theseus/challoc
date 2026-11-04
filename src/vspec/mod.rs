@@ -35,8 +35,6 @@ pub(crate) mod huge;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod layout;
 #[cfg(verus_keep_ghost)]
-pub(crate) mod meta;
-#[cfg(verus_keep_ghost)]
 mod misc;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod panic;

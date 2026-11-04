@@ -4119,10 +4119,12 @@ mod tests {
     }
 
     /// Every function that takes a lock's guard (`Lock::lock`, `Lock::try_lock`,
-    /// `Lock::lock_t`) is one its `lock_inv` axiom's doc names among the
-    /// lock's holders: `LockGuard::drop` checks nothing, so each axiom
-    /// rests on its doc's argument that every holder leaves the invariant
-    /// true, and a holder the doc does not name has no such argument. The
+    /// `Lock::lock_t`) is one its `lock_inv` axiom's doc, or its `LockSpec`
+    /// impl's where the impl defines the invariant, names among the lock's
+    /// holders: `LockGuard::drop` checks nothing, so each such doc carries
+    /// the argument that every holder leaves the invariant true (or, for a
+    /// defined invariant, ends in `LockGuard::unlock`), and a holder the
+    /// doc does not name has no such argument. The
     /// table lists, per lock of [`lock_inventory`], each holder as (file,
     /// function, the field or static its call names), copied by hand from
     /// the doc: the docs are not parsed, so the two change together. A
@@ -4235,7 +4237,7 @@ mod tests {
                     ("huge/mod.rs:", "fn audit(", "inner"),
                 ],
             ),
-            // `vspec::meta::axiom_meta_lock_inv`.
+            // `meta::Inner`'s `LockSpec` impl.
             (
                 "meta.rs:Meta.inner",
                 &[
@@ -4351,7 +4353,7 @@ mod tests {
             assert!(
                 listed().any(|(_, (file, f, r))| matches(rel, sig, file, f) && recv == r),
                 "{at}: `{sig}` takes the guard of `{recv}`, and no lock's holder list has it. \
-                 Name it in that lock's `lock_inv` axiom doc, with how it leaves the invariant \
+                 Name it in that lock's `lock_inv` axiom doc (or `LockSpec` impl doc), with how it leaves the invariant \
                  true (or that it only reads), and add it to this test's table, in one change."
             );
         }
@@ -4361,7 +4363,7 @@ mod tests {
                     .iter()
                     .any(|(rel, sig, recv, _)| matches(rel, sig, file, f) && recv == r),
                 "{key}: {file} `{f}` no longer takes the guard of `{r}`: drop it from this \
-                 table and from the lock's `lock_inv` doc"
+                 table and from the lock's `lock_inv` axiom or `LockSpec` impl doc"
             );
         }
         let mut keys: Vec<String> = HOLDERS.iter().map(|h| h.0.to_string()).collect();
@@ -4370,7 +4372,7 @@ mod tests {
         assert_eq!(
             keys,
             lock_inventory(),
-            "every lock in src/ has its holders listed here, from its `lock_inv` axiom's doc"
+            "every lock in src/ has its holders listed here, from its `lock_inv` axiom's or `LockSpec` impl's doc"
         );
         for (rel, sig, at) in &raws {
             assert!(
