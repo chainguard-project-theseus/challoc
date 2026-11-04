@@ -14,11 +14,16 @@ use vstd::prelude::*;
 use super::table::{
     desc_handed, guard_marked, lemma_guard_marked_mono, lemma_lg_group, lemma_slab_marked_mono,
     lemma_spec_class, lemma_spec_nslabs, owner_mark, owner_marks, slab_marked, slab_owner,
+    slab_zero,
 };
 #[cfg(verus_keep_ghost)]
-use super::{desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, owned_rec, whole_groups};
+use super::{
+    desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, owned_rec, whole_groups, zeros_ok,
+};
 #[cfg(verus_keep_ghost)]
 use crate::slab::{DescPerm, State};
+#[cfg(verus_keep_ghost)]
+use crate::vspec::zero::Zeroed;
 
 verus! {
 
@@ -203,14 +208,18 @@ impl ClassState {
                 let tracked mut im = g.inited.borrow().duplicate();
                 // So do its descriptors' permissions.
                 let tracked mut dp = Map::<nat, DescPerm>::tracked_empty();
-                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im), Tracked(&mut dp), pubw, Tracked(ord))?;
+                // And the zero tokens of its slabs' bytes.
+                let tracked mut zp = Map::<int, Zeroed>::tracked_empty();
+                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im), Tracked(&mut dp), Tracked(&mut zp), pubw, Tracked(ord))?;
                 let ghost g0 = *g;
                 let ghost dpv = dp;
+                let ghost zpv = zp;
                 proof {
                     assert(g0.same_sets_but_rec(ga));
                     assert(ga.inv());
                     g.inited.borrow_mut().combine(im);
                     g.dperms.borrow_mut().tracked_union_prefer_right(dp);
+                    g.zeros.borrow_mut().tracked_union_prefer_right(zp);
                     assert forall|x: nat| #[trigger] g0.owns(x) implies x < start by {
                         assert(ga.owns(x));
                     }
@@ -246,6 +255,20 @@ impl ClassState {
                                 assert(g0.owns(x));
                                 g0.lemma_desc(x);
                                 assert(!dpv.contains_key(x));
+                            }
+                        }
+                        // So do its slabs' zero tokens; an older owned
+                        // `Fresh` slab keeps its own.
+                        reveal(zeros_ok);
+                        assert forall|x: nat| #[trigger] g.states@.contains_key(x) && g.states@[x] == State::Fresh
+                            && !g.table@.spec_is_guard(x as usize) implies slab_zero(g.zeros@, g.table@, x as int) by {
+                            if start <= x < end {
+                                assert(slab_zero(zpv, *table, x as int));
+                            } else {
+                                assert(g0.owns(x));
+                                assert(g0.states@.contains_key(x) && g0.states@[x] == State::Fresh);
+                                assert(slab_zero(g0.zeros@, g0.table@, x as int));
+                                assert(!zpv.contains_key(x as int));
                             }
                         }
                     }

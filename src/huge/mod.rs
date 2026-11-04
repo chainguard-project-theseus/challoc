@@ -2470,13 +2470,19 @@ proof fn zero_run(base: int, pg: int, s: int, usable: int, mark: int, has_ext: b
 /// leave the contents alone.
 ///
 /// Premise, trusted and the caller's: the `len` bytes at `addr` lie in the
-/// huge region (`Regions::reserve`) and nothing has written them since it
-/// was mapped, or written anything but zero. Private to this module, and
-/// [`zero_run`] is its one caller (`huge::tests::zero_axioms_called_from_zero_run_only`
-/// pins that), for pages at or past the high-water mark it is given; its
-/// `requires` ties that mark to the run `Huge::take` places (only `take`
-/// raises the mark, and no run has covered pages past it).
-axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
+/// huge region or a class region (`Regions::reserve`) and nothing has
+/// written them since it was mapped, or written anything but zero. Two
+/// callers (`huge::tests::zero_axioms_called_from_listed_sites` pins
+/// them). [`zero_run`], for pages at or past the high-water mark it is
+/// given; its `requires` ties that mark to the run `Huge::take` places
+/// (only `take` raises the mark, and no run has covered pages past it).
+/// And `class::table::SlabTable::new`, for its whole class region, which
+/// it makes one token of: `new` runs once per class (its `words_once`
+/// token, `vspec::once`), before any slab of the region is handed out, and
+/// the token then goes only one group at a time to the arena `take_group`
+/// hands the group to, and one slab at a time to the `take` that makes
+/// the slab `Active` (`class::Inner::zeros`).
+pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
     requires
         0 <= len,
     ensures

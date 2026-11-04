@@ -150,7 +150,8 @@ does not promise; that is Rust's side, outside the Verus contract.
    with the kernel-state premise left to the call site. None can prove
    `false`: the tokens carry no exclusivity, and `Unbacked` tokens are
    disjoint by construction. Each is called only where its doc says
-   (`huge::zero_run` for the first two; `meta.rs` for `commit`). A
+   (`huge::zero_run` for the first two, and `class::table::SlabTable::new`
+   for `axiom_fresh_anon_zero`; `meta.rs` for `commit`). A
    misplaced call would make the zero theorem false without any
    verifier error.
 4. **Page size.** `getauxval` bounds `AT_PAGESZ` at 64 KiB and ties it

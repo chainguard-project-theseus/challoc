@@ -1598,10 +1598,13 @@ fn src_files(
 }
 
 /// The two zero axioms trust premises the proof does not state, so their
-/// one caller is pinned: they are defined in huge/mod.rs and used only in
-/// `zero_run`'s body (its four calls).
+/// callers are pinned: they are defined in huge/mod.rs and used only in
+/// `zero_run`'s body (its four calls) and, for `axiom_fresh_anon_zero`,
+/// in `SlabTable::new`'s (`class/table.rs`, one call). Any code line that
+/// names either one elsewhere fails, so an import under another name does
+/// too.
 #[test]
-fn zero_axioms_called_from_zero_run_only() {
+fn zero_axioms_called_from_listed_sites() {
     let mut files = Vec::new();
     src_files(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
@@ -1610,12 +1613,12 @@ fn zero_axioms_called_from_zero_run_only() {
     );
     // Split, so this test's own source does not match.
     let needles = [
-        ["axiom_fresh_anon", "_zero("].concat(),
-        ["axiom_discarded", "_zero("].concat(),
+        ["axiom_fresh_anon", "_zero"].concat(),
+        ["axiom_discarded", "_zero"].concat(),
     ];
-    let mut calls = 0;
+    let (mut calls, mut table_calls) = (0, 0);
     for (rel, text) in &files {
-        let mut in_zero_run = false;
+        let (mut in_zero_run, mut in_table_new) = (false, false);
         for line in text.lines() {
             let t = line.trim();
             if t.starts_with("proof fn zero_run(") {
@@ -1623,15 +1626,25 @@ fn zero_axioms_called_from_zero_run_only() {
             } else if in_zero_run && line == "}" {
                 in_zero_run = false;
             }
+            if rel == "class/table.rs" && line.starts_with("    pub fn new(") {
+                in_table_new = true;
+            } else if in_table_new && line == "    }" {
+                in_table_new = false;
+            }
             if t.starts_with("//") || !needles.iter().any(|n| t.contains(n.as_str())) {
                 continue;
             }
-            if rel == "huge/mod.rs" && t.starts_with("axiom fn ") {
+            let defines = t.starts_with("axiom fn ") || t.starts_with("pub(crate) axiom fn ");
+            if rel == "huge/mod.rs" && defines {
+                continue;
+            }
+            if in_table_new && t.contains(needles[0].as_str()) {
+                table_calls += 1;
                 continue;
             }
             assert!(
                 rel == "huge/mod.rs" && in_zero_run,
-                "{rel}: got = a zero axiom used outside zero_run ({t}), want = zero_run only"
+                "{rel}: got = a zero axiom used outside zero_run and SlabTable::new ({t}), want = those only"
             );
             calls += 1;
         }
@@ -1639,5 +1652,9 @@ fn zero_axioms_called_from_zero_run_only() {
     assert_eq!(
         calls, 4,
         "zero axiom calls in zero_run: got = {calls}, want = 4"
+    );
+    assert_eq!(
+        table_calls, 1,
+        "fresh-mapping zero axiom calls in SlabTable::new: got = {table_calls}, want = 1"
     );
 }
