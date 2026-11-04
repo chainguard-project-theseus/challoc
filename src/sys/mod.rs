@@ -1274,7 +1274,7 @@ mod linux {
         let r = unsafe { raw::syscall3(nr::SCHED_GETAFFINITY, 0, len, mask.as_mut_ptr() as usize) };
         match decode(r) {
             Ok(written) => {
-                let words = written.min(len).div_ceil(8);
+                let words = crate::vspec::div_ceil(written.min(len), 8);
                 // `mask[..words].iter().map(|w| w.count_ones()).sum()`, spelled
                 // out: Verus does not specify `Map` or `Sum`.
                 let mut bits: u32 = 0;

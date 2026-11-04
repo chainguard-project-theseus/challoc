@@ -808,8 +808,8 @@ impl Set {
             r matches Some(s) ==> (s.store matches Store::Own(l) && l.claimed()),
             *final(ord) == *old(ord),
     {
-        let l0_words = nslabs.div_ceil(64);
-        let l1_words = l0_words.div_ceil(64);
+        let l0_words = crate::vspec::div_ceil(nslabs, 64);
+        let l1_words = crate::vspec::div_ceil(l0_words, 64);
         let tracked mut words = ZeroRaw::empty(cast_provenance());
         let mut table = Lazy::reserve(meta, 8 * TwoLevelBitmap::words_needed(nslabs), page, Tracked(&mut words), Tracked(ord))?;
         proof {

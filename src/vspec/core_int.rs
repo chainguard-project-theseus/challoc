@@ -28,13 +28,6 @@ pub assume_specification<T, I>[ <[T]>::get_unchecked::<I> ](slice: &[T], i: I) -
     ensures call_ensures(<I as core::slice::SliceIndex<[T]>>::index, (i, slice), b),
 ;
 
-/// `usize::div_ceil`: the quotient rounded up; panics when `d == 0`
-/// (core docs), and cannot overflow otherwise.
-pub assume_specification[ usize::div_ceil ](x: usize, d: usize) -> (r: usize)
-    requires d > 0,
-    ensures r as int == (x as int + d as int - 1) / d as int,
-;
-
 pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
     ensures r == u64_trailing_zeros(x as u64),
 ;

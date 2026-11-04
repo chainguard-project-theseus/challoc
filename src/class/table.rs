@@ -1758,12 +1758,12 @@ impl SlabTable {
         let descs = Lazy::reserve(meta, stagger + nslabs * stride, align, Tracked(&mut draw), Tracked(ord))?;
         let bits = Lazy::reserve(
             meta,
-            stagger + (nslabs * cls.slab_bits()).div_ceil(8),
+            stagger + crate::vspec::div_ceil(nslabs * cls.slab_bits(), 8),
             align,
             Tracked(&mut braw),
             Tracked(ord),
         )?;
-        let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align, Tracked(&mut oraw), Tracked(ord))?;
+        let owners = Lazy::reserve(meta, stagger + crate::vspec::div_ceil(nslabs, group) * 2, align, Tracked(&mut oraw), Tracked(ord))?;
         let bits_base = bits.start() + stagger;
         let owners_base = owners.start() + stagger;
         let desc_base = descs.start() + stagger;
@@ -4117,7 +4117,7 @@ impl SlabTable {
             }
         }
         g.descs.ensure(meta, page, stagger + end * desc_stride(class), Tracked(&mut under)).ok()?;
-        g.bits.ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8), Tracked(&mut under)).ok()?;
+        g.bits.ensure(meta, page, stagger + crate::vspec::div_ceil(end * cls.slab_bits(), 8), Tracked(&mut under)).ok()?;
         g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2, Tracked(&mut under)).ok()?;
         sets.ensure_sets(meta, sets_page, end - 1, Tracked(&mut under)).ok()?;
         // The owner word and the descriptors' arena field record the same

@@ -2242,8 +2242,8 @@ impl TwoLevelBitmap {
         ensures
             r == (nbits + 63) / 64 + ((nbits + 63) / 64 + 63) / 64,
     {
-        let l0 = nbits.div_ceil(64);
-        l0 + l0.div_ceil(64)
+        let l0 = crate::vspec::div_ceil(nbits, 64);
+        l0 + crate::vspec::div_ceil(l0, 64)
     }
 
     /// Build a set over `0..nbits` on top of `words_needed(nbits)` words at
@@ -2276,7 +2276,7 @@ impl TwoLevelBitmap {
             r.fresh(nbits),
             r.place() == (ptr@.addr as int, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
     {
-        let l0_words = nbits.div_ceil(64);
+        let l0_words = crate::vspec::div_ceil(nbits, 64);
         let ghost l1 = (l0_words as int + 63) / 64;
         let ghost n = l1 + l0_words;
         proof {
@@ -2293,7 +2293,7 @@ impl TwoLevelBitmap {
         TwoLevelBitmap {
             nbits,
             l0_words,
-            l1_words: l0_words.div_ceil(64),
+            l1_words: crate::vspec::div_ceil(l0_words, 64),
             l1_used: 0,
             ptr,
             stride: 1,
@@ -2341,7 +2341,7 @@ impl TwoLevelBitmap {
             r.fresh(nbits),
             r.place() == (ptr@.addr as int, 8 * chunked_span((((nbits as int) + 63) / 64 + 63) / 64, stride as int)),
     {
-        let l0_words = nbits.div_ceil(64);
+        let l0_words = crate::vspec::div_ceil(nbits, 64);
         let ghost l1 = (l0_words as int + 63) / 64;
         let ghost (rows, s) = (65 * l1, stride as int);
         proof {
@@ -2370,7 +2370,7 @@ impl TwoLevelBitmap {
         TwoLevelBitmap {
             nbits,
             l0_words,
-            l1_words: l0_words.div_ceil(64),
+            l1_words: crate::vspec::div_ceil(l0_words, 64),
             l1_used: 0,
             ptr,
             stride,
@@ -2384,7 +2384,7 @@ impl TwoLevelBitmap {
         ensures
             r == ((nbits + 63) / 64 + 63) / 64,
     {
-        nbits.div_ceil(64).div_ceil(64)
+        crate::vspec::div_ceil(crate::vspec::div_ceil(nbits, 64), 64)
     }
 
     /// Rows a chunked view over `0..nbits` spans (65 per level-1 word).
