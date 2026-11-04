@@ -246,22 +246,17 @@ impl TableInner {
 /// with zero counts, uncommitted tables, every slab's markers and
 /// descriptor permission, and no watermark copy.
 ///
-/// Verified holders: `guards` changes nothing. `take_group` moves
-/// `next_slab` to the end of the group it hands out, takes the group's
-/// markers and descriptor permissions, and updates its half of the
-/// watermark's ghost variable, and of the copy's once it is set, to the
-/// new `next_slab` as it stores each, which its proof shows keeps every
-/// conjunct on the hand-out (a `?` return after a partial commit keeps
-/// them through `Lazy::ensure`'s postcondition, not asserted there:
-/// Verus checks no invariant at the guard's drop); `mirror_watermark` sets the copy's
-/// pointer, its invariant and its half of the copy's ghost variable together. `commit_run` and `commit_slab` add
-/// one to `guards` for the guard slab they commit and change no other
-/// field, and `inv` does not bound `guards`, so every conjunct still holds
-/// when their guard drops.
+/// Each holder outside the tests (`SlabTable::mirror_watermark`,
+/// `guards`, `take_group`, `commit_run` and `commit_slab`) ends with
+/// `LockGuard::unlock`, which requires [`TableInner::inv`] (this axiom)
+/// and the frame ([`axiom_table_lock_frame`]), on every path to a return
+/// (`api::tests::guards_end_in_unlock`); a guard dropped without it
+/// would release unchecked. A panic aborts (`panic = "abort"`) outside
+/// the tests, so it never releases.
 ///
-/// Unverified holders: the test helper `corrupt_owner_word` only commits
-/// through `Lazy::ensure`. The fork handlers take the raw lock without
-/// touching the value.
+/// The test helper `corrupt_owner_word` only commits through
+/// `Lazy::ensure`. The fork handlers take the raw lock without touching
+/// the value.
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
@@ -272,11 +267,9 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 
 /// Assumption (`lock.rs`): the commit lock's ghost geometry, marker
 /// authorities, descriptor array and the location of the watermark's
-/// ghost variable never change. No holder writes them:
-/// the verified ones (`take_group`, `mirror_watermark`, `commit_run`,
-/// `commit_slab`, `guards`) by their code, which Verus does not check at
-/// the guard's drop, and the test helper `corrupt_owner_word` only
-/// commits.
+/// ghost variable never change. Each holder outside the tests checks it
+/// at its `LockGuard::unlock`, as for [`axiom_table_lock_inv`]; the test
+/// helper `corrupt_owner_word` only commits.
 pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableInner)
     ensures
         #[trigger] crate::lock::assumed_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
@@ -1078,10 +1071,9 @@ unsafe fn load_owner(t: &SlabTable, w: *const AtomicU16, Ghost(slab): Ghost<usiz
 /// `marks`, the owner-store markers of the group's slabs ([`owner_mark`]),
 /// which the class's table minted once each ([`mark_loc`]) and its commit
 /// lock holds for the slabs from the watermark on ([`TableInner::inv`]).
-/// That last holds under the lock's premise (`axiom_table_lock_inv`):
-/// every holder restores the invariant before it releases the lock, which
-/// `take_group` asserts and Verus does not check at the release
-/// (`LockGuard::drop`). It runs inside the word's invariant
+/// That last holds because every holder outside the tests ends with
+/// `LockGuard::unlock`, which requires the invariant
+/// (`axiom_table_lock_inv`). It runs inside the word's invariant
 /// ([`OwnerPred`]), which holds `perm`; every store to an owner word is
 /// this one (the test helper `corrupt_owner_word` aside), so the value
 /// `perm` holds is the word's.
@@ -3133,6 +3125,7 @@ impl SlabTable {
             gi.mauth = Tracked(Some(auth));
             assert(gi.inv());
         }
+        g.unlock();
     }
 }
 
@@ -3285,7 +3278,10 @@ impl SlabTable {
         proof {
             use_type_invariant(self);
         }
-        self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).guards
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        let r = g.guards;
+        g.unlock();
+        r
     }
 }
 
@@ -4088,6 +4084,7 @@ impl SlabTable {
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
         let s = self.next_slab_locked(&*g, &*sets);
         if s >= self.nslabs {
+            g.unlock();
             return None;
         }
         proof {
@@ -4113,10 +4110,14 @@ impl SlabTable {
                     requires end <= 0x400_0000, d <= 0xffff_ffff;
             }
         }
-        g.descs.ensure(meta, page, stagger + end * desc_stride(class), Tracked(&mut under)).ok()?;
-        g.bits.ensure(meta, page, stagger + crate::vspec::div_ceil(end * cls.slab_bits(), 8), Tracked(&mut under)).ok()?;
-        g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2, Tracked(&mut under)).ok()?;
-        sets.ensure_sets(meta, sets_page, end - 1, Tracked(&mut under)).ok()?;
+        if g.descs.ensure(meta, page, stagger + end * desc_stride(class), Tracked(&mut under)).is_err()
+            || g.bits.ensure(meta, page, stagger + crate::vspec::div_ceil(end * cls.slab_bits(), 8), Tracked(&mut under)).is_err()
+            || g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2, Tracked(&mut under)).is_err()
+            || sets.ensure_sets(meta, sets_page, end - 1, Tracked(&mut under)).is_err()
+        {
+            g.unlock();
+            return None;
+        }
         // The owner word and the descriptors' arena field record the same
         // fact (design section 4) and are written together only here, so
         // a group about to be handed out must show them agreeing: both
@@ -4476,6 +4477,7 @@ impl SlabTable {
             vstd::arithmetic::div_mod::lemma_mod_self_0(gr as int);
             assert(g@.inv());
         }
+        g.unlock();
         Some((s, end))
     }
 
@@ -4842,32 +4844,33 @@ impl SlabTable {
         let cls = self.class();
         let guard = self.is_guard_slab(s);
         let end = self.run_end(s, limit);
-        if guard {
-            let page = 1usize << self.lg_page;
-            // The guard first, on the slab the cursor finds `PROT_NONE`:
-            // a marker survives the run's commit, so the run is one
-            // `mprotect` as before; without one the slab stays
-            // `PROT_NONE` and only the slabs after it are committed.
-            if self.install_guard(self.slab_addr(s), page, cls.slab_size())? {
-                proof {
-                    lemma_run_commit(*self, s, end, true);
-                }
-                commit(self.slab_addr(s), (end - s) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
-            } else if end > s + 1 {
-                proof {
-                    lemma_run_commit(*self, (s + 1) as usize, end, false);
-                }
-                commit(self.slab_addr(s + 1), (end - s - 1) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
+        if !guard {
+            proof {
+                lemma_run_commit(*self, s, end, false);
             }
-            let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-            g.guards = g.guards.wrapping_add(1);
-            return Some(false);
+            commit(self.slab_addr(s), (end - s) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
+            return Some(true);
         }
-        proof {
-            lemma_run_commit(*self, s, end, false);
+        let page = 1usize << self.lg_page;
+        // The guard first, on the slab the cursor finds `PROT_NONE`: a
+        // marker survives the run's commit, so the run is one `mprotect`
+        // as before; without one the slab stays `PROT_NONE` and only the
+        // slabs after it are committed.
+        if self.install_guard(self.slab_addr(s), page, cls.slab_size())? {
+            proof {
+                lemma_run_commit(*self, s, end, true);
+            }
+            commit(self.slab_addr(s), (end - s) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
+        } else if end > s + 1 {
+            proof {
+                lemma_run_commit(*self, (s + 1) as usize, end, false);
+            }
+            commit(self.slab_addr(s + 1), (end - s - 1) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
         }
-        commit(self.slab_addr(s), (end - s) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
-        Some(true)
+        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+        g.guards = g.guards.wrapping_add(1);
+        g.unlock();
+        Some(false)
     }
 
     /// The end of the run that starts at slab `s` ([`starts_run`]), for a
@@ -4937,7 +4940,7 @@ impl SlabTable {
     /// `Some(false)` for a guard slab, `None` when `mprotect` fails (the
     /// slab stays uncommitted and may be retried). `ord` is the caller's
     /// lock-order token for the commit lock.
-    // Refill path: left as written so its codegen does not move.
+    // The page-group test stays `s % spp == 0`, not `is_multiple_of`.
     #[allow(clippy::manual_is_multiple_of)]
     pub(super) fn commit_slab(&self, s: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
@@ -4980,25 +4983,35 @@ impl SlabTable {
         // goes on first, while the slab is still `PROT_NONE` (as in
         // `commit_run`): a marker survives the commit, and without one
         // the page group stays `PROT_NONE`.
-        if first_of_page_group {
-            if is_guard && mode != crate::thp::Mode::Chunks {
-                if self.install_guard(addr, page, len)? {
+        let committed = if !first_of_page_group {
+            true
+        } else if is_guard && mode != crate::thp::Mode::Chunks {
+            match self.install_guard(addr, page, len) {
+                Some(true) => {
                     proof {
                         lemma_page_group_commit(*self, s, len, addr);
                     }
-                    self.commit_page_group(addr, len, mode)?;
-                }
-            } else {
-                proof {
-                    lemma_page_group_commit(*self, s, len, addr);
-                }
-                self.commit_page_group(addr, len, mode)?;
+                    self.commit_page_group(addr, len, mode).is_some()
+                },
+                Some(false) => true,
+                None => false,
             }
+        } else {
+            proof {
+                lemma_page_group_commit(*self, s, len, addr);
+            }
+            self.commit_page_group(addr, len, mode).is_some()
+        };
+        if !committed {
+            g.unlock();
+            return None;
         }
         if is_guard {
             g.guards = g.guards.wrapping_add(1);
+            g.unlock();
             return Some(false);
         }
+        g.unlock();
         Some(true)
     }
 
