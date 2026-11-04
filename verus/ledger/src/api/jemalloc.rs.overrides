@@ -2,5 +2,7 @@
 Hook	function pointer	Kani
 # The C caller hands over the block it frees under the entry point's contract.
 axiom_c_call	C-program contract	none (assumption)
-# The two volatile reads of the hook slots the C program writes.
-message_hook	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: api::jemalloc::kani_hook::message_hook_picks_first_set; not checked: that the C program stores only null or a function in the two hook slots, and never while the volatile reads run, which is its contract)	contract 3679688309, body 4059375492
+# The two volatile reads of the hook slots the C program writes: Kani runs
+# the body on every pair of hook values (none or one of two functions);
+# what the program stores there, and when, is its contract (C1).
+message_hook	UnsafeCell/volatile/transmute	Kani	discharged on premises (Kani: api::jemalloc::kani_hook::message_hook_picks_first_set; premises: C1 (the program stores only null or a hook function in the two slots, and never while the volatile reads run))	contract 3679688309, body 4059375492

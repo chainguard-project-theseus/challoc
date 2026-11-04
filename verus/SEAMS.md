@@ -137,12 +137,29 @@ status lists what it leaves unchecked. The premises stay assumed, and
 `verus/count` counts the seam as discharged. A contract that also rests
 on a premise of Verus's own model (a trusted seam such as
 `TlsSlot::entry`, or a ghost cell such as `TlsCell::tp`) is
-`trusted (partly checked, ...)`. Only Isla's checks take this status:
-`verus/count` fails on one that cites another check, names no premise,
-or names anything but labels of the platform premises
-`verus/isla/seams.md` defines: it reads the `- **LABEL, ...**` bullets
-of that file's "Platform premises" section and resolves each label
-against them. The bounds of an
+`trusted (partly checked, ...)`.
+`discharged on premises (Kani: <harness path>; premises: <what>)` is
+the same status for Kani harnesses that run the item's own body and
+cover its whole contract, as for `discharged (Kani: ...)`, except for
+facts about what the C program stores in, or passes through, challoc's
+exported C symbols, which no harness reaches: the C premises of
+`verus/kani/premises.md` ("Premises"), which `<what>` lists by label,
+each label optionally followed by a gloss in parentheses, as for Isla.
+`seams.sh --check` resolves its harness paths as it does those of a
+`discharged (Kani: ...)` status. The premises stay assumed, and
+`verus/count` counts the seam as discharged. A contract that also rests
+on anything else is `trusted (partly checked, ...)`: a premise of
+Verus's own model, as for Isla, and also two things a harness can leave
+out that an Isla run cannot: an obligation on Rust callers inside
+challoc that the item's `requires` does not state (an `unsafe fn`'s
+`# Safety` premise), and a pointer's provenance.
+Only Isla's and Kani's checks take this status: `verus/count` fails on
+one that cites another check or both, names no premise, or names
+anything but labels the cited check's file defines: it reads the
+`- **LABEL, ...**` bullets of `verus/isla/seams.md`'s "Platform
+premises" section (P and K labels) for Isla and of
+`verus/kani/premises.md`'s "Premises" section (C labels) for Kani, and
+resolves each label against them. The bounds of an
 Isla check are the build, link and platform residuals `verus/isla/seams.md`
 states for its runs (the static library's code and register assignments,
 the Linux user state the runs start from, the CPU configurations
