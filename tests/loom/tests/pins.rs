@@ -301,7 +301,7 @@ const PINS: &[(&str, &[&str])] = &[
             "pub const FREE: u8 = 0;",
             "pub const CACHED: u8 = 1;",
             "pub const LIVE: u8 = 2;",
-            "match b.compare_exchange(from, to, Ordering::Relaxed, Ordering::Relaxed) {",
+            "match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {",
         ],
     ),
     // `RouteByte`'s new, load, fetch_or (tests/loom/src/flags.rs).
@@ -431,13 +431,13 @@ const WAIVED: &[(&str, &str, &str, &str)] = &[
     (
         "src/heap/slotstate.rs",
         "step",
-        "let v = b.load(Ordering::Relaxed);",
+        "let v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(&perm));",
         "step without exchange: the claims, pops and releases, made only by the thread that holds the slot; slotstate.rs models the free's compare-and-exchange, the one racing step",
     ),
     (
         "src/heap/slotstate.rs",
         "step",
-        "b.store(to, Ordering::Relaxed);",
+        "crate::vspec::byte::store(b, to, Ordering::Relaxed, Tracked(&mut perm));",
         "step without exchange, as above",
     ),
     (

@@ -9800,6 +9800,150 @@ slab not handed out aborts is read from `SlabTable::check_live`
 | S7 | `Shared::sized_slot` without `exact_sized_free() ==> r is None` | `free_sized_fast` postconditions |
 | S8 | `ClassLine::lemma_sized_ok` without its nonzero guard mask | `Shared::sized_slot` postcondition |
 
+## Double-free window under `double_free_scan` (rests on the slot-state premise)
+
+Not numbered: #138 does not have it. The `file:line`s point into main
+at this section's commit. `double_free_scan` is opt-in hardening (off by
+default): one state byte per slot, `FREE`, `CACHED` or `LIVE`, which
+every transition of the slot moves with one `step`
+(`heap/slotstate.rs`). This states how long a slot's second free is
+caught at the call.
+
+**Statement.** Given the slot-state premise below, after a free of a
+slot returns, every later free of that slot aborts until the slot is
+handed to the program again: by a cache pop (`CACHED` to `LIVE`) or by
+`Shared::alloc_direct_state`'s claim (`FREE` to `LIVE`). In between, the byte is
+`CACHED` or `FREE` whatever other steps the code takes on it (a flush's
+release, a refill's claim), and the free's step returns that value, on
+which `free` aborts. Verus checks two parts: `free`, `claim`, `pop` and
+`release` each return only when their step found the state the
+transition starts from and left the one it ends in (an assertion at
+each one's end), and the sequence lemma over the code's transitions,
+which no code calls. That the byte holds, at each entry point, the value
+the last step on that slot left is a premise no contract encodes.
+The byte operations are `vspec::byte`'s wrappers (`load`, `store`,
+`compare_exchange`), on a permission one axiom mints for the byte.
+
+```rust
+// heap/slotstate.rs:152, :160, :169, :178, :190
+pub open spec fn transition(from: u8, to: u8) -> bool {
+    ||| from == FREE && (to == CACHED || to == LIVE)    // claim
+    ||| from == CACHED && (to == LIVE || to == FREE)    // pop, release
+    ||| from == LIVE && (to == CACHED || to == FREE)    // free
+    ||| from == NONE && to == NONE                      // check_not_cached's read
+}
+pub open spec fn after(held: u8, from: u8, to: u8) -> u8   // to if held == from, else held
+pub open spec fn seen(held: u8, from: u8) -> u8            // MOVED if held == from, else held
+pub open spec fn run(s: u8, ops: Seq<(u8, u8)>) -> u8      // after, step by step, from s
+pub open spec fn hands_out(s: u8, ops: Seq<(u8, u8)>) -> bool {
+    exists|i: int| 0 <= i < ops.len() && ops[i].1 == LIVE && run(s, ops.take(i)) == ops[i].0
+}
+
+// heap/slotstate.rs:206
+pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
+    requires
+        to == CACHED || to == FREE,
+        forall|i: int| 0 <= i < ops.len() ==> transition(ops[i].0, ops[i].1),
+        !hands_out(to, ops),
+    ensures
+        run(to, ops) == CACHED || run(to, ops) == FREE,
+        seen(run(to, ops), LIVE) == run(to, ops),
+
+// heap/slotstate.rs:376 (every transition; requires transition(from, to));
+// obs is the value the byte held and the one it holds after
+fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool,
+        Tracked(obs): Tracked<&mut Ghost<(u8, u8)>>) -> (r: u8)
+    ensures
+        r != PAST ==> is_state(final(obs)@.0) && r == seen(final(obs)@.0, from)
+            && final(obs)@.1 == after(final(obs)@.0, from, to),
+
+// heap/slotstate.rs:247, minted in step for the byte `byte` computed;
+// the operations are vspec::byte::{load, store, compare_exchange} on it
+axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
+    ensures perm.id() == byte_id(b), is_state(perm.value()),
+
+// heap/slotstate.rs:445, :466, :485, :504, at the end of free, claim, pop, release
+assert(obs@.0 == LIVE && obs@.1 == to);      // free: to is CACHED or FREE
+assert(obs@.0 == FREE && obs@.1 == to);      // claim: to is CACHED or LIVE
+assert(obs@.0 == CACHED && obs@.1 == LIVE);  // pop
+assert(obs@.0 == CACHED && obs@.1 == FREE);  // release
+```
+
+**Covers.** The five entry points (`free`, `claim`, `pop`, `release`,
+`check_not_cached`) and `step`. Verus checks that each passes `step` a
+pair `transition` lists (its `requires`), so the free's `to` is `CACHED`
+or `FREE` and a claim's `CACHED` or `LIVE`; a hand-out (`to == LIVE`)
+is then made only by `pop` and a claim to `LIVE`. Read from the code,
+not proved: that `step` is the only code that reads or writes a state
+byte (the module keeps the arrays private); that only
+`Shared::alloc_direct_state` claims to `LIVE` (`heap/shared.rs:2979`);
+and that every free route calls `free` first under the key: the cached free's slow path
+(`Heap::free_slow_in`, `heap/paths.rs:763`, before the slot reaches a
+cache or its slab) and the direct free (`free_direct`,
+`heap/paths.rs:1226`). The fast push declines under the key by its
+`ensures` (`Heap::push_cache_flags`, `heap/cache.rs:775`).
+
+**Proof.** `step` follows from the `vspec::byte` wrappers' contracts on
+the minted permission; each entry point's assertion follows from `step`'s `ensures` and the byte holding a state,
+since `seen` returns `MOVED` only for a byte that held `from` (a state
+is never `MOVED`). The theorem is an induction on `ops`: a step that
+moves the byte from `CACHED` or `FREE` either moves it to `LIVE`, which
+`hands_out` excludes, or to `CACHED` or `FREE` (`transition`; `NONE`
+moves only from `NONE`, which no byte holds).
+
+**Premises.**
+- The slot-state premise: at each step the slot's byte holds a state
+  (`axiom_slot_byte`, `heap/slotstate.rs:247`, whose contract says only
+  this), the one the last step on that slot left (`FREE` before the
+  first: the array is zero-filled). Each step mints a fresh permission;
+  ghost state does not cross from one call to the next, so the step from
+  "this free left `to`" to "the next step on the slot finds what the
+  steps since left" is this premise. Verus checks each step, not the
+  sequence. No verified invariant ties the bytes to the caches or the
+  bitmap (wolfi-dev/challoc#397).
+- The source test
+  `heap::slotstate::tests::slot_byte_axiom_is_called_only_in_step` pins
+  the mint to `step`, once. The slot-state bytes are not made by
+  `vspec::byte::new`; this mint is the only other source of a `BytePerm`
+  (`vspec/byte.rs`'s trust list names it).
+- The operations: `vspec::byte::load`, `store` and `compare_exchange`
+  (`core`'s load, store and strong compare-and-exchange, partly checked
+  by Kani in `src/kani/atomic.rs`); each returns the operation's result,
+  so no proof can supply one. That the byte at the address `byte`
+  computes is that slot's is `byte_at`'s trusted contract.
+- Atomicity: the free's compare-and-exchange makes two simultaneous
+  frees of one slot find `LIVE` once (`tests/loom/src/slotstate.rs`
+  models the race); the claims, pops and releases load and store, and
+  only the thread that holds the slot makes them.
+
+**Not covered.** A free after the slot is handed out again (ABA) passes:
+the slot is the program's, and nothing tells the two frees apart. A
+free of a slot whose slab is past the watermark aborts without a read
+(`PAST`), but no ghost state follows it. `realloc`, `malloc_usable_size`
+and `sallocx` take `check_not_cached`, which aborts on `CACHED` only (a
+`FREE` slot fails their bit test); no assertion is stated for it. With the key off nothing here runs.
+
+**Mutations** (each rejected by `cargo verus focus`, module
+`heap::slotstate`):
+
+| id | change | rejected by |
+|---|---|---|
+| M1 | the theorem without `!hands_out(to, ops)` | assertions in its proof |
+| M2 | the theorem without "every step is a `transition`" | assertions in its proof |
+| M3 | `transition` admits `CACHED` to `NONE` | the theorem's postcondition |
+| M4 | the theorem's `requires to == CACHED \|\| to == FREE` becomes `to == CACHED \|\| to == LIVE` | the theorem's postconditions |
+| M5 | `step` returns `MOVED` on a failed compare-and-exchange | `step`'s postcondition |
+| M6 | `step`'s load path returns `MOVED` without the store | `step`'s postcondition |
+| M7 | `axiom_slot_byte` without "the byte holds a state" | `step`'s postcondition (`is_state`) |
+| M8 | `free` without its abort on `FREE` (the last `else if`) | `free`'s assertion |
+| M9 | `free` steps from `CACHED` instead of `LIVE` | `step`'s precondition and `free`'s assertion |
+| M10 | `claim` without `requires to == CACHED \|\| to == LIVE` | `step`'s precondition |
+| M11 | `step` exchanges from `to` to `from` (arguments swapped) | `step`'s postcondition |
+| M12 | `pop` steps from `FREE` instead of `CACHED` | `pop`'s assertion |
+| M13 | `release` hands the slot out (`CACHED` to `LIVE`) | `release`'s assertion |
+| M14 | `free` admits `to == LIVE` | `step`'s precondition |
+| M15 | `step`'s load is `core`'s, not `vspec::byte::load` | `step`'s postcondition |
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)
