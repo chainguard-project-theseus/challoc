@@ -498,7 +498,14 @@ holders all end with it. For all nine no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
 left is the mutex contract (`lock::axiom_acquired`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
-test `api::tests::guards_end_in_unlock` checks. The impl for
+test `api::tests::guards_end_in_unlock` checks. The arena creation lock
+is also held by the fork handlers, whose release,
+`Lock::unlock_held_perm`, requires the invariant and frame as
+`LockGuard::unlock` does. The one exception is the initial value: eight
+of the nine take it from `Lock::new`, which requires the invariant,
+but the per-arena statistics locks take theirs from the trusted
+`Arena::put_stats`, which the test `put_stats_writes_lock_new_of_empty`
+compares with `Lock::new(ArenaStats::empty(index), ..)`. The impl for
 `meta::Inner` (`meta.rs`), the metadata lock: `Inner::wf`, with the
 page, the region's bounds and the ghost identities fixed. The impl for
 `[Lazy; SET_GROUPS]` (`class/sets.rs`), the slab-set tables' lock:
@@ -6823,7 +6830,8 @@ below `MAX_ARENAS`. `mallinfo2` (`api/glibc.rs`, verified) ensures
   index is published at most once (proved), and `create`'s index is at
   or above `auto` by the creation lock's frame (`Created`'s `LockSpec`
   impl: the lock's `n` never drops below its initial, automatic count,
-  which every guard's release checks). The ledger's `built` set is not tied to that
+  which every release checks, the fork handlers' `Lock::unlock_held_perm`
+  included). The ledger's `built` set is not tied to that
   snapshot (read from the code).
 - `Snapshot::narenas` is the number of arenas the scan found, so it is
   below `arenas.narenas` while an automatic arena is unbuilt
