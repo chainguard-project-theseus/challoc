@@ -486,9 +486,10 @@ process statistics lock (`collect_into`, `snapshot`,
 No other lock's holders call it, so for every other lock the invariant and frame
 are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Five locks'
-holders all end with it. For four of them no axiom states `lock_inv` and
+holders all end with it, and for all five no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
-left is that every holder reaches `LockGuard::unlock`, which the source
+left is the mutex contract (`lock::axiom_acquired`) and that every
+holder outside the tests reaches `LockGuard::unlock`, which the source
 test `api::tests::guards_end_in_unlock` checks. The impl for
 `meta::Inner` (`meta.rs`), the metadata lock: `Inner::wf`, with the
 page, the region's bounds and the ghost identities fixed. The impl for
@@ -497,8 +498,8 @@ each table's `Lazy::claimed`, with its base and length fixed. The impl
 for `Snapshot` (`stats.rs`), the process statistics lock:
 `Snapshot::inv`, with a frame true of any two snapshots. The impl for
 `()` (`heap/tcaches.rs`), the explicit-cache table lock: both `true`.
-The fifth, the huge lock, still takes its invariant and frame from
-`axiom_huge_lock_inv` and `axiom_huge_lock_frame` (`vspec/huge.rs`).
+The impl for `huge::Inner` (`huge/mod.rs`), the huge lock: `Inner::wf`,
+with the ghost page count, page shift and `Meta` identity fixed.
 Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it.
@@ -679,12 +680,12 @@ turns that into `is_huge_block(p, max(size, 1))`.
   (uninterpreted; its one fact is the trusted `AT_HWCAP` reading in
   `sys::auxv`, which `pac::available` turns into its contract), and
   `auth` also requires `may_abort_corrupt() || signed(p, modifier)`.
-- Huge results: `vspec::huge::axiom_huge_lock_inv`, `_frame`
-  (`vspec/huge.rs`), both checked at the release: every holder outside
-  the tests ends with `LockGuard::unlock`, which requires them (common
+- Huge results: the huge lock's invariant and frame, which
+  `huge::Inner`'s `LockSpec` impl (`huge/mod.rs`) defines and every
+  holder outside the tests checks at its `LockGuard::unlock` (common
   premises, "Locks"); `Huge::alloc_run`
   (`huge/mod.rs`) is verified. A kept run's bound rests on the
-  same axioms: `Huge::usable_size` reads its `spec_run_usable` from a
+  same invariant: `Huge::usable_size` reads its `spec_run_usable` from a
   live `Active` descriptor under the huge lock invariant (`run_ok`,
   `desc_ok`).
 - Class lock and commit lock invariants for the claim path:
@@ -928,7 +929,8 @@ The `Shared` static lies outside all three reservations
 **Entry points.** Those of theorem 1, through `fits`. The heap and huge
 conjuncts quantify over every well-formed `Heap` and `huge::Inner`
 value; they reach the real heaps and the huge lock's value only through
-the assumed `Heap::wf` and the huge lock axiom.
+the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
+`LockSpec` impl, checked at each holder's `LockGuard::unlock`).
 
 **Premises beyond the common ones.**
 - `vspec::ptr::axiom_ptr_add_addr` (`vspec/ptr.rs`): `p.add(i)` is
@@ -1006,7 +1008,9 @@ the assumed `Heap::wf` and the huge lock axiom.
   `Meta::alloc_raw` just returned is fresh (it uses up the block's permission);
   `Heap::lemma_caches_in_meta` (`heap/mod.rs`) needs `cell_in_meta`,
   which `ensure_cache` (`heap/cache.rs`) proves for each stack.
-- Huge lock axioms (`vspec/huge.rs`) for `huge::Inner`.
+- The huge lock's holders reach `LockGuard::unlock`, which requires
+  the invariant and frame `huge::Inner`'s `LockSpec` impl defines
+  (`api::tests::guards_end_in_unlock`).
 - The `Shared` static: `Reserved::is_apart_from_static`
   (`layout/regions.rs`, trusted, the kernel's `mmap` contract): each of
   the three reservations is apart from the loaded object's data, which
@@ -1316,7 +1320,8 @@ meaning, and no stronger.
   the history.
 - Cache path: `CachePerms::zero_ok` (`heap/zero.rs`), part of the
   assumed `Heap::wf`; `Heap::take_handed` (`heap/zero.rs`).
-- Class and huge lock axioms, for the state `take` reads.
+- The class lock axioms and the huge lock's invariant (`huge::Inner`'s
+  `LockSpec` impl), for the state `take` reads.
 - The fills and the copy are valid because they take the block's
   permission (`vspec::user`, from `heap::live::axiom_hand_out` or
   `axiom_c_claim`); no other axiom makes them valid.
@@ -3478,10 +3483,11 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
 `Purged` neighbours are coalesced: `free_run` merges both states.
 
 **Premises beyond the common ones.**
-- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs`): the lock
-  protects `Inner::wf`, including `coalesced`, `free_marked` and
-  `free_exact` (theorem 29). `axiom_huge_lock_frame` (`vspec/huge.rs`)
-  states the lock's frame as an equivalence (`==`).
+- The huge lock protects `Inner::wf`, including `coalesced`,
+  `free_marked` and `free_exact` (theorem 29): `huge::Inner`'s
+  `LockSpec` impl (`huge/mod.rs`) defines the invariant and the frame
+  (an equivalence, `==`), and every holder checks both at its
+  `LockGuard::unlock` (`api::tests::guards_end_in_unlock`).
 - `class::Set::ensure` (`class/sets.rs`) leaves the bitmap view
   unchanged (verified, as is the commit it makes); `alloc_aligned`
   calls it between `find` and `take`. The view's `set_range`,
@@ -3703,7 +3709,8 @@ run authority stay those the batch's `free` was made from. The makers:
   `page_group_is_idle` says so.
 
 **Premises beyond the common ones.**
-- Huge: none beyond the huge lock axioms (`vspec/huge.rs`) and
+- Huge: none beyond the huge lock's holders reaching
+  `LockGuard::unlock` (`huge::Inner`'s `LockSpec` impl) and
   `huge::axiom_run_locs` (one huge allocator per process), which
   theorem 5's run tokens already use.
 - Class: none beyond the class lock axioms. `page_group_is_idle`
@@ -4342,9 +4349,9 @@ placement (or NULL) over 2,000 random steps (allocations, frees and
 purges) against a brute-force lowest fit over the live runs.
 
 **Premises beyond the common ones.**
-- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs`): the lock
-  protects `Inner::wf`, with `coalesced`, `free_marked` and (for
-  `extent_at`'s abort) `free_exact`.
+- The huge lock protects `Inner::wf`, with `coalesced`, `free_marked`
+  and (for `extent_at`'s abort) `free_exact`: `huge::Inner`'s `LockSpec`
+  impl defines it, and every holder checks it at its `LockGuard::unlock`.
 - `TwoLevelBitmap::lowest_set_from` (`bitmap.rs`) is verified: the
   lowest set bit at or past `from`, or none.
 
@@ -4979,10 +4986,10 @@ for `k <= 256`.
   arena's `stats.arenas.<i>.*` (`arena_stats`, which does not take the
   process statistics lock) may see it from a newer collection than the
   `stats.*` totals it read before.
-- The lock-frame axioms it rests on (`axiom_arenas_lock_frame`,
-  `axiom_huge_lock_frame`) state the frame as an equivalence (`==`);
-  the metadata lock's frame is defined by `meta::Inner`'s `LockSpec`
-  impl.
+- The lock-frame axiom it rests on (`axiom_arenas_lock_frame`) states
+  the frame as an equivalence (`==`); the metadata and huge locks'
+  frames, which `meta::Inner`'s and `huge::Inner`'s `LockSpec` impls
+  define, are equivalences too.
 
 ## 28. Cache flush completeness
 
@@ -5226,8 +5233,9 @@ Without `free_exact`, the invariant would admit an extra free bit on an
 bit.
 
 **Premises beyond the common ones.**
-- `vspec::huge::axiom_huge_lock_inv` (`vspec/huge.rs`): the lock
-  protects `Inner::wf`, including `free_exact`.
+- The huge lock protects `Inner::wf`, including `free_exact`:
+  `huge::Inner`'s `LockSpec` impl defines it, and every holder checks it
+  at its `LockGuard::unlock`.
 - `class::Set::ensure` (verified) leaves the bitmap view unchanged, as
   in theorem 17. The view's `set_range`, `clear_range`,
   `lowest_set_from` and `lemma_fresh` are verified (`bitmap.rs`).
@@ -5581,7 +5589,8 @@ token).
 - `madvise` does what it is asked when it succeeds (the kernel
   contract, a common premise); `EINVAL` leaves the range in place and
   is reported, any other failure aborts in `discard`.
-- The huge lock axioms (`vspec/huge.rs`), as for theorems 17 and 19.
+- The huge lock's invariant (`huge::Inner`'s `LockSpec` impl), as for
+  theorems 17 and 19.
 
 **Scope and where the statement is weaker than the code.**
 - Not "ends `Purged`" outright. A run above the cap that coalesces with
@@ -7180,8 +7189,9 @@ How it is proved:
 `purge_arena`'s contract).
 
 **Premises beyond the common ones.**
-- The class and huge lock axioms (`axiom_class_lock_inv`,
-  `vspec/huge.rs`), as for theorems 17, 19 and 29: the value a lock
+- The class lock axiom (`axiom_class_lock_inv`) and the huge lock's
+  invariant (`huge::Inner`'s `LockSpec` impl), as for theorems 17, 19
+  and 29: the value a lock
   hands over satisfies its invariant, which is what ties the empty set to
   the `Empty` slabs and the `Empty` list to the `Empty` extents.
 - `madvise` does what it is asked when it succeeds (a common premise);
