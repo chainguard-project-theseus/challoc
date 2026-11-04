@@ -70,7 +70,9 @@ pub(crate) struct TableInner {
     /// Next slab number not yet handed to any arena (`high_water + 1` in
     /// the design, at group granularity).
     pub(super) next_slab: usize,
-    /// Guard slabs committed (never handed out).
+    /// Guard slabs committed (never handed out). A statistic: the count
+    /// wraps (`wrapping_add`, the same add as `+= 1` in the release
+    /// build, which checks no overflow).
     pub(super) guards: usize,
     /// Ghost: the table's page, hand-out group and slab count, fixed at
     /// `new` ([`axiom_table_lock_frame`]), for [`TableInner::inv`].
@@ -4867,7 +4869,8 @@ impl SlabTable {
             }
             // `guards <= next_slab` after the increment is the cross-arena
             // premise `axiom_table_lock_inv` names, not shown here.
-            self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare())).guards += 1;
+            let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+            g.guards = g.guards.wrapping_add(1);
             return Some(false);
         }
         proof {
@@ -5006,7 +5009,7 @@ impl SlabTable {
         if is_guard {
             // As in `commit_run`: `guards <= next_slab` afterwards rests on
             // the cross-arena premise `axiom_table_lock_inv` names.
-            g.guards += 1;
+            g.guards = g.guards.wrapping_add(1);
             return Some(false);
         }
         Some(true)
