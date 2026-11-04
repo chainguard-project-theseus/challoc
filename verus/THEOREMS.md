@@ -477,14 +477,16 @@ release is the guard's drop at its end) requires `lock_inv` and
 return (`Meta::alloc`, `alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
 `reserve_table`, `commit`, `reserve_committed_raw`, `stats`), and so
 does every holder of the explicit-cache table lock (`Tcaches::create`,
-`destroy`), the slab-set tables' lock (`SetTable::ensure`) and the
+`destroy`), the slab-set tables' lock (`SetTable::ensure`), the huge
+lock (`Huge::alloc_aligned`, `free_run`, `usable_size`, `lookup`,
+`purge_empty`, `purge_curve`, `empty_bytes`, `stats`) and the
 process statistics lock (`collect_into`, `snapshot`,
 `arena_stats_all_into`); the source test `api::tests::guards_end_in_unlock`
 (`api/mod.rs`) checks that none of these guards drops without it.
 No other lock's holders call it, so for every other lock the invariant and frame
 are not checked at the release: each verified holder ends with them
-through its last call's postcondition or an `assert`. For the four
-locks whose holders all end with it, no axiom states `lock_inv` and
+through its last call's postcondition or an `assert`. Five locks'
+holders all end with it. For four of them no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
 left is that every holder reaches `LockGuard::unlock`, which the source
 test `api::tests::guards_end_in_unlock` checks. The impl for
@@ -495,6 +497,8 @@ each table's `Lazy::claimed`, with its base and length fixed. The impl
 for `Snapshot` (`stats.rs`), the process statistics lock:
 `Snapshot::inv`, with a frame true of any two snapshots. The impl for
 `()` (`heap/tcaches.rs`), the explicit-cache table lock: both `true`.
+The fifth, the huge lock, still takes its invariant and frame from
+`axiom_huge_lock_inv` and `axiom_huge_lock_frame` (`vspec/huge.rs`).
 Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it.
@@ -676,7 +680,9 @@ turns that into `is_huge_block(p, max(size, 1))`.
   `sys::auxv`, which `pac::available` turns into its contract), and
   `auth` also requires `may_abort_corrupt() || signed(p, modifier)`.
 - Huge results: `vspec::huge::axiom_huge_lock_inv`, `_frame`
-  (`vspec/huge.rs`); `Huge::alloc_run`
+  (`vspec/huge.rs`), both checked at the release: every holder outside
+  the tests ends with `LockGuard::unlock`, which requires them (common
+  premises, "Locks"); `Huge::alloc_run`
   (`huge/mod.rs`) is verified. A kept run's bound rests on the
   same axioms: `Huge::usable_size` reads its `spec_run_usable` from a
   live `Active` descriptor under the huge lock invariant (`run_ok`,

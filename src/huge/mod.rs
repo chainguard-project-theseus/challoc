@@ -5046,91 +5046,98 @@ impl Huge {
         let page = self.page_size();
         let tracked mut under = LockOrder::spare();
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
-        let Some((s, ext)) = self.find(&g, need, align) else { return (Placed::NONE, Tracked(Zeroed::empty(0))) };
-        let end = s + need;
-        // The lock's value at the placement: `prepare`'s commits are apart
-        // from its live runs' guards. The `ensure` calls below change neither
-        // its descriptors nor its mark (`prepare` gets the guard's
-        // permission and `g.next_page`).
-        let ghost gp = g@;
-        proof {
-            self.lemma_fits_apart(&gp, s as int, need as int, align);
-            // `s` is a placement, so the request is placeable.
-            assert(self.aligned_at(s as int, align));
-            assert(page_aligned(self.base as int, self.spec_page(), s as int, align as int));
-        }
-
-        // Everything fallible happens before any state changes.
-        let (run, _run_opt) = alloc_desc(meta, Tracked(&mut under));
-        if run.is_null() {
-            return (Placed::NONE, Tracked(Zeroed::empty(0)));
-        }
-        let run_perm = Tracked(_run_opt.get().tracked_unwrap());
-        let (spare, _spare_opt) = alloc_desc(meta, Tracked(&mut under));
-        if spare.is_null() {
-            free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
-            return (Placed::NONE, Tracked(Zeroed::empty(0)));
-        }
-        let spare_perm = Tracked(_spare_opt.get().tracked_unwrap());
-        proof {
-            // The table holds at most two keys per extent, a page or more
-            // each, so its count is far below `Table::ensure`'s bound.
-            assert forall|i: int| 0 <= i < g@.all@.len() implies (#[trigger] g@.descs@[g@.all@[i]].value()).pages >= 1
-                && g@.descs@[g@.all@[i]].value().state <= 2 by {
-                assert(g@.all@.contains(g@.all@[i]));
-                assert(g@.descs@.contains_key(g@.all@[i]));
-            }
-            lemma_tally_counts(g@.all@, g@.descs@, 0);
-            assert(stat(g@.stats, 0) == tally(g@.all@, g@.descs@, 0));
-            assert(stat(g@.stats, 1) == tally(g@.all@, g@.descs@, 1));
-            assert(stat(g@.stats, 2) == tally(g@.all@, g@.descs@, 2));
-        }
-        // Room for this allocation's keys (3) and one more per live run,
-        // this one included: a run's free adds at most one key net (its
-        // start key goes, a free extent's two come, the neighbours' merge
-        // away), and its own `ensure` is best effort, so with this
-        // reservation a free never finds the table full however the
-        // metadata region fares (design 14.1). Capped where no process
-        // gets.
-        let runs = g.stats.runs;
-        let extra = if g.table.keys() <= 0xFFFF_FFFF && runs <= 0xFFFF_FFFF { 4 + runs } else { 3 };
-        let ok = g.table.ensure(meta, page, extra, Tracked(&mut under)).is_ok()
-            && (end <= g.next_page || g.free.ensure(meta, page, end - 1, Tracked(&mut under)).is_ok())
-            && self.prepare(s, usable_pages, g.next_page, g.perm()).is_ok();
-        if !ok {
-            free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
-            free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())), Tracked(&mut under));
+        let r = if let Some((s, ext)) = self.find(&g, need, align) {
+            let end = s + need;
+            // The lock's value at the placement: `prepare`'s commits are apart
+            // from its live runs' guards. The `ensure` calls below change neither
+            // its descriptors nor its mark (`prepare` gets the guard's
+            // permission and `g.next_page`).
+            let ghost gp = g@;
             proof {
-                // The lock's frame: the ghost page count, shift and `Meta`
-                // identity are the ones `new` set.
-                assert(lock_frame(lock_init(self.inner), g@));
+                self.lemma_fits_apart(&gp, s as int, need as int, align);
+                // `s` is a placement, so the request is placeable.
+                assert(self.aligned_at(s as int, align));
+                assert(page_aligned(self.base as int, self.spec_page(), s as int, align as int));
             }
-            return (Placed::NONE, Tracked(Zeroed::empty(0)));
-        }
 
-        proof {
-            // The `ensure` calls left the runs `prepare` was shown apart from.
-            assert(g@.descs@ == gp.descs@);
-        }
-        // `check_zero` needs the extent's state before `take` may free it.
-        let _gi: &Inner = &g;
-        let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
-        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, zero, run_perm, spare_perm, Tracked(tok), Tracked(&mut under));
-        // `take` wrote the run's descriptor; the lock is still held.
-        let pages = g.desc(run).pages();
-        self.sync_oldest(&g);
-        if let (true, Some(prior)) = (zeroed, prior) {
-            self.check_zero(s, usable_pages, prior, arena, Tracked(tok));
-        }
-        proof {
-            // The lock's frame: the ghost page count, shift and `Meta`
-            // identity are the ones `new` set.
-            assert(lock_frame(lock_init(self.inner), g@));
-        }
-        proof {
-            self.lemma_run_at(s, usable_pages, size, align);
-        }
-        (Placed { ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)), zeroed, pages }, z)
+            // Everything fallible happens before any state changes.
+            let (run, _run_opt) = alloc_desc(meta, Tracked(&mut under));
+            if run.is_null() {
+                (Placed::NONE, Tracked(Zeroed::empty(0)))
+            } else {
+                let run_perm = Tracked(_run_opt.get().tracked_unwrap());
+                let (spare, _spare_opt) = alloc_desc(meta, Tracked(&mut under));
+                if spare.is_null() {
+                    free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
+                    (Placed::NONE, Tracked(Zeroed::empty(0)))
+                } else {
+                    let spare_perm = Tracked(_spare_opt.get().tracked_unwrap());
+                    proof {
+                        // The table holds at most two keys per extent, a page or more
+                        // each, so its count is far below `Table::ensure`'s bound.
+                        assert forall|i: int| 0 <= i < g@.all@.len() implies (#[trigger] g@.descs@[g@.all@[i]].value()).pages >= 1
+                            && g@.descs@[g@.all@[i]].value().state <= 2 by {
+                            assert(g@.all@.contains(g@.all@[i]));
+                            assert(g@.descs@.contains_key(g@.all@[i]));
+                        }
+                        lemma_tally_counts(g@.all@, g@.descs@, 0);
+                        assert(stat(g@.stats, 0) == tally(g@.all@, g@.descs@, 0));
+                        assert(stat(g@.stats, 1) == tally(g@.all@, g@.descs@, 1));
+                        assert(stat(g@.stats, 2) == tally(g@.all@, g@.descs@, 2));
+                    }
+                    // Room for this allocation's keys (3) and one more per live run,
+                    // this one included: a run's free adds at most one key net (its
+                    // start key goes, a free extent's two come, the neighbours' merge
+                    // away), and its own `ensure` is best effort, so with this
+                    // reservation a free never finds the table full however the
+                    // metadata region fares (design 14.1). Capped where no process
+                    // gets.
+                    let runs = g.stats.runs;
+                    let extra = if g.table.keys() <= 0xFFFF_FFFF && runs <= 0xFFFF_FFFF { 4 + runs } else { 3 };
+                    let ok = g.table.ensure(meta, page, extra, Tracked(&mut under)).is_ok()
+                        && (end <= g.next_page || g.free.ensure(meta, page, end - 1, Tracked(&mut under)).is_ok())
+                        && self.prepare(s, usable_pages, g.next_page, g.perm()).is_ok();
+                    if !ok {
+                        free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
+                        free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())), Tracked(&mut under));
+                        proof {
+                            // The lock's frame: the ghost page count, shift and `Meta`
+                            // identity are the ones `new` set.
+                            assert(lock_frame(lock_init(self.inner), g@));
+                        }
+                        (Placed::NONE, Tracked(Zeroed::empty(0)))
+                    } else {
+                        proof {
+                            // The `ensure` calls left the runs `prepare` was shown apart from.
+                            assert(g@.descs@ == gp.descs@);
+                        }
+                        // `check_zero` needs the extent's state before `take` may free it.
+                        let _gi: &Inner = &g;
+                        let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
+                        let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, zero, run_perm, spare_perm, Tracked(tok), Tracked(&mut under));
+                        // `take` wrote the run's descriptor; the lock is still held.
+                        let pages = g.desc(run).pages();
+                        self.sync_oldest(&g);
+                        if let (true, Some(prior)) = (zeroed, prior) {
+                            self.check_zero(s, usable_pages, prior, arena, Tracked(tok));
+                        }
+                        proof {
+                            // The lock's frame: the ghost page count, shift and `Meta`
+                            // identity are the ones `new` set.
+                            assert(lock_frame(lock_init(self.inner), g@));
+                        }
+                        proof {
+                            self.lemma_run_at(s, usable_pages, size, align);
+                        }
+                        (Placed { ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)), zeroed, pages }, z)
+                    }
+                }
+            }
+        } else {
+            (Placed::NONE, Tracked(Zeroed::empty(0)))
+        };
+        g.unlock();
+        r
     }
 
     /// Where the pages of a run at `s` come from, for `check_zero`: the
@@ -7775,7 +7782,7 @@ impl Huge {
             );
         }
         let first = self.sync_oldest(&g);
-        drop(g);
+        g.unlock();
         if first {
             purge::note_empty();
         }
@@ -7885,7 +7892,9 @@ impl Huge {
                     p > 0,
             ;
         }
-        g.desc(d).usable
+        let r = g.desc(d).usable;
+        g.unlock();
+        r
     }
 
     /// Descriptor of the extent starting or ending at `page`, if any. With
@@ -7930,18 +7939,21 @@ impl Huge {
                 assert(v.usable == (t.npages() - GUARD_PAGES) * self.spec_page());
             }
         }
-        if d.is_null() {
-            return None;
-        }
         // Table entries are live descriptors.
-        Some(RunInfo {
-            start: g.desc(d).start(),
-            pages: g.desc(d).pages(),
-            usable: g.desc(d).usable,
-            arena: g.desc(d).arena,
-            state: g.desc(d).state(),
-            dirty_at: g.desc(d).dirty_at,
-        })
+        let r = if d.is_null() {
+            None
+        } else {
+            Some(RunInfo {
+                start: g.desc(d).start(),
+                pages: g.desc(d).pages(),
+                usable: g.desc(d).usable,
+                arena: g.desc(d).arena,
+                state: g.desc(d).state(),
+                dirty_at: g.desc(d).dirty_at,
+            })
+        };
+        g.unlock();
+        r
     }
 }
 
@@ -8080,7 +8092,9 @@ impl Huge {
             // identity are the ones `new` set.
             assert(lock_frame(lock_init(self.inner), g@));
         }
-        t.purged
+        let r = t.purged;
+        g.unlock();
+        r
     }
 
     /// Push `d`, the first member of the `Empty` list a walk has left
@@ -8767,7 +8781,9 @@ impl Huge {
             // identity are the ones `new` set.
             assert(lock_frame(lock_init(self.inner), g@));
         }
-        t.purged
+        let r = t.purged;
+        g.unlock();
+        r
     }
 
     /// [`decay_with`](Huge::decay_with) keeping everything the curve
@@ -8838,7 +8854,9 @@ impl Huge {
             assert(g@.stats.empty_pages <= g@.next_page <= self.npages);
             self.lemma_pages(g@.stats.empty_pages as usize);
         }
-        g.stats.empty_pages << self.lg_page
+        let r = g.stats.empty_pages << self.lg_page;
+        g.unlock();
+        r
     }
 
     /// The extent counters, from one lock hold. The free extents' pages
@@ -8860,7 +8878,9 @@ impl Huge {
         proof {
             g@.table.lemma_wf_storage();
         }
-        HugeStats { table_cap: g.table.cap(), ..g.stats }
+        let r = HugeStats { table_cap: g.table.cap(), ..g.stats };
+        g.unlock();
+        r
     }
 }
 
