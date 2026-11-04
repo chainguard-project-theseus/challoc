@@ -239,7 +239,7 @@ pub assume_specification<'a, T, F: FnMut(&'a T) -> K, K: PartialOrd>[ <[T]>::is_
 ## `select_ptrs`
 
 src/vspec/slice.rs:216. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::select_ptrs_short, kani_proofs::slice::select_ptrs_10, kani_proofs::slice::select_ptrs_11, kani_proofs::slice::select_ptrs_12; not checked: every length above 12: at the last or first index `core`'s `select_nth_unstable` swaps the largest or smallest entry into place at every length, and at any other index it sorts by insertion up to 16 elements and runs a quickselect past that, and the flush selects on up to a cache's 1024 slots).
 
 > `s.select_nth_unstable(index)` on a slice of raw pointers, its returned parts dropped: permutes `s`.
 
@@ -256,7 +256,7 @@ pub fn select_ptrs(s: &mut [*mut u8], index: usize)
 ## `select_ptrs_by_key`
 
 src/vspec/slice.rs:236. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::select_ptrs_by_key_short, kani_proofs::slice::select_ptrs_by_key_10, kani_proofs::slice::select_ptrs_by_key_11, kani_proofs::slice::select_ptrs_by_key_12; not checked: every length above 12, as for `select_ptrs`, and every key but `L - addr`).
 
 > `s.select_nth_unstable_by_key(index, f)` on a slice of raw pointers with a `usize` key, its returned parts dropped: permutes `s`.
 
