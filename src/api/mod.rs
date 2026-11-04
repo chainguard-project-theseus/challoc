@@ -3220,6 +3220,16 @@ mod tests {
                 "meta.rs:stats",
             ],
         ),
+        (
+            "purge/background.rs:static.STATE",
+            &[
+                "purge/background.rs:request",
+                "purge/background.rs:start",
+                "purge/background.rs:start_requested",
+                "purge/background.rs:auto_tick",
+                "purge/background.rs:main",
+            ],
+        ),
     ];
 
     /// Every guard of a lock in [`UNLOCKED_LOCKS`], outside the tests and
@@ -3228,17 +3238,28 @@ mod tests {
     /// one line) is matched to its lock by the field's name, by the files
     /// that can name the field (a private field: its module and the modules
     /// under it), and for `self.field` by the type of the enclosing `impl`.
-    /// In each function that acquires one of these locks there is one such
-    /// acquisition, bound at the body's own indentation by a `let` that ends
-    /// with it (a guard chained into a call drops at the end of the
-    /// statement); every `return` after it follows the guard's `unlock();`,
-    /// one more `unlock();` stands at the body's own indentation (so on the
-    /// path to the tail), and no `?` follows it (an early exit). The
-    /// functions so checked are exactly the holders the list names. Nor
+    /// A static may also be acquired through its accessor (`state().lock(`):
+    /// a private function of the static's file whose body ends in
+    /// `&NAME`. Each acquisition is bound by a `let` that ends with it (a
+    /// guard chained into a call drops at the end of the statement), and
+    /// the guard's scope runs to the end of the block the `let` stands in.
+    /// In that scope every `return` follows the guard's `unlock();`, one
+    /// more `unlock();` stands at the `let`'s own indentation (so on the
+    /// path to the block's end), no `?` appears, and every `break` or
+    /// `continue` stands inside a loop opened in that scope (with its
+    /// label, if it names one), so none is an early exit. A function may
+    /// hold such guards in blocks one after
+    /// another, never two at once.
+    /// The functions so checked are exactly the holders the list names. Nor
     /// does the owner hand out a reference to such a lock: no `self.field`
-    /// of one is borrowed. Not seen: an acquisition through a reference
-    /// taken elsewhere, UFCS (`Lock::lock(&x, ..)`), and macros. A panic
-    /// aborts outside the tests (`panic = "abort"`), so it never releases.
+    /// of one is borrowed, nor a static of one outside its accessor, whose
+    /// result is used at once (`.lock(`, `.raw()`, ..). Not seen: an
+    /// acquisition through a reference taken elsewhere, a path-qualified
+    /// or raw borrow (`&self::NAME`, `&raw const NAME`), a path-qualified
+    /// accessor call (`self::state().lock(`), a static used directly
+    /// (`NAME.raw()`; no raw-token path reaches the value), UFCS
+    /// (`Lock::lock(&x, ..)`), and macros. A panic aborts outside the tests
+    /// (`panic = "abort"`), so it never releases.
     #[test]
     fn guards_end_in_unlock() {
         use std::string::ToString;
@@ -3423,10 +3444,38 @@ mod tests {
             if let Some(f) = fns.last_mut().filter(|f| f.3 == usize::MAX) {
                 f.3 = lines.len();
             }
+            // Each accessor of a guarded static, as (its name, the lock, the
+            // line of its `&NAME`): a private function whose body ends in
+            // `&NAME`, a static of this file in [`UNLOCKED_LOCKS`]. A public
+            // one is no accessor, and its `&NAME` fails as an escape below.
+            let accessors: Vec<(String, String, usize)> = fns
+                .iter()
+                .filter(|(_, _, from, _)| code(&lines[from - 1]).starts_with("fn "))
+                .filter_map(|(name, _, from, to)| {
+                    let k = (*from..*to).rev().find(|&k| !code(&lines[k]).is_empty())?;
+                    let t = code(&lines[k]);
+                    let target = t.strip_prefix('&').filter(|s| s.chars().all(ident))?;
+                    let key = candidates(&m, "", "", target)
+                        .into_iter()
+                        .find(|key| UNLOCKED_LOCKS.iter().any(|(k, _)| k == key))?;
+                    Some((name.clone(), key, k))
+                })
+                .collect();
             // The locks a use of the path ending at byte `end` of line `k`
             // may be, and the first of them in [`UNLOCKED_LOCKS`], if any.
+            // A path that is a call `f()` of an accessor is its static.
             let resolve = |k: usize, end: usize| -> (Vec<String>, Option<String>) {
                 let (recv, name, _) = path_before(&lines[k], end);
+                if name.is_empty()
+                    && let Some(s) = lines[k][..end].strip_suffix("()")
+                {
+                    let at = s.rfind(|c: char| !ident(c)).map_or(0, |i| i + 1);
+                    if !s[..at].ends_with(['.', ':'])
+                        && let Some((_, key, _)) = accessors.iter().find(|(f, ..)| *f == s[at..])
+                    {
+                        return (std::vec![key.clone()], Some(key.clone()));
+                    }
+                }
                 let found = candidates(&m, &owner_at[k], &recv, &name);
                 let hit = found
                     .iter()
@@ -3449,7 +3498,8 @@ mod tests {
             // No reference to a guarded lock escapes through its owner: no
             // `self.field` of a guarded lock, outside a string literal, is
             // borrowed (an accessor returning `&self.field` would let other
-            // code acquire it under another name).
+            // code acquire it under another name), nor a guarded static
+            // but in its accessor.
             for (k, line) in lines.iter().enumerate() {
                 let l = line.split("//").next().unwrap();
                 for name in UNLOCKED_LOCKS
@@ -3470,7 +3520,10 @@ mod tests {
                         let (_, Some(key)) = resolve(k, end) else {
                             continue;
                         };
-                        if recv != "self" {
+                        let fixed = recv.is_empty() && key.contains(":static.");
+                        if (recv != "self" && !fixed)
+                            || (fixed && accessors.iter().any(|(_, _, a)| *a == k))
+                        {
                             continue;
                         }
                         let before = l[..start].trim_end();
@@ -3478,6 +3531,33 @@ mod tests {
                             !(before.ends_with('&') && !before.ends_with("&&"))
                                 && !before.ends_with("&mut"),
                             "{rel}: a reference to {key} escapes: `{}`",
+                            l.trim()
+                        );
+                    }
+                }
+            }
+            // An accessor's result is used at once, never kept or passed on:
+            // each call is followed by the method it serves.
+            let uses = [
+                ".lock(",
+                ".try_lock(",
+                ".lock_t(",
+                ".raw()",
+                ".get_unlocked(",
+            ];
+            for line in &lines {
+                let l = line.split("//").next().unwrap();
+                for (f, key, _) in &accessors {
+                    let call = std::format!("{f}()");
+                    for (i, _) in l.match_indices(call.as_str()) {
+                        if (i > 0 && ident(l[..i].chars().next_back().unwrap()))
+                            || l[..i].ends_with("fn ")
+                        {
+                            continue;
+                        }
+                        assert!(
+                            uses.iter().any(|u| l[i + call.len()..].starts_with(u)),
+                            "{rel}: the accessor {f} of {key} is used other than at once: `{}`",
                             l.trim()
                         );
                     }
@@ -3508,66 +3588,129 @@ mod tests {
                     }
                 }
                 seen -= hits.len();
-                let [(a, open, ref key)] = hits[..] else {
-                    assert!(hits.is_empty(), "{rel}: {name}: more than one acquisition");
-                    continue;
-                };
-                // The acquisition ends the statement, which is a `let`.
-                let mut depth = 1;
-                let mut rest = String::new();
-                'outer: for (j, l) in body[a..].iter().enumerate() {
-                    let l = if j == 0 { &l[open..] } else { l.as_str() };
-                    for (i, c) in l.char_indices() {
-                        match c {
-                            '(' => depth += 1,
-                            ')' => depth -= 1,
-                            _ => {}
-                        }
-                        if depth == 0 {
-                            rest = l[i + 1..].trim().to_string();
-                            break 'outer;
-                        }
-                    }
-                }
-                assert!(
-                    rest == ";",
-                    "{rel}: {name}: the guard of {key} is chained into a call"
-                );
-                let decl = body[a].trim();
-                assert!(
-                    decl.starts_with("let ") && indent(&body[a]) == ind + 4,
-                    "{rel}: {name}: the guard of {key} is not bound with `let` at the body's indentation"
-                );
-                let guard = decl
-                    .trim_start_matches("let ")
-                    .trim_start_matches("mut ")
-                    .split([' ', '=', ':'])
-                    .next()
-                    .unwrap();
-                let release = std::format!("{guard}.unlock();");
-                let after = &body[a + 1..];
-                let mut tail_unlock = false;
-                for (k, l) in after.iter().enumerate() {
-                    let t = code(l);
+                // The end of the previous guard's scope, as a body line.
+                let mut free_from = 0;
+                for (a, open, key) in &hits {
+                    let (a, open) = (*a, *open);
                     assert!(
-                        !t.contains('?'),
-                        "{rel}: {name}: `?` after the acquisition of {key}"
+                        a >= free_from,
+                        "{rel}: {name}: {key} is acquired while a guard is in scope"
                     );
-                    if t.starts_with("return") || t.contains(" return ") {
-                        assert!(
-                            k > 0 && after[k - 1].trim() == release,
-                            "{rel}: {name}: a `return` without `{release}` before it"
-                        );
+                    // The acquisition ends the statement, which is a `let`.
+                    let mut depth = 1;
+                    let mut rest = String::new();
+                    'outer: for (j, l) in body[a..].iter().enumerate() {
+                        let l = if j == 0 { &l[open..] } else { l.as_str() };
+                        for (i, c) in l.char_indices() {
+                            match c {
+                                '(' => depth += 1,
+                                ')' => depth -= 1,
+                                _ => {}
+                            }
+                            if depth == 0 {
+                                rest = l[i + 1..].trim().to_string();
+                                break 'outer;
+                            }
+                        }
                     }
-                    if t == release && indent(l) == ind + 4 {
-                        tail_unlock = true;
+                    assert!(
+                        rest == ";",
+                        "{rel}: {name}: the guard of {key} is chained into a call"
+                    );
+                    let decl = body[a].trim();
+                    let at = indent(&body[a]);
+                    assert!(
+                        decl.starts_with("let ") && at >= ind + 4,
+                        "{rel}: {name}: the guard of {key} is not bound with `let`"
+                    );
+                    let guard = decl
+                        .trim_start_matches("let ")
+                        .trim_start_matches("mut ")
+                        .split([' ', '=', ':'])
+                        .next()
+                        .unwrap();
+                    let release = std::format!("{guard}.unlock();");
+                    // The guard's scope: up to the first line indented less
+                    // than its `let`, the end of the enclosing block.
+                    let after = &body[a + 1..];
+                    let scope = after
+                        .iter()
+                        .position(|l| !code(l).is_empty() && indent(l) < at)
+                        .unwrap_or(after.len());
+                    free_from = a + 1 + scope;
+                    let mut tail_unlock = false;
+                    // The loops opened in the guard's scope, as (indent,
+                    // label): a `break` or `continue` stays in the scope
+                    // only inside one of them (with its label, if it names
+                    // one).
+                    let mut loops: Vec<(usize, String)> = Vec::new();
+                    for (k, l) in after[..scope].iter().enumerate() {
+                        let t = code(l);
+                        assert!(
+                            !t.contains('?'),
+                            "{rel}: {name}: `?` after the acquisition of {key}"
+                        );
+                        if !t.is_empty() {
+                            let li = indent(l);
+                            while loops
+                                .last()
+                                .is_some_and(|(o, _)| li < *o || (li == *o && t.starts_with('}')))
+                            {
+                                loops.pop();
+                            }
+                        }
+                        let (label, head) = match t.split_once(": ") {
+                            Some((lb, h)) if lb.starts_with('\'') => (lb.to_string(), h),
+                            _ => (String::new(), t.as_str()),
+                        };
+                        if head == "loop"
+                            || head.starts_with("loop ")
+                            || head.starts_with("while ")
+                            || head.starts_with("for ")
+                        {
+                            loops.push((indent(l), label));
+                        }
+                        for w in ["break", "continue"] {
+                            for (i, _) in t.match_indices(w) {
+                                let rest = &t[i + w.len()..];
+                                if (i > 0 && ident(t[..i].chars().next_back().unwrap()))
+                                    || rest.starts_with(ident)
+                                {
+                                    continue;
+                                }
+                                let to = rest.trim_start();
+                                let target = if to.starts_with('\'') {
+                                    to.split(|c: char| c != '\'' && !ident(c)).next().unwrap()
+                                } else {
+                                    ""
+                                };
+                                assert!(
+                                    loops
+                                        .iter()
+                                        .any(|(_, lb)| target.is_empty() || lb == target),
+                                    "{rel}: {name}: `{w}` out of the scope of the guard of {key}"
+                                );
+                            }
+                        }
+                        if t.starts_with("return") || t.contains(" return ") {
+                            assert!(
+                                k > 0 && after[k - 1].trim() == release,
+                                "{rel}: {name}: a `return` without `{release}` before it"
+                            );
+                        }
+                        if t == release && indent(l) == at {
+                            tail_unlock = true;
+                        }
+                    }
+                    assert!(
+                        tail_unlock,
+                        "{rel}: {name}: no `{release}` on the path to the end of its block"
+                    );
+                    let holder = (key.clone(), std::format!("{rel}:{name}"));
+                    if !checked.contains(&holder) {
+                        checked.push(holder);
                     }
                 }
-                assert!(
-                    tail_unlock,
-                    "{rel}: {name}: no `{release}` on the path to the tail"
-                );
-                checked.push((key.clone(), std::format!("{rel}:{name}")));
             }
             assert_eq!(seen, 0, "{rel}: an acquisition outside a function");
         }
