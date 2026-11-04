@@ -11,7 +11,6 @@ file.
 | `fig_mul` | external_body | core library | Kani | discharged |
 | `fig_add64` | external_body | core library | Kani | discharged |
 | `zero_records` | external_body | raw pointer (internal) | RefinedRust | trusted |
-| `stack_mark` | external_body | raw pointer (internal) | RefinedRust | trusted |
 | `pool_take` | external_body | allocator invariant | none (assumption) | trusted |
 | `empty_pool` | external_body | core library | none (assumption) | trusted |
 
@@ -70,25 +69,14 @@ fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPai
         final(perm).is_init(),
 ```
 
-## `stack_mark`
-
-src/stats.rs:2078. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
-
-> The caller's stack position, as the address of a local of this out-of-line function: [`Scratch::new`] records it with a pooled object, and a later call of the same thread from as high on the stack (not deeper, inside the holder's callback) finds the holder's frame gone ([`pool_take`]).
-
-```rust
-fn stack_mark() -> usize
-```
-
 ## `pool_take`
 
-src/stats.rs:2095. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2094. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A pooled object for thread `tid` at stack position `mark`, with its permission: one no call holds, one `tid`'s call abandoned (held by `tid` at a mark at or below `mark`: that call's frame is gone, since a call made from inside it would be deeper), or one a thread that has exited held.
 
-Body mints Tracked at line 2101.
+Body mints Tracked at line 2100.
 
 ```rust
 fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)
@@ -100,7 +88,7 @@ fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<Point
 
 ## `empty_pool`
 
-src/stats.rs:2224. Kind: external_body. Category: core library.
+src/stats.rs:2223. Kind: external_body. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > `[EMPTY; POOL_SLOTS]`, which Verus does not take for an element type that is not `Copy`.

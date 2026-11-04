@@ -3,7 +3,8 @@
 //! `huge::RunState`, `slab::State` (`class::ClassState::take`) and
 //! `thp::Mode` (`class::table::SlabTable::commit_slab` and
 //! `commit_page_group`); and of
-//! `fence`, `core::hint::assert_unchecked`, `AtomicU32::as_ptr` and
+//! `fence`, `core::hint::assert_unchecked`, `core::hint::black_box`,
+//! `AtomicU32::as_ptr` and
 //! `Option::as_deref_mut`; and the type `PhantomPinned` (a field of
 //! `heap::Heap`).
 
@@ -92,6 +93,17 @@ pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
 pub assume_specification[ core::hint::assert_unchecked ](cond: bool)
     requires
         cond,
+    opens_invariants none
+    no_unwind
+;
+
+/// `core::hint::black_box`: the identity (`core` guarantees no more; it
+/// only keeps the optimizer from seeing through the value). Its one
+/// verified caller is `stats::stack_mark`, which keeps a local's address
+/// opaque so that the local gets a stack slot.
+pub assume_specification<T>[ core::hint::black_box ](dummy: T) -> (r: T)
+    ensures
+        r == dummy,
     opens_invariants none
     no_unwind
 ;
