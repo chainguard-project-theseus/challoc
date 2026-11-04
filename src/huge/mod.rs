@@ -1994,10 +1994,31 @@ fn protect_none(addr: usize, len: usize) -> Result<(), Errno>
 /// 2 MiB page for a PMD-aligned run under host THP `always`). `populate`
 /// may be false for a run inside the mark in the fallback mode: every VMA
 /// there was split off one populated this way, so it has its `anon_vma`.
+///
+/// The caller holds the huge lock (`lk`, [`held_by`]), and the run's first
+/// page lies in the region apart from every live run's guard
+/// (`spares_guards`); when it populates, the run's first byte is
+/// [`committed`](crate::vspec::unbacked::committed).
 fn split_guard(run: usize, guard: usize, page: usize, populate: bool, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>) -> Result<(), Errno>
     requires
         crate::sys::may_syscall(),
+        held_by(h, *lk, vstd::raw_ptr::ptr_null_mut()),
+        !lk.value().descs@.contains_key(vstd::raw_ptr::ptr_null_mut()),
+        spares_guards(h, *lk.value(), vstd::raw_ptr::ptr_null_mut(), run as int, page as int),
+        1 <= page,
+        populate ==> crate::vspec::unbacked::committed(run as int),
 {
+    proof {
+        // The first byte of that page spares the guards as the page does.
+        let g = *lk.value();
+        assert forall|d: *mut HugeDesc|
+            #[trigger] g.descs@.contains_key(d) && d != vstd::raw_ptr::ptr_null_mut() && g.descs@[d].value().state == RunState::Active as u8 implies {
+                let v = g.descs@[d].value();
+                let p = pow2(h.lg_page as nat) as int;
+                crate::layout::disjoint(run as int, 1, h.base + (v.start + v.pages - GUARD_PAGES) * p, GUARD_PAGES * p)
+            } by {}
+        assert(spares_guards(h, g, vstd::raw_ptr::ptr_null_mut(), run as int, 1));
+    }
     if populate {
         // SAFETY: the first page of a run being placed, which nobody
         // holds yet; populating leaves its contents alone.
@@ -2021,14 +2042,31 @@ fn split_guard(run: usize, guard: usize, page: usize, populate: bool, Ghost(h): 
 /// placed (`split_guard`), to give its VMA an `anon_vma` by a write fault
 /// when `MADV_POPULATE_WRITE` is refused.
 ///
-/// Trusted: `addr` is committed read-write (the callers place the guard
-/// only after committing the run, or inside the mark where every page but
-/// a live run's guard is read-write) and belongs to a run nobody holds
-/// yet. A zero leaves a page that read as zero reading as zero, so the
-/// zero tokens (`axiom_fresh_anon_zero`, `axiom_discarded_zero`) stay
-/// true, and a dirty `Empty` page's contents are not needed.
+/// Trusted only under its `requires`: the caller holds the huge lock
+/// (`lk`, [`held_by`]), `addr` was made read-write at some point
+/// ([`committed`](crate::vspec::unbacked::committed)), and the byte lies
+/// in the region apart from every live run's guard (`spares_guards`). A
+/// zero leaves a page that read as zero reading as zero, so the zero
+/// tokens (`axiom_fresh_anon_zero`, `axiom_discarded_zero`) stay true, and
+/// a dirty `Empty` page's contents are not needed.
+///
+/// Limits, the trusted part:
+/// - `committed` never expires, so the `requires` does not rule out a
+///   byte made `PROT_NONE` after its commit and outside every live run's
+///   guard. Below the mark in guard-install mode, with no commit in the
+///   same `prepare`, that the byte is read-write rests on
+///   [`Huge::mixed_guards`] being set whenever such a page may exist (a
+///   guard refused its marker, or a guard whose release failed).
+/// - The `requires` does not say the byte belongs to no live run: that
+///   the run is one being placed, which nobody holds yet, is the caller's
+///   (`prepare`'s `runs_apart`).
 #[verifier::external_body]
-fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>) {
+fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>)
+    requires
+        held_by(h, *lk, vstd::raw_ptr::ptr_null_mut()),
+        crate::vspec::unbacked::committed(addr as int),
+        spares_guards(h, *lk.value(), vstd::raw_ptr::ptr_null_mut(), addr as int, 1),
+{
     // SAFETY: as above.
     unsafe { core::ptr::write_volatile(addr as *mut u8, 0) };
 }
@@ -4302,6 +4340,26 @@ impl Huge {
         vstd::bits::lemma_usize_shl_is_mul(x, self.lg_page as usize);
     }
 
+    /// Page `q` of pages `x..y` starts among their bytes, so it is
+    /// [`committed`](crate::vspec::unbacked::committed) when they all are.
+    proof fn lemma_page_in(&self, x: int, y: int, q: int)
+        requires
+            self.inv(),
+            0 <= x <= q < y,
+        ensures
+            ({
+                let p = pow2(self.lg_page as nat) as int;
+                crate::vspec::unbacked::committed_range(self.base + x * p, (y - x) * p) ==> crate::vspec::unbacked::committed(self.base + q * p)
+            }),
+    {
+        let p = pow2(self.lg_page as nat) as int;
+        vstd::arithmetic::power2::lemma_pow2_pos(self.lg_page as nat);
+        vstd::arithmetic::mul::lemma_mul_inequality(x, q, p);
+        vstd::arithmetic::mul::lemma_mul_inequality(q + 1, y, p);
+        assert((q + 1) * p == q * p + p) by (nonlinear_arith);
+        assert(x * p + (y - x) * p == y * p) by (nonlinear_arith);
+    }
+
     /// The bytes of pages `0..w` and of pages `lo..e`, with `lo <= w`,
     /// cover the bytes of pages `0..e`: what the mark covers once a
     /// placement commits `lo..e` and moves the mark from `w` to `e`.
@@ -5625,6 +5683,7 @@ impl Huge {
     fn prepare(&self, s: usize, usable: usize, watermark: usize, Tracked(lk): Tracked<&LockPerm<Inner>>) -> (res: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
+            1 <= usable,
             s + usable + GUARD_PAGES <= self.npages,
             watermark <= self.npages,
             self.inner.has_perm(*lk),
@@ -5653,6 +5712,11 @@ impl Huge {
         let page = self.page_size();
         let guard = s + usable;
         let end = guard + GUARD_PAGES;
+        proof {
+            // The run's first page spares every live run's guard, for
+            // `split_guard`.
+            lemma_pages_spare_guards(*self, g, vstd::raw_ptr::ptr_null_mut(), s as int, s + 1);
+        }
         let r = if self.guard_install {
             if self.mixed_guards.load(Ordering::Relaxed) {
                 // A `PROT_NONE` guard may lie below the mark.
@@ -5660,6 +5724,9 @@ impl Huge {
                     lemma_pages_spare_guards(*self, g, vstd::raw_ptr::ptr_null_mut(), s as int, s + usable);
                 }
                 commit(self.addr(s), usable * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
+                proof {
+                    self.lemma_page_in(s as int, s + usable, s as int);
+                }
             }
             if watermark < end {
                 proof {
@@ -5667,6 +5734,9 @@ impl Huge {
                 }
                 commit(self.addr(watermark), (end - watermark) * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
                 proof {
+                    if watermark <= s {
+                        self.lemma_page_in(watermark as int, end as int, s as int);
+                    }
                     self.lemma_mark_grows(watermark as int, watermark as int, end as int);
                 }
             }
@@ -5676,6 +5746,13 @@ impl Huge {
                 // which works there, so the run is guarded all the same.
                 // If that fails too the run is not handed out (design
                 // 14.1).
+                proof {
+                    // A run below the mark was committed when the mark
+                    // passed it (`mark_committed`).
+                    if s < watermark {
+                        self.lemma_page_in(0, watermark as int, s as int);
+                    }
+                }
                 split_guard(self.addr(s), self.addr(guard), page, true, Ghost(*self), Tracked(lk))?;
                 self.mixed_guards.store(true, Ordering::Relaxed);
             }
@@ -5703,6 +5780,7 @@ impl Huge {
                 }
                 commit(self.addr(lo), (end - lo) * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
                 proof {
+                    self.lemma_page_in(lo as int, end as int, s as int);
                     if fresh {
                         self.lemma_mark_grows(watermark as int, lo as int, end as int);
                     }
