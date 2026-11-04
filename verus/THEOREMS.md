@@ -500,7 +500,8 @@ for `Snapshot` (`stats.rs`), the process statistics lock:
 `Snapshot::inv`, with a frame true of any two snapshots. The impl for
 `()` (`heap/tcaches.rs`), the explicit-cache table lock: both `true`.
 The impl for `huge::Inner` (`huge/mod.rs`), the huge lock: `Inner::wf`,
-with the ghost page count, page shift and `Meta` identity fixed.
+with the ghost page count, page shift, region base and `Meta` identity
+fixed.
 The impl for `ArenaStats` (`stats.rs`), the per-arena statistics locks,
 defines only the frame, true of any two values, which no release can
 break; its invariant is `axiom_arena_stats_lock_inv`'s. Each other

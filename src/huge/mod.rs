@@ -497,6 +497,7 @@ impl Settle for Tally {
         &&& c.wf()
         &&& c.spec_np() == o.npages
         &&& c.spec_lg() == o.lg_page
+        &&& c.spec_base() == o.base
         &&& c.spec_mid() == o.spec_mid()
         &&& c.pgs@@ == self.held@
         &&& forall|x: (int, int)| #[trigger] pend(x) ==> has_piece(o, c, self.vis@, x)
@@ -1866,7 +1867,8 @@ pub struct Huge {
 impl Huge {
     /// The region's geometry: `npages` pages of `2^lg_page` bytes from
     /// `base`, below the end of the user address space; the lock's first
-    /// value has the same page count and shift, and the lock its rank.
+    /// value has the same page count, shift and base, and the lock its
+    /// rank.
     #[verifier::type_invariant]
     spec fn inv(&self) -> bool {
         &&& self.lg_page < 64
@@ -1875,6 +1877,7 @@ impl Huge {
         &&& self.base + self.npages * pow2(self.lg_page as nat) <= crate::meta::va_limit()
         &&& lock_init(self.inner).spec_np() == self.npages
         &&& lock_init(self.inner).spec_lg() == self.lg_page
+        &&& lock_init(self.inner).spec_base() == self.base
         &&& self.inner.rank() == rank_huge()
     }
 }
@@ -1946,7 +1949,8 @@ spec fn held_by(h: Huge, lk: LockPerm<Inner>, freed: *mut HugeDesc) -> bool {
 
 /// Make `[addr, addr + len)` read-write. Every caller holds the huge lock
 /// (`lk`, [`held_by`]) and proves the range apart from its live runs'
-/// guards (`spares_guards`).
+/// guards (`spares_guards`). On `Ok` its bytes are
+/// [`committed`](crate::vspec::unbacked::committed).
 fn commit(addr: usize, len: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>, Ghost(freed): Ghost<*mut HugeDesc>) -> (r: Result<(), Errno>)
     requires
         crate::sys::may_syscall(),
@@ -1955,6 +1959,7 @@ fn commit(addr: usize, len: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&
     ensures
         held_by(h, *lk, freed),
         spares_guards(h, *lk.value(), freed, addr as int, len as int),
+        r is Ok ==> crate::vspec::unbacked::committed_range(addr as int, len as int),
 {
     // SAFETY: inside our own reservation; adding permissions to pages
     // nobody holds cannot break anything.
@@ -3198,6 +3203,7 @@ proof fn lemma_took_wf(g0: Inner, g1: Inner, t: Take)
         g1.pgs@@ == active_pages(g1.descs@),
         t.touch_ok(g0),
         took_free(g0.free.map.view(), g1.free.map.view(), t.vr.start as int, t.vr.start + t.vr.pages, t.mark as int),
+        g1.mark_committed(),
     ensures
         g1.wf(),
 {
@@ -3289,6 +3295,7 @@ impl Inner {
         &&& self.free.l1_words <= 0x1_0000_0000
         &&& free_marked(self.descs@, self.free.map@)
         &&& free_exact(self.descs@, self.free.map@)
+        &&& self.mark_committed()
     }
 
     /// The huge free bitmap is exact: in every value the huge lock admits,
@@ -3527,6 +3534,21 @@ impl Inner {
         self.lg@
     }
 
+    /// The ghost first byte of the region.
+    pub(crate) closed spec fn spec_base(&self) -> usize {
+        self.base@
+    }
+
+    /// Every byte below the mark was made read-write
+    /// ([`committed`](crate::vspec::unbacked::committed)): a placement
+    /// that moves the mark commits the pages it adds first
+    /// ([`Huge::prepare`]), and a failed one leaves the mark where it was.
+    /// The fact never expires, so it does not say a byte is still
+    /// read-write: a guard made `PROT_NONE` later stays committed.
+    spec fn mark_committed(&self) -> bool {
+        crate::vspec::unbacked::committed_range(self.base@ as int, self.next_page * pow2(self.lg@ as nat))
+    }
+
     /// The live-object records' identity of the `Meta` the descriptors
     /// come from ([`Inner::mid`]).
     pub(crate) closed spec fn spec_mid(&self) -> vstd::resource::Loc {
@@ -3583,6 +3605,7 @@ impl Inner {
         &&& self.stats == o.stats
         &&& self.np == o.np
         &&& self.lg == o.lg
+        &&& self.base == o.base
         &&& self.all == o.all
         &&& self.runs == o.runs
         &&& self.pgs == o.pgs
@@ -3754,6 +3777,7 @@ impl Inner {
             final(self).stats == old(self).stats,
             final(self).np == old(self).np,
             final(self).lg == old(self).lg,
+            final(self).base == old(self).base,
             final(self).runs == old(self).runs,
             final(self).pgs == old(self).pgs,
             *final(ord) == *old(ord),
@@ -4276,6 +4300,28 @@ impl Huge {
                 p >= 0,
         ;
         vstd::bits::lemma_usize_shl_is_mul(x, self.lg_page as usize);
+    }
+
+    /// The bytes of pages `0..w` and of pages `lo..e`, with `lo <= w`,
+    /// cover the bytes of pages `0..e`: what the mark covers once a
+    /// placement commits `lo..e` and moves the mark from `w` to `e`.
+    proof fn lemma_mark_grows(&self, w: int, lo: int, e: int)
+        requires
+            self.inv(),
+            0 <= lo <= w <= e,
+        ensures
+            ({
+                let p = pow2(self.lg_page as nat) as int;
+                crate::vspec::unbacked::committed_range(self.base as int, w * p) && crate::vspec::unbacked::committed_range(
+                    self.base + lo * p,
+                    (e - lo) * p,
+                ) ==> crate::vspec::unbacked::committed_range(self.base as int, e * p)
+            }),
+    {
+        let p = pow2(self.lg_page as nat) as int;
+        vstd::arithmetic::power2::lemma_pow2_pos(self.lg_page as nat);
+        vstd::arithmetic::mul::lemma_mul_inequality(lo, w, p);
+        assert(lo * p + (e - lo) * p == e * p) by (nonlinear_arith);
     }
 
     /// Pages in the region.
@@ -5100,7 +5146,7 @@ impl Huge {
                         free_desc(meta, run, Tracked(desc_raw(run_perm.get())), Tracked(&mut under));
                         free_desc(meta, spare, Tracked(desc_raw(spare_perm.get())), Tracked(&mut under));
                         proof {
-                            // The lock's frame: the ghost page count, shift and `Meta`
+                            // The lock's frame: the ghost page count, shift, base and `Meta`
                             // identity are the ones `new` set.
                             assert(lock_frame(lock_init(self.inner), g@));
                         }
@@ -5121,7 +5167,7 @@ impl Huge {
                             self.check_zero(s, usable_pages, prior, arena, Tracked(tok));
                         }
                         proof {
-                            // The lock's frame: the ghost page count, shift and `Meta`
+                            // The lock's frame: the ghost page count, shift, base and `Meta`
                             // identity are the ones `new` set.
                             assert(lock_frame(lock_init(self.inner), g@));
                         }
@@ -5572,13 +5618,23 @@ impl Huge {
     /// committed. Committing only `[s, end)` here left the hole `PROT_NONE`
     /// and the first write into it faulted; the fallback mode commits from
     /// the mark for the same reason.
-    fn prepare(&self, s: usize, usable: usize, watermark: usize, Tracked(lk): Tracked<&LockPerm<Inner>>) -> Result<(), Errno>
+    ///
+    /// Every byte below `watermark` was committed (`Inner::wf`'s
+    /// `mark_committed`), and on `Ok` every byte below the new mark, the
+    /// greater of `watermark` and `end`, is.
+    fn prepare(&self, s: usize, usable: usize, watermark: usize, Tracked(lk): Tracked<&LockPerm<Inner>>) -> (res: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
             s + usable + GUARD_PAGES <= self.npages,
             watermark <= self.npages,
             self.inner.has_perm(*lk),
             runs_apart(*lk.value(), s as int, usable + GUARD_PAGES, watermark as int),
+            crate::vspec::unbacked::committed_range(self.base as int, watermark * self.spec_page()),
+        ensures
+            res is Ok ==> crate::vspec::unbacked::committed_range(
+                self.base as int,
+                (if watermark < s + usable + GUARD_PAGES { s + usable + GUARD_PAGES } else { watermark as int }) * self.spec_page(),
+            ),
     {
         // The huge lock's value, which the caller holds (`lk`).
         let ghost g = *lk.value();
@@ -5610,6 +5666,9 @@ impl Huge {
                     lemma_pages_spare_guards(*self, g, vstd::raw_ptr::ptr_null_mut(), watermark as int, end as int);
                 }
                 commit(self.addr(watermark), (end - watermark) * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
+                proof {
+                    self.lemma_mark_grows(watermark as int, watermark as int, end as int);
+                }
             }
             if guard_install(self.addr(guard), GUARD_PAGES * page).is_err() {
                 // Refused (`EINVAL` on an `mlock`ed range: the marker
@@ -5643,6 +5702,11 @@ impl Huge {
                     lemma_pages_spare_guards(*self, g, vstd::raw_ptr::ptr_null_mut(), lo as int, end as int);
                 }
                 commit(self.addr(lo), (end - lo) * page, Ghost(*self), Tracked(lk), Ghost(vstd::raw_ptr::ptr_null_mut()))?;
+                proof {
+                    if fresh {
+                        self.lemma_mark_grows(watermark as int, lo as int, end as int);
+                    }
+                }
             }
             if self.guards {
                 split_guard(self.addr(s), self.addr(guard), page, fresh, Ghost(*self), Tracked(lk))?;
@@ -5698,6 +5762,12 @@ impl Huge {
             old(g).wf(),
             old(g).spec_np() == self.npages,
             old(g).spec_lg() == self.lg_page,
+            old(g).spec_base() == self.base,
+            // `prepare` committed the pages up to the new mark.
+            crate::vspec::unbacked::committed_range(
+                self.base as int,
+                (if old(g).next_page < p.start + p.pages { p.start + p.pages } else { old(g).next_page as int }) * self.spec_page(),
+            ),
             run@.addr != 0,
             spare@.addr != 0,
             run_desc.0.ptr() == run,
@@ -5715,6 +5785,7 @@ impl Huge {
             final(g).wf(),
             final(g).spec_np() == old(g).spec_np(),
             final(g).spec_lg() == old(g).spec_lg(),
+            final(g).spec_base() == old(g).spec_base(),
             final(g).spec_mid() == old(g).spec_mid(),
             final(g).descs@.contains_key(run),
             final(g).descs@[run].value().pages == p.pages,
@@ -6284,6 +6355,7 @@ impl Inner {
         &&& self.stats.next_page == g0.stats.next_page
         &&& self.np == g0.np
         &&& self.lg == g0.lg
+        &&& self.base == g0.base
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
@@ -6893,6 +6965,7 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         gr.next_page == g0.next_page,
         gr.np == g0.np,
         gr.lg == g0.lg,
+        gr.base == g0.base,
         gr.mid == g0.mid,
         forall|x: *mut HugeDesc| #[trigger] gr.descs@.contains_key(x) ==> desc_claimed(gr.dclaims@, x, g0.mid@),
         // `gl`: the survivor rewritten.
@@ -6902,6 +6975,7 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         gl.next_page == gr.next_page,
         gl.np == gr.np,
         gl.lg == gr.lg,
+        gl.base == gr.base,
         gl.mid == gr.mid,
         gl.dclaims == gr.dclaims,
         perms_ok(gl.descs@),
@@ -7624,6 +7698,7 @@ impl Huge {
                 g@.stats == ge.stats,
                 g@.np == ge.np,
                 g@.lg == ge.lg,
+                g@.base == ge.base,
                 g@.runs == ge.runs,
                 g@.pgs == ge.pgs,
             decreases 3 - k2,
@@ -7758,7 +7833,7 @@ impl Huge {
             assert(freed_free(g0.free.map.view(), g@.free.map.view(), vd));
             assert(m3.nbrs_ok(g0));
             lemma_free_end(g0, gr, gl, g@, m3);
-            // The lock's frame: the ghost page count, shift and `Meta`
+            // The lock's frame: the ghost page count, shift, base and `Meta`
             // identity are the ones `new` set.
             assert(lock_frame(lock_init(self.inner), g@));
             // The retain cap holds of the value the lock is released
@@ -8081,7 +8156,7 @@ impl Huge {
             }
         }
         proof {
-            // The lock's frame: the ghost page count, shift and `Meta`
+            // The lock's frame: the ghost page count, shift, base and `Meta`
             // identity are the ones `new` set.
             assert(lock_frame(lock_init(self.inner), g@));
         }
@@ -8220,6 +8295,7 @@ impl Huge {
             final(g).wf(),
             final(g).spec_np() == old(g).spec_np(),
             final(g).spec_lg() == old(g).spec_lg(),
+            final(g).spec_base() == old(g).spec_base(),
             final(g).spec_mid() == old(g).spec_mid(),
             final(g).next_page == old(g).next_page,
             final(g).pgs == old(g).pgs,
@@ -8525,6 +8601,7 @@ impl Huge {
                     &&& g.wf()
                     &&& g.spec_np() == g0.spec_np()
                     &&& g.spec_lg() == g0.spec_lg()
+                    &&& g.spec_base() == g0.spec_base()
                     &&& g.spec_mid() == g0.spec_mid()
                     &&& g.pgs == g0.pgs
                     &&& g.elist@ == g0.elist@.remove(g0.elist@.index_of(dd))
@@ -8768,7 +8845,7 @@ impl Huge {
         }
         self.sync_oldest(&g);
         proof {
-            // The lock's frame: the ghost page count, shift and `Meta`
+            // The lock's frame: the ghost page count, shift, base and `Meta`
             // identity are the ones `new` set.
             assert(lock_frame(lock_init(self.inner), g@));
         }
@@ -9030,8 +9107,8 @@ fn dirty_zero_run(
 verus! {
 
 /// The huge lock's invariant is `Inner::wf`, and its frame is the
-/// ghost page count, page shift and `Meta` identity, which `Huge::new`
-/// sets and nothing changes. Read the invariant as: the real state always
+/// ghost page count, page shift, region base and `Meta` identity, which
+/// `Huge::new` sets and nothing changes. Read the invariant as: the real state always
 /// has a ghost witness (the descriptor permissions and their blocks'
 /// claims, the list of live descriptors, the `Empty` list's order, and the
 /// run authorities whose sets are the `Active` extents and their pages)
@@ -9057,7 +9134,10 @@ impl crate::lock::LockSpec for Inner {
     }
 
     closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        init.spec_np() == v.spec_np() && init.spec_lg() == v.spec_lg() && init.spec_mid() == v.spec_mid()
+        &&& init.spec_np() == v.spec_np()
+        &&& init.spec_lg() == v.spec_lg()
+        &&& init.spec_base() == v.spec_base()
+        &&& init.spec_mid() == v.spec_mid()
     }
 }
 
