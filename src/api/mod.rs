@@ -4233,7 +4233,7 @@ mod tests {
                     ("class/sets.rs:", "pub fn committed_ranges(", "tables"),
                 ],
             ),
-            // `class::table::axiom_table_lock_inv`.
+            // `class::table::TableInner`'s `LockSpec` impl.
             (
                 "class/table.rs:SlabTable.inner",
                 &[
