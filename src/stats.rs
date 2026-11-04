@@ -2417,16 +2417,29 @@ proof fn lemma_snapshot_frame_reflexive(v: Snapshot)
 }
 
 /// An arena statistics lock's invariant, which
-/// `vspec::arena::axiom_arena_stats_lock_inv` states; its frame is
-/// uninterpreted.
+/// `vspec::arena::axiom_arena_stats_lock_inv` states, and its frame,
+/// which holds of any two values. Every stored record does keep the
+/// `index` of the `ArenaStats::empty` that `Arena::init` creates the lock
+/// with (`collect_arena_with` ensures it), but `Arena::store_stats` does
+/// not require the record it stores to keep that or any other field, so
+/// no proof needs a constant and `true`, the weakest frame, is enough.
 impl crate::lock::LockSpec for ArenaStats {
     open spec fn lock_spec_inv(self) -> bool {
         crate::lock::assumed_inv(self)
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+        true
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_arena_stats_frame_reflexive(v: ArenaStats)
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!
