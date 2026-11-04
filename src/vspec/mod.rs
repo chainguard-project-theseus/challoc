@@ -31,8 +31,6 @@ pub(crate) mod core_int;
 #[cfg(verus_keep_ghost)]
 pub(crate) mod fmt;
 #[cfg(verus_keep_ghost)]
-pub(crate) mod huge;
-#[cfg(verus_keep_ghost)]
 pub(crate) mod layout;
 #[cfg(verus_keep_ghost)]
 mod misc;

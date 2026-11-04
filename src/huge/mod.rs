@@ -65,8 +65,6 @@ use crate::lock::{axiom_entry, lock_frame, lock_init, rank_huge, rank_meta};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, Due, Settle};
 use crate::sys::{self, Errno};
-#[cfg(verus_keep_ghost)]
-use crate::vspec::huge::{axiom_huge_lock_frame, axiom_huge_lock_inv};
 use crate::vspec::once::Once;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::once::Step;
@@ -4127,8 +4125,6 @@ impl Huge {
             r matches Some(h) ==> h.spec_mid() == meta.live_id(),
             *final(ord) == *old(ord),
     {
-        broadcast use axiom_huge_lock_inv;
-
         let page = regions.page_size();
         let npages = regions.huge_pages();
         assert!(npages > 0 && npages <= u32::MAX as usize, "huge: region page count out of range");
@@ -5029,7 +5025,6 @@ impl Huge {
             r.0.ptr@.addr != 0 ==> (final(tok)[0].npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size),
             r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
     {
-        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
         proof {
             use_type_invariant(self);
             self.lemma_page();
@@ -7292,7 +7287,7 @@ impl Huge {
             r.pages == tok.npages(),
     {
         hide(Inner::wf);
-        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame, crate::vspec::fmt::lemma_errno_fmt_req};
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
         proof {
             use_type_invariant(self);
@@ -7819,8 +7814,6 @@ impl Huge {
             self.spec_run_usable(page, r),
             tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page ==> r == (tok.unwrap().npages() - GUARD_PAGES) * self.spec_page(),
     {
-        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
-
         proof {
             use_type_invariant(self);
             self.lemma_page();
@@ -7909,8 +7902,6 @@ impl Huge {
             *final(ord) == *old(ord),
             tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page ==> (r matches Some(i) && i.start == page && i.state == RunState::Active && i.usable == (tok.unwrap().npages() - GUARD_PAGES) * self.spec_page()),
     {
-        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
-
         proof {
             use_type_invariant(self);
         }
@@ -7989,8 +7980,6 @@ impl Huge {
             final(left)@.huge,
             cutoff == u64::MAX ==> final(left)@.clean(),
     {
-        broadcast use axiom_huge_lock_inv, axiom_huge_lock_frame;
-
         proof {
             use_type_invariant(self);
         }
@@ -8627,8 +8616,6 @@ impl Huge {
         ensures
             *final(ord) == *old(ord),
     {
-        broadcast use axiom_huge_lock_inv, axiom_huge_lock_frame;
-
         proof {
             use_type_invariant(self);
         }
@@ -8844,8 +8831,6 @@ impl Huge {
             *final(ord) == *old(ord),
             r <= crate::meta::va_limit(),
     {
-        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
-
         proof {
             use_type_invariant(self);
         }
@@ -8869,8 +8854,6 @@ impl Huge {
             r.empty_pages + r.purged_pages <= u32::MAX,
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
-
         proof {
             use_type_invariant(self);
         }
@@ -9042,16 +9025,45 @@ fn dirty_zero_run(
 
 verus! {
 
-/// The huge lock's invariant and frame, which `vspec::huge`'s
-/// `axiom_huge_lock_inv` and `axiom_huge_lock_frame` state.
+/// The huge lock's invariant is `Inner::wf`, and its frame is the
+/// ghost page count, page shift and `Meta` identity, which `Huge::new`
+/// sets and nothing changes. Read the invariant as: the real state always
+/// has a ghost witness (the descriptor permissions and their blocks'
+/// claims, the list of live descriptors, the `Empty` list's order, and the
+/// run authorities whose sets are the `Active` extents and their pages)
+/// that makes `wf` true.
+///
+/// `Huge::new` builds the value (`Lock::new` requires `wf`), and both
+/// are checked at every release: each holder outside the tests
+/// (`alloc_aligned`, `free_run`, `usable_size`, `lookup`, `purge_empty`,
+/// `purge_curve`, `empty_bytes` and `stats`) ends with
+/// `LockGuard::unlock`, which requires both, on every path to a return
+/// (`api::tests::guards_end_in_unlock`). A panic aborts
+/// (`panic = "abort"`) outside the tests, so it never releases. The
+/// test-only `oldest_dirty_at` and `audit` only read. The fork handlers
+/// take and release the raw lock without touching the value, and nothing
+/// calls `get_unlocked` on it. What is left is the mutex contract
+/// (`lock::axiom_acquired`).
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for Inner {
-    open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+    closed spec fn lock_spec_inv(self) -> bool {
+        self.wf()
     }
 
-    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+    closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        init.spec_np() == v.spec_np() && init.spec_lg() == v.spec_lg() && init.spec_mid() == v.spec_mid()
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_huge_frame_reflexive(v: Inner)
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!

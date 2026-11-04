@@ -1213,6 +1213,7 @@ mod tests {
         const DEFINED: &[(&str, bool, bool)] = &[
             ("crate::class::sets::[Lazy; SET_GROUPS]", true, true),
             ("crate::heap::tcaches::()", true, true),
+            ("crate::huge::Inner", true, true),
             ("crate::meta::Inner", true, true),
             ("crate::stats::Snapshot", true, true),
         ];
