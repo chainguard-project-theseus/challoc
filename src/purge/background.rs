@@ -70,7 +70,7 @@ struct State {
 /// that take the guard are the holders named here.
 broadcast axiom fn axiom_state_lock_inv(v: State)
     ensures
-        #[trigger] lock_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
+        #[trigger] crate::lock::assumed_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
 ;
 
 exec static STATE: Lock<State>
@@ -997,6 +997,22 @@ pub fn fork_child(Tracked(held): Tracked<&mut LockHeld>)
 /// bytes at the fork, from which [`auto_tick`] keeps the low-water mark.
 pub fn set_fork_base(inherited: u64) {
     AUTO_BASE.store(inherited, Ordering::Relaxed);
+}
+
+} // verus!
+
+verus! {
+
+/// The state lock's invariant, which [`axiom_state_lock_inv`] states; its
+/// frame is uninterpreted.
+impl crate::lock::LockSpec for State {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
+    }
 }
 
 } // verus!

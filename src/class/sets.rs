@@ -978,7 +978,7 @@ impl Set {
 /// that take the guard are the holders named here.
 pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
     ensures
-        #[trigger] crate::lock::lock_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),
+        #[trigger] crate::lock::assumed_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),
 ;
 
 /// Assumption (`lock.rs`): what every value behind [`SetTable::tables`]
@@ -988,7 +988,7 @@ pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
 /// [`axiom_set_tables_lock_inv`].
 pub(crate) broadcast axiom fn axiom_set_tables_lock_frame(a: [Lazy; SET_GROUPS], b: [Lazy; SET_GROUPS])
     ensures
-        #[trigger] crate::lock::lock_frame(a, b) == forall|g: int|
+        #[trigger] crate::lock::assumed_frame(a, b) == forall|g: int|
             0 <= g < SET_GROUPS ==> #[trigger] b[g].spec_base() == a[g].spec_base() && b[g].spec_len() == a[g].spec_len(),
 ;
 
@@ -1294,3 +1294,19 @@ impl SetTable {
         out
     }
 }
+
+verus! {
+
+/// The slab-set tables' lock's invariant and frame, which
+/// [`axiom_set_tables_lock_inv`] and [`axiom_set_tables_lock_frame`] state.
+impl crate::lock::LockSpec for [Lazy; SET_GROUPS] {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
+    }
+}
+
+} // verus!

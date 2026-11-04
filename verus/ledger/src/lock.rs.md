@@ -78,13 +78,13 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
 
 ## `axiom_acquired`
 
-src/lock.rs:701. Kind: axiom. Category: allocator invariant.
+src/lock.rs:737. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a guard (the other entry is [`axiom_held`], for a holder of the raw lock): a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
 
 ```rust
-axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
+axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
     ensures
         p.id() == l.value.id(),
         lock_inv(*p.value()),
@@ -94,13 +94,13 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ## `axiom_held`
 
-src/lock.rs:718. Kind: axiom. Category: allocator invariant.
+src/lock.rs:754. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters for a holder of the raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token lends the permission of `l`'s cell for as long as the token stays borrowed, and the value satisfies [`lock_inv`] and keeps [`lock_frame`], as at [`axiom_acquired`].
 
 ```rust
-axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (tracked p: &'a mut PointsTo<T>)
+axiom fn axiom_held<'a, T: LockSpec>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (tracked p: &'a mut PointsTo<T>)
     requires
         old(held).held() == l.raw,
     ensures
@@ -113,7 +113,7 @@ axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (track
 
 ## `Lock::value_ptr`
 
-src/lock.rs:782. Kind: external_body. Category: raw pointer (internal).
+src/lock.rs:818. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names), and `T` other than `u8`, `u64`, `(u64, u8)` and `ArenaStats`).
 
 > The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
@@ -124,12 +124,12 @@ pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
 
 ## `cell_ref`
 
-src/lock.rs:1087. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1130. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 1095.
+Body mints Tracked at line 1138.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -143,12 +143,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:1102. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1145. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 1112.
+Body mints Tracked at line 1155.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -164,7 +164,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:1122. Kind: external_body. Category: atomics primitive.
+src/lock.rs:1165. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return).
 
 ```rust

@@ -20,7 +20,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(crate) broadcast axiom fn axiom_set_tables_lock_inv(v: [Lazy; SET_GROUPS])
     ensures
-        #[trigger] crate::lock::lock_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),
+        #[trigger] crate::lock::assumed_inv(v) == forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] v[g].claimed(),
 ;
 ```
 
@@ -34,7 +34,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(crate) broadcast axiom fn axiom_set_tables_lock_frame(a: [Lazy; SET_GROUPS], b: [Lazy; SET_GROUPS])
     ensures
-        #[trigger] crate::lock::lock_frame(a, b) == forall|g: int|
+        #[trigger] crate::lock::assumed_frame(a, b) == forall|g: int|
             0 <= g < SET_GROUPS ==> #[trigger] b[g].spec_base() == a[g].spec_base() && b[g].spec_len() == a[g].spec_len(),
 ;
 ```

@@ -71,7 +71,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
     ensures
-        #[trigger] crate::lock::lock_inv(v) == v.inv(),
+        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
 ;
 ```
 
@@ -85,7 +85,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub broadcast axiom fn axiom_snapshot_lock_frame(init: Snapshot, v: Snapshot)
     ensures
-        #[trigger] crate::lock::lock_frame(init, v),
+        #[trigger] crate::lock::assumed_frame(init, v),
 ;
 ```
 

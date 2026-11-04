@@ -26,7 +26,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
     ensures
-        #[trigger] crate::lock::lock_inv(v),
+        #[trigger] crate::lock::assumed_inv(v),
 ;
 ```
 

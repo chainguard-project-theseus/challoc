@@ -2108,7 +2108,7 @@ verus! {
 
 /// The creation lock's invariant ([`Created::ok`]): `n` is at most
 /// [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`,
-/// and no published entry at or above it. Trusted only because `lock_inv`
+/// and no published entry at or above it. Trusted only because `assumed_inv`
 /// is uninterpreted. Its writers are verified and show it:
 /// `Arenas::init`'s `Lock::new` (the automatic count, arena 0 alone),
 /// `Arenas::create`, which publishes entry `n` and then stores `n + 1` for
@@ -2123,7 +2123,7 @@ verus! {
 /// that take the guard are the holders named here.
 pub broadcast axiom fn axiom_arenas_lock_inv(v: Created)
     ensures
-        #[trigger] lock_inv(v) == v.ok(),
+        #[trigger] crate::lock::assumed_inv(v) == v.ok(),
 ;
 
 /// The permissions to the fields of an `Arenas` under construction but
@@ -3581,7 +3581,7 @@ verus! {
 /// failed `build`, by `build`'s ensures).
 broadcast axiom fn axiom_arenas_lock_frame(init: Created, v: Created)
     ensures
-        #[trigger] lock_frame(init, v) == (v.n >= init.n && v.half@.id() == init.half@.id()),
+        #[trigger] crate::lock::assumed_frame(init, v) == (v.n >= init.n && v.half@.id() == init.half@.id()),
 ;
 
 impl Arenas {
@@ -4045,6 +4045,22 @@ impl Arenas {
         })
     }
 }
+
+verus! {
+
+/// The creation lock's invariant and frame, which
+/// [`axiom_arenas_lock_inv`] and [`axiom_arenas_lock_frame`] state.
+impl crate::lock::LockSpec for Created {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
+    }
+}
+
+} // verus!
 
 /// Kani check of `axiom_array_layout` at instances no `const` assertion
 /// covers (`verus/ledger/src/arena.rs.md`; `cfg(kani)` only, see

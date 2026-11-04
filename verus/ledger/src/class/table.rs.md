@@ -26,7 +26,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
     ensures
-        #[trigger] lock_inv(v) == v.inv(),
+        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
 ;
 ```
 
@@ -40,7 +40,7 @@ Tool: none (assumption). Status: trusted.
 ```rust
 pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableInner)
     ensures
-        #[trigger] lock_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
+        #[trigger] crate::lock::assumed_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
             && v.sb == init.sb && v.mloc == init.mloc && v.dbase == init.dbase && v.dstride == init.dstride
             && v.sloc == init.sloc && v.wloc == init.wloc),
 ;

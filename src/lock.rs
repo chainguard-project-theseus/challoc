@@ -646,6 +646,26 @@ pub struct Lock<T> {
     init: Ghost<T>,
 }
 
+/// The invariant and frame of a locked type, stated by the type's owner:
+/// [`lock_inv`] is `lock_spec_inv`, [`lock_frame`] is `lock_spec_frame`.
+/// An owner may define them in its impl only when every holder of its
+/// lock outside the tests ends with [`LockGuard::unlock`], which checks
+/// both at each release, and `api::tests::UNLOCKED_LOCKS` lists the lock
+/// with those holders (`api::tests::guards_end_in_unlock`). Otherwise
+/// the impl keeps them uninterpreted ([`assumed_inv`], [`assumed_frame`])
+/// and the owner states them by an axiom that names the holders. A frame
+/// an impl defines must hold of every value with itself: [`Lock::new`]
+/// does not check it of the initial value, and [`axiom_acquired`] claims
+/// it at the first acquisition. The two method names are defined nowhere
+/// else in the crate (several locked types have an inherent `inv`), so
+/// `lock::tests::lock_axioms_state_assumed_specs` finds every use of
+/// them by name, in method, path or generic form.
+pub trait LockSpec: Sized {
+    spec fn lock_spec_inv(self) -> bool;
+
+    spec fn lock_spec_frame(init: Self, v: Self) -> bool;
+}
+
 /// The invariant the value behind every `Lock<T>` keeps while unlocked.
 ///
 /// Verified code that takes a lock relies on it: [`Lock::new`] requires it
@@ -659,11 +679,21 @@ pub struct Lock<T> {
 /// that holder rests on instead; an unverified one is trusted. A verified
 /// holder must not move a tracked permission out of the value and keep it
 /// past the guard: the next `lock` would hand out the invariant's
-/// permission again. `lock_inv` is uninterpreted; the owner of each locked
-/// type states what it means for that type, and lists its unverified
-/// holders and the verified ones that rest on a premise. The assumption enters at [`axiom_acquired`], and at
-/// [`axiom_held`] for a holder of the raw lock.
-pub uninterp spec fn lock_inv<T>(v: T) -> bool;
+/// permission again. The owner of each locked type states what it means
+/// for that type ([`LockSpec`]), and, where an axiom states it, lists its
+/// unverified holders and the verified ones that rest on a premise. The
+/// assumption enters at [`axiom_acquired`], and at [`axiom_held`] for a
+/// holder of the raw lock.
+pub open spec fn lock_inv<T: LockSpec>(v: T) -> bool {
+    <T as LockSpec>::lock_spec_inv(v)
+}
+
+/// [`LockSpec::lock_spec_inv`] for a type whose owner states it by an
+/// axiom. The axiom states this function, never [`lock_inv`] or the
+/// trait method, so it constrains only a type whose impl delegates here:
+/// a leftover axiom cannot contradict a real impl added later
+/// (`lock::tests::lock_axioms_state_assumed_specs`).
+pub uninterp spec fn assumed_inv<T>(v: T) -> bool;
 
 /// The value a lock was created with.
 pub closed spec fn lock_init<T>(l: Lock<T>) -> T {
@@ -671,9 +701,15 @@ pub closed spec fn lock_init<T>(l: Lock<T>) -> T {
 }
 
 /// What every value a lock holds keeps from the value it was created
-/// with (its ghost constants, say); uninterpreted like [`lock_inv`], and
-/// stated per type by the type's owner.
-pub uninterp spec fn lock_frame<T>(init: T, v: T) -> bool;
+/// with (its ghost constants, say), stated per type by the type's owner
+/// ([`LockSpec`]), like [`lock_inv`].
+pub open spec fn lock_frame<T: LockSpec>(init: T, v: T) -> bool {
+    <T as LockSpec>::lock_spec_frame(init, v)
+}
+
+/// [`LockSpec::lock_spec_frame`] for a type whose owner states it by an
+/// axiom, stated as for [`assumed_inv`].
+pub uninterp spec fn assumed_frame<T>(init: T, v: T) -> bool;
 
 /// The lock invariant's assumption where it enters for a guard (the other
 /// entry is [`axiom_held`], for a holder of the raw lock): a thread that
@@ -698,7 +734,7 @@ pub uninterp spec fn lock_frame<T>(init: T, v: T) -> bool;
 /// (`Arenas::create`, `Arenas::materialise`).
 ///
 /// Checked by `lock::tests::permission_axioms_are_called_only_at_acquisitions`.
-axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
+axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
     ensures
         p.id() == l.value.id(),
         lock_inv(*p.value()),
@@ -715,7 +751,7 @@ axiom fn axiom_acquired<T>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 /// and the next call would give a second one to the same cell.
 ///
 /// Checked by `lock::tests::permission_axioms_are_called_only_at_acquisitions`.
-axiom fn axiom_held<'a, T>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (tracked p: &'a mut PointsTo<T>)
+axiom fn axiom_held<'a, T: LockSpec>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (tracked p: &'a mut PointsTo<T>)
     requires
         old(held).held() == l.raw,
     ensures
@@ -787,6 +823,7 @@ impl<T> Lock<T> {
     /// A lock of rank `rank` (ghost) guarding `value`, at most the state
     /// lock's ([`RawLock::new`]).
     pub const fn new(value: T, Ghost(rank): Ghost<int>) -> (l: Lock<T>)
+        where T: LockSpec
         requires
             lock_inv(value),
             rank <= rank_state(),
@@ -813,6 +850,7 @@ impl<T> Lock<T> {
     /// same lifetime: while the guard or `under` is in use, `ord` is not.
     #[inline]
     pub fn lock<'a>(&'a self, Tracked(ord): Tracked<&'a mut LockOrder<'_>>, Tracked(under): Tracked<&mut LockOrder<'a>>) -> (g: LockGuard<'a, T>)
+        where T: LockSpec
         requires
             crate::sys::may_syscall(),
             old(ord).allows(self.rank()),
@@ -837,7 +875,7 @@ impl<T> Lock<T> {
     /// [`Lock::lock`] for the tests, which keep no lock order tokens.
     #[cfg(test)]
     #[verifier::external]
-    pub fn lock_t(&self) -> LockGuard<'_, T> {
+    pub fn lock_t(&self) -> LockGuard<'_, T> where T: LockSpec {
         self.lock(Tracked::assume_new(), Tracked::assume_new())
     }
 
@@ -845,6 +883,7 @@ impl<T> Lock<T> {
     #[inline]
     #[cfg(test)]
     pub fn try_lock(&self) -> (r: Option<LockGuard<'_, T>>)
+        where T: LockSpec
         ensures
             r matches Some(g) ==> lock_inv(g@) && lock_frame(lock_init(*self), g@) && g.spec_lock() == *self,
     {
@@ -893,6 +932,7 @@ impl<T> Lock<T> {
     // Exclusivity is the caller's promise (`# Safety`).
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_unlocked<'a>(&'a self, Tracked(held): Tracked<&'a mut LockHeld>) -> (r: &'a mut T)
+        where T: LockSpec
         requires
             old(held).held() == self.spec_raw(),
         ensures
@@ -922,6 +962,7 @@ impl<T> Lock<T> {
     /// Lock order: as [`RawLock::lock_held`].
     #[inline(always)]
     pub(crate) fn lock_held_perm(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Tracked<(LockHeld, PointsTo<T>)>)
+        where T: LockSpec
         requires
             crate::sys::may_syscall(),
             old(ord).root(),
@@ -964,6 +1005,7 @@ impl<T> Lock<T> {
     /// has closed ([`window_closed`]).
     #[inline(always)]
     pub(crate) fn unlock_held_perm(&self, Tracked(t): Tracked<LockHeld>, Tracked(perm): Tracked<PointsTo<T>>)
+        where T: LockSpec
         requires
             crate::sys::may_syscall(),
             t.held() == self.spec_raw(),
@@ -1020,6 +1062,7 @@ impl<'a, T> LockGuard<'a, T> {
     /// release is the guard's drop, at the end of the body.
     #[inline(always)]
     pub fn unlock(self)
+        where T: LockSpec
         requires
             crate::sys::may_syscall(),
             lock_inv(self@),
@@ -1133,6 +1176,171 @@ impl<T> Drop for LockGuard<'_, T> {
 mod tests {
     use super::*;
     use std::vec::Vec;
+
+    // The values the tests below lock; their invariant is not stated.
+    impl LockSpec for u32 {}
+    impl LockSpec for u64 {}
+    impl<T> LockSpec for Vec<T> {}
+
+    /// Every lock axiom outside this file states [`assumed_inv`] or
+    /// [`assumed_frame`], never [`lock_inv`], [`lock_frame`] or a
+    /// [`LockSpec`] method: an axiom on those could contradict a real impl
+    /// added later and prove `false`, while one on the `assumed_*`
+    /// functions constrains only the types whose impls delegate to them.
+    /// The four names are matched as words, so a method call
+    /// (`v.lock_spec_inv()`), a type path (`Inner::lock_spec_inv(v)`), a
+    /// generic call (`T::lock_spec_inv(v)`) and a turbofish all count, and
+    /// no function outside a `LockSpec` impl takes the method names. No lock
+    /// axiom names, in its parameters, a type whose impl defines the
+    /// function the axiom states (does not delegate it): such an axiom
+    /// constrains nothing the type's holders use, so it is dead and its
+    /// doc misleads. An axiom is an `axiom fn` item through the first line
+    /// that ends in `;`, and a lock axiom one that names any of these
+    /// functions. Types are compared by path, a bare name read as an item
+    /// of the module whose file names it. Not seen: an `assumed_*` call
+    /// spelled with a space before `(`, a `use .. as` rename, a trusted
+    /// fact outside an `axiom fn` (an `external_body` proof, an `assume`),
+    /// and a type named only inside `ensures`. `lock.rs`, whose axioms
+    /// (`axiom_acquired`, `axiom_held`) are generic over `T`, is not
+    /// scanned.
+    #[test]
+    fn lock_axioms_state_assumed_specs() {
+        use std::string::{String, ToString};
+        // Spelled in parts, so that this test's own lines match nothing.
+        let named = [
+            std::format!("{}{}", "lock_", "inv"),
+            std::format!("{}{}", "lock_", "frame"),
+            std::format!("{}{}", "lock_spec_", "inv"),
+            std::format!("{}{}", "lock_spec_", "frame"),
+        ];
+        let assumed_inv = std::format!("{}{}", "assumed_", "inv(");
+        let assumed_frame = std::format!("{}{}", "assumed_", "frame(");
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        // A use of `name`, not the tail of a longer name.
+        let calls =
+            |t: &str, name: &str| t.match_indices(name).any(|(i, _)| !t[..i].ends_with(ident));
+        // `name` as a whole word.
+        let word = |t: &str, name: &str| {
+            t.match_indices(name)
+                .any(|(i, _)| !t[..i].ends_with(ident) && !t[i + name.len()..].starts_with(ident))
+        };
+        let module = |rel: &str| {
+            let stem = rel.strip_suffix(".rs").unwrap();
+            let stem = stem.strip_suffix("/mod").unwrap_or(stem);
+            std::format!("crate::{}", stem.replace('/', "::"))
+        };
+        let key = |m: &str, ty: &str| {
+            let ty = ty.trim();
+            if ty.starts_with("crate::") {
+                ty.to_string()
+            } else {
+                std::format!("{m}::{ty}")
+            }
+        };
+        // Per impl: (type, where, defines `inv`, defines `frame`); per lock
+        // axiom: (where, module, text).
+        let mut impls: Vec<(String, String, bool, bool)> = Vec::new();
+        let mut axioms: Vec<(String, String, String)> = Vec::new();
+        let for_ = std::format!("{}{}", "LockSpec", " for ");
+        for (rel, text) in crate::testutil::shipped_sources() {
+            if rel == "lock.rs" {
+                continue;
+            }
+            let m = module(&rel);
+            let lines: Vec<&str> = text.lines().collect();
+            let mut i = 0;
+            while i < lines.len() {
+                let t = lines[i].trim_start();
+                let at = std::format!("{rel}:{}", i + 1);
+                if t.starts_with("impl") && t.contains(for_.as_str()) {
+                    let rest = &t[t.find(for_.as_str()).unwrap() + for_.len()..];
+                    let ty = rest.split(" where").next().unwrap().trim_end();
+                    let ty = ty.trim_end_matches('}').trim_end_matches('{').trim_end();
+                    let indent = &lines[i][..lines[i].len() - t.len()];
+                    let mut body = String::new();
+                    if !t.trim_end().ends_with('}') {
+                        i += 1;
+                        while lines[i] != std::format!("{indent}}}") {
+                            body.push_str(lines[i]);
+                            body.push('\n');
+                            i += 1;
+                        }
+                    }
+                    impls.push((
+                        key(&m, ty),
+                        at,
+                        !calls(&body, &assumed_inv),
+                        !calls(&body, &assumed_frame),
+                    ));
+                } else if named[2..].iter().any(|n| word(t, &std::format!("fn {n}"))) {
+                    // The names stay unique: no item outside a `LockSpec`
+                    // impl defines them.
+                    panic!("{at}: a function named as a `LockSpec` method outside an impl of it");
+                } else if !t.starts_with("//") && t.contains("axiom fn ") {
+                    let mut item = String::new();
+                    loop {
+                        item.push_str(lines[i]);
+                        item.push('\n');
+                        if lines[i].trim_end().ends_with(';') {
+                            break;
+                        }
+                        i += 1;
+                    }
+                    if named.iter().any(|n| word(&item, n))
+                        || [&assumed_inv, &assumed_frame]
+                            .iter()
+                            .any(|n| calls(&item, n))
+                    {
+                        axioms.push((at, m.clone(), item));
+                    }
+                }
+                i += 1;
+            }
+        }
+        assert!(!impls.is_empty(), "no `LockSpec` impl found");
+        assert!(!axioms.is_empty(), "no lock axiom found");
+        for (at, m, item) in &axioms {
+            for n in &named {
+                assert!(
+                    !word(item, n),
+                    "{at}: a lock axiom names `{n}`; state `assumed_inv`/`assumed_frame` instead"
+                );
+            }
+            // The parameters' types: the first `(..)` after the name, split
+            // at its top-level commas.
+            let name = item.find("axiom fn ").unwrap();
+            let open = name + item[name..].find('(').unwrap();
+            let mut depth = 0;
+            let mut params = Vec::new();
+            let mut cur = String::new();
+            for c in item[open + 1..].chars() {
+                match c {
+                    '(' | '[' | '<' => depth += 1,
+                    ')' | ']' | '>' if depth > 0 => depth -= 1,
+                    ')' => break,
+                    ',' if depth == 0 => {
+                        params.push(core::mem::take(&mut cur));
+                        continue;
+                    }
+                    _ => {}
+                }
+                cur.push(c);
+            }
+            params.push(cur);
+            for p in params.iter().filter_map(|p| p.split_once(':')) {
+                let ty = key(m, p.1);
+                for (k, imp, inv, frame) in &impls {
+                    let dead = (*inv && calls(item, &assumed_inv))
+                        || (*frame && calls(item, &assumed_frame));
+                    assert!(
+                        !(*k == ty && dead),
+                        "{at}: a lock axiom on `{ty}` states a function its `LockSpec` impl at \
+                         {imp} defines; remove the axiom"
+                    );
+                }
+            }
+        }
+    }
 
     /// `axiom_acquired` and `axiom_held` mint a permission of a lock's
     /// cell, and two alive at once would prove `false` (vstd's

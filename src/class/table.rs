@@ -21,7 +21,7 @@ use crate::layout::{CLASSES, Class, Regions};
 use crate::layout::{NCLASSES, class_table, process_regions};
 use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{lock_frame, lock_init, lock_inv, rank_meta, rank_table};
+use crate::lock::{lock_init, rank_meta, rank_table};
 use crate::meta::Meta;
 use crate::purge;
 use crate::slab::{DESC_ALIGN, DescPerm, HEADER, SlabDesc, desc_stride};
@@ -270,7 +270,7 @@ impl TableInner {
 /// that take the guard are the holders named here.
 pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
     ensures
-        #[trigger] lock_inv(v) == v.inv(),
+        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
 ;
 
 /// Assumption (`lock.rs`): the commit lock's ghost geometry, marker
@@ -282,7 +282,7 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
 /// commits.
 pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableInner)
     ensures
-        #[trigger] lock_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
+        #[trigger] crate::lock::assumed_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
             && v.sb == init.sb && v.mloc == init.mloc && v.dbase == init.dbase && v.dstride == init.dstride
             && v.sloc == init.sloc && v.wloc == init.wloc),
 ;
@@ -5154,6 +5154,22 @@ impl SlabTable {
         let word = addr_to_ptr(owners_base + (slab >> lg_group) * 2) as *const AtomicU16;
         // SAFETY: guaranteed by the caller.
         unsafe { load_owner(self, word, Ghost(slab), Tracked(None)) }
+    }
+}
+
+} // verus!
+
+verus! {
+
+/// The slab table lock's invariant and frame, which
+/// [`axiom_table_lock_inv`] and [`axiom_table_lock_frame`] state.
+impl crate::lock::LockSpec for TableInner {
+    open spec fn lock_spec_inv(self) -> bool {
+        crate::lock::assumed_inv(self)
+    }
+
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        crate::lock::assumed_frame(init, v)
     }
 }
 
