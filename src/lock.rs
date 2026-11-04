@@ -1212,6 +1212,7 @@ mod tests {
         // (type, defines `inv`, defines `frame`) for each impl that defines
         // either; every other impl delegates both.
         const DEFINED: &[(&str, bool, bool)] = &[
+            ("crate::class::Inner", true, true),
             ("crate::class::sets::[Lazy; SET_GROUPS]", true, true),
             ("crate::heap::tcaches::()", true, true),
             ("crate::huge::Inner", true, true),

@@ -2143,49 +2143,6 @@ broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
     }
 }
 
-/// Assumption (`lock.rs`): the class lock's value keeps the set/count
-/// seam's invariant, ghost link included, while the lock is free.
-/// `ClassState::new` proves it of the value it creates the lock with.
-/// Each holder outside the tests (`ClassState::plan`, `reopen`,
-/// `on_live_zero`, `bin_stats`, `lowest_partial`, `is_partial`, and
-/// `decay.rs`'s `empty_bytes`, `purge_empty` and `purge_curve`) ends with
-/// `LockGuard::unlock`, which requires `Inner::inv` (this axiom) and the
-/// frame ([`axiom_class_lock`]), on every path to a return
-/// (`api::tests::guards_end_in_unlock`); a guard dropped without it
-/// would release unchecked. A panic aborts (`panic = "abort"`) outside
-/// the tests, so it never releases. The other holders are the tests, but for those
-/// that break the counts on purpose to reach an abort; the test helper
-/// `set_membership` only reads. Each of the others writes an owned slab's
-/// state and stamp only through the bridges (`set_state_locked`,
-/// `set_dirty_locked`), which write the descriptor through the permission the value
-/// holds and update the ghost state and stamp with it: verified, so they
-/// keep `Inner::descs` when their callers meet their preconditions, which
-/// nothing checks at these unverified call sites. None of them updates the other ghost fields (`committed`,
-/// `inited`, `oauth`, `seen`), so for them the assumption is also the set and
-/// count shapes (`Inner::base`), the sets' disjointness, and the ghost
-/// link between the sets and the ghost states (`Inner::slab_core`), which
-/// their set updates and the bridges' state updates are meant to keep
-/// together. The fork handlers take the raw lock without touching the
-/// value. `api::tests::lock_holders_match_inv_docs` checks that the
-/// functions that take the guard are the holders named here.
-broadcast axiom fn axiom_class_lock_inv(v: Inner)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
-;
-
-/// Assumption (`lock.rs`): the sets behind a class lock stay over the
-/// slab count they were created with, and the value's arena, table and
-/// owned-slab record's location are the ones `new` set. Each holder
-/// outside the tests checks it at its `LockGuard::unlock`, as for
-/// [`axiom_class_lock_inv`]; in the tests, every `Inner` method keeps
-/// `nbits` and those fields (`same_rest`, `same_sets`) and nothing
-/// replaces the sets.
-broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
-    ensures
-        #[trigger] crate::lock::assumed_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table
-            && v.oauth@.id() == init.oauth@.id()),
-;
-
 impl ClassState {
     /// Create the state for `arena` over class `c`'s table, at `tp`
     /// (element `c` of the tables `tables` covers from `base` on), with
@@ -2223,7 +2180,6 @@ impl ClassState {
             r matches Some(s) ==> s.spec_class() == c && s.spec_table() == tables[c].value() && s.spec_arena() == arena,
             *final(slots) == old(slots).remove((c, 0)).remove((c, 1)).remove((c, 2)),
     {
-        broadcast use axiom_class_lock_inv;
         let table = vstd::raw_ptr::ptr_ref(tp, Tracked(tables.tracked_borrow(c)));
         proof {
             use_type_invariant(table);
@@ -3876,7 +3832,6 @@ impl ClassState {
             picks_sum(final(picks)@, np as int) <= want,
     {
         let cls = self.class();
-        broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
         }
@@ -4776,7 +4731,6 @@ impl ClassState {
             final(reopen).len == 0,
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
         }
@@ -4853,7 +4807,6 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
         }
@@ -5514,7 +5467,7 @@ impl ClassState {
             (r.1 as int) <= ((r.0.committed - r.0.empty - r.0.purged) as int) * (class_table()[self.spec_class() as int].nslots as int),
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_class_lock, axiom_class_lock_inv, lemma_inv_counts};
+        broadcast use lemma_inv_counts;
         proof {
             use_type_invariant(self);
             lemma_slots_fit(table_at(self.table));
@@ -5671,7 +5624,6 @@ impl ClassState {
             r matches Some(s) ==> s < self.spec_nslabs(),
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
         }
@@ -5692,7 +5644,6 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
     {
-        broadcast use {axiom_class_lock, axiom_class_lock_inv};
         proof {
             use_type_invariant(self);
         }
@@ -5868,16 +5819,55 @@ pub proof fn gather(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int,
 
 verus! {
 
-/// The class lock's invariant and frame, which [`axiom_class_lock_inv`]
-/// and [`axiom_class_lock`] state.
+/// The class lock ([`ClassState::inner`]): its invariant is the set/count
+/// seam's, ghost link included ([`Inner::inv`]), and its frame is the
+/// sets' slab count and the value's arena, table and owned-slab record's
+/// location, which `ClassState::new` sets: every `Inner` method keeps
+/// `nbits` and those fields (`same_rest`, `same_sets`), nothing replaces
+/// the sets, and `take_group` adds to the record at its location.
+///
+/// `ClassState::new` proves the invariant of the value it creates the
+/// lock with (`Lock::new` requires it). Each holder outside the tests
+/// (`ClassState::plan`, `reopen`, `on_live_zero`, `bin_stats`,
+/// `lowest_partial`, `is_partial`, and `decay.rs`'s `empty_bytes`,
+/// `purge_empty` and `purge_curve`) ends with `LockGuard::unlock`, which
+/// requires both, on every path to a return
+/// (`api::tests::guards_end_in_unlock`). A panic aborts
+/// (`panic = "abort"`) outside the tests, so it never releases. The other
+/// holders are the tests, but for those that break the counts on purpose
+/// to reach an abort; the test helper `set_membership` only reads. Each
+/// of the others writes an owned slab's state and stamp only through the
+/// bridges (`set_state_locked`, `set_dirty_locked`), which write the
+/// descriptor through the permission the value holds and update the ghost
+/// state and stamp with it: verified, so they keep `Inner::descs` when
+/// their callers meet their preconditions, which nothing checks at these
+/// unverified call sites. None of them updates the other ghost fields
+/// (`committed`, `inited`, `oauth`, `seen`), so for them the invariant
+/// also rests on the set and count shapes (`Inner::base`), the sets'
+/// disjointness, and the ghost link between the sets and the ghost states
+/// (`Inner::slab_core`), which their set updates and the bridges' state
+/// updates are meant to keep together. The fork handlers take the raw
+/// lock without touching the value.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for Inner {
-    open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+    closed spec fn lock_spec_inv(self) -> bool {
+        self.inv()
     }
 
-    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+    closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table && v.oauth@.id() == init.oauth@.id()
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_class_frame_reflexive(v: Inner)
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 } // verus!
