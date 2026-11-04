@@ -2202,7 +2202,6 @@ impl Shared {
                     ord.allows(rank_table(0)),
                     forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::SlotLoc(d)),
                     forall|d: int| c <= d < NCLASSES ==> #[trigger] once::holds(steps, Step::FreshWords(d)),
-                    once::holds(steps, Step::Huge),
             {
                 let tracked slot_once = once::take(&mut steps, Step::SlotLoc(c as int));
                 let tracked words_once = once::take(&mut steps, Step::FreshWords(c as int));
@@ -2312,8 +2311,7 @@ impl Shared {
             // Arena 0's permission, frozen: the arena registry's table
             // keeps it for entry 0, and `axiom_shared_built` takes it.
             let tracked a0 = vstd::modes::tracked_static_ref(parts.arena0.perm.tracked_take());
-            let tracked huge_once = once::take(&mut steps, Step::Huge);
-            match Huge::new(meta, regions, guard_install, config.guards, Tracked(huge_once), Tracked(&mut ord)) {
+            match Huge::new(meta, regions, guard_install, config.guards, Tracked(&mut ord)) {
                 Some(h) => {
                     h.set_retain_max(config.huge_retain_max);
                     // `huge_dirty_decay_ms:0`: a freed run is purged at

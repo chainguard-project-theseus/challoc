@@ -19,10 +19,6 @@ pub ghost enum Step {
     /// `heap::shared::Shared::begin`: the permission to the process's
     /// `Shared` storage.
     Shared,
-    /// `huge::Huge::new`, which takes the token and uses it for nothing:
-    /// its run authorities are the process's by the definitions of
-    /// `huge::run_loc` and `huge::page_loc`.
-    Huge,
     /// Class `c`'s slot-token authority (`class::table`,
     /// `SlabTable::new`).
     SlotLoc(int),
