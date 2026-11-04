@@ -17,9 +17,11 @@
 //! ledger (verus/ledger, verus/SEAMS.md, "Status"), matched by the
 //! `src/FILE:LINE` of its `fn` keyword: *discharged* when the status is
 //! "discharged" (a check outside Verus covers its whole contract) or
-//! "discharged on premises (Isla: ...; premises: ...)" (an Isla check
-//! covers it but for the platform premises named by the P and K labels
-//! verus/isla/seams.md defines, which only Isla's checks may cite),
+//! "discharged on premises (Isla: ...; premises: ...)" or "discharged on
+//! premises (Kani: ...; premises: ...)" (an Isla check or a Kani harness
+//! covers it but for the premises its labels name: for Isla, the P and K
+//! labels verus/isla/seams.md defines; for Kani, the C labels
+//! verus/kani/premises.md defines; no other check may cite premises),
 //! *partly checked* when it is "trusted (partly checked, ...)", and
 //! unchecked otherwise. The *combined* share counts verified and
 //! discharged functions; partly checked ones are shown apart and not
@@ -483,15 +485,26 @@ fn main() {
     let t = c.tallies.remove(&c.krate).unwrap_or_default();
     print_row(&c.krate, &t);
     fail_on_errors(c.errors);
-    let isla = root.join("verus/isla/seams.md");
-    let premises = premise_labels(&fs::read_to_string(&isla).unwrap_or_else(|e| {
-        eprintln!("{}: {e}", isla.display());
-        std::process::exit(2);
-    }));
-    if premises.is_empty() {
-        eprintln!("{}: no platform premise labels", isla.display());
-        std::process::exit(2);
-    }
+    let labels = |(file, section, prefixes): (&str, &str, &[char])| {
+        let path = root.join(file);
+        let got = premise_labels(
+            &fs::read_to_string(&path).unwrap_or_else(|e| {
+                eprintln!("{}: {e}", path.display());
+                std::process::exit(2);
+            }),
+            section,
+            prefixes,
+        );
+        if got.is_empty() {
+            eprintln!("{}: no premise labels in {section}", path.display());
+            std::process::exit(2);
+        }
+        got
+    };
+    let premises = Premises {
+        isla: labels(ISLA_PREMISES),
+        kani: labels(KANI_PREMISES),
+    };
     let seams = read_ledger(&root.join("verus/ledger"), &premises).unwrap_or_else(|e| {
         eprintln!("verus/ledger: {e}");
         std::process::exit(2);
@@ -591,8 +604,8 @@ fn print_combined_row(name: &str, t: &Tally, c: &Checked) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Status {
     /// `discharged (...)`: the check covers the whole contract; or
-    /// [`PREMISED`]: Isla's check covers it but for the premises the
-    /// status names.
+    /// [`PREMISED`]: Isla's check or a Kani harness covers it but for the
+    /// premises the status names.
     Discharged,
     /// `trusted (partly checked, ...)`.
     Partly,
@@ -632,10 +645,11 @@ const OTHER_KINDS: &[&str] = &[
 /// Category: ...` line and the `Status: S` that follows it in the same
 /// paragraph (`S` may run on over the paragraph's next lines). An entry
 /// without a status is an error, and so is a [`PREMISED`] status that
-/// cites a check other than Isla's alone or names anything but labels in
-/// `premises` (or none), and a status starting `discharged` in any other
-/// form than `discharged (`.
-fn parse_ledger(text: &str, premises: &BTreeSet<String>) -> Result<Vec<Seam>, String> {
+/// cites a check other than Isla's alone or Kani's alone, or names
+/// anything but labels the cited check's file defines (`premises`), or
+/// none, and a
+/// status starting `discharged` in any other form than `discharged (`.
+fn parse_ledger(text: &str, premises: &Premises) -> Result<Vec<Seam>, String> {
     let mut seams = Vec::new();
     let mut lines = text.lines().enumerate().peekable();
     while let Some((i, line)) = lines.next() {
@@ -688,39 +702,83 @@ fn parse_ledger(text: &str, premises: &BTreeSet<String>) -> Result<Vec<Seam>, St
     Ok(seams)
 }
 
-/// The status of an Isla check whose contract rests on platform premises
-/// it names (verus/SEAMS.md, "Status"): `discharged on premises (Isla:
-/// verus/isla/seams.md; premises: ...)`.
+/// The status of an Isla check or a Kani harness whose contract rests on
+/// premises it names (verus/SEAMS.md, "Status"): `discharged on premises
+/// (Isla: verus/isla/seams.md; premises: ...)` or `discharged on premises
+/// (Kani: <harness paths>; premises: ...)`.
 const PREMISED: &str = "discharged on premises (";
 
+/// Where the premises a [`PREMISED`] status may name are defined: the
+/// file, the section whose `- **LABEL, title.**` bullets define them, and
+/// the letters a label starts with ([`premise_labels`]). Isla's are the
+/// platform premises of its runs; Kani's are the facts about the C
+/// program a harness cannot reach.
+const ISLA_PREMISES: (&str, &str, &[char]) =
+    ("verus/isla/seams.md", "## Platform premises", &['P', 'K']);
+const KANI_PREMISES: (&str, &str, &[char]) = ("verus/kani/premises.md", "## Premises", &['C']);
+
+/// The labels a [`PREMISED`] status may name, by the check it cites.
+struct Premises {
+    /// The labels [`ISLA_PREMISES`] defines.
+    isla: BTreeSet<String>,
+    /// The labels [`KANI_PREMISES`] defines.
+    kani: BTreeSet<String>,
+}
+
 /// The class of a [`PREMISED`] status, given the text after it: discharged
-/// when it cites the Isla runs alone (`Isla: verus/isla/seams.md`) and
-/// names at least one premise, each the label of a platform premise in
-/// `premises` ([`platform_labels`]), an error otherwise, since only Isla's
-/// checks count with named premises, and only with platform ones.
-fn premised(rest: &str, premises: &BTreeSet<String>) -> Result<Status, String> {
-    let Some(p) = rest.strip_prefix("Isla: verus/isla/seams.md; premises: ") else {
+/// when it cites the Isla runs alone (`Isla: verus/isla/seams.md`) or Kani
+/// harnesses alone ([`harness_list`]) and names at least one premise, each
+/// a label that check's file defines ([`known_labels`]); an error
+/// otherwise, since only Isla's and Kani's checks count with named
+/// premises, and each only with its own.
+fn premised(rest: &str, premises: &Premises) -> Result<Status, String> {
+    let (p, labels, file) = if let Some(p) =
+        rest.strip_prefix("Isla: verus/isla/seams.md; premises: ")
+    {
+        (p, &premises.isla, ISLA_PREMISES.0)
+    } else if let Some((h, p)) = rest
+        .strip_prefix("Kani: ")
+        .and_then(|r| r.split_once("; premises: "))
+        && harness_list(h)
+    {
+        (p, &premises.kani, KANI_PREMISES.0)
+    } else {
         return Err(format!(
-            "{PREMISED}...) cites a check other than Isla's alone, or names no premise: {rest:?}"
+            "{PREMISED}...) cites a check other than Isla's alone or Kani's alone, names a harness path not of the form `a::b::f`, or names no premise: {rest:?}"
         ));
     };
-    if !platform_labels(p, premises) {
+    if !known_labels(p, labels) {
         return Err(format!(
-            "{PREMISED}...) names no premise, or one that is not the label of a platform premise verus/isla/seams.md defines: {rest:?}"
+            "{PREMISED}...) names no premise, or one that is not the label of a premise {file} defines: {rest:?}"
         ));
     }
     Ok(Status::Discharged)
 }
 
+/// Whether `list` is one or more Kani harness paths (`a::kani_f::f`, at
+/// least two `::`-separated identifiers each), separated by `, `, ` and `
+/// or `, and ` (SEAMS.md, "Status"); another check's tag (`Isla: ...`) is
+/// no path. `seams.sh --check` checks that each names a harness.
+fn harness_list(list: &str) -> bool {
+    list.split(", ").flat_map(|s| s.split(" and ")).all(|h| {
+        let h = h.strip_prefix("and ").unwrap_or(h);
+        let segs: Vec<&str> = h.split("::").collect();
+        segs.len() >= 2
+            && segs
+                .iter()
+                .all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+    })
+}
+
 /// Whether a premise list (`K2 (gloss) and K3 (gloss)`, then the `)` that
 /// closes the status and only `.` and whitespace after it) names at least
-/// one premise and only labels in `premises` (verus/isla/seams.md's
-/// platform premises, [`premise_labels`]), each optionally followed by a
-/// gloss in parentheses. A premise of Verus's own model (`the TLS slot
-/// premise`, `TlsCell::tp`) is no such label, nor is one that file does
-/// not define (`K4`), nor text after the closing `)` or inside a gloss
-/// that never closes.
-fn platform_labels(list: &str, premises: &BTreeSet<String>) -> bool {
+/// one premise and only labels in `known` (the cited check's premises,
+/// [`premise_labels`]), each optionally followed by a gloss in
+/// parentheses. A premise of Verus's own model (`the TLS slot premise`,
+/// `TlsCell::tp`) is no such label, nor is one that file does not define
+/// (`K4`, or another check's label), nor text after the closing `)` or
+/// inside a gloss that never closes.
+fn known_labels(list: &str, known: &BTreeSet<String>) -> bool {
     let mut bare = String::new();
     let mut depth = 0usize;
     let mut tail = None;
@@ -747,21 +805,20 @@ fn platform_labels(list: &str, premises: &BTreeSet<String>) -> bool {
         .flat_map(|s| s.split(" and "))
         .map(str::trim)
         .collect();
-    labels.iter().all(|l| premises.contains(*l))
+    labels.iter().all(|l| known.contains(*l))
 }
 
-/// The labels of the platform premises verus/isla/seams.md defines: the
-/// `P` or `K` and a number that open each `- **LABEL, title.**` bullet
-/// of its "Platform premises" section.
-fn premise_labels(seams_md: &str) -> BTreeSet<String> {
-    seams_md
-        .lines()
-        .skip_while(|l| *l != "## Platform premises")
+/// The labels of the premises a file defines: the letter in `prefixes`
+/// and the number that open each `- **LABEL, title.**` bullet of its
+/// `section` (up to the next `## ` heading).
+fn premise_labels(md: &str, section: &str, prefixes: &[char]) -> BTreeSet<String> {
+    md.lines()
+        .skip_while(|l| *l != section)
         .skip(1)
         .take_while(|l| !l.starts_with("## "))
         .filter_map(|l| l.strip_prefix("- **")?.split_once(',').map(|(p, _)| p))
         .filter(|p| {
-            p.strip_prefix(['P', 'K'])
+            p.strip_prefix(prefixes)
                 .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
         })
         .map(str::to_owned)
@@ -769,8 +826,8 @@ fn premise_labels(seams_md: &str) -> BTreeSet<String> {
 }
 
 /// Every seam in the `*.rs.md` files under `dir` (verus/ledger), with
-/// `premises` the platform premise labels a [`PREMISED`] status may name.
-fn read_ledger(dir: &Path, premises: &BTreeSet<String>) -> Result<Vec<Seam>, String> {
+/// `premises` the labels a [`PREMISED`] status may name.
+fn read_ledger(dir: &Path, premises: &Premises) -> Result<Vec<Seam>, String> {
     let mut files = Vec::new();
     walk(dir, ".rs.md", &mut files);
     if files.is_empty() {
@@ -1291,19 +1348,55 @@ mod tests {
     /// section that must not count.
     const SEAMS_MD: &str = "# The seams Isla checks\n\n- **K9, not a premise.** Outside the section.\n\n## Platform premises\n\nThe runs start from a stated state.\n\n- **P1, the build.** a\n- **P2, user memory.** b\n- **P3, x.** c\n- **P4, x.** d\n- **P5, x.** e\n- **P6, x.** f\n- **P7, x.** g\n- **P8, GOT entry contents.** h\n  continued, with a comma\n- **P9, x.** i\n- **P10, x.** j\n- **P11, x.** k\n- **P12, x.** l\n- **P13, x.** m\n- **K1, the kernel's side of a system call.** n\n- **K2, no resume past a trap.** o\n- **K3, a fixed data key A and EnDA.** p\n- **Note, not a label.** q\n\n## The GOT functions\n\n- **K5, not a premise.** Outside the section.\n";
 
-    fn premises() -> BTreeSet<String> {
-        premise_labels(SEAMS_MD)
+    /// The "Premises" of a verus/kani/premises.md with C1 and C2, a bullet
+    /// whose label has another letter, and a bullet in another section,
+    /// neither of which must count.
+    const KANI_MD: &str = "# The premises Kani statuses name\n\n- **C9, not a premise.** Outside the section.\n\n## Premises\n\nWhat no harness reaches.\n\n- **C1, the hook slots.** a\n  continued, with a comma\n- **C2, x.** b\n- **P1, not a Kani label.** c\n\n## Sources\n\n- **C3, not a premise.** Outside the section.\n";
+
+    fn isla_labels(md: &str) -> BTreeSet<String> {
+        premise_labels(md, ISLA_PREMISES.1, ISLA_PREMISES.2)
+    }
+
+    fn kani_labels(md: &str) -> BTreeSet<String> {
+        premise_labels(md, KANI_PREMISES.1, KANI_PREMISES.2)
+    }
+
+    fn premises() -> Premises {
+        Premises {
+            isla: isla_labels(SEAMS_MD),
+            kani: kani_labels(KANI_MD),
+        }
     }
 
     #[test]
     fn the_platform_premise_labels_are_the_sections_bullets() {
-        let got = premises();
+        let got = premises().isla;
         let want: BTreeSet<String> = (1..=13)
             .map(|n| format!("P{n}"))
             .chain((1..=3).map(|n| format!("K{n}")))
             .collect();
         assert_eq!(got, want, "labels: got = {got:?}, want = {want:?}");
-        let got = premise_labels("- **K1, x.** y\n");
+        let got = isla_labels("- **K1, x.** y\n");
+        assert!(got.is_empty(), "no section: got = {got:?}, want = none");
+        // Isla's section of a Kani file, and the reverse, define nothing.
+        let got = isla_labels(KANI_MD);
+        assert!(
+            got.is_empty(),
+            "Kani file read as Isla's: got = {got:?}, want = none"
+        );
+        let got = kani_labels(SEAMS_MD);
+        assert!(
+            got.is_empty(),
+            "Isla file read as Kani's: got = {got:?}, want = none"
+        );
+    }
+
+    #[test]
+    fn the_kani_premise_labels_are_the_sections_c_bullets() {
+        let got = premises().kani;
+        let want: BTreeSet<String> = ["C1", "C2"].map(str::to_owned).into();
+        assert_eq!(got, want, "labels: got = {got:?}, want = {want:?}");
+        let got = kani_labels("- **C1, x.** y\n");
         assert!(got.is_empty(), "no section: got = {got:?}, want = none");
     }
 
@@ -1379,7 +1472,7 @@ Status: discharged (const assert: `k` in src/a.rs).
     }
 
     #[test]
-    fn an_isla_check_on_named_premises_counts_as_discharged() {
+    fn an_isla_or_kani_check_on_named_premises_counts_as_discharged() {
         let entry = |status: &str| {
             format!(
                 "src/a.rs:10. Kind: external_body. Category: inline asm.\nTool: Islaris/Isla. Status: {status}.\n"
@@ -1398,6 +1491,18 @@ Status: discharged (const assert: `k` in src/a.rs).
                 "discharged on premises (Isla: verus/isla/seams.md; premises: P8 (a gloss, with a comma and (nested) parentheses))",
                 Status::Discharged,
             ),
+            (
+                "discharged on premises (Kani: a::kani_f::f; premises: C1 (the program stores only null or a hook))",
+                Status::Discharged,
+            ),
+            (
+                "discharged on premises (Kani: a::kani_f::f, a::kani_f::g and kani_proofs::m::h; premises: C1 (a gloss, with a comma) and C2)",
+                Status::Discharged,
+            ),
+            (
+                "discharged on premises (Kani: a::kani_f::f, a::kani_f::g, and a::kani_f::h; premises: C2)",
+                Status::Discharged,
+            ),
             // The same check and premises, still partly checked.
             (
                 "trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call))",
@@ -1411,7 +1516,8 @@ Status: discharged (const assert: `k` in src/a.rs).
                 "{status}: got = {got:?}, want = {want:?}"
             );
         }
-        // Only Isla's checks count on premises, and only on named ones.
+        // Only Isla's and Kani's checks count on premises, and only on
+        // named ones.
         for status in [
             "discharged on premises (Kani: a::kani_f::f; premises: K1 (the kernel's side of the call))",
             "discharged on premises (emptyasm: f in src/a.rs; premises: the pointer's provenance)",
@@ -1431,6 +1537,24 @@ Status: discharged (const assert: `k` in src/a.rs).
             "discharged on premises (Isla: verus/isla/seams.md; premises: K1) and TlsCell::tp",
             "discharged on premises (Isla: verus/isla/seams.md; premises: K1 (gloss and the TLS slot premise",
             "discharged on premises (Isla: verus/isla/seams.md, and Kani: a::kani_f::f; premises: K1)",
+            // Each check names only its own file's labels.
+            "discharged on premises (Isla: verus/isla/seams.md; premises: C1)",
+            "discharged on premises (Kani: a::kani_f::f; premises: P8 (the loader's GOT fill))",
+            "discharged on premises (Kani: a::kani_f::f; premises: C1 and K1)",
+            // A Kani status names a harness and at least one defined premise.
+            "discharged on premises (Kani: a::kani_f::f)",
+            "discharged on premises (Kani: a::kani_f::f; premises: )",
+            "discharged on premises (Kani: ; premises: C1)",
+            "discharged on premises (Kani: f; premises: C1)",
+            "discharged on premises (Kani: a::kani_f::f, ; premises: C1)",
+            "discharged on premises (Kani: a::kani_f::f, and ; premises: C1)",
+            "discharged on premises (Kani: a::kani_f::f; premises: C3)",
+            "discharged on premises (Kani: a::kani_f::f; premises: C9 (outside the section))",
+            "discharged on premises (Kani: a::kani_f::f; premises: C1 and the caller's pointer)",
+            "discharged on premises (Kani: a::kani_f::f; premises: C1) and the caller's pointer",
+            // Two checks, or another tag inside the harness list.
+            "discharged on premises (Kani: a::kani_f::f, and Isla: verus/isla/seams.md; premises: C1)",
+            "discharged on premises (Kani: a::kani_f::f and loom: m::t; premises: C1)",
             // A near miss of either discharged form does not slip through as
             // plain discharged.
             "discharged on premises(Kani: a::kani_f::f; premises: K1)",
