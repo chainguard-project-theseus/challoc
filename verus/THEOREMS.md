@@ -1341,15 +1341,19 @@ meaning, and no stronger.
 **Premises beyond the common ones.**
 - Each kernel axiom's protocol premise, the caller's: a `Fresh` slab
   was never handed out; pages past the huge mark were never covered by a
-  run; a `Purged` slab or extent was discarded in the lock hold that
+  run; a `Purged` slab was discarded in the lock hold that
   set the state (`class/decay.rs` sets it whatever the advice) and
-  has no allocated slot or run since; and `take` makes a zero claim of a
+  has no allocated slot since; and `take` makes a zero claim of a
   `Purged` one only while `purge::purged_is_zero` (`purge.rs`, a
   `Relaxed` load of `LAZY_EVER`) reads true under the lock
   (`class/mod.rs`, through `purge::purged_zero`, whose witness the
-  axiom requires), that is, no batch has used `MADV_FREE`. The
-  axioms take any range; the call sites check the recorded state, not
-  the history.
+  axiom requires), that is, no batch has used `MADV_FREE`. The run's
+  pages in a `Purged` huge extent were discarded again by
+  `Huge::rediscard` in `take`'s lock hold (`huge/mod.rs`; its success,
+  `sys::madvise_ok` of exactly those pages, is what
+  `axiom_discarded_zero` requires) and nothing has written them since.
+  The other zero axioms take any range; their call sites check the
+  recorded state, not the history.
 - Cache path: `CachePerms::zero_ok` (`heap/zero.rs`), part of the
   assumed `Heap::wf`; `Heap::take_handed` (`heap/zero.rs`).
 - The class and huge locks' invariants (`class::Inner`'s and
@@ -3796,9 +3800,12 @@ run authority stay those the batch's `free` was made from. The makers:
 - Only `purge::Batch` discards are covered. `MADV_GUARD_INSTALL`
   (`class/table.rs`, `huge/mod.rs`) also drops page contents, of guard
   pages only (theorem 7), outside any batch.
-- Theorem 6's purge premise rests on trust: `axiom_discarded_zero`
-  takes any range, and `class::axiom_discarded_slots_zero` any
-  `Purged` slab whose claim holds a `purge::PurgedZero` witness. That
+- Theorem 6's purge premise rests on trust. `axiom_discarded_zero`
+  takes any range whose `MADV_DONTNEED` the kernel answered with
+  success (`sys::madvise_ok`, from `Huge::rediscard`); that nothing has
+  written it since is a premise. `class::axiom_discarded_slots_zero`
+  takes any `Purged` slab whose claim holds a `purge::PurgedZero`
+  witness. That
   witness comes from `purge::purged_zero` (`purge.rs`, verified: `Some`
   exactly when `purge::purged_is_zero`, a plain `Relaxed` load of
   `purge::LAZY_EVER`, returns true); that the slab
