@@ -18,5 +18,9 @@ fig_mul	core library	Kani	discharged (Kani: kani_proofs::stats::fig_mul_exact)	c
 pool_take	allocator invariant	none (assumption)
 # The empty pool: `[EMPTY; POOL_SLOTS]`, an array-repeat expression Verus
 # does not take for an element type that is not `Copy`. It claims nothing,
-# and runs at compile time (`POOL`'s initialiser).
-empty_pool	core library	none (assumption)
+# and runs at compile time (`POOL`'s initialiser); the harness evaluates
+# it.
+empty_pool	core library	Kani	discharged (Kani: stats::pool::kani_pool::empty_pool_is_empty)	contract 3397768555, body 1345826159
+# A raw in-place fill, like `Arena::put_stats`: zero bytes are a valid
+# `StatsPair` (integers and padding).
+zero_records	raw pointer (internal)	Kani	discharged (Kani: stats::kani_records::zero_records_zeroes)	contract 2902974600, body 1211080738
