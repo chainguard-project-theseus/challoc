@@ -5980,3 +5980,6 @@ mod kani_statics {
         is_cell::<FeatureLine>(l, (&raw const FEATURE_LINE).cast());
     }
 }
+
+#[cfg(test)]
+mod heap_at_tests;
