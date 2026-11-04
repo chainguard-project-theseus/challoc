@@ -29,7 +29,7 @@ fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm
 
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:2468. Kind: axiom. Category: platform/kernel fact.
+src/huge/mod.rs:2479. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -46,15 +46,18 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:2491. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+src/huge/mod.rs:2504. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted (requires, checked at its one caller, zero_run, from Huge::take: some MADV_DONTNEED of exactly these bytes succeeded, `sys::madvise_ok`, at that call site Huge::rediscard's; not checked: that nothing has written them since take's rediscard call).
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
 
 ```rust
 axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)
     requires
+        0 <= addr,
         0 <= len,
+        addr + len <= usize::MAX,
+        crate::sys::madvise_ok(addr as usize, len as usize, crate::sys::MADV_DONTNEED),
     ensures
         z.addr() == addr,
         z.len() == len,

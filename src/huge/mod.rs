@@ -2413,8 +2413,9 @@ spec fn keys_inside(t: Table, d: Map<*mut HugeDesc, PointsTo<HugeDesc>>, mark: i
 /// `Purged` extent whose pages under the run [`Huge::rediscard`] has just
 /// discarded again under the lock (`ve` the extent). Pages at or past the
 /// mark are fresh ([`axiom_fresh_anon_zero`]: only `take` raises the mark,
-/// and no run has covered them); the pages of a `Purged` extent were
-/// discarded with `MADV_DONTNEED` ([`axiom_discarded_zero`]),
+/// and no run has covered them); the run's pages in a `Purged` extent were
+/// discarded with `MADV_DONTNEED` ([`axiom_discarded_zero`]; the
+/// `requires` carries `rediscard`'s success for exactly those pages),
 /// and when the run runs past such an extent the extent ends at the mark
 /// and the rest is fresh.
 proof fn zero_run(base: int, pg: int, s: int, usable: int, mark: int, has_ext: bool, ve: HugeDesc, zeroed: bool) -> (tracked z: Zeroed)
@@ -2425,6 +2426,13 @@ proof fn zero_run(base: int, pg: int, s: int, usable: int, mark: int, has_ext: b
         has_ext ==> ve.start <= s,
         has_ext ==> (s + usable + GUARD_PAGES <= ve.start + ve.pages || ve.start + ve.pages == mark),
         zeroed && has_ext ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages,
+        // `Huge::rediscard`'s success for the run's pages in the extent.
+        zeroed && has_ext && s < ve.start + ve.pages ==> {
+            let hi = if s + usable <= ve.start + ve.pages { s + usable } else { ve.start + ve.pages };
+            &&& 0 <= base
+            &&& base + hi * pg <= usize::MAX
+            &&& crate::sys::madvise_ok((base + s * pg) as usize, ((hi - s) * pg) as usize, crate::sys::MADV_DONTNEED)
+        },
     ensures
         zeroed ==> z.addr() == base + s * pg && z.len() == usable * pg,
 {
@@ -2437,17 +2445,20 @@ proof fn zero_run(base: int, pg: int, s: int, usable: int, mark: int, has_ext: b
     } else if s + usable <= ve.start + ve.pages {
         // Inside the `Purged` extent.
         assert(ve.state == RunState::Purged as u8);
+        assert(base + s * pg + usable * pg == base + (s + usable) * pg) by (nonlinear_arith);
+        assert(s * pg >= 0 && usable * pg >= 0) by (nonlinear_arith)
+            requires s >= 0, usable >= 0, pg > 0;
         axiom_discarded_zero(base + s * pg, usable * pg)
     } else {
         // The `Purged` extent up to the mark, then fresh pages.
         let e = ve.start + ve.pages;
         assert(ve.state == RunState::Purged as u8 && e == mark);
-        let tracked lo = axiom_discarded_zero(base + s * pg, (e - s) * pg);
-        let tracked hi = axiom_fresh_anon_zero(base + e * pg, (s + usable - e) * pg);
         assert(base + s * pg + (e - s) * pg == base + e * pg) by (nonlinear_arith);
         assert((e - s) * pg + (s + usable - e) * pg == usable * pg) by (nonlinear_arith);
-        assert((e - s) * pg >= 0 && (s + usable - e) * pg >= 0) by (nonlinear_arith)
-            requires s < e, e < s + usable, pg > 0;
+        assert(s * pg >= 0 && (e - s) * pg >= 0 && (s + usable - e) * pg >= 0) by (nonlinear_arith)
+            requires 0 <= s < e, e < s + usable, pg > 0;
+        let tracked lo = axiom_discarded_zero(base + s * pg, (e - s) * pg);
+        let tracked hi = axiom_fresh_anon_zero(base + e * pg, (s + usable - e) * pg);
         lo.join(hi)
     }
 }
@@ -2477,20 +2488,25 @@ axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
 /// reads return zero-fill-on-demand pages (`MADV_FREE` gives no such
 /// guarantee: the old contents stay until the kernel reclaims the page).
 ///
-/// Premise, trusted and the caller's: the `len` bytes at `addr` were
-/// discarded with `MADV_DONTNEED`, or never written but with zeros, and
-/// nothing has written them since. Private to this module, and
-/// [`zero_run`] is its one caller (pinned as for
-/// [`axiom_fresh_anon_zero`]), for a `Purged` extent. Not checked: that
-/// [`Huge::rediscard`] succeeded for the run's pages in it. `take` sets
-/// its `zeroed` result from that call, made in the same lock hold before
-/// the run is handed out, but `zero_run` requires only the extent's state.
-/// The extent's own purge is not what the premise rests on: its pages are
-/// read-write after it, and a stale pointer or an underflow from the live
-/// run above can have written them since.
+/// Checked, by its `requires`: some `madvise(addr, len, MADV_DONTNEED)`
+/// of exactly these bytes succeeded (`sys::madvise_ok`, which says that
+/// some such call did, not which one or when). Private to this module,
+/// and [`zero_run`] is its one caller (pinned as for
+/// [`axiom_fresh_anon_zero`]), for a `Purged` extent; `zero_run`'s
+/// `requires` carries [`Huge::rediscard`]'s success, from the call `take`
+/// makes in the same lock hold before the run is handed out.
+///
+/// Premise, trusted and the caller's: nothing has written the bytes since
+/// `take`'s `rediscard` call. The extent's own purge is not what the
+/// premise rests on: its pages are read-write after it, and a stale
+/// pointer or an underflow from the live run above can have written them
+/// since.
 axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)
     requires
+        0 <= addr,
         0 <= len,
+        addr + len <= usize::MAX,
+        crate::sys::madvise_ok(addr as usize, len as usize, crate::sys::MADV_DONTNEED),
     ensures
         z.addr() == addr,
         z.len() == len,
@@ -4757,10 +4773,18 @@ impl Huge {
     /// `memset` (false), which is cheaper than the call; so is any range
     /// the kernel refuses (`mlock`ed pages). `take` calls it only while
     /// `purge::purged_is_zero` holds, so the pages it drops are just the
-    /// ones a stale write faulted in.
+    /// ones a stale write faulted in. True says `s < hi <= npages` and
+    /// that the kernel answered the `MADV_DONTNEED` of exactly pages
+    /// `s..hi` with success.
     fn rediscard(&self, s: usize, hi: usize) -> (r: bool)
         requires
             crate::sys::may_syscall(),
+        ensures
+            r ==> s < hi <= self.npages && sys::madvise_ok(
+                (self.base + s * self.spec_page()) as usize,
+                ((hi - s) * self.spec_page()) as usize,
+                sys::MADV_DONTNEED,
+            ),
     {
         if hi <= s || hi > self.npages {
             return false;
@@ -6089,6 +6113,15 @@ impl Huge {
             zeroed = s >= e_end || (zero && st == RunState::Purged && purge::purged_is_zero() && self.rediscard(s, hi));
             proof {
                 assert(zeroed ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
+                // `rediscard` succeeded for the run's pages in the extent.
+                if zeroed && s < e_end {
+                    self.lemma_pages(hi);
+                }
+                assert(zeroed && has_ext && s < ve.start + ve.pages ==> {
+                    let h = if s + (need - GUARD_PAGES) <= ve.start + ve.pages { s + (need - GUARD_PAGES) } else { ve.start + ve.pages };
+                    &&& self.base + h * self.spec_page() <= usize::MAX
+                    &&& sys::madvise_ok((self.base + s * self.spec_page()) as usize, ((h - s) * self.spec_page()) as usize, sys::MADV_DONTNEED)
+                });
                 lemma_can_sub(*old(g), ext);
             }
             g.drop_extent(ext, Ghost(Seq::empty()));
@@ -6348,6 +6381,11 @@ impl Huge {
             assert(has_ext ==> ve.start <= s);
             assert(has_ext ==> (s + (need - GUARD_PAGES) + GUARD_PAGES <= ve.start + ve.pages || ve.start + ve.pages == old_mark));
             assert(zeroed && has_ext ==> ve.state == RunState::Purged as u8 || s >= ve.start + ve.pages);
+            assert(zeroed && has_ext && s < ve.start + ve.pages ==> {
+                let h = if s + (need - GUARD_PAGES) <= ve.start + ve.pages { s + (need - GUARD_PAGES) } else { ve.start + ve.pages };
+                &&& self.base + h * self.spec_page() <= usize::MAX
+                &&& sys::madvise_ok((self.base + s * self.spec_page()) as usize, ((h - s) * self.spec_page()) as usize, sys::MADV_DONTNEED)
+            });
             self.lemma_page();
         }
         let tracked z = zero_run(self.base as int, self.spec_page(), s as int, (need - GUARD_PAGES) as int, old_mark as int, has_ext, ve, zeroed);
