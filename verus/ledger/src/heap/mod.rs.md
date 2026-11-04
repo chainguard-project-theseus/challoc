@@ -20,6 +20,8 @@ Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_flushed_returns_
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
 
+Hashes: contract 2922396941, body 3777272326.
+
 ```rust
 fn assert_flushed(len: &u32)
     requires
@@ -34,6 +36,8 @@ src/heap/mod.rs:4571. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_refill_empty_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns.
+
+Hashes: contract 2469768848, body 2656709376.
 
 ```rust
 fn assert_refill_empty(len: &u32)
@@ -50,6 +54,8 @@ Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_rekey_flushed_re
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
 
+Hashes: contract 2313744168, body 2184691111.
+
 ```rust
 fn assert_rekey_flushed(len: &u32)
     requires
@@ -64,6 +70,8 @@ src/heap/mod.rs:5471. Kind: axiom. Category: allocator invariant.
 Tool: Verus. Status: trusted.
 
 > The block of the heap `heap` at `h`, which `Heap::create` took from [`Meta::alloc_raw`](crate::meta::Meta::alloc_raw), for `Heap::destroy` to give back: the permission to the block's `size_of::<Heap>()` bytes and the block's claim, for the permissions to the heap's home headers (the run from `h + 128`, [`home_hdr`]), which this takes out of the heap's cache permissions `perms` and uses up.
+
+Hashes: contract 1630526878, body none.
 
 ```rust
 axiom fn axiom_heap_block(h: *mut Heap, heap: Heap, tracked perms: &mut CachePerms) -> (tracked r: (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim))
@@ -85,6 +93,8 @@ src/heap/mod.rs:7272. Kind: external_body. Category: UnsafeCell/volatile/transmu
 Tool: Kani. Status: discharged (Kani: heap::kani_volatile::arena_volatile_reads_arena).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.
+
+Hashes: contract 464277965, body 1060571397.
 
 ```rust
 pub(super) fn arena_volatile(&self) -> u16

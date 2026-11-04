@@ -18,6 +18,8 @@ Tool: Kani. Status: discharged (Kani: api::mallctl::kani_root::version_is_versio
 
 > [`VERSION_STR`] for verified code, its value opaque to the verifier.
 
+Hashes: contract 945944658, body none.
+
 ```rust
 pub(crate) const VERSION: &'static str = VERSION_STR;
 ```
@@ -28,6 +30,8 @@ src/api/mallctl.rs:1171. Kind: external_body. Category: allocator invariant.
 Tool: Kani. Status: discharged (Kani: api::mallctl::kani_root::root_returns).
 
 > [`ROOT`].
+
+Hashes: contract 3299808033, body 630918910.
 
 ```rust
 fn root() -> (r: &'static [Node])
@@ -41,6 +45,8 @@ src/api/mallctl.rs:3520. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).
+
+Hashes: contract 2849493902, body none.
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

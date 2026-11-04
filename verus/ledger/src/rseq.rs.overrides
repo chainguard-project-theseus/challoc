@@ -1,11 +1,11 @@
 # A raw read of a loader global: Kani checks the read on a live, aligned
 # `T`; that a non-null weak symbol's address is one is the loader's.
-read_global	raw pointer (internal)	Kani	trusted (partly checked, Kani: rseq::kani_rseq::read_global_reads_the_value; not checked: instances other than `T = isize` and `T = u32` (the two `probe` uses), and that a non-null `p` from `symbols` is the address of a live, aligned `T`, the `# Safety` premise the `requires` does not state, which the loader's resolution of the weak symbol provides)
+read_global	raw pointer (internal)	Kani	trusted (partly checked, Kani: rseq::kani_rseq::read_global_reads_the_value; not checked: instances other than `T = isize` and `T = u32` (the two `probe` uses), and that a non-null `p` from `symbols` is the address of a live, aligned `T`, the `# Safety` premise the `requires` does not state, which the loader's resolution of the weak symbol provides)	contract 1325462615, body 4072880412
 # A volatile read of the kernel-written `cpu_id`: Kani checks the read on
 # an area the `requires` admits; that `area` is this thread's registered
 # area is the loader's and the rseq ABI's.
-read_cpu_id	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: rseq::kani_rseq::read_cpu_id_reads_the_field; not checked: that `area` (the thread pointer plus `__rseq_offset`) is this thread's registered rseq area and `size` its registered size, and that the field is 4-byte aligned (the area is 32-byte aligned), the `# Safety` premise the `requires` does not state, which the loader and the rseq ABI provide, and that only the kernel writes the field while the read runs)
+read_cpu_id	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: rseq::kani_rseq::read_cpu_id_reads_the_field; not checked: that `area` (the thread pointer plus `__rseq_offset`) is this thread's registered rseq area and `size` its registered size, and that the field is 4-byte aligned (the area is 32-byte aligned), the `# Safety` premise the `requires` does not state, which the loader and the rseq ABI provide, and that only the kernel writes the field while the read runs)	contract 1095263007, body 1368553990
 # Inline assembly checked with Isla (verus/ISLA.md): run.sh checks
 # each against the contract verus/isla/seams.md quotes.
-symbols	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)
-thread_pointer	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)
+symbols	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 1031842438, body 2186581197
+thread_pointer	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 542526640, body 2144560029

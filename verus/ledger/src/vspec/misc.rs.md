@@ -28,6 +28,8 @@ Tool: Kani. Status: trusted.
 
 > `core::marker::PhantomPinned`, opaque: a zero-sized marker field of `heap::Heap` that makes it `!Unpin`.
 
+Hashes: contract 2387976875, body none.
+
 ```rust
 pub struct ExPhantomPinned(core::marker::PhantomPinned);
 ```
@@ -36,6 +38,8 @@ pub struct ExPhantomPinned(core::marker::PhantomPinned);
 
 src/vspec/misc.rs:23. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_config_thp).
+
+Hashes: contract 2021192603, body none.
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::Thp {
@@ -54,6 +58,8 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::Thp {
 src/vspec/misc.rs:33. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_thp_setting).
 
+Hashes: contract 2039837844, body none.
+
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::thp_host::ThpSetting {
     open spec fn obeys_eq_spec() -> bool {
@@ -70,6 +76,8 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::thp_host::ThpSettin
 
 src/vspec/misc.rs:43. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_run_state).
+
+Hashes: contract 2030742295, body none.
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
@@ -88,6 +96,8 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
 src/vspec/misc.rs:53. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_slab_state).
 
+Hashes: contract 2375931970, body none.
+
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::slab::State {
     open spec fn obeys_eq_spec() -> bool {
@@ -104,6 +114,8 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::slab::State {
 
 src/vspec/misc.rs:63. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_thp_mode).
+
+Hashes: contract 133759271, body none.
 
 ```rust
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::thp::Mode {
@@ -124,6 +136,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::fence).
 
 > `core::sync::atomic::fence`: panics on `Relaxed` only, and has no effect Verus models (Verus's memory model is sequentially consistent; the ordering it adds is checked by the loom models in `tests/loom`, not here).
 
+Hashes: contract 4116312669, body none.
+
 ```rust
 pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic::Ordering)
     requires
@@ -140,6 +154,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::str_as_ptr).
 
 > `str::as_ptr`: the address of the first byte; nothing is claimed about it.
 
+Hashes: contract 520286978, body none.
+
 ```rust
 pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
 ```
@@ -150,6 +166,8 @@ src/vspec/misc.rs:93. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::hint_assert_unchecked).
 
 > `core::hint::assert_unchecked`: undefined behaviour unless `cond` holds (`core`'s safety contract), which this makes a precondition; it has no effect Verus models.
+
+Hashes: contract 661612994, body none.
 
 ```rust
 pub assume_specification[ core::hint::assert_unchecked ](cond: bool)
@@ -167,6 +185,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::hint_black_box).
 
 > `core::hint::black_box`: the identity (`core` guarantees no more; it only keeps the optimizer from seeing through the value).
 
+Hashes: contract 2369696214, body none.
+
 ```rust
 pub assume_specification<T>[ core::hint::black_box ](dummy: T) -> (r: T)
     ensures
@@ -183,6 +203,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_u32_as_ptr).
 
 > `AtomicU32::as_ptr`: the address of the atomic's value, for a futex syscall argument.
 
+Hashes: contract 2694889095, body none.
+
 ```rust
 pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::sync::atomic::Atomic<u32>) -> *mut u32;
 ```
@@ -194,6 +216,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::option_as_deref_mut).
 
 > `Option::as_deref_mut`: a reborrow of the contents.
 
+Hashes: contract 1129125566, body none.
+
 ```rust
 pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
 ```
@@ -204,6 +228,8 @@ src/vspec/misc.rs:128. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::option_or_else).
 
 > `Option::or_else`: `option` itself when it is `Some`, else `f()`.
+
+Hashes: contract 3760740912, body none.
 
 ```rust
 pub assume_specification<T, F: FnOnce() -> Option<T>>[ Option::<T>::or_else ](option: Option<T>, f: F) -> (r: Option<T>)

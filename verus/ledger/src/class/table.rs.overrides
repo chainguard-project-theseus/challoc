@@ -1,11 +1,11 @@
 # One bitmap per class per process: it uses up its class's one-shot token.
-axiom_fresh_words	allocator invariant	Kani	trusted (partly checked, Kani: kani_proofs::zero::fresh_words_load_zero; not checked: the provenance clause of `perm_at` in `words_perms_ok` (`cast_provenance()`), which Kani cannot observe, the one-shot token `once` (one table per class per process), and the location identities `WordPerm::addr` and `word_addr`, ghost)
+axiom_fresh_words	allocator invariant	Kani	trusted (partly checked, Kani: kani_proofs::zero::fresh_words_load_zero; not checked: the provenance clause of `perm_at` in `words_perms_ok` (`cast_provenance()`), which Kani cannot observe, the one-shot token `once` (one table per class per process), and the location identities `WordPerm::addr` and `word_addr`, ghost)	contract 3687926038, body none
 # Zero bytes as plain atomics, valid for every bit pattern.
-axiom_zero_desc	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::zero::zero_desc_reads_fresh; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe, and `desc_id` and the `DescPerm`'s `id`, ghost identities)
-axiom_zero_owner	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::zero::zero_owner_loads_zero; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe: the harness reads through a pointer to its own buffer)
+axiom_zero_desc	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::zero::zero_desc_reads_fresh; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe, and `desc_id` and the `DescPerm`'s `id`, ghost identities)	contract 3210848661, body none
+axiom_zero_owner	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::zero::zero_owner_loads_zero; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe: the harness reads through a pointer to its own buffer)	contract 1743940330, body none
 # Empty-template register hint: verus/emptyasm/run.sh checks the block adds
 # no instruction to the shipped code (a verus/emptyasm/blocks.txt row).
-word_index	inline asm	Islaris/Isla	discharged (emptyasm: word_index in src/class/table.rs)
+word_index	inline asm	Islaris/Isla	discharged (emptyasm: word_index in src/class/table.rs)	contract 3122019170, body 2502825838
 # loom and C11 (verus/WEAKMEM.md): the store is the owner word's only
 # write in shipped code (tests/loom/tests/access.rs: class/table.rs writes
 # no other atomic, and only it names the owner words' invariants,
@@ -15,4 +15,4 @@ word_index	inline asm	Islaris/Isla	discharged (emptyasm: word_index in src/class
 # watermark's `Release` store the claimer's `Acquire` load supplies that
 # order; the free and watermark models check it on copies of the
 # `SlabTable` steps (tests/loom/tests/pins.rs).
-store_owner	atomics primitive	loom/GenMC	trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes; not checked: this body, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)
+store_owner	atomics primitive	loom/GenMC	trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes; not checked: this body, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)	contract 516326162, body 3738076363

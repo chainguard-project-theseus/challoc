@@ -19,6 +19,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
 
+Hashes: contract 216695415, body 2104169786.
+
 ```rust
 fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
     requires
@@ -46,6 +48,8 @@ src/class/mod.rs:3493. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The kernel fact of `mmap(2)` (a private anonymous mapping reads as zero until it is first written) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
+
+Hashes: contract 3017249109, body none.
 
 ```rust
 axiom fn axiom_fresh_slots_zero(
@@ -76,6 +80,8 @@ Tool: none (assumption). Status: trusted.
 
 > The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
 
+Hashes: contract 2678632303, body none.
+
 ```rust
 axiom fn axiom_discarded_slots_zero(
     tracked ticket: StateTicket,
@@ -105,6 +111,8 @@ src/class/mod.rs:3596. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
+
+Hashes: contract 260036461, body none.
 
 ```rust
 axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)

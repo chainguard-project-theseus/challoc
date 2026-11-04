@@ -21,6 +21,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.fetch_add(v, ordering)`, wrapping.
 
+Hashes: contract 571703860, body 3058007043.
+
 ```rust
 pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
     requires
@@ -40,6 +42,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.fetch_sub(v, ordering)`, wrapping.
 
+Hashes: contract 4017762350, body 3258061426.
+
 ```rust
 pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
     requires
@@ -58,6 +62,8 @@ src/vspec/count.rs:116. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_store, and loom: narenas::loom_narenas_create_publishes; not checked: this body under concurrency, which the model replaces with loom's `store` inside copies of the `Arenas` steps, in the configuration tests/loom/src/narenas.rs states; the C11 argument above that the permission's value is the counter's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `c.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
+
+Hashes: contract 3494972197, body 3111288973.
 
 ```rust
 pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>)
@@ -79,6 +85,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
+Hashes: contract 3212013289, body 2830643570.
+
 ```rust
 pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm>) -> (r: u32)
     requires
@@ -98,6 +106,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.swap(v, ordering)`: the previous value.
 
+Hashes: contract 1801534627, body 188380829.
+
 ```rust
 pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
     requires
@@ -116,6 +126,8 @@ src/vspec/count.rs:188. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::count_compare_exchange, and loom: count::loom_count_try_bind_idle_rival and count::loom_count_try_bind_idle_one_wins; not checked: this body under concurrency, which the models replace with loom's `compare_exchange` inside copies of the `Arenas` steps, in the configurations tests/loom/src/count.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show (it has no spurious failure) and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `c.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the counter held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
+
+Hashes: contract 4219812481, body 1661924601.
 
 ```rust
 pub fn compare_exchange(

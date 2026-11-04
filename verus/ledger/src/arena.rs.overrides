@@ -1,33 +1,33 @@
 # The build checks the array layout at each instance the proofs use (the
 # `const` assertions after `Arena`'s, `Arenas`'s, `Shared`'s and
 # `Tcaches`'s layouts).
-axiom_array_layout	core library	Kani	trusted (partly checked, const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples; not checked: the axiom is generic in `T` and `N`, and these check only the six instances the proofs use and the sampled ones)
+axiom_array_layout	core library	Kani	trusted (partly checked, const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples; not checked: the axiom is generic in `T` and `N`, and these check only the six instances the proofs use and the sampled ones)	contract 2931506158, body none
 # Byte offsets (`offset_of!`, which Verus cannot evaluate), and the
 # layout the build checks with `fits`.
-A_INDEX	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
-A_DECAY_NS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
-A_SETS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
-A_SETS_PERM	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
-A_CLASSES	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
-A_LARGE	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
-A_STATS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
-A_LAST_EXIT_PURGE	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
-axiom_arena_layout	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)
+A_INDEX	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3712976592, body none
+A_DECAY_NS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 1347582757, body none
+A_SETS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 2722110217, body none
+A_SETS_PERM	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 2314139633, body none
+A_CLASSES	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 1613433415, body none
+A_LARGE	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3093238991, body none
+A_STATS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3834723382, body none
+A_LAST_EXIT_PURGE	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 2958641560, body none
+axiom_arena_layout	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3337610579, body none
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arena_assemble	raw pointer (internal)	none (assumption)
 # `core`'s tuple and `bool` order, as documented.
-key_less	core library	Kani	discharged (Kani: arena::kani_key_less::key_less_is_key_lt)
+key_less	core library	Kani	discharged (Kani: arena::kani_key_less::key_less_is_key_lt)	contract 3102880229, body 2028399596
 # `Arenas`'s byte offsets and layout, which the build checks with `fits`.
-AR_TABLE	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-AR_BOUND	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-AR_LOCK	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-AR_COUNT	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-AR_AUTO	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-AR_SPARE	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-AR_INVS	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-AR_COUNT_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-AR_SPARE_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
-axiom_arenas_layout	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)
+AR_TABLE	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 2025192559, body none
+AR_BOUND	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 472640039, body none
+AR_LOCK	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 1212088989, body none
+AR_COUNT	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 2895611472, body none
+AR_AUTO	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 1096182461, body none
+AR_SPARE	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 1690279427, body none
+AR_INVS	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 875656104, body none
+AR_COUNT_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 4281409, body none
+AR_SPARE_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 1171311431, body none
+axiom_arenas_layout	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 752559173, body none
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arenas_assemble	raw pointer (internal)	none (assumption)
 # The smallest-sample loop retries a weak compare-and-exchange while other

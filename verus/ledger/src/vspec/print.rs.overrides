@@ -1,3 +1,3 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-base_slab_sizes	function pointer	Kani	discharged (Kani: kani_proofs::report::base_slab_sizes_returns)
-PartialEqSpecImpl for config::PercpuArena	core library	Kani	discharged (Kani: kani_proofs::eq::eq_percpu_arena)
+base_slab_sizes	function pointer	Kani	discharged (Kani: kani_proofs::report::base_slab_sizes_returns)	contract 394246006, body 2274552930
+PartialEqSpecImpl for config::PercpuArena	core library	Kani	discharged (Kani: kani_proofs::eq::eq_percpu_arena)	contract 3424993698, body none

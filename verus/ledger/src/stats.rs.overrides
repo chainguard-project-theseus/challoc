@@ -1,8 +1,8 @@
 # `+` and `*` on a figure no verified invariant bounds: exact when it fits,
 # checkable against `core` (overflow checks on or off).
-fig_add	core library	Kani	discharged (Kani: kani_proofs::stats::fig_add_exact)
-fig_add64	core library	Kani	discharged (Kani: kani_proofs::stats::fig_add64_exact)
-fig_mul	core library	Kani	discharged (Kani: kani_proofs::stats::fig_mul_exact)
+fig_add	core library	Kani	discharged (Kani: kani_proofs::stats::fig_add_exact)	contract 2015407982, body 2407465907
+fig_add64	core library	Kani	discharged (Kani: kani_proofs::stats::fig_add64_exact)	contract 2107540249, body 2407465907
+fig_mul	core library	Kani	discharged (Kani: kani_proofs::stats::fig_mul_exact)	contract 2594916814, body 2488733387
 # The scratch pool hands each object to one call at a time (a slot's
 # holder thread ID, taken by compare-exchange, or the thread's own when its
 # holding frame is gone by the stack mark), the residue of a call from an

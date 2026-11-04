@@ -1,11 +1,11 @@
 # `CStr::to_str` on the static ASCII names of `config`.
-word	core library	Kani	trusted (partly checked, Kani: api::print::kani_print::word_returns; not checked: the harness checks C strings up to 3 bytes; `core::str::from_utf8`'s word-at-a-time ASCII path (16 bytes and longer) is not reached)
+word	core library	Kani	trusted (partly checked, Kani: api::print::kani_print::word_returns; not checked: the harness checks C strings up to 3 bytes; `core::str::from_utf8`'s word-at-a-time ASCII path (16 bytes and longer) is not reached)	contract 2777297539, body 2814324046
 # The C caller passed `opts` under the entry point's contract.
 axiom_c_call	C-program contract	none (assumption)
 # Opaque wrapper of the caller's callback, a function pointer.
 WriteCallback	function pointer	Kani
 # `{:?}` of an array, core formatting.
-hist_line	core library	Kani	discharged (Kani: api::print::kani_print::hist_line_returns)
+hist_line	core library	Kani	discharged (Kani: api::print::kani_print::hist_line_returns)	contract 3431982733, body 2091081685
 # The report's calls out of the allocator: the caller's callback and its stream.
 call_back	function pointer	none (assumption)
 write_file	FFI/syscall	none (assumption)

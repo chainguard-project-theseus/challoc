@@ -18,6 +18,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::fl
 
 > `AtomicU8::new(v)`: a byte whose bits other than [`ROUTE`] are `v`'s from here on.
 
+Hashes: contract 2266153701, body 4057886722.
+
 ```rust
 pub fn new(v: u8) -> (r: RouteByte)
     ensures
@@ -32,6 +34,8 @@ src/vspec/flags.rs:73. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte, and loom: flags::loom_flags_route_byte_keeps_push_flags and flags::loom_flags_two_builders; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the `Shared` steps, in the configurations tests/loom/src/flags.rs states; that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`); that no write but these reaches the byte, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `b.load(ordering)` (it panics for a `Release` or `AcqRel` ordering): the made value, with or without [`ROUTE`].
+
+Hashes: contract 3884253665, body 694819825.
 
 ```rust
 pub fn load(b: &RouteByte, ordering: Ordering) -> (r: u8)
@@ -50,6 +54,8 @@ src/vspec/flags.rs:89. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::flags_route_byte, and loom: flags::loom_flags_route_byte_keeps_push_flags and flags::loom_flags_two_builders; not checked: this body under concurrency, which the models replace with loom's `fetch_or` inside copies of the `Shared` steps, in the configurations tests/loom/src/flags.rs states; that `fixed` is kept when the byte is moved into place (`put_flags`' `ptr::write`); that no write but these reaches the byte, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `b.fetch_or(v, ordering)`, for bits `v` within [`ROUTE`]: the previous value, which is the made value with or without [`ROUTE`].
+
+Hashes: contract 3522642779, body 597122174.
 
 ```rust
 pub fn fetch_or(b: &RouteByte, v: u8, ordering: Ordering) -> (prev: u8)

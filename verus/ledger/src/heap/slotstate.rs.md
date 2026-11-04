@@ -18,6 +18,8 @@ Tool: none (assumption). Status: trusted.
 
 > [`ARRAYS`]'s initial value: every entry unclaimed, all zero.
 
+Hashes: contract 2521126641, body none.
+
 ```rust
 const NO_ARRAYS: [Arrays; MAX_SHARED] = [const {
     Arrays {
@@ -34,6 +36,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the slot-state bytes are trusted values): a permission to `b`, a slot's state byte that [`byte`] computed, which holds a state.
 
+Hashes: contract 170951343, body none.
+
 ```rust
 axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
     ensures
@@ -48,6 +52,8 @@ src/heap/slotstate.rs:613. Kind: external_body. Category: raw pointer (internal)
 Tool: RefinedRust. Status: trusted.
 
 > The `AtomicU8` at address `at`.
+
+Hashes: contract 344538265, body 4214957818.
 
 ```rust
 unsafe fn byte_at(at: usize) -> &'static AtomicU8

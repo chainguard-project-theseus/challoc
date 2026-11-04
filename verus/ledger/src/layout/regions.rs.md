@@ -22,6 +22,8 @@ Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
 
+Hashes: contract 2542402515, body 1324333092.
+
 ```rust
 pub tracked struct Reserved
 ```
@@ -32,6 +34,8 @@ src/layout/regions.rs:2133. Kind: external_body proof. Category: platform/kernel
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
+
+Hashes: contract 1021799055, body 1293528070.
 
 ```rust
 pub proof fn is_apart_from_static(tracked &self)
@@ -47,6 +51,8 @@ src/layout/regions.rs:2150. Kind: external_body proof. Category: platform/kernel
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
+
+Hashes: contract 1022768161, body 1293528070.
 
 ```rust
 pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
@@ -65,6 +71,8 @@ Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
 
+Hashes: contract 1477004248, body 1293528070.
+
 ```rust
 pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
     ensures
@@ -81,6 +89,8 @@ Tool: none (assumption). Status: trusted.
 
 Body mints Tracked at line 2206.
 
+Hashes: contract 3469794050, body 1440593640.
+
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
     requires
@@ -96,6 +106,8 @@ Tool: Kani. Status: discharged (Kani: layout::regions::linux::kani_word::word_re
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
 
+Hashes: contract 1501169047, body 3652660392.
+
 ```rust
 fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
     requires
@@ -108,6 +120,8 @@ src/layout/regions.rs:3181. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: entry_barrier in src/layout/regions.rs; not checked: the pointer's provenance, the check shows only that no instruction is emitted).
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
+
+Hashes: contract 2079561045, body 1502381338.
 
 ```rust
 fn entry_barrier(p: *const super::Class) -> (r: *const super::Class)

@@ -21,6 +21,8 @@ file.
 src/vspec/panic.rs:13. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
+Hashes: contract 4226533340, body none.
+
 ```rust
 pub struct ExPanicInfo<'a>(core::panic::PanicInfo<'a>);
 ```
@@ -30,6 +32,8 @@ pub struct ExPanicInfo<'a>(core::panic::PanicInfo<'a>);
 src/vspec/panic.rs:17. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
+Hashes: contract 1417247462, body none.
+
 ```rust
 pub struct ExLocation<'a>(core::panic::Location<'a>);
 ```
@@ -38,6 +42,8 @@ pub struct ExLocation<'a>(core::panic::Location<'a>);
 
 src/vspec/panic.rs:21. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
+
+Hashes: contract 3864003794, body none.
 
 ```rust
 pub struct ExPanicMessage<'a>(core::panic::PanicMessage<'a>);
@@ -50,6 +56,8 @@ Tool: Kani. Status: trusted.
 
 > `PanicInfo::location`: where the panic was raised, if known; nothing is claimed about it.
 
+Hashes: contract 4292975727, body none.
+
 ```rust
 pub assume_specification<'a>[ core::panic::PanicInfo::<'a>::location ](info: &core::panic::PanicInfo<'a>) -> Option<&'static core::panic::Location<'static>>;
 ```
@@ -60,6 +68,8 @@ src/vspec/panic.rs:30. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > `PanicInfo::message`: the panic's message; nothing is claimed about it.
+
+Hashes: contract 1702037209, body none.
 
 ```rust
 pub assume_specification<'a, 'b>[ core::panic::PanicInfo::<'a>::message ](info: &'b core::panic::PanicInfo<'a>) -> core::panic::PanicMessage<'b>;
@@ -72,6 +82,8 @@ Tool: Kani. Status: trusted.
 
 > `Location::file`: the source file's name.
 
+Hashes: contract 1656922357, body none.
+
 ```rust
 pub assume_specification<'a>[ core::panic::Location::<'a>::file ](loc: &core::panic::Location<'a>) -> &'a str;
 ```
@@ -83,6 +95,8 @@ Tool: Kani. Status: trusted.
 
 > `Location::line`: the line number.
 
+Hashes: contract 3968685142, body none.
+
 ```rust
 pub assume_specification<'a>[ core::panic::Location::<'a>::line ](loc: &core::panic::Location<'a>) -> u32;
 ```
@@ -93,6 +107,8 @@ src/vspec/panic.rs:47. Kind: axiom. Category: panic/abort.
 Tool: none (assumption). Status: trusted.
 
 > A panic's message formats under any formatter (`Display`'s precondition, for `format_args!`).
+
+Hashes: contract 3731912710, body none.
 
 ```rust
 pub broadcast axiom fn axiom_fmt_req_all_panic_message<'a>()

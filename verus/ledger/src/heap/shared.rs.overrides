@@ -2,24 +2,24 @@
 ThreadKey::create	function pointer	none (assumption)
 # Byte offsets (`offset_of!`, which Verus cannot evaluate), and the
 # layout the build checks with `fits`.
-S_LINES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_FREE_FLAGS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_PUSH_FLAGS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_REGION_HI	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_REGIONS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_TABLES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_ARENA0	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_META	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_HUGE	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_GC_INTERVAL_NS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_POLICY	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_CONFIG	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_KEY	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_ARENAS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_TCACHES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_STATS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-S_CGROUP	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
-axiom_shared_layout	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)
+S_LINES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 2770929303, body none
+S_FREE_FLAGS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 2443053768, body none
+S_PUSH_FLAGS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3077670975, body none
+S_REGION_HI	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 663929462, body none
+S_REGIONS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 4146282308, body none
+S_TABLES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 4010556042, body none
+S_ARENA0	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 454506752, body none
+S_META	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 2493252749, body none
+S_HUGE	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3071001454, body none
+S_GC_INTERVAL_NS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 1444629391, body none
+S_POLICY	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 1779571104, body none
+S_CONFIG	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 1226576741, body none
+S_KEY	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 286361478, body none
+S_ARENAS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 886266886, body none
+S_TCACHES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 1262348297, body none
+S_STATS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3982933550, body none
+S_CGROUP	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 2964860936, body none
+axiom_shared_layout	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3987711063, body none
 # A field fixed once its permission is frozen: no vstd counterpart.
 axiom_shared_regions	raw pointer (internal)	none (assumption)
 axiom_shared_meta	raw pointer (internal)	none (assumption)
@@ -33,4 +33,4 @@ pthread_setspecific	FFI/syscall	none (assumption)
 # no instruction to the shipped code (a verus/emptyasm/blocks.txt row);
 # Kani checks the load, on a copy whose lines seams.sh --check requires
 # to equal the body's but for the rows verus/kani/pins.txt marks `-only`.
-ClassLine::guard_word	inline asm	Islaris/Isla	trusted (partly checked, Kani: heap::shared::kani_guard_word::guard_word_is_the_three_fields, const assert: `ClassLine::guard_word`'s word in src/heap/shared.rs, and emptyasm: guard_word in src/heap/shared.rs; not checked: the body itself, since the harness runs a copy of its load without the asm! block (Kani has no model of inline assembly), whose lines `sh verus/seams.sh --check` requires to equal the body's but for the rows verus/kani/pins.txt marks `-only`, today the opening brace and the asm! block, with comment and blank lines not compared)
+ClassLine::guard_word	inline asm	Islaris/Isla	trusted (partly checked, Kani: heap::shared::kani_guard_word::guard_word_is_the_three_fields, const assert: `ClassLine::guard_word`'s word in src/heap/shared.rs, and emptyasm: guard_word in src/heap/shared.rs; not checked: the body itself, since the harness runs a copy of its load without the asm! block (Kani has no model of inline assembly), whose lines `sh verus/seams.sh --check` requires to equal the body's but for the rows verus/kani/pins.txt marks `-only`, today the opening brace and the asm! block, with comment and blank lines not compared)	contract 33478923, body 434743552

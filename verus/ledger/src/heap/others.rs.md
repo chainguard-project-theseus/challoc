@@ -16,6 +16,8 @@ Tool: Kani. Status: discharged (Kani: heap::others::kani_aborts::assert_not_home
 
 > [`Heap::other_caches`]'s abort on a node for the home arena, which its callers rule out (the requires).
 
+Hashes: contract 1811764795, body 102304626.
+
 ```rust
 fn assert_not_home(arena: &u16, home: &u16)
     requires

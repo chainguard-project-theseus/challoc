@@ -16,6 +16,8 @@ Tool: Kani. Status: discharged (Kani: heap::paths::kani_aborts::debug_scheduled_
 
 > The scheduled pop's check, in debug builds: `allocs` is a multiple of the compaction period.
 
+Hashes: contract 2542313574, body 2337303067.
+
 ```rust
 fn debug_scheduled(allocs: u64, mask: u32)
     requires
