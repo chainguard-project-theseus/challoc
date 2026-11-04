@@ -6,16 +6,18 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 27 of those seams that are still seams in the
+*This file lists the 26 of those seams that are still seams in the
 ledger. The others are verified or no longer exist, so their rows are
 left out: among them `axiom_raw_valid`, gone; `axiom_process_shared`,
 which `lemma_process_shared` (`heap/shared.rs`) proves from the
 opaque definitions of `process_regions` and `pac_mode`;
 `axiom_run_locs`, gone, its facts following from the opaque
-definitions of `run_loc` and `page_loc` (`huge/mod.rs`); and
+definitions of `run_loc` and `page_loc` (`huge/mod.rs`);
 `axiom_class_table_wf`, which `lemma_class_table_wf` (`vspec/class.rs`)
 proves from the opaque definition of `class_table`
-(`layout/mod.rs`). Seams
+(`layout/mod.rs`); and `axiom_slot_loc`, gone, its facts following
+from the opaque definitions of `slot_loc` and `mark_loc`
+(`class/table.rs`) and `guard_geom` (`layout/regions.rs`). Seams
 of this scope that the audit did not cover, such as `axiom_slot_byte`
 (`heap/slotstate.rs`) and `axiom_ready` (`api/mod.rs`), are not
 listed. Each row names the seam by its item and its ledger file,
@@ -50,7 +52,7 @@ Verdicts:
 Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 27 seams listed: 8 sound, 12 sound (premise), 7 fixed.
+Totals for the 26 seams listed: 8 sound, 11 sound (premise), 7 fixed.
 
 ## Per seam
 
@@ -64,7 +66,6 @@ Totals for the 27 seams listed: 8 sound, 12 sound (premise), 7 fixed.
 | `axiom_fresh_slots_zero` | `class/mod.rs` | fixed | Requires `n <= nslots`, a `Fresh` state ticket for the slab, and the held slot tokens of the slots it covers, so the zero claim stays inside the slab. |
 | `axiom_discarded_slots_zero` | `class/mod.rs` | fixed | As `axiom_fresh_slots_zero`, for a `Purged` slab, with the `PurgedZero` witness of the call site's run-time test (`purged_is_zero`). |
 | `store_owner` | `class/table.rs` | sound (premise) | Uses up the owner-store markers of the group's slabs (`owner_marks`), so a second store of one group does not verify. That holds while every holder of the commit lock restores `TableInner::inv` before releasing it (see "Premises"). |
-| `axiom_slot_loc` | `class/table.rs` | sound (premise) | Takes the class's `SlotLoc(c)` one-shot token, so it runs once per class. |
 | `axiom_fresh_words` | `class/table.rs` | fixed | Requires the words to end below `usize::MAX` and takes the class's `FreshWords(c)` token. Nothing ties `base` to the class's bitmap; a call at another address would give `WordPerm`s that no lemma separates from other permissions, so no `false`. |
 | `axiom_c_claim` | `heap/live.rs` | sound (premise) | The C contract: two claims of one slot start prove `false` through `theorem_apart`, as its doc says. Every C free is its own entry, with no ghost state from the allocation that made the block. |
 | `axiom_shared_layout` | `heap/shared.rs` | sound | The build's `const` assertion covers every clause. |
@@ -126,8 +127,8 @@ one-shot token) against main's.
 - **`Reserved` with an empty token.** `disjoint(a, 0, b, blen)` is false
   when `b < a < b + blen`. A zero-length reservation is impossible
   (`mmap` of 0 bytes fails), and the non-empty `requires` say so.
-- **The one-shot seams called twice.** `Shared::begin`,
-  `axiom_slot_loc` and `axiom_fresh_words` each take a
+- **The one-shot seams called twice.** `Shared::begin` and
+  `axiom_fresh_words` each take a
   linear `Once` token (`vspec/once.rs`), and `store_owner` uses up its
   group's markers. A second call with the same token fails with E0382; a
   second token for the same step cannot be taken from the process's map

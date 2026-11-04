@@ -254,8 +254,12 @@ impl Shared {
     /// set only where pointer authentication is available, and
     /// `free_flags`' bits other than [`FREE_ROUTE`] are `push_flags`'; the
     /// configuration is well formed; `meta`'s live-object records are the
-    /// process's ([`process_live_id`](crate::meta::process_live_id)); and
-    /// arena 0 has index 0 and is the process's arena registry's.
+    /// process's ([`process_live_id`](crate::meta::process_live_id));
+    /// arena 0 has index 0 and is the process's arena registry's; each
+    /// table is the process's ([`SlabTable::is_process`]), and arena 0's
+    /// class states were built over the tables (`Arena::tables_from` of
+    /// the permissions class 0's state carries, each to its class's
+    /// table).
     pub closed spec fn built(&self) -> bool {
         &&& self.regions.wf()
         &&& self.regions == crate::layout::process_regions()
@@ -285,6 +289,54 @@ impl Shared {
         &&& self.arenas.is_process()
         &&& self.arenas.spec_arena0() == self.arena0
         &&& self.huge.runs_process()
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].is_process()
+        &&& self.arena0.tables_from(self.arena0.spec_class_state(0).spec_tables())
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.arena0.spec_class_state(0).spec_tables()[c].value() == self.tables[c]
+    }
+    /// Arena 0's class states were built over the permissions class 0's
+    /// state carries ([`Shared::built`]): what `Arenas::build` gives a new
+    /// arena's states. Kept apart from [`Shared::lemma_wf_slow`] so its
+    /// callers do not get the quantifier.
+    pub(crate) proof fn lemma_tables(&self)
+        requires
+            self.wf(),
+        ensures
+            self.arena0.tables_from(self.arena0.spec_class_state(0).spec_tables()),
+            self.spec_arena0() == self.arena0,
+    {
+    }
+
+    /// The class states of an arena with the registry's arena 0's tables
+    /// ([`same_tables`](crate::arena::same_tables)) have the process's
+    /// tables ([`Arena::tables_process`]).
+    pub(crate) proof fn lemma_arena_tables(&self, a: Arena)
+        requires
+            self.wf(),
+            crate::arena::same_tables(a, self.arenas.spec_arena0()),
+        ensures
+            a.tables_process(),
+    {
+        assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] a.spec_class_state(c).is_process() by {
+            assert(a.spec_class_state(c).spec_table() == self.arena0.spec_class_state(c).spec_table());
+            assert(self.arena0.spec_class_state(0).spec_tables()[c].value() == self.tables[c]);
+            assert(self.tables[c].is_process());
+        }
+    }
+
+    /// The class states of an arena the process registry published
+    /// ([`published`]) have the process's tables
+    /// ([`ClassState::is_process`]): what the paths that claim and release
+    /// slots through the arena need of them. A published arena has the
+    /// tables of the process registry's arena 0, this `Shared`'s arena 0
+    /// ([`Shared::lemma_wf_slow`]).
+    pub(crate) proof fn lemma_published_tables(&self, w: Published, a: Arena)
+        requires
+            self.wf(),
+            published(w, a),
+        ensures
+            a.tables_process(),
+    {
+        self.lemma_wf_slow();
     }
 
     /// The value is as `Shared::init` built it ([`Shared::built`]), and the
@@ -473,9 +525,9 @@ impl ClassLine {
         &&& self.slab_bits == cls.slab_bits
         &&& self.tz == cls.tz
         &&& self.lg_slab == cls.lg_slab
-        &&& (self.guard_mask == crate::layout::guard_geom(c).1 || self.guard_mask == 0)
-        &&& crate::layout::guard_geom(c).0 <= 26
-        &&& self.lg_guard == cls.lg_slab + crate::layout::guard_geom(c).0
+        &&& (self.guard_mask == t.spec_slots().gmask || self.guard_mask == 0)
+        &&& t.spec_slots().glg <= 26
+        &&& self.lg_guard == cls.lg_slab + t.spec_slots().glg
         &&& self._pad[0] == 0 && self._pad[1] == 0
         &&& self.committed_inv@.constant().0 == usize_id(&self.committed)
         &&& self.committed_inv@.constant().1 == t.spec_nslabs()
@@ -497,7 +549,7 @@ impl ClassLine {
             table.spec_class() == class,
         ensures
             r.0.wf(*table, *regions, class as int),
-            r.0.guard_mask == if exact_sized_free { 0 } else { crate::layout::guard_geom(class as int).1 },
+            r.0.guard_mask == if exact_sized_free { 0 } else { table.spec_slots().gmask },
             r.0.committed_inv@.constant().2 == r.1@.id(),
     {
         broadcast use crate::vspec::class::lemma_class_table_wf;
@@ -528,7 +580,7 @@ impl ClassLine {
         proof {
             // The page group's shift is `log2(slabs_per_page)`, and the
             // inverse's low half is the class's 32-bit one.
-            let (spp, lg) = (table.spec_slabs_per_page(), crate::layout::guard_geom(class as int).0);
+            let (spp, lg) = (table.spec_slabs_per_page(), table.spec_slots().glg);
             assert(spp == 1usize << (lg as u64)) by (bit_vector)
                 requires spp == 1usize << lg;
             crate::class::lemma_tz_shl(spp, lg as u64);
@@ -653,6 +705,8 @@ impl ClassLine {
         requires
             0 <= c < NCLASSES,
             self.wf(t, regions, c),
+            t.spec_class() == c,
+            t.is_process(),
             regions.wf(),
             region_hi == !(((1usize << regions.lg_region) - 1) as usize),
             ({
@@ -722,7 +776,7 @@ impl ClassLine {
         ;
         // The guard test is the table's, `guard_of`, on `slab`: the page
         // group is `rel >> (lg_slab + lg_spp)`, below `2^26`.
-        let lspp = crate::layout::guard_geom(c).0;
+        let lspp = t.spec_slots().glg;
         assert(lgg == ls + lspp);
         let (lsu, lsppu, lgu) = (ls as usize, lspp as usize, lgg as usize);
         assert(lgu == lsu + lsppu && lgu < 64);
@@ -816,6 +870,7 @@ impl ClassLine {
     #[allow(clippy::question_mark)]
     fn set_slab(&self, p: usize, table: &SlabTable) -> (r: Option<usize>)
         requires
+            table.is_process(),
             table.spec_class() < NCLASSES,
             self.wf(*table, crate::layout::process_regions(), table.spec_class() as int),
             crate::layout::process_regions().wf(),
@@ -2267,7 +2322,7 @@ impl Shared {
                     in_alloc(lines, NCLASSES as int * size_of::<ClassLine>()),
                     ord.allows(rank_table(0)),
                     forall|d: int| 0 <= d < c ==> (#[trigger] line_perms[d]).value().wf(table_perms[d].value(), *regions, d)
-                        && line_perms[d].value().guard_mask == if config.exact_sized_free { 0 } else { crate::layout::guard_geom(d).1 },
+                        && line_perms[d].value().guard_mask == if config.exact_sized_free { 0 } else { table_perms[d].value().spec_slots().gmask },
             {
                 let ghost before = line_perms;
                 proof {
@@ -2285,7 +2340,7 @@ impl Shared {
                     }
                     assert forall|d: int| 0 <= d < c + 1 implies (#[trigger] line_perms[d]).is_init()
                         && line_perms[d].value().wf(table_perms[d].value(), *regions, d)
-                        && line_perms[d].value().guard_mask == if config.exact_sized_free { 0 } else { crate::layout::guard_geom(d).1 } by {
+                        && line_perms[d].value().guard_mask == if config.exact_sized_free { 0 } else { table_perms[d].value().spec_slots().gmask } by {
                         if d != c {
                             assert(before[d] == line_perms[d]);
                         }
@@ -2387,6 +2442,11 @@ impl Shared {
             proof {
                 built.perm = Some(axiom_shared_built(parts, regions_perm, meta_perm, line_perms, table_perms, a0, this));
                 assert(shared_at(this).regions == regions0);
+                // The class authorities and guard geometry are the stored
+                // `Shared`'s tables': their definitions.
+                reveal(crate::class::slot_loc);
+                reveal(crate::class::mark_loc);
+                reveal(crate::layout::guard_geom);
                 // The class lines and tables are the ones written above.
                 assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] shared_at(this).tables[d].spec_class() == d
                     && shared_at(this).lines[d].wf(shared_at(this).tables[d], shared_at(this).regions, d)
@@ -2645,7 +2705,10 @@ impl Shared {
             (self.push_flags & PUSH_PAC != 0) == super::pac_mode(),
             super::pac_mode() ==> crate::sys::pac::pac_available(),
             self.arenas.spec_arena0() == self.arena0,
+            self.arenas.spec_arena0() == self.spec_arena0(),
+            crate::arena::process_arena0() == self.arena0,
     {
+        self.arenas.lemma_process_arena0();
     }
 
     /// The memory cgroup record, `None` until discovery has run
@@ -2752,6 +2815,11 @@ impl Shared {
         self.tables
     }
 
+    /// Arena 0, for the arena registry's contracts (`Arenas::get`).
+    pub closed spec fn spec_arena0(&self) -> Arena {
+        self.arena0
+    }
+
     /// The fork handlers' locks that live in `Shared` itself, by value
     /// (`api::lock_at`): the explicit-cache table lock, the arena
     /// creation lock, the huge, metadata and process statistics locks.
@@ -2823,6 +2891,7 @@ impl Shared {
             class < NCLASSES,
         ensures
             self.wf() ==> r.spec_class() == class,
+            self.wf() ==> r.is_process(),
     {
         proof {
             if self.wf() {
@@ -3004,6 +3073,9 @@ impl Shared {
     {
         let mut out = [ptr::null_mut()];
         let cs = arena.class(class);
+        proof {
+            self.lemma_published_tables(*pubw@, *arena);
+        }
         cs.slot_tokens_are_the_class_s();
         let tracked mut toks = crate::class::SlotToks::empty();
         let (c, Tracked(mut z)) = cs.claim_tokens(&self.meta, &mut out, Tracked(&mut toks), pubw, Tracked(ord));
@@ -3064,6 +3136,9 @@ impl Shared {
             assert(seq![p][0] == p);
         }
         let (oa, ow) = self.owner(arena);
+        proof {
+            self.lemma_published_tables(*ow@, *oa);
+        }
         oa.class(class).release_with(&[p], Tracked(bag), ow, Tracked(ord));
     }
 
@@ -3519,6 +3594,9 @@ impl Shared {
                 }
             }
             let (oa, ow) = self.owner(a);
+            proof {
+                self.lemma_published_tables(*ow@, *oa);
+            }
             done += oa.class(class).release_owned(&ptrs[done..], Tracked(&mut *bag), ow, Tracked(ord));
             proof {
                 let r = done - d0;

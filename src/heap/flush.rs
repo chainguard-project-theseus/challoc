@@ -181,6 +181,9 @@ impl Heap {
             // The claimed slots' tokens, by index into `out`.
             let tracked mut toks = crate::class::SlotToks::empty();
             let cs = arena.class(class);
+            proof {
+                shared.lemma_published_tables(*pubw@, *arena);
+            }
             let (claim, Tracked(mut ztok)) = self.claim(shared, cs, out, Tracked(&mut toks), pubw, Tracked(ord));
             let ghost claimed = out@;
             proof {

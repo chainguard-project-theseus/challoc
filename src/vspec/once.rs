@@ -1,6 +1,6 @@
 //! One-shot tokens for the steps of building the allocator that happen
 //! once per process. An axiom that fixes a process-wide ghost fact (the
-//! permission to the `Shared` storage, a class's slot-token authority)
+//! permission to the `Shared` storage, a class bitmap's word permissions)
 //! is true only if it runs once:
 //! a second run would fix the fact a second way and prove `false`. Each
 //! such axiom uses up a [`Once`] token for its step, so a second run no
@@ -19,8 +19,10 @@ pub ghost enum Step {
     /// `heap::shared::Shared::begin`: the permission to the process's
     /// `Shared` storage.
     Shared,
-    /// Class `c`'s slot-token authority (`class::table`,
-    /// `SlabTable::new`).
+    /// `class::table::SlabTable::new` for class `c`, which takes the token
+    /// and uses it for nothing: its slot-token and marker authorities and
+    /// guard geometry are the process's by the definitions of
+    /// `class::slot_loc`, `class::mark_loc` and `layout::guard_geom`.
     SlotLoc(int),
     /// The word permissions of class `c`'s bitmap (`class::table`,
     /// `SlabTable::new`).
