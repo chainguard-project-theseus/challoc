@@ -505,23 +505,21 @@ process statistics lock (`collect_into`, `snapshot`,
 these guards drops without it. For every other lock the invariant and
 frame are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Ten locks'
-holders all end with it. For all but the state lock (whose invariant
-`axiom_state_lock_inv` states) no axiom states `lock_inv` and
+holders all end with it. For all ten no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
 left is the mutex contract (`lock::axiom_acquired`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
 test `api::tests::guards_end_in_unlock` checks. The arena creation lock
 and the state lock are also held by the fork handlers, whose release,
 `Lock::unlock_held_perm`, requires the invariant and frame as
-`LockGuard::unlock` does. For the state lock that release checks the
-invariant `axiom_state_lock_inv` states: `purge::background::fork_child`
-writes the value through `Lock::value_held_mut` and proves it of the state
-it stores (`StateHold::wf`). The one exception is the
-initial value: eight of those nine take it from `Lock::new`, which
-requires the invariant, but the per-arena statistics locks take theirs
-from the trusted `Arena::put_stats`, which the test
-`put_stats_writes_lock_new_of_empty` compares with
-`Lock::new(ArenaStats::empty(index), ..)`. The impl for
+`LockGuard::unlock` does: for the state lock,
+`purge::background::fork_child` writes the value through
+`Lock::value_held_mut` and proves the invariant of the state it stores
+(`StateHold::wf`). The one exception is the initial value: nine of the
+ten take it from `Lock::new`, which requires the invariant, but the
+per-arena statistics locks take theirs from the trusted
+`Arena::put_stats`, which the test `put_stats_writes_lock_new_of_empty`
+compares with `Lock::new(ArenaStats::empty(index), ..)`. The impl for
 `meta::Inner` (`meta.rs`), the metadata lock: `Inner::wf`, with the
 page, the region's bounds and the ghost identities fixed. The impl for
 `[Lazy; SET_GROUPS]` (`class/sets.rs`), the slab-set tables' lock:
@@ -543,10 +541,8 @@ or above the one the lock was created with. The impl for `ArenaStats`
 (`stats.rs`), the per-arena statistics locks: `ArenaStats::identities`,
 with a frame true of any two values. The impl for
 `purge::background::State` (`purge/background.rs`), the background
-thread's state lock, defines only the frame, true of any two states,
-which no release can break; its invariant is `axiom_state_lock_inv`'s,
-which the fork handlers' hold (`purge::background::StateHold`) also
-keeps. Each other
+thread's state lock: the stack's end in range and `exited ==> !present`,
+with a frame true of any two states. Each other
 lock type's `lock_inv`/`lock_frame` axiom says the lock protects that
 type's invariant; the theorems that use one name it.
 `Tcaches::init` makes each entry null with
@@ -2609,8 +2605,8 @@ build a token; the handoff axioms below are the other source.
   `RawLock::release`. The order of the window against the hold is
   proved: `fork_window_open` requires `lock::fork_prepared` of
   `fork_prepare`'s one root token (from `lock::axiom_fork_entry`): the
-  root's top is `rank_state`, which only `RawLock::lock_held` and
-  `Lock::lock_held_perm` of the lock at `rank_state` ensure (the state
+  root's top is `rank_state`, which only `Lock::lock_held_perm` of the
+  lock at `rank_state` ensures (the state
   lock, taken last; `RawLock::new` ranks no lock above it, so lock order
   admits no acquisition after it on that token), and
   `RawLock::unlock_held` and `Lock::unlock_held_perm` require
@@ -2642,9 +2638,8 @@ build a token; the handoff axioms below are the other source.
   specifications); its rank is proved,
   and `purge::background::state` verifies over the static's
   postcondition.
-- The background state's invariant in the child is checked over the
-  formula `axiom_state_lock_inv` (`purge/background.rs`) names:
-  `purge::background::fork_child` proves it of the value it stores
+- The background state's invariant in the child is checked:
+  `purge::background::fork_child` ensures it of the value it stores
   (`StateHold::wf`), and `fork_unlock`'s `Lock::unlock_held_perm`
   requires it at the release. The value `fork_child` starts from is the
   one `axiom_fork_resumed_state` restates, which prepare's

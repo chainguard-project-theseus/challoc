@@ -23,8 +23,10 @@
 //! published a thread that exited before it published it. The control
 //! (`present = thread.is_some()`, without the `exited` test) does in some
 //! execution: `B` sees the withdrawal and exits between `S`'s two holds.
-//! Verus proves the lock-value side (`exited ==> !present` in
-//! `axiom_state_lock_inv`, asserted at each guard's write); that `exited` is set
+//! Verus proves the lock-value side (`exited ==> !present` in the state
+//! lock's invariant, `purge::background::State`'s `LockSpec` impl,
+//! checked at each release and read by
+//! `lemma_state_inv_unpublishes_exited`); that `exited` is set
 //! exactly when the created thread exits is read from `main`. The model
 //! adds the interleavings of the three threads, which Verus does not see
 //! (loom stops the control at its first failing one).

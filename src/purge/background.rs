@@ -49,43 +49,11 @@ struct State {
     thread: Option<::libc::pthread_t>,
 }
 
-/// Assumption: every holder of the state lock leaves the stack's end in
-/// range and no thread published that has exited, so the lock's
-/// invariant is `stack + STACK_SIZE <= usize::MAX` (0 before the first
-/// start; after it, a reservation of `STACK_SIZE` bytes, which
-/// `Meta::reserve` places below `va_limit`) and `exited ==> !present`
-/// (a thread that found the request withdrawn and exited before its
-/// `start` published it stays unpublished). Each guard's holder outside
-/// the tests (`request`, `start`, `start_requested`, `auto_tick`,
-/// `main`) ends in `LockGuard::unlock` (`api::tests::guards_end_in_unlock`),
-/// which requires it: `start` writes `stack` and `present` (which it
-/// sets only to `thread.is_some() && !exited`, and clears `exited` only
-/// while nothing is present), `main` its exit's `present` false and
-/// `exited` true, and `request`, `start_requested` and `auto_tick` write
-/// nothing under it. The fork handlers hold the lock with its cell's
-/// permission ([`StateHold`]), whose value keeps it ([`StateHold::wf`]):
-/// [`fork_child`], the fork child's writer, clears `present`, `creating`
-/// and `exited` through `Lock::value_held_mut`, keeping `stack`, and
-/// proves it of that state; [`fork_unlock`]'s
-/// release (`Lock::unlock_held_perm`) requires it. The test-only readers
-/// (`join_exited`, `stack`, `thread`), whose guards drop, never write
-/// `stack`, `present` or `exited`, and no other code touches the value.
-///
-/// `api::tests::lock_holders_match_inv_docs` checks that the functions
-/// that take the guard are the holders named here.
-broadcast axiom fn axiom_state_lock_inv(v: State)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == (v.stack + STACK_SIZE <= usize::MAX && (v.exited ==> !v.present)),
-;
-
 exec static STATE: Lock<State>
     ensures
         STATE == state_static(),
         STATE.rank() == rank_state(),
 {
-    proof {
-        axiom_state_lock_inv(State { present: false, creating: false, exited: false, stack: 0, thread: None });
-    }
     let l = Lock::new(State {
         present: false,
         creating: false,
@@ -268,8 +236,6 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
         final(errno).val() == old(errno).val(),
         *final(ord) == *old(ord),
 {
-    broadcast use axiom_state_lock_inv;
-
     // Not inside the fork window (an atfork handler registered before
     // challoc's, on the forking thread with every lock held): the fork
     // handlers' bookkeeping of the thread (`fork_child` forgets it,
@@ -837,13 +803,8 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         let seq = SEQ.load(Ordering::SeqCst);
         if !requested() {
             let mut g = state().lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
-            let ghost before = g@;
             g.present = false;
             g.exited = true;
-            proof {
-                axiom_state_lock_inv(before);
-                axiom_state_lock_inv(g@);
-            }
             assert(lock_inv(g@));
             PRESENT.store(false, Ordering::Relaxed);
             #[cfg(test)]
@@ -1026,8 +987,6 @@ pub fn fork_child(Tracked(hold): Tracked<&mut StateHold>)
     ensures
         final(hold).wf(),
 {
-    broadcast use axiom_state_lock_inv;
-
     let st = state().value_held_mut(Tracked(&mut hold.perm));
     st.present = false;
     st.creating = false;
@@ -1053,12 +1012,38 @@ pub fn set_fork_base(inherited: u64) {
 
 verus! {
 
-/// The state lock's invariant, which [`axiom_state_lock_inv`] states, and
-/// its frame: the state keeps no constant from the value [`STATE`] is
+/// The state lock's invariant: the stack's end is in range and no thread
+/// published that has exited, that is `stack + STACK_SIZE <= usize::MAX`
+/// (0 before the first start; after it, a reservation of `STACK_SIZE`
+/// bytes, which `Meta::reserve` places below `va_limit`) and
+/// `exited ==> !present` (a thread that found the request withdrawn and
+/// exited before its `start` published it stays unpublished). Each
+/// guard's holder outside the tests (`request`, `start`,
+/// `start_requested`, `auto_tick`, `main`) ends in `LockGuard::unlock`
+/// (`api::tests::guards_end_in_unlock`), which requires it: `start`
+/// writes `stack` and `present` (which it sets only to
+/// `thread.is_some() && !exited`, and clears `exited` only while nothing
+/// is present), `main` its exit's `present` false and `exited` true, and
+/// `request`, `start_requested` and `auto_tick` write nothing under it.
+/// The fork handlers hold the lock with its cell's permission
+/// ([`StateHold`]), whose value keeps it ([`StateHold::wf`]):
+/// [`fork_child`], the fork child's writer, clears `present`, `creating`
+/// and `exited` through `Lock::value_held_mut`, keeping `stack`, and
+/// ensures it of that state, and [`fork_unlock`]'s release
+/// (`Lock::unlock_held_perm`) requires it. The test-only readers (`join_exited`, `stack`,
+/// `thread`), whose guards drop, never write `stack`, `present` or
+/// `exited`. The publication argument (`verus/WEAKMEM.md`,
+/// `tests/loom/src/publish.rs`) reads `exited ==> !present` from it
+/// ([`lemma_state_inv_unpublishes_exited`]).
+///
+/// The frame: the state keeps no constant from the value [`STATE`] is
 /// created with, so the frame holds of any two states.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for State {
-    open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+    closed spec fn lock_spec_inv(self) -> bool {
+        self.stack + STACK_SIZE <= usize::MAX && (self.exited ==> !self.present)
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
@@ -1072,6 +1057,17 @@ impl crate::lock::LockSpec for State {
 proof fn lemma_state_frame_reflexive(v: State)
     ensures
         crate::lock::lock_frame(v, v),
+{
+}
+
+/// The lock-value side of the publication argument (`verus/WEAKMEM.md`,
+/// `tests/loom/src/publish.rs`): a state that keeps the lock invariant,
+/// as every release leaves it, publishes no thread that has exited.
+proof fn lemma_state_inv_unpublishes_exited(v: State)
+    requires
+        lock_inv(v),
+    ensures
+        v.exited ==> !v.present,
 {
 }
 
