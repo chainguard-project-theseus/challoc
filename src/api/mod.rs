@@ -4234,7 +4234,7 @@ mod tests {
                     ("stats.rs:", "pub fn arena_stats_all_into(", "stats"),
                 ],
             ),
-            // `vspec::huge::axiom_huge_lock_inv`.
+            // `huge::Inner`'s `LockSpec` impl.
             (
                 "huge/mod.rs:Huge.inner",
                 &[
