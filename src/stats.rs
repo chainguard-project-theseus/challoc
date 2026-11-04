@@ -2072,12 +2072,11 @@ fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPai
 /// out-of-line function: [`Scratch::new`] records it with a pooled
 /// object, and a later call of the same thread from as high on the stack
 /// (not deeper, inside the holder's callback) finds the holder's frame
-/// gone ([`pool_take`]).
-#[verifier::external_body]
+/// gone ([`pool_take`]). Nothing is claimed about the value.
 #[inline(never)]
 fn stack_mark() -> usize {
     let here = 0u8;
-    core::hint::black_box(core::ptr::addr_of!(here)) as usize
+    core::hint::black_box(core::ptr::from_ref(&here)) as usize
 }
 
 /// A pooled object for thread `tid` at stack position `mark`, with its
