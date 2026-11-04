@@ -205,9 +205,9 @@ impl TableInner {
         &&& self.wm == o.wm
     }
 
-    /// The guard count stays below the slabs handed out, which stay below
-    /// the largest slab count a region can have and are whole hand-out
-    /// groups until the region's end; the three tables are committed in
+    /// The slabs handed out stay below the largest slab count a region
+    /// can have and are whole hand-out groups until the region's end (the
+    /// guard count is a statistic, with no bound here); the three tables are committed in
     /// the process's page ([`lazy_ok`], what `Lazy::ensure` takes). The
     /// commit lock holds the init markers of every bit and the owner-store
     /// markers of every slab from the watermark on, and those slabs'
@@ -219,7 +219,6 @@ impl TableInner {
     /// `next_slab`, and its half of the watermark's ghost variable is
     /// `next_slab`.
     pub(super) open spec fn inv(self) -> bool {
-        &&& self.guards <= self.next_slab
         &&& self.next_slab <= usize::MAX >> 12
         &&& self.group@ >= 1
         &&& self.next_slab < self.nslabs@ ==> self.next_slab % self.group@ == 0
@@ -257,12 +256,8 @@ impl TableInner {
 /// Verus checks no invariant at the guard's drop); `mirror_watermark` sets the copy's
 /// pointer, its invariant and its half of the copy's ghost variable together. `commit_run` and `commit_slab` add
 /// one to `guards` for the guard slab they commit and change no other
-/// field, so every conjunct but `guards <= next_slab` still holds when
-/// their guard drops; that one rests on a premise their proofs do not
-/// show: each slab below `next_slab` is reached once, by the cursor of the
-/// one arena its group went to (`next_fresh_slab` moves each arena's
-/// cursor forward through its own groups, under that arena's class lock),
-/// so at most one guard is counted per guard slab handed out.
+/// field, and `inv` does not bound `guards`, so every conjunct still holds
+/// when their guard drops.
 ///
 /// Unverified holders: the test helper `corrupt_owner_word` only commits
 /// through `Lazy::ensure`. The fork handlers take the raw lock without
@@ -4837,7 +4832,7 @@ impl SlabTable {
             r matches Some(usable) ==> usable == !self.spec_is_guard(s),
             *final(ord) == *old(ord),
     {
-        broadcast use axiom_table_lock_inv;
+        broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
         if !self.runs() {
             return self.commit_slab(s, Tracked(ord));
         }
@@ -4864,11 +4859,6 @@ impl SlabTable {
                 }
                 commit(self.slab_addr(s + 1), (end - s - 1) << cls.lg_slab, Ghost(self.class as int), Ghost(false)).ok()?;
             }
-            proof {
-                assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
-            }
-            // `guards <= next_slab` after the increment is the cross-arena
-            // premise `axiom_table_lock_inv` names, not shown here.
             let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
             g.guards = g.guards.wrapping_add(1);
             return Some(false);
@@ -4978,7 +4968,6 @@ impl SlabTable {
             assert((1usize << lp) <= 0x8000_0000_0000_0000usize) by (bit_vector)
                 requires lp < 64;
             assert((1usize << 57u32) == 0x200_0000_0000_0000usize) by (bit_vector);
-            assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
         }
         let first_of_page_group = s % spp == 0;
         let is_guard = self.is_guard_slab(s);
@@ -5007,8 +4996,6 @@ impl SlabTable {
             }
         }
         if is_guard {
-            // As in `commit_run`: `guards <= next_slab` afterwards rests on
-            // the cross-arena premise `axiom_table_lock_inv` names.
             g.guards = g.guards.wrapping_add(1);
             return Some(false);
         }
