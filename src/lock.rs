@@ -593,7 +593,17 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
     ensures
         r ==> crate::sys::cgroup::in_fork_child(),
 {
-    fork_holder_is_me() && FORK_PID.load(Ordering::Relaxed) != crate::sys::getpid() as u32
+    let h = FORK_HOLDER.load(Ordering::Relaxed);
+    if h == 0 {
+        return false;
+    }
+    let me = crate::sys::pthread_self();
+    if h != me {
+        return false;
+    }
+    let pid = FORK_PID.load(Ordering::Relaxed);
+    let now = crate::sys::getpid() as u32;
+    pid != now
 }
 
 /// End the fork window; the parent and child handlers' step before their
