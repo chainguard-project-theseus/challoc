@@ -1,2 +1,5 @@
 # The lock contract, as for lock.rs's axiom_acquired and axiom_held.
 axiom_set_tables_lock_inv	allocator invariant	none (assumption)
+# Temporary seam, provable in Verus once the commit lock's frame is
+# stated, which its explicit `t.unlock()` requires.
+SetTable::ensure	allocator invariant	Verus

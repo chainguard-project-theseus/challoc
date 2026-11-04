@@ -18,7 +18,7 @@ file.
 
 ## `axiom_tcaches_lock_inv`
 
-src/heap/tcaches.rs:224. Kind: axiom. Category: allocator invariant.
+src/heap/tcaches.rs:225. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption (`lock.rs`): the explicit-cache table lock guards no value (`()`), so its invariant is trivially true.
@@ -32,7 +32,7 @@ pub broadcast axiom fn axiom_tcaches_lock_inv(v: ())
 
 ## `T_TABLE`
 
-src/heap/tcaches.rs:233. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:234. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 ```rust
@@ -41,7 +41,7 @@ const T_TABLE: usize = core::mem::offset_of!(Tcaches, table);
 
 ## `T_LOCK`
 
-src/heap/tcaches.rs:235. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:236. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 ```rust
@@ -50,7 +50,7 @@ const T_LOCK: usize = core::mem::offset_of!(Tcaches, lock);
 
 ## `T_INV`
 
-src/heap/tcaches.rs:237. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:238. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 ```rust
@@ -59,7 +59,7 @@ const T_INV: usize = core::mem::offset_of!(Tcaches, inv);
 
 ## `axiom_tcaches_layout`
 
-src/heap/tcaches.rs:244. Kind: axiom. Category: core library.
+src/heap/tcaches.rs:245. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 > `Tcaches`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `inv`) by the size, and a table entry not empty.
@@ -82,7 +82,7 @@ axiom fn axiom_tcaches_layout()
 
 ## `axiom_tcaches_assemble`
 
-src/heap/tcaches.rs:381. Kind: axiom. Category: raw pointer (internal).
+src/heap/tcaches.rs:382. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Tcaches` at `p` (`Tcaches::split`'s parts and table entries, every one initialised), as the `Tcaches`: the value of each field is what its permission holds.
@@ -117,7 +117,7 @@ axiom fn axiom_tcaches_assemble(
 
 ## `axiom_heap_use`
 
-src/heap/tcaches.rs:725. Kind: axiom. Category: C-program contract.
+src/heap/tcaches.rs:726. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the C caller's contract): the calling thread uses the heap it is about to reach through [`heap_at`] with no other reference to it live, here or on another thread: an explicit cache is used by one thread at a time and not after `tcache.destroy` (the contract of [`Tcaches::get`]), a destroyed cache is unreachable through the table, a thread's heap reaches its key destructor once, at thread exit, and a heap created and never published has no other reference.
@@ -132,7 +132,7 @@ pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
 
 ## `heap_at`
 
-src/heap/tcaches.rs:770. Kind: external_body. Category: allocator invariant.
+src/heap/tcaches.rs:771. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the heap `Heap::destroy` is handed.

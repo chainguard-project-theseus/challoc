@@ -672,7 +672,7 @@ fn access_entry_tables_control() {
         "crate::vspec::entry::swap(&self.table[0], p, Ordering::AcqRel, Tracked(e));",
     );
     assert!(!check_entries(&t2).is_empty());
-    let anchor = "let _g = self.lock.lock(Tracked(ord), Tracked(&mut under));";
+    let anchor = "let g = self.lock.lock(Tracked(ord), Tracked(&mut under));";
     let t2 = with(
         &t,
         "src/heap/tcaches.rs",

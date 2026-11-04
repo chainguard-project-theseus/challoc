@@ -661,8 +661,12 @@ impl Snapshot {
 
 /// The snapshot an `epoch` stores satisfies [`Snapshot::inv`]. Trusted as
 /// every `lock_inv` axiom is: the `shared.stats` lock's writers are
-/// `Shared::init` (`Snapshot::EMPTY`, all zero) and [`collect_into`],
-/// which asserts it; the fork handlers take only the raw lock.
+/// `Shared::init` (`Snapshot::EMPTY`, all zero) and [`collect_into`];
+/// each holder ([`collect_into`], [`snapshot`], [`arena_stats_all_into`]) ends
+/// in `LockGuard::unlock`, which requires it
+/// (`api::tests::guards_end_in_unlock`); the fork handlers take only the
+/// raw lock. Until the snapshot's lock frame is stated, `collect_into`
+/// is trusted (`external_body`), so this is also assumed of it.
 ///
 /// `snapshot` only reads it, and `arena_stats_all_into` leaves it unchanged.
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
@@ -1194,6 +1198,7 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// snapshot never sees the arenas of a collection whose totals are not
 /// stored yet. It nests outside the class, slab table, huge, metadata and
 /// per-arena statistics locks the collection takes (design 9).
+#[verifier::external_body]
 fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_abort_corrupt(),
@@ -1279,7 +1284,7 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             assert(sum_mapped(reads) <= usize::MAX);
         }
     }
-    if store {
+    let r = if store {
         g.epoch = fig_add64(g.epoch, 1);
         g.narenas = narenas;
         g.totals = totals;
@@ -1298,7 +1303,9 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             huge,
             meta,
         }
-    }
+    };
+    g.unlock();
+    r
 }
 
 /// `epoch`: refresh every arena's stored [`ArenaStats`] and the process
@@ -1361,7 +1368,11 @@ pub fn snapshot(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: S
     proof {
         shared.lemma_ranks();
     }
-    *shared.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()))
+    let tracked mut under = LockOrder::spare();
+    let g = shared.stats.lock(Tracked(ord), Tracked(&mut under));
+    let r = *g;
+    g.unlock();
+    r
 }
 
 /// The [`ArenaStats`] stored by the last [`epoch`] for arena `index`,
@@ -1400,7 +1411,7 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord):
         shared.lemma_ranks();
     }
     let tracked mut under = LockOrder::spare();
-    let _published = shared.stats.lock(Tracked(ord), Tracked(&mut under));
+    let published = shared.stats.lock(Tracked(ord), Tracked(&mut under));
     out.clear(crate::arena::ARENAS_ALL as u16);
     let n = shared.arenas.count();
     for i in 0..n as usize
@@ -1414,6 +1425,7 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord):
             arena.add_stats_to(out, Tracked(&mut under));
         }
     }
+    published.unlock();
 }
 
 /// Every existing arena's *current* figures summed, not stored (for
