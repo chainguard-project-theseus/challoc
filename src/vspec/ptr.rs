@@ -161,9 +161,11 @@ pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
 /// the user blocks it hands out are, and writes through their provenance
 /// must be open (`vspec::cbuf::c_writes`). Verified code fills its own
 /// memory through `vspec::zero::zero_raw` and `vspec::user::zero_user`,
-/// which take the permission `&mut`.
+/// which take the permission `&mut`. `T` is not zero-sized: every caller
+/// fills bytes, and the contract claims nothing about a zero-sized fill.
 pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8, count: usize)
     requires
+        vstd::layout::size_of::<T>() > 0,
         dst@.addr != 0,
         dst@.addr as int % vstd::layout::align_of::<T>() as int == 0,
         count as int * vstd::layout::size_of::<T>() == 0 || {
