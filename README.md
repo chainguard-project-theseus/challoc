@@ -32,12 +32,12 @@ the project stands is under "Status" below.
 
 ## Formal verification
 
-Verus verifies 83.4% of challoc's executable functions and 93.5% of its
+Verus verifies 85.2% of challoc's executable functions and 94.0% of its
 executable lines. Counting also the trusted functions whose seams Kani,
-a constant assertion, Isla or `make emptyasm` discharges gives 87.4% of
-functions and 95.3% of lines. Counting instead the trusted functions
-checked by loom models of the atomic protocol gives 85.6% and 94.5%;
-those functions stay partly checked, not verified (main `26f535a9`;
+a constant assertion, Isla or `make emptyasm` discharges gives 89.3% of
+functions and 95.8% of lines. Counting instead the trusted functions
+checked by loom models of the atomic protocol gives 87.5% and 95.0%;
+those functions stay partly checked, not verified (main `8b2b5353`;
 [verus/RESULTS.md](verus/RESULTS.md#headline-figures) has the figures
 and the commands that measure them).
 

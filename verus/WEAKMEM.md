@@ -19,11 +19,11 @@ and not run.
 
 ## Inventory
 
-361 lines of shipped source carry an `Ordering::` (`grep` over `src/`,
+377 lines of shipped source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/kani/`, `src/model/`,
 inline `#[cfg(test)]` and `#[cfg(kani)]` modules, and comment lines).
 Files that pass an ordering through an imported name or a `vspec`
-wrapper argument (`class/mod.rs`, for example) are not in this count.
+wrapper argument are not in this count.
 Most of these lines are `Relaxed` statistics, configuration and
 heuristics. `purge/background.rs` holds the crate's two `fence` calls
 (in `wake` and `start`, P3), and there is no `compiler_fence`.
@@ -40,6 +40,7 @@ a compiler barrier.
 | `api/mod.rs` | 28 | `STATE`, `INIT_TID`, `SEALED`, `LINE_STATE` |
 | `stats.rs`, `policy.rs` | 26, 26 | statistics and the sampled policy, `Relaxed` |
 | `slab.rs` | 20 | `SlabDesc`: state, arena, `live`, dirty |
+| `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 15 | watermark; bitmap and owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
 | `lock.rs` | 11 | the lock word |
 | `heap/slotstate.rs` | 11 | `double_free_scan`'s per-slot state byte |
