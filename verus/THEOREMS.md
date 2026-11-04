@@ -352,6 +352,11 @@ the call does not return (theorem 3, which is not voided for it).
   flush's kept-half sort and the fallback of the verified
   `flush::group_by_slab` (whose result is a permutation of the batch,
   so the flush's tokens follow it).
+- The contracts of `vspec::slice::select_ptrs` and
+  `select_ptrs_by_key` (`vspec/slice.rs`: `select_nth_unstable` and
+  its keyed form on `*mut u8` entries, a permutation; a Kani record checks it for slices
+  of up to 12 entries at every index), under the flush's selection of
+  the entries it releases, so the flush's tokens follow it.
 - `thread::fast_flags` (verified): the `PUSH_PAC` bit, read
   through the permission frozen at `READY` at the pointer
   `api::shared_ptr`, `api::shared_base` or `heap::paths::shared_ptr`
