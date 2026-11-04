@@ -1,0 +1,12 @@
+
+pad-old.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000002000 <fmt>:
+    2000:	ldrb	w8, [x0]
+    2004:	adrp	x1, 5000 <fmt+0x3000>
+    2008:	add	x1, x1, #0x10
+    200c:	b	3000 <pad>
+    2010:	nop

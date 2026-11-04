@@ -1,0 +1,13 @@
+
+impl-old.so:	file format elf64-littleaarch64
+
+
+Disassembly of section .text:
+
+0000000000001000 <_RNvMs0_NtCs1a2b3c4d5e6_5crate4heapNtB4_4Heap4push>:
+    1000:	add	x0, x0, x1
+    1004:	ret
+
+0000000000001010 <_RNvMs0_NtCs1a2b3c4d5e6_5crate4heapNtB4_4Heap3pop>:
+    1010:	sub	x0, x0, x1
+    1014:	ret

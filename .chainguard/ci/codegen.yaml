@@ -22,8 +22,8 @@ checks:
     advisory: true
     description: >-
       scripts/codegen-diff.sh from the pull request's base to its head on
-      x86_64: .text hash and exact, reloc-only and changed functions for
-      the quantum-16 and quantum-8 builds.
+      x86_64: .text hash and exact, reloc-only, padding-only, erratum-stub
+      and changed functions for the quantum-16 and quantum-8 builds.
     trigger: [presubmit]
     resources: medium-amd64
     timeout: 30m
