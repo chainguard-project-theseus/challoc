@@ -587,11 +587,11 @@ fn create(
     if park {
         crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut *cell));
     }
-    // The previous thread exited at a wake-up (`request(false)`) but
-    // glibc's exit path still runs on the stack until the kernel has
-    // reaped it; the join returns only then, so nothing runs on the
-    // stack when it is handed to the next thread. A fork child never
-    // has a `previous`: its copy of the stack carries no thread.
+    // The previous thread exited at a wake-up (`request(false)`); the join
+    // returns at the kernel's exit-time tid clear (CLONE_CHILD_CLEARTID),
+    // after the thread has left its stack, so nothing runs on the stack when
+    // it is handed to the next thread. /proc may list the exiting thread a
+    // little longer. A fork child never has a `previous`: no thread on it.
     if let Some(t) = previous {
         // SAFETY: a joinable thread this module created and never joined.
         let rc = unsafe { pthread_join(t, Tracked(&mut *cell)) };
