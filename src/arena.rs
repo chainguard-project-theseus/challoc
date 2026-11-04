@@ -213,12 +213,10 @@ exec const ARENA_STORAGE: usize
     crate::vspec::next_multiple_of(core::mem::size_of::<Arena>(), 1 << 16)
 }
 
-/// `meta`'s address, [`BUILD_COST`]'s key. Trusted: Verus has no
-/// reference-to-pointer cast; it claims nothing about the value.
-#[verifier::external_body]
+/// `meta`'s address, [`BUILD_COST`]'s key; nothing is claimed about it.
 #[inline(always)]
 fn meta_key(meta: &Meta) -> usize {
-    meta as *const Meta as usize
+    core::ptr::from_ref(meta) as usize
 }
 
 /// Automatic arenas not built yet that `arenas.create` keeps room for

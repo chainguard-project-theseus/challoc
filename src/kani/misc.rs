@@ -298,6 +298,18 @@ fn hint_assert_unchecked() {
     unsafe { core::hint::assert_unchecked(cond) };
 }
 
+/// `core::hint::black_box`: the identity, at an integer and at the
+/// pointer type `stats::stack_mark` passes (a local's address, which the
+/// call returns unchanged).
+#[kani::proof]
+fn hint_black_box() {
+    let x: u64 = kani::any();
+    assert_eq!(core::hint::black_box(x), x);
+    let here = 0u8;
+    let p = core::ptr::from_ref(&here);
+    assert_eq!(core::hint::black_box(p), p);
+}
+
 /// `str::as_ptr`: no `ensures`; it returns, and (beyond the contract)
 /// gives the address of the first byte, for every string up to 4 bytes
 /// and a literal.
