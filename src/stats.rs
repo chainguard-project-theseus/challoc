@@ -2434,8 +2434,8 @@ proof fn lemma_snapshot_frame_reflexive(v: Snapshot)
 /// return (`api::tests::guards_end_in_unlock`). `Arena::store_stats`'s one
 /// caller, [`collect_into`], stores what [`collect_arena_with`] computes,
 /// whose ensures give the identities. The fork handlers take and release
-/// the raw lock without touching the value, and nothing calls
-/// `get_unlocked` on it. What is left is the mutex contract
+/// the raw lock without touching the value, and nothing reads it
+/// without a guard. What is left is the mutex contract
 /// (`lock::axiom_acquired`).
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions

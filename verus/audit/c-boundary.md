@@ -36,8 +36,8 @@ Totals for the 51 seams listed: 49 sound, 2 fixed.
 | seam | ledger file | verdict | reason |
 |---|---|---|---|
 | `throw_bad_alloc_addr` | `api/cxx.rs` | sound | GOT load of a weak symbol (null when undefined); ensures only `is_throw_bad_alloc(r)`, an uninterpreted name for that address. |
-| `axiom_fork_resumed_state` | `api/mod.rs` | sound | Mints a `LockHeld`; no lemma makes two of one lock contradict, though two would let `get_unlocked` alias, as its doc says. |
-| `axiom_fork_resumed` | `api/mod.rs` | fixed | Requires the state token to be the state lock's (see details). |
+| `axiom_fork_resumed_state` | `api/mod.rs` | sound | Mints a `StateHold`, which carries the state lock's cell `PointsTo`, so two calls give two permissions of one cell, which vstd's `PointsTo::is_exclusive` makes contradict (see "Notes"); `get_unlocked` is gone. It asserts `lock_inv` of the held value, which `axiom_held` used to assume at the read. |
+| `axiom_fork_resumed` | `api/mod.rs` | fixed | Requires the state hold to be the state lock's (`state.wf()`; see details). |
 | `read_slot` | `config.rs` | sound | Claims nothing. |
 | `malloc_conf_addr` | `config.rs` | sound | GOT load; claims nothing. |
 | `je_malloc_conf_addr` | `config.rs` | sound | As `malloc_conf_addr`, for a weak symbol. |
@@ -89,28 +89,29 @@ Totals for the 51 seams listed: 49 sound, 2 fixed.
 
 ## Details
 
-### `axiom_fork_resumed`: the state token is required
+### `axiom_fork_resumed`: the state hold is required
 
-`fork_holds` includes `state.held() == purge::background::state_lock()`.
-An axiom that ensured `fork_holds(*s, held, *state)` for any `state`
-would state a conclusion about a token the caller already holds, and this
-scratch proof would verify:
+`fork_holds` includes `state.wf()`: the hold is the state lock's token
+(`purge::background::state_lock()`) with the permission of its cell and
+a value that keeps the lock invariant. An axiom that ensured
+`fork_holds(*s, held, *state)` for any `state` would state a conclusion
+about a hold the caller already has, and this scratch proof would verify:
 
 ```rust
-proof fn scratch_fork_resumed_false(s: &Shared, tracked t: &LockHeld)
+proof fn scratch_fork_resumed_false(s: &Shared, slot: &AtomicU64, tracked h: &StateHold)
     requires
-        t.held() != purge::background::state_lock(),
+        !h.wf(),
     ensures
         false,
 {
-    let tracked h = axiom_fork_resumed(s, t);
+    let tracked held = axiom_fork_resumed(s, slot, h);
 }
 ```
 
-Any `LockHeld` of another lock, such as one `RawLock::lock_held` returns
-or one in `fork_prepare`'s bundle, would satisfy its `requires`. The
-axiom requires the fact instead, and its one call site, `fork_release`,
-requires it of its `state`.
+The axiom requires `state.wf()` instead, and its one call site,
+`fork_release`, requires it of its `state`. At `26f535a9` the hold was a
+`LockHeld` and the requirement `state.held() == state_lock()`, for the
+same reason.
 
 ### `purge::background::spawn`: `shared.wf()`
 
@@ -158,16 +159,20 @@ does not promise; that is Rust's side, outside the Verus contract.
    that the contract states, not one the code enforces.
 5. **Edge cases tried.** Scratch proofs, each `ensures false`,
    instantiate the axioms and trusted proof functions at their edges:
-   `axiom_fork_resumed_state` twice, and `axiom_fork_resumed` twice on
-   one token; `axiom_c_claim` twice on one pointer, on address 0 and on
-   `usize::MAX`; `axiom_user_va_limit` and `axiom_auth_sign` at `p = 0`
-   and `p = user_va_limit() - 1`, with modifiers 0, `usize::MAX` and
-   equal to `p`; the two zero axioms at address 0 with length 0, at
-   length `usize::MAX`, at a negative address, and at address and length
-   `usize::MAX`; and `Unbacked::commit` of empty tokens at -1, 0 (twice)
+   `axiom_fork_resumed` twice on one token; `axiom_c_claim` twice on one
+   pointer, on address 0 and on `usize::MAX`; `axiom_user_va_limit` and
+   `axiom_auth_sign` at `p = 0` and `p = user_va_limit() - 1`, with
+   modifiers 0, `usize::MAX` and equal to `p`; the two zero axioms at
+   address 0 with length 0, at length `usize::MAX`, at a negative
+   address, and at address and length `usize::MAX`; and
+   `Unbacked::commit` of empty tokens at -1, 0 (twice)
    and `usize::MAX` after a `split(0)` and `join`. Verus refutes each
-   ("postcondition not satisfied"). Two tokens of one lock are
-   consistent, because no lemma claims two `LockHeld` of one lock are
-   apart, as `axiom_fork_resumed_state`'s doc requires. The `Reserved`
-   proof functions need tokens that only `try_reserve` (exec) mints, so
-   they are read, not instantiated.
+   ("postcondition not satisfied"). `axiom_fork_resumed_state` twice is
+   the exception: each call's `StateHold` carries a permission of the
+   state lock's cell, and vstd's `PointsTo::is_exclusive` makes two
+   contradict. A scratch proof of `false` from two permissions of one
+   lock's cell verifies in `lock.rs`, where `Lock::has_perm` unfolds; the
+   same proof from two well-formed holds fails in `purge/background.rs`,
+   where `has_perm` is closed. The axiom's doc keeps it to one call per
+   handler. The `Reserved` proof functions need tokens that only
+   `try_reserve` (exec) mints, so they are read, not instantiated.

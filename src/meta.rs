@@ -3642,7 +3642,7 @@ verus! {
 /// `eager_allowed`, which touch only `eager`, which neither `Inner::wf` nor the frame
 /// mentions, and `base` and `top`, which only read. The fork handlers
 /// take and release the raw lock without touching the value, and nothing
-/// calls `get_unlocked` on it. What is left is the mutex contract
+/// reads it without a guard. What is left is the mutex contract
 /// (`lock::axiom_acquired`).
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions

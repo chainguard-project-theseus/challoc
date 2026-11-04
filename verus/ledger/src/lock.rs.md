@@ -12,7 +12,6 @@ file.
 | `axiom_fork_entry` | axiom | C-program contract | none (assumption) | trusted |
 | `in_chil...window` | external_body | allocator invariant | none (assumption) | trusted |
 | `axiom_acquired` | axiom | allocator invariant | none (assumption) | trusted |
-| `axiom_held` | axiom | allocator invariant | none (assumption) | trusted |
 | `Lock::value_ptr` | external_body | raw pointer (internal) | Kani | trusted |
 | `cell_ref` | external_body | UnsafeCell/volatile/transmute | Verus | trusted |
 | `cell_mut` | external_body | UnsafeCell/volatile/transmute | Verus | trusted |
@@ -33,7 +32,7 @@ fn lock_slow(&self)
 
 ## `axiom_entry`
 
-src/lock.rs:508. Kind: axiom. Category: allocator invariant.
+src/lock.rs:509. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (an entry point): the calling thread holds no allocator lock.
@@ -48,7 +47,7 @@ pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `axiom_fork_entry`
 
-src/lock.rs:527. Kind: axiom. Category: C-program contract.
+src/lock.rs:528. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork prepare handler's entry): the calling thread holds no allocator lock, as for [`axiom_entry`], and keeps this token for the whole handler, which takes every lock with [`RawLock::lock_held`] and releases none of them before it returns: a root.
@@ -63,7 +62,7 @@ pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `in_child_fork_window`
 
-src/lock.rs:590. Kind: external_body. Category: allocator invariant.
+src/lock.rs:591. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Whether the caller is the forking thread in the child of a `fork`, inside the window: a child handler registered before challoc's, which runs before challoc's own resets the work other parent threads had under way (the feature line's build, the cgroup discovery).
@@ -78,10 +77,10 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
 
 ## `axiom_acquired`
 
-src/lock.rs:747. Kind: axiom. Category: allocator invariant.
+src/lock.rs:748. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> The lock invariant's assumption where it enters for a guard (the other entry is [`axiom_held`], for a holder of the raw lock): a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
+> The lock invariant's assumption where it enters, at an acquisition: a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
 
 ```rust
 axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
@@ -92,28 +91,9 @@ axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 ;
 ```
 
-## `axiom_held`
-
-src/lock.rs:764. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> The lock invariant's assumption where it enters for a holder of the raw lock ([`Lock::get_unlocked`]): the holder's [`LockHeld`] token lends the permission of `l`'s cell for as long as the token stays borrowed, and the value satisfies [`lock_inv`] and keeps [`lock_frame`], as at [`axiom_acquired`].
-
-```rust
-axiom fn axiom_held<'a, T: LockSpec>(l: Lock<T>, tracked held: &'a mut LockHeld) -> (tracked p: &'a mut PointsTo<T>)
-    requires
-        old(held).held() == l.raw,
-    ensures
-        *final(held) == *old(held),
-        p.id() == l.value.id(),
-        lock_inv(*p.value()),
-        lock_frame(lock_init(l), *p.value()),
-;
-```
-
 ## `Lock::value_ptr`
 
-src/lock.rs:828. Kind: external_body. Category: raw pointer (internal).
+src/lock.rs:809. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names), and `T` other than `u8`, `u64`, `(u64, u8)` and `ArenaStats`).
 
 > The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
@@ -124,12 +104,12 @@ pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
 
 ## `cell_ref`
 
-src/lock.rs:1148. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1114. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow`] with the permission `t`.
 
-Body mints Tracked at line 1156.
+Body mints Tracked at line 1122.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -143,12 +123,12 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
 
 ## `cell_mut`
 
-src/lock.rs:1163. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/lock.rs:1129. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Verus. Status: trusted.
 
 > [`PCell::borrow_mut`] with the permission `t`.
 
-Body mints Tracked at line 1173.
+Body mints Tracked at line 1139.
 
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -164,7 +144,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 ## `LockGuard::drop`
 
-src/lock.rs:1183. Kind: external_body. Category: atomics primitive.
+src/lock.rs:1149. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return).
 
 ```rust

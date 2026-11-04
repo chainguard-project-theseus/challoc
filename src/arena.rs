@@ -4096,8 +4096,8 @@ verus! {
 /// handlers keep the cell's permission from `Arenas::lock_held` to
 /// `Arenas::unlock_held` without writing the value; that release,
 /// `Lock::unlock_held_perm`, requires both too (`Arenas::frozen` carries
-/// them from the acquisition). Nothing calls
-/// `get_unlocked` on it. What is left is the mutex contract
+/// them from the acquisition). Nothing reads it without a guard or that
+/// permission. What is left is the mutex contract
 /// (`lock::axiom_acquired`).
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
