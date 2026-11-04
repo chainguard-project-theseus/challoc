@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `RawLock::lock_slow` | no_decreases | termination | loom/GenMC | trusted |
 | `axiom_entry` | axiom | allocator invariant | none (assumption) | trusted |
-| `axiom_fork_entry` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_fork_entry` | axiom | C-program contract | none (assumption) | trusted |
 | `in_chil...window` | external_body | allocator invariant | none (assumption) | trusted |
 | `axiom_acquired` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_held` | axiom | allocator invariant | none (assumption) | trusted |
@@ -48,7 +48,7 @@ pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `axiom_fork_entry`
 
-src/lock.rs:524. Kind: axiom. Category: allocator invariant.
+src/lock.rs:524. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork prepare handler's entry): the calling thread holds no allocator lock, as for [`axiom_entry`], and keeps this token for the whole handler, which takes every lock with [`RawLock::lock_held`] and releases none of them before it returns: a root.

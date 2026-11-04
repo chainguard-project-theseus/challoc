@@ -1,10 +1,14 @@
 # The zero tokens of a run `take` hands out (zero_run, their one caller,
 # pinned by huge::tests::zero_axioms_called_from_zero_run_only): kernel
-# zero-fill facts under the allocator's rules. zero_run's requires tie the
-# fresh-page premise to the mark; the Purged premise, that
-# purge::purged_is_zero read true, is not checked (a follow-up takes
-# purge::purged_zero's PurgedZero witness, as the class claim path does).
-axiom_fresh_anon_zero	allocator invariant	none (assumption)
+# zero-fill facts under the allocator's rules.
+# The fresh pages: zero_run's requires tie the premise to the mark, which
+# only `take` raises, so what is left is mmap(2)'s zero fill of a private
+# anonymous mapping that nothing has written since.
+axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
+# The Purged pages: the premise that Huge::rediscard succeeded for the
+# run's pages (purge::purged_is_zero read true) is challoc's own and not
+# checked (a follow-up takes purge::purged_zero's PurgedZero witness, as
+# the class claim path does).
 axiom_discarded_zero	allocator invariant	none (assumption)
 # write_zero: Verus checks its requires at every caller (split_guard, from
 # Huge::prepare); its body, the write, is trusted.

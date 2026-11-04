@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `write_zero` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
-| `axiom_f...n_zero` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_f...n_zero` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_d...d_zero` | axiom | allocator invariant | none (assumption) | trusted |
 
 ## `write_zero`
@@ -29,7 +29,7 @@ fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm
 
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:2468. Kind: axiom. Category: allocator invariant.
+src/huge/mod.rs:2468. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
