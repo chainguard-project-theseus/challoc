@@ -648,7 +648,7 @@ impl Snapshot {
     };
 
     /// What every stored snapshot satisfies (the `shared.stats` lock's
-    /// invariant, [`axiom_snapshot_lock_inv`]): with up to
+    /// invariant, `Snapshot`'s `LockSpec` impl): with up to
     /// 256 arenas the totals' identities hold. Each arena's `mapped` is
     /// at most [`arena_mapped_max`], so 256 of them sum below `2^64` and
     /// no figure of the totals wraps; past that the identities hold when
@@ -658,30 +658,6 @@ impl Snapshot {
         self.narenas <= 256 ==> self.totals.identities()
     }
 }
-
-/// The snapshot an `epoch` stores satisfies [`Snapshot::inv`]. Trusted as
-/// every `lock_inv` axiom is: the `shared.stats` lock's writers are
-/// `Shared::init` (`Snapshot::EMPTY`, all zero) and [`collect_into`];
-/// each holder ([`collect_into`], [`snapshot`], [`arena_stats_all_into`]) ends
-/// in `LockGuard::unlock`, which requires it
-/// (`api::tests::guards_end_in_unlock`); the fork handlers take only the
-/// raw lock.
-///
-/// `snapshot` only reads it, and `arena_stats_all_into` leaves it unchanged.
-/// `api::tests::lock_holders_match_inv_docs` checks that the functions
-/// that take the guard are the holders named here.
-pub broadcast axiom fn axiom_snapshot_lock_inv(v: Snapshot)
-    ensures
-        #[trigger] crate::lock::assumed_inv(v) == v.inv(),
-;
-
-/// The snapshot behind `shared.stats` keeps no constant from the one
-/// `Shared::init` created it with: the frame its holders'
-/// `LockGuard::unlock` requires holds of any two snapshots.
-pub broadcast axiom fn axiom_snapshot_lock_frame(init: Snapshot, v: Snapshot)
-    ensures
-        #[trigger] crate::lock::assumed_frame(init, v),
-;
 
 } // verus!
 
@@ -1222,8 +1198,6 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
         r.inv(),
         *final(ord) == *old(ord),
 {
-    broadcast use {axiom_snapshot_lock_inv, axiom_snapshot_lock_frame};
-
     proof {
         shared.lemma_ranks();
     }
@@ -1369,8 +1343,6 @@ pub fn snapshot(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: S
         r.inv(),
         *final(ord) == *old(ord),
 {
-    broadcast use axiom_snapshot_lock_inv;
-
     proof {
         shared.lemma_ranks();
     }
@@ -2411,16 +2383,37 @@ mod pool {
 
 verus! {
 
-/// The process statistics lock's invariant and frame, which
-/// [`axiom_snapshot_lock_inv`] and [`axiom_snapshot_lock_frame`] state.
+/// The process statistics lock's invariant is [`Snapshot::inv`], and its
+/// frame holds of any two snapshots: the value keeps no constant from the
+/// one `Shared::init` created it with.
+///
+/// The lock's writers are `Shared::init` (`Snapshot::EMPTY`, all zero;
+/// `Lock::new` requires the invariant) and [`collect_into`]; each holder
+/// ([`collect_into`], [`snapshot`], [`arena_stats_all_into`]) ends in
+/// `LockGuard::unlock`, which requires both
+/// (`api::tests::guards_end_in_unlock`); the fork handlers take only the
+/// raw lock. `snapshot` only reads the value, and `arena_stats_all_into`
+/// leaves it unchanged.
+///
+/// `api::tests::lock_holders_match_inv_docs` checks that the functions
+/// that take the guard are the holders named here.
 impl crate::lock::LockSpec for Snapshot {
     open spec fn lock_spec_inv(self) -> bool {
-        crate::lock::assumed_inv(self)
+        Snapshot::inv(self)
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        crate::lock::assumed_frame(init, v)
+        true
     }
+}
+
+/// The frame holds of every value with itself, as `LockSpec` requires of
+/// a defined frame (`Lock::new` does not check it, and
+/// `lock::axiom_acquired` claims it at the first acquisition).
+proof fn lemma_snapshot_frame_reflexive(v: Snapshot)
+    ensures
+        crate::lock::lock_frame(v, v),
+{
 }
 
 /// An arena statistics lock's invariant, which
