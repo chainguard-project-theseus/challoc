@@ -19,6 +19,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::load`, which vstd does not specify: any pointer.
 
+Hashes: contract 3858011528, body none.
+
 ```rust
 pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::load ](
     a: &core::sync::atomic::Atomic<*mut T>,
@@ -36,6 +38,8 @@ src/vspec/arena.rs:20. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::store`, which vstd does not specify.
+
+Hashes: contract 2216000472, body none.
 
 ```rust
 pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::store ](
@@ -56,6 +60,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::new`, which vstd does not specify.
 
+Hashes: contract 1246102949, body none.
+
 ```rust
 pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::new ](v: *mut T) -> core::sync::atomic::Atomic<*mut T>;
 ```
@@ -66,6 +72,8 @@ src/vspec/arena.rs:34. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_ptr).
 
 > `AtomicPtr::swap`, which vstd does not specify: any previous pointer.
+
+Hashes: contract 511827329, body none.
 
 ```rust
 pub assume_specification<T>[ core::sync::atomic::Atomic::<*mut T>::swap ](

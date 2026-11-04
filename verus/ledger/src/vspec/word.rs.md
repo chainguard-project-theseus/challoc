@@ -20,6 +20,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: bitmap::loom_bitmap_rel
 
 > Ghost permission to the word at [`addr`](WordPerm::addr): its current [`value`](WordPerm::value).
 
+Hashes: contract 3518268196, body 1324333092.
+
 ```rust
 pub tracked struct WordPerm
 ```
@@ -30,6 +32,8 @@ src/vspec/word.rs:57. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_or, and loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency, which the models replace with loom's `fetch_or` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only); the C11 argument above that the permission's value is the word's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `w.fetch_or(v, ordering)`.
+
+Hashes: contract 1035611347, body 3207900689.
 
 ```rust
 pub fn fetch_or(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&mut WordPerm>) -> (prev: u64)
@@ -49,6 +53,8 @@ src/vspec/word.rs:75. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_store, and loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `w.store(v, ordering)`, which panics for an `Acquire` or `AcqRel` ordering.
+
+Hashes: contract 4071357672, body 3296770765.
 
 ```rust
 pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&mut WordPerm>)
@@ -70,6 +76,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::wo
 
 > `w.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
+Hashes: contract 2516375944, body 560895366.
+
 ```rust
 pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>) -> (r: u64)
     requires
@@ -88,6 +96,8 @@ src/vspec/word.rs:113. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_and, and loom: bitmap::loom_bitmap_release_then_reserve and bitmap::loom_bitmap_two_claimers; not checked: this body under concurrency, which the models replace with loom's `fetch_and` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only, so not `init`'s sub-word branch); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `w.fetch_and(v, ordering)`.
+
+Hashes: contract 1239913950, body 2893078100.
 
 ```rust
 pub fn fetch_and(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&mut WordPerm>) -> (prev: u64)

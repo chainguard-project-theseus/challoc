@@ -42,6 +42,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted: a thread that holds the frozen permissions ([`Published`], which `init` builds when it freezes them and `STATE`'s invariant holds from `READY` on, [`load_state`]) may state [`ready`].
 
+Hashes: contract 3440922866, body none.
+
 ```rust
 pub axiom fn axiom_ready(tracked p: &'static Published)
     requires
@@ -57,6 +59,8 @@ src/api/mod.rs:315. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the frozen permissions, for a thread that knows the allocator is published ([`ready`]): a `&'static` reference to the `Published` `init` froze, the only one there is.
+
+Hashes: contract 3862638696, body none.
 
 ```rust
 pub axiom fn axiom_published() -> (tracked r: &'static Published)
@@ -74,6 +78,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `LINE_STATE`: its current [`value`](LinePerm::value).
 
+Hashes: contract 1065980795, body 1324333092.
+
 ```rust
 pub tracked struct LinePerm
 ```
@@ -85,6 +91,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > Ghost permission to `STATE`: its current [`value`](StatePerm::value).
 
+Hashes: contract 3870767310, body 1324333092.
+
 ```rust
 pub tracked struct StatePerm
 ```
@@ -95,6 +103,8 @@ src/api/mod.rs:524. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > `STATE`'s invariant.
+
+Hashes: contract 764506434, body none.
 
 ```rust
 axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, StatePred>)
@@ -110,6 +120,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_ra
 
 > `STATE.load(Acquire)`: the permission's value.
 
+Hashes: contract 3749283829, body 2433046193.
+
 ```rust
 fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
     ensures
@@ -124,6 +136,8 @@ src/api/mod.rs:626. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the init steps, with the callers tests/loom/src/init.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)` when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value it has otherwise, left unchanged.
+
+Hashes: contract 85710167, body 4074283701.
 
 ```rust
 fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
@@ -141,6 +155,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_ra
 
 > `STATE`'s `READY` store, `Release`.
 
+Hashes: contract 2256376580, body 4059210318.
+
 ```rust
 fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
     ensures
@@ -155,6 +171,8 @@ src/api/mod.rs:699. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `load` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above that the permission's value is `LINE_STATE`'s last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `LINE_STATE.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
+
+Hashes: contract 2771109588, body 2110027002.
 
 ```rust
 fn line_load(ordering: Ordering, Tracked(perm): Tracked<&LinePerm>) -> (r: u8)
@@ -173,6 +191,8 @@ src/api/mod.rs:720. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `LINE_STATE.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when it held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
+
+Hashes: contract 1382960686, body 856950910.
 
 ```rust
 fn line_compare_exchange(
@@ -199,6 +219,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell
 
 > `LINE_STATE.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
+Hashes: contract 3106292439, body 2809660891.
+
 ```rust
 fn line_store(v: u8, ordering: Ordering, Tracked(perm): Tracked<&mut LinePerm>)
     requires
@@ -217,6 +239,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: api::kani_statics::shared_ptr
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
 
+Hashes: contract 1380591404, body 29835824.
+
 ```rust
 pub fn shared_ptr() -> (r: *const Shared)
     ensures
@@ -231,6 +255,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: shared_base in sr
 
 > [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
 
+Hashes: contract 534596380, body 2091081502.
+
 ```rust
 pub fn shared_base() -> (r: *const Shared)
     ensures
@@ -244,6 +270,8 @@ src/api/mod.rs:1105. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > [`feature_line_ready`] after its `shared()`, whose published permissions (`published`) have the line's invariant: build the line, or wait for the thread building it (termination is not claimed: the wait ends when the other thread's build does).
+
+Hashes: contract 3066523785, body 2868952860.
 
 ```rust
 fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'static LineCell>)
@@ -261,6 +289,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > Wait for the thread building the line: its permissions, frozen at `LINE_READY`; or `None` when the caller is a fork child's handler in the fork window (`lock::in_child_fork_window`), where that thread is not in the child and the wait would never end: the line is then reset as the child handler would ([`feature_line_fork_child`]), for the caller to build.
 
+Hashes: contract 3027503195, body 4017504348.
+
 ```rust
 fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Tracked<&'static LineCell>>)
     requires
@@ -276,6 +306,8 @@ src/api/mod.rs:1356. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time; termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
+
+Hashes: contract 1867649379, body 4001748639.
 
 ```rust
 fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
@@ -295,6 +327,8 @@ Tool: Kani. Status: discharged (Kani: api::kani_statics::shared_ptrs_agree).
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
 
+Hashes: contract 2098755632, body 507721659.
+
 ```rust
 fn shared_storage_ptr() -> (p: *mut Shared)
     ensures
@@ -308,6 +342,8 @@ src/api/mod.rs:1430. Kind: external_body. Category: UnsafeCell/volatile/transmut
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURES`].
+
+Hashes: contract 2881023278, body 531095909.
 
 ```rust
 fn features_ptr() -> (p: *mut Features)
@@ -323,6 +359,8 @@ Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURE_LINE`].
 
+Hashes: contract 2262815526, body 756715309.
+
 ```rust
 fn line_ptr() -> (p: *mut FeatureLine)
     ensures
@@ -336,6 +374,8 @@ src/api/mod.rs:1478. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, the class table ([`layout::CLASSES`]), initialised, whose entries are well formed and sized ([`layout::table_ok`]: its initial value is [`layout::BASE_CLASSES`], `ClassTable::new`), and `LINE_STATE`'s permission, at `LINE_UNBUILT`.
+
+Hashes: contract 1652217840, body none.
 
 ```rust
 axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
@@ -365,6 +405,8 @@ Tool: none (assumption). Status: trusted.
 
 > The `pthread_atfork` call itself.
 
+Hashes: contract 2058438580, body 3006741482.
+
 ```rust
 fn pthread_atfork_handlers() -> i32
 ```
@@ -375,6 +417,8 @@ src/api/mod.rs:1571. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Before init's claim: open an init under way as this thread's (`GATE_IDLE` to its `sys::pthread_self`), or go on to the claim when challoc is initialised (`GATE_DONE`), when this thread already holds the gate (a re-entrant call: the claim finds `INITIALISING` and aborts), or when a `fork` holds it and this is the forking thread; wait while another thread's init or another thread's `fork` holds it.
+
+Hashes: contract 518708444, body 1503277437.
 
 ```rust
 fn init_gate_enter()
@@ -387,6 +431,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > The prepare handler, before it looks at `STATE`: with challoc initialised (`GATE_DONE`) nothing; with an init under way on another thread, wait until it publishes, so the child gets the finished state; with this thread's own init under way (a `fork` from a signal handler that interrupted it), nothing (design 9, residuals); with none (`GATE_IDLE`), close the gate (`GATE_FORKING`) so that none starts until the parent and child handlers (`fork_gate_exit`).
 
+Hashes: contract 1749912161, body 2916045881.
+
 ```rust
 fn fork_gate_enter()
 ```
@@ -397,6 +443,8 @@ src/api/mod.rs:2062. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between (the handlers call this only when `FORK_LOCKED` says this fork's prepare took the locks: glibc serialises one fork's handlers under its atfork lock and runs them on the forking thread, so a `true` read there is this fork's; a stale `true` would mint a hold that does not exist): signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) release none: an allocation of theirs takes the held locks as acquired and its releases do nothing (`lock::fork_holder_is_me`, whose premise is that the forking thread has no allocator critical section open in the window).
+
+Hashes: contract 3296512616, body none.
 
 ```rust
 axiom fn axiom_fork_resumed_state() -> (tracked state: StateHold)
@@ -412,6 +460,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
 
+Hashes: contract 2606020099, body none.
+
 ```rust
 axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
     ensures
@@ -425,6 +475,8 @@ src/api/mod.rs:2758. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, `LINE_STATE`'s permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
+
+Hashes: contract 272733662, body none.
 
 ```rust
 axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm, tracked cell: &Option<LineCell>) -> (tracked c: LineCell)
@@ -444,6 +496,8 @@ src/api/mod.rs:2817. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address; passed any other word, it would mint a second permission to it, which is why it is private to this module.
+
+Hashes: contract 280583608, body none.
 
 ```rust
 axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &StateHold) -> (tracked held: ForkHeld)

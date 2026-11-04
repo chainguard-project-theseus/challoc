@@ -21,6 +21,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_add_exact).
 
 > `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
 
+Hashes: contract 2015407982, body 2407465907.
+
 ```rust
 pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
     ensures
@@ -33,6 +35,8 @@ src/stats.rs:556. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_mul_exact).
 
 > `a * b` for a statistics figure; see [`fig_add`].
+
+Hashes: contract 2594916814, body 2488733387.
 
 ```rust
 pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
@@ -47,6 +51,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_add64_exact).
 
 > `a + b` for a statistics counter; see [`fig_add`].
 
+Hashes: contract 2107540249, body 2407465907.
+
 ```rust
 pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
     ensures
@@ -59,6 +65,8 @@ src/stats.rs:2059. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
 > Zero the records at `p` in place: every field of an `ArenaStats` is an integer, for which zero is a value.
+
+Hashes: contract 2902974600, body 1211080738.
 
 ```rust
 fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPair>>)
@@ -78,6 +86,8 @@ Tool: none (assumption). Status: trusted.
 
 Body mints Tracked at line 2100.
 
+Hashes: contract 1387577703, body 171475313.
+
 ```rust
 fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)
     requires
@@ -92,6 +102,8 @@ src/stats.rs:2223. Kind: external_body. Category: core library.
 Tool: none (assumption). Status: trusted.
 
 > `[EMPTY; POOL_SLOTS]`, which Verus does not take for an element type that is not `Copy`.
+
+Hashes: contract 3397768555, body 1345826159.
 
 ```rust
 const fn empty_pool() -> [Slot; POOL_SLOTS]

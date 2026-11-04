@@ -17,6 +17,8 @@ Tool: none (assumption). Status: trusted.
 
 > glibc's `getauxval(3)`: some word, 0 when the key is absent.
 
+Hashes: contract 164231696, body none.
+
 ```rust
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
     ensures
@@ -32,6 +34,8 @@ src/sys/auxv.rs:71. Kind: assume_spec. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > As above, and on arm64: an `AT_HWCAP` word with `HWCAP_PACA` and `HWCAP_PACG` set means the process may execute the data-key A instructions ([`crate::sys::pac::pac_available`]).
+
+Hashes: contract 710834691, body none.
 
 ```rust
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)

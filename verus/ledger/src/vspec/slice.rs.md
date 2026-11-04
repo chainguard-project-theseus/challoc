@@ -34,6 +34,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::slice_fro
 
 > `core::slice::from_raw_parts`, with the safety contract of the `core` documentation that can be stated here: `data` is not null, aligned, and valid for reads of the slice's `len * size_of::<T>()` bytes, at most `isize::MAX`.
 
+Hashes: contract 1605428040, body none.
+
 ```rust
 pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *const T, len: usize) -> (r: &'a [T])
     requires
@@ -53,6 +55,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::array_get_unchecked).
 
 > `a.get_unchecked(i)` on an array, for the fast paths: vstd's array-to-slice coercion (`vstd::array::array_as_slice`) declares Verus's default invariant mask, `any`, which a function that opens none cannot call.
 
+Hashes: contract 754151473, body 3866839271.
+
 ```rust
 pub unsafe fn array_get_unchecked<T, const N: usize>(a: &[T; N], i: usize) -> (r: &T)
     requires
@@ -69,6 +73,8 @@ src/vspec/slice.rs:73. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: vspec::slice::kani_perms::slice_from_perms_elems; not checked: elements outside one allocation, the `# Safety` premise the `requires` does not state and the harness, on one array, assumes; that no permission holder writes the elements while the slice lives; element types other than `u64`, a padded pair and `AtomicU64`, and more than 5 elements).
 
 > `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose permissions `perms` holds from key `j0` on, element `i`'s at key `j0 + i`, at `p`, `p + size_of::<T>()`, ...
+
+Hashes: contract 475554734, body 4015970110.
 
 ```rust
 pub unsafe fn slice_from_perms<T>(
@@ -103,6 +109,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_swap).
 
 > `s.swap(a, b)`: panics unless both indices are in bounds.
 
+Hashes: contract 406721141, body none.
+
 ```rust
 pub assume_specification<T>[ <[T]>::swap ](s: &mut [T], a: usize, b: usize)
     requires
@@ -120,6 +128,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_from_ref).
 
 > A one-element slice of `*s`.
 
+Hashes: contract 2701217384, body none.
+
 ```rust
 pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
     ensures
@@ -134,6 +144,8 @@ Tool: Kani. Status: trusted.
 
 > `core::array::IntoIter`, the iterator `for x in [a, b]` walks.
 
+Hashes: contract 1952044650, body none.
+
 ```rust
 pub struct ExArrayIntoIter<T, const N: usize>(core::array::IntoIter<T, N>);
 ```
@@ -144,6 +156,8 @@ src/vspec/slice.rs:131. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::slice::array_into_iter).
 
 > The iterator starts with every element of the array, in order.
+
+Hashes: contract 4284393070, body none.
 
 ```rust
 pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator>::into_iter ](a: [T; N]) -> (r: <[
@@ -161,6 +175,8 @@ src/vspec/slice.rs:141. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::slice::array_into_iter).
 
 > `next` hands out the front element, or `None` once every element has been handed out.
+
+Hashes: contract 3944802746, body none.
 
 ```rust
 pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as core::iter::Iterator>::next ](i: &mut core::array::IntoIter<T, N>) -> (r: Option<
@@ -180,6 +196,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::sort_ptrs
 
 > `s.sort_unstable()` on a slice of raw pointers: permutes `s`.
 
+Hashes: contract 856773546, body 4191889696.
+
 ```rust
 pub fn sort_ptrs(s: &mut [*mut u8])
     ensures
@@ -194,6 +212,8 @@ src/vspec/slice.rs:175. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_iter_mut).
 
 > `for e in s` over a mutable slice: `s.iter_mut()`, whose `vstd` specification this repeats (the loop hands out each element once, and each one's final value flows back into `s`).
+
+Hashes: contract 377655020, body none.
 
 ```rust
 pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into_iter ](s: &'a mut [T]) -> (iter: core::slice::IterMut<'a, T>)
@@ -218,6 +238,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_is_sorted).
 
 > `s.is_sorted()`.
 
+Hashes: contract 205767834, body none.
+
 ```rust
 pub assume_specification<T: PartialOrd>[ <[T]>::is_sorted ](s: &[T]) -> bool;
 ```
@@ -228,6 +250,8 @@ src/vspec/slice.rs:197. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_is_sorted_by_key).
 
 > `s.is_sorted_by_key(f)`.
+
+Hashes: contract 911796177, body none.
 
 ```rust
 pub assume_specification<'a, T, F: FnMut(&'a T) -> K, K: PartialOrd>[ <[T]>::is_sorted_by_key::<'a, F, K> ](s: &'a [T], f: F) -> bool
@@ -242,6 +266,8 @@ src/vspec/slice.rs:216. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::select_ptrs_short, kani_proofs::slice::select_ptrs_10, kani_proofs::slice::select_ptrs_11, kani_proofs::slice::select_ptrs_12; not checked: every length above 12: at the last or first index `core`'s `select_nth_unstable` swaps the largest or smallest entry into place at every length, and at any other index it sorts by insertion up to 16 elements and runs a quickselect past that, and the flush selects on up to a cache's 1024 slots).
 
 > `s.select_nth_unstable(index)` on a slice of raw pointers, its returned parts dropped: permutes `s`.
+
+Hashes: contract 4181325796, body 2202159842.
 
 ```rust
 pub fn select_ptrs(s: &mut [*mut u8], index: usize)
@@ -259,6 +285,8 @@ src/vspec/slice.rs:236. Kind: external_body. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::select_ptrs_by_key_short, kani_proofs::slice::select_ptrs_by_key_10, kani_proofs::slice::select_ptrs_by_key_11, kani_proofs::slice::select_ptrs_by_key_12; not checked: every length above 12, as for `select_ptrs`, and every key but `L - addr`).
 
 > `s.select_nth_unstable_by_key(index, f)` on a slice of raw pointers with a `usize` key, its returned parts dropped: permutes `s`.
+
+Hashes: contract 1032199818, body 1229464848.
 
 ```rust
 pub fn select_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], index: usize, f: F)
@@ -278,6 +306,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::sort_ptrs
 
 > `s.sort_unstable_by_key(f)` on a slice of raw pointers with a `usize` key: permutes `s`.
 
+Hashes: contract 817276013, body 782986871.
+
 ```rust
 pub fn sort_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], f: F)
     requires
@@ -295,6 +325,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_get_unchecked_mu
 
 > `get_unchecked_mut` is `index_mut` without the bounds check: its safety contract is that the index is in bounds, so it has `index_mut`'s precondition.
 
+Hashes: contract 1623500229, body none.
+
 ```rust
 pub assume_specification<T, I>[ <[T]>::get_unchecked_mut::<I> ](slice: &mut [T], i: I) -> (b: &mut <I as core::slice::SliceIndex<[T]>>::Output)
     where I: core::slice::SliceIndex<[T]>
@@ -309,6 +341,8 @@ src/vspec/slice.rs:315. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: vspec::slice::kani_perms::slice_mut_elems_writes_through; not checked: elements outside one allocation, a zero-sized `T` or bytes not initialised, the premises the `requires` does not state and the harness, on one initialised array, assumes; that the elements are reached only through the slice while it lives; element types other than `u64` and `*mut u8`, and more than 5 elements).
 
 > `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `elems` holds keyed by their pointers, element `i`'s at `base.add(i)`, and no other permission: the slice of those elements, for as long as `elems` stays borrowed.
+
+Hashes: contract 1159167311, body 1608609135.
 
 ```rust
 pub unsafe fn slice_mut_elems<'a, T>(
@@ -346,6 +380,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::slice_swa
 
 > `a.swap_with_slice(b)`: panics unless the lengths are equal.
 
+Hashes: contract 1022712554, body none.
+
 ```rust
 pub assume_specification<T>[ <[T]>::swap_with_slice ](a: &mut [T], b: &mut [T])
     requires
@@ -362,6 +398,8 @@ src/vspec/slice.rs:416. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::slice_rotate_left, kani_proofs::slice::slice_rotate_left_swap; not checked: the verified instance's element type, a cache stack's `*mut u8` (the harnesses rotate `u64`s), the block-swap path at lengths other than 66 and 67, and the buffer path past 6 words, while a cache stack is longer).
 
 > `s.rotate_left(mid)`: panics unless `mid <= s.len()`.
+
+Hashes: contract 2862124004, body none.
 
 ```rust
 pub assume_specification<T>[ <[T]>::rotate_left ](s: &mut [T], mid: usize)

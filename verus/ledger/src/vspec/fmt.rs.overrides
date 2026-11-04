@@ -1,5 +1,5 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (Kani: kani_proofs::misc::formatter_write_str)
-core::fmt::Formatter::<'a>::write_fmt	core library	Kani	discharged (Kani: kani_proofs::misc::formatter_write_fmt)
-DisplaySpecImpl for sys::Errno	core library	Kani	discharged (Kani: kani_proofs::fmt::display_errno)
-DebugSpecImpl for slab::State	core library	Kani	discharged (Kani: kani_proofs::fmt::debug_slab_state)
+core::fmt::Formatter::<'a>::write_str	core library	Kani	discharged (Kani: kani_proofs::misc::formatter_write_str)	contract 4077382676, body none
+core::fmt::Formatter::<'a>::write_fmt	core library	Kani	discharged (Kani: kani_proofs::misc::formatter_write_fmt)	contract 193430641, body none
+DisplaySpecImpl for sys::Errno	core library	Kani	discharged (Kani: kani_proofs::fmt::display_errno)	contract 710474546, body none
+DebugSpecImpl for slab::State	core library	Kani	discharged (Kani: kani_proofs::fmt::debug_slab_state)	contract 1173636884, body none

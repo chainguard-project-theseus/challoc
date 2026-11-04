@@ -24,6 +24,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > Termination is not claimed: the wait ends when another thread releases the lock.
 
+Hashes: contract 2760686836, body 2399024101.
+
 ```rust
 fn lock_slow(&self)
     requires
@@ -36,6 +38,8 @@ src/lock.rs:508. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (an entry point): the calling thread holds no allocator lock.
+
+Hashes: contract 3943126267, body none.
 
 ```rust
 pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
@@ -52,6 +56,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the fork prepare handler's entry): the calling thread holds no allocator lock, as for [`axiom_entry`], and keeps this token for the whole handler, which takes every lock with [`RawLock::lock_held`] and releases none of them before it returns: a root.
 
+Hashes: contract 4177873813, body none.
+
 ```rust
 pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
@@ -67,6 +73,8 @@ Tool: none (assumption). Status: trusted.
 
 > Whether the caller is the forking thread in the child of a `fork`, inside the window: a child handler registered before challoc's, which runs before challoc's own resets the work other parent threads had under way (the feature line's build, the cgroup discovery).
 
+Hashes: contract 3533832777, body 3112863921.
+
 ```rust
 pub(crate) fn in_child_fork_window() -> (r: bool)
     requires
@@ -81,6 +89,8 @@ src/lock.rs:747. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The lock invariant's assumption where it enters, at an acquisition: a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
+
+Hashes: contract 3374465368, body none.
 
 ```rust
 axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
@@ -98,6 +108,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: lock::kani_lock::value_ptr_is
 
 > The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
 
+Hashes: contract 3118686952, body 2553620183.
+
 ```rust
 pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
 ```
@@ -110,6 +122,8 @@ Tool: Verus. Status: trusted.
 > [`PCell::borrow`] with the permission `t`.
 
 Body mints Tracked at line 1121.
+
+Hashes: contract 1530591252, body 1034020046.
 
 ```rust
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -130,6 +144,8 @@ Tool: Verus. Status: trusted.
 
 Body mints Tracked at line 1138.
 
+Hashes: contract 2313273051, body 2927460227.
+
 ```rust
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
     requires
@@ -146,6 +162,8 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
 
 src/lock.rs:1148. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return).
+
+Hashes: contract 3065263068, body 2348458592.
 
 ```rust
 fn drop(&mut self)

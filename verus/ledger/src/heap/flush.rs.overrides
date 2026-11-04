@@ -1,2 +1,2 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-addr_mix	raw pointer (internal)	Kani	discharged (Kani: heap::flush::kani_flush::addr_mix_returns)
+addr_mix	raw pointer (internal)	Kani	discharged (Kani: heap::flush::kani_flush::addr_mix_returns)	contract 949350679, body 1848345580

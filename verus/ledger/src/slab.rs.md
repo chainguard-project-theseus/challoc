@@ -22,6 +22,8 @@ Tool: Kani. Status: discharged (Kani: slab::kani_desc_stride::desc_stride_reads_
 
 > Descriptor stride for `class` in bytes.
 
+Hashes: contract 921200764, body 3955666860.
+
 ```rust
 pub fn desc_stride(class: usize) -> (r: usize)
     requires
@@ -37,6 +39,8 @@ src/slab.rs:347. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > Initialise the descriptor of a slab handed to `arena`: `Fresh`, no live slots, through `p`, the descriptor's permission (ghost).
+
+Hashes: contract 204434904, body 42649987.
 
 ```rust
 pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
@@ -56,6 +60,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > The `state` byte, as [`state_held`](SlabDesc::state_held): the state the permission under `k` records when that is this descriptor's.
 
+Hashes: contract 3651557864, body 3849804937.
+
 ```rust
 fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u8)
     ensures
@@ -69,6 +75,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > [`dirty_at`](SlabDesc::dirty_at) read by a holder of `m`, as [`state_held`](SlabDesc::state_held): the stamp the permission under `k` records when that is this descriptor's.
 
+Hashes: contract 2362101036, body 3847503768.
+
 ```rust
 pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u64)
     ensures
@@ -81,6 +89,8 @@ src/slab.rs:427. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > Only ever called with the class lock held, which holds `p`, the descriptor's permission (ghost), which records the new state.
+
+Hashes: contract 3999907322, body 587933448.
 
 ```rust
 pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
@@ -100,6 +110,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > [`arena`](SlabDesc::arena) read by a holder of `m`, the permissions a class lock value holds: the arena the permission under `k` records when that is this descriptor's.
 
+Hashes: contract 1354875024, body 68663393.
+
 ```rust
 pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u16)
     ensures
@@ -112,6 +124,8 @@ src/slab.rs:525. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).
+
+Hashes: contract 390545731, body 4271175392.
 
 ```rust
 pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)

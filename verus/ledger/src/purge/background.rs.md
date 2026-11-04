@@ -20,6 +20,8 @@ Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
 
+Hashes: contract 2838171325, body 3975953447.
+
 ```rust
 unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell>) -> i32
     requires
@@ -37,6 +39,8 @@ Tool: none (assumption). Status: trusted.
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
 
 Body mints Tracked at line 697; mints Tracked at line 705.
+
+Hashes: contract 1600496607, body 1049282638.
 
 ```rust
 fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
@@ -56,6 +60,8 @@ Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
 
+Hashes: contract 721657616, body 3356801781.
+
 ```rust
 fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
     ensures
@@ -69,6 +75,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: exit::loom_exit_after_w
 
 > The thread's body: decay and sample until the request is withdrawn.
 
+Hashes: contract 165770519, body 2141906423.
+
 ```rust
 extern "C" fn main(arg: *mut c_void) -> *mut c_void
 ```
@@ -79,6 +87,8 @@ src/purge/background.rs:884. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_static`] is [`STATE`].
+
+Hashes: contract 53631359, body none.
 
 ```rust
 axiom fn axiom_state_lock(l: Lock<State>)

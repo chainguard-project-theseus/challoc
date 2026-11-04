@@ -18,6 +18,8 @@ file.
 src/vspec/fmt.rs:12. Kind: ext_trait_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
+Hashes: contract 2510665584, body none.
+
 ```rust
 pub trait ExWrite {
     type ExternalTraitSpecificationFor: core::fmt::Write;
@@ -37,6 +39,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::formatter_write_str).
 
 > `Formatter::write_str`: nothing is claimed about what it writes or returns.
 
+Hashes: contract 4077382676, body none.
+
 ```rust
 pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_str ](f: &mut core::fmt::Formatter<'a>, data: &str) -> core::fmt::Result;
 ```
@@ -48,6 +52,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::formatter_write_fmt).
 
 > `Formatter::write_fmt`: as for `write_str`.
 
+Hashes: contract 193430641, body none.
+
 ```rust
 pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_fmt ](f: &mut core::fmt::Formatter<'a>, args: core::fmt::Arguments<'_>) -> core::fmt::Result;
 ```
@@ -56,6 +62,8 @@ pub assume_specification<'a>[ core::fmt::Formatter::<'a>::write_fmt ](f: &mut co
 
 src/vspec/fmt.rs:40. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::fmt::display_errno).
+
+Hashes: contract 710474546, body none.
 
 ```rust
 impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::Errno {
@@ -69,6 +77,8 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::Errno {
 
 src/vspec/fmt.rs:56. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::fmt::debug_slab_state).
+
+Hashes: contract 1173636884, body none.
 
 ```rust
 impl vstd::std_specs::fmt::DebugSpecImpl for crate::slab::State {

@@ -5,6 +5,6 @@ TlsSlot::entry	allocator invariant	none (assumption)
 # memory each reads or writes and the registers it writes against the
 # contract verus/isla/seams.md quotes; what the slot holds rests on P8
 # there and the slot premise above.
-get	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise)
-get_tp	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset), the TLS slot premise and TlsCell::tp (TPIDR_EL0 is the cell's tp))
-set	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise)
+get	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise)	contract 584579997, body 90234313
+get_tp	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset), the TLS slot premise and TlsCell::tp (TPIDR_EL0 is the cell's tp))	contract 900674773, body 3050843110
+set	inline asm	Islaris/Isla	trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise)	contract 2478902706, body 3452213169

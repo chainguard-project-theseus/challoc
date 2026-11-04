@@ -26,6 +26,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the calling thread's mask): the token stands for the signal mask of the thread that calls this.
 
+Hashes: contract 2374419075, body none.
+
 ```rust
 pub(crate) axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
     ensures
@@ -39,6 +41,8 @@ src/sys/mod.rs:810. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`getrandom(2)`, Linux's `drivers/char/random.c`): a `getrandom` that does not fail returns the number of bytes it stored, at most `buflen`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
+
+Hashes: contract 446341345, body none.
 
 ```rust
 pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: usize, r: usize)
@@ -56,6 +60,8 @@ Tool: none (assumption). Status: trusted.
 
 > Fill `buf` completely from `getrandom`, retrying short reads and `EINTR`.
 
+Hashes: contract 68011817, body 1100405515.
+
 ```rust
 pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
     requires
@@ -68,6 +74,8 @@ src/sys/mod.rs:1018. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`read(2)`, Linux's `fs/read_write.c`): a `read` that does not fail returns the number of bytes it stored, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result or a driver returns more than it was asked for (the VFS does not clamp it), all assumed absent.
+
+Hashes: contract 3468075040, body none.
 
 ```rust
 pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: usize)
@@ -85,6 +93,8 @@ Tool: none (assumption). Status: trusted.
 
 > Read as much of `buf` as the file yields, retrying `EINTR`.
 
+Hashes: contract 1624340068, body 3252371030.
+
 ```rust
 pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
     requires
@@ -100,6 +110,8 @@ src/sys/mod.rs:1101. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`write(2)`, Linux's `fs/read_write.c`): a `write` that does not fail returns the number of bytes it took, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
+
+Hashes: contract 1302063086, body none.
 
 ```rust
 pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r: usize)
@@ -117,6 +129,8 @@ Tool: none (assumption). Status: trusted.
 
 > Write all of `buf`, retrying short writes and `EINTR`.
 
+Hashes: contract 974240898, body 1598817750.
+
 ```rust
 pub fn write_all(fd: i32, buf: &[u8])
     requires
@@ -130,6 +144,8 @@ Tool: none (assumption). Status: trusted.
 
 > The calling thread's `pthread_self`: the forking thread keeps it in the child of a `fork`, where its kernel thread ID (`gettid`) is new.
 
+Hashes: contract 1280841326, body 598176152.
+
 ```rust
 pub fn pthread_self() -> usize
 ```
@@ -140,6 +156,8 @@ src/sys/mod.rs:1479. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the syscall's word.
+
+Hashes: contract 43088889, body 291760688.
 
 ```rust
 unsafe fn sigprocmask_block(
@@ -162,6 +180,8 @@ Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the syscall's word.
 
+Hashes: contract 1589051214, body 3169880791.
+
 ```rust
 unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -> (r: usize)
     requires
@@ -176,6 +196,8 @@ src/sys/mod.rs:1560. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past the trap)).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
+
+Hashes: contract 1016438138, body 2141251898.
 
 ```rust
 pub fn trap() -> !

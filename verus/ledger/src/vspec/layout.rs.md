@@ -19,6 +19,8 @@ file.
 src/vspec/layout.rs:14. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
+Hashes: contract 1438845126, body none.
+
 ```rust
 pub struct ExLayout(Layout);
 ```
@@ -28,6 +30,8 @@ pub struct ExLayout(Layout);
 src/vspec/layout.rs:18. Kind: ext_type_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
+Hashes: contract 2393945422, body none.
+
 ```rust
 pub struct ExLayoutError(core::alloc::LayoutError);
 ```
@@ -36,6 +40,8 @@ pub struct ExLayoutError(core::alloc::LayoutError);
 
 src/vspec/layout.rs:30. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances).
+
+Hashes: contract 1718855412, body none.
 
 ```rust
 pub assume_specification[ Layout::size ](l: &Layout) -> (r: usize)
@@ -49,6 +55,8 @@ pub assume_specification[ Layout::size ](l: &Layout) -> (r: usize)
 
 src/vspec/layout.rs:36. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances).
+
+Hashes: contract 2111602691, body none.
 
 ```rust
 pub assume_specification[ Layout::align ](l: &Layout) -> (r: usize)
@@ -64,6 +72,8 @@ src/vspec/layout.rs:44. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align).
 
 > `Ok` exactly when `align` is a power of two and `size` rounded up to it does not exceed `isize::MAX`.
+
+Hashes: contract 3475049326, body none.
 
 ```rust
 pub assume_specification[ Layout::from_size_align ](size: usize, align: usize) -> (r: Result<
@@ -82,6 +92,8 @@ src/vspec/layout.rs:54. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_new_instances).
 
 > `Layout::new::<T>()`: the size and alignment of `T`.
+
+Hashes: contract 1798870285, body none.
 
 ```rust
 pub assume_specification<T>[ Layout::new::<T> ]() -> (r: Layout)

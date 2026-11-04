@@ -35,7 +35,15 @@ Each entry gives the place, the kind, the contract Verus assumes (copied
 verbatim from the source: the signature with its `requires` and
 `ensures`), a category (why Verus cannot check it), a proposed tool and a
 status. An entry is named by its item, with `#N` for the Nth of several
-seams that share a name in one file.
+seams that share a name in one file. Its hashes, `contract C, body B`,
+are the POSIX `cksum` CRCs of its contract (the item's attributes and
+its signature with its clauses) and of its body (`body none` for an item
+without one), with `//` comments dropped and each run of whitespace made
+one space, string literals included, so moving, reindenting or
+recommenting the item keeps them. Splitting a line where there was no
+space (a signature reflowed one parameter per line) changes them, and a
+`/* */` comment counts as code. A method's hashes do not cover its
+`impl` line (the impl's generics and `where` bounds).
 
 ## Categories and tools
 
@@ -53,7 +61,7 @@ itself, once its producer states it or a lemma derives it) and none
 `seams.sh` picks a category from the kind, the path and the body. The
 seams of `src/a/b.rs` may have an overrides file,
 `verus/ledger/src/a/b.rs.overrides`, with one
-`name<TAB>category<TAB>tool[<TAB>status]` line per seam it corrects
+`name<TAB>category<TAB>tool[<TAB>status[<TAB>hashes]]` line per seam it corrects
 (`#` starts a comment; `name` as the ledger file prints it). Category and
 tool are spelled as above. A line that matches no seam is an error, and
 so is a seam with no category.
@@ -63,6 +71,24 @@ so is a seam with no category.
 The tool is a proposal. A seam's status stays "trusted" until the
 fourth column of its overrides line names another status, citing the
 other tool's result.
+
+A status that cites a check (discharged, discharged on premises, or
+trusted (partly checked, ...)) also records, in a fifth column, the
+hashes of the item the check covered, as its ledger entry shows them:
+`contract C, body B`. `seams.sh --check` fails when they differ from
+the item's, so an edit to a checked seam's attributes, signature,
+`requires`, `ensures` or body fails the check, even after `--write`, until the
+status is revisited and the hashes copied again from the ledger entry
+(the failure also prints them). It also fails on such a status with no
+hashes, and on hashes after any other status, including `trusted
+(requires, checked at every caller: ...)`, whose body no check runs.
+The hashes cover the seam's own item, not the code it calls or the
+harness or model it cites. `sh verus/seams-mutants.sh` checks that
+`--check`'s self-tests catch weakened forms of this rule, and that, in a
+copy of the tree, an edit to a discharged seam's attribute, `requires`,
+`ensures` or body fails
+`--check` after `--write` while a comment, a reindent or a line shift
+does not.
 
 A seam is "discharged" when a check outside Verus covers its whole
 contract: under every input its `requires` admits, the call is defined

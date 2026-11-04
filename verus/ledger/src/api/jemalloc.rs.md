@@ -17,6 +17,8 @@ file.
 src/api/jemalloc.rs:121. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
+Hashes: contract 346261534, body none.
+
 ```rust
 pub struct ExHook(Hook);
 ```
@@ -28,6 +30,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: api::jemalloc::kani_hook::mes
 
 > The installed hook, if any: `malloc_message`, else `je_malloc_message`.
 
+Hashes: contract 3679688309, body 4059375492.
+
 ```rust
 pub fn message_hook() -> Option<Hook>
 ```
@@ -38,6 +42,8 @@ src/api/jemalloc.rs:145. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc calls it, on the C string in `buf`, which holds a NUL.
+
+Hashes: contract 4272715841, body 924183077.
 
 ```rust
 fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
@@ -53,6 +59,8 @@ src/api/jemalloc.rs:1188. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
+
+Hashes: contract 3969130002, body none.
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

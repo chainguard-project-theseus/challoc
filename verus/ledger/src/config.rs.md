@@ -31,6 +31,8 @@ Tool: Kani. Status: discharged (const assert: `THP_NAMES` in src/config.rs).
 
 > The names [`Thp::name`] gives, in variant order.
 
+Hashes: contract 2041706674, body none.
+
 ```rust
 const THP_NAMES: [&'static CStr; 3] = [c"never", c"auto", c"always"];
 ```
@@ -42,6 +44,8 @@ Tool: Kani. Status: discharged (const assert: `PERCPU_ARENA_NAMES` in src/config
 
 > The names [`PercpuArena::name`] gives, in variant order, as [`THP_NAMES`].
 
+Hashes: contract 2651964696, body none.
+
 ```rust
 const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu"];
 ```
@@ -52,6 +56,8 @@ src/config.rs:399. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged (Kani: config::kani_config::set_listed_contract).
 
 > The [`TABLE`] entry's parser for `key`, `None` when no entry is named `key`.
+
+Hashes: contract 1746912615, body 2364960765.
 
 ```rust
 fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Result<(), Issue<'a>>>)
@@ -68,6 +74,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: config::kani_config::get_cont
 
 > The value of a key by name, for `mallctl("opt.<key>")`: the [`TABLE`] entry's reader.
 
+Hashes: contract 2444094337, body 4260931877.
+
 ```rust
 pub fn get(&self, key: &[u8]) -> Option<Value>
 ```
@@ -77,6 +85,8 @@ pub fn get(&self, key: &[u8]) -> Option<Value>
 src/config.rs:562. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
 
+Hashes: contract 451832648, body none.
+
 ```rust
 struct ExParse(Parse);
 ```
@@ -85,6 +95,8 @@ struct ExParse(Parse);
 
 src/config.rs:568. Kind: ext_type_spec. Category: function pointer.
 Tool: Kani. Status: trusted.
+
+Hashes: contract 3732856044, body none.
 
 ```rust
 struct ExRead(Read);
@@ -97,6 +109,8 @@ Tool: Kani. Status: trusted.
 
 > [`ENTRIES`], the tunables.
 
+Hashes: contract 161098296, body none.
+
 ```rust
 pub exec const TABLE: &'static [Key] = ENTRIES;
 ```
@@ -107,6 +121,8 @@ src/config.rs:890. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: discharged (Kani: config::kani_config::keys_are_the_table_names).
 
 > Every key readable through [`Config::get`], in table order, for the `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at compile time, by position) and the tests: the names of [`TABLE`].
+
+Hashes: contract 208287259, body none.
 
 ```rust
 pub exec const KEYS: &'static [&'static str] = &NAMES;
@@ -119,6 +135,8 @@ Tool: RefinedRust. Status: trusted.
 
 > The buffer [`load`] reads `/etc/challoc.conf` into: a static, so init's frame does not carry 4 KiB of it (design 13.8: init's frame is capped, though challoc initialises before `main`, so init does not normally run on a program's small thread).
 
+Hashes: contract 2174549885, body 3431169048.
+
 ```rust
 fn conf_buffer() -> (r: &'static mut [u8; MAX_TEXT + 1])
 ```
@@ -129,6 +147,8 @@ src/config.rs:1778. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `const char *` at `slot` (a symbol, or an `environ` entry).
+
+Hashes: contract 648944960, body 3867502835.
 
 ```rust
 unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
@@ -141,6 +161,8 @@ Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
 
+Hashes: contract 235445132, body 2594729634.
+
 ```rust
 fn malloc_conf_addr() -> *const c_void
 ```
@@ -151,6 +173,8 @@ src/config.rs:1816. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
+
+Hashes: contract 3550187510, body 2728554437.
 
 ```rust
 fn je_malloc_conf_addr() -> *const c_void
@@ -163,6 +187,8 @@ Tool: none (assumption). Status: trusted.
 
 > The byte at `p + n`.
 
+Hashes: contract 1666289894, body 3122419301.
+
 ```rust
 unsafe fn byte_at(p: *const u8, n: usize) -> u8
 ```
@@ -173,6 +199,8 @@ src/config.rs:1889. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
+
+Hashes: contract 3209775459, body 4015970110.
 
 ```rust
 unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
@@ -187,6 +215,8 @@ Tool: none (assumption). Status: trusted.
 
 > glibc's `environ`, null before libc has set it up.
 
+Hashes: contract 1363833998, body 613346698.
+
 ```rust
 fn environ_array() -> *const *const c_char
 ```
@@ -197,6 +227,8 @@ src/config.rs:1924. Kind: no_decreases. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.
+
+Hashes: contract 3768520112, body 1492388976.
 
 ```rust
 pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)

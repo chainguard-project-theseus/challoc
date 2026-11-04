@@ -1,5 +1,5 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-core::sync::atomic::Atomic::<*mut T>::load	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)
-core::sync::atomic::Atomic::<*mut T>::store	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)
-core::sync::atomic::Atomic::<*mut T>::new	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)
-core::sync::atomic::Atomic::<*mut T>::swap	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)
+core::sync::atomic::Atomic::<*mut T>::load	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)	contract 3858011528, body none
+core::sync::atomic::Atomic::<*mut T>::store	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)	contract 2216000472, body none
+core::sync::atomic::Atomic::<*mut T>::new	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)	contract 1246102949, body none
+core::sync::atomic::Atomic::<*mut T>::swap	core library	Kani	discharged (Kani: kani_proofs::atomic::atomic_ptr)	contract 511827329, body none

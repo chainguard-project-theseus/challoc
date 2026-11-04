@@ -1,3 +1,3 @@
 # The explicit purge's guard: Verus wants a destructor that opens no
 # invariant and cannot unwind; the body is one atomic subtract.
-Explicit::drop	atomics primitive	Kani	discharged (Kani: purge::kani_explicit::explicit_drop_returns)
+Explicit::drop	atomics primitive	Kani	discharged (Kani: purge::kani_explicit::explicit_drop_returns)	contract 1849994264, body 2402818886

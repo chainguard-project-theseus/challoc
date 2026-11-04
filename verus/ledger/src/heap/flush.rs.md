@@ -16,6 +16,8 @@ Tool: Kani. Status: discharged (Kani: heap::flush::kani_flush::addr_mix_returns)
 
 > `rng`'s mix of the heap's address into its seed: the address of `h`, rotated left by 17 bits.
 
+Hashes: contract 949350679, body 1848345580.
+
 ```rust
 fn addr_mix(h: &Heap) -> u64
 ```
