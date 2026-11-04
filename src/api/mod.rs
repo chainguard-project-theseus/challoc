@@ -3125,6 +3125,19 @@ mod tests {
             &["heap/tcaches.rs:create", "heap/tcaches.rs:destroy"],
         ),
         (
+            "huge/mod.rs:Huge.inner",
+            &[
+                "huge/mod.rs:alloc_aligned",
+                "huge/mod.rs:free_run",
+                "huge/mod.rs:usable_size",
+                "huge/mod.rs:lookup",
+                "huge/mod.rs:purge_empty",
+                "huge/mod.rs:purge_curve",
+                "huge/mod.rs:empty_bytes",
+                "huge/mod.rs:stats",
+            ],
+        ),
+        (
             "meta.rs:Meta.inner",
             &[
                 "meta.rs:alloc",

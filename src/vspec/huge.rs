@@ -10,20 +10,20 @@ verus! {
 /// as: the real state always has a ghost witness (the descriptor
 /// permissions and their blocks' claims, the list of live descriptors,
 /// the `Empty` list's order, and the run authorities whose sets are the
-/// `Active` extents and their pages) that makes `wf` true. Verus does not
-/// check what a holder does before it drops a guard; each verified holder
-/// ends with the value satisfying `wf` or only reads.
+/// `Active` extents and their pages) that makes `wf` true. Each holder
+/// outside the tests (`Huge::alloc_aligned`, `free_run`, `usable_size`,
+/// `lookup`, `purge_empty`, `purge_curve`, `empty_bytes` and `stats`)
+/// ends with `LockGuard::unlock`, which requires `wf` (this axiom) and
+/// the frame ([`axiom_huge_lock_frame`]), on every path to a return
+/// (`api::tests::guards_end_in_unlock`); a guard dropped without it
+/// would release unchecked. A panic aborts (`panic = "abort"`) outside
+/// the tests, so it never releases.
 ///
-/// The writers of the locked value: `Huge::new` builds it (verified:
-/// `Lock::new` requires `wf`); `lookup`, `usable_size`, `empty_bytes` and
-/// `stats` are verified and only read. `alloc_run` (through
-/// `alloc_aligned`), `free_run`, `purge_empty` and the decay walk
-/// (`purge_curve`) are verified and write it, though nothing checks that
-/// they restore `wf` at the guard's drop; the test-only `oldest_dirty_at`
-/// and `audit` only read. The fork handlers take
-/// and release the raw lock without touching the value, and nothing calls
-/// `get_unlocked` on it. What is left is the claim that the lock protects
-/// `wf`.
+/// `Huge::new` builds the value (`Lock::new` requires `wf`). The
+/// test-only `oldest_dirty_at` and `audit` only read. The fork handlers
+/// take and release the raw lock without touching the value, and nothing
+/// calls `get_unlocked` on it. What is left is the claim that the lock
+/// protects `wf`.
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
@@ -35,9 +35,8 @@ pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
 /// Assumption: what every value the huge lock holds keeps from the one
 /// `Huge::new` created it with is exactly the ghost page count, page
 /// shift and `Meta` identity. They are ghost fields set only in
-/// `Huge::new`. The verified writers assert it of the value they leave
-/// (`alloc_aligned` on its paths after the first write, `purge_empty`,
-/// `purge_curve`, `free_run`).
+/// `Huge::new`. Each holder outside the tests checks it at its
+/// `LockGuard::unlock`, as for [`axiom_huge_lock_inv`].
 pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: crate::huge::Inner)
     ensures
         #[trigger] crate::lock::assumed_frame(a, b) == (a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg() && a.spec_mid() == b.spec_mid()),
