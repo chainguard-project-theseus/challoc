@@ -7,14 +7,14 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `NO_ARRAYS` | external_body const | core library | none (assumption) | trusted |
+| `NO_ARRAYS` | external_body const | core library | Kani | discharged |
 | `axiom_slot_byte` | axiom | allocator invariant | none (assumption) | trusted |
 | `byte_at` | external_body | raw pointer (internal) | RefinedRust | trusted |
 
 ## `NO_ARRAYS`
 
 src/heap/slotstate.rs:102. Kind: external_body const. Category: core library.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged (Kani: heap::slotstate::kani_arrays::no_arrays_are_zero).
 
 > [`ARRAYS`]'s initial value: every entry unclaimed, all zero.
 

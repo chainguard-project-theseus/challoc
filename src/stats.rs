@@ -2378,6 +2378,26 @@ mod pool {
     }
 
     } // verus!
+
+    /// The Kani harness of [`empty_pool`], next to the private type.
+    #[cfg(kani)]
+    mod kani_pool {
+        use super::{FREE, POOL_SLOTS, empty_pool};
+        use core::sync::atomic::Ordering::Relaxed;
+
+        /// `empty_pool`: no `ensures`; the call returns, and (beyond the
+        /// contract, which claims nothing) every slot is `EMPTY`: no
+        /// record, owner 0, mark `FREE`.
+        #[kani::proof]
+        fn empty_pool_is_empty() {
+            let pool = empty_pool();
+            let i: usize = kani::any();
+            kani::assume(i < POOL_SLOTS);
+            assert!(pool[i].rec.load(Relaxed).is_null());
+            assert_eq!(pool[i].owner.load(Relaxed), 0);
+            assert_eq!(pool[i].mark.load(Relaxed), FREE);
+        }
+    }
 }
 
 verus! {
@@ -2460,6 +2480,45 @@ proof fn lemma_arena_stats_frame_reflexive(v: ArenaStats)
 }
 
 } // verus!
+
+/// The Kani harness of [`zero_records`], next to the private item.
+#[cfg(kani)]
+mod kani_records {
+    use super::{StatsPair, zero_records};
+    use crate::layout::NCLASSES;
+    use core::mem::{MaybeUninit, size_of};
+    use vstd::prelude::Tracked;
+
+    /// `zero_records`, `requires old(perm).ptr() == p`, `ensures
+    /// final(perm).ptr() == p`, `final(perm).is_init()`: on a slot of a
+    /// `StatsPair`'s size and alignment holding arbitrary bytes, the call
+    /// is defined (Kani checks the fill's writes), `p` is then what a
+    /// read of a `StatsPair` needs (`kani::mem::can_dereference`:
+    /// non-null, aligned, in bounds, the bytes a valid value), and every
+    /// byte of the records reads zero, the fields of both records with
+    /// them. `final(perm).ptr() == p` is the permission's, which the body
+    /// does not touch.
+    #[kani::proof]
+    fn zero_records_zeroes() {
+        let mut slot = MaybeUninit::<StatsPair>::uninit();
+        let p = slot.as_mut_ptr();
+        // SAFETY: `p` is the slot's storage, of `size_of::<StatsPair>()`
+        // bytes, and a byte array has alignment 1.
+        unsafe { p.cast::<[u8; size_of::<StatsPair>()]>().write(kani::any()) };
+        zero_records(p, Tracked::assume_new());
+        assert!(kani::mem::can_dereference(p));
+        let i: usize = kani::any();
+        kani::assume(i < size_of::<StatsPair>());
+        // SAFETY: `i` is inside the slot, whose bytes the call wrote.
+        assert_eq!(unsafe { p.cast::<u8>().add(i).read() }, 0);
+        // SAFETY: `can_dereference`, checked above.
+        let r = unsafe { &*p };
+        let c: usize = kani::any();
+        kani::assume(c < NCLASSES);
+        assert_eq!((r.a.index, r.a.mapped, r.a.bins[c].clamped), (0, 0, 0));
+        assert_eq!((r.b.index, r.b.mapped, r.b.bins[c].size), (0, 0, 0));
+    }
+}
 
 #[cfg(test)]
 mod tests {

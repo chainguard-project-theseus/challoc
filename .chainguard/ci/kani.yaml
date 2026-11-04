@@ -54,6 +54,7 @@ checks:
         - "src/api/jemalloc.rs"
         - "src/api/print.rs"
         - "src/config.rs"
+        - "src/heap/slotstate.rs"
         - "src/heap/tcaches.rs"
         - "src/huge/table.rs"
         - "src/layout/regions.rs"
