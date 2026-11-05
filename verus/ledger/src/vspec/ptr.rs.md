@@ -190,7 +190,7 @@ pub proof fn axiom_raw_readable(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mu
 ## `axiom_ptr_add_addr`
 
 src/vspec/ptr.rs:224. Kind: external_body proof. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences).
 
 > The address [`ptr_add`] stands for: `count` elements past `p`, when that stays inside the allocation `p` points into (the only case in which `<*mut T>::add` is defined, and so the only one verified code reaches), and the address does not wrap (the caller shows it: no allocation does, but `alloc_len` is not tied to the address space).
 
@@ -210,7 +210,7 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
 ## `<*mut T>::sub`
 
 src/vspec/ptr.rs:242. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani observes only through a dereference, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`)).
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`)).
 
 > `<*mut T>::sub`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize` and is at most `p`'s address, and, when it is not zero, the whole range from the result to `p` is inside the allocation `p` points into ([`in_alloc`] of the result).
 
@@ -231,7 +231,7 @@ pub assume_specification<T>[ <*mut T>::sub ](p: *mut T, count: usize) -> (r: *mu
 ## `<*mut T>::add`
 
 src/vspec/ptr.rs:256. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences).
 
 > `<*mut T>::add`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize`, and, when it is not zero, the whole range from `p` to the result is inside the allocation `p` points into ([`in_alloc`]).
 
@@ -251,7 +251,7 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
 ## `<*const T>::add`
 
 src/vspec/ptr.rs:268. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences).
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences).
 
 > `<*const T>::add`, with the safety contract of `<*mut T>::add`: the result is [`ptr_add`] of the pointer as a `*mut T`, back as a `*const T` (`axiom_ptr_add_addr` gives its address).
 

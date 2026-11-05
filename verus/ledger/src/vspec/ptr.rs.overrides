@@ -1,4 +1,4 @@
-axiom_ptr_add_addr	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences)	contract 1089707123, body 4028365563
+axiom_ptr_add_addr	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 1089707123, body 4028365563
 # The array layout, checked at sampled element types and lengths.
 axiom_array_elem	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: the provenance clause of the element pointers, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table, which is this axiom's instance in `layout::regions`))	contract 3585017109, body none
 # axiom_array_view: its one instance, `heap::others::node_view`'s
@@ -21,13 +21,13 @@ axiom_plain_u32	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_byte
 axiom_plain_ptr	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 467056659, body none
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 core::ptr::write_bytes::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_bytes)	contract 3565122288, body none
-<*mut T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences)	contract 3817630095, body none
-<*const T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani observes only through a dereference, and the one-past-the-end result, which the harness never dereferences)	contract 1492966780, body none
+<*mut T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 3817630095, body none
+<*const T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 1492966780, body none
 ref_ptr	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::ptr_ref_ptr)	contract 2898739365, body 3326604510
 # `core::ptr` functions, specified against `core`'s documentation and checked on
 # buffers at every offset.
 core::ptr::read_volatile::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_volatile; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes))	contract 380533337, body none
-<*mut T>::sub	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani observes only through a dereference, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`))	contract 3919411524, body none
+<*mut T>::sub	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`))	contract 3919411524, body none
 # The unaligned reads of the C program's mallctl buffers: Kani runs them at
 # every offset; that the bytes are initialised and not changed by another
 # thread during the call is the program's contract (C2), and verified code
