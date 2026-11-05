@@ -4174,6 +4174,73 @@ mod kani_array_layout {
     }
 }
 
+/// The Kani harness of [`Arena::put_stats`], next to the private function.
+#[cfg(kani)]
+mod kani_put_stats {
+    use super::Arena;
+    use crate::layout::NCLASSES;
+    use crate::lock::Lock;
+    use crate::stats::ArenaStats;
+    use core::mem::{MaybeUninit, size_of};
+    use vstd::prelude::Tracked;
+
+    /// The lock `put_stats` writes, named once: the lock inventory of
+    /// `api::tests` (`lock_decls`) reads a code line `name: ..Lock<..>`
+    /// outside a `mod tests` as a lock declaration, which
+    /// `kani::assume(i < size_of::<..>())` spelled with the lock type
+    /// would be.
+    type StatsLock = Lock<ArenaStats>;
+
+    /// `Arena::put_stats`, `requires old(perm).ptr() == p`, `ensures
+    /// final(perm).ptr() == p`, `final(perm).is_init()`,
+    /// `final(perm).value().rank() == rank_arena_stats(index)`: for every
+    /// `index`, on a slot of a `Lock<ArenaStats>`'s size and alignment
+    /// holding arbitrary bytes, the call is defined (Kani checks the
+    /// fill's and the store's writes), and every byte of the slot is then
+    /// zero but those of the record's `index`, which hold `index`: a zero
+    /// lock word and a record whose `index` is `index` and whose other
+    /// fields, the bins' among them, are 0, as `ArenaStats::empty(index)`
+    /// has them. Every byte of a `Lock<ArenaStats>` is an integer's, so
+    /// any bytes are a valid value (`kani::mem::can_dereference` holds
+    /// before the call too); `is_init` rests on every byte being written.
+    /// `final(perm).ptr() == p` is the permission's, which the body does
+    /// not touch. Not checked: the rank, a ghost field of the lock with
+    /// no bytes, and the `# Safety` contract (`p` is the `stats` field of
+    /// `init`'s storage): the harness passes a slot of its own.
+    #[kani::proof]
+    fn put_stats_writes_empty() {
+        let mut slot = MaybeUninit::<StatsLock>::uninit();
+        let p = slot.as_mut_ptr();
+        // SAFETY: `p` is the slot's storage, of
+        // `size_of::<Lock<ArenaStats>>()` bytes, and a byte array has
+        // alignment 1.
+        unsafe { p.cast::<[u8; size_of::<StatsLock>()]>().write(kani::any()) };
+        let index: u16 = kani::any();
+        // SAFETY: the slot is writable and unaliased.
+        unsafe { Arena::put_stats(p, Tracked::assume_new(), index) };
+        assert!(kani::mem::can_dereference(p));
+        // SAFETY: a field projection inside the slot; nothing is read.
+        let at = unsafe { core::ptr::addr_of!((*Lock::value_ptr(p)).index) } as usize - p as usize;
+        let i: usize = kani::any();
+        kani::assume(i < size_of::<StatsLock>());
+        // SAFETY: `i` is inside the slot, whose bytes the call wrote.
+        let b = unsafe { p.cast::<u8>().add(i).read() };
+        let want = if at <= i && i < at + size_of::<u16>() {
+            index.to_ne_bytes()[i - at]
+        } else {
+            0
+        };
+        assert_eq!(b, want);
+        // SAFETY: `can_dereference`, checked above; the record is the
+        // lock's value.
+        let r = unsafe { &*Lock::value_ptr(p) };
+        let c: usize = kani::any();
+        kani::assume(c < NCLASSES);
+        assert_eq!((r.index, r.small_allocated, r.mapped), (index, 0, 0));
+        assert_eq!((r.bins[c].size, r.bins[c].curregs), (0, 0));
+    }
+}
+
 /// Kani check of `key_less` (`verus/ledger/src/arena.rs.md`; `cfg(kani)`
 /// only, see `verus/README.md`, "Kani").
 #[cfg(kani)]

@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `NO_ARRAYS` | external_body const | core library | Kani | discharged |
 | `axiom_slot_byte` | axiom | allocator invariant | none (assumption) | trusted |
-| `byte_at` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `byte_at` | external_body | raw pointer (internal) | Kani | trusted |
 
 ## `NO_ARRAYS`
 
@@ -49,7 +49,7 @@ axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
 ## `byte_at`
 
 src/heap/slotstate.rs:613. Kind: external_body. Category: raw pointer (internal).
-Tool: RefinedRust. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: heap::slotstate::kani_byte_at::byte_at_is_the_byte; not checked: the `# Safety` contract, that `at` is a byte of a slot-state array that `commit` made writable and that the arrays live for the process, which is the protocol of `init`, `commit` and the watermark: the harness passes a byte of its own array).
 
 > The `AtomicU8` at address `at`.
 
