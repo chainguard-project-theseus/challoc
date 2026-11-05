@@ -1017,6 +1017,140 @@ fn access_init_once_words_control() {
     assert!(!check_once(&t2).is_empty());
 }
 
+// The fork signal-mask slot (`FORK_SIGMASK`, a word `vspec/word.rs`'s
+// `load` reads through the permission `api::resume::resumed` mints, so
+// the word wrappers' seams rest on it too): every shipped line that names
+// the static, `fork_slot`, `resumed` or `saved_sigmask` anywhere, or the
+// slot's binding (`slot` in `save_sigmask`, `resumed` and `fork_release`,
+// `w` in `saved_sigmask`), is one of the lines below, each once. So the
+// slot's one write is `save_sigmask`'s raw `store`, and the only other
+// access is `saved_sigmask`'s `vspec::word::load`. Spec clauses
+// (`word_addr(..)`) and ghost code are left out.
+
+/// `(fn, line)`, `""` outside a fn: the shipped lines the check matches.
+const SLOT_LINES: &[(&str, &str)] = &[
+    (
+        "",
+        "exec static FORK_SIGMASK: AtomicU64 = AtomicU64::new(0);",
+    ),
+    ("fork_slot", "fn fork_slot() -> &'static AtomicU64 {"),
+    ("fork_slot", "&FORK_SIGMASK"),
+    ("save_sigmask", "let slot = fork_slot();"),
+    ("save_sigmask", "slot.store(mask, Ordering::Relaxed);"),
+    ("saved_sigmask", "fn saved_sigmask("),
+    ("saved_sigmask", "w: &AtomicU64,"),
+    (
+        "saved_sigmask",
+        "crate::vspec::word::load(w, Ordering::Relaxed, Tracked(slot))",
+    ),
+    (
+        "fork_release",
+        "let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));",
+    ),
+    (
+        "fork_release",
+        "let mask = saved_sigmask(slot, Ghost(*s), Tracked(&held), Tracked(&state));",
+    ),
+    ("", "use super::{ForkHeld, fork_slot};"),
+    (
+        "resumed",
+        "pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&StateHold>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>))",
+    ),
+    ("resumed", "let slot = fork_slot();"),
+    (
+        "resumed",
+        "(slot, Tracked(axiom_fork_resumed(s, slot, state)))",
+    ),
+];
+
+fn check_slot(t: &Tree) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = vec![0; SLOT_LINES.len()];
+    for (file, text) in t {
+        for l in shipped(text) {
+            let c = &l.code;
+            if l.ghost || c.contains("word_addr(") {
+                continue;
+            }
+            let api = file == "src/api/mod.rs";
+            let binding = match l.func.as_str() {
+                "save_sigmask" | "resumed" | "fork_release" if api => "slot",
+                "saved_sigmask" if api => "w",
+                _ => "",
+            };
+            let names = ["FORK_SIGMASK", "fork_slot", "resumed", "saved_sigmask"]
+                .iter()
+                .any(|n| !occurs(c, n, &[]).is_empty())
+                || (!binding.is_empty() && !occurs(c, binding, &[]).is_empty());
+            if !names {
+                continue;
+            }
+            match SLOT_LINES
+                .iter()
+                .position(|(f, w)| api && *f == l.func && *w == c)
+            {
+                Some(k) => seen[k] += 1,
+                None => out.push(bad(file, &l)),
+            }
+        }
+    }
+    for (k, (func, w)) in SLOT_LINES.iter().enumerate() {
+        if seen[k] != 1 {
+            out.push(format!(
+                "src/api/mod.rs: {} slot lines in {func:?}, not 1: {w}",
+                seen[k]
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn access_fork_slot_written_once() {
+    report("fork slot accesses", check_slot(&tree()));
+}
+
+#[test]
+fn access_fork_slot_control() {
+    let t = tree();
+    let store = "slot.store(mask, Ordering::Relaxed);";
+    for (file, anchor, line) in [
+        ("src/api/mod.rs", store, "slot.store(0, Ordering::Relaxed);"),
+        (
+            "src/api/mod.rs",
+            store,
+            "slot.fetch_or(1, Ordering::Relaxed);",
+        ),
+        ("src/api/mod.rs", store, "let other = slot;"),
+        ("src/api/mod.rs", store, store),
+        (
+            "src/api/mod.rs",
+            "crate::lock::fork_window_close();",
+            "let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));",
+        ),
+        (
+            "src/api/mod.rs",
+            "let mask = saved_sigmask(slot, Ghost(*s), Tracked(&held), Tracked(&state));",
+            "slot.store(0, Ordering::Relaxed);",
+        ),
+        (
+            "src/api/mod.rs",
+            "let slot = fork_slot();",
+            "fork_slot().store(0, Ordering::Relaxed);",
+        ),
+        (
+            "src/heap/shared.rs",
+            "use crate::vspec::flags::RouteByte;",
+            "fn f() { crate::api::FORK_SIGMASK.store(0, Ordering::Relaxed); }",
+        ),
+    ] {
+        assert!(
+            !check_slot(&with(&t, file, anchor, line)).is_empty(),
+            "{line}"
+        );
+    }
+}
+
 // The deferred cgroup record's phase (`vspec/byte.rs`'s seams): non-test
 // sys/cgroup.rs writes no `.phase` by a method, and no file but it and
 // heap/slotstate.rs (the slot-state bytes' `step`) calls `vspec::byte`.
