@@ -1546,6 +1546,91 @@ mod tests {
         }
     }
 
+    /// `Lock::value_ptr` admits any pointer, and its projection is defined
+    /// only through one into a live `Lock<T>`: its one caller is
+    /// `Arena::put_stats`, which passes its own parameter `p`, the pointer
+    /// its permission names (`requires old(perm).ptr() == p`), at `T =
+    /// ArenaStats`, one of the `T`s `kani_lock` runs it at. The only other
+    /// call is that harness's. Any call spelling that ends in `value_ptr(`
+    /// counts (`Self::` and `Lock::<T>::` included), and the name is never
+    /// used but as a call (no function pointer to it); an associated
+    /// function cannot be imported under another name. In `put_stats`'s
+    /// body `p` appears only in its two statements, so nothing rebinds it.
+    #[test]
+    fn value_ptr_called_only_by_put_stats() {
+        use crate::testutil::{assert_only_at, grant_sites};
+        // Spelled in parts, so that this test's lines match nothing.
+        let name = concat!("value", "_ptr");
+        let call = concat!("value", "_ptr(");
+        let put = concat!("unsafe fn put_", "stats(");
+        assert_only_at(
+            call,
+            &[("arena.rs:", put, 1), ("lock.rs:", "fn on<T>()", 1)],
+        );
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        for (_, at) in grant_sites(name) {
+            let text = at
+                .split_once(": `")
+                .map_or("", |(_, t)| t.strip_suffix('`').unwrap_or(t));
+            for (i, _) in text.match_indices(name) {
+                let before = text[..i].chars().next_back().is_some_and(ident);
+                let after = text[i + name.len()..].chars().next();
+                assert!(
+                    before || after.is_some_and(|c| c == '(' || ident(c)),
+                    "{at}: got = `{name}` not called, want = only calls"
+                );
+            }
+        }
+        let src = include_str!("arena.rs");
+        let at: Vec<_> = src.match_indices(put).map(|(i, _)| i).collect();
+        assert_eq!(at.len(), 1, "`{put}`: got = {} matches, want = 1", at.len());
+        let item = &src[at[0]..];
+        let end = item.find("\n    }\n").unwrap_or_else(|| {
+            panic!("put_stats: got = no `}}` at 4 spaces, want = its body's end")
+        });
+        let item: Vec<&str> = item[..end]
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//"))
+            .collect();
+        let sig = concat!(
+            "(p: *mut Lock<Arena",
+            "Stats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, "
+        );
+        assert!(
+            item[0].contains(sig),
+            "put_stats: got = `{}`, want = `p` and the permission at `Lock<ArenaStats>`",
+            item[0]
+        );
+        let line = |l: &str| {
+            item.iter()
+                .position(|x| *x == l)
+                .unwrap_or_else(|| panic!("put_stats: got = no `{l}` line, want = one"))
+        };
+        let (requires, ensures, body) = (line("requires"), line("ensures"), line("{"));
+        assert!(
+            item[requires..ensures].contains(&"old(perm).ptr() == p,"),
+            "put_stats: got = no `old(perm).ptr() == p`, want = the permission names `p`"
+        );
+        let uses: Vec<&str> = item[body..]
+            .iter()
+            .copied()
+            .filter(|l| l.split(|c: char| !ident(c)).any(|w| w == "p"))
+            .collect();
+        let want = [
+            "core::ptr::write_bytes(p, 0, 1);",
+            concat!("(*Lock::value", "_ptr(p)).index = index;"),
+        ];
+        assert_eq!(
+            uses, want,
+            "put_stats: got = {uses:?} naming `p`, want = {want:?}"
+        );
+        assert!(
+            include_str!("lock.rs").contains(concat!("on::<crate::stats::Arena", "Stats>();")),
+            "kani_lock: got = no `ArenaStats` instance, want = put_stats' `T`"
+        );
+    }
+
     /// `axiom_entry` asserts that no allocator lock is held where it is
     /// called, which only its caller's context shows: each use is pinned
     /// to the functions its doc lists, so a new one fails here until the
