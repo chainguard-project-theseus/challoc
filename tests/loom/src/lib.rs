@@ -1,7 +1,11 @@
 //! loom models of challoc's atomics protocols. challoc's statics are
 //! built in `const` context, which loom cannot construct, so each model
 //! here is a copy of the code it checks, step by step, naming the
-//! function each step mirrors. `tests/pins.rs` checks that the source
+//! function each step mirrors. The atomic wrappers those steps call,
+//! `src/vspec/{atom,byte,count,entry,flags,word}.rs`, are challoc's own
+//! files, compiled here under `cfg(loom)` over loom's atomics
+//! (`vspec.rs`, `src/sync.rs`): a model runs their real bodies.
+//! `tests/pins.rs` checks that the source
 //! still has the copied lines, in order, and that every other line with an
 //! `Ordering::`, a `fence(` or a `futex_` call inside a function a pin falls
 //! in is pinned too or waived with its reason (`WAIVED`).
@@ -29,6 +33,16 @@
 //! preemptions. `LOOM_MAX_PREEMPTIONS` sets a bound for all of them
 //! (`run.sh` unsets it). `LOOM_LOG=info` prints loom's execution count per
 //! model.
+
+// challoc's `src/sync.rs`, which the `vspec` files import as
+// `crate::sync::atomic`.
+#[cfg(test)]
+#[path = "../../../src/sync.rs"]
+mod sync;
+// challoc's atomic wrappers; the models call a few of each file's.
+#[cfg(test)]
+#[allow(dead_code)]
+mod vspec;
 
 #[cfg(test)]
 mod background;

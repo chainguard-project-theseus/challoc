@@ -234,8 +234,11 @@ memory (`class/table.rs` casts addresses to `&AtomicU64` and
 `&AtomicU16`). So the crate is not built under `cfg(loom)`, and every
 model in `tests/loom` (its own crate) is a copy of the code it checks,
 step by step, naming the function each step mirrors
-(`tests/loom/src/lib.rs`). Two source tests keep the copies tied to the
-code:
+(`tests/loom/src/lib.rs`). The atomic wrappers those steps call are
+challoc's own: the loom crate compiles `src/vspec/{atom,byte,count,entry,flags,word}.rs`
+and `src/sync.rs` as its own modules under `cfg(loom)`, where
+`crate::sync::atomic` is loom's, so a model runs the wrappers' real
+bodies. Two source tests keep the copies tied to the code:
 
 - `tests/loom/tests/pins.rs` checks that the source still has the
   copied lines, in order, and that every other line with an
@@ -302,7 +305,8 @@ the properties P1's loom models assert.
 
 ## loom models
 
-Each model below runs a copy of the code it names (`tests/loom/src`).
+Each model below runs a copy of the code it names (`tests/loom/src`),
+calling the `vspec` atomic wrappers' real bodies ("The tools").
 Every model has at least one control, a mutant that must fail, which
 shows the check can fail.
 
@@ -315,7 +319,7 @@ shows the check can fail.
   `CONTENDED` mark, deadlocks (`loom_lock_dropped_mark_loses_a_wake_up`),
   and a bare wait on the stand-in deadlocks (`loom_futex_stand_in_sleeps`).
 - P1, `bitmap.rs` (`AtomicBitmap`'s whole-word steps over one loom
-  word, with copies of the class steps around it, citing `slab.rs` and
+  word, through `vspec/word.rs`'s wrappers as they are, with copies of the class steps around it, citing `slab.rs` and
   `class/mod.rs`): two owners release while a third thread reserves
   through `live` under the `RawLock` copy and claims; one owner releases
   two slots to two claimers; `init` is published by `Release` and
@@ -342,7 +346,8 @@ shows the check can fail.
   unpublished `INITIALISING` fails. loom cannot explore two waiters
   spinning at once (they yield to each other with no bound), so each
   model has one.
-- P5, `free.rs` (the `AtomicBitmap` copy over one loom word; copies of
+- P5, `free.rs` (the `AtomicBitmap` copy over one loom word, through
+  `vspec/atom.rs`'s and `vspec/word.rs`'s wrappers as they are; copies of
   `take_group`'s tail, a claimer's `Acquire` watermark load, and the
   free path's checks in `Shared::set_slot` and `home_owns`, through the
   class line): an allocating thread hands its slot to the freeing thread
@@ -361,16 +366,16 @@ shows the check can fail.
   with the free touching the block races; with the claimer's watermark
   load `Relaxed`, a synchronised free can read the owner as 0. The
   `free_flags` route bit is modelled in `flags.rs`, not here.
-- Arena bound counts, `count.rs` (copies of `vspec/count.rs`'s wrappers,
-  `Relaxed` as in `arena.rs`, driven by copies of `assign` under the
+- Arena bound counts, `count.rs` (`vspec/count.rs`'s wrappers as they
+  are, `Relaxed` as in `arena.rs`, driven by copies of `assign` under the
   `RawLock` copy, `count_in`, `unbind`, `load_bound` and
   `try_bind_idle`): no `unbind` reads 0, no holder reads its arena's
   count below its own tickets, the counts end at the tickets out, and a
   `try_bind_idle` wins only on an arena with no ticket out. Controls: a
   `fetch_add` split into a load and a store loses a ticket; a split
   compare-and-exchange binds twice.
-- Arena count and table, `narenas.rs` (copies of `vspec/count.rs`'s
-  `store` and `load` and `vspec/entry.rs`'s, driven by copies of
+- Arena count and table, `narenas.rs` (`vspec/count.rs`'s `store` and
+  `load` and `vspec/entry.rs`'s, as they are, driven by copies of
   `create` under the `RawLock` copy, `count`, `get_existing` and the
   index walk): two creators and a scanner, `MAX_ARENAS` 3. The count
   stays in range and never goes back for a reader; a scan finds every
@@ -386,8 +391,8 @@ shows the check can fail.
   appliers and a reader. Every load is a stored value, at most
   `FRAC_ONE + 1`, and the swaps' results and the final value form one
   chain. Control: a swap split into a load and a store breaks the chain.
-- Class table watermark, `watermark.rs` (copies of `store_usize`,
-  `load_usize`, `load_usize_seen` and `store_usize_at`, driven by copies
+- Class table watermark, `watermark.rs` (`store_usize`, `load_usize`,
+  `load_usize_seen` and `store_usize_at` as they are, driven by copies
   of `take_group` under the `RawLock` copy, `committed_slabs`,
   `watermark` and `mirror_watermark`): two hand-outs and a reader. Every
   load is at most the slab count and never goes back, `take_group`'s
@@ -424,8 +429,8 @@ shows the check can fail.
   `line_ready`, `feature_line_fork_child` and the `LINE_STATE` wrappers
   `line_load`, `line_compare_exchange` and `line_store`): the line is
   built once, and every reader that sees `LINE_READY` reads it
-  race-free. The deferred cgroup record (copies of `vspec/byte.rs`'s
-  wrappers driven by copies of `Deferred::get`, `discover` and
+  race-free. The deferred cgroup record (`vspec/byte.rs`'s wrappers as
+  they are, driven by copies of `Deferred::get`, `discover` and
   `fork_child`): one discovery runs, and every reader that sees `DONE`
   reads the record race-free. Controls: a `Relaxed` `LINE_READY` (or
   `DONE`) store lets a reader see it without the write. The fork-child
@@ -433,8 +438,8 @@ shows the check can fail.
   (discovers) rather than waits. Verus proves the hand-off of the cells'
   permissions (`api::LinePred`, `sys::cgroup::PhasePred`); the models
   check that the release/acquire pairs give the edges it relies on.
-- The free path's dispatch byte, `flags.rs` (a copy of `vspec/flags.rs`'s
-  `RouteByte`, driven by copies of `init`'s `Shared::put_flags` and
+- The free path's dispatch byte, `flags.rs` (`vspec/flags.rs`'s
+  `RouteByte` and wrappers as they are, driven by copies of `init`'s `Shared::put_flags` and
   publication, `Arenas::build`'s `Shared::set_multi_arena`, and the free
   path's `Shared::free_flags` load): every value a load or the
   `fetch_or` returns is `push_flags` with or without `ROUTE`, with no
@@ -442,7 +447,8 @@ shows the check can fail.
   leaves the reader unordered after `init`'s write; a bit outside
   `ROUTE` fails the assertions.
 - The double-free state byte, `slotstate.rs` (a copy of
-  `slotstate::free`'s compare-and-exchange from `LIVE`): two
+  `slotstate::free`'s compare-and-exchange from `LIVE`, through
+  `vspec::byte::compare_exchange` as it is): two
   simultaneous frees of one live slot. In every interleaving exactly one
   finds the slot `LIVE` and moves it; the other sees what the first
   stored and aborts by name. Control: the load-then-store form lets both
@@ -453,8 +459,9 @@ shows the check can fail.
 A seam that cites loom names its models in its ledger status
 (`loom: <mod>::<test>`, [SEAMS.md](SEAMS.md), "Status"), and the comment
 above it in its `.overrides` file under `verus/ledger/src/` gives its
-C11 argument. Because a model runs a copy of the code, a loom citation
-makes a seam at most partly checked; the status names what the models
+C11 argument. Because a model runs a copy of the code, and runs a
+wrapper's own body only within the part of C11 loom models, a loom
+citation makes a seam at most partly checked; the status names what the models
 leave unchecked. Where the ledger also cites Kani, the Kani harness
 checks the wrapper's own body on one thread.
 
@@ -568,7 +575,8 @@ The arguments, by group (the overrides comments give each in full):
   holder.
 
 The checks leave out what the statuses list: the bodies themselves
-(the models run copies), configurations larger than the models', the
+(the models run copies, and the wrappers' own bodies only within
+loom's part of C11), configurations larger than the models', the
 kernel's futex (replaced by the stand-in), and the C11 arguments, which
 `access.rs` backs by matching source text only. Remaining weak-memory
 work is tracked in

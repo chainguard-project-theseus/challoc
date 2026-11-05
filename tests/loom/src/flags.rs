@@ -1,8 +1,8 @@
-//! The `free` fast path's dispatch byte (`heap::Shared::free_flags`): a
-//! copy of `vspec/flags.rs`'s `RouteByte` (`new`, `fetch_or`, `load`,
-//! each the bare `core` operation on its `AtomicU8` with the caller's
-//! ordering), driven by copies of the steps that call them (the `Shared`
-//! they live in is a static whose storage starts uninitialised):
+//! The `free` fast path's dispatch byte (`heap::Shared::free_flags`):
+//! `vspec/flags.rs`'s `RouteByte` and its wrappers (`new`, `fetch_or`,
+//! `load`), which run here as they are, over loom's `AtomicU8`
+//! (`crate::vspec`), driven by copies of the steps that call them (the
+//! `Shared` they live in is a static whose storage starts uninitialised):
 //!
 //! - [`Model::init`] is `init`'s `Shared::put_flags`: plain writes of
 //!   `push_flags` and of the byte `flags::new(push_flags)` made, into the
@@ -33,42 +33,18 @@
 //! entry are `narenas.rs`'s), and the slow paths that read `push_flags`
 //! (a plain field, never written after `init`).
 
+use crate::vspec::flags::{ROUTE, RouteByte, fetch_or, load, new};
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
-use loom::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
 
 const UNINIT: u32 = 0;
 const READY: u32 = 2;
 
-/// `flags::ROUTE` (`heap::FREE_ROUTE`).
-const ROUTE: u8 = 8;
-
 /// `push_flags` in the model: `PUSH_STATE | PUSH_ZERO | PUSH_PAC`, every
 /// bit `init` may set.
 const PUSH: u8 = 0b111;
-
-/// `vspec::flags::RouteByte`.
-struct RouteByte {
-    b: AtomicU8,
-}
-
-/// `flags::new`.
-fn new(v: u8) -> RouteByte {
-    RouteByte {
-        b: AtomicU8::new(v),
-    }
-}
-
-/// `flags::load`.
-fn load(b: &RouteByte, ordering: Ordering) -> u8 {
-    b.b.load(ordering)
-}
-
-/// `flags::fetch_or`.
-fn fetch_or(b: &RouteByte, v: u8, ordering: Ordering) -> u8 {
-    b.b.fetch_or(v, ordering)
-}
 
 struct Model {
     /// `api::STATE`.
@@ -187,7 +163,7 @@ fn run(publish: Ordering, builders: usize, bits: u8) {
 
 /// As shipped: one builder, the main thread freeing.
 ///
-/// Covers copies of `vspec::flags::new`, `vspec::flags::load` and
+/// Runs `vspec::flags::new`, `vspec::flags::load` and
 /// `vspec::flags::fetch_or`.
 #[test]
 fn loom_flags_route_byte_keeps_push_flags() {
@@ -197,7 +173,7 @@ fn loom_flags_route_byte_keeps_push_flags() {
 /// Two builders (a third arena built while the second's `fetch_or` is in
 /// flight), the main thread freeing.
 ///
-/// Covers copies of `vspec::flags::new`, `vspec::flags::load` and
+/// Runs `vspec::flags::new`, `vspec::flags::load` and
 /// `vspec::flags::fetch_or`.
 #[test]
 fn loom_flags_two_builders() {

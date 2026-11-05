@@ -45,7 +45,7 @@
 //!   to a slot-state byte is one of these wrappers in
 //!   `heap::slotstate::step`.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use crate::sync::atomic::{AtomicU8, Ordering};
 use vstd::prelude::*;
 
 verus! {
@@ -80,7 +80,9 @@ impl BytePerm {
 /// for. It is
 /// `const` for `Deferred::later`, which runs at run time: neither may
 /// appear in a `const` item, each use of which would be a new atomic with
-/// the same permission.
+/// the same permission. Not under `cfg(loom)`, whose `AtomicU8::new` is
+/// not `const`.
+#[cfg(not(loom))]
 #[inline(always)]
 pub const fn new(v: u8) -> (r: (AtomicU8, Tracked<BytePerm>))
     ensures

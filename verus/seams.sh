@@ -59,7 +59,8 @@
 # `"/* {0} */"`; or `loom: <mod>::<test>` and tests/loom/src/<mod>.rs has
 # no `#[test]` fn <test> outside `#[should_panic]` whose doc comment or
 # body names the seam's function, or the file does not name the seam's
-# source file, or the status is "discharged" (a loom model runs a copy);
+# source file, or the status is "discharged" (a loom model runs a copy,
+# or a vspec wrapper under loom's bounded model);
 # and when a line verus/kani/pins.txt lists (the source a Kani harness
 # runs a copy of) is not in place, or a copy those lines mark differs from
 # its original but for the rows marked `-only`; or a Kani status names
@@ -629,7 +630,8 @@ gen() {
 # `<seam> @ <mod>::<test>`) or `callers` (a guard test); `none` for a
 # "discharged" or "partly checked" status, or a list, that cites nothing;
 # and `loomdischarged` (its item the seam) for a "discharged" status that
-# cites `loom:`, which a model running a copy cannot give. Reads the
+# cites `loom:`, which a model running a copy, or loom's bounded model,
+# cannot give. Reads the
 # overrides files given.
 cites() {
   for o in "$@"; do
@@ -890,8 +892,10 @@ guardrow() {
 # checkcite OVERRIDES TAG ITEM: one line of cites (its loom models in
 # $loomdir, tests/loom/src by default): nothing when the cited check
 # resolves, else the error. A loom model runs a copy of the code it checks
-# (tests/loom/src/lib.rs), not the item's own body, so a status citing one
-# is at most partly checked: `loomdischarged` is always an error.
+# (tests/loom/src/lib.rs), not the item's own body, but for the vspec
+# atomic wrappers, which it runs as they are; either way loom models only
+# part of C11, so a status citing one is at most partly checked:
+# `loomdischarged` is always an error.
 checkcite() {
   case $2 in
     Kani) harness "$3" || echo "seams: $1: Kani: $3 names no #[kani::proof] fn" ;;
@@ -903,7 +907,7 @@ checkcite() {
       if ! harness "$3" test; then echo "seams: $1: callers: $3 names no #[test] fn"
       elif ! guardrow "$3"; then echo "seams: $1: callers: $3 has no row in the guard-test table of verus/README.md with its Mutants killed: and Known escapes: parts"
       fi ;;
-    loomdischarged) echo "seams: $1: $3: discharged by a loom model, which runs a copy (at most partly checked)" ;;
+    loomdischarged) echo "seams: $1: $3: discharged by a loom model, which runs a copy or checks only part of C11 (at most partly checked)" ;;
     *) echo "seams: $1: $3: the status cites no check" ;;
   esac
 }

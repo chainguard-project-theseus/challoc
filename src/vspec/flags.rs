@@ -33,7 +33,7 @@
 //!   coherence once the reader happens after `init`, the premise of every
 //!   holder of a published `&Shared`.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use crate::sync::atomic::{AtomicU8, Ordering};
 use vstd::prelude::*;
 
 verus! {

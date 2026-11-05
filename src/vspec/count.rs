@@ -39,7 +39,7 @@
 //!   its invariant (`policy::FracPred`), which `Policy::new` builds with
 //!   the permission [`new`] returns.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use crate::sync::atomic::{AtomicU32, Ordering};
 use vstd::prelude::*;
 
 verus! {
@@ -165,7 +165,9 @@ pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&m
 /// `AtomicU32::new(v)`, with the one permission to it: the only place a
 /// [`CountPerm`] is minted, one per counter, with the counter it is for.
 /// It must not appear in a `const` item, each use of which would be a
-/// new atomic with the same permission.
+/// new atomic with the same permission. Not under `cfg(loom)`, whose
+/// `AtomicU32::new` is not `const`.
+#[cfg(not(loom))]
 #[inline(always)]
 pub const fn new(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
     ensures

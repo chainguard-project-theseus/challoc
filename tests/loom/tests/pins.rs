@@ -304,16 +304,6 @@ const PINS: &[(&str, &[&str])] = &[
             "match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {",
         ],
     ),
-    // `RouteByte`'s new, load, fetch_or (tests/loom/src/flags.rs).
-    (
-        "src/vspec/flags.rs",
-        &[
-            "pub const ROUTE: u8 = 8;",
-            "RouteByte { b: AtomicU8::new(v) }",
-            "b.b.load(ordering)",
-            "b.b.fetch_or(v, ordering)",
-        ],
-    ),
     // The STATE wrappers, load_state, the LINE_STATE wrappers, load_line,
     // claim_line, publish_line, shared, shared_if_ready (then
     // shared_published and shared_marked, shared's body with the mark),
