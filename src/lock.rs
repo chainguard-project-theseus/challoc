@@ -1551,7 +1551,9 @@ mod tests {
     /// `Arena::put_stats`, which passes its own parameter `p`, the pointer
     /// its permission names (`requires old(perm).ptr() == p`), at `T =
     /// ArenaStats`, one of the `T`s `kani_lock` runs it at. The only other
-    /// call is that harness's. Any call spelling that ends in `value_ptr(`
+    /// calls are Kani harnesses' (`cfg(kani)`, never in a build): `kani_lock`'s
+    /// and the two in `arena::kani_put_stats::put_stats_writes_empty`, which
+    /// pass a pointer to its own `Lock<ArenaStats>`. Any call spelling that ends in `value_ptr(`
     /// counts (`Self::` and `Lock::<T>::` included), and the name is never
     /// used but as a call (no function pointer to it); an associated
     /// function cannot be imported under another name. In `put_stats`'s
@@ -1565,7 +1567,11 @@ mod tests {
         let put = concat!("unsafe fn put_", "stats(");
         assert_only_at(
             call,
-            &[("arena.rs:", put, 1), ("lock.rs:", "fn on<T>()", 1)],
+            &[
+                ("arena.rs:", put, 1),
+                ("arena.rs:", "fn put_stats_writes_empty() {", 2),
+                ("lock.rs:", "fn on<T>()", 1),
+            ],
         );
         let ident = |c: char| c.is_alphanumeric() || c == '_';
         for (_, at) in grant_sites(name) {
