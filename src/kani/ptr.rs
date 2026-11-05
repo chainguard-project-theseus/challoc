@@ -189,12 +189,13 @@ fn ptr_add_on<T: Copy + PartialEq + kani::Arbitrary, const N: usize>() {
 
 /// `<*mut T>::add`: `r == ptr_add(p, count)`, and `axiom_ptr_add_addr`,
 /// what `ptr_add` is under `in_alloc`: the address `count * size_of::<T>()`
-/// bytes on, with `p`'s provenance (a read through it is a read of the
-/// array) and metadata (`()`, `T` being sized). At a byte, a word, a
+/// bytes on, with metadata `()` (`T` being sized). At a byte, a word, a
 /// padded element and a zero-sized type (for which every `count` is an
 /// empty offset). `<*const T>::add`, whose contract is that of
 /// `<*mut T>::add` through a cast, gives the same pointer as the `*mut`
-/// one at every in-bounds `count`.
+/// one at every in-bounds `count`. Not checked: the result's provenance,
+/// which Kani does not observe (a pointer of the same address and no
+/// provenance passes too).
 #[kani::proof]
 fn ptr_add() {
     ptr_add_on::<u8, 5>();
@@ -726,11 +727,12 @@ fn ptr_sub_on<T: Copy + PartialEq, const N: usize>(any: fn() -> T) {
 }
 
 /// `<*mut T>::sub`: `r == ptr_sub(p, count)`, the address
-/// `count * size_of::<T>()` bytes back, with `p`'s provenance (a read
-/// through it is a read of the array) and metadata (`()`, `T` being
+/// `count * size_of::<T>()` bytes back, with metadata `()` (`T` being
 /// sized). At a byte and a `*mut u8` (verified code's two instances: a
 /// block's bytes, a cache stack's entries), a word, a padded element and a
-/// zero-sized type (for which every `count` is an empty offset).
+/// zero-sized type (for which every `count` is an empty offset). Not
+/// checked: the result's provenance, which Kani does not observe (a
+/// pointer of the same address and no provenance passes too).
 #[kani::proof]
 #[kani::unwind(7)]
 fn ptr_sub() {
