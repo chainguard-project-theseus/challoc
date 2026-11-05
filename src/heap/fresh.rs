@@ -100,6 +100,7 @@ const H_SHARED: usize = 0;
 const H_TID: usize = 8;
 const H_ARENA: usize = 12;
 const H_SLOW_TICKS: usize = 16;
+const H_HINT_TICKS: usize = 20;
 const H_LAST_GC: usize = 24;
 const H_REST: usize = 32;
 // `bound` and `rehome`, inside `HeadRest`, which [`mark_bound`] and
@@ -222,6 +223,7 @@ pub(super) unsafe fn init_fields(
         super::others::lemma_field_aligned::<u32>(base, H_TID as int);
         super::others::lemma_field_aligned::<u16>(base, H_ARENA as int);
         super::others::lemma_field_aligned::<u32>(base, H_SLOW_TICKS as int);
+        super::others::lemma_field_aligned::<u32>(base, H_HINT_TICKS as int);
         super::others::lemma_field_aligned::<u64>(base, H_LAST_GC as int);
         assert((base + H_REST as int) % 32 == 0);
     }
@@ -232,6 +234,7 @@ pub(super) unsafe fn init_fields(
         put_head::<u32>(h, H_TID, Tracked(&mut raw), tid());
         put_head::<u16>(h, H_ARENA, Tracked(&mut raw), arena);
         put_head::<u32>(h, H_SLOW_TICKS, Tracked(&mut raw), 0u32);
+        put_head::<u32>(h, H_HINT_TICKS, Tracked(&mut raw), 0u32);
         put_head::<u64>(h, H_LAST_GC, Tracked(&mut raw), now_ns());
         put_head::<HeadRest>(
             h,
@@ -328,6 +331,7 @@ const _: () = assert!(
         && core::mem::offset_of!(Heap, tid) == H_TID
         && core::mem::offset_of!(Heap, arena) == H_ARENA
         && core::mem::offset_of!(Heap, slow_ticks) == H_SLOW_TICKS
+        && core::mem::offset_of!(Heap, hint_ticks) == H_HINT_TICKS
         && core::mem::offset_of!(Heap, last_gc) == H_LAST_GC
         && core::mem::offset_of!(Heap, uncached)
             == H_REST + core::mem::offset_of!(HeadRest, uncached)
@@ -354,12 +358,13 @@ const _: () = assert!(
     clippy::type_complexity,
     reason = "a compile-time check of the field types"
 )]
-const FIELD_TYPES: fn(&Heap) -> (*const Shared, u32, u16, u32, u64, HeadRest) = |h| {
+const FIELD_TYPES: fn(&Heap) -> (*const Shared, u32, u16, u32, u32, u64, HeadRest) = |h| {
     (
         h.shared,
         h.tid,
         h.arena,
         h.slow_ticks,
+        h.hint_ticks,
         h.last_gc,
         HeadRest {
             uncached: h.uncached,

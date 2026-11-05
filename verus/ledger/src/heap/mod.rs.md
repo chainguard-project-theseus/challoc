@@ -14,7 +14,7 @@ file.
 
 ## `assert_flushed`
 
-src/heap/mod.rs:4571. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4619. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
@@ -31,7 +31,7 @@ fn assert_flushed(len: &u32)
 
 ## `assert_refill_empty`
 
-src/heap/mod.rs:4592. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4640. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_refill_empty_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns.
@@ -48,7 +48,7 @@ fn assert_refill_empty(len: &u32)
 
 ## `assert_rekey_flushed`
 
-src/heap/mod.rs:4607. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4655. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_rekey_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
@@ -65,7 +65,7 @@ fn assert_rekey_flushed(len: &u32)
 
 ## `Heap::arena_volatile`
 
-src/heap/mod.rs:7284. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:7467. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: heap::kani_volatile::arena_volatile_reads_arena).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.

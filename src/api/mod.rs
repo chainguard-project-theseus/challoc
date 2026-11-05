@@ -1202,8 +1202,9 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
 /// [`sys::integrity_aborts`] holds, not [`sys::may_abort`]. Each call
 /// verifies, so none of these functions requires `may_abort`, and every
 /// abort but an integrity check does: they abort at most at an integrity
-/// check, for no argument. `get_defrag_hint` and
-/// `malloc_usable_size(NULL)` are called whole; `nallocx` and
+/// check, for no argument. `malloc_usable_size(NULL)` is called whole
+/// (`get_defrag_hint` is not read only: it runs the caller's cache GC,
+/// whose release may abort, design 13.5); `nallocx` and
 /// `challoc_features` through the calls their bodies make after
 /// `shared()`, whose init may abort (it returns at once once init has
 /// completed, which `shared` stands for here). `mallinfo2` (verified
@@ -1234,8 +1235,6 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
     proof {
         shared.lemma_wf();
     }
-    // `get_defrag_hint`, whole.
-    let _ = jemalloc::get_defrag_hint(p);
     // `malloc_usable_size(NULL)`, whole.
     let _ = libc::malloc_usable_size(core::ptr::null_mut());
     // `nallocx` after its `shared()`.
@@ -1267,6 +1266,24 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
     let _ = published_line(line).as_ptr();
     // `mallctl::utilization`, whole.
     let _ = mallctl::utilization(shared, p as *const core::ffi::c_void, verbose);
+}
+
+/// `get_defrag_hint` aborts, for every pointer and before init, at most
+/// where a valid program's free can (a resource failure or a pending
+/// free-path check, [`sys::valid_aborts`], both in its cache GC's release,
+/// which does not read the pointer) or at an integrity check
+/// ([`sys::integrity_aborts`]): called with only those capabilities, not
+/// [`sys::may_abort`], it verifies (design 13.5).
+///
+/// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
+#[cfg(verus_keep_ghost)]
+fn theorem_defrag_hint_aborts_only_in_its_gc(p: *const u8)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::valid_aborts(),
+        crate::sys::integrity_aborts(),
+{
+    let _ = jemalloc::get_defrag_hint(p);
 }
 
 } // verus!

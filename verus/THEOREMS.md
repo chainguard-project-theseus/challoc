@@ -5722,10 +5722,12 @@ token).
 
 ## 32. Read-only APIs never abort
 
-The read-only entry points (`get_defrag_hint`, `malloc_usable_size(NULL)`,
-`nallocx`, `mallinfo`, `mallinfo2`, `challoc_features`, and `mallctl`
-and `mallctlbymib` for every read-only key but the four `thread.*`
-readers) abort at most at an integrity check once init has completed,
+The read-only entry points (`malloc_usable_size(NULL)`, `nallocx`,
+`mallinfo`, `mallinfo2`, `challoc_features`, and `mallctl` and
+`mallctlbymib` for every read-only key but the four `thread.*` readers;
+`get_defrag_hint` is not one, since it runs a cache GC, and has a
+witness of its own below) abort at most at
+an integrity check once init has completed,
 and only `mallinfo` and `mallinfo2` reach one. The proof tracks an
 abort capability that only `extern "C"` bodies and the panic handler
 grant.
@@ -5753,6 +5755,13 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: c_int, p:
         crate::sys::may_syscall(),
         crate::sys::integrity_aborts(),
         shared.wf(),
+
+#[cfg(verus_keep_ghost)]
+fn theorem_defrag_hint_aborts_only_in_its_gc(p: *const u8)
+    requires
+        crate::sys::may_syscall(),
+        crate::sys::valid_aborts(),
+        crate::sys::integrity_aborts(),
 
 #[cfg(verus_keep_ghost)]
 fn theorem_mallctl_reads_never_abort(shared: &Shared, name: *const c_char, io: &Io,
@@ -5794,9 +5803,17 @@ calls abort at most at an integrity check, whatever their arguments
 (for the `mallctl*` pointers, whatever arguments keep the C contract,
 as the premises below say), and only `mallinfo`/`mallinfo2` reach one:
 
-- `get_defrag_hint(p)` (`api/jemalloc.rs`), whole, for every `p`
-  and before init. It requires no abort capability at all (only
-  `may_syscall()`): it never aborts.
+- `get_defrag_hint(p)` is not among them: it runs the calling
+  thread's cache GC (`Heap::gc_for_defrag`, design 13.5), whose
+  release is the free path's and may abort where a valid program's free
+  can, at a failed system call or a pending free-path check
+  (`valid_aborts()`). Its own witness,
+  `theorem_defrag_hint_aborts_only_in_its_gc` (`api/mod.rs`), calls it
+  with `valid_aborts()` and `integrity_aborts()` alone, not
+  `may_abort()`, and verifies: for every `p` and before init it aborts
+  at most at a resource failure or a pending check, both in the GC,
+  which does not read `p`, or at an integrity check (the thread-heap
+  lookup's).
 - `malloc_usable_size(NULL)` (`api/libc.rs`, `requires may_abort()
   || p@.addr == 0`): returns 0 and never aborts.
 - `nallocx` (`api/jemalloc.rs`) after its `shared()`:
@@ -6041,7 +6058,9 @@ bounds, and `Sink::write_str` (verified) keeps it.
   `challoc_features`, and of `mallctl` or `mallctlbymib` with a name or
   MIB that resolves (both resolve before `super::shared()`), runs init,
   which may abort (above). `get_defrag_hint`, `malloc_trim`,
-  `malloc_usable_size` and `mallctlnametomib` never run init.
+  `malloc_usable_size` and `mallctlnametomib` never run init;
+  `get_defrag_hint`'s cache GC can abort where a valid program's free
+  can (`valid_aborts()`, above).
 - `malloc_usable_size` of a non-NULL pointer aborts on a pointer that
   is not an allocation (by design; row 9), and before init
   (`free_before_init`).
@@ -6626,7 +6645,8 @@ unsafe fn store_triple(out: *mut usize, i: usize, nfree: usize, nregs: usize, si
 
 // api/jemalloc.rs (defrag_rule is opaque, revealed in get_defrag_hint)
 pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
-    requires crate::sys::may_syscall(),
+    requires crate::sys::may_abort() || crate::sys::valid_aborts(),
+        crate::sys::may_abort_corrupt(), crate::sys::may_syscall(),
     ensures r == 0 || r == 1, exists|rd: HintRead| #[trigger] hint_read(p as usize, rd, r),
 pub open spec fn defrag_rule(rd: HintRead) -> bool {
     &&& rd.ready
@@ -9552,8 +9572,8 @@ Properties:
   to return (pointer shape, size hints, alignments, cache ids of
   `MAX_TCACHES` or more) and what rests on the C contract. For the
   read-only entry points B is the converse, theorem 32 ("Read-only APIs
-  never abort"): no argument makes the call abort (row 35; the covered
-  reads of row 34).
+  never abort"): no argument makes the call abort (row 35, whose cache
+  GC may still abort as a valid free can; the covered reads of row 34).
 - **U**: size consistency: when `mallocx(size, flags)` succeeds,
   `nallocx(size, flags)` equals its usable size, and `nallocx` is 0
   for a request no placement can serve, which `mallocx` always rejects
@@ -10074,11 +10094,15 @@ alone):
 35. `get_defrag_hint` (`api/jemalloc.rs`). F: `r == 0 || r == 1`;
     in its body, 1 exactly when the design 13.5 rule holds over its reads
     (section "Utilization and defrag hint are exact"; the `ensures`
-    exports it existentially). B:
-    never aborts, for every pointer and before init (theorem 32): it
-    requires no `may_abort()`, which an abort would need, and the
-    theorem's witness calls it without (`theorem_read_only_never_aborts`,
-    `api/mod.rs`). The body is verified.
+    exports it existentially). B: no pointer makes it abort, before init
+    included (theorem 32). It requires `may_abort() || valid_aborts()`
+    and `may_abort_corrupt()`, not `may_abort()`: the calling thread's
+    cache GC (`Heap::gc_for_defrag`, design 13.5) may abort where a valid
+    program's free can (a failed system call, a pending free-path check),
+    and it does not read `p`; the thread-heap lookup may abort at an
+    integrity check. `theorem_defrag_hint_aborts_only_in_its_gc`
+    (`api/mod.rs`) calls it with only those capabilities. The body is
+    verified.
 36. `challoc_version` (`api/mod.rs`), `challoc_features`:
     verified, no contract.
 37. Data symbols `malloc_conf`, `malloc_message`, `je_malloc_message`

@@ -460,9 +460,10 @@ impl<'a> LockOrder<'a> {
 ///   (`malloc`, `free` and the `mallocx` family) through code that holds
 ///   no allocator lock;
 /// - `api::jemalloc`'s `get_defrag_hint`, one token for its
-///   `ClassState::lowest_partial` and `ClassState::bin_stats` calls: a C
-///   entry point, which holds no allocator lock, and each call releases the
-///   class lock before it returns;
+///   `heap::Heap::gc_for_defrag`, `ClassState::lowest_partial` and
+///   `ClassState::bin_stats` calls: a C entry point, which holds no
+///   allocator lock, `Heap::gc_for_defrag` leaves the token unchanged, and
+///   each of the other two releases the class lock before it returns;
 /// - `api::glibc::mallinfo2`'s `stats::Scratch` and `stats::collect_all`
 ///   calls: its callers (the C exports `mallinfo2` and `mallinfo`, the
 ///   latter through `api::glibc::mallinfo`, and the tests) hold no

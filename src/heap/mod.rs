@@ -113,6 +113,7 @@ use crate::vspec::zero::Zeroed;
 use fresh::{FreshHeap, init_fields, mark_bound, mark_rehome};
 use others::{node_block_layout, node_caches_detached, node_set_arena};
 use paths::invalid_free;
+pub(crate) use shared::DEFRAG_GC_INTERVAL_NS;
 #[cfg(test)]
 use shared::ncpus;
 use shared::{now_ns, tid};
@@ -3231,6 +3232,11 @@ pub struct Heap {
     /// caches are `caches` (design 6.2 `heap.arena`).
     arena: u16,
     slow_ticks: u32,
+    /// `get_defrag_hint` calls so far ([`Heap::gc_for_defrag`]), counted
+    /// apart from `slow_ticks` so hints neither shift the periodic tick's
+    /// phase nor run down [`REHOME_TICKS`]; in the padding before
+    /// `last_gc`.
+    hint_ticks: u32,
     last_gc: u64,
     /// Bytes counted per operation rather than derived from a cache
     /// header: huge runs, slots served directly from a slab (no cache, or
@@ -3986,6 +3992,48 @@ impl Heap {
                 ==> self.gc_left(old, node_hdr(old.list@[i], c), old.keys@[i] == FOREIGN)
     }
 
+    /// [`Heap::gc_all`] reads only the cache permissions: a heap with `a`'s
+    /// keeps what `a` left.
+    proof fn lemma_gc_all_perms(a: Heap, b: Heap, old: Heap)
+        requires
+            a.gc_all(old),
+            b.perms@ == a.perms@,
+        ensures
+            b.gc_all(old),
+    {
+        assert forall|p: *mut CacheHeader, f: bool| a.gc_left(old, p, f) implies #[trigger] b.gc_left(old, p, f) by {
+            assert(b.held(p) =~= a.held(p));
+        }
+        assert forall|c: int| #![trigger old.home_ptr(c)] 0 <= c < NCLASSES implies b.gc_left(old, old.home_ptr(c), old.home() == FOREIGN) by {
+            assert(a.gc_left(old, old.home_ptr(c), old.home() == FOREIGN));
+        }
+        assert forall|i: int, c: int| #![trigger node_hdr(old.list@[i], c)]
+            0 <= i < old.list@.len() && 0 <= c < NCLASSES implies b.gc_left(old, node_hdr(old.list@[i], c), old.keys@[i] == FOREIGN) by {
+            assert(a.gc_left(old, node_hdr(old.list@[i], c), old.keys@[i] == FOREIGN));
+        }
+    }
+
+    /// The time of this heap's last cache GC (`last_gc`), periodic or not.
+    pub closed spec fn gc_clock(&self) -> u64 {
+        self.last_gc
+    }
+
+    /// The slow-path tick count (`slow_ticks`).
+    pub closed spec fn ticks(&self) -> u32 {
+        self.slow_ticks
+    }
+
+    /// The defrag-hint count (`hint_ticks`).
+    pub closed spec fn hint_ticks(&self) -> u32 {
+        self.hint_ticks
+    }
+
+    /// A GC is due at `now`: `now - last_gc`, modulo 2^64 as the code's
+    /// `wrapping_sub`, is at least [`DEFRAG_GC_INTERVAL_NS`].
+    pub open spec fn gc_due(&self, now: u64) -> bool {
+        (if now >= self.gc_clock() { now - self.gc_clock() } else { now + 0x1_0000_0000_0000_0000 - self.gc_clock() }) >= DEFRAG_GC_INTERVAL_NS
+    }
+
     /// `perms` are this heap's cache permissions, lent to a proof
     /// (`heap.perms.borrow_mut()`).
     pub closed spec fn perms_are(&self, perms: CachePerms) -> bool {
@@ -4011,7 +4059,7 @@ impl Heap {
     /// permissions (headers, stacks, entries, and the slot tokens and zero
     /// tokens under them), the same `caches` field, `shared` pointer,
     /// `others` list and keys, home headers, home arena, binding, ticket
-    /// and `rehome`. The other fields (`tid`, `slow_ticks`, `last_gc`,
+    /// and `rehome`. The other fields (`tid`, `slow_ticks`, `hint_ticks`, `last_gc`,
     /// `uncached`, `snapshot`, `tcache_enabled`, `rng`, `rehome_from`) are
     /// unconstrained.
     pub closed spec fn caches_same(&self, old: Heap) -> bool {
@@ -5840,6 +5888,24 @@ impl Heap {
         self.slow_ticks
     }
 
+    /// `get_defrag_hint` calls so far ([`Heap::gc_for_defrag`]'s counter).
+    #[cfg(test)]
+    pub fn hint_ticks(&self) -> u32 {
+        self.hint_ticks
+    }
+
+    /// When this heap's cache GC last ran, in `now_ns` time.
+    #[cfg(test)]
+    pub fn last_gc(&self) -> u64 {
+        self.last_gc
+    }
+
+    /// Back-date (or forward-date) this heap's last cache GC.
+    #[cfg(test)]
+    pub fn set_last_gc(&mut self, ns: u64) {
+        self.last_gc = ns;
+    }
+
     /// The home arena's cache for `class`, or `None` while it has never
     /// been used.
     #[cfg(test)]
@@ -6642,6 +6708,123 @@ impl Heap {
             }
             assert forall|i: int, c: int| 0 <= i < self.list@.len() && 0 <= c < NCLASSES implies #[trigger] self.cached_len(node_hdr(self.list@[i], c)) == 0 by {
                 assert(self.list@[i] == l[i]);
+            }
+        }
+    }
+
+    /// Cache GC on behalf of a defragmenter (design 13.5), from its
+    /// `get_defrag_hint` calls. A defragmenter moves the live blocks it can
+    /// see; a slot that sits in a cache is neither live data nor free in its
+    /// slab, so it keeps the slab occupied and the class's figures
+    /// fragmented whatever the defragmenter moves, and a defragmenter that
+    /// finds nothing worth moving keeps asking (Redis's rescans) without
+    /// freeing anything.
+    ///
+    /// The call counts in `hint_ticks` and reads the clock once every
+    /// [`PERIODIC_EVERY`] calls, as the periodic tick does in `slow_ticks`.
+    /// A counter of its own, so that hints, which a defragmenting thread
+    /// makes far more often than slow paths, neither take the periodic
+    /// tick's turns (its decay, cgroup sampling and background-thread start,
+    /// `purge::on_tick`) nor run down [`REHOME_TICKS`]. The clock is a
+    /// system call (`now_coarse_ns`), and a defragmenter asks about every
+    /// allocation it scans, so a read per call would put a system call on
+    /// every hint. When the read finds
+    /// the last GC of this heap, periodic or not, at least
+    /// [`DEFRAG_GC_INTERVAL_NS`] old, [`Heap::gc`] runs
+    /// ([`Heap::gc_for_defrag_at`]) and restarts the periodic clock as well:
+    /// it releases only what went unused since the last GC.
+    // `%` rather than `is_multiple_of`, as the periodic tick: the contract
+    // states the count modulo `PERIODIC_EVERY`.
+    #[allow(clippy::manual_is_multiple_of)]
+    pub fn gc_for_defrag(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).keeps(*old(self)),
+            final(self).hint_ticks() as int == (old(self).hint_ticks() as int + 1) % 0x1_0000_0000,
+            // Off the count, no clock read and no GC: the caches and the GC
+            // clock are as they were.
+            final(self).hint_ticks() % PERIODIC_EVERY != 0 ==> final(self).gc_clock() == old(self).gc_clock(),
+            // A GC ran exactly when the clock restarted.
+            final(self).gc_clock() == old(self).gc_clock() ==> final(self).caches_same(*old(self)),
+            final(self).gc_clock() != old(self).gc_clock() ==> final(self).gc_all(*old(self)),
+    {
+        proof {
+            Heap::lemma_keeps_refl(*self);
+        }
+        // Stored after the GC, whose contract does not mention the count.
+        let ticks = self.hint_ticks.wrapping_add(1);
+        if ticks % PERIODIC_EVERY == 0 {
+            let now = now_ns();
+            self.gc_for_defrag_at(shared, now, Tracked(ord));
+        }
+        let ghost mid = *self;
+        self.hint_ticks = ticks;
+        proof {
+            if mid.gc_all(*old(self)) {
+                Heap::lemma_gc_all_perms(mid, *self, *old(self));
+            }
+        }
+    }
+
+    /// Cache GC before a statistics refresh (`mallctl("epoch")`, design
+    /// 13.5): [`Heap::gc`] if the last GC of this heap is at least
+    /// [`DEFRAG_GC_INTERVAL_NS`] old, with one clock read (a refresh is
+    /// rare: Redis and Valkey write `epoch` from their 100 ms cron). After a
+    /// mass free (`FLUSHDB`, a deleted dataset) the freed slots wait in the
+    /// freeing thread's caches, and each keeps its slab occupied, counted
+    /// as fragmentation by the very figures the caller is about to read,
+    /// until the periodic GC; refreshing returns the ones that went unused.
+    pub fn gc_if_due(&mut self, shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).keeps(*old(self)),
+            // A GC ran exactly when the clock restarted.
+            final(self).gc_clock() == old(self).gc_clock() ==> *final(self) == *old(self),
+            final(self).gc_clock() != old(self).gc_clock() ==> final(self).gc_all(*old(self)),
+    {
+        let now = now_ns();
+        self.gc_for_defrag_at(shared, now, Tracked(ord));
+    }
+
+    /// [`Heap::gc_for_defrag`] at time `now`: [`Heap::gc`] if the last GC
+    /// is at least [`DEFRAG_GC_INTERVAL_NS`] old, and the clock restarted.
+    pub fn gc_for_defrag_at(&mut self, shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).keeps(*old(self)),
+            // Due: the GC of [`Heap::gc`], and the clock restarted at `now`.
+            old(self).gc_due(now) ==> final(self).gc_clock() == now && final(self).gc_all(*old(self)),
+            // Not due: nothing changes.
+            !old(self).gc_due(now) ==> *final(self) == *old(self),
+    {
+        proof {
+            Heap::lemma_keeps_refl(*self);
+        }
+        if now.wrapping_sub(self.last_gc) >= DEFRAG_GC_INTERVAL_NS {
+            self.gc(shared, Tracked(ord));
+            let ghost mid = *self;
+            // Restarted after the GC, whose contract does not mention it.
+            self.last_gc = now;
+            proof {
+                Heap::lemma_gc_all_perms(mid, *self, *old(self));
             }
         }
     }
