@@ -119,10 +119,10 @@ pub fn probe() -> (r: Probe)
     }
 }
 
-/// One read of a loader global [`symbols`] found. Trusted: a raw read;
-/// nothing is claimed about the value. The contract states the one
-/// address fact the caller can show, that `p` is not null; that a
-/// non-null weak symbol's address is a live, aligned `T` is the loader's.
+/// One read of a loader global [`symbols`] found; [`probe`] is the only
+/// caller (`tests::probe_reads_are_listed`). Trusted: a raw read; nothing
+/// is claimed about the value. The contract states that `p` is not null;
+/// that it is then a live, aligned `T` is L1 of `verus/kani/premises.md`.
 ///
 /// # Safety
 /// `p` is the non-null address of a live, aligned `T`.
@@ -140,11 +140,11 @@ unsafe fn read_global<T: Copy>(p: *const T) -> T
 /// Trusted: a raw read; nothing is claimed about the value. The contract
 /// states the bounds check the caller makes: `size`, the value it read
 /// from `__rseq_size`, covers the field. The rest is the caller's
-/// unproved obligation, from the loader and the rseq ABI: that `size`
-/// is this area's registered size (nothing ghost ties the two), that
-/// `area` (the thread pointer plus `__rseq_offset`) is this thread's
-/// registered area, and that the field is 4-byte aligned (the area is
-/// 32-byte aligned).
+/// obligation, which L2 of `verus/kani/premises.md` states: [`probe`], the
+/// only caller (`tests::probe_reads_are_listed`), passes [`area`] of the
+/// `__rseq_offset` it read, the thread pointer plus that offset: this
+/// thread's rseq area, at least 32 bytes and 32-byte aligned, whose
+/// `cpu_id` only glibc and the kernel write.
 ///
 /// # Safety
 /// `area` is this thread's rseq area, at least `CPU_ID_OFFSET + 4` bytes.
@@ -321,6 +321,134 @@ mod tests {
         let cpu = unsafe { cpu_id(area(p.offset)) };
         assert_ne!(cpu, CPU_ID_UNINITIALIZED);
         pinned_threads_read_their_cpu(p);
+    }
+
+    /// `read_global` and `read_cpu_id` rest on L1 and L2 of
+    /// `verus/kani/premises.md` only for the addresses `probe` passes: the
+    /// three `symbols` results, each after its null check, and `area` of
+    /// the `__rseq_offset` read through the first. This pins those calls:
+    /// every line under `src/` that names either item is its declaration,
+    /// the Kani module's `use`, a Kani harness's call on a local, or a call
+    /// in `probe`, whose code (and `area`'s) is the listed one, line for
+    /// line; and the types that fix the instances (`symbols`' signature,
+    /// `Probe`'s `size`, `flags` and `offset`) and `CPU_ID_OFFSET` are the
+    /// listed ones. A change to any of them, or a new caller, updates the
+    /// list here and the argument in the item's doc in one change.
+    #[test]
+    fn probe_reads_are_listed() {
+        use crate::testutil::{assert_only_at, grant_sites};
+        // Spelled in parts, so that this test's lines match nothing.
+        let (global, cpu) = (concat!("read_", "global"), concat!("read_", "cpu_id"));
+        let probe = concat!("pub fn ", "probe(");
+        let harness_global = concat!("fn read_", "global_reads_the_value(");
+        let harness_cpu = concat!("fn read_", "cpu_id_reads_the_field(");
+        assert_only_at(
+            &std::format!("{global}("),
+            &[("rseq.rs:", probe, 3), ("rseq.rs:", harness_global, 2)],
+        );
+        assert_only_at(
+            &std::format!("{cpu}("),
+            &[("rseq.rs:", probe, 1), ("rseq.rs:", harness_cpu, 1)],
+        );
+        // No other spelling reaches either item: no turbofish, no rename,
+        // no function pointer.
+        let uses = std::format!("use super::{{CPU_ID_OFFSET, {cpu}, {global}}};`");
+        let declaration = std::format!("unsafe fn {global}<T: Copy>(p: *const T) -> T`");
+        for name in [global, cpu] {
+            for (_, at) in grant_sites(name) {
+                let text = at.split_once(": `").map_or("", |(_, t)| t);
+                let ok = text.contains(&std::format!("{name}("))
+                    || text.starts_with(harness_global)
+                    || text.starts_with(harness_cpu)
+                    || text == uses
+                    || text == declaration;
+                assert!(
+                    ok,
+                    "{at}: got = `{name}` other than in a call, want = only calls"
+                );
+            }
+        }
+        // A function's code, from its item line to its closing brace, as
+        // trimmed lines without comment or empty lines.
+        let src = include_str!("rseq.rs");
+        let body = |item: &str| -> std::vec::Vec<&str> {
+            let at: std::vec::Vec<_> = src.match_indices(item).map(|(i, _)| i).collect();
+            assert_eq!(
+                at.len(),
+                1,
+                "`{item}`: got = {} matches, want = 1",
+                at.len()
+            );
+            let b = &src[at[0]..];
+            b[..b.find("\n}\n").unwrap()]
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with("//"))
+                .collect()
+        };
+        let want_probe = [
+            concat!("pub fn ", "probe() -> (r: Probe)"),
+            "ensures",
+            "!r.present ==> r == Probe::NONE,",
+            "r.registered ==> r.present && r.size as int >= CPU_ID_OFFSET + 4,",
+            "{",
+            "let (so, ss, sf) = symbols();",
+            "if so.is_null() || ss.is_null() {",
+            "return Probe::NONE;",
+            "}",
+            concat!(
+                "let (offset, size) = unsafe { (read_",
+                "global(so), read_",
+                "global(ss)) };"
+            ),
+            "let flags = if sf.is_null() {",
+            "0",
+            "} else {",
+            concat!("unsafe { read_", "global(sf) }"),
+            "};",
+            "let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {",
+            concat!(
+                "unsafe { read_",
+                "cpu_id(area(offset), Ghost(size)) != CPU_ID_UNINITIALIZED }"
+            ),
+            "};",
+            "Probe {",
+            "present: true,",
+            "size,",
+            "flags,",
+            "offset,",
+            "registered,",
+            "}",
+        ];
+        let got = body(concat!("pub fn ", "probe() -> (r: Probe)"));
+        assert_eq!(
+            got, want_probe,
+            "probe: got = {got:#?}, want = {want_probe:#?}"
+        );
+        let want_area = [
+            concat!("pub fn ", "area(offset: isize) -> *mut u8 {"),
+            "crate::vspec::addr::addr_to_ptr(thread_pointer().wrapping_add_signed(offset))",
+        ];
+        // The types that fix the two instances the harness runs (`symbols`'
+        // results, `Probe`'s fields) and the field offset L2 states.
+        for line in [
+            concat!(
+                "fn symbols() -> (*const isize, *const u32, ",
+                "*const u32) {"
+            ),
+            concat!("pub size: ", "u32,"),
+            concat!("pub flags: ", "u32,"),
+            concat!("pub offset: ", "isize,"),
+            concat!("pub const CPU_ID_OFFSET: ", "usize = 4;"),
+        ] {
+            let n = src.lines().filter(|l| l.trim() == line).count();
+            assert_eq!(n, 1, "`{line}`: got = {n} lines, want = 1");
+        }
+        let got = body(concat!("pub fn ", "area(offset: isize)"));
+        assert_eq!(
+            got, want_area,
+            "area: got = {got:#?}, want = {want_area:#?}"
+        );
     }
 
     /// The calling thread's allowed CPUs (`sched_getaffinity`: the cpuset

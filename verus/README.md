@@ -99,9 +99,10 @@ Isla run or `make emptyasm`) covers its whole contract, as
 (Isla: ...; premises: ...)", meaning an Isla run covers it but for the
 platform premises (P and K labels) the status names, or "discharged on
 premises (Kani: ...; premises: ...)", meaning a Kani harness covers it
-but for the C premises (C labels, [kani/premises.md](kani/premises.md))
-the status names. A function whose status is "trusted (partly checked,
-...)" is shown in its own column and
+but for the C premises and the loader and kernel premises (C and L
+labels, [kani/premises.md](kani/premises.md)) the status names. A
+function whose status is "trusted (partly checked, ...)" is shown in its
+own column and
 not counted in the combined share, since part of its contract is still
 assumed. Discharged seams that are not functions
 (constants, types, `assume_specification`s) do not enter either share.
@@ -274,6 +275,7 @@ items' docs name the test that checks them. A separate guard,
 | `arena::array_layout_tests::array_layout_only_at_asserted_instances` | `axiom_array_layout` only at the instances the build's `const` assertions state, and generically in `split_array`, which is called only on fields of those types |
 | `api::mallctl::tests::c_buffer_reads_are_listed` | `from_raw_parts` and `read_unaligned` in verified code only in `mallctl`'s `name_bytes`, `load`, `query_ptr` and `mib_in`; those helpers used only in the functions that read the C program's name, `newp` and MIB, and keeping the `requires` that make what they read the caller's buffer (premise C2, [kani/premises.md](kani/premises.md)); the `callers:` test of the `from_raw_parts` and `read_unaligned` seams. Mutants killed: a use in another file (`config` `cstr`), in another fn (`old_len`), in method form (`name_byte`), through a `use .. as` inside a fn, through a turbofish (`load::<u8>`) and a `self::` path, a second use and a removed use in `mib_in`, `load` called from a fn not listed for it (`batch_query`), a dropped `c_readable` requires (`load`), a `&'static` return on `name_bytes`, and a one-line `#[inline(always)] fn` (12 mutants; uses in an `external_body` fn, in a comment and of another module's `load` pass, as they should). Known escapes: a rename through a `use .. as` outside `verus!` (its later uses are not seen), a use a `macro_rules!` defined outside `verus!` expands to (the scan reads source lines, not expansions), and a helper's kept clause moved or weakened inside its item (the clauses are matched as text from the `fn` line to the body's `{`, so one moved to `ensures` or guarded by `false ==>` passes the scan) |
 | `vspec::ptr::array_view_tests::array_view_only_at_the_checked_instance` | `axiom_array_view` once, in `heap::others::node_view`, at the `[CacheHeader; NCLASSES]` its Kani harness checks |
+| `rseq::tests::probe_reads_are_listed` | `rseq::read_global` and `rseq::read_cpu_id` called only in `rseq::probe` (and their Kani harnesses), on the `symbols` results and `area` of the offset read, with `probe`'s and `area`'s code line for line, and `symbols`' signature, `Probe`'s `size`, `flags` and `offset` and `CPU_ID_OFFSET` as listed (premises L1 and L2, [kani/premises.md](kani/premises.md)); the `callers:` test of the `read_global` and `read_cpu_id` seams. Mutants killed: a dropped `ss` null check, `area(offset + 8)`, `area(0)`, a negated offset in `area`, a shadowing `let offset`, a fourth `read_global` call in `probe`, a third in its harness, a call in another fn (`reread`), a function pointer through a turbofish (`read_global::<u32>`), a `use .. as` rename of `read_cpu_id`, `flags` read through `ss`, a size guard without its `+ 4`, and `CPU_ID_OFFSET` changed (13 mutants). Known escapes: a call a macro assembles from parts (`paste!`, `concat_idents!`), and code `include!`d from outside `src/` (the scan reads the source lines under `src/`) |
 
 The tests check where a premise is used, not that it holds: a new site
 fails a test so that a person reads its argument. The call-site scans

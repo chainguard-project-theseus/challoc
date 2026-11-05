@@ -141,19 +141,21 @@ on a premise of Verus's own model (a trusted seam such as
 `discharged on premises (Kani: <harness path>; premises: <what>)` is
 the same status for Kani harnesses that run the item's own body and
 cover its whole contract, as for `discharged (Kani: ...)`, except for
-facts about what the C program stores in, or passes through, challoc's
-exported C symbols, which no harness reaches: the C premises of
-`verus/kani/premises.md` ("Premises"), which `<what>` lists by label,
-each label optionally followed by a gloss in parentheses, as for Isla.
-`seams.sh --check` resolves its harness paths as it does those of a
-`discharged (Kani: ...)` status. The premises stay assumed, and
+facts no harness reaches: what the C program stores in, or passes
+through, challoc's exported C symbols (the C premises of
+`verus/kani/premises.md`, "Premises"), and what glibc's loader and the
+Linux kernel place at an address challoc reads but does not allocate
+(its L premises, "Loader and kernel premises"), which `<what>` lists by
+label, each label optionally followed by a gloss in parentheses, as for
+Isla. `seams.sh --check` resolves its harness paths as it does those of
+a `discharged (Kani: ...)` status. The premises stay assumed, and
 `verus/count` counts the seam as discharged. A contract that also rests
 on anything else is `trusted (partly checked, ...)`: a premise of
 Verus's own model, as for Isla, and also two things a harness can leave
 out that an Isla run cannot: an obligation on Rust callers inside
 challoc that the item's `requires` does not state (an `unsafe fn`'s
 `# Safety` premise), and a pointer's provenance.
-The one exception is the caller obligation, and only when the status
+One exception is the caller obligation, and only when the status
 names a guard test (`verus/README.md`, "Guard tests") that confines it:
 `discharged on premises (Kani: <harness path>; premises: <what>;
 callers: <test path>)`. The test must list every caller of the item, or
@@ -167,16 +169,28 @@ known escapes, the uses it cannot see, in a `Known escapes:` part.
 and the guard-test table has a row whose first cell names that path in
 full with both parts; `verus/count` fails on a `callers:` clause
 anywhere but in a Kani `discharged on premises` status, or on one that
-names no `#[test]` fn under `src/`. A contract that rests on any other
+names no `#[test]` fn under `src/`, and on a Kani status that names an
+L premise without one, since an L premise holds only for the addresses
+the item's callers pass. A contract that rests on any other
 caller obligation, or on one no such test confines, stays `trusted
 (partly checked, ...)`.
+The other is the provenance of an address an L premise defines (a
+value the loader resolved, or one computed from such values as the
+premise states): for an item that reads through such an address, the
+argument of `verus/kani/premises.md` ("Provenance of the addresses")
+covers it instead, showing that the memory lies outside the Rust
+abstract machine and so is exposed. No tool checks that argument; a
+status whose pointer comes from an `asm!` output names it in its gloss.
+The harness runs such an item on a stand-in for the memory no larger
+and no more aligned than the premises state, holding any value.
 Only Isla's and Kani's checks take this status: `verus/count` fails on
 one that cites another check or both, names no premise, or names
 anything but labels the cited check's file defines: it reads the
 `- **LABEL, ...**` bullets of `verus/isla/seams.md`'s "Platform
 premises" section (P and K labels) for Isla and of
-`verus/kani/premises.md`'s "Premises" section (C labels) for Kani, and
-resolves each label against them. The bounds of an
+`verus/kani/premises.md`'s "Premises" and "Loader and kernel premises"
+sections (C and L labels) for Kani, each section's labels with its own
+letter, and resolves each label against them. The bounds of an
 Isla check are the build, link and platform residuals `verus/isla/seams.md`
 states for its runs (the static library's code and register assignments,
 the Linux user state the runs start from, the CPU configurations
