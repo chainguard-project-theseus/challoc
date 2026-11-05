@@ -13,8 +13,6 @@ file.
 | `axiom_c...window` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_acquired` | axiom | allocator invariant | none (assumption) | trusted |
 | `Lock::value_ptr` | external_body | raw pointer (internal) | Kani | trusted |
-| `cell_ref` | external_body | UnsafeCell/volatile/transmute | Verus | trusted |
-| `cell_mut` | external_body | UnsafeCell/volatile/transmute | Verus | trusted |
 | `LockGuard::drop` | external_body | atomics primitive | loom/GenMC | trusted |
 
 ## `RawLock::lock_slow`
@@ -117,53 +115,9 @@ Hashes: contract 3118686952, body 2553620183.
 pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
 ```
 
-## `cell_ref`
-
-src/lock.rs:1165. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: Verus. Status: trusted.
-
-> [`PCell::borrow`] with the permission `t`.
-
-Body mints Tracked at line 1173.
-
-Hashes: contract 1530591252, body 1034020046.
-
-```rust
-fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
-    requires
-        t@.id() == c.id(),
-    ensures
-        *r == *t@.value(),
-    opens_invariants none
-    no_unwind
-```
-
-## `cell_mut`
-
-src/lock.rs:1180. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: Verus. Status: trusted.
-
-> [`PCell::borrow_mut`] with the permission `t`.
-
-Body mints Tracked at line 1190.
-
-Hashes: contract 2313273051, body 2927460227.
-
-```rust
-fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
-    requires
-        old(t)@.id() == c.id(),
-    ensures
-        *r == *old(t)@.value(),
-        *final(r) == *final(t)@.value(),
-        final(t)@.id() == c.id(),
-    opens_invariants none
-    no_unwind
-```
-
 ## `LockGuard::drop`
 
-src/lock.rs:1200. Kind: external_body. Category: atomics primitive.
+src/lock.rs:1193. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return).
 
 Hashes: contract 3065263068, body 2348458592.

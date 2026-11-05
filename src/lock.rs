@@ -1146,20 +1146,14 @@ impl<T> DerefMut for LockGuard<'_, T> {
 
 // The guard's two reads of its cell: [`PCell::borrow`] and
 // [`PCell::borrow_mut`] with the permission taken from the guard's
-// field. `c.borrow(Tracked(t.borrow()))` and
-// `c.borrow_mut(Tracked(t.borrow_mut()))` verify as they are, but every
-// `Tracked(..)` expression in exec code erases to
-// `Tracked::assume_new_fallback(|| unreachable!())`, and that closure,
-// instantiated in `deref` and `deref_mut` for every guarded type, changed
-// the machine code of `Shared::free_huge` (an extra range check of the
-// run state byte) and `ClassState::claim_with` (block order) on x86_64.
-// These two pass `Tracked::assume_new()` instead. Trusted: each contract
-// is the vstd one of the call it makes, restated for a permission held by
-// reference (`&Tracked<PointsTo<T>>`, `&mut Tracked<PointsTo<T>>`) rather
-// than passed as `Tracked<&PointsTo<T>>`.
+// field. Each contract is the vstd one of the call it makes, carried to
+// a permission held by reference (`&Tracked<PointsTo<T>>`,
+// `&mut Tracked<PointsTo<T>>`) rather than passed as
+// `Tracked<&PointsTo<T>>`. Outside Verus `Tracked(..)` erases to
+// `Tracked::assume_new_fallback(|| unreachable!())`, which leaves `t`
+// unused in an ordinary build.
 
 /// [`PCell::borrow`] with the permission `t`.
-#[verifier::external_body]
 #[inline(always)]
 #[allow(unused_variables)]
 fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
@@ -1170,11 +1164,10 @@ fn cell_ref<'b, T>(c: &'b PCell<T>, t: &'b Tracked<PointsTo<T>>) -> (r: &'b T)
     opens_invariants none
     no_unwind
 {
-    c.borrow(Tracked::assume_new())
+    c.borrow(Tracked(t.borrow()))
 }
 
 /// [`PCell::borrow_mut`] with the permission `t`.
-#[verifier::external_body]
 #[inline(always)]
 #[allow(unused_variables)]
 fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b mut T)
@@ -1187,7 +1180,7 @@ fn cell_mut<'b, T>(c: &'b PCell<T>, t: &'b mut Tracked<PointsTo<T>>) -> (r: &'b 
     opens_invariants none
     no_unwind
 {
-    c.borrow_mut(Tracked::assume_new())
+    c.borrow_mut(Tracked(t.borrow_mut()))
 }
 
 // Trusted: Verus wants a destructor that opens no invariant and cannot
