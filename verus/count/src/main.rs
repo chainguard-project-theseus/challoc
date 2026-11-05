@@ -21,7 +21,9 @@
 //! premises (Kani: ...; premises: ...)" (an Isla check or a Kani harness
 //! covers it but for the premises its labels name: for Isla, the P and K
 //! labels verus/isla/seams.md defines; for Kani, the C labels
-//! verus/kani/premises.md defines; no other check may cite premises),
+//! verus/kani/premises.md defines, and optionally `; callers: <test>`, a
+//! guard test that must be a `#[test]` fn under src/; no other check may
+//! cite premises or callers),
 //! *partly checked* when it is "trusted (partly checked, ...)", and
 //! unchecked otherwise. The *combined* share counts verified and
 //! discharged functions; partly checked ones are shown apart and not
@@ -74,6 +76,48 @@ struct Counter {
     /// Files and `verus!` blocks that could not be read or parsed. Their
     /// functions are missing from every count, so any of them fails the run.
     errors: usize,
+}
+
+/// The paths of the `#[test]` fns in `items`, a file's or an inline
+/// module's, whose module path is `module` (`api::mallctl`, or empty for
+/// the crate root): `module::name` for each, through inline modules
+/// (`api::mallctl::tests::f`), which a [`PREMISED`] status's `callers:`
+/// clause names.
+fn test_fns(module: &str, items: &[Item], out: &mut BTreeSet<String>) {
+    let path = |name: &str| {
+        if module.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{module}::{name}")
+        }
+    };
+    for item in items {
+        match item {
+            Item::Fn(f) if f.attrs.iter().any(|a| a.path().is_ident("test")) => {
+                out.insert(path(&f.sig.ident.to_string()));
+            }
+            Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    test_fns(&path(&m.ident.to_string()), inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The module path of `file` under `src` (`src/api/mallctl.rs` is
+/// `api::mallctl`, `src/heap/mod.rs` is `heap`, `src/lib.rs` is empty).
+fn module_path(src: &Path, file: &Path) -> String {
+    let rel = file.strip_prefix(src).unwrap_or(file).with_extension("");
+    let mut segs: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if (segs.len() == 1 && segs[0] == "lib") || segs.last().is_some_and(|s| s == "mod") {
+        segs.pop();
+    }
+    segs.join("::")
 }
 
 /// The files of modules declared `#[cfg(test)] mod name;` (or under another
@@ -449,11 +493,13 @@ fn main() {
     // and Verus code never writes `let tracked =`.
     let stand_in = |text: String| text.replace("let tracked =", "let trackd_ =");
     let mut skip = Vec::new();
+    let mut tests = BTreeSet::new();
     for f in &files {
         if let Ok(text) = fs::read_to_string(f)
             && let Ok(file) = parse_file(&stand_in(text))
         {
             test_module_files(f, &file.items, &mut skip);
+            test_fns(&module_path(&src, f), &file.items, &mut tests);
         }
     }
     for f in files {
@@ -504,6 +550,7 @@ fn main() {
     let premises = Premises {
         isla: labels(ISLA_PREMISES),
         kani: labels(KANI_PREMISES),
+        tests,
     };
     let seams = read_ledger(&root.join("verus/ledger"), &premises).unwrap_or_else(|e| {
         eprintln!("verus/ledger: {e}");
@@ -681,6 +728,11 @@ fn parse_ledger(text: &str, premises: &Premises) -> Result<Vec<Seam>, String> {
         };
         let status = if let Some(rest) = status.strip_prefix(PREMISED) {
             premised(rest, premises).map_err(|e| format!("line {}: {loc}: {e}", i + 1))?
+        } else if status.contains("; callers: ") {
+            return Err(format!(
+                "line {}: {loc}: a `callers:` clause outside a `{PREMISED}Kani: ...)` status",
+                i + 1
+            ));
         } else if status.starts_with("discharged (") {
             Status::Discharged
         } else if status.starts_with("discharged") {
@@ -723,6 +775,9 @@ struct Premises {
     isla: BTreeSet<String>,
     /// The labels [`KANI_PREMISES`] defines.
     kani: BTreeSet<String>,
+    /// The paths of the `#[test]` fns under `src/` ([`test_fns`]), which a
+    /// Kani status's `callers:` clause may name.
+    tests: BTreeSet<String>,
 }
 
 /// The class of a [`PREMISED`] status, given the text after it: discharged
@@ -730,29 +785,63 @@ struct Premises {
 /// harnesses alone ([`harness_list`]) and names at least one premise, each
 /// a label that check's file defines ([`known_labels`]); an error
 /// otherwise, since only Isla's and Kani's checks count with named
-/// premises, and each only with its own.
+/// premises, and each only with its own. A Kani status may end in a
+/// `; callers: <test path>` clause ([`callers_clause`]), the guard test
+/// that confines the item's callers (SEAMS.md, "Status"), which must name
+/// a `#[test]` fn in `premises.tests`; no Isla status may.
 fn premised(rest: &str, premises: &Premises) -> Result<Status, String> {
     let (p, labels, file) = if let Some(p) =
         rest.strip_prefix("Isla: verus/isla/seams.md; premises: ")
     {
-        (p, &premises.isla, ISLA_PREMISES.0)
+        (p.to_owned(), &premises.isla, ISLA_PREMISES.0)
     } else if let Some((h, p)) = rest
         .strip_prefix("Kani: ")
         .and_then(|r| r.split_once("; premises: "))
         && harness_list(h)
     {
+        let (p, callers) = callers_clause(p);
+        if let Some(t) = callers
+            && !premises.tests.contains(t)
+        {
+            return Err(format!(
+                "{PREMISED}...)'s `callers:` clause names no #[test] fn under src/ (one path, `a::tests::f`): {rest:?}"
+            ));
+        }
         (p, &premises.kani, KANI_PREMISES.0)
     } else {
         return Err(format!(
             "{PREMISED}...) cites a check other than Isla's alone or Kani's alone, names a harness path not of the form `a::b::f`, or names no premise: {rest:?}"
         ));
     };
-    if !known_labels(p, labels) {
+    if !known_labels(&p, labels) {
         return Err(format!(
             "{PREMISED}...) names no premise, or one that is not the label of a premise {file} defines: {rest:?}"
         ));
     }
     Ok(Status::Discharged)
+}
+
+/// A Kani premise list (after `premises: `) with its trailing `; callers:
+/// <test path>` clause, outside every gloss, taken out: the list up to the
+/// clause and the rest from the `)` that ends the clause, and the path.
+/// The list as it is, and none, when it has no such clause.
+fn callers_clause(p: &str) -> (String, Option<&str>) {
+    const TAG: &str = "; callers: ";
+    let mut depth = 0usize;
+    for (i, c) in p.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => break,
+            ')' => depth -= 1,
+            ';' if depth == 0 && p[i..].starts_with(TAG) => {
+                let after = &p[i + TAG.len()..];
+                let end = after.find(')').unwrap_or(after.len());
+                return (format!("{}{}", &p[..i], &after[end..]), Some(&after[..end]));
+            }
+            _ => {}
+        }
+    }
+    (p.to_owned(), None)
 }
 
 /// Whether `list` is one or more Kani harness paths (`a::kani_f::f`, at
@@ -1365,6 +1454,9 @@ mod tests {
         Premises {
             isla: isla_labels(SEAMS_MD),
             kani: kani_labels(KANI_MD),
+            tests: ["a::tests::guard", "b::m::tests::other"]
+                .map(str::to_owned)
+                .into(),
         }
     }
 
@@ -1388,6 +1480,41 @@ mod tests {
         assert!(
             got.is_empty(),
             "Isla file read as Kani's: got = {got:?}, want = none"
+        );
+    }
+
+    /// The `#[test]` fns a `callers:` clause may name: each at its file's
+    /// module path and its inline modules', and nothing else (a Kani
+    /// harness, a plain fn, a test inside a fn).
+    #[test]
+    fn callers_name_the_test_fns_by_their_module_paths() {
+        let src = Path::new("src");
+        for (file, want) in [
+            ("src/lib.rs", ""),
+            ("src/api/mallctl.rs", "api::mallctl"),
+            ("src/heap/mod.rs", "heap"),
+            ("src/heap/heap_at_tests.rs", "heap::heap_at_tests"),
+        ] {
+            let got = module_path(src, Path::new(file));
+            assert_eq!(got, want, "{file}: got = {got:?}, want = {want:?}");
+        }
+        let text = "#[test]\nfn top() {}\nfn plain() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn guard() {}\n    #[kani::proof]\n    fn harness() {}\n    mod inner {\n        #[test]\n        fn deep() { #[test] fn nested() {} }\n    }\n}\n";
+        let file = parse_file(text).expect("fixture parses");
+        let mut got = BTreeSet::new();
+        test_fns("api::m", &file.items, &mut got);
+        let want: BTreeSet<String> = [
+            "api::m::top",
+            "api::m::tests::guard",
+            "api::m::tests::inner::deep",
+        ]
+        .map(str::to_owned)
+        .into();
+        assert_eq!(got, want, "tests: got = {got:?}, want = {want:?}");
+        let mut got = BTreeSet::new();
+        test_fns("", &file.items, &mut got);
+        assert!(
+            got.contains("top") && got.contains("tests::guard"),
+            "crate root: got = {got:?}"
         );
     }
 
@@ -1503,6 +1630,19 @@ Status: discharged (const assert: `k` in src/a.rs).
                 "discharged on premises (Kani: a::kani_f::f, a::kani_f::g, and a::kani_f::h; premises: C2)",
                 Status::Discharged,
             ),
+            (
+                "discharged on premises (Kani: a::kani_f::f; premises: C2 (a gloss; with a semicolon); callers: a::tests::guard)",
+                Status::Discharged,
+            ),
+            (
+                "discharged on premises (Kani: a::kani_f::f and a::kani_f::g; premises: C1 and C2; callers: b::m::tests::other)",
+                Status::Discharged,
+            ),
+            // A gloss is text: a `; callers: ` inside one is no clause.
+            (
+                "discharged on premises (Kani: a::kani_f::f; premises: C2 (x; callers: a::tests::missing))",
+                Status::Discharged,
+            ),
             // The same check and premises, still partly checked.
             (
                 "trusted (partly checked, Isla: verus/isla/seams.md; not checked: K1 (the kernel's side of the call))",
@@ -1560,6 +1700,20 @@ Status: discharged (const assert: `k` in src/a.rs).
             "discharged on premises(Kani: a::kani_f::f; premises: K1)",
             "discharged on premises: K1",
             "discharged, on premises (Kani: a::kani_f::f)",
+            // A `callers:` clause names one #[test] fn the tree has, after a
+            // Kani premise list, and nothing follows its `)`.
+            "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: a::tests::missing)",
+            "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: a::kani_f::f)",
+            "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: )",
+            "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: a::tests::guard and b::m::tests::other)",
+            "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: a::tests::guard; callers: a::tests::guard)",
+            "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: a::tests::guard) and more",
+            "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: a::tests::guard",
+            "discharged on premises (Kani: a::kani_f::f; premises: ; callers: a::tests::guard)",
+            "discharged on premises (Kani: a::kani_f::f; callers: a::tests::guard; premises: C2)",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: K1; callers: a::tests::guard)",
+            "discharged (Kani: a::kani_f::f; callers: a::tests::guard)",
+            "trusted (partly checked, Kani: a::kani_f::f; callers: a::tests::guard; not checked: x)",
         ] {
             let got = parse_ledger(&entry(status), &premises());
             assert!(got.is_err(), "{status}: got = {got:?}, want = an error");

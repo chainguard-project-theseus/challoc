@@ -14,8 +14,13 @@ core::slice::from_ref	core library	Kani	discharged (Kani: kani_proofs::slice::sl
 <[T]>::get_unchecked_mut::<I>	core library	Kani	discharged (Kani: kani_proofs::slice::slice_get_unchecked_mut)	contract 1623500229, body none
 <[T]>::swap_with_slice	core library	Kani	trusted (partly checked, Kani: kani_proofs::slice::slice_swap_with_slice; not checked: the provenance of the `*mut u8` elements, which the harness builds without provenance and compares by address)	contract 1022712554, body none
 <[T]>::rotate_left	core library	Kani	trusted (partly checked, Kani: kani_proofs::slice::slice_rotate_left, kani_proofs::slice::slice_rotate_left_swap; not checked: the verified instance's element type, a cache stack's `*mut u8` (the harnesses rotate `u64`s), the block-swap path at lengths other than 66 and 67, and the buffer path past 6 words, while a cache stack is longer)	contract 2862124004, body none
-# A `core::slice` function, specified against `core`'s documentation.
-core::slice::from_raw_parts::<'a, T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::slice::slice_from_raw_parts; not checked: that the elements are initialised and unchanged for `'a`, which the `requires` leaves to the caller (`name_bytes`))	contract 1605428040, body none
+# A `core::slice` function, specified against `core`'s documentation: Kani runs
+# it at bytes and words from every in-array start and length up to the
+# harness's bound; that the name bytes it borrows are initialised and not
+# changed by another thread during the call is the program's contract (C2),
+# and verified code calls it nowhere else
+# (api::mallctl::tests::c_buffer_reads_are_listed).
+core::slice::from_raw_parts::<'a, T>	core library	Kani	discharged on premises (Kani: kani_proofs::slice::slice_from_raw_parts; premises: C2 (the name bytes `name_bytes` borrows are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed)	contract 1605428040, body none
 # Slice views of element permissions, checked on arrays.
 slice_from_perms	raw pointer (internal)	Kani	trusted (partly checked, Kani: vspec::slice::kani_perms::slice_from_perms_elems; not checked: elements outside one allocation, the `# Safety` premise the `requires` does not state and the harness, on one array, assumes; that no permission holder writes the elements while the slice lives; element types other than `u64`, a padded pair and `AtomicU64`, and more than 5 elements)	contract 475554734, body 4015970110
 slice_mut_elems	raw pointer (internal)	Kani	trusted (partly checked, Kani: vspec::slice::kani_perms::slice_mut_elems_writes_through; not checked: elements outside one allocation, a zero-sized `T` or bytes not initialised, the premises the `requires` does not state and the harness, on one initialised array, assumes; that the elements are reached only through the slice while it lives; element types other than `u64` and `*mut u8`, and more than 5 elements)	contract 1159167311, body 1608609135
