@@ -1472,6 +1472,35 @@ spec fn zeros_ok(states: Map<nat, State>, zeros: Map<int, Zeroed>, t: SlabTable)
         ==> table::slab_zero(zeros, t, s as int)
 }
 
+/// The kernel answered a discard advice (`MADV_DONTNEED` or `MADV_FREE`)
+/// with success on a range holding the bytes of slab `x` of `t`
+/// (`purge::discard_covers`): what `settle` records of a slab it makes
+/// `Purged`, from the flush's report on the range.
+spec fn slab_discarded(t: SlabTable, x: int) -> bool {
+    purge::discard_covers(t.spec_slots().base + x * t.spec_slots().slab_size, t.spec_slots().slab_size)
+}
+
+/// Every owned `Purged` slab of `t` was discarded ([`slab_discarded`]):
+/// `settle` makes a slab `Purged` only when the flush reports the range
+/// holding it discarded. Opaque ([`lemma_purged_at`] reads it at one
+/// slab); a function of the fields it reads, as [`zeros_ok`] is.
+#[verifier::opaque]
+spec fn purged_ok(states: Map<nat, State>, t: SlabTable) -> bool {
+    forall|s: nat| #[trigger] states.contains_key(s) && states[s] == State::Purged ==> slab_discarded(t, s as int)
+}
+
+/// [`purged_ok`] at owned `Purged` slab `s`.
+proof fn lemma_purged_at(states: Map<nat, State>, t: SlabTable, s: nat)
+    requires
+        purged_ok(states, t),
+        states.contains_key(s),
+        states[s] == State::Purged,
+    ensures
+        slab_discarded(t, s as int),
+{
+    reveal(purged_ok);
+}
+
 /// [`zeros_ok`] at owned `Fresh` slab `s`, not a guard slab.
 proof fn lemma_zeros_at(states: Map<nat, State>, zeros: Map<int, Zeroed>, t: SlabTable, s: nat)
     requires
@@ -1571,11 +1600,17 @@ proof fn lemma_descs_update(g0: Inner, g1: Inner, k: nat)
         desc_ok(g1.dperms@, g1.table@, g1.arena@, k, g1.st(k), g1.dirty@[k]),
         g1.zeros == g0.zeros,
         g1.st(k) == g0.st(k) || g1.st(k) != State::Fresh,
+        g1.st(k) == g0.st(k) || g1.st(k) != State::Purged || slab_discarded(g1.table@, k as int),
     ensures
         g1.descs(),
 {
     reveal(descs_ok);
     reveal(zeros_ok);
+    reveal(purged_ok);
+    assert forall|s: nat| #[trigger] g1.states@.contains_key(s) && g1.states@[s] == State::Purged
+        implies slab_discarded(g1.table@, s as int) by {
+        assert(g0.states@.contains_key(s));
+    }
     assert forall|s: nat| #[trigger] g1.states@.contains_key(s) && g1.states@[s] == State::Fresh && !g1.table@.spec_is_guard(s as usize)
         implies table::slab_zero(g1.zeros@, g1.table@, s as int) by {
         assert(g0.states@.contains_key(s) && g0.states@[s] == State::Fresh);
@@ -1631,10 +1666,12 @@ impl Inner {
 
     /// The value holds the agreeing permission of every owned slab's
     /// descriptor ([`descs_ok`]) and the zero token of every owned `Fresh`
-    /// slab's bytes but the guards' ([`zeros_ok`]).
+    /// slab's bytes but the guards' ([`zeros_ok`]); and every owned
+    /// `Purged` slab was discarded ([`purged_ok`]).
     spec fn descs(&self) -> bool {
         &&& descs_ok(self.states@, self.dirty@, self.dperms@, self.table@, self.arena@)
         &&& zeros_ok(self.states@, self.zeros@, self.table@)
+        &&& purged_ok(self.states@, self.table@)
     }
 
     /// [`descs`](Inner::descs) at owned slab `s`.
@@ -2085,6 +2122,15 @@ impl ClassState {
         &&& self.inner.0.rank() == rank_class(self.arena as int, self.class as int)
     }
 
+    /// The table's class is the state's, for the rest of `class/`.
+    proof fn lemma_table_class(&self)
+        requires
+            self.inv(),
+        ensures
+            self.spec_table().spec_class() == self.spec_class(),
+    {
+    }
+
     /// The class's shared table.
     pub closed spec fn spec_table(&self) -> SlabTable {
         table_at(self.table)
@@ -2327,6 +2373,7 @@ impl ClassState {
             assert(inner.descs()) by {
                 reveal(descs_ok);
                 reveal(zeros_ok);
+                reveal(purged_ok);
             }
             assert(whole_groups(inner.states@.dom(), inner.table@)) by {
                 reveal(whole_groups);
@@ -2619,7 +2666,8 @@ impl ClassState {
     /// this arena's class lock (`g`), through the permission `g` holds for
     /// it, with the ghost state updated to match (the write side of
     /// [`state_locked`]). Nothing else changes. Never to `Fresh`: an owned
-    /// slab that left `Fresh` does not return to it.
+    /// slab that left `Fresh` does not return to it. To `Purged` only for a
+    /// slab a discard took ([`slab_discarded`]).
     ///
     /// [`state_locked`]: ClassState::state_locked
     #[allow(unused_variables)]
@@ -2631,6 +2679,7 @@ impl ClassState {
             *d == desc_at(self.spec_table(), slab),
             old(g).owns(slab as nat),
             s != State::Fresh,
+            s == State::Purged ==> slab_discarded(self.spec_table(), slab as int),
         ensures
             final(g).descs(),
             final(g).states@ == old(g).states@.insert(slab as nat, s),
@@ -3540,19 +3589,23 @@ spec fn prefix_addrs(t: SlabTable, slab: int, n: int) -> VSet<int> {
 /// a guard slab; the caller holds the slots' uniqueness tokens (`held`),
 /// so none of them is allocated, cached or in another claim at the call;
 /// the `n` slots are the slab's own (`n <= nslots`), so the range ends
-/// inside the slab; and `witness`, which this uses up, from a read of
-/// `purge::purged_zero` that returned true (`purge::PurgedZero`).
+/// inside the slab; `witness`, which this uses up, from a read of
+/// `purge::purged_zero` that returned true (`purge::PurgedZero`); and
+/// the kernel answered a discard advice on a range holding the bytes
+/// with success (`purge::discard_covers`, which says that some such call
+/// was, not which one or when). `take` passes the slab's: `settle` makes
+/// a slab `Purged` only when the flush reports the range holding it
+/// discarded, and the class lock value keeps that of every owned
+/// `Purged` slab (`purged_ok`).
 ///
-/// Premise, the caller's and trusted: the witness's read was made in the
-/// lock hold that claims the slots (`take` reads it there and passes it
-/// straight on), and then a `Purged` slab was discarded with
-/// `MADV_DONTNEED` and not written since: no batch of the process has
-/// used `MADV_FREE` before that read (`purge::Batch::flush` sets the flag
-/// before it issues one, and the lock orders that store before the read),
-/// `Purged` is set only in the lock hold that flushes the slab's discard
-/// (`ClassState::purge_empty`, `purge_curve`), and a `Purged` slab has no
-/// allocated slot until a claim makes it `Active`. Call site:
-/// `ClassState::take`.
+/// Premise, the caller's and trusted: the bytes' latest discard was
+/// `MADV_DONTNEED` and nothing has written them since. The witness's
+/// read was made in the lock hold that claims the slots (`take` reads it
+/// there and passes it straight on), and no batch of the process has used
+/// `MADV_FREE` before that read (`purge::Batch::flush` sets the flag
+/// before it issues one, and the lock orders that store before the read);
+/// a `Purged` slab has no allocated slot until a claim makes it `Active`.
+/// Call site: `ClassState::take`.
 ///
 /// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
 /// call sites to the ones named here: a new one is named here, with its
@@ -3573,6 +3626,7 @@ axiom fn axiom_discarded_slots_zero(
         0 <= n <= t.spec_slots().nslots,
         held.id() == t.spec_slots().loc,
         prefix_addrs(t, slab, n).subset_of(held@),
+        purge::discard_covers(t.spec_slots().addr(slab * t.spec_slots().sb), n * t.spec_slots().size),
     ensures
         z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
         z.len() == n * t.spec_slots().size,
@@ -4148,6 +4202,10 @@ impl ClassState {
         let tracked ticket = g.dperms.borrow().tracked_borrow(slab as nat).ticket();
         proof {
             lemma_state_byte_inj(state, g.st(slab as nat));
+            // A `Purged` slab's bytes were discarded (`settle`).
+            if state == State::Purged {
+                lemma_purged_at(g.states@, g.table@, slab as nat);
+            }
         }
         let ghost g0 = *g;
         if state != State::Active {
@@ -4205,8 +4263,9 @@ impl ClassState {
         // The zero pick's bytes, slots `0..n` of the slab: a `Fresh` slab's
         // are the first `n * size` bytes of its zero token, which the lock
         // value held from `take_group` on (`zs`); a `Purged` one
-        // was discarded with `MADV_DONTNEED` in the lock hold that made it
-        // `Purged` and has had no allocated slot since, and
+        // was discarded in the lock hold that made it `Purged` (the lock
+        // value keeps that discard's success, `purged_ok`) and has had no
+        // allocated slot since, and
         // `purged_is_zero` read true in this hold (its witness,
         // `axiom_discarded_slots_zero`). `ticket` is the state byte the
         // slab's descriptor permission recorded before `take` made the slab
@@ -4221,6 +4280,11 @@ impl ClassState {
             vstd::arithmetic::div_mod::lemma_mod_multiples_basic(slab as int, sl.sb);
             vstd::arithmetic::mul::lemma_mul_is_commutative(slab as int, sl.sb);
             assert(sl.addr(slab * sl.sb) == sl.base + slab * sl.slab_size);
+            // The pick's bytes are inside the slab, which a discard took.
+            if state == State::Purged {
+                assert(n * sl.size <= sl.slab_size);
+                purge::lemma_covers_inside(sl.base + slab * sl.slab_size, sl.slab_size, sl.addr(slab * sl.sb), n * sl.size);
+            }
         }
         let tracked zt = if zero {
             if state == State::Fresh {
