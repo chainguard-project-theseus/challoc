@@ -293,8 +293,8 @@ pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_p
 
 ## `axiom_array_view`
 
-src/vspec/ptr.rs:324. Kind: axiom. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: its one verified instance, `heap::others`' `[CacheHeader; NCLASSES]`, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table)).
+src/vspec/ptr.rs:327. Kind: axiom. Category: core library.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems, heap::others::kani_view::caches_array_view; not checked: the provenance clause `r.ptr() == a`, which Kani does not observe (the harnesses compare addresses), and that a shared permission to the array may stand in for its elements' permissions while they stay borrowed, a premise of Verus's own model that no tool checks, and `T` and `N` other than `[CacheHeader; NCLASSES]` and the harnesses' samples, which `vspec::ptr::array_view_tests::array_view_only_at_the_checked_instance` keeps out of the proofs).
 
 > A shared view of the `[T; N]` at `a` lent by its elements' permissions: `perms` holds an initialised permission to each element ([`array_elem_ptr`]), so it holds the array, whose value is theirs, for as long as they stay borrowed.
 
@@ -318,7 +318,7 @@ pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut
 
 ## `ref_ptr`
 
-src/vspec/ptr.rs:352. Kind: external_body. Category: raw pointer (internal).
+src/vspec/ptr.rs:355. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_ref_ptr).
 
 > `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
@@ -334,7 +334,7 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
 
 ## `core::ptr::read_unaligned::<T>`
 
-src/vspec/ptr.rs:390. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:393. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed).
 
 > `core::ptr::read_unaligned`.
@@ -352,7 +352,7 @@ pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> 
 
 ## `<*const T>::read_unaligned`
 
-src/vspec/ptr.rs:398. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:401. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed).
 
 > `<*const T>::read_unaligned`.
@@ -370,7 +370,7 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
 
 ## `core::ptr::write_unaligned::<T>`
 
-src/vspec/ptr.rs:406. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:409. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_unaligned).
 
 > `core::ptr::write_unaligned`.
@@ -389,7 +389,7 @@ pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src:
 
 ## `<*mut T>::write_unaligned`
 
-src/vspec/ptr.rs:415. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:418. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_unaligned).
 
 > `<*mut T>::write_unaligned`.

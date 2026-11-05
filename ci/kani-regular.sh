@@ -23,6 +23,8 @@
 # `zero_records_zeroes` and `untracked_in_place_is_untracked` rows are
 # CBMC's verification times, one harness per call at quantum 16 on the
 # 8 vCPU guest (2026-11-04).
+# The `caches_array_view` row is CBMC's verification time, one harness per
+# call at quantum 16 on the 8 vCPU guest (2026-11-05).
 # A harness not listed counts as
 # $default seconds, so a new one lands in some shard without an edit
 # here; add it to the table when it takes more than half a minute.
@@ -67,6 +69,7 @@ weights='
   kani_proofs::slice::sort_ptrs_10 57
   config::kani_config::display_issue_bad_value 57
   config::kani_config::display_issue_out_of_range 56
+  heap::others::kani_view::caches_array_view 55
   kani_proofs::stats::fig_mul_exact 54
   kani_proofs::slice::sort_ptrs_by_key_10 33
   heap::cache::kani_cache::home_ptr_at_is_the_home_header 28

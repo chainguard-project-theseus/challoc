@@ -1136,3 +1136,73 @@ mod kani_aborts {
         assert_not_home(&arena, &home);
     }
 }
+
+/// Kani check of `vspec::ptr::axiom_array_view` at its one instance
+/// (`verus/ledger/src/vspec/ptr.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_view {
+    use super::{ArenaCaches, CacheHeader, node_caches_ptr};
+    use crate::layout::NCLASSES;
+    use core::mem::{MaybeUninit, align_of, size_of};
+
+    /// `axiom_array_view` at `[CacheHeader; NCLASSES]`, the array
+    /// `node_view` lends from an `others` node's header permissions and
+    /// `node_caches_ptr` computes (`node_arr`). The harness checks, for a
+    /// node of any bytes at the address Kani gives the local, and every
+    /// class `c < NCLASSES`: the array is `NCLASSES` headers of 64 bytes
+    /// each, aligned as one (the `requires`' `0 < N` and `0 <
+    /// size_of::<T>()`); `node_caches_ptr` gives the node's `caches`
+    /// field, 64 bytes past the node, non-null and aligned, whose bytes
+    /// do not wrap the address space; element `c` (`array_elem_ptr`,
+    /// `64 * c` bytes past the array, derived from its pointer) is
+    /// `node_hdr`'s address, the node's plus `64 + 64 * c`, is `&(*a)[c]`,
+    /// and is dereferenceable; the whole array is dereferenceable (its
+    /// bytes initialised because the harness writes every one, which
+    /// stands for `r.is_init()`: Kani does not observe initialisation), and
+    /// its element `c` reads as the header at element `c`'s address, every
+    /// field (`r.value()[c]`). Not checked: the provenance of the
+    /// pointers, which Kani does not observe (the harness compares
+    /// addresses), and the permissions themselves, which are ghost.
+    #[kani::proof]
+    fn caches_array_view() {
+        assert!(NCLASSES > 0 && size_of::<CacheHeader>() == 64);
+        assert_eq!(size_of::<[CacheHeader; NCLASSES]>(), NCLASSES * 64);
+        assert_eq!(align_of::<[CacheHeader; NCLASSES]>(), 64);
+        let bytes: [u8; size_of::<ArenaCaches>()] = kani::any();
+        let mut m = MaybeUninit::<ArenaCaches>::uninit();
+        let o = m.as_mut_ptr();
+        // SAFETY: `o` is the node's own storage, written whole; its
+        // fields are integers, raw pointers and `CacheHeader`s (integers
+        // and a raw pointer), valid with any bytes. Never moved.
+        unsafe { o.cast::<[u8; size_of::<ArenaCaches>()]>().write(bytes) };
+        // SAFETY: the node is in its storage, as `node_placed` states.
+        let a = unsafe { node_caches_ptr(o) };
+        // SAFETY: `o` is the node's storage; the place is not read.
+        assert!(core::ptr::eq(a, unsafe { &raw mut (*o).caches }));
+        assert_eq!(a.addr(), o.addr() + 64);
+        assert!(!a.is_null() && a.is_aligned());
+        assert!(a.addr().checked_add(NCLASSES * 64).is_some());
+        let c: usize = kani::any();
+        kani::assume(c < NCLASSES);
+        // SAFETY: `c < NCLASSES`: inside the array.
+        let e = unsafe { (a as *mut CacheHeader).add(c) };
+        assert_eq!(e.addr(), a.addr() + 64 * c);
+        assert_eq!(e.addr(), o.addr() + 64 + 64 * c);
+        // SAFETY: `a` is the array's address; the place is not read.
+        assert!(core::ptr::eq(e, unsafe { &raw mut (*a)[c] }));
+        assert!(kani::mem::can_dereference(e));
+        assert!(kani::mem::can_dereference(a));
+        // SAFETY: both checked dereferenceable. The array is read as one
+        // value, its bytes copied from `a`; nothing is written.
+        let (whole, hdr) = unsafe { (a.read(), &*e) };
+        let fields = |h: &CacheHeader| {
+            (
+                (h.len, h.cap, h.low_water, h.zeroed, h.slots, h.allocs),
+                (h.compact_mask, h.run_end, h.moved, h.probe_refilled),
+                (h.arena, h.mode, h.unsorted_flushes),
+            )
+        };
+        assert!(fields(&whole[c]) == fields(hdr));
+    }
+}

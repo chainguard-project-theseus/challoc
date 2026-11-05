@@ -320,7 +320,10 @@ pub open spec fn array_elem_ptr<T, const N: usize>(a: *mut [T; N], i: int) -> *m
 /// borrow lives, and no permission is duplicated that could be written.
 /// The array has an element (element 0's permission gives it the non-null,
 /// `T`-aligned address an array of `T` needs) and does not wrap the
-/// address space (so its elements are the permissions' objects).
+/// address space (so its elements are the permissions' objects). Used only
+/// at `[CacheHeader; NCLASSES]`, in `heap::others::node_view`, which
+/// `array_view_tests` pins and `heap::others::kani_view::caches_array_view`
+/// checks.
 pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut T, vstd::raw_ptr::PointsTo<T>>, a: *mut [T; N]) -> (tracked r: &'a vstd::raw_ptr::PointsTo<[T; N]>)
     requires
         0 < N,
@@ -461,3 +464,116 @@ pub proof fn lemma_raw_disjoint(
 }
 
 } // verus!
+
+/// The instance of `axiom_array_view` the proofs use, against the Kani
+/// harness that checks it (`verus/ledger/src/vspec/ptr.rs.md`).
+#[cfg(test)]
+mod array_view_tests {
+    use crate::testutil::grant_sites;
+    use std::vec::Vec;
+
+    /// `axiom_array_view` is generic in `T` and `N`, and the harness
+    /// `heap::others::kani_view::caches_array_view` checks it only at
+    /// `[CacheHeader; NCLASSES]`. Outside comments, the name appears on
+    /// two lines only: its definition here, and one call, with no
+    /// turbofish, spelled as below, in `heap::others::node_view`, as that
+    /// function's last expression, so its result is what `node_view`
+    /// returns, a `&'a PointsTo<[CacheHeader; NCLASSES]>` by its
+    /// signature, which fixes `T` and `N` (no line between that signature
+    /// and the call is a `}` at column 0, so the call is in its body); the
+    /// argument `a` is bound once in the function, to `node_arr(o)`. Any
+    /// other line naming it (a
+    /// second call, a generic use, a turbofish, a `use` with or without a
+    /// rename) fails the test.
+    #[test]
+    fn array_view_only_at_the_checked_instance() {
+        // Spelled in parts, so that this test's lines match nothing.
+        let name = concat!("axiom_array", "_view");
+        let def = concat!("pub axiom fn axiom_array", "_view<'a, T, const N: usize>(");
+        let call = concat!("crate::vspec::ptr::axiom_array", "_view(&perms.hdrs, a)");
+        let view = "proof fn node_view<'a>(";
+        let ret = "-> (tracked r: &'a PointsTo<[CacheHeader; NCLASSES]>)";
+        let mut defs = 0;
+        let mut calls = Vec::new();
+        for (sig, at) in grant_sites(name) {
+            let text = at
+                .split_once(": `")
+                .map_or("", |(_, t)| t.strip_suffix('`').unwrap_or(t));
+            if at.starts_with("vspec/ptr.rs:") && text.starts_with(def) {
+                defs += 1;
+            } else if at.starts_with("heap/others.rs:") && sig.starts_with(view) && text == call {
+                calls.push(at);
+            } else {
+                panic!(
+                    "{at}: got = `{name}` in `{sig}`, want = only its definition and the one \
+                     call in `node_view`, spelled `{call}`"
+                );
+            }
+        }
+        assert_eq!(defs, 1, "got = {defs} definitions of `{name}`, want = 1");
+        assert_eq!(calls.len(), 1, "got = calls {calls:?}, want = 1");
+
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/heap/others.rs"),
+        )
+        .unwrap_or_else(|e| panic!("heap/others.rs: got = {e}, want = its text"));
+        let lines: Vec<&str> = text.lines().collect();
+        let line: usize = calls[0]
+            .split(':')
+            .nth(1)
+            .and_then(|l| l.parse().ok())
+            .unwrap_or_else(|| panic!("{}: got = no line number, want = one", calls[0]));
+        let start = (0..line)
+            .rev()
+            .find(|&i| lines[i].starts_with(view))
+            .unwrap_or_else(|| panic!("heap/others.rs: got = no `{view}` above, want = one"));
+        assert!(
+            lines[start].ends_with(ret),
+            "node_view: got = `{}`, want = a signature ending `{ret}`",
+            lines[start]
+        );
+        assert_eq!(
+            lines.get(line).copied(),
+            Some("}"),
+            "{}: got = no `}}` after the call, want = the call ends `node_view`",
+            calls[0]
+        );
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let body = &lines[start + 1..line - 1];
+        assert!(
+            !body.contains(&"}"),
+            "node_view: got = an item closing between its signature and the call, want = none"
+        );
+        let binds: Vec<&str> = body
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| {
+                l.strip_prefix("let ").is_some_and(|l| {
+                    l.split_once('=')
+                        .map_or(l, |(p, _)| p)
+                        .split(|c: char| !ident(c))
+                        .any(|w| w == "a")
+                })
+            })
+            .collect();
+        assert_eq!(
+            binds,
+            ["let a = node_arr(o);"],
+            "node_view: got = bindings {binds:?} of `a`, want = one, to `node_arr(o)`"
+        );
+        let count = |want: &str| lines.iter().filter(|l| **l == want).count();
+        let arr =
+            "pub open spec fn node_arr(n: *mut ArenaCaches) -> *mut [CacheHeader; NCLASSES] {";
+        let got = count(arr);
+        assert_eq!(
+            got, 1,
+            "heap/others.rs: got = {got} lines `{arr}`, want = 1"
+        );
+        let harness = "    fn caches_array_view() {";
+        let got = count(harness);
+        assert_eq!(
+            got, 1,
+            "heap/others.rs: got = {got} lines `{harness}`, want = 1"
+        );
+    }
+}
