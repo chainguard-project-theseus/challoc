@@ -1283,8 +1283,9 @@ impl ClassState {
 
     /// The flush's report on `[addr, addr + len)`, page groups pushed by
     /// [`push_group`] (under the class lock since): discarded, every
-    /// `Empty` slab in it becomes `Purged`; not, they stay `Empty` and
-    /// count among the survivors for `oldest_empty`.
+    /// `Empty` slab in it becomes `Purged`, recorded as discarded
+    /// (`slab_discarded`, from the report's `discard_taken`); not, they
+    /// stay `Empty` and count among the survivors for `oldest_empty`.
     ///
     /// [`push_group`]: ClassState::push_group
     // The loop carries a Verus invariant.
@@ -1307,6 +1308,7 @@ impl ClassState {
             len as int % piece == 0,
             addr + len <= usize::MAX,
             forall|x: (int, int)| #[trigger] crate::purge::in_run(addr as int, len as int, piece, x) ==> pend(x),
+            done ==> crate::purge::discard_taken(addr as int, len as int),
         ensures
             final(t).inv(self, *final(g), crate::purge::minus(pend, addr as int, len as int, piece)),
             final(t).conf() == old(t).conf(),
@@ -1379,6 +1381,7 @@ impl ClassState {
                 sz > 0,
                 sz == slab_bytes(self),
                 addr == tb.base + f0 * sz,
+                done ==> crate::purge::discard_taken(addr as int, len as int),
                 piece == spp * sz,
                 spp == t0.spp@ as int,
                 len == cnt * sz,
@@ -1438,6 +1441,16 @@ impl ClassState {
                 // which holds `s`: the decrement below cannot underflow.
                 assert(g0.empty.map@.contains(s as nat));
                 vstd::set::lemma_set_contains_len(g0.empty.map@, s as nat);
+                // The slab's bytes are inside the range the flush reported
+                // discarded.
+                tb.lemma_slots_at();
+                use_type_invariant(self);
+                self.lemma_table_class();
+                let sa = tb.base + s * sz;
+                assert(addr <= sa && sa + sz <= addr + len) by (nonlinear_arith)
+                    requires addr == tb.base + f0 * sz, len == cnt * sz, sa == tb.base + s * sz, f0 <= s, s + 1 <= f0 + cnt, sz > 0;
+                crate::purge::lemma_taken_covers(addr as int, len as int, sa, sz);
+                assert(super::slab_discarded(tb, s as int));
             }
             self.set_state_locked(g, d, s, State::Purged);
             self.set_dirty_locked(g, d, s, 0);

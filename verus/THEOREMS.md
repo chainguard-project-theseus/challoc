@@ -1344,8 +1344,9 @@ meaning, and no stronger.
   `reserve_committed_raw` (`meta.rs`).
 - `MADV_DONTNEED` memory reads zero: `class::axiom_discarded_slots_zero`
   (`class/mod.rs`, called in `take`, for a `Purged` slab,
-  with the state ticket and the `PurgedZero` witness of a
-  `purge::purged_zero` read, `purge.rs`) and
+  with the state ticket, the `PurgedZero` witness of a
+  `purge::purged_zero` read, `purge.rs`, and the discard success
+  `purge::discard_covers` that `class::purged_ok` keeps) and
   `huge::axiom_discarded_zero` (`huge/mod.rs`, called in
   `zero_run`).
 - `huge::axiom_discarded_zero` is private to `huge`;
@@ -1357,9 +1358,14 @@ meaning, and no stronger.
   written a class region's bytes before `SlabTable::new`, nor a slab's
   bytes before `take` claims its first slots (the token's path from
   `new` to `take` is verified); pages past the huge mark were never
-  covered by a run; a `Purged` slab was discarded in the lock hold that
-  set the state (`class/decay.rs` sets it whatever the advice) and
-  has no allocated slot since; and `take` makes a zero claim of a
+  covered by a run; some discard advice on a range holding a `Purged`
+  slab succeeded, which is checked and timeless (`ClassState::settle`
+  in `class/decay.rs` sets `Purged` only on the flush's report, the
+  class lock value keeps it, `class::purged_ok`, and
+  `axiom_discarded_slots_zero` requires it, `purge::discard_covers`),
+  while that it was the bytes' latest discard, which advice it used,
+  and that the slab has had no allocated slot since are not; and `take`
+  makes a zero claim of a
   `Purged` one only while `purge::purged_is_zero` (`purge.rs`, a
   `Relaxed` load of `LAZY_EVER`) reads true under the lock
   (`class/mod.rs`, through `purge::purged_zero`, whose witness the
@@ -3835,12 +3841,15 @@ run authority stay those the batch's `free` was made from. The makers:
   success (`sys::madvise_ok`, from `Huge::rediscard`); that nothing has
   written it since is a premise. `class::axiom_discarded_slots_zero`
   takes any `Purged` slab whose claim holds a `purge::PurgedZero`
-  witness. That
+  witness and whose bytes lie in a range a discard advice succeeded on
+  (`purge::discard_covers`, which `ClassState::settle` records from the
+  flush's report as it sets `Purged`, and the class lock value keeps,
+  `class::purged_ok`). That
   witness comes from `purge::purged_zero` (`purge.rs`, verified: `Some`
   exactly when `purge::purged_is_zero`, a plain `Relaxed` load of
-  `purge::LAZY_EVER`, returns true); that the slab
-  was discarded with `MADV_DONTNEED` in the hold that set `Purged` and
-  is untouched since is a premise. `Batch::flush` mints no `Zeroed`
+  `purge::LAZY_EVER`, returns true); that the discard's advice was
+  `MADV_DONTNEED` and the slab is untouched since is a premise.
+  `Batch::flush` mints no `Zeroed`
   token, and no lock value holds one per `Purged` slab or extent
   (wolfi-dev/challoc#397, fresh-slab zero facts).
 - `MADV_FREE` and `MADV_DONTNEED` are treated alike: the theorem is
