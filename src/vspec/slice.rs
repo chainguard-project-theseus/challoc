@@ -14,8 +14,11 @@ verus! {
 /// it may write through that permission while the slice lives. Not
 /// stated: that the elements are initialised `T`s and unchanged for `'a`
 /// (the one caller, `mallctl`'s `name_bytes`, reads the caller's string
-/// for the call and ties `'a` to the call's token). The length is the
-/// result's; its elements are not stated.
+/// for the call and ties `'a` to the call's token; that the bytes are
+/// initialised and not changed by another thread is premise C2 of
+/// `verus/kani/premises.md`, and `api::mallctl::tests::c_buffer_reads_are_listed`
+/// keeps it the one verified caller). The length is the result's; its
+/// elements are not stated.
 pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *const T, len: usize) -> (r: &'a [T])
     requires
         data@.addr != 0,

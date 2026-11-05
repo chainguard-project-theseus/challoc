@@ -23,8 +23,8 @@ file.
 | `axiom_array_elem` | axiom | core library | Kani | trusted |
 | `axiom_array_view` | axiom | core library | Kani | trusted |
 | `ref_ptr` | external_body | raw pointer (internal) | Kani | discharged |
-| `ptr::read_unaligned::<T>` | assume_spec | core library | Kani | trusted |
-| `<*const T>::read_unaligned` | assume_spec | core library | Kani | trusted |
+| `ptr::read_unaligned::<T>` | assume_spec | core library | Kani | discharged |
+| `<*const T>:..._unaligned` | assume_spec | core library | Kani | discharged |
 | `ptr::write_...igned::<T>` | assume_spec | core library | Kani | discharged |
 | `<*mut T>::w..._unaligned` | assume_spec | core library | Kani | discharged |
 
@@ -334,8 +334,8 @@ pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
 
 ## `core::ptr::read_unaligned::<T>`
 
-src/vspec/ptr.rs:386. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes)).
+src/vspec/ptr.rs:390. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed).
 
 > `core::ptr::read_unaligned`.
 
@@ -352,8 +352,8 @@ pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> 
 
 ## `<*const T>::read_unaligned`
 
-src/vspec/ptr.rs:394. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes)).
+src/vspec/ptr.rs:398. Kind: assume_spec. Category: core library.
+Tool: Kani. Status: discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed).
 
 > `<*const T>::read_unaligned`.
 
@@ -370,7 +370,7 @@ pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
 
 ## `core::ptr::write_unaligned::<T>`
 
-src/vspec/ptr.rs:402. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:406. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_unaligned).
 
 > `core::ptr::write_unaligned`.
@@ -389,7 +389,7 @@ pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src:
 
 ## `<*mut T>::write_unaligned`
 
-src/vspec/ptr.rs:411. Kind: assume_spec. Category: core library.
+src/vspec/ptr.rs:415. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_unaligned).
 
 > `<*mut T>::write_unaligned`.

@@ -62,7 +62,10 @@
 # source file, or the status is "discharged" (a loom model runs a copy);
 # and when a line verus/kani/pins.txt lists (the source a Kani harness
 # runs a copy of) is not in place, or a copy those lines mark differs from
-# its original but for the rows marked `-only`.
+# its original but for the rows marked `-only`; or a Kani status names
+# `callers: <test>` and no `#[test]` fn has that path, or the guard-test
+# table of verus/README.md has no row naming it with its `Mutants killed:`
+# and `Known escapes:` parts.
 # The output depends only on the tree: files are read in byte order.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -619,17 +622,18 @@ gen() {
 
 # The checks the overrides statuses cite: one line `<overrides file> <tag>
 # <item>` per item of each `Kani: a, b and c`, `const assert: a, b and
-# c`, `Isla: FILE`, `emptyasm: a` or `loom: a` list (up to `;`, `)` or
+# c`, `Isla: FILE`, `emptyasm: a`, `loom: a` or `callers: a` list (up to
+# `;`, `)` or
 # the next tag), tag `Kani`, `assert`, `Isla` (its item `<seam> in FILE`),
 # `emptyasm` (its item `<seam> @ <fn> in <file>`) or `loom` (its item
-# `<seam> @ <mod>::<test>`); `none` for a
+# `<seam> @ <mod>::<test>`) or `callers` (a guard test); `none` for a
 # "discharged" or "partly checked" status, or a list, that cites nothing;
 # and `loomdischarged` (its item the seam) for a "discharged" status that
 # cites `loom:`, which a model running a copy cannot give. Reads the
 # overrides files given.
 cites() {
   for o in "$@"; do
-    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla"; tag["emptyasm: "] = "emptyasm"; tag["loom: "] = "loom" }
+    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla"; tag["emptyasm: "] = "emptyasm"; tag["loom: "] = "loom"; tag["callers: "] = "callers" }
     !/^#/ && NF >= 4 {
       k = 0
       for (t in tag) {
@@ -650,15 +654,17 @@ cites() {
   done
 }
 
-# harness PATH: exit 0 if PATH names a `#[kani::proof]` fn.
+# harness PATH [ATTR]: exit 0 if PATH names a `#[kani::proof]` fn (or a fn
+# with the attribute line `#[ATTR]`, `test` for a guard test).
 # `kani_proofs::m::f` is `f` in src/kani/m.rs; `a::b::m::f` is `f` in the
 # inline `mod m` of src/a/b.rs (or src/a/b/mod.rs), one `mod` per segment
 # after the file's. Inline mods are found by rustfmt's indentation.
 harness() {
+  attr=${2:-kani::proof}
   # shellcheck disable=SC2046 # one word per path segment
   set -- $(echo "$1" | sed 's/::/ /g')
   [ $# -ge 2 ] && [ "$1" != kani ] || return 1
-  if [ "$1" = kani_proofs ]; then shift; set -- kani "$@"; fi
+  if [ "$1" = kani_proofs ] && [ "$attr" = kani::proof ]; then shift; set -- kani "$@"; fi
   segs=$*; n=$(($# - 1)); file=''; mods=''
   while [ "$n" -ge 1 ]; do
     p=src/$(echo "$segs" | cut -d' ' -f1-"$n" | tr ' ' /)
@@ -668,12 +674,12 @@ harness() {
   done
   [ -n "$file" ] || return 1
   mods=$(echo "$segs" | cut -d' ' -f$((n + 1))- | awk '{ $NF = ""; print }')
-  awk -v mods="$mods" -v f="${segs##* }" '
+  awk -v mods="$mods" -v f="${segs##* }" -v a="$attr" '
     BEGIN { nm = split(mods, m, " "); d = 0; ind = ""; pub = "(pub(\\([a-z]+\\))? )?" }
     d < nm && $0 ~ ("^" ind pub "mod " m[d + 1] " \\{$") { d++; ind = ind "    "; p = 0; next }
     d > 0 && $0 == substr(ind, 5) "}" { exit 1 }
     d == nm && $0 ~ ("^" ind pub "fn " f "[(<]") { rc = !p; done = 1; exit }
-    $0 ~ ("^" ind "#\\[kani::proof\\]$") { p = 1; next }
+    $0 == (ind "#[" a "]") { p = 1; next }
     $0 !~ ("^" ind "(#\\[|//)") { p = 0 }
     END { exit done ? rc : 1 }
   ' "$file"
@@ -867,6 +873,20 @@ loomtest() {
   ' "$1/$lt_mod.rs"
 }
 
+# guardrow PATH: exit 0 if the guard-test table of verus/README.md (or of
+# $guardmd, for the self-tests; the
+# `| test | what it pins |` table under "## Guard tests") has a row whose
+# first cell names PATH in backquotes and whose text has the parts
+# `Mutants killed:` and `Known escapes:`, which a `callers:` status needs
+# (verus/SEAMS.md, "Status").
+guardrow() {
+  awk -F "|" -v t="\`$1\`" '
+    /^## / { g = ($0 == "## Guard tests") }
+    g && /^\| / && index($2, t) && index($0, "Mutants killed:") && index($0, "Known escapes:") { f = 1 }
+    END { exit !f }
+  ' "${guardmd:-verus/README.md}"
+}
+
 # checkcite OVERRIDES TAG ITEM: one line of cites (its loom models in
 # $loomdir, tests/loom/src by default): nothing when the cited check
 # resolves, else the error. A loom model runs a copy of the code it checks
@@ -879,6 +899,10 @@ checkcite() {
     Isla) isla "$1" "$3" || echo "seams: $1: Isla: $3: no such seam heading" ;;
     emptyasm) emptyasm "$1" "$3" || echo "seams: $1: emptyasm: ${3#* @ } is not this seam's fn and file, or names no one row of verus/emptyasm/blocks.txt" ;;
     loom) loomtest "${loomdir:-tests/loom/src}" "$1" "$3" || echo "seams: $1: loom: ${3#* @ } is no #[test] outside #[should_panic] in ${loomdir:-tests/loom/src} naming ${3%% @ *} in a file naming its source file" ;;
+    callers)
+      if ! harness "$3" test; then echo "seams: $1: callers: $3 names no #[test] fn"
+      elif ! guardrow "$3"; then echo "seams: $1: callers: $3 has no row in the guard-test table of verus/README.md with its Mutants killed: and Known escapes: parts"
+      fi ;;
     loomdischarged) echo "seams: $1: $3: discharged by a loom model, which runs a copy (at most partly checked)" ;;
     *) echo "seams: $1: $3: the status cites no check" ;;
   esac
@@ -1096,6 +1120,49 @@ case $mode in
         heap::no_such_mod::no_such_harness; do
       if harness "$c"; then echo "seams: self-test: $c resolved, want rejected"; fi
     done >> "$tmp/cites"
+    # A `callers:` path resolves only to a #[test] fn, and a guard test
+    # needs its row in the README table with both parts.
+    {
+      harness lock::tests::fork_record_uses_are_listed test ||
+        echo "seams: self-test: callers: lock::tests::fork_record_uses_are_listed rejected, want resolved"
+      if harness lock::tests::fork_record_uses_are_listed; then
+        echo "seams: self-test: Kani: lock::tests::fork_record_uses_are_listed (a #[test]) resolved, want rejected"
+      fi
+      for c in api::mallctl::kani_root::root_returns kani_proofs::ptr::ptr_add lock::tests::no_such_test; do
+        if harness "$c" test; then echo "seams: self-test: callers: $c resolved, want rejected"; fi
+      done
+      if guardrow lock::tests::no_such_test; then
+        echo "seams: self-test: callers: a guard-test row for lock::tests::no_such_test found, want none"
+      fi
+      # A real row without the two parts is no guard-test row for a status.
+      if guardrow lock::tests::entry_lock_order_uses_are_listed; then
+        echo "seams: self-test: callers: the row of lock::tests::entry_lock_order_uses_are_listed (no Mutants killed: or Known escapes:) accepted, want refused"
+      fi
+      # End to end, through cites and checkcite: a status whose callers
+      # test is gone is refused, and one naming the guard test this tree
+      # records is accepted.
+      co="$tmp/callers.overrides"
+      for t in lock::tests::no_such_test api::mallctl::tests::c_buffer_reads_are_listed; do
+        printf 'f\tcore library\tKani\t%s\n' "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: $t)" > "$co"
+        r=$(cites "$co" | while read -r ro rt rc; do if [ "$rt" = callers ]; then checkcite "$ro" "$rt" "$rc"; fi; done)
+        case $t in
+          *no_such_test) [ -n "$r" ] || echo "seams: self-test: callers: $t accepted, want refused" ;;
+          *) [ -z "$r" ] || echo "seams: self-test: callers: $t refused, want accepted: $r" ;;
+        esac
+      done
+      # A Kani harness with a guard-test row (in a fixture table) is still
+      # no #[test] fn.
+      # shellcheck disable=SC2016 # the backquotes are part of the row
+      printf '## Guard tests\n\n| `api::mallctl::kani_root::root_returns` | x. Mutants killed: y. Known escapes: z |\n' > "$tmp/guard.md"
+      printf 'f\tcore library\tKani\t%s\n' "discharged on premises (Kani: a::kani_f::f; premises: C2; callers: api::mallctl::kani_root::root_returns)" > "$co"
+      r=$(cites "$co" | while read -r ro rt rc; do if [ "$rt" = callers ]; then guardmd="$tmp/guard.md" checkcite "$ro" "$rt" "$rc"; fi; done)
+      case $r in
+        *"names no #[test] fn"*) ;;
+        *) echo "seams: self-test: callers: a Kani harness with a guard-test row accepted, want refused as no #[test] fn: $r" ;;
+      esac
+      (guardmd="$tmp/guard.md" guardrow api::mallctl::kani_root::root_returns) ||
+        echo "seams: self-test: callers: the fixture row of api::mallctl::kani_root::root_returns not found, want found"
+    } >> "$tmp/cites"
     # The same for assertion labels: one no file carries, one two blocks
     # carry, and a real label cited in the wrong file. The backticks are
     # part of the labels.

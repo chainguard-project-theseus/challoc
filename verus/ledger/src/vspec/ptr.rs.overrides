@@ -21,7 +21,13 @@ ref_ptr	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::ptr_ref_
 # buffers at every offset.
 core::ptr::read_volatile::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_volatile; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes))	contract 380533337, body none
 <*mut T>::sub	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani observes only through a dereference, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`))	contract 3919411524, body none
-core::ptr::read_unaligned::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes))	contract 3934529747, body none
-<*const T>::read_unaligned	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_unaligned; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes))	contract 604882496, body none
+# The unaligned reads of the C program's mallctl buffers: Kani runs them at
+# every offset; that the bytes are initialised and not changed by another
+# thread during the call is the program's contract (C2), and verified code
+# reads no other memory through them
+# (api::mallctl::tests::c_buffer_reads_are_listed).
+core::ptr::read_unaligned::<T>	core library	Kani	discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed)	contract 3934529747, body none
+<*const T>::read_unaligned	core library	Kani	discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed)	contract 604882496, body none
+# The unaligned writes, checked on buffers at every offset.
 core::ptr::write_unaligned::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_unaligned)	contract 3052813032, body none
 <*mut T>::write_unaligned	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_unaligned)	contract 342041177, body none
