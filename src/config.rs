@@ -2044,6 +2044,33 @@ mod linux {
     }
 
     } // verus!
+
+    /// The Kani harness of [`conf_buffer`], next to the private function
+    /// and its static.
+    #[cfg(kani)]
+    mod kani_conf_buffer {
+        use super::{CONF_BUF, MAX_TEXT, conf_buffer};
+
+        /// `conf_buffer`: no `ensures`; the call is defined, and the
+        /// `&'static mut [u8; MAX_TEXT + 1]` it returns is `CONF_BUF`
+        /// (`core::ptr::eq`), writable (`kani::mem::can_write`), and a
+        /// byte written at any index reads back there. Not checked: that
+        /// no two references are live at once, which rests on `load`'s
+        /// caller, `api::init`, running once.
+        #[kani::proof]
+        fn conf_buffer_is_conf_buf() {
+            let r = conf_buffer();
+            let p: *mut [u8; MAX_TEXT + 1] = r;
+            assert!(core::ptr::eq(p, core::ptr::addr_of_mut!(CONF_BUF)));
+            assert!(kani::mem::can_write(p));
+            let (i, v): (usize, u8) = (kani::any(), kani::any());
+            kani::assume(i <= MAX_TEXT);
+            // SAFETY: `p` is `r`, the only reference, writable above.
+            unsafe { (*p)[i] = v };
+            // SAFETY: as above.
+            assert_eq!(unsafe { (*p)[i] }, v);
+        }
+    }
 }
 
 #[cfg(test)]

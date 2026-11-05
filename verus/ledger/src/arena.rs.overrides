@@ -20,6 +20,10 @@ A_LAST_EXIT_PURGE	core library	Kani	discharged (const assert: `axiom_arena_layou
 axiom_arena_layout	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3337610579, body none
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arena_assemble	raw pointer (internal)	none (assumption)
+# A raw in-place fill, like `stats::zero_records`: zero bytes are a free
+# lock over an empty record, then the `index` store. The harness runs
+# the body on a slot of arbitrary bytes; the rank is a ghost field.
+Arena::put_stats	raw pointer (internal)	Kani	trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own)	contract 2008592952, body 2769252653
 # `core`'s tuple and `bool` order, as documented.
 key_less	core library	Kani	discharged (Kani: arena::kani_key_less::key_less_is_key_lt)	contract 3102880229, body 2028399596
 # `Arenas`'s byte offsets and layout, which the build checks with `fits`.

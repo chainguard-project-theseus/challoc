@@ -14,7 +14,8 @@ NO_ARRAYS	core library	Kani	discharged (Kani: heap::slotstate::kani_arrays::no_a
 # The byte at an address `byte` computes: a slot index below the
 # watermark that `commit` precedes, in an array `init` reserved. That
 # protocol is not a verified fact; it claims nothing about the byte.
-byte_at	raw pointer (internal)	RefinedRust
+# The harness runs the body on a byte of its own array.
+byte_at	raw pointer (internal)	Kani	trusted (partly checked, Kani: heap::slotstate::kani_byte_at::byte_at_is_the_byte; not checked: the `# Safety` contract, that `at` is a byte of a slot-state array that `commit` made writable and that the arrays live for the process, which is the protocol of `init`, `commit` and the watermark: the harness passes a byte of its own array)	contract 344538265, body 4214957818
 
 # The double-free window's premise (theorem_double_free_window): a
 # permission to the byte `step` operates on, whose value is a state, the
