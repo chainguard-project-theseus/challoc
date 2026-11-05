@@ -380,7 +380,11 @@ verus! {
 // returns is not stated either. A read also needs the bytes to be a valid
 // `T`: the reads require [`plain`], as `read_volatile` does, which only
 // the `axiom_plain_*` axioms give, for types valid for any initialised
-// bytes.
+// bytes. That the bytes are initialised, and not changed by another thread
+// during the call, is premise C2 of `verus/kani/premises.md` for the three
+// verified reads (`load`, `query_ptr` and `mib_in` in `api::mallctl`), each
+// of the C program's `newp` or MIB buffer
+// (`api::mallctl::tests::c_buffer_reads_are_listed`).
 
 /// `core::ptr::read_unaligned`.
 pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> T

@@ -153,6 +153,23 @@ Verus's own model, as for Isla, and also two things a harness can leave
 out that an Isla run cannot: an obligation on Rust callers inside
 challoc that the item's `requires` does not state (an `unsafe fn`'s
 `# Safety` premise), and a pointer's provenance.
+The one exception is the caller obligation, and only when the status
+names a guard test (`verus/README.md`, "Guard tests") that confines it:
+`discharged on premises (Kani: <harness path>; premises: <what>;
+callers: <test path>)`. The test must list every caller of the item, or
+confine every use of it, together with the clause each caller must keep
+for the obligation to reduce to the named premises; its row of the
+guard-test table must record its mutation evidence, the mutants it
+kills, in a `Mutants killed:` part; and the row must state the test's
+known escapes, the uses it cannot see, in a `Known escapes:` part.
+`seams.sh --check` fails unless `<test path>` names a `#[test]` fn
+(resolved as a harness path is, with `#[test]` for `#[kani::proof]`)
+and the guard-test table has a row whose first cell names that path in
+full with both parts; `verus/count` fails on a `callers:` clause
+anywhere but in a Kani `discharged on premises` status, or on one that
+names no `#[test]` fn under `src/`. A contract that rests on any other
+caller obligation, or on one no such test confines, stays `trusted
+(partly checked, ...)`.
 Only Isla's and Kani's checks take this status: `verus/count` fails on
 one that cites another check or both, names no premise, or names
 anything but labels the cited check's file defines: it reads the

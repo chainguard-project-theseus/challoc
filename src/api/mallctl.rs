@@ -5157,6 +5157,196 @@ mod tests {
             "an EINVAL read made the request"
         );
     }
+
+    /// The verified reads that rest on premise C2 of
+    /// `verus/kani/premises.md` (the C program's name, `newp` and MIB
+    /// bytes are initialised and unchanged by any other thread during the
+    /// call). In verified code (inside `verus!`, in a function that is not
+    /// `external_body`, `external`, `cfg(test)` or `cfg(kani)`, in the
+    /// files `testutil::shipped_sources` returns), every use of
+    /// `from_raw_parts` and `read_unaligned` is in one of the four helpers
+    /// listed, as many times as listed; each helper is used only in the
+    /// functions listed: `name_bytes` in `cstr`, which `mallctl` and
+    /// `mallctlnametomib` call on their name; `load` in `Io::write` and
+    /// `query_ptr` in `batch_query`, on the call's `newp`; `mib_in` in
+    /// `mallctlbymib` (and the theorems that restate those entry points'
+    /// bodies); and the helpers keep the contracts that tie what they read
+    /// to those buffers (`c_readable` of the caller's buffer, and for
+    /// `name_bytes` the call's string, with the slice borrowed from the
+    /// call's token). The helpers are private to this file, so their uses
+    /// are looked for here only: every mention of the name but a method
+    /// (`.name`), a `fn` item, or a path to another module's item
+    /// (`m::name` but for `self::`, `super::` or `mallctl::`). Known
+    /// escapes: a rename through a `use .. as` outside `verus!` (its later
+    /// uses are not seen), a use that a `macro_rules!` defined outside
+    /// `verus!` expands to, and a kept clause moved or weakened inside its
+    /// helper's item (`CONTRACTS` matches text from the `fn` line to the
+    /// body's `{`). `verus/README.md`'s guard-test row records the mutants
+    /// this test kills.
+    #[test]
+    fn c_buffer_reads_are_listed() {
+        use crate::testutil::{fn_item, shipped_sources};
+        const READS: [&str; 2] = ["from_raw_parts", "read_unaligned"];
+        const HELPERS: [&str; 5] = ["name_bytes", "cstr", "load", "query_ptr", "mib_in"];
+        const HERE: &str = "api/mallctl.rs";
+        // (the function in this file, the name it uses, uses).
+        const SITES: [(&str, &str, usize); 12] = [
+            ("name_bytes", "from_raw_parts", 1),
+            ("load", "read_unaligned", 1),
+            ("query_ptr", "read_unaligned", 1),
+            ("mib_in", "read_unaligned", 1),
+            ("cstr", "name_bytes", 1),
+            ("mallctl", "cstr", 1),
+            ("mallctlnametomib", "cstr", 1),
+            ("theorem_mallctl_reads_never_abort", "cstr", 1),
+            ("write", "load", 1),
+            ("batch_query", "query_ptr", 1),
+            ("mallctlbymib", "mib_in", 1),
+            ("theorem_mallctlbymib_reads_never_abort", "mib_in", 1),
+        ];
+        // (helper, a clause of its item, from its `fn` line to its body's
+        // `{`, that ties its read to the C buffer).
+        const CONTRACTS: [(&str, &str); 5] = [
+            (
+                "name_bytes",
+                "Tracked(call): Tracked<&CCall>) -> (r: &[u8])",
+            ),
+            ("name_bytes", "call.reads_str(p),"),
+            ("load", "c_readable(newp as *mut u8, newlen as int),"),
+            ("query_ptr", "c_readable(ptrs as *mut u8, newlen as int),"),
+            (
+                "mib_in",
+                "c_readable(mib as *mut usize, miblen as int * size_of::<usize>()),",
+            ),
+        ];
+        // The name a `fn` item line declares.
+        let fn_name = |sig: &str| -> std::string::String {
+            let rest = sig.split_once("fn ").map_or("", |(_, r)| r);
+            rest.split(['(', '<']).next().unwrap().into()
+        };
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        let mut found = Vec::new();
+        let mut items: Vec<(std::string::String, std::string::String)> = Vec::new();
+        for (rel, text) in shipped_sources() {
+            let mut depth = 0usize;
+            let mut attrs: Vec<&str> = Vec::new();
+            let mut sig = "";
+            let mut verified = false;
+            // The item of the helper whose `fn` line was seen last, until
+            // its body's `{`.
+            let mut item: Option<(std::string::String, std::string::String)> = None;
+            for (i, line) in text.lines().enumerate() {
+                let mut t = line.trim();
+                if t.starts_with("//") {
+                    continue;
+                }
+                if t.ends_with("verus! {") {
+                    depth += 1;
+                    // Code before the block's first `fn` counts as verified.
+                    (sig, verified) = ("", true);
+                } else if t == "} // verus!" {
+                    depth = depth.checked_sub(1).unwrap_or_else(|| {
+                        panic!("{rel}:{}: a `verus!` close with none open", i + 1)
+                    });
+                }
+                // Attributes, on lines of their own or before an item on
+                // the same line.
+                while t.starts_with("#[") {
+                    let Some(end) = t.find(']') else { break };
+                    attrs.push(&t[..=end]);
+                    t = t[end + 1..].trim_start();
+                }
+                if t.is_empty() {
+                    continue;
+                }
+                if fn_item(t) {
+                    sig = t;
+                    verified = !attrs.iter().any(|a| {
+                        a.contains("verifier::external_body")
+                            || a.contains("verifier::external]")
+                            || a.contains("cfg(test)")
+                            || a.contains("cfg(kani)")
+                    });
+                    let f = fn_name(sig);
+                    if rel == HERE && HELPERS.contains(&f.as_str()) {
+                        item = Some((f, std::string::String::new()));
+                    }
+                }
+                attrs.clear();
+                if let Some((f, s)) = &mut item {
+                    s.push_str(t);
+                    s.push('\n');
+                    if t == "{" || t.ends_with(" {") {
+                        items.push((core::mem::take(f), core::mem::take(s)));
+                        item = None;
+                    }
+                }
+                if depth == 0 || !verified || t.contains("assume_specification") {
+                    continue;
+                }
+                let names = READS.iter().map(|n| (*n, false));
+                let helpers = HELPERS.iter().filter(|_| rel == HERE).map(|n| (*n, true));
+                for (name, helper) in names.chain(helpers) {
+                    for (k, _) in t.match_indices(name) {
+                        let (before, after) = (&t[..k], &t[k + name.len()..]);
+                        if before.ends_with(ident) || after.starts_with(ident) {
+                            continue;
+                        }
+                        let other_path = before.ends_with("::")
+                            && !["self::", "super::", "mallctl::"]
+                                .iter()
+                                .any(|p| before.ends_with(p));
+                        if helper
+                            && (before.ends_with('.') || before.ends_with("fn ") || other_path)
+                        {
+                            continue;
+                        }
+                        found.push((
+                            rel.clone(),
+                            fn_name(sig),
+                            name,
+                            std::format!("{rel}:{}: `{t}`", i + 1),
+                        ));
+                    }
+                }
+            }
+            assert_eq!(depth, 0, "{rel}: a `verus!` block left open");
+        }
+        for (rel, f, name, at) in &found {
+            assert!(
+                rel == HERE && SITES.iter().any(|(s, n, _)| f == s && name == n),
+                "{at}: `{name}` in `{f}`, which is not a listed site. A verified read \
+                 through it rests on premise C2 only for the C program's name, `newp` \
+                 and MIB: argue the new site in verus/kani/premises.md and add it \
+                 here, in one change."
+            );
+        }
+        for (s, n, want) in SITES {
+            let got = found
+                .iter()
+                .filter(|(_, f, name, _)| f == s && *name == n)
+                .count();
+            assert_eq!(
+                got, want,
+                "{HERE} `{s}`: got = {got} uses of `{n}`, want = {want}"
+            );
+        }
+        for (f, clause) in CONTRACTS {
+            let got: Vec<_> = items.iter().filter(|(g, _)| g == f).collect();
+            assert_eq!(
+                got.len(),
+                1,
+                "{HERE} `{f}`: got = {} items, want = 1",
+                got.len()
+            );
+            assert!(
+                got[0].1.contains(clause),
+                "{HERE} `{f}`: got = item\n{}\nwant = one with `{clause}`, which ties its read to \
+                 the C buffer premise C2 covers",
+                got[0].1
+            );
+        }
+    }
 }
 
 /// Kani checks of `root` and `VERSION` (`verus/ledger/src/api/mallctl.rs.md`;
