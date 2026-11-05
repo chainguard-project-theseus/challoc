@@ -20,10 +20,10 @@
 //! "discharged on premises (Isla: ...; premises: ...)" or "discharged on
 //! premises (Kani: ...; premises: ...)" (an Isla check or a Kani harness
 //! covers it but for the premises its labels name: for Isla, the P and K
-//! labels verus/isla/seams.md defines; for Kani, the C labels
-//! verus/kani/premises.md defines, and optionally `; callers: <test>`, a
-//! guard test that must be a `#[test]` fn under src/; no other check may
-//! cite premises or callers),
+//! labels verus/isla/seams.md defines; for Kani, the C and L labels
+//! verus/kani/premises.md defines, and `; callers: <test>`, a guard test
+//! that must be a `#[test]` fn under src/, optional unless an L label is
+//! named; no other check may cite premises or callers),
 //! *partly checked* when it is "trusted (partly checked, ...)", and
 //! unchecked otherwise. The *combined* share counts verified and
 //! discharged functions; partly checked ones are shown apart and not
@@ -531,21 +531,19 @@ fn main() {
     let t = c.tallies.remove(&c.krate).unwrap_or_default();
     print_row(&c.krate, &t);
     fail_on_errors(c.errors);
-    let labels = |(file, section, prefixes): (&str, &str, &[char])| {
+    let labels = |(file, sections): PremiseFile| {
         let path = root.join(file);
-        let got = premise_labels(
+        premise_labels(
             &fs::read_to_string(&path).unwrap_or_else(|e| {
                 eprintln!("{}: {e}", path.display());
                 std::process::exit(2);
             }),
-            section,
-            prefixes,
-        );
-        if got.is_empty() {
-            eprintln!("{}: no premise labels in {section}", path.display());
+            sections,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("{}: {e}", path.display());
             std::process::exit(2);
-        }
-        got
+        })
     };
     let premises = Premises {
         isla: labels(ISLA_PREMISES),
@@ -761,13 +759,25 @@ fn parse_ledger(text: &str, premises: &Premises) -> Result<Vec<Seam>, String> {
 const PREMISED: &str = "discharged on premises (";
 
 /// Where the premises a [`PREMISED`] status may name are defined: the
-/// file, the section whose `- **LABEL, title.**` bullets define them, and
-/// the letters a label starts with ([`premise_labels`]). Isla's are the
-/// platform premises of its runs; Kani's are the facts about the C
-/// program a harness cannot reach.
-const ISLA_PREMISES: (&str, &str, &[char]) =
-    ("verus/isla/seams.md", "## Platform premises", &['P', 'K']);
-const KANI_PREMISES: (&str, &str, &[char]) = ("verus/kani/premises.md", "## Premises", &['C']);
+/// file, and each section whose `- **LABEL, title.**` bullets define
+/// them with the letters a label of that section starts with
+/// ([`premise_labels`]).
+type PremiseFile = (&'static str, &'static [(&'static str, &'static [char])]);
+
+/// Isla's premises: the platform premises of its runs.
+const ISLA_PREMISES: PremiseFile = (
+    "verus/isla/seams.md",
+    &[("## Platform premises", &['P', 'K'])],
+);
+/// Kani's premises: the facts about the C program, and about the memory
+/// the loader and the kernel set up, that a harness cannot reach.
+const KANI_PREMISES: PremiseFile = (
+    "verus/kani/premises.md",
+    &[
+        ("## Premises", &['C']),
+        ("## Loader and kernel premises", &['L']),
+    ],
+);
 
 /// The labels a [`PREMISED`] status may name, by the check it cites.
 struct Premises {
@@ -788,12 +798,14 @@ struct Premises {
 /// premises, and each only with its own. A Kani status may end in a
 /// `; callers: <test path>` clause ([`callers_clause`]), the guard test
 /// that confines the item's callers (SEAMS.md, "Status"), which must name
-/// a `#[test]` fn in `premises.tests`; no Isla status may.
+/// a `#[test]` fn in `premises.tests`, and must be there when the status
+/// names an L premise (a loader or kernel premise holds only for the
+/// addresses the item's callers pass); no Isla status may.
 fn premised(rest: &str, premises: &Premises) -> Result<Status, String> {
-    let (p, labels, file) = if let Some(p) =
+    let (p, labels, file, uncalled) = if let Some(p) =
         rest.strip_prefix("Isla: verus/isla/seams.md; premises: ")
     {
-        (p.to_owned(), &premises.isla, ISLA_PREMISES.0)
+        (p.to_owned(), &premises.isla, ISLA_PREMISES.0, false)
     } else if let Some((h, p)) = rest
         .strip_prefix("Kani: ")
         .and_then(|r| r.split_once("; premises: "))
@@ -807,15 +819,20 @@ fn premised(rest: &str, premises: &Premises) -> Result<Status, String> {
                 "{PREMISED}...)'s `callers:` clause names no #[test] fn under src/ (one path, `a::tests::f`): {rest:?}"
             ));
         }
-        (p, &premises.kani, KANI_PREMISES.0)
+        (p, &premises.kani, KANI_PREMISES.0, callers.is_none())
     } else {
         return Err(format!(
             "{PREMISED}...) cites a check other than Isla's alone or Kani's alone, names a harness path not of the form `a::b::f`, or names no premise: {rest:?}"
         ));
     };
-    if !known_labels(&p, labels) {
+    let Some(cited) = known_labels(&p, labels) else {
         return Err(format!(
             "{PREMISED}...) names no premise, or one that is not the label of a premise {file} defines: {rest:?}"
+        ));
+    };
+    if uncalled && let Some(l) = cited.iter().find(|l| l.starts_with('L')) {
+        return Err(format!(
+            "{PREMISED}...) names the loader or kernel premise {l} but no `; callers: <test>` clause, the guard test that confines the item's callers to the addresses {l} covers (verus/kani/premises.md, \"Loader and kernel premises\"): {rest:?}"
         ));
     }
     Ok(Status::Discharged)
@@ -859,15 +876,15 @@ fn harness_list(list: &str) -> bool {
     })
 }
 
-/// Whether a premise list (`K2 (gloss) and K3 (gloss)`, then the `)` that
-/// closes the status and only `.` and whitespace after it) names at least
-/// one premise and only labels in `known` (the cited check's premises,
-/// [`premise_labels`]), each optionally followed by a gloss in
-/// parentheses. A premise of Verus's own model (`the TLS slot premise`,
-/// `TlsCell::tp`) is no such label, nor is one that file does not define
-/// (`K4`, or another check's label), nor text after the closing `)` or
-/// inside a gloss that never closes.
-fn known_labels(list: &str, known: &BTreeSet<String>) -> bool {
+/// The labels a premise list (`K2 (gloss) and K3 (gloss)`, then the `)`
+/// that closes the status and only `.` and whitespace after it) names, when
+/// it names at least one premise and only labels in `known` (the cited
+/// check's premises, [`premise_labels`]), each optionally followed by a
+/// gloss in parentheses; none otherwise. A premise of Verus's own model
+/// (`the TLS slot premise`, `TlsCell::tp`) is no such label, nor is one
+/// that file does not define (`K4`, or another check's label), nor text
+/// after the closing `)` or inside a gloss that never closes.
+fn known_labels(list: &str, known: &BTreeSet<String>) -> Option<Vec<String>> {
     let mut bare = String::new();
     let mut depth = 0usize;
     let mut tail = None;
@@ -883,35 +900,43 @@ fn known_labels(list: &str, known: &BTreeSet<String>) -> bool {
             _ => {}
         }
     }
-    let Some(tail) = tail else {
-        return false;
-    };
-    if !tail.chars().all(|c| c == '.' || c.is_whitespace()) {
-        return false;
+    if !tail?.chars().all(|c| c == '.' || c.is_whitespace()) {
+        return None;
     }
-    let labels: Vec<&str> = bare
+    let labels: Vec<String> = bare
         .split(", ")
         .flat_map(|s| s.split(" and "))
-        .map(str::trim)
+        .map(|l| l.trim().to_owned())
         .collect();
-    labels.iter().all(|l| known.contains(*l))
+    labels.iter().all(|l| known.contains(l)).then_some(labels)
 }
 
-/// The labels of the premises a file defines: the letter in `prefixes`
-/// and the number that open each `- **LABEL, title.**` bullet of its
-/// `section` (up to the next `## ` heading).
-fn premise_labels(md: &str, section: &str, prefixes: &[char]) -> BTreeSet<String> {
-    md.lines()
-        .skip_while(|l| *l != section)
-        .skip(1)
-        .take_while(|l| !l.starts_with("## "))
-        .filter_map(|l| l.strip_prefix("- **")?.split_once(',').map(|(p, _)| p))
-        .filter(|p| {
-            p.strip_prefix(prefixes)
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        })
-        .map(str::to_owned)
-        .collect()
+/// The labels of the premises a file defines: for each of its `sections`,
+/// the letter in that section's prefixes and the number that open each
+/// `- **LABEL, title.**` bullet of the section (up to the next `## `
+/// heading). An error names a section that defines no label (a heading
+/// renamed or gone).
+fn premise_labels(md: &str, sections: &[(&str, &[char])]) -> Result<BTreeSet<String>, String> {
+    let mut all = BTreeSet::new();
+    for &(section, prefixes) in sections {
+        let got: BTreeSet<String> = md
+            .lines()
+            .skip_while(|l| *l != section)
+            .skip(1)
+            .take_while(|l| !l.starts_with("## "))
+            .filter_map(|l| l.strip_prefix("- **")?.split_once(',').map(|(p, _)| p))
+            .filter(|p| {
+                p.strip_prefix(prefixes)
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .map(str::to_owned)
+            .collect();
+        if got.is_empty() {
+            return Err(format!("no premise labels in {section}"));
+        }
+        all.extend(got);
+    }
+    Ok(all)
 }
 
 /// Every seam in the `*.rs.md` files under `dir` (verus/ledger), with
@@ -1437,23 +1462,24 @@ mod tests {
     /// section that must not count.
     const SEAMS_MD: &str = "# The seams Isla checks\n\n- **K9, not a premise.** Outside the section.\n\n## Platform premises\n\nThe runs start from a stated state.\n\n- **P1, the build.** a\n- **P2, user memory.** b\n- **P3, x.** c\n- **P4, x.** d\n- **P5, x.** e\n- **P6, x.** f\n- **P7, x.** g\n- **P8, GOT entry contents.** h\n  continued, with a comma\n- **P9, x.** i\n- **P10, x.** j\n- **P11, x.** k\n- **P12, x.** l\n- **P13, x.** m\n- **K1, the kernel's side of a system call.** n\n- **K2, no resume past a trap.** o\n- **K3, a fixed data key A and EnDA.** p\n- **Note, not a label.** q\n\n## The GOT functions\n\n- **K5, not a premise.** Outside the section.\n";
 
-    /// The "Premises" of a verus/kani/premises.md with C1 and C2, a bullet
-    /// whose label has another letter, and a bullet in another section,
-    /// neither of which must count.
-    const KANI_MD: &str = "# The premises Kani statuses name\n\n- **C9, not a premise.** Outside the section.\n\n## Premises\n\nWhat no harness reaches.\n\n- **C1, the hook slots.** a\n  continued, with a comma\n- **C2, x.** b\n- **P1, not a Kani label.** c\n\n## Sources\n\n- **C3, not a premise.** Outside the section.\n";
+    /// A verus/kani/premises.md with C1 and C2 in "Premises" and L1 and L2
+    /// in "Loader and kernel premises"; in each section a bullet whose
+    /// label has the other section's letter or another check's, and a
+    /// bullet in another section, none of which must count.
+    const KANI_MD: &str = "# The premises Kani statuses name\n\n- **C9, not a premise.** Outside the section.\n\n## Premises\n\nWhat no harness reaches.\n\n- **C1, the hook slots.** a\n  continued, with a comma\n- **C2, x.** b\n- **P1, not a Kani label.** c\n- **L7, not a C premise.** d\n\n## Loader and kernel premises\n\nWhat the loader and the kernel set up.\n\n- **L1, glibc's rseq globals.** e\n  continued, with a comma\n- **L2, the rseq area.** f\n- **C8, not an L premise.** g\n- **K1, not a Kani label.** h\n\n## Provenance of the addresses\n\n- **L3, not a premise.** Outside the sections.\n";
 
-    fn isla_labels(md: &str) -> BTreeSet<String> {
-        premise_labels(md, ISLA_PREMISES.1, ISLA_PREMISES.2)
+    fn isla_labels(md: &str) -> Result<BTreeSet<String>, String> {
+        premise_labels(md, ISLA_PREMISES.1)
     }
 
-    fn kani_labels(md: &str) -> BTreeSet<String> {
-        premise_labels(md, KANI_PREMISES.1, KANI_PREMISES.2)
+    fn kani_labels(md: &str) -> Result<BTreeSet<String>, String> {
+        premise_labels(md, KANI_PREMISES.1)
     }
 
     fn premises() -> Premises {
         Premises {
-            isla: isla_labels(SEAMS_MD),
-            kani: kani_labels(KANI_MD),
+            isla: isla_labels(SEAMS_MD).unwrap(),
+            kani: kani_labels(KANI_MD).unwrap(),
             tests: ["a::tests::guard", "b::m::tests::other"]
                 .map(str::to_owned)
                 .into(),
@@ -1469,17 +1495,17 @@ mod tests {
             .collect();
         assert_eq!(got, want, "labels: got = {got:?}, want = {want:?}");
         let got = isla_labels("- **K1, x.** y\n");
-        assert!(got.is_empty(), "no section: got = {got:?}, want = none");
+        assert!(got.is_err(), "no section: got = {got:?}, want = an error");
         // Isla's section of a Kani file, and the reverse, define nothing.
         let got = isla_labels(KANI_MD);
         assert!(
-            got.is_empty(),
-            "Kani file read as Isla's: got = {got:?}, want = none"
+            got.is_err(),
+            "Kani file read as Isla's: got = {got:?}, want = an error"
         );
         let got = kani_labels(SEAMS_MD);
         assert!(
-            got.is_empty(),
-            "Isla file read as Kani's: got = {got:?}, want = none"
+            got.is_err(),
+            "Isla file read as Kani's: got = {got:?}, want = an error"
         );
     }
 
@@ -1519,12 +1545,35 @@ mod tests {
     }
 
     #[test]
-    fn the_kani_premise_labels_are_the_sections_c_bullets() {
+    fn the_kani_premise_labels_are_the_c_and_l_sections_bullets() {
         let got = premises().kani;
-        let want: BTreeSet<String> = ["C1", "C2"].map(str::to_owned).into();
+        let want: BTreeSet<String> = ["C1", "C2", "L1", "L2"].map(str::to_owned).into();
         assert_eq!(got, want, "labels: got = {got:?}, want = {want:?}");
         let got = kani_labels("- **C1, x.** y\n");
-        assert!(got.is_empty(), "no section: got = {got:?}, want = none");
+        assert!(got.is_err(), "no section: got = {got:?}, want = an error");
+        // Each section must define a label: a file with only one of the
+        // two is an error, which names the missing one.
+        for (md, missing) in [
+            (
+                "## Premises\n\n- **C1, x.** a\n",
+                "## Loader and kernel premises",
+            ),
+            (
+                "## Loader and kernel premises\n\n- **L1, x.** a\n",
+                "## Premises",
+            ),
+            (
+                "## Premises\n\n- **C1, x.** a\n\n## Loader and kernel premises\n\n- **C2, x.** b\n",
+                "## Loader and kernel premises",
+            ),
+        ] {
+            let got = kani_labels(md);
+            assert_eq!(
+                got,
+                Err(format!("no premise labels in {missing}")),
+                "{md:?}: got = {got:?}, want = an error naming {missing}"
+            );
+        }
     }
 
     fn seam(loc: &str, kind: &str, status: Status) -> Seam {
@@ -1630,6 +1679,24 @@ Status: discharged (const assert: `k` in src/a.rs).
                 "discharged on premises (Kani: a::kani_f::f, a::kani_f::g, and a::kani_f::h; premises: C2)",
                 Status::Discharged,
             ),
+            // The loader and kernel premises, alone or with a C premise, each
+            // with the guard test that confines the item's callers.
+            (
+                "discharged on premises (Kani: a::kani_f::f; premises: L1 (the loader's globals, with a comma); callers: a::tests::guard)",
+                Status::Discharged,
+            ),
+            (
+                "discharged on premises (Kani: a::kani_f::f; premises: L1 and L2 (the area (aligned 32)); callers: a::tests::guard)",
+                Status::Discharged,
+            ),
+            (
+                "discharged on premises (Kani: a::kani_f::f; premises: C1, L1 and L2; callers: b::m::tests::other)",
+                Status::Discharged,
+            ),
+            (
+                "discharged on premises (Kani: a::kani_f::f; premises: L1 (x) and L2 (y; with a semicolon); callers: a::tests::guard)",
+                Status::Discharged,
+            ),
             (
                 "discharged on premises (Kani: a::kani_f::f; premises: C2 (a gloss; with a semicolon); callers: a::tests::guard)",
                 Status::Discharged,
@@ -1681,6 +1748,22 @@ Status: discharged (const assert: `k` in src/a.rs).
             "discharged on premises (Isla: verus/isla/seams.md; premises: C1)",
             "discharged on premises (Kani: a::kani_f::f; premises: P8 (the loader's GOT fill))",
             "discharged on premises (Kani: a::kani_f::f; premises: C1 and K1)",
+            // The loader and kernel premises are Kani's alone, and each
+            // section's letter counts only in that section.
+            "discharged on premises (Isla: verus/isla/seams.md; premises: L1)",
+            "discharged on premises (Isla: verus/isla/seams.md; premises: P8 and L1)",
+            "discharged on premises (Kani: a::kani_f::f; premises: L1 and P10 (the thread pointer))",
+            "discharged on premises (Kani: a::kani_f::f; premises: L3 (outside the sections))",
+            "discharged on premises (Kani: a::kani_f::f; premises: L7 (an L bullet among the C premises))",
+            "discharged on premises (Kani: a::kani_f::f; premises: C8 (a C bullet among the L premises))",
+            "discharged on premises (Kani: a::kani_f::f; premises: L0)",
+            "discharged on premises (Kani: a::kani_f::f; premises: L1 and the pointer's provenance)",
+            // An L premise holds only for the addresses the item's callers
+            // pass, so a status naming one also names their guard test.
+            "discharged on premises (Kani: a::kani_f::f; premises: L1 (the loader's globals, with a comma))",
+            "discharged on premises (Kani: a::kani_f::f; premises: L1 and L2 (the area (aligned 32)))",
+            "discharged on premises (Kani: a::kani_f::f; premises: C1, L1 and L2)",
+            "discharged on premises (Kani: a::kani_f::f; premises: C2 and L2 (y; callers: a::tests::guard))",
             // A Kani status names a harness and at least one defined premise.
             "discharged on premises (Kani: a::kani_f::f)",
             "discharged on premises (Kani: a::kani_f::f; premises: )",
@@ -1718,6 +1801,15 @@ Status: discharged (const assert: `k` in src/a.rs).
             let got = parse_ledger(&entry(status), &premises());
             assert!(got.is_err(), "{status}: got = {got:?}, want = an error");
         }
+        // The error for a missing `callers:` clause names the L premise.
+        let status = "discharged on premises (Kani: a::kani_f::f; premises: C1 and L2 (y))";
+        let got = parse_ledger(&entry(status), &premises());
+        assert!(
+            got.as_ref().is_err_and(
+                |e| e.contains("loader or kernel premise L2 but no `; callers: <test>` clause")
+            ),
+            "{status}: got = {got:?}, want = an error naming L2 and the missing `callers:` clause"
+        );
     }
 
     #[test]
