@@ -142,13 +142,17 @@ on a premise of Verus's own model (a trusted seam such as
 the same status for Kani harnesses that run the item's own body and
 cover its whole contract, as for `discharged (Kani: ...)`, except for
 facts no harness reaches: what the C program stores in, or passes
-through, challoc's exported C symbols (the C premises of
-`verus/kani/premises.md`, "Premises"), and what glibc's loader and the
-Linux kernel place at an address challoc reads but does not allocate
-(its L premises, "Loader and kernel premises"), which `<what>` lists by
-label, each label optionally followed by a gloss in parentheses, as for
-Isla. `seams.sh --check` resolves its harness paths as it does those of
-a `discharged (Kani: ...)` status. The premises stay assumed, and
+through, challoc's exported C symbols, and what the program's own
+callback does while challoc calls it (as a K premise states the kernel's
+side of a system call; the harness runs a recording stand-in in the
+callback's place, the one stub it may use of code that is not verified),
+which are the C premises of `verus/kani/premises.md` ("Premises"); and
+what glibc's loader and the Linux kernel place at an address challoc
+reads but does not allocate (its L premises, "Loader and kernel
+premises"), which `<what>` lists by label, each label optionally
+followed by a gloss in parentheses, as for Isla. `seams.sh --check`
+resolves its harness paths as it does those of a `discharged (Kani:
+...)` status. The premises stay assumed, and
 `verus/count` counts the seam as discharged. A contract that also rests
 on anything else is `trusted (partly checked, ...)`: a premise of
 Verus's own model, as for Isla, and also two things a harness can leave

@@ -1071,7 +1071,18 @@ libc calls it makes that are, that `pthread_join` and the `fwrite` of
 `pthread_cancel` of the thread inside `mallctl`, `malloc_info` or an
 allocation is acted on at the program's next cancellation point, never
 midway through a start and never by unwinding through challoc's frames
-(14.1). Asynchronous cancellation inside challoc is undefined behaviour
+(14.1). A report's calls into the program's own callback, the
+`write_cb` of `malloc_stats_print` (`api::print::call_back`) and the
+`malloc_message` hook (`api::jemalloc::call_hook`), are the exception.
+They run with cancellation enabled, unlike `api::print::write_file`'s
+`fwrite`, so a deferred cancel acted on at a cancellation point inside
+the callback unwinds through challoc's frames, which is undefined
+behaviour; until they disable cancellation as `write_file` does,
+premise C3 (`verus/kani/premises.md`) assumes the callback is not
+cancelled. Disabling it cannot stop the callback itself from leaving
+the call by `pthread_exit` (in glibc a forced unwind too) or
+`longjmp`: under C3 that stays the program's obligation.
+Asynchronous cancellation inside challoc is undefined behaviour
 (POSIX allows it only around async-cancel-safe calls) and is not
 covered. After `fork` the child
 forgets the parent's thread and does not recreate it until asked or,
@@ -1902,6 +1913,10 @@ aborts:
 
 Thread cancellation is not a failure either: challoc never acts on a
 (deferred) cancellation request (8.1), so none leaves its state half set.
+The exception is a report's call into the program's callback, which
+runs with cancellation enabled, so a cancel may be acted on inside it
+(8.1); and a callback that leaves the call by `pthread_exit` or
+`longjmp` breaks premise C3 whatever the cancel state.
 
 Guards degrade, never vanish: a guard the kernel refuses as a
 `MADV_GUARD_INSTALL` marker (on an `mlock`ed range, `EINVAL`) is a

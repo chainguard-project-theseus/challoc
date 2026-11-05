@@ -2771,10 +2771,52 @@ mod tests {
 }
 
 /// Kani harnesses for this file's seams that Kani can run
-/// (`verus/ledger/src/api/print.rs.md`): `word` and `hist_line`.
+/// (`verus/ledger/src/api/print.rs.md`): `word`, `hist_line` and
+/// `call_back`.
 #[cfg(kani)]
 mod kani_print {
-    use super::{hist_line, word};
+    use super::{WriteCallback, call_back, hist_line, word};
+    use core::ffi::{c_char, c_void};
+    use core::ptr;
+    use vstd::prelude::Tracked;
+
+    /// How many times `record` was called, and the last call's
+    /// `cbopaque` and `s` as addresses.
+    static mut CALLS: usize = 0;
+    static mut GOT: (usize, usize) = (0, 0);
+
+    /// A `write_cb` that records its arguments.
+    unsafe extern "C" fn record(opaque: *mut c_void, s: *const c_char) {
+        // SAFETY: the harness's own statics; no other code runs in a
+        // harness.
+        unsafe {
+            CALLS += 1;
+            GOT = (opaque as usize, s as usize);
+        }
+    }
+
+    /// `call_back`: no `ensures`; it returns for a callback or none, any
+    /// `opaque` and any buffer holding a NUL (its `requires`; the token is
+    /// ghost), and (beyond the contract) calls the callback once, with
+    /// `opaque` and the buffer's address, when there is one, else not at
+    /// all, and returns whether it called. What the program's callback
+    /// does is premise C3 (`verus/kani/premises.md`).
+    #[kani::proof]
+    fn call_back_calls_once() {
+        let cb = WriteCallback(if kani::any() { Some(record) } else { None });
+        let opaque: *mut c_void = ptr::without_provenance_mut(kani::any());
+        let buf: [u8; 1024] = kani::any();
+        let nul: usize = kani::any();
+        kani::assume(nul < 1024 && buf[nul] == 0);
+        let called = call_back(&cb, opaque, &buf, Tracked::assume_new());
+        // SAFETY: as in `record`.
+        let (calls, got) = unsafe { (CALLS, GOT) };
+        assert_eq!(called, cb.0.is_some());
+        assert_eq!(calls, usize::from(called));
+        if called {
+            assert_eq!(got, (opaque as usize, buf.as_ptr() as usize));
+        }
+    }
 
     /// `word`, no `requires`, no `ensures`: it returns for every C string
     /// up to 3 bytes before its NUL, UTF-8 or not (built at run time:

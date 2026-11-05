@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `WriteCallback` | ext_type_spec | function pointer | Kani | trusted |
-| `call_back` | external_body | function pointer | none (assumption) | trusted |
+| `call_back` | external_body | function pointer | Kani | discharged |
 | `write_file` | external_body | FFI/syscall | none (assumption) | trusted |
 | `word` | external_body | core library | Kani | trusted |
 | `hist_line` | external_body | core library | Kani | discharged |
@@ -30,7 +30,7 @@ pub struct ExWriteCallback(WriteCallback);
 ## `call_back`
 
 src/api/print.rs:114. Kind: external_body. Category: function pointer.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: discharged on premises (Kani: api::print::kani_print::call_back_calls_once; premises: C3 (the program's `write_cb` is null or a report callback that keeps the C allocation contract)).
 
 > Call the caller's callback `cb`, when it gave one, with `opaque` and the C string in `buf`, which holds a NUL; whether it did.
 
