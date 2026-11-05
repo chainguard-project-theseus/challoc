@@ -2881,7 +2881,15 @@ fn ctl(
             let e = match io.write::<u64>()? {
                 // `EAGAIN`, with nothing refreshed, when there is no
                 // metadata object for the collection's scratch record.
-                Some(_) => stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut ord)).ok_or(EAGAIN)?,
+                // Before the refresh, the caller's cache GC when one is due
+                // (`Heap::gc_if_due`, design 13.5), so the figures do not
+                // count slots that only sit in its caches.
+                Some(_) => {
+                    if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
+                        h.gc_if_due(shared, Tracked(&mut ord));
+                    }
+                    stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut ord)).ok_or(EAGAIN)?
+                },
                 None => stats::snapshot(shared, Tracked(&mut ord)).epoch,
             };
             io.read(e, Tracked(cc))
@@ -3801,6 +3809,54 @@ mod tests {
         );
         assert_eq!(rc, 0, "mallctlbymib({mib:?}) = {rc}");
         v
+    }
+
+    /// Design 13.5: an `epoch` write runs the calling thread's cache GC
+    /// first when one is due, so the refreshed figures do not count slots
+    /// that only sit in its caches; a read, and a write inside the
+    /// interval, run none. Its own thread, so the heap is the test's.
+    #[test]
+    fn an_epoch_write_runs_the_callers_cache_gc_when_due() {
+        // It writes `epoch`, which the tests that read frozen figures
+        // serialize on.
+        let _serial = crate::testutil::global_state();
+        std::thread::spawn(|| {
+            let heap = || {
+                crate::heap::existing_heap(crate::heap::shared_ptr(shared()))
+                    .expect("this thread's heap")
+            };
+            // A batch through the thread's cache, all but one back in.
+            let ptrs: Vec<*mut u8> = (0..64)
+                .map(|_| mallocx(100, 0, Tracked::assume_new()))
+                .collect();
+            for p in &ptrs[1..] {
+                dallocx(*p, 0, Tracked::assume_new(), Tracked::assume_new());
+            }
+            let c = crate::layout::class_of(100).unwrap();
+            let len = || heap().cache(c).map_or(0, |k| k.len());
+            // A read refreshes nothing and runs no GC.
+            heap().set_last_gc(0);
+            let mut e: u64 = 0;
+            assert_eq!(ctl_rw::<u64>("epoch", Some(&mut e), None), 0);
+            assert_eq!(heap().last_gc(), 0, "a read runs no GC");
+            // A write with the last GC long ago runs it (restarting the low
+            // water), and an interval later the next returns three quarters
+            // of what sat unused since.
+            epoch();
+            assert_ne!(heap().last_gc(), 0, "the write ran the GC");
+            let after_first = len();
+            assert!(after_first > 0);
+            let at = heap().last_gc();
+            epoch();
+            assert_eq!(heap().last_gc(), at, "not again within the interval");
+            assert_eq!(len(), after_first);
+            heap().set_last_gc(0);
+            epoch();
+            assert_eq!(len(), after_first - (after_first - after_first / 4));
+            dallocx(ptrs[0], 0, Tracked::assume_new(), Tracked::assume_new());
+        })
+        .join()
+        .unwrap();
     }
 
     fn epoch() -> u64 {

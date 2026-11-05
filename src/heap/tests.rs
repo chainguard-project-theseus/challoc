@@ -1706,6 +1706,107 @@ fn gc_releases_unused_entries_by_low_water() {
     t.destroy();
 }
 
+/// Design 13.5: `gc_for_defrag_at` is `gc` once the last GC (periodic or
+/// not) is `DEFRAG_GC_INTERVAL_NS` old, restarts the clock when it runs,
+/// and does nothing before that.
+#[test]
+fn gc_for_defrag_runs_the_gc_once_its_interval_has_passed() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(48);
+    let other = class_with(160);
+    // Refills: both caches hold a batch, low water at its length.
+    t.alloc(c);
+    t.alloc(other);
+    let (len, lw) = (t.len(c), t.cache(c).low_water());
+    let (olen, olw) = (t.len(other), t.cache(other).low_water());
+    assert!(lw > 0 && olw > 0);
+    let at = now_ns();
+    // The last GC is recent: nothing moves.
+    t.heap().set_last_gc(at - DEFRAG_GC_INTERVAL_NS + 1);
+    t.heap().gc_for_defrag_at(s, at, Tracked::assume_new());
+    assert_eq!((t.len(c), t.len(other)), (len, olen));
+    // The interval has passed: exactly `gc`, three quarters of every
+    // cache's low water back to the slabs, and the clock restarts.
+    t.heap().set_last_gc(at - DEFRAG_GC_INTERVAL_NS);
+    let live_before = live(s, c);
+    t.heap().gc_for_defrag_at(s, at, Tracked::assume_new());
+    assert_eq!(t.len(c), len - (lw - lw / 4));
+    assert_eq!(t.len(other), olen - (olw - olw / 4));
+    assert_eq!(live(s, c), live_before - (lw - lw / 4));
+    assert_eq!(t.cache(c).low_water(), t.len(c));
+    assert_eq!(t.heap().last_gc(), at);
+    // Straight after, the interval has not passed again.
+    let len = t.len(c);
+    t.heap()
+        .gc_for_defrag_at(s, at + DEFRAG_GC_INTERVAL_NS - 1, Tracked::assume_new());
+    assert_eq!(t.len(c), len);
+    t.destroy();
+}
+
+/// Design 13.5: `gc_if_due` (a statistics refresh) runs `gc` when the last
+/// GC is `DEFRAG_GC_INTERVAL_NS` old and nothing when it is recent.
+#[test]
+fn gc_if_due_runs_the_gc_only_once_its_interval_has_passed() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(48);
+    t.alloc(c);
+    let (len, lw) = (t.len(c), t.cache(c).low_water());
+    assert!(lw > 0);
+    // Recent: nothing.
+    t.heap().set_last_gc(now_ns());
+    t.heap().gc_if_due(s, Tracked::assume_new());
+    assert_eq!(t.len(c), len);
+    // Long ago (the monotonic clock is past 100 ms): exactly `gc`.
+    t.heap().set_last_gc(0);
+    t.heap().gc_if_due(s, Tracked::assume_new());
+    assert_eq!(t.len(c), len - (lw - lw / 4));
+    assert_ne!(t.heap().last_gc(), 0);
+    t.destroy();
+}
+
+/// Design 13.5: `gc_for_defrag` reads the clock once every
+/// `PERIODIC_EVERY` calls (the clock is a system call), counting in
+/// `hint_ticks`: with the last GC long past, the calls before the count
+/// reaches a multiple of `PERIODIC_EVERY` run nothing, the one that
+/// reaches it runs a step.
+#[test]
+fn gc_for_defrag_reads_the_clock_once_every_periodic_every_calls() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    t.heap().set_last_gc(0);
+    let hints = t.heap().hint_ticks();
+    let quiet = PERIODIC_EVERY - 1 - hints % PERIODIC_EVERY;
+    for _ in 0..quiet {
+        t.heap().gc_for_defrag(s, Tracked::assume_new());
+        assert_eq!(t.heap().last_gc(), 0, "no clock read before the count");
+    }
+    t.heap().gc_for_defrag(s, Tracked::assume_new());
+    assert_ne!(t.heap().last_gc(), 0, "the counted call reads the clock");
+    assert_eq!(t.heap().hint_ticks(), hints + quiet + 1);
+    t.destroy();
+}
+
+/// Design 13.5: hints count in `hint_ticks`, not in the slow path's
+/// `slow_ticks`, so a defragmenter's calls neither take the periodic
+/// tick's turns (its `purge::on_tick` work) nor run down `REHOME_TICKS`:
+/// after many hints the next slow-path tick that reaches a multiple of
+/// `PERIODIC_EVERY` is the same one as without them.
+#[test]
+fn gc_for_defrag_leaves_the_periodic_ticks_count_alone() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let ticks = t.ticks();
+    let hints = t.heap().hint_ticks();
+    for _ in 0..3 * PERIODIC_EVERY + 5 {
+        t.heap().gc_for_defrag(s, Tracked::assume_new());
+    }
+    assert_eq!(t.ticks(), ticks, "hints do not advance slow_ticks");
+    assert_eq!(t.heap().hint_ticks(), hints + 3 * PERIODIC_EVERY + 5);
+    t.destroy();
+}
+
 #[test]
 fn periodic_work_runs_gc_on_the_interval() {
     // Every slow path is a tick and every 64th tick checks the clock.

@@ -482,6 +482,7 @@ struct Heap {                                // repr(C); caches at offset 128
     tid:         u32,
     arena:       u16,                        // home arena: plain malloc allocates here
     slow_ticks:  u32,                        // counts slow-path entries for periodic work
+    hint_ticks:  u32,                        // counts get_defrag_hint calls (13.5)
     last_gc:     u64,                        // monotonic ns of the last cache GC
     uncached:    ThreadStats,                // bytes that never went through a cache (huge, direct)
     others:      *mut ArenaCaches,           // caches of other arenas, and the FOREIGN node (6.3)
@@ -782,6 +783,19 @@ that needs more falls back to `rallocx`, as jemalloc's contract allows.
   drain from the bottom; direct claims do not count). A rebuild drops
   back to probing once the class is dense, which then pays one counter
   test per `malloc`.
+- **Defrag GC**: `get_defrag_hint` calls run the GC below at most once
+  per `DEFRAG_GC_INTERVAL_NS` (100 ms), with the clock read once every
+  `PERIODIC_EVERY` calls (13.5); such a GC restarts the GC clock.
+- **Refresh GC**: an `epoch` write (13.4) runs the GC below first when the
+  last one is `DEFRAG_GC_INTERVAL_NS` old (`Heap::gc_if_due`). After a
+  mass free (Redis's `FLUSHDB`) the freed slots wait in the freeing
+  thread's caches, each keeping its slab occupied and counted as
+  fragmentation by the figures the caller is about to read; Redis and
+  Valkey write `epoch` from their 100 ms cron on the main thread, so the
+  slots that went unused are returned within a cron period or two
+  instead of the 10 s period. It reaches the calling thread's caches
+  only: a thread that frees and then stays idle (Redis's `bio` threads)
+  keeps what it holds until its own next slow path.
 - **Cache GC**: every 10 s (`GC_INTERVAL_NS`) flush three quarters of
   `low_water`, the entries that went unused since the last GC, then reset
   `low_water = len`. `cap` is fixed; it never shrinks. This is jemalloc's
@@ -1639,6 +1653,10 @@ stats.thp.mode, stats.thp.class_ranges, stats.thp.class_bytes, stats.thp.huge_ra
 stats.thp.meta_ranges, stats.thp.nohuge_ranges, stats.thp.failures (section 17.1)
 ```
 
+An `epoch` write runs the calling thread's cache GC first when one is due
+(6.4, refresh GC), so the snapshot it publishes does not count slots that
+only sit in that thread's caches; a read refreshes nothing.
+
 Everything else, `prof.*` included, returns `ENOENT`.
 
 Semantics that differ from jemalloc's, deliberately: `arena.<i>.destroy`
@@ -1701,12 +1719,33 @@ live count is at or below the average of the class's other slabs in that
 arena (`live * (curslabs - 1) <= curregs - live(slabcur)`). Every slab
 class answers, the ones above `BIN_MAX` included, since the hint carries
 no geometry. It answers 0 for everything else (a huge run, a full slab, a
-freed or foreign pointer, null) and never aborts: a wrong answer only
-costs the defragmenter a move. It is a cold statistics read with no
-effect on any allocation path. Free slots still in the freeing thread's
-cache pin their slabs until the cache GC returns them, which KeyDB's stop
-rule (`stats.active - stats.allocated`) sees. The `*_with_usize`
-family stays out of scope: no Wolfi package calls it.
+freed or foreign pointer, null); a wrong answer only costs the
+defragmenter a move, and nothing about the pointer aborts.
+
+Before it answers, the hint runs the calling thread's cache GC when one
+is due (`Heap::gc_for_defrag`, 6.4). Free slots still in a cache are neither
+live data the defragmenter can move nor free in their slabs: they pin
+their slabs, and Redis's fragmentation figure (`frag_smallbins`, unused
+slots of current slabs) and KeyDB's stop rule (`stats.active -
+stats.allocated`) both count them. Redis 8 raises the cache to 1000 slots
+a class (`je_malloc_conf`), and with only the periodic GC a Redis defrag
+pass that finds nothing worth moving rescans its keyspace until the next
+10 s GC. The call counts in `hint_ticks`, apart from the slow path's
+`slow_ticks` so hints neither take the periodic tick's turns nor run down
+the rehome window, and reads the clock (a system
+call, `now_coarse_ns`) once every `PERIODIC_EVERY` calls, since a
+defragmenter asks about every allocation it scans and a clock read per
+call would put a system call on every hint. When the read finds the last
+GC at least `DEFRAG_GC_INTERVAL_NS` (100 ms) old, `Heap::gc` runs: it
+releases only the entries that went unused since the last GC. The release is the free path's (`Heap::flush`), so it can abort
+where a valid program's free can: at a failed system call or a pending
+free-path check (`valid_aborts`). With the thread-heap lookup's
+integrity check (`may_abort_corrupt`), those are all the hint requires,
+not `may_abort`: `theorem_defrag_hint_aborts_only_in_its_gc` shows it
+aborts at most there, for every pointer, and none of those checks reads
+the pointer. It is not among the read-only entry points of
+`theorem_read_only_never_aborts`, which allow only integrity checks. The
+`*_with_usize` family stays out of scope: no Wolfi package calls it.
 
 ### 13.6 Library name, soname and packaging
 
