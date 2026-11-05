@@ -16,7 +16,7 @@ file.
 ## `WordPerm`
 
 src/vspec/word.rs:41. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: that the type's value is its word's last write, the C11 argument above (the models check the wrappers' orderings on copies, in the configurations tests/loom/src/bitmap.rs states, and no model sees the ghost value), which tests/loom/tests/access.rs backs by matching source text, for the bitmap words only; `FORK_SIGMASK`, which `api::save_sigmask` writes with a raw `store`).
+Tool: loom/GenMC. Status: trusted (partly checked, loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: that the type's value is its word's last write, the C11 argument above (the models check the wrappers' orderings on copies, in the configurations tests/loom/src/bitmap.rs states, and no model sees the ghost value), which tests/loom/tests/access.rs backs by matching source text, for the bitmap words, and for `FORK_SIGMASK` only that `api::save_sigmask`'s raw `store` is its one write (its permission's value is `api::resume::axiom_fork_resumed`'s premise, and no model covers it)).
 
 > Ghost permission to the word at [`addr`](WordPerm::addr): its current [`value`](WordPerm::value).
 
@@ -72,7 +72,7 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
 ## `load`
 
 src/vspec/word.rs:96. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_load, and loom: free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the free path's steps, in the configurations tests/loom/src/free.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text, for the bitmap words only; `FORK_SIGMASK`, which `api::save_sigmask` writes with a raw `store`).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_load, and loom: free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the free path's steps, in the configurations tests/loom/src/free.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text, for the bitmap words, and for `FORK_SIGMASK` only that `api::save_sigmask`'s raw `store` is its one write (its permission's value is `api::resume::axiom_fork_resumed`'s premise, and no model covers it)).
 
 > `w.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
