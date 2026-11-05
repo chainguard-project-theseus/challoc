@@ -65,4 +65,9 @@ axiom_child_window	platform/kernel fact	none (assumption)
 # A field projection: no `requires`, no `ensures`. The harness runs it on
 # pointers to locks at four `T`s; the contract admits any pointer, and a
 # projection through one that points into no lock is not defined in Rust.
-Lock::value_ptr	raw pointer (internal)	Kani	trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names), and `T` other than `u8`, `u64`, `(u64, u8)` and `ArenaStats`)	contract 3118686952, body 2553620183
+# lock::tests::value_ptr_called_only_by_put_stats pins its one caller,
+# `Arena::put_stats`, which passes the pointer its permission names, at
+# `T = ArenaStats`, one of the harness's `T`s. That is an obligation on a
+# Rust caller that no `requires` states, so the seam stays partly checked
+# (verus/SEAMS.md, "Status").
+Lock::value_ptr	raw pointer (internal)	Kani	trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names, which a source test pins, at `T = ArenaStats`, one of the harness's))	contract 3118686952, body 2553620183

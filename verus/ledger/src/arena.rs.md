@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `note_build_cost` | no_decreases | termination | none (assumption) | trusted |
-| `axiom_array_layout` | axiom | core library | Kani | trusted |
+| `axiom_array_layout` | axiom | core library | Kani | discharged |
 | `A_INDEX` | external_body const | core library | Kani | discharged |
 | `A_DECAY_NS` | external_body const | core library | Kani | discharged |
 | `A_SETS` | external_body const | core library | Kani | discharged |
@@ -49,7 +49,7 @@ fn note_build_cost(meta: &Meta, tables: usize)
 ## `axiom_array_layout`
 
 src/arena.rs:453. Kind: axiom. Category: core library.
-Tool: Kani. Status: trusted (partly checked, const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples; not checked: the axiom is generic in `T` and `N`, and these check only the six instances the proofs use and the sampled ones).
+Tool: Kani. Status: discharged (const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples).
 
 > An array of `N` `T`s is `N` `T`s back to back, aligned as one: the size and alignment the Rust reference gives arrays.
 

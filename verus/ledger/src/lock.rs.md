@@ -107,7 +107,7 @@ axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 ## `Lock::value_ptr`
 
 src/lock.rs:860. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names), and `T` other than `u8`, `u64`, `(u64, u8)` and `ArenaStats`).
+Tool: Kani. Status: trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names, which a source test pins, at `T = ArenaStats`, one of the harness's)).
 
 > The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
 

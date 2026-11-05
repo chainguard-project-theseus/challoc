@@ -1,7 +1,12 @@
 # The build checks the array layout at each instance the proofs use (the
 # `const` assertions after `Arena`'s, `Arenas`'s, `Shared`'s and
-# `Tcaches`'s layouts).
-axiom_array_layout	core library	Kani	trusted (partly checked, const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples; not checked: the axiom is generic in `T` and `N`, and these check only the six instances the proofs use and the sampled ones)	contract 2931506158, body none
+# `Tcaches`'s layouts), and those are the only instances:
+# arena::array_layout_tests::array_layout_only_at_asserted_instances pins
+# every call of the axiom (in `Arena::split`, `Arena::unsplit`,
+# `Arenas::split`, `Tcaches::split` and `heap/shared.rs`'s `split`) and of
+# `split_array`, its one generic use, to those instances. The Kani samples
+# check other instances, which no proof uses.
+axiom_array_layout	core library	Kani	discharged (const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples)	contract 2931506158, body none
 # Byte offsets (`offset_of!`, which Verus cannot evaluate), and the
 # layout the build checks with `fits`.
 A_INDEX	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3712976592, body none

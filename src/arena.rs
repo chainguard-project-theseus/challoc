@@ -444,7 +444,7 @@ pub(crate) proof fn take_field<S, T>(tracked raw: PointsToRaw, base: *mut S, off
 /// An array of `N` `T`s is `N` `T`s back to back, aligned as one: the
 /// size and alignment the Rust reference gives arrays. Trusted (vstd
 /// states no array layout), and checked by the build at each instance
-/// used (the `const` assertions after `Arena`'s layout). Only for an
+/// used: the `const` assertions `array_layout_tests` pins. Only for an
 /// array whose elements fit in an `isize`: a longer one has no layout
 /// (rustc rejects it as too big), yet Verus still names its `size_of`,
 /// which vstd bounds by `isize::MAX` (`layout_for_type_is_valid`), so
@@ -4155,10 +4155,10 @@ mod kani_array_layout {
         assert_eq!(align_of::<[T; N]>(), align_of::<T>());
     }
 
-    /// `axiom_array_layout` is generic, and `split_array` relies on it for
-    /// any `T` and `N`. The build's `const` assertions check it at the five
-    /// instances the proofs split (after `axiom_arena_layout`,
-    /// `axiom_arenas_layout` and `heap/shared.rs`'s `axiom_shared_layout`);
+    /// `axiom_array_layout` is generic. The build's `const` assertions
+    /// check it at the six instances the proofs use (after
+    /// `axiom_arena_layout`, `axiom_arenas_layout`, `axiom_tcaches_layout`
+    /// and `axiom_shared_layout`; `array_layout_tests` pins the uses);
     /// this checks it at primitive, zero-sized and padded element types
     /// and lengths 0, 1 and 7.
     #[kani::proof]
@@ -4228,6 +4228,323 @@ mod put_stats_tests {
             // SAFETY: put_stats initialised it.
             let got = unsafe { got.assume_init_ref() };
             assert_eq!(*want.lock_t(), *got.lock_t(), "index {index}");
+        }
+    }
+}
+
+/// The instances of `axiom_array_layout` the proofs use, against the
+/// build's `const` assertions (`verus/ledger/src/arena.rs.md`).
+#[cfg(test)]
+mod array_layout_tests {
+    use crate::testutil::{assert_only_at, fn_item, grant_sites, shipped_sources};
+    use std::string::String;
+    use std::vec::Vec;
+
+    /// `(file, fn, T, N, splits, label)`: the function states the axiom
+    /// once at `[T; N]`, and splits `splits` fields of that type with
+    /// `split_array`, whose own use of the axiom is generic; the `const`
+    /// assertion the ledger cites by `label` states that instance.
+    const USES: &[(&str, &str, &str, &str, usize, &str)] = &[
+        (
+            "arena.rs:",
+            "proof fn split(tracked perm: PointsTo<Arena>)",
+            "ClassState",
+            "NCLASSES",
+            1,
+            concat!("`axiom_array", "_layout` at `Arena::split`'s instance"),
+        ),
+        (
+            "arena.rs:",
+            "proof fn unsplit(",
+            "ClassState",
+            "NCLASSES",
+            0,
+            concat!("`axiom_array", "_layout` at `Arena::split`'s instance"),
+        ),
+        (
+            "arena.rs:",
+            "proof fn split(tracked perm: PointsTo<Arenas>)",
+            "AtomicPtr<Arena>",
+            "MAX_ARENAS",
+            1,
+            concat!(
+                "`axiom_array",
+                "_layout` at `Arenas::split`'s two instances"
+            ),
+        ),
+        (
+            "arena.rs:",
+            "proof fn split(tracked perm: PointsTo<Arenas>)",
+            "AtomicU32",
+            "MAX_ARENAS",
+            1,
+            concat!(
+                "`axiom_array",
+                "_layout` at `Arenas::split`'s two instances"
+            ),
+        ),
+        (
+            "heap/tcaches.rs:",
+            "proof fn split(tracked perm: PointsTo<Tcaches>)",
+            "AtomicPtr<u8>",
+            "MAX_TCACHES",
+            1,
+            concat!(
+                "`arena::axiom_array",
+                "_layout` at `Tcaches::split`'s instance"
+            ),
+        ),
+        (
+            "heap/shared.rs:",
+            "proof fn split(tracked perm: PointsTo<Shared>)",
+            "ClassLine",
+            "NCLASSES",
+            1,
+            concat!("`arena::axiom_array", "_layout` at `split`'s two instances"),
+        ),
+        (
+            "heap/shared.rs:",
+            "proof fn split(tracked perm: PointsTo<Shared>)",
+            "SlabTable",
+            "NCLASSES",
+            1,
+            concat!("`arena::axiom_array", "_layout` at `split`'s two instances"),
+        ),
+    ];
+
+    /// A line that names `name` without calling it: a `use` list's items,
+    /// with no rename (a renamed call would not be seen).
+    fn use_list(at: &str, text: &str, name: &str) {
+        assert!(
+            !text.contains(" as ")
+                && text
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || " _,:{}".contains(c)),
+            "{at}: got = `{name}` named but not called, want = only calls and `use` list items"
+        );
+    }
+
+    /// `axiom_array_layout` is generic in `T` and `N`, and the build checks
+    /// it only at the instances `USES` lists. The axiom is called only
+    /// there (each call on one line, with its turbofish) and in
+    /// `split_array`, at `<T, N>`. `split_array` is called only by the
+    /// functions `USES` lists, with no turbofish, each on a variable that
+    /// `take_field` bound to a field of that `[T; N]` (the nearest binding
+    /// above the call, in the same function, with no block closing in
+    /// between). Each instance is stated, as both `ensures` clauses, by the
+    /// labelled `const` assertion, at column 0 right after its comment, in
+    /// its file. A line that names either function without calling it is
+    /// a `use` list item with no rename.
+    #[test]
+    fn array_layout_only_at_asserted_instances() {
+        // Spelled in parts, so that this test's lines match nothing.
+        let name = concat!("axiom_array", "_layout");
+        let generic = ("arena.rs:", concat!("pub(crate) proof fn split", "_array<"));
+        let turbofish = std::format!("{name}::<");
+        let mut n = std::vec![0usize; USES.len()];
+        let mut generic_n = 0;
+        for (sig, at) in grant_sites(name) {
+            let text = at
+                .split_once(": `")
+                .map_or("", |(_, t)| t.strip_suffix('`').unwrap_or(t));
+            if text.contains(&std::format!("axiom fn {name}<")) {
+                continue;
+            }
+            let calls: Vec<&str> = text.split(turbofish.as_str()).skip(1).collect();
+            if calls.is_empty() {
+                use_list(&at, text, name);
+            }
+            for c in calls {
+                let (t, k) = c
+                    .split_once(">(")
+                    .and_then(|(args, _)| args.rsplit_once(", "))
+                    .unwrap_or_else(|| {
+                        panic!("{at}: got = a call of `{name}` not on one line, want = one line")
+                    });
+                let place = |file: &str, f: &str| at.starts_with(file) && sig.starts_with(f);
+                if place(generic.0, generic.1) && (t, k) == ("T", "N") {
+                    generic_n += 1;
+                    continue;
+                }
+                let i = USES
+                    .iter()
+                    .position(|u| place(u.0, u.1) && (u.2, u.3) == (t, k))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{at}: got = `{name}` at `[{t}; {k}]` in `{sig}`, want = only at the \
+                             instances this test lists, each stated by a `const` assertion"
+                        )
+                    });
+                n[i] += 1;
+            }
+        }
+        assert_eq!(
+            generic_n, 1,
+            "{}: got = {generic_n} generic uses of `{name}`, want = 1",
+            generic.1
+        );
+        for (u, got) in USES.iter().zip(n) {
+            assert_eq!(
+                got, 1,
+                "{} `{}`: got = {got} uses of `{name}` at `[{}; {}]`, want = 1",
+                u.0, u.1, u.2, u.3
+            );
+        }
+
+        // Every `split_array` call is listed, on a field of its instance.
+        let split_name = concat!("split", "_array");
+        let split = concat!("split", "_array(");
+        for (_, at) in grant_sites(split_name) {
+            let text = at
+                .split_once(": `")
+                .map_or("", |(_, t)| t.strip_suffix('`').unwrap_or(t));
+            if text.starts_with(generic.1) {
+                continue;
+            }
+            if !text.contains(split) {
+                use_list(&at, text, split_name);
+            }
+        }
+        let mut sites: Vec<(&str, &str, usize)> = Vec::new();
+        for u in USES.iter().filter(|u| u.4 > 0) {
+            match sites.iter_mut().find(|s| (s.0, s.1) == (u.0, u.1)) {
+                Some(s) => s.2 += u.4,
+                None => sites.push((u.0, u.1, u.4)),
+            }
+        }
+        assert_only_at(split, &sites);
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let mut seen = std::vec![0usize; USES.len()];
+        for (sig, at) in grant_sites(split) {
+            let mut parts = at.splitn(3, ':');
+            let (file, line) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            let line: usize = line
+                .parse()
+                .unwrap_or_else(|_| panic!("{at}: got = no line number, want = one"));
+            let text = std::fs::read_to_string(src.join(file))
+                .unwrap_or_else(|e| panic!("{file}: got = {e}, want = its text"));
+            let lines: Vec<&str> = text.lines().collect();
+            let call = lines[line - 1];
+            let arg = call
+                .split_once(split)
+                .and_then(|(_, r)| r.split_once(')'))
+                .map_or("", |(a, _)| a.trim());
+            assert!(
+                !arg.is_empty() && arg.chars().all(ident),
+                "{at}: got = argument `{arg}`, want = a variable"
+            );
+            let binds = |l: &str| {
+                l.strip_prefix("let ").is_some_and(|l| {
+                    l.split_once('=')
+                        .map_or(l, |(p, _)| p)
+                        .split(|c: char| !ident(c))
+                        .any(|w| w == arg)
+                })
+            };
+            let mut binding = None;
+            for l in lines[..line - 1].iter().rev() {
+                let t = l.trim();
+                assert!(
+                    !fn_item(t),
+                    "{at}: got = no binding of `{arg}` above, want = one"
+                );
+                assert!(
+                    !(t.starts_with('}') && indent(l) <= indent(call)),
+                    "{at}: got = a block closing between `{arg}`'s binding and the call, \
+                     want = none"
+                );
+                if binds(t) {
+                    binding = Some(t);
+                    break;
+                }
+            }
+            let binding = binding
+                .unwrap_or_else(|| panic!("{at}: got = no binding of `{arg}` above, want = one"));
+            let i = USES
+                .iter()
+                .position(|u| {
+                    u.4 > 0
+                        && at.starts_with(u.0)
+                        && sig.starts_with(u.1)
+                        && binding.contains("take_field::<")
+                        && binding.contains(&std::format!(", [{}; {}]>(", u.2, u.3))
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{at}: got = `{arg}` bound by `{binding}`, want = a field `take_field` \
+                         took at an instance this test lists for `{sig}`"
+                    )
+                });
+            seen[i] += 1;
+        }
+        for (u, got) in USES.iter().zip(seen) {
+            assert_eq!(
+                got, u.4,
+                "{} `{}`: got = {got} splits of `[{}; {}]`, want = {}",
+                u.0, u.1, u.2, u.3, u.4
+            );
+        }
+
+        // Each label's assertion is the conjunction of its instances'
+        // clauses, in `USES` order (whitespace collapsed).
+        let shipped = shipped_sources();
+        let mut labels: Vec<(&str, &str)> = Vec::new();
+        for u in USES {
+            if !labels.contains(&(u.0, u.5)) {
+                labels.push((u.0, u.5));
+            }
+        }
+        for (file, label) in labels {
+            let text = &shipped
+                .iter()
+                .find(|(rel, _)| std::format!("{rel}:") == file)
+                .unwrap_or_else(|| panic!("{file}: got = not shipped, want = shipped"))
+                .1;
+            let lines: Vec<&str> = text.lines().collect();
+            let head = std::format!("// {label}");
+            let at: Vec<usize> = (0..lines.len())
+                .filter(|&i| lines[i].starts_with(&head))
+                .collect();
+            assert_eq!(
+                at.len(),
+                1,
+                "{file}: got = {} comments starting `{head}`, want = 1",
+                at.len()
+            );
+            let start = (at[0]..lines.len())
+                .find(|&i| !lines[i].starts_with("//"))
+                .unwrap_or(lines.len());
+            assert_eq!(
+                lines.get(start).copied(),
+                Some("const _: () = assert!("),
+                "{file}: got = no `const` assertion at column 0 after `{label}`, want = one"
+            );
+            let end = (start..lines.len())
+                .find(|&i| lines[i] == ");")
+                .unwrap_or_else(|| panic!("{file}: got = no `);` after `{label}`, want = one"));
+            let got = lines[start + 1..end]
+                .iter()
+                .map(|l| l.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let want = USES
+                .iter()
+                .filter(|u| (u.0, u.5) == (file, label) && u.4 > 0)
+                .map(|u| {
+                    let (t, k) = (u.2, u.3);
+                    std::format!(
+                        "core::mem::size_of::<[{t}; {k}]>() == {k} * core::mem::size_of::<{t}>() \
+                         && core::mem::align_of::<[{t}; {k}]>() == core::mem::align_of::<{t}>()"
+                    )
+                })
+                .collect::<Vec<String>>()
+                .join(" && ");
+            assert_eq!(
+                got, want,
+                "{file}: `{label}`: got = the assertion above, want = this"
+            );
         }
     }
 }
