@@ -1,6 +1,11 @@
-# Kernel fact at the refill: a Purged slab's slots read as zero while every
-# discard was MADV_DONTNEED (madvise).
-axiom_discarded_slots_zero	allocator invariant	none (assumption)
+# Allocator invariant at the refill: the axiom's requires, checked in take,
+# tie the premise to the flush's success on a range holding the Purged slab
+# (settle records it in the class lock value), and the PurgedZero witness to
+# a read that no batch used MADV_FREE. The recorded success is timeless: it
+# may come from an earlier Purged period of the slab, so what is left is the
+# lifecycle fact that no slot was written since the latest discard, as well
+# as madvise(2)'s MADV_DONTNEED zero fill of a private anonymous mapping.
+axiom_discarded_slots_zero	allocator invariant	none (assumption)	trusted (requires, checked at its one caller, ClassState::take: some discard advice of a range holding these bytes succeeded, `purge::discard_covers`, from settle's report through the class lock value's purged_ok; not checked: that this discard is the slab's latest, since `discard_covers` holds for any earlier successful discard too, that the advice was MADV_DONTNEED, which the PurgedZero witness's premise covers, and that nothing has written the bytes since)
 # The check_zero debug mode's read of a Fresh slab's slots: a permission to
 # them, lent while its descriptor permission is borrowed under the lock.
 axiom_fresh_slab_mem	allocator invariant	none (assumption)

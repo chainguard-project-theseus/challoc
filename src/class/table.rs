@@ -1468,6 +1468,15 @@ impl SlabTable {
         }
     }
 
+    /// The slot tokens' base and slab size are the table's base and the
+    /// class's slab size.
+    pub(super) proof fn lemma_slots_at(&self)
+        ensures
+            self.spec_slots().base == self.base as int,
+            self.spec_slots().slab_size == (1usize << class_table()[self.spec_class() as int].lg_slab) as int,
+    {
+    }
+
     /// The slot tokens' geometry, spelled out: the class's slab bits, slots,
     /// slot size and slab size, the region's base and slab count.
     pub(super) proof fn lemma_slots_wf(&self)

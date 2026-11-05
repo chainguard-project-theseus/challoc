@@ -13,7 +13,7 @@ file.
 
 ## `ClassState::claim_with`
 
-src/class/mod.rs:2930. Kind: no_decreases. Category: termination.
+src/class/mod.rs:2979. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -43,12 +43,12 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ## `axiom_discarded_slots_zero`
 
-src/class/mod.rs:3560. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+src/class/mod.rs:3613. Kind: axiom. Category: allocator invariant.
+Tool: none (assumption). Status: trusted (requires, checked at its one caller, ClassState::take: some discard advice of a range holding these bytes succeeded, `purge::discard_covers`, from settle's report through the class lock value's purged_ok; not checked: that this discard is the slab's latest, since `discard_covers` holds for any earlier successful discard too, that the advice was MADV_DONTNEED, which the PurgedZero witness's premise covers, and that nothing has written the bytes since).
 
 > The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
 
-Hashes: contract 2678632303, body none.
+Hashes: contract 1202681164, body none.
 
 ```rust
 axiom fn axiom_discarded_slots_zero(
@@ -67,6 +67,7 @@ axiom fn axiom_discarded_slots_zero(
         0 <= n <= t.spec_slots().nslots,
         held.id() == t.spec_slots().loc,
         prefix_addrs(t, slab, n).subset_of(held@),
+        purge::discard_covers(t.spec_slots().addr(slab * t.spec_slots().sb), n * t.spec_slots().size),
     ensures
         z.addr() == t.spec_slots().addr(slab * t.spec_slots().sb),
         z.len() == n * t.spec_slots().size,
@@ -75,7 +76,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ## `axiom_fresh_slab_mem`
 
-src/class/mod.rs:3620. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:3674. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.

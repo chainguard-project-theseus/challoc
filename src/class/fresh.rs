@@ -18,7 +18,8 @@ use super::table::{
 };
 #[cfg(verus_keep_ghost)]
 use super::{
-    desc_ok, descs_ok, lemma_same_sets_inv, lemma_whole_group, owned_rec, whole_groups, zeros_ok,
+    desc_ok, descs_ok, lemma_purged_at, lemma_same_sets_inv, lemma_whole_group, owned_rec,
+    purged_ok, slab_discarded, whole_groups, zeros_ok,
 };
 #[cfg(verus_keep_ghost)]
 use crate::slab::{DescPerm, State};
@@ -270,6 +271,16 @@ impl ClassState {
                                 assert(slab_zero(g0.zeros@, g0.table@, x as int));
                                 assert(!zpv.contains_key(x as int));
                             }
+                        }
+                        // The group's slabs are `Fresh`; an older owned
+                        // `Purged` slab keeps its discard.
+                        reveal(purged_ok);
+                        assert forall|x: nat| #[trigger] g.states@.contains_key(x) && g.states@[x] == State::Purged
+                            implies slab_discarded(g.table@, x as int) by {
+                            assert(!(start <= x < end));
+                            assert(g0.owns(x));
+                            assert(g0.states@.contains_key(x) && g0.states@[x] == State::Purged);
+                            lemma_purged_at(g0.states@, g0.table@, x);
                         }
                     }
                     // `g0` with the record it had before the group: the value

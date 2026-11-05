@@ -2558,6 +2558,39 @@ pub closed spec fn discard_taken(addr: int, len: int) -> bool {
 }
 
 /// The kernel answered a discard advice on a range holding
+/// `[addr, addr + len)` with success ([`discard_taken`] of that range):
+/// what a class purge records of each slab it makes `Purged`. Timeless,
+/// as [`discard_taken`] is: it says that some such call was answered so,
+/// not which one or when.
+pub closed spec fn discard_covers(addr: int, len: int) -> bool {
+    exists|a: int, l: int| a <= addr && addr + len <= a + l && #[trigger] discard_taken(a, l)
+}
+
+/// A range inside one [`discard_taken`] is [`discard_covers`].
+pub proof fn lemma_taken_covers(a: int, l: int, addr: int, len: int)
+    requires
+        discard_taken(a, l),
+        a <= addr,
+        addr + len <= a + l,
+    ensures
+        discard_covers(addr, len),
+{
+}
+
+/// A range inside one [`discard_covers`] is [`discard_covers`].
+pub proof fn lemma_covers_inside(addr: int, len: int, at: int, l: int)
+    requires
+        discard_covers(addr, len),
+        addr <= at,
+        at + l <= addr + len,
+    ensures
+        discard_covers(at, l),
+{
+    let (a0, l0) = choose|a0: int, l0: int| a0 <= addr && addr + len <= a0 + l0 && #[trigger] discard_taken(a0, l0);
+    assert(a0 <= at && at + l <= a0 + l0 && discard_taken(a0, l0));
+}
+
+/// The kernel answered a discard advice on a range holding
 /// `[addr, addr + len)` with an error (`sys::madvise_err`): what a
 /// [`discard`] returning false says of the range, and of each of its
 /// pieces. A refused call may still have discarded some of the pages
