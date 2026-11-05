@@ -783,8 +783,9 @@ fn array_layout_on<T: Copy + PartialEq, const N: usize>(a: [T; N]) {
 /// sampled `T` and `N` only: a byte, a word, a padded pair, and the
 /// class table `[Class; NCLASSES]` at `BASE_CLASSES` (the instance
 /// `layout::regions`' `class_entry` takes `axiom_array_elem` at; the
-/// other proof instance, `heap::others`' `[CacheHeader; NCLASSES]`, is
-/// not checked). The permissions themselves are ghost.
+/// other proof instance, `heap::others`' `[CacheHeader; NCLASSES]`, has
+/// its own harness, `heap::others::kani_view::caches_array_view`). The
+/// permissions themselves are ghost.
 #[kani::proof]
 #[kani::unwind(70)]
 fn array_layout_elems() {
