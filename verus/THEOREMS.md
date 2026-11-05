@@ -478,9 +478,9 @@ trusted only in how it is reached:
 of the lock's cell (a vstd `PCell`) out of the free lock's invariant,
 and the value satisfies `lock_inv` and `lock_frame`, for a guard or for
 a holder with no guard (`Lock::lock_held_perm`). The guard's `deref` and
-`deref_mut` are verified, over two trusted restatements of vstd's
-`PCell::borrow` and `borrow_mut` (`cell_ref`, `cell_mut`, kept for the
-machine code); `drop` (`lock.rs`) is `external_body` and checks
+`deref_mut` are verified, and so are the two helpers they call
+(`cell_ref`, `cell_mut`), which pass the guard's permission to vstd's
+`PCell::borrow` and `borrow_mut`; `drop` (`lock.rs`) is `external_body` and checks
 nothing. `LockGuard::unlock` (`lock.rs`, verified, empty body: the
 release is the guard's drop at its end) requires `lock_inv` and
 `lock_frame` of the value. Every holder of the metadata lock outside the tests ends with it, on every path to a
