@@ -7,17 +7,17 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `read_global` | external_body | raw pointer (internal) | Kani | trusted |
-| `read_cpu_id` | external_body | UnsafeCell/volatile/transmute | Kani | trusted |
+| `read_global` | external_body | raw pointer (internal) | Kani | discharged |
+| `read_cpu_id` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `symbols` | external_body | inline asm | Islaris/Isla | discharged |
 | `thread_pointer` | external_body | inline asm | Islaris/Isla | discharged |
 
 ## `read_global`
 
 src/rseq.rs:131. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted (partly checked, Kani: rseq::kani_rseq::read_global_reads_the_value; not checked: instances other than `T = isize` and `T = u32` (the two `probe` uses), and that a non-null `p` from `symbols` is the address of a live, aligned `T`, the `# Safety` premise the `requires` does not state, which the loader's resolution of the weak symbol provides).
+Tool: Kani. Status: discharged on premises (Kani: rseq::kani_rseq::read_global_reads_the_value; premises: L1 (a non-null address `symbols` returns is glibc's live, aligned `isize` or `u32`, which nothing writes after startup, in a dynamic link; `probe` passes those three at the two instances the harness runs; and the provenance of an `asm!` output, premises.md: Provenance of the addresses); callers: rseq::tests::probe_reads_are_listed).
 
-> One read of a loader global [`symbols`] found.
+> One read of a loader global [`symbols`] found; [`probe`] is the only caller (`tests::probe_reads_are_listed`).
 
 Hashes: contract 1325462615, body 4072880412.
 
@@ -30,7 +30,7 @@ unsafe fn read_global<T: Copy>(p: *const T) -> T
 ## `read_cpu_id`
 
 src/rseq.rs:153. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: Kani. Status: trusted (partly checked, Kani: rseq::kani_rseq::read_cpu_id_reads_the_field; not checked: that `area` (the thread pointer plus `__rseq_offset`) is this thread's registered rseq area and `size` its registered size, and that the field is 4-byte aligned (the area is 32-byte aligned), the `# Safety` premise the `requires` does not state, which the loader and the rseq ABI provide, and that only the kernel writes the field while the read runs).
+Tool: Kani. Status: discharged on premises (Kani: rseq::kani_rseq::read_cpu_id_reads_the_field; premises: L1 (`__rseq_offset` is stored before challoc runs and never after) and L2 (in a thread glibc created, the thread pointer plus `__rseq_offset` is its rseq area, at least 32 bytes and 32-byte aligned, whose `cpu_id` only glibc and the kernel write, never during the thread's own load; `probe` passes `area` of that offset; and the provenance of an exposed address, premises.md: Provenance of the addresses); callers: rseq::tests::probe_reads_are_listed).
 
 > A volatile read of the `cpu_id` field of the rseq area at `area`.
 
