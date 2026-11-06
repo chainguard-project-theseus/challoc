@@ -1,7 +1,7 @@
 #!/bin/sh
 # ci/shellcheck.sh: lint every shell script in the tree (the lint check):
-# ci/, verus/ (with verus/emptyasm), scripts/, tests/ (with tests/loom and
-# tests/consumers), bench/ (the build script, cb, the drivers and the
+# ci/, verus/ (with verus/emptyasm), scripts/, tests/ (with tests/loom,
+# tests/consumers and tests/tlscheck), bench/ (the build script, cb, the drivers and the
 # probes) and the CI services. .shellcheckrc at the root lets it follow
 # the drivers' `. "$(dirname "$0")/cb.sh"` includes. Run it from the
 # repository root.
@@ -25,6 +25,6 @@ tar -xJf "$tarball" -C "$dir"
 "$dir/shellcheck-$version/shellcheck" --version
 "$dir/shellcheck-$version/shellcheck" \
   ci/*.sh verus/*.sh verus/emptyasm/*.sh scripts/*.sh \
-  tests/*.sh tests/loom/*.sh tests/consumers/*.sh \
+  tests/*.sh tests/loom/*.sh tests/consumers/*.sh tests/tlscheck/*.sh \
   bench/*.sh bench/cb/*.sh bench/drivers/*.sh bench/probes/*.sh \
   .chainguard/ci/services/*/*.sh

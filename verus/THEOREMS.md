@@ -321,6 +321,16 @@ the call does not return (theorem 3, which is not voided for it).
   `create_heap_for_thread` puts a new heap's permission in the token
   (`tcaches::heap_new`, over the trusted `HeapPerm::assemble`, which
   states what `init_fields`, `mark_bound` and `mark_rehome` stored).
+  A debug build tests the slot half of this premise at run time
+  (`--cfg challoc_tls_check`, `heap/tlscheck.rs`; the `tlscheck` CI
+  check, `docs/testing.md`): at every use, `heap_from_slot` checks that
+  the authenticated value names a heap `create_heap_for_thread`
+  published on this thread and the thread's exit has not destroyed,
+  with its `shared` field the one it was published with and the heap
+  in that `Shared`'s metadata; at publication, at thread exit and every
+  64th use it also checks the conjuncts of `Heap::wf` and
+  `Heap::home_at` that `heap::heap_at_tests::check` tests and that need
+  no sets. The premise stays trusted: the check tests the runs it sees.
 - Heap creation is verified, the stores to `bound` and `rehome`
   included (`mark_bound`, `mark_rehome`, `heap/fresh.rs`, and
   `init_fields` are verified): `Heap::create` (`heap/mod.rs`),

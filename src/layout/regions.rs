@@ -1208,7 +1208,7 @@ impl Regions {
     }
 
     /// True when `p` is anywhere inside the metadata reservation.
-    #[cfg(test)]
+    #[cfg(any(test, challoc_tls_check))]
     pub fn in_meta(&self, p: usize) -> bool {
         p.wrapping_sub(self.meta_base) < self.meta_len
     }

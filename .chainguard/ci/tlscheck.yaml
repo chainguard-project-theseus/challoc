@@ -1,0 +1,69 @@
+# The debug TLS check (src/heap/tlscheck.rs), on pull requests that change
+# the library or the check's tests: the crate built with
+# RUSTFLAGS="--cfg challoc_tls_check", which checks every slot-to-heap use
+# against a registry of the heaps each thread published (the premise on
+# TlsSlot and heap_at, verus/THEOREMS.md), then make test's cargo steps
+# against that build and the check's own C tests (tests/tlscheck/run.sh:
+# the lifecycle modes and a 120 s fuzz), on x86_64 and aarch64 at quantum
+# 16. A broken link aborts the process, which fails the step. The shipped
+# library never sets the cfg, and lint.yaml's clippy never builds the
+# check, so this check also runs clippy with it.
+# The toolchains run in the guest directly, no container, with the tools
+# Dockerfile.dev's base stage has.
+version: 1
+
+environment:
+  packages:
+    - rust-1.98          # Dockerfile.dev's stream
+    - build-base         # cc and g++ for build.rs and the C programs, pkg-config
+    - binutils           # readelf, nm, objdump for the api:: tests
+    - git
+    - bash
+    - busybox
+    - coreutils          # timeout
+    - procps
+    - posix-libc-utils   # getconf
+
+checks:
+  tlscheck:
+    description: >-
+      The debug TLS check build (RUSTFLAGS="--cfg challoc_tls_check",
+      quantum 16) on x86_64 and aarch64: clippy -D warnings over every
+      target, the release build, the jemalloc-compat stage, both cargo test
+      groups, then tests/tlscheck/run.sh (every lifecycle mode and a 120 s
+      fuzz with a random seed, printed). Runs on pull requests that change
+      src/, the build, the C test programs, tests/tlscheck/ or this file.
+    when:
+      changed:
+        - "src/**"
+        - "build.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+        - "scripts/ctest-cc.sh"
+        - "scripts/jemalloc-compat.sh"
+        - "tests/c/**"
+        - "tests/tlscheck/**"
+        - ".chainguard/ci/tlscheck.yaml"
+    foreach:
+      - {name: amd64-q16, resources: medium-amd64}
+      - {name: arm64-q16, resources: medium-arm64}
+    vars:
+      RUSTFLAGS: "--cfg challoc_tls_check"
+      CHALLOC_TEST_ALLOW_SKIP: "1"
+      TLSCHECK_FUZZ_SECS: "120"
+    timeout: 30m
+    network:
+      egress: [index.crates.io, static.crates.io]
+    steps:
+      - name: clippy with the check (every target)
+        cmd: [cargo, clippy, --locked, --all-targets, --, -D, warnings]
+      - name: release build with the check
+        cmd: [cargo, build, --release, --locked]
+      - name: jemalloc-compat stage
+        cmd: [sh, scripts/jemalloc-compat.sh]
+      - name: unit tests
+        cmd: [cargo, test, --locked, --, --nocapture, --skip, "api::"]
+      - name: api tests under the preload
+        cmd: [cargo, test, --locked, "api::", --, --nocapture]
+      - name: lifecycle tests and fuzz
+        cmd: [sh, tests/tlscheck/run.sh]

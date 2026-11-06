@@ -7,9 +7,10 @@
 //! a ghost token on trust); *trusted* when it sits inside
 //! `verus!` but is one of those; and *outside* when it is not inside
 //! `verus!` at all. `spec` and `proof` functions are ghost code, erased
-//! from ordinary builds, and are counted apart. Items under `#[cfg(test)]`
-//! or `#[cfg(kani)]` (the Kani harnesses) are left out, and so are
-//! executable functions whose own `cfg` only `test`, `kani` or
+//! from ordinary builds, and are counted apart. Items under `#[cfg(test)]`,
+//! `#[cfg(kani)]` (the Kani harnesses) or `#[cfg(challoc_tls_check)]` (the
+//! debug TLS check build) are left out, and so are executable functions
+//! whose own `cfg` only `test`, `kani`, `challoc_tls_check` or
 //! `verus_keep_ghost` builds meet (`UNSHIPPED`). Lines run from a
 //! function's `fn` keyword to its closing brace.
 //!
@@ -168,16 +169,18 @@ fn test_module_files(file: &Path, items: &[Item], out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Names whose `cfg` holds only in test builds, or only in the builds Kani
-/// makes of its harnesses (`kani`). Verus never sees an item under such a
-/// `cfg`, and no build ships it.
-const TEST: &[&str] = &["test", "kani"];
+/// Names whose `cfg` holds only in test builds, only in the builds Kani
+/// makes of its harnesses (`kani`), or only in the debug TLS check build
+/// (`challoc_tls_check`, set through `RUSTFLAGS` by the `tlscheck` CI
+/// job). Verus never sees an item under such a `cfg`, and no build ships
+/// it.
+const TEST: &[&str] = &["test", "kani", "challoc_tls_check"];
 
 /// Names a shipped build never sets: the [`TEST`] names, and
 /// `verus_keep_ghost`, which is set only while Verus verifies. Verus sees
 /// an item that needs only these, so a proof under it still counts, but
 /// no build ships it.
-const UNSHIPPED: &[&str] = &["test", "kani", "verus_keep_ghost"];
+const UNSHIPPED: &[&str] = &["test", "kani", "challoc_tls_check", "verus_keep_ghost"];
 
 /// Whether one of `attrs` is a `cfg` that holds only when one of `names`
 /// is set (`cfg_predicate_needs`).
@@ -1262,6 +1265,11 @@ mod tests {
             ("test", true, true),
             ("kani", true, true),
             ("any (test , kani)", true, true),
+            ("challoc_tls_check", true, true),
+            ("any (test , challoc_tls_check)", true, true),
+            ("not (challoc_tls_check)", false, false),
+            ("all (test , challoc_tls_check)", true, true),
+            ("any (challoc_tls_check , unix)", false, false),
             ("not (kani)", false, false),
             ("not (any (test , kani))", false, false),
             ("any (kani , verus_keep_ghost)", false, true),
@@ -1315,6 +1323,8 @@ mod tests {
                 fn test_only() {}
                 #[cfg(any(test, verus_keep_ghost))]
                 fn verification_only() {}
+                #[cfg(any(test, challoc_tls_check))]
+                fn tls_check_only() {}
                 #[cfg(verus_keep_ghost)]
                 fn verification_build_only() {}
                 #[cfg(verus_keep_ghost)]
@@ -1331,6 +1341,10 @@ mod tests {
             fn test_only_outside() {}
             #[cfg(test)]
             mod tests { fn helper() {} }
+            #[cfg(challoc_tls_check)]
+            mod tlscheck { fn hook() {} }
+            #[cfg(any(test, challoc_tls_check))]
+            fn tls_check_outside() {}
             "#,
         );
         assert_eq!(errors, 0, "errors: got = {errors}, wanted = 0");
@@ -1993,7 +2007,7 @@ Status: discharged (const assert: `k` in src/a.rs).
 
     #[test]
     fn a_test_module_skips_its_file_and_its_directory() {
-        let file = parse_file("#[cfg(test)] mod model; #[cfg(all(test, target_os = \"linux\"))] mod linux_tests; mod kept;")
+        let file = parse_file("#[cfg(test)] mod model; #[cfg(all(test, target_os = \"linux\"))] mod linux_tests; #[cfg(challoc_tls_check)] mod tlscheck; #[cfg(any(test, challoc_tls_check))] mod facts; mod kept;")
             .expect("parses");
         let mut skip = Vec::new();
         test_module_files(Path::new("src/lib.rs"), &file.items, &mut skip);
@@ -2002,6 +2016,8 @@ Status: discharged (const assert: `k` in src/a.rs).
             ("src/model/steps.rs", true),
             ("src/model.rs", true),
             ("src/linux_tests.rs", true),
+            ("src/tlscheck.rs", true),
+            ("src/facts.rs", true),
             ("src/kept.rs", false),
             ("src/kept/model.rs", false),
             ("src/models.rs", false),
