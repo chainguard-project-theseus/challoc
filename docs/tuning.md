@@ -84,7 +84,8 @@ effect; forced to never by a cgroup limit under 1 GiB)` for `thp` when
 section 4's rule applied.
 
 At run time, through `mallctl`: `background_thread` (a write of `true`
-creates the thread synchronously; Valkey does this at startup),
+creates the thread synchronously, or returns 0 at once when another
+thread is already creating it; Valkey does this at startup),
 `arena.<i>.dirty_decay_ms`, `arena.<i>.purge` and `arena.<i>.decay`,
 `thread.tcache.enabled`, `thread.tcache.flush`; and `malloc_trim(0)`
 (every arena purged, eagerly).

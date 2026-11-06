@@ -15,7 +15,7 @@ file.
 
 ## `pthread_join`
 
-src/purge/background.rs:489. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:506. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
@@ -33,12 +33,12 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
 
 ## `spawn`
 
-src/purge/background.rs:677. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:694. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
 
-Body mints Tracked at line 697; mints Tracked at line 705.
+Body mints Tracked at line 714; mints Tracked at line 722.
 
 Hashes: contract 1600496607, body 1049282638.
 
@@ -55,7 +55,7 @@ fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut T
 
 ## `shared_arg`
 
-src/purge/background.rs:767. Kind: external_body. Category: raw pointer from C caller.
+src/purge/background.rs:784. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -70,7 +70,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ## `main`
 
-src/purge/background.rs:783. Kind: no_decreases. Category: termination.
+src/purge/background.rs:800. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: exit::loom_exit_after_withdrawal and exit::loom_exit_after_withdrawal_with_waker; not checked: this body, which the models replace with a copy of the loop whose pass is its worst case for this property (no deadline); that each pass and the exit's state lock return; a `request(true)` after the withdrawal, which rightly keeps the thread running; the kernel's futex, which the models replace with a stand-in).
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -83,7 +83,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:884. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:901. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_static`] is [`STATE`].

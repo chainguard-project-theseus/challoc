@@ -297,6 +297,23 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
     present
 }
 
+/// Whether the thread exists or another thread is creating it, under
+/// the state lock. `mallctl("background_thread", true)` succeeds when
+/// this holds after its own [`start`] returned `false`, which [`start`]
+/// does while another thread's creation is in progress.
+pub fn present_or_creating(Tracked(ord): Tracked<&mut LockOrder>) -> bool
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_state()),
+    ensures
+        *final(ord) == *old(ord),
+{
+    let g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+    let r = g.present || g.creating;
+    g.unlock();
+    r
+}
+
 /// [`start`] for an allocation's tick that found the thread requested.
 /// A lazy request (the lazy start still armed) whose start failed, and
 /// is not merely in progress on another thread, withdraws itself: the
@@ -1019,12 +1036,13 @@ verus! {
 /// `exited ==> !present` (a thread that found the request withdrawn and
 /// exited before its `start` published it stays unpublished). Each
 /// guard's holder outside the tests (`request`, `start`,
-/// `start_requested`, `auto_tick`, `main`) ends in `LockGuard::unlock`
-/// (`api::tests::guards_end_in_unlock`), which requires it: `start`
-/// writes `stack` and `present` (which it sets only to
-/// `thread.is_some() && !exited`, and clears `exited` only while nothing
-/// is present), `main` its exit's `present` false and `exited` true, and
-/// `request`, `start_requested` and `auto_tick` write nothing under it.
+/// `present_or_creating`, `start_requested`, `auto_tick`, `main`) ends in
+/// `LockGuard::unlock` (`api::tests::guards_end_in_unlock`), which
+/// requires it: `start` writes `stack` and `present` (which it sets only
+/// to `thread.is_some() && !exited`, and clears `exited` only while
+/// nothing is present), `main` its exit's `present` false and `exited`
+/// true, `present_or_creating` only reads, and `request`,
+/// `start_requested` and `auto_tick` write nothing under it.
 /// The fork handlers hold the lock with its cell's permission
 /// ([`StateHold`]), whose value keeps it ([`StateHold::wf`]):
 /// [`fork_child`], the fork child's writer, clears `present`, `creating`

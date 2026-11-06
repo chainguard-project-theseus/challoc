@@ -499,8 +499,8 @@ process statistics lock (`collect_into`, `snapshot`,
 `purge_curve`), the slab table's commit lock
 (`SlabTable::mirror_watermark`, `guards`, `take_group`, `commit_run`,
 `commit_slab`) and the background thread's state lock
-(`purge::background::request`, `start`, `start_requested`,
-`auto_tick`, `main`); the source test
+(`purge::background::request`, `start`, `present_or_creating`,
+`start_requested`, `auto_tick`, `main`); the source test
 `api::tests::guards_end_in_unlock` (`api/mod.rs`) checks that none of
 these guards drops without it. For every other lock the invariant and
 frame are not checked at the release: each verified holder ends with them
@@ -6145,7 +6145,7 @@ below):
 | huge: `Shared::alloc_huge` → `alloc_run` → `alloc_aligned` (huge; the lowest-fit `find` runs under it) → `alloc_desc`, `free_desc`, `Table::ensure`, `Set::ensure` (own store), `take` → `retire` (meta); `free_run` (huge) → `Table::ensure`, `retire` (meta) | Huge < Meta |
 | cache flushes and routing: `Heap::flush_all` (`tcache.flush` through `Tcaches::flush`, `thread.tcache.flush` and `arena.<i>.purge` through `flush_caller`, `thread.tcache.enabled` through `set_tcache_enabled`) → `flush_arena` → `flush` → `release_routed` (class) and `free_caches_in` → `Meta::free` (meta); `gc` → `gc_arena` → `flush`; `set_arena` → `other_caches` (meta, when it creates a node) | class locks one at a time, then Meta |
 | arena creation `Arenas::create`, heap creation `Heap::create` → `assign_home` (arenas) and `create_detached` (meta), explicit caches `Tcaches::create`/`destroy` (tcaches → meta / class, meta, huge) | Tcaches < Arenas, Meta, Class, Huge |
-| purge `purge_all`, `purge_arena`, `decay` and `decay_arena` (through `decay_one`, `decay_huge`) → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main`; the lazy start: `on_tick` → `auto_tick` (`policy::empty_bytes`: class and huge locks, then state, then, on an allocation's tick, `start_requested`), `start_requested` (`start`, then state), `request` (state; from `ctl`'s `background_thread` write) | class, huge, state locks one at a time |
+| purge `purge_all`, `purge_arena`, `decay` and `decay_arena` (through `decay_one`, `decay_huge`) → `Arena::decay_with`, `ClassState::decay_with`, `Huge::decay_with`, `on_tick`, `sample` → `policy::evaluate`; background `start` (state, then meta) and `main`; the lazy start: `on_tick` → `auto_tick` (`policy::empty_bytes`: class and huge locks, then state, then, on an allocation's tick, `start_requested`), `start_requested` (`start`, then state), `request` (state; from `ctl`'s `background_thread` write, which then calls `start` and, when it returns `false`, `present_or_creating` (state)) | class, huge, state locks one at a time |
 | statistics `epoch`, `collect` (`collect_into`, with its exact-stats ghost outputs) and `arena_stats_all_into`, under the process statistics lock held across the scan | Stats < Class(i, c) < Table(c), and Stats < Huge, Meta, ArenaStats(i), each released before the next is taken; `arena_stats_all_into`: Stats < ArenaStats(i) |
 | statistics `collect_all`, `snapshot`, `arena_stats` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
 | `fork_prepare` (`api/mod.rs`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Sets(i) (arenas ascending) < Huge < Meta < ArenaStats(i) < State, through one root token; before them the deferred cgroup discovery's `policy::evaluate` from the same root token, each class lock with nothing above it held, all released on return (`*final(ord) == *old(ord)`) |

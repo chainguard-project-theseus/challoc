@@ -1035,7 +1035,9 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
 
 Created through `pthread_create` (`purge/background.rs`), never from
 init: on the first periodic tick (6.4) after `background_thread:true` in
-`malloc_conf`, synchronously by `mallctl("background_thread", true)`, or,
+`malloc_conf`, synchronously by `mallctl("background_thread", true)`
+(which returns 0 without waiting when another thread, a tick or another
+enable, is creating it at that moment), or,
 with the key unset (the default), lazily. The lazy start looks at most
 every 100 ms, from a periodic tick whose foreground decay pass left dirty
 memory waiting: it sums the `Empty` bytes (every class and the huge tier)
