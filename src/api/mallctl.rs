@@ -2814,8 +2814,8 @@ fn read_out(io: &Io, r: Reading, Tracked(cc): Tracked<&mut CCall>) -> (res: Resu
 /// The two errors that may follow a change `c`, both in jemalloc 5.3.0's
 /// order: `epoch`'s read after its refresh (`Change::Refreshed`; jemalloc's
 /// `epoch_ctl` reads after `ctl_refresh` too), and `background_thread`'s
-/// `EAGAIN` when the thread it requested does not start
-/// (`background_thread_ctl` keeps the enabled flag set and fails too).
+/// `EAGAIN` when the thread it requested does not start and no other
+/// thread is creating it (`background_thread_ctl` keeps the enabled flag set and fails too).
 spec fn error_after_change(node: Node, r: Result<(), c_int>, c: Change) -> bool {
     ||| c is Refreshed
     ||| node.entry matches Entry::Op(Op::BackgroundThread) && r == Err::<(), c_int>(EAGAIN)
@@ -2902,7 +2902,16 @@ fn ctl(
                 // The slot token: `start` parks the slot through its cell
                 // while it creates the thread. No heap is borrowed here.
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
-                if on && !purge::background::present() && !purge::background::start(shared, Tracked(&mut ord), Tracked(errno), Tracked(&mut tls.cell)) {
+                // A `start` that found another thread (an allocation's
+                // tick or another enable) creating the thread is no
+                // failure: the thread is starting. jemalloc's racing
+                // enable waits on its lock and returns 0; this one
+                // returns 0 without waiting. Should that creation fail,
+                // the request stays and the next tick tries again.
+                if on && !purge::background::present()
+                    && !purge::background::start(shared, Tracked(&mut ord), Tracked(errno), Tracked(&mut tls.cell))
+                    && !purge::background::present_or_creating(Tracked(&mut ord))
+                {
                     return Err(EAGAIN);
                 }
             }
@@ -5156,6 +5165,165 @@ mod tests {
             before,
             "an EINVAL read made the request"
         );
+    }
+
+    #[test]
+    fn background_thread_enable_racing_a_start_in_progress_succeeds() {
+        use core::sync::atomic::{AtomicI32, Ordering};
+        use std::sync::Arc;
+        let _serial = crate::testutil::global_state();
+        assert!(!purge::background::present());
+        // A second enable, from another thread, while the first one's
+        // `start` is between creating the thread and publishing it: that
+        // `start` finds the creation in progress, and the enable returns
+        // 0, as jemalloc's does once the thread runs.
+        let racing = Arc::new(AtomicI32::new(-1));
+        let racing_rc = Arc::clone(&racing);
+        *purge::background::BEFORE_PUBLISH.lock().unwrap() =
+            Some(std::boxed::Box::new(move || {
+                // No panics here: unwinding out of `start` would leave the
+                // state marked as creating for every later test.
+                let rc = std::thread::spawn(|| set("background_thread", true))
+                    .join()
+                    .unwrap_or(-2);
+                racing_rc.store(rc, Ordering::SeqCst);
+            }));
+        let rc = set("background_thread", true);
+        // Another test's allocation tick may have become the creator and
+        // run the hook; wait for it before taking the hook back.
+        for _ in 0..400 {
+            if racing.load(Ordering::SeqCst) != -1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        purge::background::BEFORE_PUBLISH.lock().unwrap().take();
+        let present = purge::background::present();
+        assert_eq!(set("background_thread", false), 0);
+        for _ in 0..400 {
+            if !purge::background::present() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let stopped = !purge::background::present();
+        if stopped {
+            purge::background::join_exited();
+        }
+        assert_eq!(rc, 0, "the enable that created the thread");
+        assert_eq!(
+            racing.load(Ordering::SeqCst),
+            0,
+            "the enable racing the creation (-1: the hook did not run)"
+        );
+        assert!(present, "background thread did not start");
+        assert!(stopped, "background thread did not stop");
+    }
+
+    #[test]
+    fn background_thread_enable_whose_thread_exits_before_it_publishes_fails() {
+        use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+        use std::sync::Arc;
+        let _serial = crate::testutil::global_state();
+        // A disable, through `mallctl` on another thread, while the
+        // enable's `start` is between creating the thread and publishing
+        // it, and the thread exits first: when that `start` returns
+        // false, no thread is present or being created, so the enable
+        // fails with EAGAIN. Another test's allocation tick may create a
+        // thread in the same round (before the enable's `start`, so that
+        // it runs the hook, or after the hook's disable, from a request it
+        // read before it); such a round is cleaned up and run again, so
+        // the checked round's only creation is the enable's.
+        let mut checked = None;
+        for _ in 0..20 {
+            assert!(!purge::background::present());
+            // 0: the hook did not run, 1: it ran on this thread and the
+            // thread exited, 2: it ran here and the thread did not exit,
+            // 3: it ran on another thread.
+            let hook = Arc::new(AtomicU8::new(0));
+            let hook_seen = Arc::clone(&hook);
+            // `EXITS` once the hook saw the thread exit.
+            let exited_at = Arc::new(AtomicU32::new(0));
+            let exited_at_seen = Arc::clone(&exited_at);
+            let me = std::thread::current().id();
+            let exits = purge::background::EXITS.load(Ordering::SeqCst);
+            *purge::background::BEFORE_PUBLISH.lock().unwrap() =
+                Some(std::boxed::Box::new(move || {
+                    // No panics here: unwinding out of `start` would leave
+                    // the state marked as creating for every later test.
+                    if std::thread::current().id() != me {
+                        hook_seen.store(3, Ordering::SeqCst);
+                        return;
+                    }
+                    let _ = std::thread::spawn(|| set("background_thread", false)).join();
+                    let mut seen = 2;
+                    for _ in 0..1000 {
+                        let now = purge::background::EXITS.load(Ordering::SeqCst);
+                        if now != exits {
+                            exited_at_seen.store(now, Ordering::SeqCst);
+                            seen = 1;
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    hook_seen.store(seen, Ordering::SeqCst);
+                }));
+            let rc = set("background_thread", true);
+            let present = purge::background::present();
+            // Still installed: no creation reached the hook (another
+            // creator is still before it, or the creation failed).
+            let unused = purge::background::BEFORE_PUBLISH
+                .lock()
+                .unwrap()
+                .take()
+                .is_some();
+            // Taken: wait for the creator that took it to report.
+            if !unused {
+                for _ in 0..1200 {
+                    if hook.load(Ordering::SeqCst) != 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+            let ran = hook.load(Ordering::SeqCst);
+            // Leave no thread, and no creation in progress, for the next
+            // round or test.
+            assert_eq!(set("background_thread", false), 0);
+            for _ in 0..400 {
+                if !purge::background::present_or_creating(Tracked::assume_new()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let stopped = !purge::background::present_or_creating(Tracked::assume_new());
+            if stopped {
+                purge::background::join_exited();
+            }
+            // Another creation in this round made a thread that exited
+            // after the hook's.
+            let other = ran == 1
+                && purge::background::EXITS.load(Ordering::SeqCst)
+                    != exited_at.load(Ordering::SeqCst);
+            // A round that did not stop is checked: running another
+            // would start from a thread left over.
+            if !stopped || (!unused && ran != 3 && !other) {
+                checked = Some((ran, rc, present, stopped));
+                break;
+            }
+        }
+        let (ran, rc, present, stopped) =
+            checked.expect("no round had the enable as the only creator");
+        assert_eq!(
+            ran, 1,
+            "hook: 0 did not run, 2 the thread did not exit before publication"
+        );
+        assert!(!present, "start published a thread that had already exited");
+        assert_eq!(
+            rc, EAGAIN,
+            "the enable whose thread exited before its start published it"
+        );
+        assert!(stopped, "background thread did not stop");
     }
 
     /// The verified reads that rest on premise C2 of
