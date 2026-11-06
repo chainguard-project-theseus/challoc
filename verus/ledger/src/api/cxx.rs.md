@@ -10,7 +10,7 @@ file.
 | `get_new...r_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `throw_b...c_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `Handler` | external_body type | function pointer | Kani | trusted |
-| `call_get_new_handler` | external_body | function pointer | Kani | trusted |
+| `call_get...handler` | external_body | function pointer | Kani | discharged |
 | `call_throw_bad_alloc` | external_body | function pointer | Kani | trusted |
 | `call_handler` | external_body | function pointer | Kani | trusted |
 | `call_handler_caught` | external_body | function pointer | Kani | trusted |
@@ -19,20 +19,22 @@ file.
 
 ## `get_new_handler_addr`
 
-src/api/cxx.rs:83. Kind: external_body. Category: inline asm.
-Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
+src/api/cxx.rs:88. Kind: external_body. Category: inline asm.
+Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the loader fills the GOT entry with std::get_new_handler's address or 0)).
 
 > Address of libstdc++'s `std::get_new_handler()`, or null when no libstdc++ is loaded in the process.
 
-Hashes: contract 1036951882, body 823680132.
+Hashes: contract 581949349, body 823680132.
 
 ```rust
-fn get_new_handler_addr() -> *const c_void
+fn get_new_handler_addr() -> (r: *const c_void)
+    ensures
+        is_get_new_handler(r),
 ```
 
 ## `throw_bad_alloc_addr`
 
-src/api/cxx.rs:114. Kind: external_body. Category: inline asm.
+src/api/cxx.rs:122. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the loader fills the GOT entry with std::__throw_bad_alloc's address or 0)).
 
 > Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
@@ -47,7 +49,7 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
 
 ## `Handler`
 
-src/api/cxx.rs:143. Kind: external_body type. Category: function pointer.
+src/api/cxx.rs:151. Kind: external_body type. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > The installed `new_handler`, opaque to Verus (which has no function pointer types).
@@ -60,23 +62,24 @@ struct Handler(unsafe extern "C" fn());
 
 ## `call_get_new_handler`
 
-src/api/cxx.rs:152. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+src/api/cxx.rs:158. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: discharged on premises (Kani: api::cxx::kani_cxx::call_get_new_handler_gives_installed; premises: C5 (the address, an `asm!` output only called, is the C++ runtime's std::get_new_handler, which returns null or the installed handler without throwing)).
 
-> Call `std::get_new_handler` at `get`, its non-null address: the installed `new_handler`, if one is set.
+> Call `std::get_new_handler` at `get`, its non-null address ([`is_get_new_handler`]): the installed `new_handler`, if one is set.
 
-Hashes: contract 800703334, body 3023004719.
+Hashes: contract 2579292462, body 3023004719.
 
 ```rust
 fn call_get_new_handler(get: *const c_void) -> Option<Handler>
     requires
         crate::sys::may_syscall(),
+        is_get_new_handler(get),
         get@.addr != 0,
 ```
 
 ## `call_throw_bad_alloc`
 
-src/api/cxx.rs:181. Kind: external_body. Category: function pointer.
+src/api/cxx.rs:188. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: trusted.
 
 > Call `std::__throw_bad_alloc` at `t`, its non-null address ([`is_throw_bad_alloc`]).
@@ -94,8 +97,8 @@ fn call_throw_bad_alloc(t: *const c_void) -> !
 
 ## `call_handler`
 
-src/api/cxx.rs:220. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+src/api/cxx.rs:227. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: trusted (partly checked, Kani: api::cxx::kani_cxx::call_handler_calls_once; not checked: what the program's handler does (C4), and that a throw from it unwinds through `oom` to the caller of `operator new`, undefined in Rust and resting on the unwind tables rustc emits (module doc)).
 
 > Call the program's `new_handler`, which may write `errno`: `errno` is the calling thread's, taken `&mut` with no ensures, so nothing is known of its value afterwards.
 
@@ -109,8 +112,8 @@ fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>)
 
 ## `call_handler_caught`
 
-src/api/cxx.rs:238. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+src/api/cxx.rs:245. Kind: external_body. Category: function pointer.
+Tool: Kani. Status: trusted (partly checked, Kani: api::cxx::kani_cxx::call_handler_caught_reports_shim; not checked: `challoc_call_new_handler` in `cxx_handler.cpp`, which the harness replaces by a model that calls the handler and returns 1 or reports a throw as 0; what the program's handler does (C4)).
 
 > Call the program's `new_handler` through `challoc_call_new_handler` (`cxx_handler.cpp`), which catches anything it throws: `false` when it threw.
 
@@ -124,7 +127,7 @@ fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> b
 
 ## `oom`
 
-src/api/cxx.rs:256. Kind: no_decreases. Category: termination.
+src/api/cxx.rs:263. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > The `operator new` failure protocol: call the `new_handler` and retry until an attempt succeeds or no handler is installed, then throw `std::bad_alloc` (or return null for the `nothrow_t` forms, also when the handler throws).
@@ -154,7 +157,7 @@ fn oom(
 
 ## `axiom_c_call`
 
-src/api/cxx.rs:512. Kind: axiom. Category: C-program contract.
+src/api/cxx.rs:636. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C++ call that hands over the block at `p` to an `operator delete` ([`CCall`], [`CEntry::Frees`]).

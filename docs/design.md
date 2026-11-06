@@ -1082,6 +1082,15 @@ premise C3 (`verus/kani/premises.md`) assumes the callback is not
 cancelled. Disabling it cannot stop the callback itself from leaving
 the call by `pthread_exit` (in glibc a forced unwind too) or
 `longjmp`: under C3 that stays the program's obligation.
+`operator new`'s calls into the program's `new_handler` (13.1;
+`api::cxx::call_handler` and `call_handler_caught`) are an exception
+too: they also run with cancellation enabled. A deferred cancel acted on
+inside the handler unwinds through `api::cxx::oom` in the throwing
+forms, which is undefined behaviour as for the report's callbacks, and
+aborts the process in the `nothrow_t` forms, whose `catch (...)` in
+`cxx_handler.cpp` takes glibc's forced unwind without rethrowing it, as
+libstdc++'s own nothrow `operator new` does. Until the call runs with
+cancellation disabled, premise C4 assumes the handler is not cancelled.
 Asynchronous cancellation inside challoc is undefined behaviour
 (POSIX allows it only around async-cancel-safe calls) and is not
 covered. After `fork` the child
@@ -1913,10 +1922,13 @@ aborts:
 
 Thread cancellation is not a failure either: challoc never acts on a
 (deferred) cancellation request (8.1), so none leaves its state half set.
-The exception is a report's call into the program's callback, which
-runs with cancellation enabled, so a cancel may be acted on inside it
-(8.1); and a callback that leaves the call by `pthread_exit` or
-`longjmp` breaks premise C3 whatever the cancel state.
+The exceptions are a report's call into the program's callback and
+`operator new`'s call into the program's `new_handler`, which run with
+cancellation enabled, so a cancel may be acted on inside them (8.1); a
+callback that leaves the call by `pthread_exit` or `longjmp` breaks
+premise C3, and a `new_handler` that does breaks C4, whatever the cancel
+state. `operator new` holds no lock and no half-set state of challoc's
+while its handler runs: the failed attempt has returned.
 
 Guards degrade, never vanish: a guard the kernel refuses as a
 `MADV_GUARD_INSTALL` marker (on an `mlock`ed range, `EINVAL`) is a
