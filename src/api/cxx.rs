@@ -495,12 +495,16 @@ pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): T
 
 } // verus!
 
-/// Kani checks of `call_get_new_handler`, `call_handler` and
-/// `call_handler_caught` (`verus/ledger/src/api/cxx.rs.md`; `cfg(kani)`
-/// only, see `verus/README.md`, "Kani").
+/// Kani checks of `call_get_new_handler`, `call_throw_bad_alloc`,
+/// `call_handler` and `call_handler_caught`
+/// (`verus/ledger/src/api/cxx.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
 #[cfg(kani)]
 mod kani_cxx {
-    use super::{Handler, NewHandler, call_get_new_handler, call_handler, call_handler_caught};
+    use super::{
+        Handler, NewHandler, call_get_new_handler, call_handler, call_handler_caught,
+        call_throw_bad_alloc,
+    };
     use core::ffi::{c_int, c_void};
     use vstd::prelude::Tracked;
 
@@ -569,6 +573,41 @@ mod kani_cxx {
         // SAFETY: as in `record`.
         assert_eq!(unsafe { GETS }, 1);
         assert_eq!(addr(got.map(|g| g.0)), addr(h));
+    }
+
+    /// A stand-in for `std::__throw_bad_alloc` that leaves by a panic, as
+    /// the runtime's function leaves by a throw.
+    unsafe extern "C" fn throw_panics() -> ! {
+        panic!("std::bad_alloc");
+    }
+
+    /// `call_throw_bad_alloc`: no `ensures`, and `-> !`, so it never
+    /// returns. With `throw_panics` at `t`, the call panics and fails in
+    /// no other way (an abort, an unwinding bound, a bad access).
+    #[kani::proof]
+    #[kani::should_panic]
+    fn call_throw_bad_alloc_leaves_by_panic() {
+        call_throw_bad_alloc(throw_panics as *const c_void)
+    }
+
+    /// A stand-in for `std::__throw_bad_alloc` that ends the path where
+    /// the runtime's function would throw: no path goes on past it, so it
+    /// is called at most once.
+    unsafe extern "C" fn throw_ends() -> ! {
+        kani::cover!(true);
+        kani::assume(false);
+        unreachable!()
+    }
+
+    /// `call_throw_bad_alloc` (beyond the contract): nothing before the
+    /// call of the function at `t` fails, since a panic or an abort fails
+    /// this harness, which has no `should_panic`. With
+    /// `call_throw_bad_alloc_leaves_by_panic`, which fails unless the call
+    /// panics, the pair shows that the body calls the function at `t` and
+    /// leaves through it.
+    #[kani::proof]
+    fn call_throw_bad_alloc_calls_once() {
+        call_throw_bad_alloc(throw_ends as *const c_void)
     }
 
     /// Whether the stand-in for `cxx_handler.cpp`'s shim reports a throw,

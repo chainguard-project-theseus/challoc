@@ -1,5 +1,7 @@
 # A function pointer (the key's destructor), which Verus does not support.
-ThreadKey::create	function pointer	none (assumption)
+# Kani runs the body with glibc's pthread_key_create replaced by a recording
+# stand-in; what glibc's function does is C7.
+ThreadKey::create	function pointer	Kani	discharged on premises (Kani: heap::shared::kani_key::create_keeps_the_key; premises: C7 (glibc's pthread_key_create stores the key and returns 0, or returns an error number))	contract 663924478, body 2383684293
 # Byte offsets (`offset_of!`, which Verus cannot evaluate), and the
 # layout the build checks with `fits`.
 S_LINES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 2770929303, body none

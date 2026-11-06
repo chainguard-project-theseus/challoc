@@ -4,6 +4,11 @@ Handler	function pointer	Kani
 # on a recording stand-in that returns none or one of two handlers; that
 # the address is the runtime's function, and what it does, is C5.
 call_get_new_handler	function pointer	Kani	discharged on premises (Kani: api::cxx::kani_cxx::call_get_new_handler_gives_installed; premises: C5 (the address, an `asm!` output only called, is the C++ runtime's std::get_new_handler, which returns null or the installed handler without throwing))	contract 2579292462, body 3023004719
+# The call of the C++ runtime's `std::__throw_bad_alloc`: Kani runs the body
+# on stand-ins that panic or end the path; that the
+# address is the runtime's function, and that it throws, is C6, but the
+# throw unwinds through Rust frames, which rests on codegen.
+call_throw_bad_alloc	function pointer	Kani	trusted (partly checked, Kani: api::cxx::kani_cxx::call_throw_bad_alloc_leaves_by_panic and api::cxx::kani_cxx::call_throw_bad_alloc_calls_once; not checked: what std::__throw_bad_alloc does (C6), and that its throw unwinds through `throw_bad_alloc` and its callers (`oom`, or the aligned operator's frame) to the caller of `operator new`, undefined in Rust and resting on the unwind tables rustc emits (module doc))	contract 3235960257, body 302946644
 # The throwing forms' call of the program's `new_handler`: Kani runs the
 # body on a recording handler; what the handler does is its contract (C4),
 # but a throw unwinds through Rust frames, which rests on codegen.

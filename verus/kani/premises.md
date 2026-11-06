@@ -2,22 +2,24 @@
 
 A Kani harness runs a trusted item's own body on the inputs and statics
 the harness sets up. What the C program stores in those statics, and
-what the program's own callbacks, and the functions of the C++ runtime
-it links, do while challoc calls them, and what
+what the program's own callbacks, and the functions of the C and C++
+runtimes it links, do while challoc calls them, and what
 glibc's loader and the Linux kernel place at the addresses the item
 reads, are outside its reach. A seam whose harness covers its whole
 contract except for such facts is `discharged on premises (Kani:
 <harness path>; premises: <what>)` (verus/SEAMS.md, "Status"), and
-`<what>` names them by the labels below: C labels for the C program, L
-labels for the loader and the kernel.
+`<what>` names them by the labels below: C labels for the C program and
+the runtime functions challoc calls, L labels for the loader and the
+kernel.
 
 ## Premises
 
 Each premise is a fact about what the C program that calls challoc
 stores in, or passes through, challoc's exported C symbols, or about
-what the program's own callback, or a function of the C++ runtime it
-links, does while challoc calls it, as a K premise of
-`verus/isla/seams.md` states the kernel's side of a system call. The
+what the program's own callback, or a function of the C runtime (glibc)
+or the C++ runtime it links, does while challoc calls it, as a K
+premise of `verus/isla/seams.md` states the kernel's side of a system
+call. The
 harness assumes it in the values it stores before it runs the item, in
 running the item on one thread, and in running a recording stand-in in
 place of the program's callback or the runtime's function; its comment
@@ -145,6 +147,106 @@ section's, and fails on a Kani status that names any other.
   `__ATOMIC_ACQUIRE`, or a load under a mutex where pointers are not
   lock-free) and `libsupc++/new` (`new_handler get_new_handler()
   noexcept;`), as read on gcc's master branch on 2026-11-06.
+- **C6, the C++ runtime's `std::__throw_bad_alloc`.** A non-null
+  address the loader resolves challoc's weak reference
+  `_ZSt17__throw_bad_allocv` to (the GOT entry
+  `api::cxx::throw_bad_alloc_addr` loads, which P8 of
+  `verus/isla/seams.md` says holds the address of the definition symbol
+  resolution picks; `api::cxx::is_throw_bad_alloc`) is that of
+  libstdc++'s `std::__throw_bad_alloc()`: a function with the C calling
+  convention (the Itanium C++ ABI gives a non-member function the
+  platform's C convention) that takes no arguments and never returns:
+  it throws a `std::bad_alloc`, or, in a libstdc++ built without
+  exceptions, aborts. A program that defines that symbol itself,
+  interposing on the runtime's, is outside this premise unless its
+  definition does the same. challoc only calls the address, as an
+  `asm!` output turned into a function pointer
+  (`api::cxx::call_throw_bad_alloc`, from `api::cxx::throw_bad_alloc`),
+  on the thread whose `operator new` failed, and reads no byte through
+  it. The throw unwinds through `throw_bad_alloc` and its callers
+  (`oom`, or, for an alignment that is not a power of two, the aligned
+  operator's frame) to the caller of `operator new`; as for C4, that
+  this unwind through Rust frames works is a fact about challoc's
+  compiled code (the `api::cxx` module documentation), not about the
+  runtime, so it is outside this premise and a status that rests on it
+  stays partly checked. The harnesses run the item with a stand-in, a
+  Rust function, that panics, or ends the path, where the runtime's
+  function would throw. Source: libstdc++ `src/c++11/functexcept.cc`
+  (the exported definition, `__throw_bad_alloc() {
+  _GLIBCXX_THROW_OR_ABORT(bad_alloc()); }`) and
+  `include/bits/new_throw.h` (its declaration, `void
+  __throw_bad_alloc(void) __attribute__((__noreturn__));`, where the
+  header does not define it inline for constexpr exceptions), as read
+  on gcc's master branch on 2026-11-06.
+- **C7, glibc's `pthread_key_create`.** The symbol `pthread_key_create`
+  resolves to glibc's `int pthread_key_create(pthread_key_t *key, void
+  (*destructor)(void *))`, the signature of challoc's declaration of it
+  in `heap/shared.rs`, with `pthread_key_t` an `unsigned int`. A program
+  or preloaded library that defines that symbol itself, interposing on
+  glibc's, is outside this premise unless its definition does the same.
+  Called by `heap::shared::ThreadKey::create` with the address of a
+  live, writable `pthread_key_t` on challoc's stack and the destructor
+  `heap::heap_destructor`, it returns 0 and stores the new key in
+  `*key`, or returns a nonzero error number, creating no key. It
+  returns to its caller, writes no memory of challoc's but `*key`, and
+  makes no call into challoc while it runs. glibc claims, with a
+  compare-and-swap, the first unused, usable slot of its table of
+  `PTHREAD_KEYS_MAX` keys it wins, stores the destructor in the slot
+  and the slot's index in `*key`, and returns 0; when it claims no slot
+  it returns `EAGAIN` without writing `*key`. It allocates nothing.
+  When glibc later calls the destructor (at a thread's exit, theorem 10
+  of `verus/THEOREMS.md`) is not part of the call, and not of this
+  premise. The harness runs the item with `pthread_key_create`
+  replaced by a stand-in that records its call and the destructor,
+  checks that `key` is writable, and returns any value, storing any
+  key when that value is 0. Source: POSIX `pthread_key_create` ("If
+  successful, the pthread_key_create() function shall store the newly
+  created key value at *key and shall return zero. Otherwise, an error
+  number shall be returned to indicate the error."); glibc
+  `nptl/pthread_key_create.c` (`___pthread_key_create`), as read on
+  glibc's master branch on 2026-11-06 (a mirror).
+- **C8, glibc's `pthread_atfork`.** The symbol `pthread_atfork`
+  resolves to glibc's `int pthread_atfork(void (*prepare)(void), void
+  (*parent)(void), void (*child)(void))`, the signature of challoc's
+  declaration of it in `api/mod.rs`: glibc links its copy into
+  challoc's own object from `libc_nonshared.a`, and that copy calls
+  libc's `__register_atfork` with challoc's `__dso_handle`. A program
+  or preloaded library that defines `__register_atfork` itself,
+  interposing on glibc's, is outside this premise unless its definition
+  does the same. Called by `api::pthread_atfork_handlers` with
+  `api::fork_prepare`, `api::fork_parent` and `api::fork_child`, it
+  records the three as one registration and returns 0. It returns to
+  its caller, reads and writes no memory challoc's Rust code owns, and
+  makes no call into challoc while it runs. `__register_atfork`
+  appends the handlers to a table under glibc's atfork lock, which a
+  `fork` holds from its prepare handlers to its parent and child
+  handlers; the return rests on the calling thread not holding that
+  lock, as a thread running a `fork`'s handlers does, which is assumed,
+  with no source. The table holds its first 48
+  entries in place (`DYNARRAY_INITIAL_SIZE`) and grows past them with
+  `malloc`, which in a process whose allocator is challoc is a call
+  into challoc; a process with 48 or more live registrations before
+  challoc's is outside this premise, and so is the `ENOMEM` return,
+  which needs a failed `malloc`. So is the process-ending
+  `__libc_fatal` on an overflow of glibc's 64-bit registration counter.
+  What glibc does with the handlers at a `fork` (the prepare handlers
+  in the reverse order of registration, the parent and child handlers
+  in order, on the forking thread; theorem 13's premises,
+  `verus/THEOREMS.md`) is not part of the call, and not of this
+  premise. The harness runs the item with `pthread_atfork` replaced by
+  a stand-in that records its call and the three handlers, in argument
+  order, and returns any value. Source: POSIX `pthread_atfork` ("Upon
+  successful completion, pthread_atfork() shall return a value of zero;
+  otherwise, an error number shall be returned to indicate the error");
+  glibc `sysdeps/pthread/pthread_atfork.c` (`__pthread_atfork`, "no
+  definition but the one locally in the executable or DSO is used"),
+  `sysdeps/pthread/Makefile` (`static-only-routines += pthread_atfork`,
+  the routines built into `libc_nonshared.a`), `posix/register-atfork.c`
+  (`__register_atfork`, and `__run_prefork_handlers` and
+  `__run_postfork_handlers` for the lock and the order at a `fork`),
+  `malloc/dynarray-skeleton.c` and `malloc/dynarray_emplace_enlarge.c`
+  (the in-place table and the `malloc` past it), as read on glibc's
+  master branch on 2026-11-06 (a mirror).
 
 ## Loader and kernel premises
 

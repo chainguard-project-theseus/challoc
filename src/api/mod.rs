@@ -1280,10 +1280,11 @@ pub fn is_ready() -> bool {
 
 unsafe extern "C" {
     /// glibc's `pthread_atfork(3)`, with the `libc` crate's signature and
-    /// the same symbol. Declared in this crate rather than taken from the
-    /// `libc` crate so that a Kani harness can stub it: Kani 0.68 stubs a
-    /// foreign function only where this crate declares it, and silently
-    /// ignores a stub on `libc::pthread_atfork`.
+    /// the same symbol (premise C8 of `verus/kani/premises.md`). Declared
+    /// in this crate rather than taken from the `libc` crate so that
+    /// `kani_atfork` can stub it: Kani 0.68 stubs a foreign function only
+    /// where this crate declares it, and silently ignores a stub on
+    /// `libc::pthread_atfork`.
     fn pthread_atfork(
         prepare: Option<unsafe extern "C" fn()>,
         parent: Option<unsafe extern "C" fn()>,
@@ -1543,11 +1544,15 @@ fn atfork_handlers() -> i32
     rc
 }
 
-/// The `pthread_atfork` call itself. Trusted: passes function pointers,
-/// which Verus does not support.
+/// The `pthread_atfork` call itself, which may wait on glibc's atfork
+/// lock (a futex). Trusted: passes function pointers, which Verus does
+/// not support.
 #[verifier::external_body]
 #[inline(always)]
-fn pthread_atfork_handlers() -> i32 {
+fn pthread_atfork_handlers() -> i32
+    requires
+        crate::sys::may_syscall(),
+{
     // SAFETY: the three handlers are plain `extern "C"` functions that only
     // touch allocator locks.
     unsafe { pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) }
@@ -5999,6 +6004,68 @@ mod kani_statics {
         let l = line_ptr();
         assert!(line_ptr() == l);
         is_cell::<FeatureLine>(l, (&raw const FEATURE_LINE).cast());
+    }
+}
+
+/// Kani check of `pthread_atfork_handlers` (`verus/ledger/src/api/mod.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_atfork {
+    use super::{fork_child, fork_parent, fork_prepare, pthread_atfork_handlers};
+    use core::ffi::c_int;
+
+    /// What the stand-in for `pthread_atfork` returns.
+    static mut RC: c_int = 0;
+    /// How many times it was called, and the three handlers it was passed
+    /// (0 for none), in its argument order.
+    static mut CALLS: usize = 0;
+    static mut PASSED: [usize; 3] = [0; 3];
+
+    /// The address of a handler, 0 for none.
+    fn addr(h: Option<unsafe extern "C" fn()>) -> usize {
+        h.map_or(0, |f| f as usize)
+    }
+
+    /// A stand-in for glibc's `pthread_atfork` (premise C8): it records
+    /// its call and the handlers, and returns `RC`.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn atfork_model(
+        prepare: Option<unsafe extern "C" fn()>,
+        parent: Option<unsafe extern "C" fn()>,
+        child: Option<unsafe extern "C" fn()>,
+    ) -> c_int {
+        // SAFETY: the harness's own statics; no other code runs in a
+        // harness.
+        unsafe {
+            CALLS += 1;
+            PASSED = [addr(prepare), addr(parent), addr(child)];
+            RC
+        }
+    }
+
+    /// `pthread_atfork_handlers`: no `ensures`; it returns, and (beyond
+    /// the contract) calls `pthread_atfork` once with `fork_prepare`,
+    /// `fork_parent` and `fork_child` in that order, and returns its
+    /// result unchanged, for any result.
+    #[kani::proof]
+    #[kani::stub(super::pthread_atfork, atfork_model)]
+    fn atfork_registers_the_handlers() {
+        let rc: c_int = kani::any();
+        kani::cover!(rc == 0);
+        kani::cover!(rc != 0);
+        // SAFETY: as in `atfork_model`.
+        unsafe { RC = rc };
+        let want = [
+            fork_prepare as *const () as usize,
+            fork_parent as *const () as usize,
+            fork_child as *const () as usize,
+        ];
+        assert!(want[0] != want[1] && want[1] != want[2] && want[0] != want[2]);
+        assert_eq!(pthread_atfork_handlers(), rc);
+        // SAFETY: as in `atfork_model`.
+        let (calls, passed) = unsafe { (CALLS, PASSED) };
+        assert_eq!(calls, 1);
+        assert_eq!(passed, want);
     }
 }
 
