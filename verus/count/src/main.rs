@@ -657,7 +657,7 @@ enum Status {
     Discharged,
     /// `trusted (partly checked, ...)`.
     Partly,
-    /// `trusted`, or any other status.
+    /// `trusted`, `trusted (claims nothing: ...)`, or any other status.
     Unchecked,
 }
 
@@ -1631,6 +1631,11 @@ trusted
 src/a.rs:40. Kind: external_body proof. Category: x.
 Tool: none (assumption).
 Status: discharged (const assert: `k` in src/a.rs).
+
+## `m`
+
+src/a.rs:50. Kind: ext_type_spec. Category: core library.
+Tool: Kani. Status: trusted (claims nothing: an opaque type).
 "#;
         let got = parse_ledger(text, &premises());
         let want = vec![
@@ -1638,6 +1643,8 @@ Status: discharged (const assert: `k` in src/a.rs).
             seam("src/a.rs:20", "external_body", Status::Partly),
             seam("src/a.rs:30", "external_body const", Status::Unchecked),
             seam("src/a.rs:40", "external_body proof", Status::Discharged),
+            // A seam that claims nothing is trusted, not checked.
+            seam("src/a.rs:50", "ext_type_spec", Status::Unchecked),
         ];
         assert_eq!(got, Ok(want), "seams: got = {got:?}");
         // The status belongs to the entry's own paragraph.

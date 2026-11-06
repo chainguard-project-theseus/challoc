@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `get_new...r_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `throw_b...c_addr` | external_body | inline asm | Islaris/Isla | discharged |
-| `Handler` | external_body type | function pointer | Kani | trusted |
+| `Handler` | external_body type | function pointer | none (assumption) | trusted |
 | `call_get...handler` | external_body | function pointer | Kani | discharged |
 | `call_throw_bad_alloc` | external_body | function pointer | Kani | trusted |
 | `call_handler` | external_body | function pointer | Kani | trusted |
@@ -50,7 +50,7 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
 ## `Handler`
 
 src/api/cxx.rs:151. Kind: external_body type. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > The installed `new_handler`, opaque to Verus (which has no function pointer types).
 
