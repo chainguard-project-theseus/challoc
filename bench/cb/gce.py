@@ -414,7 +414,7 @@ class Launch:
         specs = [parse_variant(v, refs) for v in vitems] + [parse_variant(c, refs, role="control") for c in citems]
         self.variants = []
         for v in specs:
-            e = {"label": v.label, "kind": v.kind, "source": v.source, "conf": v.conf, "role": v.role, "knobs": v.knobs}
+            e = {"label": v.label, "kind": v.kind, "source": v.source, "conf": v.conf, "role": v.role, "knobs": v.knobs, "features": v.features}
             if v.kind == "challoc":
                 if v.source == "tree":
                     raise SpecError("variant source `tree` is local-only; commit it (or name the rev) for cb launch")

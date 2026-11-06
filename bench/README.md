@@ -259,13 +259,14 @@ host facts of its own images.
 
 ### Variants and host knobs
 
-A variant is (library, `MALLOC_CONF`, host knobs):
+A variant is (library, `MALLOC_CONF`, host knobs, cargo features):
 
     base | head | aa=base | x=git:REV | tree        challoc builds (tree: local only)
     jemalloc | glibc | tcmalloc | mimalloc          stock allocators
     jemalloc53 | jemalloc54                         jemalloc release tarballs (bench/build.sh)
     LABEL=SRC@CONF                                  one build, another MALLOC_CONF
     LABEL=SRC[@CONF]+knob:NAME=VALUE[+knob:...]     plus host knobs
+    LABEL=SRC[...]+features:F[ F...]                plus cargo features (challoc)
 
 `jemalloc` is Wolfi's package (5.3.1, pinned in the image so a rebuild
 does not move it); `jemalloc53` and `jemalloc54` are the 5.3.0 and 5.4.0
@@ -284,7 +285,12 @@ chl-nollc=head+knob:sched.llc_balancing=0`.
 
 A row's `features` (`quantum8` for Valkey, `jemalloc-soname` for the
 --with-jemalloc Ruby) builds every challoc variant a second time with
-those cargo features; the run uses that build for the row.
+those cargo features; the run uses that build for the row. A challoc
+variant's own `+features:F` (last, after any knobs; several
+space-separated) is merged into every row's, its quantum feature
+replacing the row's:
+`q16=head+features:quantum16` runs the quantum8 Redis rows on a quantum16
+build (Redis does not assert the quantum; Valkey does).
 
 ### Drivers
 
