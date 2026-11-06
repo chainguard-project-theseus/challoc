@@ -1715,7 +1715,8 @@ sizes above the small table), which requires
   syscall, a libc call, a call through a function pointer or a verified
   function it calls unchecked, `requires may_syscall()` too:
   `linux::try_reserve` (`layout/regions.rs`), `ThreadKey::create`
-  (`heap/shared.rs`), `atfork_handlers` (`api/mod.rs`),
+  (`heap/shared.rs`), `atfork_handlers` and `pthread_atfork_handlers`
+  (`api/mod.rs`),
   `background::spawn` and `pthread_join` (`purge/background.rs`;
   `init_fields`, with its `tid()` and `now_ns()`, `Meta::commit` and
   `Heap::destroy` are verified), `print::call_back`, `print::write_file`
