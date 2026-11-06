@@ -156,7 +156,11 @@ impl HeapPerm {
     /// Called once per heap, at `tcaches::heap_new`, before the token is
     /// used up (`FreshHeap::into_block`); `tests::trusted_mint_sites_are_pinned`
     /// pins that call. A convention, not a proof fact: like any
-    /// `HeapPerm` (above), the one it makes carries no uniqueness.
+    /// `HeapPerm` (above), the one it makes carries no uniqueness. The
+    /// writers' stores are checked against the fields the `ensures` states
+    /// by `heap::fresh::kani_assemble::writers_store_the_assembled_fields`
+    /// (`tests::assembled_writes_only_at_checked_sites` pins the writers
+    /// to heap creation and `tcaches::heap_new` to `create_heap_for_thread`).
     pub(super) axiom fn assemble(tracked s: &super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
         requires
             super::heap_head(s.heap(), s.head()),
