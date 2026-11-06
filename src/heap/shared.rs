@@ -1038,6 +1038,18 @@ const _: () = assert!(
 #[cfg(test)]
 pub static FAIL_SETSPECIFIC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+unsafe extern "C" {
+    /// glibc's `pthread_key_create(3)`, with the `libc` crate's signature
+    /// and the same symbol. Declared in this crate rather than taken from
+    /// the `libc` crate so that a Kani harness can stub it: Kani 0.68
+    /// stubs a foreign function only where this crate declares it, and
+    /// silently ignores a stub on `libc::pthread_key_create`.
+    fn pthread_key_create(
+        key: *mut libc::pthread_key_t,
+        destructor: Option<unsafe extern "C" fn(*mut c_void)>,
+    ) -> core::ffi::c_int;
+}
+
 verus! {
 
 /// The `pthread_key` whose destructor tears down a thread's heap.
@@ -1058,7 +1070,7 @@ impl ThreadKey {
         let mut key: libc::pthread_key_t = 0;
         // SAFETY: `key` is a valid out-pointer; the destructor is a plain
         // `extern "C"` function that only touches allocator state.
-        let rc = unsafe { libc::pthread_key_create(&mut key, Some(heap_destructor)) };
+        let rc = unsafe { pthread_key_create(&mut key, Some(heap_destructor)) };
         ThreadKey {
             key,
             valid: rc == 0,
