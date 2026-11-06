@@ -1278,6 +1278,19 @@ pub fn is_ready() -> bool {
     STATE.load(Ordering::Acquire) == READY
 }
 
+unsafe extern "C" {
+    /// glibc's `pthread_atfork(3)`, with the `libc` crate's signature and
+    /// the same symbol. Declared in this crate rather than taken from the
+    /// `libc` crate so that a Kani harness can stub it: Kani 0.68 stubs a
+    /// foreign function only where this crate declares it, and silently
+    /// ignores a stub on `libc::pthread_atfork`.
+    fn pthread_atfork(
+        prepare: Option<unsafe extern "C" fn()>,
+        parent: Option<unsafe extern "C" fn()>,
+        child: Option<unsafe extern "C" fn()>,
+    ) -> core::ffi::c_int;
+}
+
 verus! {
 
 /// What the winner of [`claim_init`]'s exchange takes from `STATE`'s
@@ -1537,7 +1550,7 @@ fn atfork_handlers() -> i32
 fn pthread_atfork_handlers() -> i32 {
     // SAFETY: the three handlers are plain `extern "C"` functions that only
     // touch allocator locks.
-    unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) }
+    unsafe { pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) }
 }
 
 /// Record whether `fork_prepare` took the locks (`FORK_LOCKED`): a
