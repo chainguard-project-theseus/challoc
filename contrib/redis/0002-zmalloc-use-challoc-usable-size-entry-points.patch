@@ -1,0 +1,85 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH 2/3] zmalloc: use challoc's usable-size entry points
+
+Redis's zmalloc accounts used_memory by usable size, and the bundled
+jemalloc's *_with_usize extension returns that size from the allocation
+and the free themselves. challoc has the same thing under its own names
+(challoc_malloc_usable, challoc_calloc_usable, challoc_realloc_usable,
+challoc_free_usable, <challoc/challoc.h>); without them every allocation
+and unsized zfree() under MALLOC=challoc asks zmalloc_size() a second
+time.
+
+- src/zmalloc.h: include <challoc/challoc.h> behind the feature test
+  challoc's jemalloc header provides (JEMALLOC_CHALLOC_USABLE), and define
+  HAVE_ALLOC_WITH_USIZE when it announces CHALLOC_USABLE, as for the
+  bundled jemalloc's JEMALLOC_ALLOC_WITH_USIZE.
+- src/zmalloc.c: under USE_CHALLOC the *_with_usize macros map to
+  challoc's entry points. challoc's realloc reports only the new block's
+  usable size, so the old one is asked for before the block can move;
+  ztryrealloc_usable_internal never passes NULL or a zero size there.
+
+A challoc without the entry points (no JEMALLOC_CHALLOC_USABLE) builds
+the patch 1/3 way, with zmalloc_size() lookups.
+---
+ src/zmalloc.c | 17 ++++++++++++++++-
+ src/zmalloc.h | 14 ++++++++++++--
+ 2 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/src/zmalloc.c b/src/zmalloc.c
+--- a/src/zmalloc.c
++++ b/src/zmalloc.c
+@@ -70,7 +70,22 @@ void zlibc_free(void *ptr) {
+ #define mallocx(size,flags) je_mallocx(size,flags)
+ #define rallocx(ptr,size,flags) je_rallocx(ptr,size,flags)
+ #define dallocx(ptr,flags) je_dallocx(ptr,flags)
+-#if defined(HAVE_ALLOC_WITH_USIZE)
++#if defined(HAVE_ALLOC_WITH_USIZE) && defined(USE_CHALLOC)
++/* challoc's four size-returning entry points (<challoc/challoc.h>), each the
++ * standard function plus the usable size the call itself classified. The
++ * realloc one reports only the new block's usable size, so the old one is
++ * the usable size of the live block, asked for before it can move. The
++ * callers never pass NULL or a zero size here: ztryrealloc_usable_internal
++ * sends both to malloc and free first. */
++static inline void *challoc_realloc_with_usize(void *ptr, size_t size, size_t *old_usize, size_t *new_usize) {
++    *old_usize = je_malloc_usable_size(ptr);
++    return challoc_realloc_usable(ptr, size, new_usize);
++}
++#define malloc_with_usize(size,usize) challoc_malloc_usable(size,usize)
++#define calloc_with_usize(num,size,usize) challoc_calloc_usable(num,size,usize)
++#define realloc_with_usize(ptr,size,old_usize,new_usize) challoc_realloc_with_usize(ptr,size,old_usize,new_usize)
++#define free_with_usize(ptr,usize) (*(usize) = challoc_free_usable(ptr))
++#elif defined(HAVE_ALLOC_WITH_USIZE)
+ void *je_malloc_with_usize(size_t size, size_t *usize);
+ void *je_calloc_with_usize(size_t num, size_t size, size_t *usize);
+ void *je_realloc_with_usize(void *ptr, size_t size, size_t *old_usize, size_t *new_usize);
+diff --git a/src/zmalloc.h b/src/zmalloc.h
+--- a/src/zmalloc.h
++++ b/src/zmalloc.h
+@@ -37,6 +37,14 @@
+  * defrag.c's je_get_defrag_hint work unchanged. */
+ #define ZMALLOC_LIB ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX) "-challoc")
+ #include <challoc/jemalloc.h>
++/* challoc's size-returning entry points (challoc_malloc_usable and friends)
++ * play the part of the bundled jemalloc's *_with_usize extension, behind the
++ * feature test challoc's jemalloc header provides: zmalloc.c gets the usable
++ * size back from the allocation and the free instead of asking
++ * zmalloc_size() a second time. */
++#ifdef JEMALLOC_CHALLOC_USABLE
++#include <challoc/challoc.h>
++#endif
+ #define HAVE_MALLOC_SIZE 1
+ #define zmalloc_size(p) je_malloc_usable_size(p)
+ 
+@@ -97,8 +105,10 @@
+ 
+ /* We can enable allocation with usable size capabilities only if we are using Jemalloc
+  * and the version used is our special version modified for Redis having
+- * the ability to return usable size during allocation or deallocation. */
+-#if defined(USE_JEMALLOC) && defined(JEMALLOC_ALLOC_WITH_USIZE)
++ * the ability to return usable size during allocation or deallocation, or
++ * challoc, whose header announces its size-returning entry points. */
++#if defined(USE_JEMALLOC) && (defined(JEMALLOC_ALLOC_WITH_USIZE) || \
++    (defined(USE_CHALLOC) && defined(CHALLOC_USABLE)))
+ #define HAVE_ALLOC_WITH_USIZE
+ #endif
+ 
