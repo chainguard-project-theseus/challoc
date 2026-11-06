@@ -5,6 +5,10 @@
 //! `entry` are left out under `cfg(loom)` (loom's atomics are not built
 //! in `const`), so the models make the atomic with loom's `new` and pass
 //! the erased permission as `Tracked::assume_new()`.
+//!
+//! The GenMC harnesses (`tests/genmc/prelude.rs`) compile this file too,
+//! without `cfg(loom)`, so there `crate::sync::atomic` is `core`'s and
+//! GenMC interprets the wrappers' atomic instructions.
 
 #[path = "../../../src/vspec/atom.rs"]
 pub mod atom;

@@ -1,0 +1,73 @@
+# The GenMC cases tests/genmc/run.sh runs, one per line:
+#
+#   name | template | models | constants | expected
+#
+# template: the .rs file in this directory the case instantiates.
+# models: the memory models to run it under, each a run: rc11 (GenMC's
+#   default), imm (--imm) or arm8 (--arm8).
+# constants: Rust items written into the case's main.rs before the
+#   template (each template names the constants it reads).
+# expected: `pass` (GenMC explores at least one complete execution and
+#   reports no error), or `fail` followed by one or more `| text`: GenMC
+#   exits with its verification-error status (42) and its report has one
+#   of the texts. A `fail` case is a control, like a loom model's
+#   #[should_panic]: a mutant of the shipped code that the check must
+#   reject.
+
+# flags.rs (P5, vspec::flags): the dispatch byte.
+flags1 | flags | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const BUILDERS: usize = 1; const BITS: u8 = ROUTE; | pass
+flags2 | flags | rc11 imm arm8 | const PUBLISH: Ordering = Ordering::Release; const BUILDERS: usize = 2; const BITS: u8 = ROUTE; | pass
+flags_relaxed | flags | rc11 imm | const PUBLISH: Ordering = Ordering::Relaxed; const BUILDERS: usize = 1; const BITS: u8 = ROUTE; | fail | did not make | Non-atomic race
+flags_badbit | flags | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const BUILDERS: usize = 1; const BITS: u8 = ROUTE + 0x10; | fail | the joined byte | did not make
+
+# watermark.rs (vspec::atom): the hand-out watermark and its copy.
+wm | watermark | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const MIRROR_UNLOCKED: bool = false; const MODE: u32 = 0; const NSLABS: usize = 2; const HANDOUTS: usize = 2; | pass
+wm3 | watermark | rc11 imm arm8 | const PUBLISH: Ordering = Ordering::Release; const MIRROR_UNLOCKED: bool = false; const MODE: u32 = 0; const NSLABS: usize = 3; const HANDOUTS: usize = 3; | pass
+wm_mirror1 | watermark | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const MIRROR_UNLOCKED: bool = false; const MODE: u32 = 1; const NSLABS: usize = 2; const HANDOUTS: usize = 2; | pass
+wm_mirror2 | watermark | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const MIRROR_UNLOCKED: bool = false; const MODE: u32 = 2; const NSLABS: usize = 2; const HANDOUTS: usize = 2; | pass
+wm_mirror3 | watermark | rc11 imm arm8 | const PUBLISH: Ordering = Ordering::Release; const MIRROR_UNLOCKED: bool = false; const MODE: u32 = 3; const NSLABS: usize = 2; const HANDOUTS: usize = 2; | pass
+wm_relaxed | watermark | rc11 imm arm8 | const PUBLISH: Ordering = Ordering::Relaxed; const MIRROR_UNLOCKED: bool = false; const MODE: u32 = 0; const NSLABS: usize = 2; const HANDOUTS: usize = 2; | fail | a slab below an Acquire watermark has no owner
+wm3_relaxed | watermark | rc11 imm | const PUBLISH: Ordering = Ordering::Relaxed; const MIRROR_UNLOCKED: bool = false; const MODE: u32 = 0; const NSLABS: usize = 3; const HANDOUTS: usize = 3; | fail | a slab below an Acquire watermark has no owner
+wm_mirror_unlocked | watermark | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const MIRROR_UNLOCKED: bool = true; const MODE: u32 = 1; const NSLABS: usize = 2; const HANDOUTS: usize = 2; | fail | the copy
+
+# count.rs (vspec::count): the arena bound counts.
+count | count | rc11 imm arm8 | const MODE: u32 = 0; const SPLIT: bool = false; const SPLIT_CAS: bool = false; const RIVAL: bool = false; | pass
+count_split_rmw | count | rc11 imm | const MODE: u32 = 0; const SPLIT: bool = true; const SPLIT_CAS: bool = false; const RIVAL: bool = false; | fail | count is not its tickets | read its arena's count as 0 | never bound
+count_idle_rival | count | rc11 imm arm8 | const MODE: u32 = 1; const SPLIT: bool = false; const SPLIT_CAS: bool = false; const RIVAL: bool = true; | pass
+count_idle_one_wins | count | rc11 imm | const MODE: u32 = 1; const SPLIT: bool = false; const SPLIT_CAS: bool = false; const RIVAL: bool = false; | pass
+count_split_cas | count | rc11 imm | const MODE: u32 = 1; const SPLIT: bool = false; const SPLIT_CAS: bool = true; const RIVAL: bool = false; | fail | two heaps bound
+# The split compare-and-swap can also overwrite the rival's ticket.
+count_split_cas_rival | count | rc11 imm | const MODE: u32 = 1; const SPLIT: bool = false; const SPLIT_CAS: bool = true; const RIVAL: bool = true; | fail | two heaps bound | count is not its tickets
+
+# narenas.rs (vspec::count, vspec::entry): the arena count and table.
+# RC11 only: under IMM and ARMv8 GenMC 0.20 stops on an internal check
+# (`it != allocInfoMap_.end()`, in `ExecutionState::onFree`).
+narenas | narenas | rc11 | const PUBLISH: Ordering = Ordering::Release; const ENTRY: Ordering = Ordering::Release; | pass
+narenas_relaxed_store | narenas | rc11 | const PUBLISH: Ordering = Ordering::Relaxed; const ENTRY: Ordering = Ordering::Release; | fail | is not built
+narenas_relaxed_entry | narenas | rc11 | const PUBLISH: Ordering = Ordering::Release; const ENTRY: Ordering = Ordering::Relaxed; | fail | Non-atomic race
+
+# slotstate.rs (vspec::byte): the slot state byte's free step.
+slotstate | slotstate | rc11 imm | const LOAD_STORE: bool = false; | pass
+slotstate_load_store | slotstate | rc11 imm | const LOAD_STORE: bool = true; | fail | both passed
+
+# bitmap.rs (P1, vspec::word): the slab bitmap and `live`. Two claimers run
+# under RC11 only: under IMM and ARMv8, GenMC 0.20 stops on an internal
+# check (`it != allocInfoMap_.end()`, in `ExecutionState::getAllocAccess`).
+# Under ARMv8, GenMC 0.20 does not report bitmap_relaxed_release's race (the
+# run passes), so that run is left out, and the ARMv8 run of
+# bitmap_release_then_reserve checks its assertions only.
+bitmap_release_then_reserve | bitmap | rc11 imm arm8 | const MODE: u32 = 0; const MUTANT: u32 = 0; const PUBLISH: Ordering = Ordering::Release; | pass
+bitmap_relaxed_release | bitmap | rc11 imm | const MODE: u32 = 0; const MUTANT: u32 = 1; const PUBLISH: Ordering = Ordering::Release; | fail | Non-atomic race
+bitmap_relaxed_claim | bitmap | rc11 imm | const MODE: u32 = 0; const MUTANT: u32 = 2; const PUBLISH: Ordering = Ordering::Release; | fail | Non-atomic race
+bitmap_two_claimers | bitmap | rc11 | const MODE: u32 = 1; const MUTANT: u32 = 0; const PUBLISH: Ordering = Ordering::Release; | pass
+bitmap_init_published | bitmap | rc11 imm | const MODE: u32 = 2; const MUTANT: u32 = 0; const PUBLISH: Ordering = Ordering::Release; | pass
+bitmap_relaxed_commit | bitmap | rc11 imm | const MODE: u32 = 2; const MUTANT: u32 = 0; const PUBLISH: Ordering = Ordering::Relaxed; | fail | the hint missed the padding
+bitmap_unclaimed_write | bitmap | rc11 imm | const MODE: u32 = 3; const MUTANT: u32 = 0; const PUBLISH: Ordering = Ordering::Release; | fail | Non-atomic race
+
+# litmus.rs (vspec::count): two shapes loom 0.7.2 cannot produce, as
+# evidence for verus/WEAKMEM.md's loom limits. RC11 forbids load
+# buffering, IMM and ARMv8 allow it.
+lb | litmus | rc11 | const MODE: u32 = 0; const N: u32 = 0; | pass
+lb_weak | litmus | imm arm8 | const MODE: u32 = 0; const N: u32 = 0; | fail | load buffering
+hist3 | litmus | rc11 imm | const MODE: u32 = 1; const N: u32 = 3; | fail | store history
+hist8 | litmus | rc11 imm | const MODE: u32 = 1; const N: u32 = 8; | fail | store history

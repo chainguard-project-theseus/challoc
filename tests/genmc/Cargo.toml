@@ -1,0 +1,12 @@
+[package]
+name = "challoc-genmc-deps"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Only builds vstd for the harnesses: `run.sh` compiles each case as one
+# file with rustc (through GenMC) and links this build's vstd. The `vspec`
+# wrapper files the harnesses compile are written in `verus!`; the
+# version is the crate's (`Cargo.toml`).
+[dependencies]
+vstd = { version = "=0.0.0-2026-10-18-0147", default-features = false }
