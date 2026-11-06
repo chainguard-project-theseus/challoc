@@ -6,3 +6,8 @@ axiom_c_call	C-program contract	none (assumption)
 # the body on every pair of hook values (none or one of two functions);
 # what the program stores there, and when, is its contract (C1).
 message_hook	UnsafeCell/volatile/transmute	Kani	discharged on premises (Kani: api::jemalloc::kani_hook::message_hook_picks_first_set; premises: C1 (the program stores only null or a hook function in the two slots, and never while the volatile reads run))	contract 3679688309, body 4059375492
+# The report's call of the program's `malloc_message` hook: Kani runs the
+# body on a recording hook and any buffer holding a NUL; what the program
+# stores in the slots is its contract (C1), and what the hook does once
+# called is its contract too (C3).
+call_hook	function pointer	Kani	discharged on premises (Kani: api::jemalloc::kani_hook::call_hook_calls_once; premises: C1 (the program stores only null or a hook function in the two slots), C3 (the program's hook keeps the C allocation contract))	contract 4272715841, body 924183077

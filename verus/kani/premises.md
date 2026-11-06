@@ -2,8 +2,9 @@
 
 A Kani harness runs a trusted item's own body on the inputs and statics
 the harness sets up. What the C program stores in those statics, and
-what glibc's loader and the Linux kernel place at the addresses the item
-reads, is outside its reach. A seam whose harness covers its whole
+what the program's own callbacks do while challoc calls them, and what
+glibc's loader and the Linux kernel place at the addresses the item
+reads, are outside its reach. A seam whose harness covers its whole
 contract except for such facts is `discharged on premises (Kani:
 <harness path>; premises: <what>)` (verus/SEAMS.md, "Status"), and
 `<what>` names them by the labels below: C labels for the C program, L
@@ -12,9 +13,13 @@ labels for the loader and the kernel.
 ## Premises
 
 Each premise is a fact about what the C program that calls challoc
-stores in, or passes through, challoc's exported C symbols. The harness
-assumes it in the values it stores before it runs the item, and in
-running the item on one thread; its comment states those values.
+stores in, or passes through, challoc's exported C symbols, or about
+what the program's own callback does while challoc calls it, as a K
+premise of `verus/isla/seams.md` states the kernel's side of a system
+call. The harness assumes it in the values it stores before it runs the
+item, in running the item on one thread, and in running a recording
+stand-in in place of the program's callback; its comment states those
+values.
 `verus/count` reads the labels of this section's bullets and of the next
 section's, and fails on a Kani status that names any other.
 
@@ -50,6 +55,33 @@ section's, and fails on a Kani status that names any other.
   translates a name to a MIB, which is passed to `mallctlbymib` with its
   length `miblen`); ISO C11 section 5.1.2.4 (a data race is undefined
   behaviour).
+- **C3, the program's callbacks.** The `write_cb` a program passes to
+  `malloc_stats_print` or `je_malloc_stats_print` is null or the address
+  of a function of type `void (*)(void *cbopaque, const char *s)`. That
+  function, and the hook the program stores in `malloc_message` or
+  `je_malloc_message` (C1), each keep the C allocation contract while
+  challoc calls them: each reads `s` only up to its NUL and only until
+  it returns, writes no byte through `s`, returns to its caller (it
+  neither unwinds nor `longjmp`s out of the call, is not cancelled and
+  does not call `pthread_exit` during it), and any call it makes into
+  challoc passes only pointers it owns and frees only live blocks.
+  challoc calls them, when not null, on the thread that called the
+  report, with a NUL-terminated buffer on challoc's stack and without
+  disabling cancellation: the `write_cb` with the program's `cbopaque`
+  (`api::print::call_back`), and, when `write_cb` is null, the hook with
+  a null `cbopaque` (`api::jemalloc::call_hook`). A write through `s`,
+  or a read of it after the call returns, is the program's use of memory
+  it does not own. Each harness runs its item with a recording callback
+  in the program's place. Source: jemalloc(3), `malloc_stats_print` (it
+  writes the statistics through `write_cb`, passing it `cbopaque`, or
+  through `malloc_message` when `write_cb` is null) and `malloc_message`
+  (the function jemalloc's messages go to, which a program may
+  override); the C allocation contract (`verus/RESULTS.md`, "Trust
+  base") for `s` and the calls into challoc; the Rust Reference,
+  "Behavior considered undefined" (unwinding past a frame that does not
+  allow it, as from a function called through a `"C"` function
+  pointer). That neither callback `longjmp`s out of the call is assumed,
+  with no source.
 
 ## Loader and kernel premises
 

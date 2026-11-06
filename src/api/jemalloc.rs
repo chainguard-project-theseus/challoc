@@ -2425,13 +2425,46 @@ mod tests {
     }
 }
 
-/// Kani check of `message_hook` (`verus/ledger/src/api/jemalloc.rs.md`;
-/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+/// Kani checks of `message_hook` and `call_hook`
+/// (`verus/ledger/src/api/jemalloc.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
 #[cfg(kani)]
 mod kani_hook {
-    use super::{MallocMessage, je_malloc_message, malloc_message, message_hook};
+    use super::{Hook, MallocMessage, call_hook, je_malloc_message, malloc_message, message_hook};
     use core::ffi::{c_char, c_void};
     use core::ptr;
+    use vstd::prelude::Tracked;
+
+    /// How many times `record` was called, and the last call's
+    /// `cbopaque` and `s` as addresses.
+    static mut CALLS: usize = 0;
+    static mut GOT: (usize, usize) = (0, 0);
+
+    /// A hook that records its arguments.
+    unsafe extern "C" fn record(opaque: *mut c_void, s: *const c_char) {
+        // SAFETY: the harness's own statics; no other code runs in a
+        // harness.
+        unsafe {
+            CALLS += 1;
+            GOT = (opaque as usize, s as usize);
+        }
+    }
+
+    /// `call_hook`: no `ensures`; it returns for any buffer holding a NUL
+    /// (its `requires`; the token is ghost), and (beyond the contract)
+    /// calls the hook once, with a null `cbopaque` and the buffer's
+    /// address.
+    #[kani::proof]
+    fn call_hook_calls_once() {
+        let buf: [u8; 512] = kani::any();
+        let nul: usize = kani::any();
+        kani::assume(nul < 512 && buf[nul] == 0);
+        call_hook(Hook(record), &buf, Tracked::assume_new());
+        // SAFETY: as in `record`.
+        let (calls, got) = unsafe { (CALLS, GOT) };
+        assert_eq!(calls, 1);
+        assert_eq!(got, (0, buf.as_ptr() as usize));
+    }
 
     unsafe extern "C" fn first(_: *mut c_void, _: *const c_char) {}
 
