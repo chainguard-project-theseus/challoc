@@ -16,6 +16,6 @@
 version: 1
 entries:
   - pattern: '*'
-    owners: [dlorenc, mattmoor, tcnghia, 'bot:challoc']
+    owners: [dlorenc, mattmoor, tcnghia, 'bot:challoc', wolfi-dev/foundations-squad]
     gate: 1
-    note: 'every path, gated: the maintainers and the challoc Checks reviewer (bot:challoc, .chainguard/reviewers.yaml), whose approve verdict at a head satisfies the gate as an owner approval does (mono code-reviewer README, "4. Let its approvals count")'
+    note: 'every path, gated: the maintainers, the wolfi-dev/foundations-squad team and the challoc Checks reviewer (bot:challoc, .chainguard/reviewers.yaml), whose approve verdict at a head satisfies the gate as an owner approval does (mono code-reviewer README, "4. Let its approvals count")'
