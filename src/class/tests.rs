@@ -2753,3 +2753,151 @@ fn the_protocol_steps_are_numbered_in_order() {
         assert_eq!(Purge::at(i as u8), s);
     }
 }
+
+/// Weak-memory stress of the class protocol (ignored;
+/// `CHALLOC_STRESS_SECS`): producers claim batches of the 4-slot class,
+/// check each slot's first word, write a held token and hand the batch
+/// through a channel (a synchronising hand-off) to a consumer, which
+/// checks the token and the slot (`check`: the watermark, bit and owner
+/// word), writes a free mark and releases the batch from its own thread;
+/// a purger purges the empty slabs. A claimed slot that reads a held
+/// token, a zeroed claim that reads non-zero, or a consumer that reads
+/// another token saw a release, a purge or a hand-out not ordered before
+/// the claim: the release/claim protocol end to end (P1's bitmap, `live`
+/// and class-lock edges, and the watermark). The 4-slot slabs send most
+/// releases through the class lock, so this does not isolate the bitmap
+/// edge; `bitmap::tests::stress_bitmap_claim_release_edge` does.
+#[test]
+#[ignore]
+fn stress_class_cross_thread_release() {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::mpsc;
+    const HELD: u64 = 0xC000_0000_0000_0000;
+    const FREE: u64 = 0x5A5A;
+    let env = Arc::new(Env::new());
+    let cs: &'static ClassState = env.class(min_slab_class(), 0);
+    let threads = crate::testutil::stress_threads().max(4);
+    let producers = threads / 2;
+    let consumers = threads - producers;
+    let stop = Arc::new(AtomicBool::new(false));
+    let anomalies = Arc::new(AtomicU64::new(0));
+    let first = Arc::new(AtomicU64::new(u64::MAX));
+    let note = {
+        let (anomalies, first) = (Arc::clone(&anomalies), Arc::clone(&first));
+        move |n: u64| {
+            anomalies.fetch_add(1, Ordering::Relaxed);
+            first.fetch_min(n, Ordering::Relaxed);
+        }
+    };
+    let started = std::time::Instant::now();
+    let mut txs = Vec::new();
+    let mut cons = Vec::new();
+    for _ in 0..consumers {
+        let (tx, rx) = mpsc::sync_channel::<(Vec<usize>, u64)>(16);
+        txs.push(tx);
+        let note = note.clone();
+        cons.push(std::thread::spawn(move || {
+            let mut released = 0u64;
+            for (mut batch, token) in rx {
+                for &q in &batch {
+                    // SAFETY: the slot was claimed and handed over; this
+                    // thread is its one holder until the release below.
+                    unsafe {
+                        if (q as *const u64).read_volatile() != token {
+                            note(token & 0xFFFF_FFFF);
+                        }
+                        (q as *mut u64).write_volatile(FREE);
+                    }
+                    cs.check(q as *mut u8);
+                }
+                batch.sort();
+                let ptrs: Vec<*mut u8> = batch.iter().map(|&q| q as *mut u8).collect();
+                cs.release(&ptrs);
+                released += batch.len() as u64;
+            }
+            released
+        }));
+    }
+    let purger = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut n = 0;
+            while !stop.load(Ordering::Relaxed) {
+                n += cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
+                std::thread::yield_now();
+            }
+            n
+        })
+    };
+    let prods: Vec<_> = (0..producers)
+        .map(|t| {
+            let (env, stop, txs, note) = (
+                Arc::clone(&env),
+                Arc::clone(&stop),
+                txs.clone(),
+                note.clone(),
+            );
+            std::thread::spawn(move || {
+                let mut rng = 0x9E37_79B9_7F4A_7C15u64 ^ (t as u64 + 1);
+                let (mut n, mut slots) = (0u64, 0u64);
+                while !stop.load(Ordering::Relaxed) {
+                    n += 1;
+                    let k = xorshift(&mut rng) as usize % 8 + 1;
+                    let (p, claim) = env.claim(cs, k);
+                    if p.is_empty() {
+                        std::thread::yield_now();
+                        continue;
+                    }
+                    let token = HELD | ((t as u64 + 1) << 32) | (n & 0xFFFF_FFFF);
+                    for &q in &p {
+                        // SAFETY: claimed by this thread.
+                        unsafe {
+                            let v = (q as *const u64).read_volatile();
+                            if (claim.zeroed && v != 0) || v & HELD == HELD {
+                                note(n);
+                            }
+                            (q as *mut u64).write_volatile(token);
+                        }
+                    }
+                    slots += p.len() as u64;
+                    let to = xorshift(&mut rng) as usize % txs.len();
+                    txs[to]
+                        .send((p.into_iter().map(|q| q as usize).collect(), token))
+                        .unwrap();
+                }
+                (n, slots)
+            })
+        })
+        .collect();
+    drop(txs);
+    std::thread::sleep(crate::testutil::stress_duration());
+    stop.store(true, Ordering::Relaxed);
+    // Every thread is joined before any result is unwrapped: the
+    // consumers and the purger use `cs`, which `env` owns, so a panic
+    // here must not drop `env` while they run.
+    let prods: Vec<_> = prods.into_iter().map(|h| h.join()).collect();
+    let cons: Vec<_> = cons.into_iter().map(|h| h.join()).collect();
+    let purges = purger.join();
+    let (mut claims, mut slots) = (0u64, 0u64);
+    for r in prods {
+        let (n, s) = r.unwrap();
+        claims += n;
+        slots += s;
+    }
+    let released: u64 = cons.into_iter().map(|r| r.unwrap()).sum();
+    let purges = purges.unwrap();
+    crate::testutil::stress_report(
+        "class_cross_thread_release",
+        &std::format!(
+            "threads={threads} claims={claims} slots={slots} released={released} purges={purges} secs={:.1} anomalies={} first_anomaly_claim={}",
+            started.elapsed().as_secs_f64(),
+            anomalies.load(Ordering::Relaxed),
+            first.load(Ordering::Relaxed) as i64,
+        ),
+    );
+    assert_eq!(anomalies.load(Ordering::Relaxed), 0);
+    assert_eq!(released, slots);
+    let st = cs.stats();
+    assert_eq!(st.empty + st.purged, st.committed, "{st:?}");
+    assert_eq!(st.nonfull, 0, "{st:?}");
+}

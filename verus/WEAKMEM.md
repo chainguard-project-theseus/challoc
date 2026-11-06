@@ -290,7 +290,7 @@ behaviours that loom's bound can miss. It reads C through its own clang
 front end. Feeding it rustc's LLVM IR would need matching LLVM versions
 and a way to map Rust's atomics and the futex syscall onto GenMC's
 primitives (**unconfirmed**; not tried). No GenMC model of challoc
-exists, so every weak-memory result here is loom's.
+exists, so every exhaustive weak-memory result here is loom's.
 
 ### The SC slab model
 
@@ -302,6 +302,57 @@ held bit set, the calloc zero claim, `live` bounds and set membership.
 It has no orderings or stale reads, no lock or futex internals, no
 publication and nothing of the background thread. Its invariants are
 the properties P1's loom models assert.
+
+### Hardware stress tests
+
+Three ignored unit tests run the shipped code, not a copy, for
+`CHALLOC_STRESS_SECS` seconds each, on as many threads as the process
+has CPUs unless `CHALLOC_STRESS_THREADS` says otherwise, and check plain
+data across the edges P1 and P2 order:
+
+- `lock::tests::stress_lock_edges` (P2): twice that many threads take
+  one `Lock` over four plain words, check that the words are equal and
+  bump them all. A torn read or a lost update is a critical section
+  whose accesses were not ordered before the next holder's.
+- `bitmap::tests::stress_bitmap_claim_release_edge` (P1): the threads
+  claim and release the 4 slots of one bitmap word; each claimer checks
+  that its slot's data reads 0, as the last holder left it before
+  `release`.
+- `class::tests::stress_class_cross_thread_release` (P1 end to end):
+  producers claim batches from a class and hand them to consumers, which
+  release them from their own threads while a purger purges the empty
+  slabs. Its 4-slot slabs send most releases through the class lock, so
+  it does not isolate the bitmap edge, and no weakened ordering has been
+  tried against it.
+
+They are evidence, not proof: a reordering the hardware never makes
+passes. x86_64 (TSO) lets only a later load pass an earlier store, so the
+`weakmem-stress` check (`.chainguard/ci/weakmem.yaml`, on request) runs
+them 60 s each on aarch64. Each ordering below was weakened to `Relaxed`
+alone and the test that targets it run for 60 s, on an 8-vCPU aarch64
+guest and an 8-vCPU x86_64 one:
+
+| Weakened ordering | aarch64 | x86_64 |
+|---|---|---|
+| `RawLock::try_acquire`'s `compare_exchange` success `Acquire` | caught in 2 of 2 runs: 40,800 and 285,126 torn reads, 35,473,359 and 47,362,058 lost updates, in 594M and 656M acquisitions; the first torn read at the 33,379th and 10,480th update | not caught (252.5M acquisitions) |
+| `AtomicBitmap::release`'s `fetch_and` `Release` | caught in 5 of 5 runs: 5 to 25 stale claims in 364M-425M claims, the first within about 7 s | not caught (209M claims) |
+| `RawLock::release`'s `swap` `Release` | not caught: 535M acquisitions, and 1,217M in 120 s | not caught |
+| `AtomicBitmap::claim_word`'s `fetch_or` `Acquire` | not caught (515M claims) | not caught |
+
+The `release` mutant shows only if a critical section's access moves
+past the unlocking swap (a store-store or load-store reordering), which
+the core tried did not make in 1.2G acquisitions; the `try_acquire`
+mutant, a load run ahead of the claiming CAS, shows at once. The
+`claim_word` mutant did not show on aarch64, and is not expected to: in
+the compiled test the data address is computed from the claimed mask, an
+address dependency that orders the load on aarch64 whatever the C11
+ordering says, and the allocator likewise computes a slot's address from
+the claimed bits. That holds only while the compiler keeps the
+dependency. A model checker sees that mutant (`tests/loom/src/bitmap.rs`
+has it as a control). `Shared`'s publication (P4) has no hardware stress
+test: a fork-based one, with `api::state_publish`'s `READY` store
+(`src/api/mod.rs`) weakened to `Relaxed`, caught nothing in 5,905 rounds
+on aarch64.
 
 ## loom models
 
