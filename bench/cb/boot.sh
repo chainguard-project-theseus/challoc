@@ -225,9 +225,17 @@ stamp fetched
 wait $RUNTIME_PID || { cat /var/log/cb-runtime.log; finish infra 3 "container runtime $RUNTIME not usable"; }
 echo "cb-boot: $RT $(tail -1 /var/log/cb-runtime.log)"
 # The metadata server (the VM's token) is the host's, not the container's.
+# The same address is GCE's DNS resolver, which Docker hands the container
+# (systemd-resolved's upstream): port 53 stays open so a driver can clone
+# a pinned tree (the Redis and Valkey drivers), the token endpoint (HTTP)
+# stays rejected. -I prepends, so the ACCEPTs land above the REJECT.
 if [ "$RT" = docker ]; then
   iptables -I DOCKER-USER -d 169.254.169.254/32 -j REJECT \
     || finish infra 3 "cannot block the metadata server from containers (iptables DOCKER-USER)"
+  for proto in udp tcp; do
+    iptables -I DOCKER-USER -d 169.254.169.254/32 -p "$proto" --dport 53 -j ACCEPT \
+      || finish infra 3 "cannot allow DNS to the metadata server from containers (iptables DOCKER-USER)"
+  done
 fi
 stamp runtime
 

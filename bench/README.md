@@ -21,6 +21,8 @@ Suites (`python3 bench/cb suites`):
     apps        the application subset of full: RocksDB, nginx, compilers, ONNX Runtime, runtimes, PostgreSQL
     sidecar     the idle-sidecar and startup rows in a 512 MiB container
     soak        Valkey, Ruby and JVM soaks, head vs jemalloc, one variant per VM
+    kv-redis    Redis 8.10 under every allocator: the command-mix rows (paired) and the soak
+    kv-valkey   Valkey 9.1 likewise, plus challoc preloaded beside the Wolfi (runpath) build
     aa          base vs an identical base: calibration and the false-positive rate
     smoke       every quick row once, parse only (CI's bench-smoke); `--rows` smokes any row
     exp-ladder  the CPU ladder: challoc vs jemalloc per CPU family
@@ -289,7 +291,9 @@ those cargo features; the run uses that build for the row.
 Rows with `kind = "soak"` or `"driver"` run a script under
 `bench/drivers/` once per run instead of one program:
 
-    valkey-soak.sh   Valkey 9.1 under valkey-benchmark + memtier: write, delete, settle
+    valkey-soak.sh   Valkey 9.1 (or Redis 8.10, SERVER=redis) under the benchmark + memtier: write, delete, settle
+    kv-ops.sh        Redis / Valkey: a fill, then <server>-benchmark over a 14-command mix (paired)
+    kv.sh            (sourced) the Redis and Valkey builds: bundled jemalloc, MALLOC=libc, Valkey's runpath
     ruby-soak.sh     the Sidekiq-shaped Ruby process (drivers/ruby/soak.rb)
     jvm-bench.sh     JVM http server and the mixed-size soak (drivers/jvm/HttpBench.java)
     rocksdb.sh       db_bench fillrandom, readrandom, readwhilewriting on one fresh database
@@ -319,6 +323,22 @@ check that the process maps exactly the variant's library.
   the jemalloc variant is the same tag with its bundled jemalloc 5.3.0,
   whose clients (`valkey-cli`, `valkey-benchmark`) every variant uses.
   Trees are cloned at `VALKEY_TAG` (commit-checked) on first use.
+- **Redis and Valkey under every allocator** (`kv.sh`, suites `kv-redis`
+  and `kv-valkey`). Each server is pinned (Redis 8.10.3, Valkey 9.1.2,
+  commit-checked) and built at most three ways per target volume: with its
+  bundled jemalloc 5.3.0 (the `jemalloc` variant: the server as upstream
+  ships it, and the client binaries of every variant), with `MALLOC=libc`
+  (one binary that every other allocator is preloaded on: glibc,
+  `jemalloc53`, `jemalloc54`, `tcmalloc`, `mimalloc`), and the runpath
+  build above with the server's challoc integration (Valkey:
+  `contrib/valkey/000{1,2}`, challoc as Wolfi ships it; Redis:
+  `contrib/redis/000{1,2,3}`). A challoc variant whose label
+  contains `preload` (`challoc-preload=head`) runs preloaded on the libc
+  build instead, which separates the allocator from the integration. The
+  libc build has no active defrag: the soaks run it off there and on
+  where the build has it (the summary says which); the ops rows run it
+  off everywhere. Every start checks INFO's `mem_allocator` and that the
+  server maps exactly the variant's library.
 - **Ruby.** A challoc variant built with `jemalloc-soname` is preloaded;
   its soname satisfies the binary's `DT_NEEDED libjemalloc.so.2`, so the
   staged library is never mapped. A missing Ruby build is made first
@@ -350,6 +370,7 @@ and command. The families:
 | family | rows | what they stand for |
 |---|---|---|
 | mimalloc-bench (`bench/build.sh`, 06a4c4f) | larson1/10/16/32/64/N, larsonN-sized, xmalloc, xmallocN, alloc-test1/N, cfrac, espresso, mstress, glibc-simple, glibc-thread, cache-scratch1/N, cache-thrash1/N, malloc-large, rptestN, sh6benchN, sh8benchN, barnes, gs, z3, lua, rbstress1/N, mleak10/100 | the allocator benchmarks everyone quotes, with mimalloc-bench's arguments; the N rows use `nproc` (`{nproc2}` for shbench) |
+| Redis and Valkey (`kv.sh`) | redis-ops, redis-ops-d1k, valkey-ops, valkey-ops-d1k, redis-soak, valkey-soak | the servers themselves under every allocator (below) |
 | the Valkey model | valkey1, valkey1-free, valkey1-usable, valkey1-write, valkey1-write-zmalloc, valkey1-write-pair | Valkey's allocator-visible shape at a 500 MiB heap (below) |
 | churn | churn1024 | compaction: one class at 44% occupancy under churn, scored by its end occupancy (challoc and jemalloc only: mallctl) |
 | applications | rocksdb, nginx-proxy, compile-sqlite, lua, ort-mlp | storage engine, proxy at a fixed rate, compiler, ONNX Runtime with the arena off |

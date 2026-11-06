@@ -89,7 +89,7 @@ env_flags = $(foreach v,$(1),$(if $($(v)),-e $(v)="$($(v))"))
 # expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey ruby check-needed clean-volumes help print-docker-run test-all verus isla emptyasm
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey redis ruby check-needed clean-volumes help print-docker-run test-all verus isla emptyasm
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -235,6 +235,10 @@ bench-build: image ## build the bench programs (bench/build.sh) into the target 
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
 valkey: image ## build challoc (quantum8) and Valkey at Wolfi's tag with contrib/valkey/000{1,2}-*.patch, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
 	$(DOCKER_RUN) sh tests/consumers/valkey-build.sh
+
+redis: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
+redis: image ## build challoc (quantum8) and Redis 8.10 with the contrib/redis/0*.patch series, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
+	$(DOCKER_RUN) sh tests/consumers/redis-build.sh
 
 RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY OPENSSL_TAG OPENSSL_COMMIT RUBY_GEMS_CA RUBY_TEST_EXCLUDE RUBY_TEST_EXCLUDE_EXTRA
 ruby: DOCKER_FLAGS = $(call env_flags,$(RUBY_VARS))
