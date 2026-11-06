@@ -279,4 +279,67 @@ mod tests {
             crate::testutil::assert_only_at(call, sites);
         }
     }
+
+    /// The struct-assembly axioms a Kani harness checks at one call
+    /// (`verus/README.md`, "Guard tests"): `axiom_tcaches_assemble` is
+    /// pinned to the `init` whose writes its harness runs, and
+    /// `HeapPerm::assemble`'s token writers to the heap creation its
+    /// harness runs (and to the harness's own calls), with
+    /// `tcaches::heap_new` to the one caller whose token comes from
+    /// `Heap::create`. `trusted_mint_sites_are_pinned` pins
+    /// `HeapPerm::assemble` itself to `tcaches::heap_new`.
+    #[test]
+    fn assembled_writes_only_at_checked_sites() {
+        type Sites = &'static [(&'static str, &'static str, usize)];
+        const PINS: &[(&str, Sites)] = &[
+            // `heap::tcaches::kani_assemble::init_writes_every_field`.
+            (
+                concat!("axiom_", "tcaches_assemble("),
+                &[("heap/tcaches.rs:", "pub unsafe fn init(", 1)],
+            ),
+            // `heap::fresh::kani_assemble::writers_store_the_assembled_fields`,
+            // which runs the writers in `Heap::create`'s order: the token
+            // `HeapPerm::assemble` gets in `heap_new` comes from there.
+            (
+                concat!("heap_", "new("),
+                &[("heap/thread.rs:", "fn create_heap_for_thread<", 1)],
+            ),
+            (
+                concat!("init_", "fields("),
+                &[
+                    ("heap/mod.rs:", "fn create_detached(", 1),
+                    (
+                        "heap/fresh.rs:",
+                        "fn writers_store_the_assembled_fields(",
+                        1,
+                    ),
+                ],
+            ),
+            (
+                concat!("mark_", "bound("),
+                &[
+                    ("heap/mod.rs:", "fn create(", 1),
+                    (
+                        "heap/fresh.rs:",
+                        "fn writers_store_the_assembled_fields(",
+                        1,
+                    ),
+                ],
+            ),
+            (
+                concat!("mark_", "rehome("),
+                &[
+                    ("heap/mod.rs:", "fn create(", 1),
+                    (
+                        "heap/fresh.rs:",
+                        "fn writers_store_the_assembled_fields(",
+                        1,
+                    ),
+                ],
+            ),
+        ];
+        for (call, sites) in PINS {
+            crate::testutil::assert_only_at(call, sites);
+        }
+    }
 }

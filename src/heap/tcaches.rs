@@ -365,7 +365,10 @@ impl Tcaches {
 /// offset, and `pad` every byte between and around them
 /// ([`tcaches_pad_covers`]), so their bytes are the `Tcaches`'s. The type
 /// invariant (`Tcaches::type_inv`) is a precondition, so the value is one
-/// a `Tcaches` may hold.
+/// a `Tcaches` may hold. Called only by [`Tcaches::init`], whose writes
+/// `kani_assemble::init_writes_every_field` checks against the bytes the
+/// `ensures` describes (`crate::tests::assembled_writes_only_at_checked_sites`
+/// pins the call).
 axiom fn axiom_tcaches_assemble(
     tracked parts: TcachesParts,
     tracked table: Map<int, PointsTo<AtomicPtr<u8>>>,
@@ -1267,5 +1270,88 @@ mod tests {
                 ("heap/thread.rs:", "fn create_heap_for_thread<", 1),
             ],
         );
+    }
+}
+
+/// Kani check of the exec half of `axiom_tcaches_assemble`
+/// (`verus/ledger/src/heap/tcaches.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_assemble {
+    use super::{MAX_TCACHES, T_INV, T_LOCK, T_TABLE, Tcaches};
+    use crate::lock::Lock;
+    use core::mem::{MaybeUninit, size_of, transmute};
+    use core::sync::atomic::{AtomicPtr, Ordering};
+    use vstd::prelude::{Ghost, Tracked};
+
+    /// The table lock, named once, as in `arena::kani_put_stats`.
+    type TableLock = Lock<()>;
+
+    /// `axiom_tcaches_assemble` at its one call, the end of
+    /// `Tcaches::init`: the axiom states that the value of the `Tcaches`
+    /// at `this` is the one whose fields hold what their permissions hold,
+    /// and those are what `init`'s writes stored (`put_entry`'s null entry
+    /// from `vspec::entry::new`, `Lock::new((), ..)`, the ghost `inv`).
+    /// The harness runs `init` on storage of a `Tcaches`'s size and
+    /// alignment holding arbitrary bytes, so a field `init` does not write
+    /// keeps them, and checks, for every byte `i` of the storage before
+    /// `T_INV`: a byte of the table (`T_TABLE` up to `T_LOCK`) is 0, a null
+    /// pointer's byte; and a byte of the lock (`T_LOCK` up to `T_INV`) is
+    /// the same byte of `Lock::new((), ..)` built apart. The bytes from
+    /// `T_INV` on are the padding at the end (the ghost `inv` has no
+    /// bytes). It also checks, for every entry `c < MAX_TCACHES`, that the
+    /// table entry loads as a null pointer through a `&Tcaches`. That `p`
+    /// may be dereferenced (`kani::mem::can_dereference`) shows only that
+    /// it is inside the slot and aligned, not what its bytes hold. Kani
+    /// checks that every write is inside the storage; `kani::unwind(1025)`
+    /// is `MAX_TCACHES + 1`, so `init`'s loop over the table runs in full.
+    /// Not checked: the join of the permissions itself (that the field
+    /// permissions and `pad` may be exchanged for one `PointsTo<Tcaches>`
+    /// at `p`, with its provenance), a premise of Verus's own model; the
+    /// ghost identities the `ensures` carries over,
+    /// each table entry's atomic identity (`vspec::entry::entry_id`, which
+    /// the `inv`'s key records) and the lock's cell identity, which have no
+    /// bytes and which Kani does not observe; and the ghost fields (`inv`,
+    /// the lock's rank and initial value), which have no bytes.
+    #[kani::proof]
+    #[kani::unwind(1025)]
+    fn init_writes_every_field() {
+        assert_eq!(T_TABLE, 0);
+        assert_eq!(T_LOCK, MAX_TCACHES * size_of::<AtomicPtr<u8>>());
+        assert_eq!(T_INV, T_LOCK + size_of::<TableLock>());
+        let mut slot = MaybeUninit::<Tcaches>::uninit();
+        let p = slot.as_mut_ptr();
+        // SAFETY: `p` is the slot's storage, of `size_of::<Tcaches>()`
+        // bytes, and a byte array has alignment 1. The slot is
+        // uninitialised before this write and holds arbitrary bytes after.
+        unsafe { p.cast::<[u8; size_of::<Tcaches>()]>().write(kani::any()) };
+        // SAFETY: the slot is writable and unaliased, and nothing reads it
+        // until `init` returns.
+        unsafe { Tcaches::init(p, Tracked::assume_new()) };
+        assert!(kani::mem::can_dereference(p));
+        let want: [u8; size_of::<TableLock>()] =
+            // SAFETY: a `Lock<()>` is a `u32` lock word, a `PCell<()>` and
+            // ghost fields, the last two with no bytes, so its bytes are
+            // initialised.
+            unsafe { transmute(TableLock::new((), Ghost::assume_new())) };
+        let i: usize = kani::any();
+        kani::assume(i < T_INV);
+        // SAFETY: `i` is inside the slot, and every byte of the slot is
+        // initialised (the arbitrary bytes, then `init`'s writes).
+        let b = unsafe { p.cast::<u8>().add(i).read() };
+        if i < T_LOCK {
+            assert_eq!(b, 0);
+        } else {
+            assert_eq!(b, want[i - T_LOCK]);
+        }
+        // SAFETY: `p` is inside the slot and aligned (`can_dereference`,
+        // checked above), and every byte of the slot is initialised. The
+        // table's `AtomicPtr`s and the lock's `u32` hold a value of their
+        // type at any bytes, and the rest of a `Tcaches` has no bytes but
+        // the padding, so the bytes are a `Tcaches`.
+        let t = unsafe { &*p };
+        let c: usize = kani::any();
+        kani::assume(c < MAX_TCACHES);
+        assert!(t.table[c].load(Ordering::Relaxed).is_null());
     }
 }

@@ -25,6 +25,10 @@
 # 8 vCPU guest (2026-11-04).
 # The `caches_array_view` row is CBMC's verification time, one harness per
 # call at quantum 16 on the 8 vCPU guest (2026-11-05).
+# The `init_writes_every_field` and `writers_store_the_assembled_fields`
+# rows are CBMC's verification times, both harnesses in one call at
+# quantum 16 on the 8 vCPU guest, beside the same call at quantum 8
+# (2026-11-06).
 # A harness not listed counts as
 # $default seconds, so a new one lands in some shard without an edit
 # here; add it to the table when it takes more than half a minute.
@@ -61,6 +65,7 @@ weights='
   config::kani_config::display_issue_rounded 125
   kani_proofs::slice::select_ptrs_10 115
   kani_proofs::ptr::ptr_copy_nonoverlapping 104
+  heap::tcaches::kani_assemble::init_writes_every_field 104
   kani_proofs::slice::sort_ptrs_11 98
   kani_proofs::ptr::ptr_write_unaligned 71
   kani_proofs::slice::sort_ptrs_by_key_11 70
@@ -76,6 +81,7 @@ weights='
   config::kani_config::display_issue_unknown_key 26
   config::kani_config::get_contract 25
   heap::slotstate::kani_arrays::no_arrays_are_zero 10
+  heap::fresh::kani_assemble::writers_store_the_assembled_fields 7
   stats::kani_records::zero_records_zeroes 6
   sys::cgroup::kani_in_place::untracked_in_place_is_untracked 3
 '

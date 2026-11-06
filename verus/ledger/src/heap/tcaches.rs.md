@@ -11,7 +11,7 @@ file.
 | `T_LOCK` | external_body const | core library | Kani | discharged |
 | `T_INV` | external_body const | core library | Kani | discharged |
 | `axiom_tcaches_layout` | axiom | core library | Kani | discharged |
-| `axiom_t...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
+| `axiom_tcaches_assemble` | axiom | raw pointer (internal) | Kani | trusted |
 | `axiom_heap_use` | axiom | C-program contract | none (assumption) | trusted |
 | `heap_at` | external_body | allocator invariant | none (assumption) | trusted |
 
@@ -75,8 +75,8 @@ axiom fn axiom_tcaches_layout()
 
 ## `axiom_tcaches_assemble`
 
-src/heap/tcaches.rs:369. Kind: axiom. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+src/heap/tcaches.rs:372. Kind: axiom. Category: raw pointer (internal).
+Tool: Kani. Status: trusted (partly checked, Kani: heap::tcaches::kani_assemble::init_writes_every_field; not checked: the join itself, that the field permissions and `pad` may be exchanged for one `PointsTo<Tcaches>` at `p`, with its provenance, a premise of Verus's own model that no tool checks; the ghost identities the `ensures` carries over, each table entry's atomic identity (`vspec::entry::entry_id`, which the `inv`'s key records) and the lock's cell identity, which Kani does not observe; and the ghost fields (`inv`, the lock's rank and initial value), which have no bytes).
 
 > The written fields of the `Tcaches` at `p` (`Tcaches::split`'s parts and table entries, every one initialised), as the `Tcaches`: the value of each field is what its permission holds.
 
@@ -112,7 +112,7 @@ axiom fn axiom_tcaches_assemble(
 
 ## `axiom_heap_use`
 
-src/heap/tcaches.rs:711. Kind: axiom. Category: C-program contract.
+src/heap/tcaches.rs:714. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the C caller's contract): the calling thread uses the heap it is about to reach through [`heap_at`] with no other reference to it live, here or on another thread: an explicit cache is used by one thread at a time and not after `tcache.destroy` (the contract of [`Tcaches::get`]), a destroyed cache is unreachable through the table, a thread's heap reaches its key destructor once, at thread exit, and a heap created and never published has no other reference.
@@ -129,7 +129,7 @@ pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
 
 ## `heap_at`
 
-src/heap/tcaches.rs:764. Kind: external_body. Category: allocator invariant.
+src/heap/tcaches.rs:767. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the heap `Heap::destroy` is handed.
