@@ -47,7 +47,16 @@
 # hashes of the item it checked in a fifth column, `<TAB>contract C, body
 # B`; --check fails when they differ from the item's (its contract or body
 # changed, and --write does not change the overrides), when such a
-# status records none, and when another status records some. --check
+# status records none, and when another status records some. A status
+# `trusted (claims nothing: <why>)`, for an opaque type or an
+# external_body constant whose contract states nothing, records them too,
+# and --check fails when it is on another kind of seam, on an item that
+# is not external_body, on a contract with `requires`, `ensures`,
+# `returns` or a `_recursive_types` attribute, with a proposed tool other
+# than `none (assumption)`, when it cites a check
+# or gives no reason, on a `tracked` type (a ghost token), or when a
+# source file under src/, test files included, has an `unsafe impl` of
+# `Send` or `Sync` for a type of the type's name. --check
 # also fails when a
 # status cites `Kani: <harness>` and no `#[kani::proof]` fn has that path,
 # or `const assert: <label> in <file>` and not exactly one assertion there
@@ -85,6 +94,8 @@ esac
 files=$(find src -name '*.rs' ! -name tests.rs ! -name linux_tests.rs \
   ! -name testutil.rs | sort)
 [ -n "$files" ] || { echo "seams: no sources under src/" >&2; exit 2; }
+# The test files, read only for the impls a claims nothing status bars.
+testfiles=$(find src \( -name tests.rs -o -name linux_tests.rs -o -name testutil.rs \) | sort)
 ovfiles=$(find verus/ledger -name '*.rs.overrides' 2>/dev/null | sort)
 
 prog=$(cat <<'EOF'
@@ -363,9 +374,31 @@ EOF
 )
 
 marker=$(cat <<'EOF'
-/^\001FILE / { FILE = substr($0, 7); LN = 0; newfile = 1; next }
+/^\001FILE / { FILE = substr($0, 7); LN = 0; newfile = 1; implonly = 0; next }
+/^\001IMPLS / { FILE = substr($0, 8); LN = 0; implonly = 1; next }
 /^\001FAIL / { print "seams: cannot read " substr($0, 7) > "/dev/stderr"; bad = 1; next }
 { LN++ }
+EOF
+)
+
+# unsafeimpl[N]: where a source file has an `unsafe impl` of Send or
+# Sync for a type named N, as `FILE:LINE (unsafe impl T)` items joined by
+# `, `; claimsnothing refuses a type that has any. Every source line is
+# read, outside comments and string literals: test files (behind IMPLS
+# markers, read for nothing else) and test-only items too. A type is
+# matched by the last segment of its path, without generic arguments, so
+# a type of the same name in another module also counts. The impl's
+# header, through the type's name, must be on one line, as rustfmt
+# writes it.
+typeimpls=$(cat <<'EOF'
+FILE !~ /^verus\// && match(code($0), /(^|[^A-Za-z0-9_])unsafe impl(<.*>)? +(::)?((core|std)::marker::)?(Send|Sync) +for +(::)?[A-Za-z_][A-Za-z0-9_:]*/) {
+    ui_s = substr(code($0), RSTART, RLENGTH)
+    ui_tr = ui_s; sub(/ +for .*$/, "", ui_tr); sub(/^.*[ :]/, "", ui_tr)
+    ui_n = ui_s; sub(/^.* for +/, "", ui_n); sub(/^.*::/, "", ui_n)
+    ui_p = (ui_n in unsafeimpl) ? unsafeimpl[ui_n] ", " : ""
+    unsafeimpl[ui_n] = ui_p FILE ":" LN " (unsafe impl " ui_tr ")"
+}
+implonly { next }
 EOF
 )
 
@@ -567,8 +600,9 @@ function nfiles_with_seams(    e, c, p) { c = 0; p = ""; for (e = 1; e <= n; e++
 # disagrees: a status that cites a check (discharged, or trusted and
 # partly checked) must
 # record, in a fifth column, the hashes of the item it checked, and they
-# must equal the item's now; any other status records none.
-function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, rc, nc, what) {
+# must equal the item's now; so must a status that says the item claims
+# nothing (claimsnothing, below); any other status records none.
+function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, cn, rc, nc, what) {
     for (e = 1; e <= n; e++) {
         f = hashdir "/" e ".c"; printf "%s", norm(ehc[e]) > f; close(f)
         if (norm(ehb[e]) != "") { f = hashdir "/" e ".b"; printf "%s", norm(ehb[e]) > f; close(f) }
@@ -580,9 +614,11 @@ function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, rc, nc, what) {
         if (!((e ".c") in hv)) { print "seams: cksum gave no hash for " efile[e] ":" eline[e] > "/dev/stderr"; bad = 1 }
         ehash[e] = "contract " hv[e ".c"] ", body " ((e ".b") in hv ? hv[e ".b"] : "none")
         ok = eok[e]; rec = ok != "" ? ohash[ok] : ""
-        chk = estat[e] ~ /^discharged/ || estat[e] ~ /^trusted \(partly checked/
+        cn = estat[e] ~ /^trusted \(claims nothing/
+        if (cn) claimsnothing(e, ok)
+        chk = estat[e] ~ /^discharged/ || estat[e] ~ /^trusted \(partly checked/ || cn
         if (chk && rec == "")
-            print "seams: " ofile[ok] ": " oname[ok] " (" efile[e] ":" eline[e] "): the status cites a check but records no hashes; once it holds for the item as it is, add them as a fifth column: " ehash[e] > drift
+            print "seams: " ofile[ok] ": " oname[ok] " (" efile[e] ":" eline[e] "): the status " (cn ? "claims nothing" : "cites a check") " but records no hashes; once it holds for the item as it is, add them as a fifth column: " ehash[e] > drift
         else if (chk && rec != ehash[e]) {
             rc = rec; sub(/,.*$/, "", rc); nc = ehash[e]; sub(/,.*$/, "", nc)
             what = rc != nc ? (substr(rec, length(rc) + 1) != substr(ehash[e], length(nc) + 1) ? "contract and body" : "contract") : "body"
@@ -591,6 +627,47 @@ function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, rc, nc, what) {
             print "seams: " ofile[ok] ": " oname[ok] ": hashes on a status that cites no check" > drift
     }
     printf "" > drift; close(drift)
+}
+
+# A status `trusted (claims nothing: <why>)` (verus/SEAMS.md, "Status")
+# is for an item that states nothing a check could test: an opaque type
+# (an external type specification or an external_body struct or enum) or
+# an external_body constant, `#[verifier::external_body]`, with no
+# `requires`, `ensures`, `returns` or `_recursive_types` attribute in its
+# contract, a reason, and the tool `none (assumption)`, since no check
+# applies. A function seam may not carry it: its call is assumed to
+# return, which is a claim. Nor may a `tracked` struct or enum, a ghost
+# token whose axioms may rely on it not being Copy, or a type with an
+# `unsafe impl` of Send or Sync, which rustc does not check, anywhere
+# under src/ (unsafeimpl): the type named by the seam (for an external
+# type specification, the last segment of the specified type's path, so
+# `core` and libc types, whose impls are outside src/, find none) or the
+# item's own struct. Into the file drift, one line per
+# rule the seam breaks.
+function claimsnothing(e, ok,    at, nm, own) {
+    at = "seams: " ofile[ok] ": " oname[ok] " (" efile[e] ":" eline[e] "): "
+    if (estat[e] !~ /^trusted \(claims nothing: [^ )].*\)$/)
+        print at "a claims nothing status gives no reason, want `trusted (claims nothing: <why>)`" > drift
+    if (ekind[e] != "ext_type_spec" && ekind[e] != "external_body type" && ekind[e] != "external_body const")
+        print at "claims nothing, but its kind (" ekind[e] ") may not: only an opaque type or an external_body constant may" > drift
+    if (ehc[e] !~ /#\[verifier::external_body\]/)
+        print at "claims nothing, but the item is not external_body, so Verus sees inside it" > drift
+    if (ehc[e] ~ /(^|[^A-Za-z0-9_])(requires|ensures|returns|[a-z_]*_recursive_types[a-z_]*)([^A-Za-z0-9_]|$)/)
+        print at "claims nothing, but its contract holds requires, ensures, returns or a _recursive_types attribute" > drift
+    if (estat[e] ~ /(Kani|const assert|Isla|emptyasm|loom|callers): /)
+        print at "claims nothing, but the status cites a check" > drift
+    if (etool[e] != "none (assumption)")
+        print at "claims nothing, but proposes the tool " etool[e] ", want none (assumption)" > drift
+    if (ehc[e] ~ /(^|[^A-Za-z0-9_])tracked (struct|enum) /)
+        print at "claims nothing, but the item is a tracked type, a ghost token whose axioms may rely on it not being Copy" > drift
+    if (ekind[e] == "external_body const") return
+    nm = ename[e]; sub(/<.*$/, "", nm); sub(/^.*::/, "", nm)
+    own = match(ehc[e], /(struct|enum) [A-Za-z_][A-Za-z0-9_]*/) ? substr(ehc[e], RSTART, RLENGTH) : ""
+    sub(/^[a-z]+ /, "", own)
+    if (nm in unsafeimpl)
+        print at "claims nothing, but the type " nm " has " unsafeimpl[nm] ", which rustc does not check" > drift
+    if (own != "" && own != nm && (own in unsafeimpl))
+        print at "claims nothing, but the type " own " has " unsafeimpl[own] ", which rustc does not check" > drift
 }
 EOF
 )
@@ -602,6 +679,10 @@ stream() {
     printf '\001FILE %s\n' "$f"
     cat "$f" || printf '\001FAIL %s\n' "$f"
   done
+  for f in $testfiles; do
+    printf '\001IMPLS %s\n' "$f"
+    cat "$f" || printf '\001FAIL %s\n' "$f"
+  done
 }
 
 # scan MODE DIR [HASHDIR]: scan the marked stream on stdin; the totals on
@@ -611,6 +692,7 @@ stream() {
 scan() {
   if [ -n "${3:-}" ]; then rm -rf "$3" && mkdir -p "$3"; fi
   awk -v mode="$1" -v outdir="$2" -v hashdir="${3:-}" -v drift="${3:+$3/drift}" "$marker
+$typeimpls
 $overrides
 $prog
 $render"
@@ -1035,11 +1117,12 @@ case $mode in
     # and still pass once the item moves down, is reindented or gains
     # comments; an edited `requires`, attribute or body fails, as does a checked
     # status (discharged or partly checked) with no hashes and a trusted
-    # one with some.
-    # hs STATUS HASHES < SOURCE: the drift lines for seam f of SOURCE.
+    # one with some. The claims nothing rules follow.
+    # hs STATUS HASHES [NAME [TOOL]] < SOURCE: the drift lines for seam
+    # NAME (default f) of SOURCE, its proposed tool TOOL (default Kani).
     hs() {
       { printf '\001FILE verus/ledger/src/t.rs.overrides\n'
-        printf 'f\tpanic/abort\tKani\t%s%s\n' "$1" "${2:+$tab$2}"
+        printf '%s\tpanic/abort\t%s\t%s%s\n' "${3:-f}" "${4:-Kani}" "$1" "${2:+$tab$2}"
         printf '\001FILE src/t.rs\n'; cat; } |
         scan write "$tmp/hs-ledger" "$tmp/hs-hash" > /dev/null 2>&1 || { echo "scan failed"; return 0; }
       cat "$tmp/hs-hash/drift"
@@ -1068,6 +1151,60 @@ case $mode in
     case $r in *'records no hashes'*) ;; *) echo "seams: self-test: hash: a partly checked status with no hashes accepted: $r" >> "$tmp/cites" ;; esac
     r=$(hsrc 'x < 3' 'x + 1' | hs trusted "$hs_h")
     case $r in *'hashes on a status that cites no check'*) ;; *) echo "seams: self-test: hash: hashes on a trusted status accepted: $r" >> "$tmp/cites" ;; esac
+    # Self-test: a claims nothing status passes on an opaque type (an
+    # external type specification or an external_body struct) or an
+    # external_body constant with the item's hashes, and fails with none,
+    # with no reason, on a function, on an item that is not external_body,
+    # on a contract with ensures or accept_recursive_types, and on a status
+    # that cites a check.
+    # hty ATTR: an external type specification of F, with ATTR above it.
+    hty() { printf '%s\n' 'verus! {' '#[verifier::external_type_specification]' "$1" 'pub struct ExF(F);' '}'; }
+    cn_st='trusted (claims nothing: an opaque type)'
+    cn_t='none (assumption)'
+    cn_h=$(hty '#[verifier::external_body]' | hs "$cn_st" '' F "$cn_t" | sed -n 's/.*claims nothing but records no hashes.*fifth column: //p')
+    case $cn_h in
+      'contract '[0-9]*', body none') ;;
+      *) echo "seams: self-test: claims nothing: a status with no hashes accepted, or no hashes offered: $cn_h" >> "$tmp/cites" ;;
+    esac
+    r=$(hty '#[verifier::external_body]' | hs "$cn_st" "$cn_h" F "$cn_t")
+    [ -z "$r" ] || echo "seams: self-test: claims nothing: an opaque type with its hashes refused: $r" >> "$tmp/cites"
+    r=$(hty '#[verifier::external_body]' | hs "$cn_st" "$cn_h" F Kani)
+    case $r in *'proposes the tool Kani'*) ;; *) echo "seams: self-test: claims nothing: a proposed tool other than none (assumption) accepted: $r" >> "$tmp/cites" ;; esac
+    # cn_only: whether $r is only the line asking for the hashes.
+    cn_only() { case $r in *'claims nothing, but'*|*'gives no reason'*) return 1 ;; *'claims nothing but records no hashes'*) return 0 ;; *) return 1 ;; esac; }
+    r=$(printf '%s\n' 'verus! {' '#[verifier::external_body]' 'pub exec const F: u8 = 1;' '}' | hs "$cn_st" '' F "$cn_t")
+    cn_only || echo "seams: self-test: claims nothing: an external_body constant refused, or not scanned: $r" >> "$tmp/cites"
+    r=$(printf '%s\n' 'verus! {' '#[verifier::external_body]' 'pub struct F(u8);' '}' | hs "$cn_st" '' F "$cn_t")
+    cn_only || echo "seams: self-test: claims nothing: an external_body struct refused, or not scanned: $r" >> "$tmp/cites"
+    r=$(hty '#[verifier::external_body]' | hs 'trusted (claims nothing)' "$cn_h" F)
+    case $r in *'gives no reason'*) ;; *) echo "seams: self-test: claims nothing: a status with no reason accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(hsrc 'true' 'x' | hs "$cn_st" '')
+    case $r in *'its kind (external_body) may not'*) ;; *) echo "seams: self-test: claims nothing: a function accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(hty '#[allow(dead_code)]' | hs "$cn_st" '' F)
+    case $r in *'not external_body'*) ;; *) echo "seams: self-test: claims nothing: an item that is not external_body accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(printf '%s\n' 'verus! {' '#[verifier::external_body]' 'pub exec const F: u8' '    ensures F == 1,' '{ 1 }' '}' | hs "$cn_st" '' F)
+    case $r in *'holds requires, ensures'*) ;; *) echo "seams: self-test: claims nothing: a constant with an ensures accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(hty '#[verifier::external_body] #[verifier::accept_recursive_types(T)]' | hs "$cn_st" '' F)
+    case $r in *'holds requires, ensures'*) ;; *) echo "seams: self-test: claims nothing: accept_recursive_types accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(hty '#[verifier::external_body]' | hs 'trusted (claims nothing: Kani: k::f)' "$cn_h" F)
+    case $r in *'cites a check'*) ;; *) echo "seams: self-test: claims nothing: a status citing a check accepted: $r" >> "$tmp/cites" ;; esac
+    # Self-test: a claims nothing status fails on a tracked struct (a ghost
+    # token), and on a type with an `unsafe impl` of Send or Sync (a
+    # generic one with paths included), whether the impl names the type
+    # the seam specifies or the item's own struct; and passes when only
+    # other types, or a comment, have one, and on a type that derives
+    # Copy and Clone.
+    r=$(printf '%s\n' 'verus! {' '#[verifier::external_body]' 'pub tracked struct F { _no_copy: () }' '}' | hs "$cn_st" '' F "$cn_t")
+    case $r in *'the item is a tracked type'*) ;; *) echo "seams: self-test: claims nothing: a tracked struct accepted: $r" >> "$tmp/cites" ;; esac
+    r=$( { hty '#[verifier::external_body]'; echo 'unsafe impl Sync for F {}'; } | hs "$cn_st" '' F "$cn_t")
+    case $r in *'the type F has src/t.rs:6 (unsafe impl Sync)'*) ;; *) echo "seams: self-test: claims nothing: a type with an unsafe impl of Sync accepted: $r" >> "$tmp/cites" ;; esac
+    r=$( { hty '#[verifier::external_body]'; echo "unsafe impl<'a> ::core::marker::Send for crate::m::F<'a> {}"; } | hs "$cn_st" '' F "$cn_t")
+    case $r in *'the type F has src/t.rs:6 (unsafe impl Send)'*) ;; *) echo "seams: self-test: claims nothing: a type with a generic unsafe impl of Send accepted: $r" >> "$tmp/cites" ;; esac
+    r=$( { hty '#[verifier::external_body]'; echo 'unsafe impl Sync for ExF {}'; } | hs "$cn_st" '' F "$cn_t")
+    case $r in *'the type ExF has src/t.rs:6 (unsafe impl Sync)'*) ;; *) echo "seams: self-test: claims nothing: a specification struct with an unsafe impl of Sync accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(printf '%s\n' 'verus! {' '#[derive(Clone, Copy)]' '#[verifier::external_body]' 'pub struct F(u8);' '}' \
+      'unsafe impl Send for FF {}' '// unsafe impl Send for F {}' | hs "$cn_st" '' F "$cn_t")
+    cn_only || echo "seams: self-test: claims nothing: an unsafe impl of another type, a comment, or a derive of Copy refused: $r" >> "$tmp/cites"
     # Self-test: a loom citation resolves only for a #[test] that is no
     # control, whose doc or body names the seam's function (a method by
     # `Type::fn`), in a file naming the seam's source file; and a

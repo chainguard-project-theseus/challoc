@@ -7,7 +7,7 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `WriteCallback` | ext_type_spec | function pointer | Kani | trusted |
+| `WriteCallback` | ext_type_spec | function pointer | none (assumption) | trusted |
 | `call_back` | external_body | function pointer | Kani | discharged |
 | `write_file` | external_body | FFI/syscall | none (assumption) | trusted |
 | `word` | external_body | core library | Kani | trusted |
@@ -17,7 +17,7 @@ file.
 ## `WriteCallback`
 
 src/api/print.rs:69. Kind: ext_type_spec. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > Opaque: `WriteCallback` holds a function pointer type, which Verus rejects.
 

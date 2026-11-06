@@ -7,8 +7,8 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `ffi::c_void` | ext_type_spec | core library | Kani | trusted |
-| `ffi::CStr` | ext_type_spec | core library | Kani | trusted |
+| `ffi::c_void` | ext_type_spec | core library | none (assumption) | trusted |
+| `ffi::CStr` | ext_type_spec | core library | none (assumption) | trusted |
 | `<*const T>::cast::<U>` | assume_spec | core library | Kani | discharged |
 | `<*const T>::wrapping_add` | assume_spec | core library | Kani | discharged |
 | `ffi::CStr::as_ptr` | assume_spec | core library | Kani | discharged |
@@ -17,7 +17,7 @@ file.
 ## `core::ffi::c_void`
 
 src/vspec/config.rs:14. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > `core::ffi::c_void`, opaque: `config::linux` holds the symbol addresses its assembly returns as `*const c_void` and only casts them.
 
@@ -30,7 +30,7 @@ pub struct ExCVoid(core::ffi::c_void);
 ## `core::ffi::CStr`
 
 src/vspec/config.rs:20. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > `core::ffi::CStr`, opaque: verified code only passes the static names of `config::Value::Str` on.
 

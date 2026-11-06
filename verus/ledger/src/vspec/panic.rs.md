@@ -7,9 +7,9 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `panic::PanicInfo<'a>` | ext_type_spec | core library | Kani | trusted |
-| `panic::Location<'a>` | ext_type_spec | core library | Kani | trusted |
-| `panic::PanicMessage<'a>` | ext_type_spec | core library | Kani | trusted |
+| `panic::...fo<'a>` | ext_type_spec | core library | none (assumption) | trusted |
+| `panic::...on<'a>` | ext_type_spec | core library | none (assumption) | trusted |
+| `panic::...ge<'a>` | ext_type_spec | core library | none (assumption) | trusted |
 | `panic::Panic...a>::location` | assume_spec | core library | Kani | trusted |
 | `panic::Panic...'a>::message` | assume_spec | core library | Kani | trusted |
 | `panic::Location::<'a>::file` | assume_spec | core library | Kani | trusted |
@@ -19,7 +19,7 @@ file.
 ## `core::panic::PanicInfo<'a>`
 
 src/vspec/panic.rs:13. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 4226533340, body none.
 
@@ -30,7 +30,7 @@ pub struct ExPanicInfo<'a>(core::panic::PanicInfo<'a>);
 ## `core::panic::Location<'a>`
 
 src/vspec/panic.rs:17. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 1417247462, body none.
 
@@ -41,7 +41,7 @@ pub struct ExLocation<'a>(core::panic::Location<'a>);
 ## `core::panic::PanicMessage<'a>`
 
 src/vspec/panic.rs:21. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 3864003794, body none.
 

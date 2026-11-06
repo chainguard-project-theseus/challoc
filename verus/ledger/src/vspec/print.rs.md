@@ -7,14 +7,14 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `libc::FILE` | ext_type_spec | core library | Kani | trusted |
+| `libc::FILE` | ext_type_spec | core library | none (assumption) | trusted |
 | `base_slab_sizes` | external_body | function pointer | Kani | discharged |
 | `PartialEqSpe...PercpuArena` | spec_impl | core library | Kani | discharged |
 
 ## `libc::FILE`
 
 src/vspec/print.rs:16. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > libc's `FILE`, opaque: `malloc_info` only passes the caller's stream on.
 

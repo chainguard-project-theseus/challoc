@@ -1,12 +1,15 @@
 #!/bin/sh
 # verus/seams-mutants.sh: check that verus/seams.sh's self-tests have
 # teeth, and that its hashes catch an edited seam. Each script mutant
-# below is one sed edit of seams.sh that weakens the `loom:` citation rule
-# or the hash rule; the mutated copy's `--check` must report a self-test
-# failure of that rule. Each tree mutant is one sed edit of a source file
-# in a copy of the tree, followed by `--write` and `--check` there: an edit
-# to a discharged seam's attribute, `requires`, `ensures` or body must
-# fail `--check` with its hashes' message, and one that only adds a
+# below is one sed edit of seams.sh that weakens the `loom:` citation rule,
+# the hash rule or the claims nothing rule; the mutated copy's `--check`
+# must report a self-test failure of that rule. Each tree mutant is one
+# sed edit of a source file in a copy of the tree, followed by `--write`
+# and `--check` there: an edit to a discharged seam's attribute,
+# `requires`, `ensures` or body, to the attributes of a seam that
+# claims nothing, or one that gives such a seam an `unsafe impl Send` or
+# makes it a `tracked` struct, must fail `--check` with the message of the rule it
+# breaks, and one that only adds a
 # comment, reindents or moves the seam must pass. Exits 1 if a mutant survives, a passing edit
 # fails, or an edit no longer applies.
 #
@@ -100,6 +103,39 @@ attributes are not hashed|s/ehc\[n\] = hattrs;/ehc[n] = "";/
 a partly checked status needs no hashes|s/ || estat\[e\] ~ \/^trusted .(partly checked\///
 changed hashes are accepted|s/else if (chk \&\& rec != ehash\[e\])/else if (0)/
 hashes on a trusted status are accepted|s/} else if (!chk \&\& rec != "")/} else if (0)/
+EOF
+
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+script 'self-test: claims nothing' <<'EOF'
+a claims nothing status needs no hashes|s/ || cn$//
+no reason needed|s/print at "a claims nothing status gives no reason.*/at = at/
+any kind may claim nothing|s/print at "claims nothing, but its kind.*/at = at/
+an item need not be external_body|s/print at "claims nothing, but the item is not external_body.*/at = at/
+a contract may hold ensures|s/print at "claims nothing, but its contract holds.*/at = at/
+accept_recursive_types is allowed|s/|\[a-z_\]\*_recursive_types\[a-z_\]\*)(/)(/
+a check may be cited|s/print at "claims nothing, but the status cites a check.*/at = at/
+any tool may be proposed|s/print at "claims nothing, but proposes the tool.*/at = at/
+a tracked type may claim nothing|s/print at "claims nothing, but the item is a tracked type.*/at = at/
+the specified type's unsafe impls are allowed|s/^    if (nm in unsafeimpl)$/    if (0)/
+the item's own struct's unsafe impls are allowed|s/^    if (own != "" \&\& own != nm \&\& (own in unsafeimpl))$/    if (0)/
+generic unsafe impls are not matched|s/unsafe impl(<\.\*>)? +/unsafe impl +/
+EOF
+
+# The seam is the external type specification of core::ffi::c_void in
+# src/vspec/config.rs, whose status says it claims nothing.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+tree src/vspec/config.rs core::ffi::c_void <<'EOF'
+external_body dropped|not external_body|/^\/\/\/ addresses its assembly returns/,/^pub struct ExCVoid/{/^#\[verifier::external_body\]$/d;}
+an attribute added|its contract changed|/^\/\/\/ addresses its assembly returns/,/^pub struct ExCVoid/s/^#\[verifier::external_body\]$/#[verifier::external_body] #[allow(dead_code)]/
+a comment added|pass|s/^pub struct ExCVoid(core::ffi::c_void);$/& \/\/ a comment/
+EOF
+
+# The seam is the external_body type Handler in src/api/cxx.rs, whose
+# status says it claims nothing.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+tree src/api/cxx.rs Handler <<'EOF'
+an unsafe impl of Send added|the type Handler has|/^struct Handler(unsafe extern "C" fn());$/a unsafe impl Send for Handler {}
+made a tracked struct|a tracked type|s/^struct Handler(unsafe extern "C" fn());$/tracked &/
 EOF
 
 # The seam is desc_stride of src/slab.rs, discharged by a Kani harness.

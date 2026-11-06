@@ -7,8 +7,8 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Layout` | ext_type_spec | core library | Kani | trusted |
-| `alloc::LayoutError` | ext_type_spec | core library | Kani | trusted |
+| `Layout` | ext_type_spec | core library | none (assumption) | trusted |
+| `alloc::...tError` | ext_type_spec | core library | none (assumption) | trusted |
 | `Layout::size` | assume_spec | core library | Kani | discharged |
 | `Layout::align` | assume_spec | core library | Kani | discharged |
 | `Layout::from_size_align` | assume_spec | core library | Kani | discharged |
@@ -17,7 +17,7 @@ file.
 ## `Layout`
 
 src/vspec/layout.rs:14. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 1438845126, body none.
 
@@ -28,7 +28,7 @@ pub struct ExLayout(Layout);
 ## `core::alloc::LayoutError`
 
 src/vspec/layout.rs:18. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 2393945422, body none.
 

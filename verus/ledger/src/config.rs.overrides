@@ -1,6 +1,6 @@
-TABLE	function pointer	Kani
-Parse	function pointer	Kani
-Read	function pointer	Kani
+TABLE	function pointer	none (assumption)	trusted (claims nothing: an opaque constant; Verus sees no value of it, and the compiler evaluates it)	contract 161098296, body none
+Parse	function pointer	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 451832648, body none
+Read	function pointer	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 3732856044, body none
 # The C program's `environ` memory: no tool checks the caller's pointers; their validity is assumed.
 read_slot	raw pointer from C caller	none (assumption)
 byte_at	raw pointer from C caller	none (assumption)

@@ -1,1 +1,5 @@
 axiom_fmt_req_all_panic_message	panic/abort	none (assumption)
+# Opaque types, which claim nothing (verus/SEAMS.md, "Status").
+core::panic::PanicInfo<'a>	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 4226533340, body none
+core::panic::Location<'a>	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 1417247462, body none
+core::panic::PanicMessage<'a>	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 3864003794, body none
