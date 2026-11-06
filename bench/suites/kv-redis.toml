@@ -1,0 +1,25 @@
+# kv-redis: Redis 8.10 under every allocator (bench/drivers/kv.sh,
+# kv-ops.sh, valkey-soak.sh with SERVER=redis). The gate pair is Redis as
+# it ships upstream (its bundled jemalloc 5.3.0, active defrag available)
+# against challoc through contrib/redis/000{1,2,3} (MALLOC=challoc, the runpath
+# build, quantum8); the controls are preloaded on one MALLOC=libc build of
+# the same tag: jemalloc 5.4.0 and 5.3.0 (the release tarballs), glibc,
+# tcmalloc-minimal, mimalloc 3.x, and challoc itself (`challoc-preload`),
+# which separates the allocator from the integration.
+#
+# The ops rows are paired; the soak is one variant per VM, 20 minutes,
+# compared unpaired. Shorter soaks for a check: --var valkey_soak_secs=300.
+description = "Redis: challoc (contrib/redis integration) vs bundled jemalloc (gate); jemalloc 5.3/5.4, glibc, tcmalloc, mimalloc, challoc preloaded (controls)"
+cells = "tag:gate"
+variants = ["jemalloc", "challoc=head"]
+controls = ["jemalloc54", "jemalloc53", "glibc", "tcmalloc", "mimalloc", "challoc-preload=head"]
+rows = ["redis-ops", "redis-ops-d1k", "redis-soak"]
+replicas = 3
+blocks = 2
+warmup_blocks = 0
+shard_seconds = 1500
+looks = 1
+budget_usd = 30
+
+[local]
+blocks = 1
