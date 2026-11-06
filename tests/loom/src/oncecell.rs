@@ -3,9 +3,9 @@
 //! `LINE_STATE`, `FEATURES` and `FEATURE_LINE` are statics built in
 //! `const` context, which loom cannot construct) and the deferred cgroup
 //! record (`src/sys/cgroup.rs`, `Deferred`, `PENDING` to `RUNNING` to
-//! `DONE`, through `vspec/byte.rs`'s wrappers, each the bare `core`
-//! operation with the caller's ordering). Each step names the code it
-//! mirrors:
+//! `DONE`, through `vspec/byte.rs`'s wrappers, which run here as they
+//! are, over loom's `AtomicU8`: `crate::vspec`). Each step names the code
+//! it mirrors:
 //!
 //! - [`Line::line_load`], [`Line::line_compare_exchange`] and
 //!   [`Line::line_store`] are `api::line_load`, `api::line_compare_exchange`
@@ -54,10 +54,12 @@
 //! fork itself (the reset models run in one thread, as the child has
 //! one).
 
+use crate::vspec::byte;
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use loom::thread;
+use vstd::prelude::Tracked;
 
 const LINE_UNBUILT: u8 = 0;
 const LINE_BUILDING: u8 = 1;
@@ -284,7 +286,7 @@ impl Deferred {
 
     /// `Deferred::get`: `load_phase`, then `cell_ref` on `DONE`.
     fn get(&self) -> Option<u64> {
-        if self.phase.load(Ordering::Acquire) == PHASE_DONE {
+        if byte::load(&self.phase, Ordering::Acquire, Tracked::assume_new()) == PHASE_DONE {
             // SAFETY: `DONE` observed by an `Acquire` load on this thread
             // (loom reports a race if not).
             Some(self.cell.with(|p| unsafe { *p }))
@@ -295,22 +297,27 @@ impl Deferred {
 
     /// `Deferred::discover`, `found` left out.
     fn discover(&self, wait: bool) -> bool {
-        match self.phase.compare_exchange(
+        match byte::compare_exchange(
+            &self.phase,
             PHASE_PENDING,
             PHASE_RUNNING,
             Ordering::Acquire,
             Ordering::Relaxed,
+            Tracked::assume_new(),
         ) {
             Ok(_) => {
                 self.discoveries.fetch_add(1, Ordering::Relaxed);
                 // SAFETY: only the exchange's winner writes, before `DONE`
                 // (loom reports a race if not).
                 self.cell.with_mut(|p| unsafe { *p = RECORD });
-                self.phase.store(PHASE_DONE, self.publish);
+                byte::store(&self.phase, PHASE_DONE, self.publish, Tracked::assume_new());
                 true
             }
             Err(_) => {
-                while wait && self.phase.load(Ordering::Acquire) != PHASE_DONE {
+                while wait
+                    && byte::load(&self.phase, Ordering::Acquire, Tracked::assume_new())
+                        != PHASE_DONE
+                {
                     loom::hint::spin_loop();
                 }
                 false
@@ -328,11 +335,13 @@ impl Deferred {
 
     /// `Deferred::fork_child`.
     fn fork_child(&self) {
-        let _ = self.phase.compare_exchange(
+        let _ = byte::compare_exchange(
+            &self.phase,
             PHASE_RUNNING,
             PHASE_PENDING,
             Ordering::Relaxed,
             Ordering::Relaxed,
+            Tracked::assume_new(),
         );
     }
 }
@@ -376,7 +385,7 @@ fn run_deferred(publish: Ordering) {
 /// discovers, the waiting reader returns with the record published, and
 /// the sampler sees nothing or the record.
 ///
-/// Covers copies of `vspec::byte::load`, `vspec::byte::store` and
+/// Runs `vspec::byte::load`, `vspec::byte::store` and
 /// `vspec::byte::compare_exchange`.
 #[test]
 fn loom_oncecell_deferred_discover_races_get() {
@@ -395,7 +404,7 @@ fn loom_oncecell_deferred_relaxed_publish_is_a_race() {
 /// at `RUNNING`): the reset makes the child's waiting discovery run
 /// rather than spin for ever; a reset of a published record leaves it.
 ///
-/// Covers copies of `vspec::byte::load`, `vspec::byte::store` and
+/// Runs `vspec::byte::load`, `vspec::byte::store` and
 /// `vspec::byte::compare_exchange`.
 #[test]
 fn loom_oncecell_deferred_fork_child_restarts() {

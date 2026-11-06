@@ -41,7 +41,7 @@
 //!   and `Tcaches::len`) are plain `core` loads, whose result Verus takes
 //!   as any pointer.
 
-use core::sync::atomic::{AtomicPtr, Ordering};
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use vstd::prelude::*;
 
 verus! {
@@ -129,6 +129,8 @@ pub fn swap<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): T
 
 /// `AtomicPtr::new(v)`, with the one permission to it: the only place an
 /// [`EntryPerm`] is minted, one per atomic, with the atomic it is for.
+/// Not under `cfg(loom)`, whose `AtomicPtr::new` is not `const`.
+#[cfg(not(loom))]
 #[inline(always)]
 pub const fn new<T>(v: *mut T) -> (r: (AtomicPtr<T>, Tracked<EntryPerm<T>>))
     ensures

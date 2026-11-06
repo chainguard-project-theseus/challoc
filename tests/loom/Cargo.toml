@@ -6,3 +6,10 @@ publish = false
 
 [dependencies]
 loom = "=0.7.2"
+# The `vspec` wrapper files this crate compiles (`src/vspec.rs`) are
+# written in `verus!`; the version is the crate's (`Cargo.toml`).
+vstd = { version = "=0.0.0-2026-10-18-0147", default-features = false }
+
+[lints.rust]
+# `build.rs` sets `loom`; the `vspec` files also name Verus's and Kani's.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(verus_keep_ghost)", "cfg(kani)"] }

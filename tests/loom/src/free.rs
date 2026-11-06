@@ -2,7 +2,9 @@
 //! `AtomicBitmap` (`bitmap.rs`: `init`, `claim_from`, `release`) over one
 //! loom word for a slab of [`NSLOTS`] slots; the table steps around it
 //! are copies of `src/class/table.rs` and `src/heap/shared.rs`, with
-//! their orderings:
+//! their orderings, calling `vspec/atom.rs`'s and `vspec/word.rs`'s
+//! wrappers, which run here as they are, over loom's atomics
+//! (`crate::vspec`):
 //!
 //! - the hand-out is the tail of `SlabTable::take_group`: the slab's
 //!   bitmap `init` (`Relaxed` writes), `store_owner` (the group's owner
@@ -43,12 +45,14 @@
 //! claimer's `Acquire` load of the watermark stands for that chain).
 
 use crate::bitmap::AtomicBitmap;
+use crate::vspec::{self, atom, word};
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use loom::thread;
 use std::collections::BTreeSet;
 use std::sync::Mutex;
+use vstd::prelude::Tracked;
 
 const NSLOTS: usize = 2;
 
@@ -122,15 +126,33 @@ impl Table {
     fn hand_out(&self) {
         self.bitmap().init(NSLOTS);
         self.owner.store(ARENA, Ordering::Relaxed);
-        self.committed.store(1, Ordering::Release);
-        self.mirror.store(1, Ordering::Release);
+        atom::store_usize(&self.committed, 1, Ordering::Release, Tracked::assume_new());
+        // SAFETY: `mirror` is a live atomic in the leaked table.
+        unsafe {
+            atom::store_usize_at(
+                atom::usize_ptr(&self.mirror),
+                1,
+                Ordering::Release,
+                Tracked::assume_new(),
+            )
+        }
+    }
+
+    /// `SlabTable::committed_slabs` (`load_usize_seen`) for an `Acquire`
+    /// load, else `SlabTable::watermark` (`load_usize`).
+    fn watermark(&self, order: Ordering) -> usize {
+        if order == Ordering::Acquire {
+            vspec::load_usize_seen(&self.committed, order)
+        } else {
+            atom::load_usize(&self.committed, order, Tracked::assume_new())
+        }
     }
 
     /// A claim of one slot of a slab found through `committed_slabs()`,
     /// whose load is `order` (`Acquire` as shipped);
     /// `None` when the slab is not handed out yet or no slot is clear.
     fn claim(&self, order: Ordering) -> Option<usize> {
-        if self.committed.load(order) == 0 {
+        if self.watermark(order) == 0 {
             return None;
         }
         let (w, bits) = self.bitmap().claim_from(0, 1)?;
@@ -158,17 +180,20 @@ impl Table {
         let slab = 0;
         // `ClassLine::set_slab`'s watermark copy (`load_mirror`); below
         // the slab, the slow path's `check_live` reads the table's.
-        let lagged = slab >= self.mirror.load(Ordering::Relaxed);
-        if lagged && slab >= self.committed.load(Ordering::Relaxed) {
+        let lagged =
+            slab >= atom::load_usize(&self.mirror, Ordering::Relaxed, Tracked::assume_new());
+        if lagged && slab >= self.watermark(Ordering::Relaxed) {
             return Out::NeverCommitted;
         }
         // `bit_word`.
-        let x = self.words[0].load(Ordering::Relaxed);
+        let x = word::load(&self.words[0], Ordering::Relaxed, Tracked::assume_new());
         if (x >> slot) & 1 != 1 {
             return Out::NotLive;
         }
         // `ClassLine::owner` (`owner_from`, `load_owner`).
-        let owner = self.owner.load(Ordering::Relaxed);
+        // SAFETY: the owner word is a live atomic in the leaked table.
+        let owner =
+            unsafe { atom::load_u16_at(&self.owner, Ordering::Relaxed, Tracked::assume_new()) };
         if owner != ARENA {
             return Out::Misrouted(owner);
         }
@@ -225,7 +250,7 @@ fn run(
 /// table), and its writes to the block do not race with the allocating
 /// thread's.
 ///
-/// Covers copies of `table::store_owner` (`src/class/table.rs`),
+/// Covers a copy of `table::store_owner` (`src/class/table.rs`) and runs
 /// `vspec::atom::store_usize`, `vspec::atom::store_usize_at`,
 /// `vspec::atom::load_usize`, `vspec::atom::load_usize_seen` and
 /// `vspec::atom::load_u16_at` (`vspec/atom.rs`) and `vspec::word::load`
@@ -256,7 +281,7 @@ fn loom_free_after_synchronised_handoff() {
 /// too). The free does not touch the block here (that would be a reported
 /// race).
 ///
-/// Covers copies of `vspec::atom::load_usize`,
+/// Runs `vspec::atom::load_usize`,
 /// `vspec::atom::load_usize_seen` and `vspec::atom::load_u16_at`
 /// (`vspec/atom.rs`) and `vspec::word::load` (`vspec/word.rs`).
 #[test]

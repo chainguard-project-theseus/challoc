@@ -55,5 +55,6 @@ verify = true
 [lints.rust]
 # Verus sets `verus_keep_ghost` while verifying (`verus/README.md`), and
 # Kani sets `kani` for its harnesses (`src/kani/` and the `kani_*`
-# modules of other files).
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)", "cfg(kani)"] }
+# modules of other files). The loom crate (`tests/loom`) sets `loom` when
+# it compiles the `vspec` atomic wrappers (`src/sync.rs`).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)", "cfg(kani)", "cfg(loom)"] }

@@ -2,8 +2,8 @@
 //! `Arenas::count`, `Arenas::table`), a copy of the `Arenas` steps that
 //! touch them through `vspec/count.rs`'s wrappers (`store`, `load`, over
 //! the `AtomicU32` count) and `vspec/entry.rs`'s (`store`, `load`, over
-//! the `AtomicPtr` entries), each the bare `core` operation with the
-//! caller's ordering:
+//! the `AtomicPtr` entries), which run here as they are, over loom's
+//! atomics (`crate::vspec`), with the steps' orderings:
 //!
 //! - [`Arenas::create`] is `Arenas::create`: under the creation lock (the
 //!   copy of `RawLock`; the lock's value, the next index `n`, a loom
@@ -37,11 +37,13 @@
 //! `Arenas::init`'s count, written before the registry is published.
 
 use crate::lock::RawLock;
+use crate::vspec::{count, entry};
 use crate::{leak, model};
 use core::ptr;
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use loom::thread;
+use vstd::prelude::Tracked;
 
 /// `MAX_ARENAS` for the model.
 const MAX_ARENAS: u32 = 3;
@@ -94,12 +96,12 @@ impl Arenas {
     /// `get_frozen`, and `iter`, test code; `assign`'s load is `Relaxed` and
     /// only feeds its key: `count.rs`).
     fn entry(&self, i: usize) -> *mut u64 {
-        self.table[i].load(Ordering::Acquire)
+        entry::load(&self.table[i], Ordering::Acquire, Tracked::assume_new())
     }
 
     /// `Arenas::count`.
     fn count(&self) -> u32 {
-        self.count.load(Ordering::Acquire)
+        count::load(&self.count, Ordering::Acquire, Tracked::assume_new())
     }
 
     /// `Arenas::create`.
@@ -130,10 +132,15 @@ impl Arenas {
         let i = index as usize;
         // SAFETY: entry `i` is not published yet.
         self.fields[i].with_mut(|p| unsafe { *p = u64::from(index) + 1 });
-        self.table[i].store(ptr::dangling_mut(), self.entry_order);
+        entry::store(
+            &self.table[i],
+            ptr::dangling_mut(),
+            self.entry_order,
+            Tracked::assume_new(),
+        );
         // SAFETY: under the lock.
         self.next.with_mut(|p| unsafe { *p = index + 1 });
-        self.count.store(index + 1, self.publish);
+        count::store(&self.count, index + 1, self.publish, Tracked::assume_new());
         self.lock.unlock();
         Some(index)
     }
@@ -198,7 +205,7 @@ fn run(publish: Ordering, entry_order: Ordering) {
 
 /// The shipped orderings.
 ///
-/// Covers copies of `vspec::count::store`, `vspec::count::load`,
+/// Runs `vspec::count::store`, `vspec::count::load`,
 /// `vspec::entry::store` and `vspec::entry::load`.
 #[test]
 fn loom_narenas_create_publishes() {

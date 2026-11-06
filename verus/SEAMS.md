@@ -222,8 +222,13 @@ rows equal the original's but for the `-only` ones.
 A model runs a copy of the code it checks (challoc's statics are built
 in `const` context, which loom cannot construct;
 `tests/loom/tests/pins.rs` keeps the copied lines in place), not the
-item's own body, so a seam that cites one is at most partly checked, and
-`seams.sh --check` fails on a "discharged" status that cites `loom:`. It
+item's own body. The exception is the `vspec` atomic wrappers, whose own
+bodies the models run over loom's atomics (`src/sync.rs`), inside copies
+of their callers' steps. Either way loom models only part of C11 (stale
+`Relaxed` and `Acquire` loads within a bounded store history, and no
+load buffering, `verus/WEAKMEM.md`), so a seam that cites one is at most
+partly checked, and `seams.sh --check` fails on a "discharged" status
+that cites `loom:`. It
 also fails unless the model is no `#[should_panic]` control, its doc
 comment or body names the seam's function in backquotes (`Type::fn` for
 a method, else `m::fn` with `m` the source file's module, after any

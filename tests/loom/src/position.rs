@@ -1,7 +1,7 @@
 //! The policy's position (`src/policy.rs`, `Policy::scaled16`), a copy of
 //! the `Policy` steps that touch it through `vspec/count.rs`'s wrappers
-//! (`swap`, `load`, each the bare `core` operation with the caller's
-//! ordering), with their orderings (both `Relaxed`):
+//! (`swap`, `load`), which run here as they are, over loom's `AtomicU32`
+//! (`crate::vspec`), with the steps' orderings (both `Relaxed`):
 //!
 //! - [`Policy::apply`] is the position's step of `Policy::apply`:
 //!   `count::swap` of one more than the band's position (0 outside the
@@ -18,9 +18,11 @@
 //! modification order (what `changed` compares). Left out: the other
 //! fields `apply` writes, each its own `Relaxed` atomic.
 
+use crate::vspec::count;
 use crate::{leak, model};
 use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
+use vstd::prelude::Tracked;
 
 /// `policy::FRAC_ONE`.
 const FRAC_ONE: u32 = 0x1_0000;
@@ -50,7 +52,7 @@ impl Policy {
 
     /// `Policy::position`.
     fn position(&self) -> u32 {
-        self.scaled16.load(Ordering::Relaxed)
+        count::load(&self.scaled16, Ordering::Relaxed, Tracked::assume_new())
     }
 
     /// `Policy::apply`'s swap of the position: the previous value.
@@ -60,7 +62,12 @@ impl Policy {
             self.scaled16.store(scaled, Ordering::Relaxed);
             prev
         } else {
-            self.scaled16.swap(scaled, Ordering::Relaxed)
+            count::swap(
+                &self.scaled16,
+                scaled,
+                Ordering::Relaxed,
+                Tracked::assume_new(),
+            )
         }
     }
 }
@@ -91,7 +98,7 @@ fn run(split: bool) {
 
 /// The shipped code: one atomic swap.
 ///
-/// Covers copies of `vspec::count::swap` and `vspec::count::load`.
+/// Runs `vspec::count::swap` and `vspec::count::load`.
 #[test]
 fn loom_position_apply_swaps() {
     run(false);
