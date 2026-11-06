@@ -5,9 +5,11 @@
 #
 # What it does:
 #   1. builds libchalloc.so at QUANTUM (default 8, the lg_quantum=3
-#      size-class geometry of Redis's bundled jemalloc; Redis itself asserts
-#      nothing about the quantum, so QUANTUM=16, the system challoc's, works
-#      too) and stages it with scripts/install.sh, the way challoc-dev
+#      size-class geometry of Redis's bundled jemalloc; QUANTUM=16, the
+#      system challoc's, works too, but one test, unit/type/string's
+#      "Check MEMORY USAGE for embedded key strings with jemalloc", asserts
+#      jemalloc's 40-byte class, which quantum16 does not have, and is
+#      skipped there) and stages it with scripts/install.sh, the way challoc-dev
 #      installs it: lib/libchalloc.so.0, include/challoc/*.h and
 #      lib/pkgconfig/challoc.pc under target/redis/challoc-q<QUANTUM>;
 #   2. clones Redis at REDIS_TAG into target/redis/src-<tag>, checks the
@@ -194,11 +196,17 @@ run_tests() { # name, flags...
         return 1
     fi
 }
+# The tests that assert jemalloc's lg_quantum=3 size classes, skipped at
+# QUANTUM=16: unit/type/string's MEMORY USAGE / DEBUG SDSLEN test expects
+# 33- and 40-byte kvobjs in jemalloc's 40-byte class, which quantum16 rounds
+# to 48.
+set --
+[ "$QUANTUM" = 16 ] && set -- --skiptest "Check MEMORY USAGE for embedded key strings with jemalloc"
 rc=0
 if [ "$STAGE" = memefficiency ] || [ "$STAGE" = all ]; then
     run_tests memefficiency --single unit/memefficiency || rc=1
 fi
 if [ "$STAGE" = full ] || [ "$STAGE" = all ]; then
-    run_tests full || rc=1
+    run_tests full "$@" || rc=1
 fi
 exit $rc

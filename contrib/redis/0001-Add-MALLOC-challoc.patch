@@ -35,9 +35,12 @@ patch 3/3 is an upstream bug fix the test suite needs.
 Build, with challoc-dev installed:
        make MALLOC=challoc BUILD_TLS=yes
 An install outside the default paths: PKG_CONFIG_PATH=<libdir>/pkgconfig
-and LDFLAGS="-Wl,-rpath,<libdir>". Redis asserts nothing about the
-allocator's quantum: the system challoc (quantum16) works, and challoc's
-quantum8 build matches the bundled jemalloc's lg_quantum=3 size classes.
+and LDFLAGS="-Wl,-rpath,<libdir>". challoc's quantum8 build matches the
+bundled jemalloc's lg_quantum=3 size classes. The system challoc
+(quantum16) works too, except for one test that asserts those classes:
+"Check MEMORY USAGE for embedded key strings with jemalloc" in
+tests/unit/type/string.tcl expects jemalloc's 40-byte class, which
+quantum16 rounds up to 48.
 ---
  src/Makefile  | 29 +++++++++++++++++++++++++++++
  src/zmalloc.h | 12 ++++++++++++

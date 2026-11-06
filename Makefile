@@ -236,8 +236,11 @@ valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TE
 valkey: image ## build challoc (quantum8) and Valkey at Wolfi's tag with contrib/valkey/000{1,2}-*.patch, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
 	$(DOCKER_RUN) sh tests/consumers/valkey-build.sh
 
-redis: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
-redis: image ## build challoc (quantum8) and Redis 8.10 with the contrib/redis/0*.patch series, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
+# QUANTUM is forwarded only when set on the command line or in the
+# environment: redis-build.sh defaults to 8, the Makefile's QUANTUM to 16.
+REDIS_VARS = STAGE TEST_FLAGS REDIS_TAG REDIS_COMMIT JOBS
+redis: DOCKER_FLAGS = $(call env_flags,$(REDIS_VARS)) $(if $(filter-out file,$(origin QUANTUM)),-e QUANTUM="$(QUANTUM)")
+redis: image ## build challoc (QUANTUM=8|16, default 8) and Redis 8.10 with the contrib/redis/0*.patch series, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
 	$(DOCKER_RUN) sh tests/consumers/redis-build.sh
 
 RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY OPENSSL_TAG OPENSSL_COMMIT RUBY_GEMS_CA RUBY_TEST_EXCLUDE RUBY_TEST_EXCLUDE_EXTRA
