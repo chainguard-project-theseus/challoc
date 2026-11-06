@@ -19,8 +19,9 @@ and not run.
 
 ## Inventory
 
-378 lines of shipped source carry an `Ordering::` (`grep` over `src/`,
+380 lines of shipped source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/kani/`, `src/model/`,
+`src/heap/tlscheck.rs` (built only with `cfg(challoc_tls_check)`),
 inline `#[cfg(test)]` and `#[cfg(kani)]` modules, and comment lines).
 Files that pass an ordering through an imported name or a `vspec`
 wrapper argument are not in this count.
@@ -45,7 +46,7 @@ a compiler barrier.
 | `lock.rs` | 12 | the lock word; the fork window's record (`FORK_PID`, `FORK_HOLDER`), `Relaxed` |
 | `heap/slotstate.rs` | 11 | `double_free_scan`'s per-slot state byte |
 | `huge/mod.rs`, `bitmap.rs` | 9, 9 | `retain_max`, `purge_on_free`; `&[AtomicU64]` words |
-| `heap/tcaches.rs` | 5 | `[AtomicPtr<u8>; 1024]` |
+| `heap/tcaches.rs` | 6 | `[AtomicPtr<u8>; 1024]` |
 | `heap/shared.rs` | 4 | `free_flags`; the class lines' watermark copies, read through `class::load_mirror` |
 
 ## Protocols that matter
