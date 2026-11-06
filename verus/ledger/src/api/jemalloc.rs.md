@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `Hook` | ext_type_spec | function pointer | Kani | trusted |
 | `message_hook` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
-| `call_hook` | external_body | function pointer | Kani | trusted |
+| `call_hook` | external_body | function pointer | Kani | discharged |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
 ## `Hook`
@@ -39,7 +39,7 @@ pub fn message_hook() -> Option<Hook>
 ## `call_hook`
 
 src/api/jemalloc.rs:145. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged on premises (Kani: api::jemalloc::kani_hook::call_hook_calls_once; premises: C1 (the program stores only null or a hook function in the two slots), C3 (the program's hook keeps the C allocation contract)).
 
 > `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc calls it, on the C string in `buf`, which holds a NUL.
 
