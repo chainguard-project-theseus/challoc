@@ -61,7 +61,7 @@ class Variant:
     def lib_for(self, features: str) -> tuple[str, str]:
         """(lib, sha256) of the build a row with these features needs; a
         stock allocator has one library whatever the row asks."""
-        if not features or self.spec.kind != "challoc":
+        if self.spec.kind != "challoc" or not (features or self.spec.features):
             return self.lib, self.sha256
         if features not in self.extra:
             raise BuildError(f"{self.label}: no build with features {features!r}")
@@ -106,6 +106,16 @@ def sha256_file(path: str) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def merge_features(row: str, variant: str) -> str:
+    """The features of a variant's build for a row: the row's plus the
+    variant's, a quantum feature of the variant replacing the row's."""
+    vs = [f for f in variant.replace(" ", ",").split(",") if f]
+    rs = [f for f in row.replace(" ", ",").split(",") if f]
+    if any(f.startswith("quantum") for f in vs):
+        rs = [f for f in rs if not f.startswith("quantum")]
+    return ",".join(dict.fromkeys(rs + vs))
 
 
 def cargo_feature_args(features: str) -> list[str]:
@@ -205,14 +215,15 @@ def prepare(root: str, specs: list[VariantSpec], work: str, values: dict[str, st
     codegen unit, so one build leaves most CPUs idle); labels of one tree
     share the first build."""
     out = _prepare(root, specs, work, values, log)
-    for fs in sorted({f for f in features or [] if f}):
-        done: dict[str, tuple[str, str]] = {}
+    done: dict[tuple[str, str], tuple[str, str]] = {}
+    for fs in sorted({f for f in features or [] if f} | {""}):
         for v in out:
-            if v.spec.kind != "challoc":
+            if v.spec.kind != "challoc" or not (fs or v.spec.features):
                 continue
-            key = v.tree or v.spec.source
+            eff = merge_features(fs, v.spec.features)
+            key = (v.tree or v.spec.source, eff)
             if key not in done:
-                b = build_challoc(root, v.spec, work, log, features=fs)
+                b = build_challoc(root, v.spec, work, log, features=eff)
                 done[key] = (b.lib, b.sha256)
             v.extra[fs] = done[key]
     return out
@@ -255,6 +266,8 @@ def identity_notes(variants: list[Variant]) -> list[str]:
     ch = [v for v in variants if v.spec.kind == "challoc"]
     for i, a in enumerate(ch):
         for b in ch[i + 1 :]:
+            if a.spec.features != b.spec.features:
+                continue
             if a.tree == b.tree and a.sha256 != b.sha256:
                 notes.append(f"WARNING: {a.label} and {b.label} are one tree but the .so files differ: nondeterministic build?")
             elif a.tree != b.tree and a.sha256 == b.sha256:

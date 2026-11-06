@@ -109,6 +109,18 @@ class Variants(unittest.TestCase):
         with self.assertRaises(spec.SpecError):
             parse_variant("nope", refs)
 
+    def test_features(self):
+        from cb.variants import merge_features
+
+        refs = {"base": "origin/main", "head": "HEAD"}
+        v = parse_variant("q16=head@a:b+knob:thp=never+features:quantum16", refs)
+        self.assertEqual((v.source, v.conf, v.knobs, v.features), ("HEAD", "a:b", {"thp": "never"}, "quantum16"))
+        with self.assertRaises(spec.SpecError):
+            parse_variant("jemalloc+features:quantum16", refs)
+        self.assertEqual(merge_features("quantum8", "quantum16"), "quantum16")
+        self.assertEqual(merge_features("jemalloc-soname", "quantum8"), "jemalloc-soname,quantum8")
+        self.assertEqual(merge_features("quantum8", ""), "quantum8")
+
     def test_can_run(self):
         refs = {"base": "b", "head": "h"}
         self.assertTrue(parse_variant("head", refs).can_run(["challoc", "mallctl"]))

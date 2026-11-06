@@ -285,7 +285,7 @@ def execute(args) -> int:
     if launch is not None:
         only = set(vm_entry.get("variants") or [])
         specs = [
-            VariantSpec(v["label"], v["kind"], v["source"], v.get("conf", ""), v.get("role", "variant"), dict(v.get("knobs") or {}))
+            VariantSpec(v["label"], v["kind"], v["source"], v.get("conf", ""), v.get("role", "variant"), dict(v.get("knobs") or {}), v.get("features", ""))
             for v in launch["variants"]
             if not only or v["label"] in only
         ]
