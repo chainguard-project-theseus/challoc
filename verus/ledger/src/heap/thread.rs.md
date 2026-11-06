@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `HeapPerm` | external_body type | allocator invariant | none (assumption) | trusted |
-| `HeapPer...semble` | axiom | allocator invariant | none (assumption) | trusted |
+| `HeapPerm::assemble` | axiom | allocator invariant | Kani | trusted |
 | `slot_heap_ref` | external_body | raw pointer (internal) | none (assumption) | trusted |
 
 ## `HeapPerm`
@@ -26,8 +26,8 @@ pub tracked struct HeapPerm
 
 ## `HeapPerm::assemble`
 
-src/heap/thread.rs:160. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+src/heap/thread.rs:164. Kind: axiom. Category: allocator invariant.
+Tool: Kani. Status: trusted (partly checked, Kani: heap::fresh::kani_assemble::writers_store_the_assembled_fields; not checked: any order of the writers but `Heap::create`'s, the one the harness runs; the join itself, that the token's raw permission to the head and `perms`' home headers stand for the whole-heap permission, a premise of Verus's own model that no tool checks; that nothing else writes those fields between the writers and the axiom, which the token's linear permission gives verified code; and the provenance of `shared`, which Kani does not observe).
 
 > The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the field writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound` and `mark_rehome`, verified), and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)).
 
@@ -49,7 +49,7 @@ pub(super) axiom fn assemble(tracked s: &super::FreshHeap, tracked perms: &super
 
 ## `slot_heap_ref`
 
-src/heap/thread.rs:212. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:216. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The heap whose permission the heap loan holds, at `h`, as a reference, for as long as the loan is lent.

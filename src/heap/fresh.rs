@@ -392,3 +392,89 @@ impl<T: Unpin> IsUnpin<T> {
 }
 
 const _: () = assert!(!IsUnpin::<Heap>::VALUE);
+
+/// Kani check of the exec half of `heap::thread::HeapPerm::assemble`
+/// (`verus/ledger/src/heap/thread.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_assemble {
+    use super::{Heap, Shared, init_fields, mark_bound, mark_rehome};
+    use core::mem::{MaybeUninit, size_of};
+    use vstd::prelude::Tracked;
+
+    /// The `Shared` the harness hands `init_fields`, all zero. A static's
+    /// value must be valid for its type, which const evaluation checks, so
+    /// this builds only while every field of `Shared` is valid all-zero.
+    // SAFETY: const evaluation rejects an all-zero `Shared` that is not a
+    // valid value.
+    static ZERO_SHARED: Shared = unsafe { core::mem::zeroed() };
+
+    /// `tid` for the harness: any thread id.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    fn any_tid() -> u32 {
+        kani::any()
+    }
+
+    /// `now_ns` for the harness: any time.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    fn any_ns() -> u64 {
+        kani::any()
+    }
+
+    /// `HeapPerm::assemble` at its one call, `tcaches::heap_new`, whose one
+    /// caller, `heap::thread::create_heap_for_thread`, gets the token from
+    /// `Heap::create`: `Heap::create_detached` runs `init_fields`, then
+    /// `Heap::create` runs `mark_bound` and `mark_rehome`. The axiom
+    /// states that the heap at `s.heap()` has a null `others` and the
+    /// `arena`, `bound` and `shared` the token records, which are what
+    /// those writers stored: the `arena` given, `bound` `true`, and
+    /// `shared` the pointer `api::shared_ptr` gives (`Shared::storage()`).
+    /// The writers are called only there and here, and `heap_new` only
+    /// there (`crate::tests::assembled_writes_only_at_checked_sites`). The
+    /// harness runs the three writers in that order, the only one it
+    /// checks, for any `arena`, on storage of a `Heap`'s size and
+    /// alignment holding arbitrary bytes, so a field the writers do not
+    /// store keeps them. It hands `init_fields` a `Shared` of its own
+    /// (`ZERO_SHARED`), not the process's: outside `cfg(test)`
+    /// `heap::paths::shared_ptr` reads nothing of the one it is given and
+    /// returns `api::shared_ptr()`, so the stored `shared` must still be
+    /// that pointer. It reads those four fields of the `Heap` there,
+    /// each by its own place. Kani checks that every store is inside the
+    /// storage. `tid` and `now_ns`, system calls whose values the axiom
+    /// does not state, return any value. Not checked: the join itself
+    /// (that the token's raw permission to the head and `perms`' home
+    /// headers stand for a permission to the whole `Heap`), a premise of
+    /// Verus's own model; that nothing else writes those fields between
+    /// the writers and the axiom, which the token's linear permission gives
+    /// verified code; the heap's other fields and its ghost fields, which
+    /// the axiom claims nothing of; and the provenance of `shared`, which
+    /// Kani does not observe (the harness compares addresses).
+    #[kani::proof]
+    #[kani::stub(crate::heap::shared::tid, any_tid)]
+    #[kani::stub(crate::heap::shared::now_ns, any_ns)]
+    fn writers_store_the_assembled_fields() {
+        let mut slot = MaybeUninit::<Heap>::uninit();
+        let h = slot.as_mut_ptr();
+        // SAFETY: `h` is the slot's storage, of `size_of::<Heap>()` bytes,
+        // and a byte array has alignment 1.
+        unsafe { h.cast::<[u8; size_of::<Heap>()]>().write(kani::any()) };
+        let arena: u16 = kani::any();
+        let sp = crate::api::shared_ptr();
+        // SAFETY: the slot is a fresh, exclusively owned block of a
+        // `Heap`'s size and alignment. `ZERO_SHARED` need not be `wf()`:
+        // outside `cfg(test)` `heap::paths::shared_ptr` reads none of it.
+        let _s = unsafe { init_fields(h, &ZERO_SHARED, arena, Tracked::assume_new()) };
+        // SAFETY: as above.
+        unsafe { mark_bound(h, Tracked::assume_new()) };
+        // SAFETY: as above; `bound` is stored.
+        unsafe { mark_rehome(h, Tracked::assume_new()) };
+        // SAFETY: each a field of the slot, read by its place: the
+        // writers stored all four (`bound` as a `bool`), so each holds a
+        // value of its type, whatever the arbitrary bytes were.
+        let (others, at, b, s) = unsafe { ((*h).others, (*h).arena, (*h).bound, (*h).shared) };
+        assert!(others.is_null());
+        assert_eq!(at, arena);
+        assert!(b);
+        assert!(s == sp);
+    }
+}
