@@ -304,7 +304,8 @@ the call does not return (theorem 3, which is not voided for it).
   and `homed_ok` (the arena ticket); also `ready()` and that
   its `shared` field is the process's `Shared` at its storage.
 - Assumed by `tcaches::heap_at` (`heap/tcaches.rs`, with its home
-  headers at the pointer, `Heap::home_at`, and its
+  headers at the pointer and the rest of its block with the block's
+  claim in `Heap::head`, `Heap::home_at`, and its
   nodes' block permissions and claims, `others::block_ok`;
   `external_body`; it also takes the caller's `HeapUse` token,
   which `heap::tcaches::axiom_heap_use`, `heap/tcaches.rs`, mints
@@ -335,7 +336,9 @@ the call does not return (theorem 3, which is not voided for it).
   included (`mark_bound`, `mark_rehome`, `heap/fresh.rs`, and
   `init_fields` are verified): `Heap::create` (`heap/mod.rs`),
   `create_detached`. Teardown, `destroy`, is verified
-  (its heap block over `heap::axiom_heap_block`).
+  (its heap block from the ghost state of the heap `tcaches::heap_at`
+  hands it: `Heap::head` and the home headers' permissions; creation
+  puts a thread heap's head and claim there, `tcaches::heap_new`).
 - No writer escapes the permissions: `Heap::set_arena`
   (`heap/mod.rs`) swaps the home headers through their permissions
   and ensures `wf`; `Heap::free_caches` writes a bare array and
@@ -1014,7 +1017,8 @@ the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
   `Heap::destroy` (verified) gives back the claims
   of what it frees from the heap's ghost state (the stacks' from
   `CachePerms::blocks`, the nodes' from `Heap::heads`) and the heap
-  block's from its home headers' permissions (`heap::axiom_heap_block`).
+  block's from `Heap::head` (`Heap::home_at`, which `tcaches::heap_at`
+  assumes).
 - `Shared::put_head` and `put_table` store what they are given
   (common premise); `SlabTable::new` (`class/table.rs`) proves
   `meta_ok` from the reservations `Meta::reserve_table` (`meta.rs`)
@@ -6444,35 +6448,38 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   128 bytes of plain fields (`head()`, `heap_head`) and records what
   the field writers stored in `shared`, `arena` and `bound`. `init_fields`
   (verified) takes the head permission that `create_detached`
-  splits off the heap's block (with the block's `MetaClaim`, which it
-  drops), stores the fields through permissions carved from it (one
-  per field up to `last_gc`, then one `HeadRest` for the rest, so the
-  stores keep their alignment and machine code), forgets the values
+  splits off the heap's block (with the block's `MetaClaim`, which the
+  token keeps, `FreshHeap::claim`), stores the fields through
+  permissions carved from it (one per field up to `last_gc`, then one
+  `HeadRest` for the rest, so the stores keep their alignment and machine code), forgets the values
   and returns the token holding the permission, with `shared`, `arena` and
   `bound` set to what it stored (`shared` is `shared_ptr`'s, at
   `Shared::storage`). That the token's `shared`, `arena` and `bound`
   are the fields' values is not a Verus fact: the token's fields are
   private to `heap::fresh` (`init_fields`'s module), so nothing else
-  builds, takes apart or changes one but `mark_bound` (and
-  `mark_rehome`, which stores `rehome` through the token's permission
-  and keeps what the token records), both verified.
+  builds one, takes one apart but `FreshHeap::into_block` (which
+  returns exactly `head()` and `claim()`), or changes one but
+  `mark_bound` (and `mark_rehome`, which stores `rehome` through the
+  token's permission and keeps what the token records), all verified.
   `mark_bound` (`heap/fresh.rs`) needs the permission and hands back
   one to the same bytes (`heap_head`), and records `bound` (its body
   stores `true` there through a permission carved from
   the token's); `tcaches::heap_new`
-  (`heap/tcaches.rs`) uses the token up (through
-  `HeapPerm::assemble`, below), giving the permission to the heap's,
-  whose `others`, `shared`, `arena` and `bound` are what it records.
+  (`heap/tcaches.rs`) gives the heap's permission from it
+  (`HeapPerm::assemble`, below, which borrows it), whose `others`,
+  `shared`, `arena` and `bound` are what it records, then uses it up:
+  `FreshHeap::into_block` moves its permission and claim into
+  `Heap::head`.
   `create_detached` and `create` pass it on. The token carries the
   bare `PointsToRaw`, so one linear object, not two, stands for the
   fresh heap.
-  A token is valid while its heap is live: `destroy` does not take it,
-  so one kept past `destroy` would be stale for a later heap in the same
-  block; no code keeps one (`create_heap_for_thread` uses it right after
-  `create`, `Tcaches::create` drops it). `heap_new` is
-  verified: the token is used up by the trusted
-  `thread::HeapPerm::assemble`, which makes the heap's linear permission
-  with those claims (and, from `FreshHeap::shared`, that its `shared`
+  No code keeps a token past creation: `create_heap_for_thread` uses it
+  right after `create` (or drops it when the thread key cannot be set),
+  and `Tcaches::create` drops it. `destroy` frees the block from
+  `Heap::head`, not from a token. `heap_new` is verified: it calls the
+  trusted `thread::HeapPerm::assemble` once (pinned by
+  `tests::trusted_mint_sites_are_pinned`), which makes the heap's
+  linear permission with those claims (and, from `FreshHeap::shared`, that its `shared`
   field is the process's `Shared`), and `heap_new` puts it in the
   thread's slot token and borrows the heap from there.
 - `Heap::destroy` (verified; it takes a `tcaches::HeapUse` token and
@@ -10127,8 +10134,8 @@ alone):
 - I7: theorem 10 (`Heap::flush_all`): the flush
   `destroy` runs first empties every home and node header and appends
   exactly what they held to the released log, each slot's token handed
-  to `release_routed` with it. `destroy` itself is verified (its heap block over
-  `heap::axiom_heap_block`), section
+  to `release_routed` with it. `destroy` itself is verified (its heap block from
+  `Heap::head`, which `tcaches::heap_at` assumes), section
   10's "weaker" list applies, and that every heap gets a destructor is
   not proved (with an invalid thread key none does), hence `p`.
 

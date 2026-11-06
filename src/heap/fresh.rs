@@ -28,18 +28,23 @@ verus! {
 /// permission, made by [`init_fields`] once per heap. That `shared`,
 /// `arena` and `bound` are what the heap's fields hold is not a fact
 /// Verus checks (the permission forgets the values): `init_fields` sets
-/// them to what it stores, and nothing else builds or takes one apart (its
-/// fields are private to this module) or changes what it records but
-/// `mark_bound`, which records its store of `bound` in it. [`mark_rehome`]
+/// them to what it stores, and nothing else builds one (its fields are
+/// private to this module), takes one apart but [`FreshHeap::into_block`]
+/// (verified, it returns exactly `head()` and `claim()`), or changes what
+/// it records but `mark_bound`, which records its store of `bound` in it. [`mark_rehome`]
 /// stores `rehome`, a field the token does not record, through the
-/// permission it holds, and keeps what it records.
-/// It is valid while its heap is live, and must be dropped before
-/// `destroy`, which gets the whole heap block back, head included.
-/// `Tcaches::create` drops it.
+/// permission it holds, and keeps what it records. It also holds the
+/// heap block's metadata claim ([`FreshHeap::claim`]), which
+/// [`init_fields`] is handed with the permission. The heap-head
+/// permission and the claim go into the heap's ghost state
+/// (`Heap::head`, [`FreshHeap::into_block`] at `tcaches::heap_new`),
+/// from which `Heap::destroy` frees the block. `Tcaches::create` drops
+/// the token instead, as it drops the cache permissions creation returns.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub(super) tracked struct FreshHeap {
     ghost heap: *mut Heap,
     tracked head: vstd::raw_ptr::PointsToRaw,
+    tracked claim: crate::meta::MetaClaim,
     ghost arena: vstd::prelude::int,
     ghost bound: bool,
     ghost shared: *const Shared,
@@ -70,6 +75,21 @@ impl FreshHeap {
     /// The `Shared` pointer [`init_fields`] stored in `shared`.
     pub(super) closed spec fn shared(&self) -> *const Shared {
         self.shared
+    }
+
+    /// The heap block's metadata claim the token holds.
+    pub(super) closed spec fn claim(&self) -> crate::meta::MetaClaim {
+        self.claim
+    }
+
+    /// The permission to the heap's plain fields and the block's claim,
+    /// out of the token, which is used up.
+    pub(super) proof fn into_block(tracked self) -> (tracked r: (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim))
+        ensures
+            r.0 == self.head(),
+            r.1 == self.claim(),
+    {
+        (self.head, self.claim)
     }
 }
 
@@ -163,9 +183,8 @@ unsafe fn put_head<T>(h: *mut Heap, off: usize, Tracked(raw): Tracked<&mut vstd:
 /// returned with what was stored in `shared`, `arena` and `bound`: the
 /// `shared` stored is the well-formed `&Shared` given, as a pointer, the
 /// one at [`Shared::storage`] ([`shared_ptr`]). `head.1` is
-/// the heap block's claim, which is dropped: `destroy` gets it back
-/// with the whole block. It comes along so that the permission travels
-/// with the same type as `Meta::alloc_raw`'s: every erased
+/// the heap block's claim, which goes into the [`FreshHeap`] too. The two
+/// travel as one pair, of the type `Meta::alloc_raw` returns: every erased
 /// `Tracked(..)` expression is a call to
 /// `Tracked::<T>::assume_new_fallback`, and rustc's MIR inliner gives up
 /// on a function from which more than 16 instances of it, by `T`, are
@@ -190,11 +209,12 @@ pub(super) unsafe fn init_fields(
         r@.arena() == arena as int,
         !r@.bound(),
         r@.shared() == Shared::storage() as *const Shared,
+        r@.claim() == head.1,
 {
     broadcast use vstd::layout::layout_of_primitives, vstd::layout::layout_of_references_and_pointers,
         vstd::layout::layout_of_references_and_pointers_for_sized_types;
 
-    let tracked (mut raw, _) = head;
+    let tracked (mut raw, claim) = head;
     let ghost base = h@.addr as int;
     proof {
         crate::vspec::ptr::axiom_raw_readable(&raw, h as *mut u8, 128);
@@ -229,7 +249,7 @@ pub(super) unsafe fn init_fields(
             },
         );
     }
-    Tracked(FreshHeap { heap: h, head: raw, arena: arena as int, bound: false, shared: sp })
+    Tracked(FreshHeap { heap: h, head: raw, claim, arena: arena as int, bound: false, shared: sp })
 }
 
 /// `(*h).bound = true` for a heap [`Heap::create`] has just made: a
@@ -249,6 +269,7 @@ pub(super) unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap
         final(s).arena() == old(s).arena(),
         final(s).bound(),
         final(s).shared() == old(s).shared(),
+        final(s).claim() == old(s).claim(),
 {
     broadcast use vstd::layout::layout_of_primitives;
 
@@ -286,6 +307,7 @@ pub(super) unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHea
         final(s).arena() == old(s).arena(),
         final(s).bound(),
         final(s).shared() == old(s).shared(),
+        final(s).claim() == old(s).claim(),
 {
     broadcast use vstd::layout::layout_of_primitives;
 

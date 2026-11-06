@@ -10,12 +10,11 @@ file.
 | `assert_flushed` | external_body | panic/abort | Kani | discharged |
 | `assert_refill_empty` | external_body | panic/abort | Kani | discharged |
 | `assert_rekey_flushed` | external_body | panic/abort | Kani | discharged |
-| `axiom_heap_block` | axiom | allocator invariant | Verus | trusted |
 | `Heap::a...latile` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 
 ## `assert_flushed`
 
-src/heap/mod.rs:4554. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4571. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
@@ -32,7 +31,7 @@ fn assert_flushed(len: &u32)
 
 ## `assert_refill_empty`
 
-src/heap/mod.rs:4575. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4592. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_refill_empty_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns.
@@ -49,7 +48,7 @@ fn assert_refill_empty(len: &u32)
 
 ## `assert_rekey_flushed`
 
-src/heap/mod.rs:4590. Kind: external_body. Category: panic/abort.
+src/heap/mod.rs:4607. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_rekey_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero).
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
@@ -64,32 +63,9 @@ fn assert_rekey_flushed(len: &u32)
         *len == 0,
 ```
 
-## `axiom_heap_block`
-
-src/heap/mod.rs:5475. Kind: axiom. Category: allocator invariant.
-Tool: Verus. Status: trusted.
-
-> The block of the heap `heap` at `h`, which `Heap::create` took from [`Meta::alloc_raw`](crate::meta::Meta::alloc_raw), for `Heap::destroy` to give back: the permission to the block's `size_of::<Heap>()` bytes and the block's claim, for the permissions to the heap's home headers (the run from `h + 128`, [`home_hdr`]), which this takes out of the heap's cache permissions `perms` and uses up.
-
-Hashes: contract 1630526878, body none.
-
-```rust
-axiom fn axiom_heap_block(h: *mut Heap, heap: Heap, tracked perms: &mut CachePerms) -> (tracked r: (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim))
-    requires
-        heap.wf(),
-        heap.home_at(h),
-        *old(perms) == heap.perms@,
-    ensures
-        *final(perms) == (CachePerms { hdrs: old(perms).hdrs.remove_keys(run_set(h@.addr + 128, h@.provenance, NCLASSES as int)), ..*old(perms) }),
-        r.0.is_range(h@.addr as int, vstd::layout::size_of::<Heap>() as int),
-        r.0.provenance() == h@.provenance,
-        r.1.held(crate::meta::process_live_id(), h as *mut u8, vstd::layout::size_of::<Heap>() as int, vstd::layout::align_of::<Heap>() as int),
-;
-```
-
 ## `Heap::arena_volatile`
 
-src/heap/mod.rs:7276. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:7284. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: heap::kani_volatile::arena_volatile_reads_arena).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.

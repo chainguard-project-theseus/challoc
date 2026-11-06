@@ -532,6 +532,21 @@ const SPECS: &[Spec] = &[
                 Checked,
                 "HomeWraps",
             ),
+            (
+                "&&& self.head@.0.is_range(h@.addr as int, 128)",
+                Ghost,
+                "the permission to the heap's plain fields",
+            ),
+            (
+                "&&& self.head@.0.provenance() == h@.provenance",
+                Ghost,
+                "the permission to the heap's plain fields",
+            ),
+            (
+                "&&& heap_claim(h, self.head@.1)",
+                Ghost,
+                "the heap block's metadata claim",
+            ),
         ],
     },
     // The definitions the checker computes with, pinned so that a change

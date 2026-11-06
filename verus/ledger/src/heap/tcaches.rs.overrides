@@ -9,8 +9,9 @@ axiom_tcaches_assemble	raw pointer (internal)	none (assumption)
 # heap's key destructor runs once: each call that reaches an existing
 # heap through `heap_at` makes one token, before any reference it lends.
 axiom_heap_use	C-program contract	none (assumption)
-# A raw-pointer dereference: a live heap from creation is well formed and
-# has its home headers at `p`. The reference borrows the caller's
+# A raw-pointer dereference: a live heap from creation is well formed,
+# has its home headers at `p` and keeps the rest of its block with the
+# block's claim (`Heap::head`). The reference borrows the caller's
 # `HeapUse` token, so one token gives one reference at a time; two
 # tokens rest on `axiom_heap_use`'s premise.
 heap_at	allocator invariant	none (assumption)
