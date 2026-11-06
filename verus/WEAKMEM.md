@@ -226,8 +226,22 @@ that lock orders the one store it must see (P2).
 
 loom runs a test body under every interleaving it can reach and models
 part of C11: stale `Relaxed` and `Acquire` loads within a bounded store
-history (**unconfirmed**: no load buffering). Its `UnsafeCell` reports
-data races, which is the check P1 needs for slot data.
+history. Its `UnsafeCell` reports data races, which is the check P1
+needs for slot data. Two limits, both run with stock loom 0.7.2 on the
+two shapes of `tests/genmc/litmus.rs` in a scratch crate that is not in
+the tree (so CI does not rerun the loom half), and reached by GenMC
+("GenMC"):
+
+- No load buffering. loom runs each load against stores already made,
+  so in the shape where each of two threads loads one atomic and then
+  stores the other, no load reads the other thread's later store: none
+  of its 15 executions has both loads read 1.
+- A store history of 7. loom keeps the last 7 stores of an atomic
+  (`MAX_ATOMIC_HISTORY` in loom 0.7.2's `src/rt/mod.rs`). When a thread
+  stores 1 to 8 to an atomic and then sets a `Relaxed` flag, a reader
+  that sees the flag never reads the first store in loom's 393
+  executions; with 3 stores it does (73 executions). No loom model here
+  stores one atomic more than 7 times.
 
 challoc's statics are built in `const` context, which loom's
 constructors cannot do, and some atomics are made from raw metadata
@@ -285,13 +299,85 @@ requests that change `tests/loom/` or the code that model copies.
 
 ### GenMC
 
-GenMC checks C and C++ programs under RC11 (and IMM) by exhaustive,
-stateless exploration with no bound on store history, so it finds weak
-behaviours that loom's bound can miss. It reads C through its own clang
-front end. Feeding it rustc's LLVM IR would need matching LLVM versions
-and a way to map Rust's atomics and the futex syscall onto GenMC's
-primitives (**unconfirmed**; not tried). No GenMC model of challoc
-exists, so every exhaustive weak-memory result here is loom's.
+GenMC (0.20.0, the `genmc` package, built against LLVM 22) explores a
+program's executions exhaustively and statelessly, with no bound on
+store history, under RC11 (its default), IMM (`--imm`) or ARMv8
+(`--arm8`). Its Rust mode compiles a `.rs` file with rustc, whose LLVM
+major version must be GenMC's (rust-1.99 is LLVM 22), links genmc-std
+as `std`, and interprets the LLVM IR, so `Relaxed`, `Acquire` and
+`Release` mean what rustc emits. A plain access racing another is a
+reported non-atomic race, which is the check P1 needs for slot data.
+
+`tests/genmc` holds the harnesses, one template per protocol, each a
+GenMC port of a loom model, and `tests/genmc/cases` lists the cases made
+from them (`run.sh` writes each as one file). As in the loom crate, the
+`vspec` wrappers are challoc's own: `prelude.rs`, through the loom
+crate's `tests/loom/src/vspec.rs`, compiles
+`src/vspec/{atom,byte,count,entry,flags,word}.rs` and `src/sync.rs`
+unchanged, without `cfg(loom)`, so they run over
+`core`'s atomics as in the release build. The steps around them are
+copies, as the loom models' are:
+
+- `flags.rs` (P5, `vspec::flags`): the dispatch byte, with one and two
+  builders.
+- `watermark.rs` (`vspec::atom`): the hand-out watermark and its copy,
+  with 2 and 3 slabs, and the copy's install racing two hand-outs (three
+  holders of the commit lock, which the loom model's comments call too
+  large to exhaust).
+- `count.rs` (`vspec::count`): the arena bound counts
+  (`bind`/`assign`/`unbind`, and `try_bind_idle` with and without a
+  rival).
+- `narenas.rs` (`vspec::count`, `vspec::entry`): the arena count and
+  table.
+- `slotstate.rs` (`vspec::byte`): two simultaneous frees of one slot.
+- `bitmap.rs` (P1, `vspec::word`): release then reserve, two claimers,
+  and `init`'s publication through the commit count.
+- `litmus.rs` (`vspec::count`): the two shapes of loom's limits above.
+
+Every case loom also runs has loom's controls (the `Release` stores made
+`Relaxed`, a read-modify-write split into a load and a store), each a
+`fail` case that must fail with its expected report. `sh
+tests/genmc/run.sh` runs every case under each model it names and
+checks each verdict: 70 runs, all as expected, in 42 to 44 s from a
+cold cargo cache (27 s of it the cases) on an 8-vCPU guest. Runs skip
+GenMC's random estimation pass (`--disable-estimation`), so each
+explores in the same order every time and reports the same error.
+Every shipped configuration passes under RC11; all but `narenas` and
+`bitmap_two_claimers` also pass under IMM, so they do not rely on the
+absence of load buffering, and six pass under ARMv8 as well (the cases
+file names the models of each). Under ARMv8 GenMC 0.20 did not report
+the race of `bitmap_relaxed_release` (that run passed), so the ARMv8
+runs are evidence for the harnesses' assertions, not for their race
+checks.
+The load-buffering shape's outcome is never reached under RC11, which
+forbids it, and is reached under IMM and ARMv8; the first of 8 stores
+is read after the flag under RC11 and IMM. The `genmc` check
+(`.chainguard/ci/genmc.yaml`) runs `run.sh` on pull requests that change
+the wrappers, `src/sync.rs`, the files the harnesses copy steps from,
+`Cargo.toml`, `tests/genmc/` or `tests/loom/src/vspec.rs`. GenMC found no bug in challoc. The seam ledger cites
+loom alone.
+
+What GenMC does not check here:
+
+- No futex. The harnesses take genmc-std's `Mutex` for the `RawLock`
+  copy, so they say nothing of P2, and P3's wake-up is not modelled.
+- P4's `Shared` publication: the loom model (`tests/loom/src/init.rs`)
+  copies `api/mod.rs`'s own functions, with no `vspec` wrapper, so a
+  GenMC port would be a copy through and through, and no source test
+  would tie it to the code.
+- No source test ties the harnesses' copied steps to the code, as
+  `tests/loom/tests/pins.rs` does for loom's.
+- `-Copt-level=1` only. At 0, GenMC 0.20 stops on rustc's IR (an
+  internal check in `PromoteMemIntrinsicPass`, or `Constant
+  unimplemented for type`); at 1, LLVM can hoist a plain read of a
+  static above the test that guards it, a race the source does not
+  have, so the harnesses' plain reads behind a flag test are volatile.
+- GenMC rejects mixed-size accesses and some heap accesses in racy
+  executions, so the harnesses keep their state in statics, one field
+  per access size.
+- The `narenas` cases and `bitmap_two_claimers` run under RC11 only:
+  under IMM and ARMv8, GenMC 0.20 stops on an internal check
+  (`allocInfoMap_`).
 
 ### The SC slab model
 
