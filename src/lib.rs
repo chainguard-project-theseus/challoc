@@ -218,10 +218,21 @@ mod tests {
     fn trusted_mint_sites_are_pinned() {
         type Sites = &'static [(&'static str, &'static str, usize)];
         const PINS: &[(&str, Sites)] = &[
-            // A destroyed heap's block (`heap::axiom_heap_block`).
+            // What a heap keeps of its own block (`heap::Heap::head`):
+            // installed at creation, taken out only to free the block.
             (
-                concat!("axiom_", "heap_block("),
+                concat!(".head", " = "),
+                &[("heap/tcaches.rs:", "pub(super) unsafe fn heap_new<", 1)],
+            ),
+            (
+                concat!(".head", ".borrow_mut()"),
                 &[("heap/mod.rs:", "pub unsafe fn destroy(", 1)],
+            ),
+            // A thread heap's permission (`heap::thread::HeapPerm::assemble`),
+            // made once per heap, from the creation token it borrows.
+            (
+                concat!("HeapPerm::", "assemble("),
+                &[("heap/tcaches.rs:", "pub(super) unsafe fn heap_new<", 1)],
             ),
             // Zero bytes for a fresh permission (`vspec::zero::ZeroRaw::axiom_new`).
             (

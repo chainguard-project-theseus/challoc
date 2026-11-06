@@ -129,7 +129,7 @@ pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
 
 ## `heap_at`
 
-src/heap/tcaches.rs:756. Kind: external_body. Category: allocator invariant.
+src/heap/tcaches.rs:764. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A heap [`Heap::create`] or [`Heap::create_detached`] returned and nothing has destroyed: an explicit cache's non-null table entry, or the heap `Heap::destroy` is handed.
