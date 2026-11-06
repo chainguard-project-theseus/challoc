@@ -7,7 +7,7 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `marker::PhantomPinned` | ext_type_spec | core library | Kani | trusted |
+| `marker:...Pinned` | ext_type_spec | core library | none (assumption) | trusted |
 | `PartialEqSpe...config::Thp` | spec_impl | core library | Kani | discharged |
 | `PartialEqSpe...:ThpSetting` | spec_impl | core library | Kani | discharged |
 | `PartialEqSpe...e::RunState` | spec_impl | core library | Kani | discharged |
@@ -24,7 +24,7 @@ file.
 ## `core::marker::PhantomPinned`
 
 src/vspec/misc.rs:19. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > `core::marker::PhantomPinned`, opaque: a zero-sized marker field of `heap::Heap` that makes it `!Unpin`.
 

@@ -1,5 +1,5 @@
 # Opaque wrapper of the program's `malloc_message` hook, a function pointer.
-Hook	function pointer	Kani
+Hook	function pointer	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 346261534, body none
 # The C caller hands over the block it frees under the entry point's contract.
 axiom_c_call	C-program contract	none (assumption)
 # The two volatile reads of the hook slots the C program writes: Kani runs

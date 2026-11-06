@@ -70,11 +70,13 @@ so is a seam with no category.
 
 The tool is a proposal. A seam's status stays "trusted" until the
 fourth column of its overrides line names another status, citing the
-other tool's result.
+other tool's result. The column may instead add a note to "trusted"
+that says the item claims nothing (the last paragraph of this section).
 
 A status that cites a check (discharged, discharged on premises, or
-trusted (partly checked, ...)) also records, in a fifth column, the
-hashes of the item the check covered, as its ledger entry shows them:
+trusted (partly checked, ...)), or says the item claims nothing, also
+records, in a fifth column, the hashes of the item the check covered
+(or of the item judged to claim nothing), as its ledger entry shows them:
 `contract C, body B`. `seams.sh --check` fails when they differ from
 the item's, so an edit to a checked seam's attributes, signature,
 `requires`, `ensures` or body fails the check, even after `--write`, until the
@@ -256,3 +258,45 @@ A trusted body whose `requires` Verus checks at every caller (no tool
 checks the body) keeps the status "trusted", with a note that names
 what the `requires` states and what it leaves out: `trusted (requires,
 checked at every caller: <what>; not checked: <what>)`.
+A seam whose item states nothing a check could test keeps the status
+"trusted", with a note that says so and why: `trusted (claims nothing:
+<why>)`. Only an opaque type (an `external_type_specification` or an
+`external_body` struct or enum) or an `external_body` constant may
+carry it: Verus sees no field, invariant or value of the item, only
+its name and type, and the facts verified code uses about it are the
+contracts of other seams, such as the `assume_specification`s of a
+type's methods, each with its own status. A function seam may not, since
+Verus assumes that its call returns. Nor may a type whose soundness
+rests on more than its own item: a ghost token that verified code relies
+on not being `Copy`, or a type with an `unsafe impl` of `Sync` or
+`Send`, which rustc does not check. Source comments also say "claims
+nothing" of a function with no `ensures`; that function still claims
+that its call returns, and its status is "trusted".
+The status is not a check: `verus/count` counts such a seam as trusted,
+and since only an `external_body`, `external_body proof` or `axiom` seam
+classes a function, none enters a coverage figure. `seams.sh --check`
+fails on the status for any other kind of seam. It fails for an item
+without `#[verifier::external_body]`. It fails for a contract with
+`requires`, `ensures`, `returns`, or a `_recursive_types` attribute (a
+fact about the type's definition). It fails for a status that cites a
+check, or that gives no reason, and for a proposed tool other than none
+(assumption), since no check applies. Of the two rules above for types,
+it enforces these forms: it fails for a `tracked` struct or enum, the
+form of this crate's ghost tokens, and it fails when a source file under
+`src/`, test files and test-only items included, has an `unsafe impl`
+of `Send` or `Sync` for a type with the seam's type name (the last
+segment of the specified type's path, without generic arguments, or the
+name of the item's own struct). It matches by name, so a type of the
+same name in another module also fails it, and it reads an impl only
+when its header, through the type's name, is on one line, as rustfmt
+writes it. It does not see the impls of a type from `core` or libc, such
+as `Layout`, `CStr`, `c_void` or `FILE`: they are in those crates,
+outside `src/`, and the orphan rule keeps this crate from adding one.
+It does not look at `Copy` or `Clone`: a type that is not `tracked`,
+such as `Hook`, which derives both, may still claim nothing. Review
+covers the rest: a ghost token in another form, or an `unsafe impl`
+whose header is split across lines or written by a macro. And, as for a status that cites a check,
+it fails when the item's hashes differ from the ones the status records,
+so an edit to the item fails until the status is revisited. The hashes
+cover the item itself: for a specification of a crate-local type (the
+`Ex` wrapper of a function-pointer type), not the type's own definition.

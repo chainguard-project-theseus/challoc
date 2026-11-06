@@ -12,3 +12,5 @@ Option::<T>::as_deref_mut	core library	Kani	discharged (Kani: kani_proofs::misc:
 str::as_ptr	core library	Kani	discharged (Kani: kani_proofs::misc::str_as_ptr)	contract 520286978, body none
 Option::<T>::or_else	core library	Kani	discharged (Kani: kani_proofs::misc::option_or_else)	contract 3760740912, body none
 core::hint::black_box	core library	Kani	discharged (Kani: kani_proofs::misc::hint_black_box)	contract 2369696214, body none
+# Opaque types, which claim nothing (verus/SEAMS.md, "Status").
+core::marker::PhantomPinned	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 2387976875, body none

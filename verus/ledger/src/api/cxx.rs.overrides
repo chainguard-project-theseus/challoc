@@ -1,5 +1,5 @@
 # Opaque wrapper of the program's `new_handler`, a function pointer.
-Handler	function pointer	Kani
+Handler	function pointer	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 1359222408, body none
 # The call of the C++ runtime's `std::get_new_handler`: Kani runs the body
 # on a recording stand-in that returns none or one of two handlers; that
 # the address is the runtime's function, and what it does, is C5.

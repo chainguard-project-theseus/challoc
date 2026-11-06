@@ -7,7 +7,7 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `Hook` | ext_type_spec | function pointer | Kani | trusted |
+| `Hook` | ext_type_spec | function pointer | none (assumption) | trusted |
 | `message_hook` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `call_hook` | external_body | function pointer | Kani | discharged |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
@@ -15,7 +15,7 @@ file.
 ## `Hook`
 
 src/api/jemalloc.rs:121. Kind: ext_type_spec. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 346261534, body none.
 

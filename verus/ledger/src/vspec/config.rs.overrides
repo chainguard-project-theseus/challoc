@@ -3,3 +3,6 @@ core::ffi::CStr::as_ptr	core library	Kani	discharged (Kani: kani_proofs::misc::c
 char::to_digit	core library	Kani	discharged (Kani: kani_proofs::core_int::char_to_digit)	contract 2455008607, body none
 <*const T>::cast::<U>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_cast)	contract 3681771168, body none
 <*const T>::wrapping_add	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_wrapping_add)	contract 2840327990, body none
+# Opaque types, which claim nothing (verus/SEAMS.md, "Status").
+core::ffi::c_void	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 331443444, body none
+core::ffi::CStr	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 3079426279, body none

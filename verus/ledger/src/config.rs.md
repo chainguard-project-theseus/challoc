@@ -11,9 +11,9 @@ file.
 | `PERCPU_..._NAMES` | external_body const | core library | Kani | discharged |
 | `Config::set_listed` | external_body | function pointer | Kani | discharged |
 | `Config::get` | external_body | function pointer | Kani | discharged |
-| `Parse` | ext_type_spec | function pointer | Kani | trusted |
-| `Read` | ext_type_spec | function pointer | Kani | trusted |
-| `TABLE` | external_body const | function pointer | Kani | trusted |
+| `Parse` | ext_type_spec | function pointer | none (assumption) | trusted |
+| `Read` | ext_type_spec | function pointer | none (assumption) | trusted |
+| `TABLE` | external_body const | function pointer | none (assumption) | trusted |
 | `KEYS` | external_body const | function pointer | Kani | discharged |
 | `conf_buffer` | external_body | raw pointer (internal) | Kani | trusted |
 | `read_slot` | external_body | raw pointer from C caller | none (assumption) | trusted |
@@ -83,7 +83,7 @@ pub fn get(&self, key: &[u8]) -> Option<Value>
 ## `Parse`
 
 src/config.rs:562. Kind: ext_type_spec. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 451832648, body none.
 
@@ -94,7 +94,7 @@ struct ExParse(Parse);
 ## `Read`
 
 src/config.rs:568. Kind: ext_type_spec. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 3732856044, body none.
 
@@ -105,7 +105,7 @@ struct ExRead(Read);
 ## `TABLE`
 
 src/config.rs:855. Kind: external_body const. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque constant; Verus sees no value of it, and the compiler evaluates it).
 
 > [`ENTRIES`], the tunables.
 

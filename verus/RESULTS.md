@@ -15,7 +15,7 @@ Measured on main at `415e5886` with the commands in [Check it yourself](#check-i
 | Functions Verus verifies, plus trusted functions also checked by loom models of the atomic protocol | 1424 of 1618 (88.0%) |
 | Lines Verus verifies, plus trusted lines also checked by loom models of the atomic protocol | 42578 of 44728 (95.1%) |
 | Theorems | 64 `theorem_*` functions: 49 proof functions and 15 verification-only executable functions |
-| Seams | 395 in 61 source files: 161 discharged, 30 discharged on premises, 81 partly checked, 123 trusted with no check |
+| Seams | 395 in 61 source files: 161 discharged, 30 discharged on premises, 81 partly checked, 107 trusted with no check, 16 trusted and claiming nothing |
 | Kani harnesses | 196 `#[kani::proof]` harnesses under `src/` |
 | loom tests | 87 `#[test]` functions in `tests/loom`: 63 models in `tests/loom/src` and 24 source checks in `tests/loom/tests` |
 
@@ -208,10 +208,12 @@ The ledger records 395 seams in 61 source files. These are items, not coverage l
 
 | Ledger view | Counts |
 | --- | --- |
-| Status | 161 discharged: 110 by Kani harnesses, 44 by compile-time constant assertions, 6 by Isla runs and 1 by `make emptyasm`; 30 discharged on premises: 19 by Isla runs on platform premises and 11 by Kani harnesses, 9 of them on C premises and 2 on loader and kernel premises; 81 partly checked; 123 trusted |
+| Status | 161 discharged: 110 by Kani harnesses, 44 by compile-time constant assertions, 6 by Isla runs and 1 by `make emptyasm`; 30 discharged on premises: 19 by Isla runs on platform premises and 11 by Kani harnesses, 9 of them on C premises and 2 on loader and kernel premises; 81 partly checked; 107 trusted with no check; 16 trusted and claiming nothing: 14 external type specifications, 1 `external_body` type and 1 `external_body` constant |
 | Kind | 150 `external_body`; 11 `external_body` proofs; 7 `external_body` types; 43 `external_body` constants; 68 axioms; 76 assumed specifications; 15 external type specifications; 1 external trait specification; 8 specification implementations; 16 functions without decreases checks |
 | Category | 163 core library; 42 atomics primitive; 31 inline assembly; 27 internal raw pointer; 24 allocator invariant; 20 platform or kernel fact; 18 function pointer; 18 C-program contract; 15 termination; 12 `UnsafeCell`, volatile, or transmute; 12 FFI or syscall; 7 panic or abort; 6 raw pointer from a C caller |
-| Proposed tool | 222 Kani; 90 none (assumption); 50 loom or GenMC; 32 Islaris or Isla; 1 RefinedRust |
+| Proposed tool | 206 Kani; 106 none (assumption); 50 loom or GenMC; 32 Islaris or Isla; 1 RefinedRust |
+
+The 16 seams that claim nothing are opaque types (10 from `core` and libc, such as `Layout`, `CStr`, `PanicInfo` and `FILE`, and 5 function-pointer wrappers) and the configuration table `config::TABLE`: Verus sees no field, invariant or value of them, and what verified code relies on about them is other seams' contracts, each with its own status ([SEAMS.md](SEAMS.md#status)). They stay trusted, not checked, and propose no tool (none (assumption)). None is a function, so none enters a coverage figure.
 
 Each of the 31 inline-assembly seams has a check: 25 are discharged (5 by Isla, 19 by Isla on platform premises, 1 by `make emptyasm`) and 6 are partly checked (3 by Isla, 2 by `make emptyasm`, 1 by Kani). The platform premises, such as the kernel's side of a system call (K1), the kernel keeping the pointer-authentication key fixed (K3) and the loader's fill of a GOT entry (P8), are stated with their sources in [isla/seams.md](isla/seams.md#platform-premises); each seam's ledger status names the ones it rests on, and the counter fails on a label that file does not define. The C and L premises a Kani status names, such as the hook slots' contents (C1) that `api::jemalloc::message_hook` rests on and glibc's rseq globals (L1) that `rseq::read_global` rests on, are stated in [kani/premises.md](kani/premises.md#premises) and its [loader and kernel premises](kani/premises.md#loader-and-kernel-premises), and the counter checks their labels the same way.
 

@@ -18,7 +18,7 @@ file.
 | `Option::<T>::map_or` | assume_spec | core library | Kani | discharged |
 | `Result::<T, E>::map_or` | assume_spec | core library | Kani | discharged |
 | `Result::<T,...:unwrap_or` | assume_spec | core library | Kani | discharged |
-| `str::Utf8Error` | ext_type_spec | core library | Kani | trusted |
+| `str::Utf8Error` | ext_type_spec | core library | none (assumption) | trusted |
 | `str::from_utf8` | assume_spec | core library | Kani | trusted |
 
 ## `u8::is_ascii_digit`
@@ -200,7 +200,7 @@ pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>
 ## `core::str::Utf8Error`
 
 src/vspec/sys.rs:85. Kind: ext_type_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 2656431228, body none.
 
