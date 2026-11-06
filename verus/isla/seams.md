@@ -224,15 +224,16 @@ register, writes nothing else and returns to the caller. The aarch64
 jobs assume P2 and P7 (code and GOT entry at user addresses, the entry
 8-byte aligned); the x86_64 jobs also assume P4 and P6 (64-bit mode and
 the stack). The contracts claim nothing about
-the address beyond the uninterpreted `is_throw_bad_alloc`, which only
-`throw_bad_alloc_addr` ensures. That predicate says the address is
-`std::__throw_bad_alloc`'s, or null, which is P8 itself, so
-`throw_bad_alloc_addr` is `discharged on premises (Isla:
-verus/isla/seams.md; premises: P8 ...)`. The other three have no
-`ensures`: their contracts claim only that the call returns, writing
-nothing Verus tracks, which the runs show within the premises their
-`Premises:` lines name, so each is `discharged (Isla:
-verus/isla/seams.md)`.
+the address beyond the uninterpreted `is_throw_bad_alloc` and
+`is_get_new_handler`, which only `throw_bad_alloc_addr` and
+`get_new_handler_addr` ensure. Each predicate says the address is that
+of the symbol's definition (`std::__throw_bad_alloc`'s,
+`std::get_new_handler`'s), or null, which is P8 itself, so each of the
+two is `discharged on premises (Isla: verus/isla/seams.md; premises:
+P8 ...)`. The other two have no `ensures`: their contracts claim only
+that the call returns, writing nothing Verus tracks, which the runs
+show within the premises their `Premises:` lines name, so each is
+`discharged (Isla: verus/isla/seams.md)`.
 
 ## `src/api/cxx.rs` `get_new_handler_addr` (both)
 
@@ -241,7 +242,9 @@ Jobs: `aarch64/got-fn-get_new_handler_addr` `x86_64/got-fn-get_new_handler_addr`
 Premises: P1, P2, P3, P4, P6, P7
 
 ```rust
-fn get_new_handler_addr() -> *const c_void
+fn get_new_handler_addr() -> (r: *const c_void)
+    ensures
+        is_get_new_handler(r),
 ```
 
 ## `src/api/cxx.rs` `throw_bad_alloc_addr` (both)
