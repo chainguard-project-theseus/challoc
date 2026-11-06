@@ -17,7 +17,11 @@
 //! any of those specs fails it until the table follows; [`check`] is tied
 //! to the table only through the [`Broken`] variants each row names,
 //! which the test requires to exist, so a review of a table change is
-//! what keeps the checker in step.
+//! what keeps the checker in step. The part of [`check`] that needs no
+//! sets is `heap_facts::set_free` and `heap_facts::homed_ok`, which the
+//! debug TLS check (`tlscheck::deep`) runs as well (`heap_facts::no_sets`),
+//! so the table covers both, and the mutants below run both
+//! (`check_both`) but for the set-based conjuncts past a node met twice.
 //!
 //! The `shared` conjunct names the process's `Shared`
 //! (`Shared::storage()`); the checker takes the `Shared` the heap was
@@ -39,84 +43,15 @@
 //! above `64 * 15`; and, on a host without pointer authentication,
 //! [`Broken::EntryNotStored`], since `stored` is then the identity.
 
+use super::heap_facts::{self, Broken, Hdr, Seen, plain};
 use super::*;
-use crate::layout::{CLASSES, Kind, class_of};
+use crate::layout::{CLASSES, class_of};
 use crate::testutil::{TestShared, xorshift};
 use core::ffi::c_void;
 use std::collections::HashSet;
 use std::string::String;
 use std::vec::Vec;
 use vstd::prelude::Tracked;
-
-/// A conjunct of a spec [`check`] transcribes that the heap does not meet.
-/// Header, node and slot fields are addresses.
-#[derive(Debug, PartialEq, Eq)]
-enum Broken {
-    /// `Heap::wf`: `self.shared == Shared::storage() as *const Shared`.
-    Shared { got: usize, want: usize },
-    /// `Heap::home_at`: home header `class` is not `home_hdr(p, class)`,
-    /// `p + 128 + 64 * class`.
-    HomeAt { class: usize },
-    /// `Heap::home_at`: `p + size_of::<Heap>()` wraps.
-    HomeWraps,
-    /// `Heap::list_ok`: the `next` chain from `others` comes back to a
-    /// node (the nodes are distinct).
-    ListRepeats { node: usize },
-    /// `others::block_ok`'s claim: the node is not in the metadata region.
-    NodeOutsideMeta { node: usize },
-    /// `node_placed`: `node + 64 + 64 * NCLASSES` wraps.
-    NodeWraps { node: usize },
-    /// `Heap::home_ok`: a header of the node is home header `class`.
-    NodeOnHome { node: usize, class: usize },
-    /// `owns_node` with `hdr_class` a function: two nodes share a header.
-    HeaderTwice { hdr: usize },
-    /// `others::block_ok`: `pad < 16`.
-    PadRange { node: usize, pad: u8 },
-    /// `others::block_ok`: `64 * pad <= n@.addr`.
-    PadBelowZero { node: usize, pad: u8 },
-    /// `others::block_ok`'s claim (`held(.., node_block(n, pad),
-    /// block_size(), 64)`): the block is not 64-aligned metadata.
-    BlockMisplaced { node: usize },
-    /// Not a `Heap::wf` conjunct: a node's key is an arena index
-    /// (`< MAX_ARENAS`) or `FOREIGN`.
-    KeyRange { node: usize, key: u16 },
-    /// `Heap::list_ok`: `k[i] != self.arena`.
-    KeyIsHome { node: usize, key: u16 },
-    /// `Heap::list_ok`: the keys are pairwise distinct.
-    KeyRepeats { node: usize, key: u16 },
-    /// `CacheHeader::inv`: `run_end <= low_water <= len <= cap`.
-    HeaderOrder { hdr: usize },
-    /// `CacheHeader::inv`: `cap <= MAX_NSLOTS`.
-    HeaderCap { hdr: usize },
-    /// `CacheHeader::inv`: `zeroed <= low_water`.
-    HeaderZeroed { hdr: usize },
-    /// `cell_in_meta`: the header is not 64 bytes of metadata.
-    HeaderOutsideMeta { hdr: usize },
-    /// `cell_in_meta`: the stack is not `8 * cap` bytes of metadata.
-    StackOutsideMeta { hdr: usize },
-    /// `stack_claimed`'s claim (`held(.., 8 * cap, 16)`): the stack is not
-    /// 16-aligned.
-    StackMisaligned { hdr: usize },
-    /// `slot_entry`: `e@.addr == stored(plain(e, base), base)`.
-    EntryNotStored { hdr: usize, i: usize },
-    /// `slot_entry`: `process_regions().is_slot(c, plain(e, base))` for
-    /// the header's class `c`.
-    EntryNotSlot { hdr: usize, i: usize },
-    /// `CachePerms::tracks`: an entry of one stack is an entry of another
-    /// (`owner` maps it to one header).
-    StacksOverlap { a: usize, b: usize },
-    /// `CachePerms::tokened`: a slot is cached twice (each cached entry
-    /// holds its slot's token, and there is one token per slot).
-    SlotTwice { slot: usize },
-    /// `CachePerms::zero_ok`: entry `i` of the zero prefix does not read
-    /// as zero for its class's size.
-    NotZero { hdr: usize, i: usize },
-    /// `Heap::homed_ok`: `self.rehome ==> self.bound`.
-    RehomeUnbound,
-    /// `Heap::homed_ok`: a counted heap holds its home arena's ticket, so
-    /// the arena's bound count is at least one.
-    BoundUncounted { arena: u16 },
-}
 
 /// How [`check`] covers one conjunct of [`SPECS`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -733,197 +668,41 @@ const BROKEN: &[&str] = &[
     "BoundUncounted",
 ];
 
-/// Whether `[a, a + len)` is in `s`'s metadata region
-/// (`Regions::in_meta(a, len)`: the region is one range, so its first and
-/// last byte are).
-fn in_meta(s: &Shared, a: usize, len: usize) -> bool {
-    len > 0
-        && a.checked_add(len - 1)
-            .is_some_and(|end| s.regions.in_meta(a) && s.regions.in_meta(end))
-}
-
-/// The address stack entry `e` stands for (`plain`): `pac::strip` of it
-/// with pointer authentication, which is `pac::auth` of an entry signed
-/// as `stored` signs it (`check`'s `EntryNotStored`), and never faults on
-/// one that is not, where `pac::auth` would on FEAT_FPAC hosts.
-fn plain(e: *mut u8, pac: bool) -> usize {
-    if pac {
-        crate::sys::pac::strip(e as usize)
-    } else {
-        e as usize
-    }
-}
-
-/// A header `h` at address `at` caching `class`: an element of the home
-/// `caches` or of a node's.
-struct Hdr<'a> {
-    at: usize,
-    class: usize,
-    h: &'a CacheHeader,
-}
-
 /// Check what `heap_at(p)` ensures, `r.wf()` and `r.home_at(p)`, of
 /// `h`, the heap `heap_at` handed out for `p`, created on `s`; the first
 /// broken conjunct, in the order below, if any. [`SPECS`] says how each
-/// conjunct is covered.
+/// conjunct is covered. The conjuncts that need no sets are
+/// [`heap_facts::set_free`] and [`heap_facts::homed_ok`], which the debug
+/// TLS check (`tlscheck::deep`) runs too; this adds a node met twice,
+/// a header of two nodes, two stacks overlapping, a slot cached twice and
+/// the zero prefix.
 ///
 /// # Safety
 /// `h` is a live heap that nothing else uses while the check runs; every
 /// `others` node the check reaches is read, so a corrupted list must stay
 /// inside mapped memory.
 unsafe fn check(h: &Heap, p: *const Heap, s: &Shared) -> Result<(), Broken> {
-    // `Heap::wf`: `self.shared == Shared::storage() as *const Shared`.
-    let want = s as *const Shared;
-    if h.shared != want {
-        return Err(Broken::Shared {
-            got: h.shared as usize,
-            want: want as usize,
-        });
-    }
-    // `Heap::home_at`: the home headers are `home_hdr(p, c)`, and the
-    // heap's block does not wrap.
-    let base = p as usize;
-    if base.checked_add(core::mem::size_of::<Heap>()).is_none() {
-        return Err(Broken::HomeWraps);
+    // `Heap::list_ok`: the nodes are distinct; `Heap::home_ok`: each
+    // header having one class, no two nodes share one.
+    let mut nodes: HashSet<usize> = HashSet::new();
+    let mut node_hdrs: HashSet<usize> = HashSet::new();
+    // SAFETY: the caller's.
+    unsafe {
+        heap_facts::set_free(h, p, s, |seen| match seen {
+            Seen::Node(node) if !nodes.insert(node) => Err(Broken::ListRepeats { node }),
+            Seen::Hdr(hdr) if !node_hdrs.insert(hdr) => Err(Broken::HeaderTwice { hdr }),
+            _ => Ok(()),
+        })?;
     }
     let mut hdrs: Vec<Hdr> = Vec::new();
-    let mut home: HashSet<usize> = HashSet::new();
-    for c in 0..NCLASSES {
-        let at = &h.caches[c] as *const CacheHeader as usize;
-        if at != base + 128 + 64 * c {
-            return Err(Broken::HomeAt { class: c });
-        }
-        home.insert(at);
-        hdrs.push(Hdr {
-            at,
-            class: c,
-            h: &h.caches[c],
-        });
+    // SAFETY: the caller's, and `set_free` passed the list.
+    unsafe {
+        heap_facts::headers(h, |d| {
+            hdrs.push(d);
+            Ok(())
+        })?;
     }
-    // `Heap::list_ok`: walk `others` along `next`; `l` is the walk's
-    // nodes and `k` their `arena` fields.
-    let mut seen: HashSet<usize> = HashSet::new();
-    let mut keys: HashSet<u16> = HashSet::new();
-    let mut all: HashSet<usize> = home.clone();
-    let mut o = h.others as *const ArenaCaches;
-    while !o.is_null() {
-        let node = o as usize;
-        if !seen.insert(node) {
-            return Err(Broken::ListRepeats { node });
-        }
-        if !in_meta(s, node, core::mem::size_of::<ArenaCaches>()) {
-            return Err(Broken::NodeOutsideMeta { node });
-        }
-        // `node_placed`: `node@.addr + 64 + 64 * NCLASSES <= usize::MAX`.
-        if node.checked_add(64 + 64 * NCLASSES).is_none() {
-            return Err(Broken::NodeWraps { node });
-        }
-        // `Heap::home_ok`: no home header is `node_hdr(node, k)`; and,
-        // each header having one class, no two nodes share one.
-        for k in 0..NCLASSES {
-            let at = node + 64 + 64 * k;
-            if home.contains(&at) {
-                return Err(Broken::NodeOnHome {
-                    node,
-                    class: (at - base - 128) / 64,
-                });
-            }
-            if !all.insert(at) {
-                return Err(Broken::HeaderTwice { hdr: at });
-            }
-        }
-        // SAFETY: the node lies in the metadata region (checked above);
-        // the caller keeps the heap and its nodes live.
-        let n = unsafe { &*o };
-        // `others::block_ok`: `pad < 16`, `64 * pad <= n@.addr`, and the
-        // block (`node_block(n, pad)`, `block_size()` bytes) is the
-        // claim's: 64-aligned metadata.
-        let pad = n.pad;
-        if pad >= 16 {
-            return Err(Broken::PadRange { node, pad });
-        }
-        if 64 * pad as usize > node {
-            return Err(Broken::PadBelowZero { node, pad });
-        }
-        let block = node - 64 * pad as usize;
-        let block_size = core::mem::size_of::<ArenaCaches>() + 64 * 15;
-        if !block.is_multiple_of(64) || !in_meta(s, block, block_size) {
-            return Err(Broken::BlockMisplaced { node });
-        }
-        // `Heap::list_ok`'s keys: an arena or `FOREIGN` (not a conjunct),
-        // not the home arena, pairwise distinct.
-        let key = n.arena;
-        if key != FOREIGN && key as usize >= crate::arena::MAX_ARENAS {
-            return Err(Broken::KeyRange { node, key });
-        }
-        if key == h.arena {
-            return Err(Broken::KeyIsHome { node, key });
-        }
-        if !keys.insert(key) {
-            return Err(Broken::KeyRepeats { node, key });
-        }
-        for c in 0..NCLASSES {
-            hdrs.push(Hdr {
-                at: node + 64 + 64 * c,
-                class: c,
-                h: &n.caches[c],
-            });
-        }
-        o = n.next;
-    }
-    // `cell_ok` of every header: `CacheHeader::inv`, `cell_in_meta`, and
-    // `stack_claimed`'s alignment.
-    for d in &hdrs {
-        let k = d.h;
-        if !(k.run_end <= k.low_water && k.low_water <= k.len && k.len <= k.cap) {
-            return Err(Broken::HeaderOrder { hdr: d.at });
-        }
-        if k.cap > crate::config::MAX_NSLOTS {
-            return Err(Broken::HeaderCap { hdr: d.at });
-        }
-        if k.zeroed > k.low_water {
-            return Err(Broken::HeaderZeroed { hdr: d.at });
-        }
-        if !in_meta(s, d.at, 64) {
-            return Err(Broken::HeaderOutsideMeta { hdr: d.at });
-        }
-        if k.cap != 0 {
-            if !in_meta(s, k.slots as usize, 8 * k.cap as usize) {
-                return Err(Broken::StackOutsideMeta { hdr: d.at });
-            }
-            if !(k.slots as usize).is_multiple_of(16) {
-                return Err(Broken::StackMisaligned { hdr: d.at });
-            }
-        }
-    }
-    // `CachePerms::tracks`: each of the first `len` entries holds a slot
-    // start of the header's class, stored as a push stores it
-    // (`slot_entry`).
     let pac = s.pac();
-    for d in &hdrs {
-        let k = d.h;
-        for (i, &e) in k.cached().iter().enumerate() {
-            let plain = plain(e, pac);
-            let stored = if pac {
-                crate::sys::pac::sign(plain, k.slots as usize)
-            } else {
-                plain
-            };
-            if stored != e as usize {
-                return Err(Broken::EntryNotStored { hdr: d.at, i });
-            }
-            let slot = match s.regions.classify(plain) {
-                Kind::Slab { class, slab, .. } => {
-                    class as usize == d.class
-                        && !s.arena0.classes[d.class].is_guard_slab(slab as usize)
-                }
-                _ => false,
-            };
-            if !slot {
-                return Err(Broken::EntryNotSlot { hdr: d.at, i });
-            }
-        }
-    }
     // `CachePerms::tracks`: `owner` maps every entry of every stack to one
     // header, so no two stacks share an entry.
     let mut stacks: Vec<(usize, usize, usize)> = hdrs
@@ -972,15 +751,41 @@ unsafe fn check(h: &Heap, p: *const Heap, s: &Shared) -> Result<(), Broken> {
             }
         }
     }
-    // `Heap::homed_ok`: `rehome ==> bound`, and a counted heap's ticket is
-    // counted in its home arena.
-    if h.rehome && !h.bound {
-        return Err(Broken::RehomeUnbound);
+    heap_facts::homed_ok(h, s)
+}
+
+/// [`check`], and `heap_facts::no_sets` (what the debug TLS check's
+/// `deep` tests) of the same heap, which must report the same broken
+/// conjunct; `check`'s result. Where `check` found a node met twice,
+/// `no_sets` must stop at that node's key, met twice too. Not compared:
+/// the conjuncts only `check`'s sets show past that (a header of two
+/// nodes, two stacks overlapping, a slot cached twice, the zero prefix).
+///
+/// # Safety
+/// As for [`check`].
+unsafe fn check_both(h: &Heap, p: *const Heap, s: &Shared) -> Result<(), Broken> {
+    // SAFETY: the caller's.
+    let got = unsafe { check(h, p, s) };
+    if matches!(
+        got,
+        Err(Broken::HeaderTwice { .. }
+            | Broken::StacksOverlap { .. }
+            | Broken::SlotTwice { .. }
+            | Broken::NotZero { .. })
+    ) {
+        return got;
     }
-    if h.bound && ((h.arena as usize) >= crate::arena::MAX_ARENAS || s.arenas.bound(h.arena) == 0) {
-        return Err(Broken::BoundUncounted { arena: h.arena });
+    // SAFETY: the caller's.
+    let free = unsafe { heap_facts::no_sets(h, p, s) };
+    if let Err(Broken::ListRepeats { node }) = got {
+        assert!(
+            matches!(free, Err(Broken::KeyRepeats { node: n, .. }) if n == node),
+            "no_sets on a cycle at {node:#x}: got = {free:?}, want = KeyRepeats there"
+        );
+    } else {
+        assert_eq!(free, got, "no_sets: got = {free:?}, want = {got:?}");
     }
-    Ok(())
+    got
 }
 
 /// [`check`] of explicit cache `id` of `s` as [`Tcaches::get`] hands it
@@ -992,7 +797,7 @@ fn check_tcache(s: &Shared, id: u16) -> Result<(), Broken> {
         .get(id, Tracked::assume_new())
         .expect("a live explicit cache");
     // SAFETY: the caller's cache, which it uses on no other thread.
-    unsafe { check(h, p, s) }
+    unsafe { check_both(h, p, s) }
 }
 
 /// [`check_tcache`], which must pass.
@@ -1264,7 +1069,7 @@ fn explicit_cache_lifecycle_passes_the_checker() {
 #[track_caller]
 fn assert_heap_ok(h: *mut Heap, s: &Shared, after: &str) {
     // SAFETY: the caller's live heap, used by this thread only.
-    if let Err(e) = unsafe { check(&*h, h, s) } {
+    if let Err(e) = unsafe { check_both(&*h, h, s) } {
         panic!("heap {:#x} after {after}: {e:?}", h as usize);
     }
 }
@@ -1583,7 +1388,7 @@ fn checker_fails_each_corrupted_fact() {
     let run = move |what: &str, want: fn(&Broken) -> bool| {
         // SAFETY: the live heap, with no reference to it live (see above);
         // `check`'s `&Heap` lasts for the call.
-        let got = unsafe { check(&*hp, hp, s) };
+        let got = unsafe { check_both(&*hp, hp, s) };
         assert!(
             got.as_ref().err().is_some_and(want),
             "mutant `{what}`: got = {got:?}"
@@ -1603,14 +1408,14 @@ fn checker_fails_each_corrupted_fact() {
 
     // The pointer `heap_at` is handed is not the heap's.
     // SAFETY: as in `run`.
-    let got = unsafe { check(&*hp, (hp as usize + 64) as *const Heap, s) };
+    let got = unsafe { check_both(&*hp, (hp as usize + 64) as *const Heap, s) };
     assert_eq!(got, Err(Broken::HomeAt { class: 0 }), "mutant `p`");
 
     // The pointer `heap_at` is handed is a `Heap`'s size from the top of
     // the address space (the checker does arithmetic on it, no more).
     let top = usize::MAX - core::mem::size_of::<Heap>() + 1;
     // SAFETY: as in `run`.
-    let got = unsafe { check(&*hp, top as *const Heap, s) };
+    let got = unsafe { check_both(&*hp, top as *const Heap, s) };
     assert_eq!(got, Err(Broken::HomeWraps), "mutant `p wraps`");
 
     // Home header order: `low_water > len`.
@@ -1913,7 +1718,7 @@ fn checker_fails_each_corrupted_fact() {
     let at: *const Heap = &*copy;
     // SAFETY: the copy is live for the call and nothing writes it; the
     // nodes and stacks it names are the heap's, with no reference live.
-    let got = unsafe { check(&copy, at, s) };
+    let got = unsafe { check_both(&copy, at, s) };
     assert!(
         matches!(got, Err(Broken::HeaderOutsideMeta { .. })),
         "mutant `heap outside meta`: got = {got:?}"
@@ -1946,7 +1751,7 @@ fn checker_fails_each_corrupted_fact() {
     // SAFETY: the cache this test just created, written in place.
     unsafe { (*hu).bound = true };
     // SAFETY: as above; `check`'s `&Heap` lasts for the call.
-    let got = unsafe { check(&*hu, hu, s) };
+    let got = unsafe { check_both(&*hu, hu, s) };
     assert_eq!(
         got,
         Err(Broken::BoundUncounted { arena: a1 }),

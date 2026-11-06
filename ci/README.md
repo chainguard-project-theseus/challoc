@@ -15,7 +15,7 @@ Each script also runs by hand on a Linux host with Docker.
 | `skip-summary.sh LOG MANIFEST` | the `SKIP` lines of a run against `expected-skips/<cell>.txt`: a new skip fails, a vanished one is a notice |
 | `features-assert.sh LOG KEY=V...` | the `features:` line of a run must carry each KEY=V (the privileged cells: `mseal=yes`) |
 | `glibc-max.sh SO MAX` | SO needs no `GLIBC_` version above MAX (2.44) |
-| `shellcheck.sh` | shellcheck (the pinned upstream release, SHA-256 checked) over every shell script: `ci/`, `verus/`, `scripts/`, `tests/` (with `tests/loom/` and `tests/consumers/`), `bench/` and `.chainguard/ci/services/` |
+| `shellcheck.sh` | shellcheck (the pinned upstream release, SHA-256 checked) over every shell script: `ci/`, `verus/`, `scripts/`, `tests/` (with `tests/loom/`, `tests/consumers/` and `tests/tlscheck/`), `bench/` and `.chainguard/ci/services/` |
 | `extended.sh [TASK]` | one task of the on-request extended checks |
 | `floor.sh CELLS` | `cb launch exp-floor` on GCE cells with the check's `challoc-gce` identity |
 | `codegen.sh` | `scripts/codegen-diff.sh` from the change's merge base (`CHAINGUARD_BASE_REVISION`) to this tree, both quantum builds; exits 2 when a function changed |
@@ -42,6 +42,13 @@ require); each file is a workflow:
   bench-unit`), msrv-build (1.94).
 - `test.yaml`: `linux` {x86_64, aarch64} x quantum {16, 8}, `privileged`
   per arch (`hosted-<arch>-*` cells in `expected-skips/`).
+- `tlscheck.yaml`: `tlscheck` (`amd64-q16`, `arm64-q16`), the debug TLS
+  check build (`RUSTFLAGS="--cfg challoc_tls_check"`, `src/heap/tlscheck.rs`)
+  with clippy over every target, the release build, the jemalloc-compat
+  stage, both cargo test groups and `tests/tlscheck/run.sh` (the lifecycle
+  modes and a 120 s fuzz), in the guest directly; on pull requests that
+  change `src/`, the build, `scripts/jemalloc-compat.sh`, the C test
+  programs (`tests/c/`), `tests/tlscheck/` or `tlscheck.yaml` itself.
 - `floor.yaml`: `floor` (AlmaLinux 9's 5.14, both arches, default and
   privileged containers) and the advisory `tripwire` (Debian 11's 5.10;
   off until its bench image is rebuilt, #463, see `floor.yaml`),

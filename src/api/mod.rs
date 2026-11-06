@@ -2663,6 +2663,8 @@ extern "C" fn fork_child() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
+    #[cfg(challoc_tls_check)]
+    crate::heap::tlscheck::on_fork_child();
     fork_gate_exit();
     if !fork_was_locked() {
         return;

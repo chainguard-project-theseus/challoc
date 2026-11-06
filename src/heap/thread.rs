@@ -258,6 +258,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     // Premise (`axiom_heap_use`): a thread's heap reaches its key
     // destructor once, at thread exit, and nothing else uses it then.
     let tracked mut u = axiom_heap_use();
+    #[cfg(challoc_tls_check)]
+    super::tlscheck::on_exit(h);
     // SAFETY: the pointer was registered by `create_heap_for_thread` for
     // this thread.
     unsafe {
@@ -412,6 +414,10 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
         crate::sys::tls::set(ptr::null_mut(), Tracked(&mut *cell));
         return None;
     }
+    // Registered while the slot still holds `TLS_CREATING`, so a signal
+    // handler that allocates in between never finds the heap unregistered.
+    #[cfg(challoc_tls_check)]
+    super::tlscheck::on_publish(h);
     crate::sys::tls::set(tls_value_for(shared, h, Tracked(&*cell)), Tracked(&mut *cell));
     let tracked (homed, stored) = fresh.tracked_unwrap();
     // SAFETY: freshly created and owned by this thread.
@@ -605,6 +611,8 @@ pub unsafe fn heap_from_slot<'a>(t: usize, tp: usize, pac: bool, Tracked(cell): 
     opens_invariants none
 {
     let h = if pac { pac::auth(t, tp) } else { t };
+    #[cfg(challoc_tls_check)]
+    super::tlscheck::on_use(h);
     // SAFETY: guaranteed by the caller; the hint spares the null test the
     // compiler would otherwise add for the `Option` niche, `t` being above
     // the sentinels and `autda` never producing zero from it.

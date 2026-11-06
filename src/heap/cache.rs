@@ -135,7 +135,7 @@ impl CacheHeader {
 
     /// Cached pointers, bottom of the stack first, as stored: signed when
     /// `Shared::pac()` ([`CacheHeader::plain`]).
-    #[cfg(test)]
+    #[cfg(any(test, challoc_tls_check))]
     pub fn cached(&self) -> &[*mut u8] {
         if self.len == 0 {
             return &[];
