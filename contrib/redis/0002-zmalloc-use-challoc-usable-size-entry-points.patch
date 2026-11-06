@@ -1,5 +1,5 @@
 From: challoc <noreply@chainguard.dev>
-Subject: [PATCH 2/3] zmalloc: use challoc's usable-size entry points
+Subject: [PATCH 2/4] zmalloc: use challoc's usable-size entry points
 
 Redis's zmalloc accounts used_memory by usable size, and the bundled
 jemalloc's *_with_usize extension returns that size from the allocation
@@ -19,7 +19,7 @@ time.
   ztryrealloc_usable_internal never passes NULL or a zero size there.
 
 A challoc without the entry points (no JEMALLOC_CHALLOC_USABLE) builds
-the patch 1/3 way, with zmalloc_size() lookups.
+the patch 1/4 way, with zmalloc_size() lookups.
 ---
  src/zmalloc.c | 17 ++++++++++++++++-
  src/zmalloc.h | 14 ++++++++++++--
