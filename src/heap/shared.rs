@@ -1040,10 +1040,11 @@ pub static FAIL_SETSPECIFIC: core::sync::atomic::AtomicU32 = core::sync::atomic:
 
 unsafe extern "C" {
     /// glibc's `pthread_key_create(3)`, with the `libc` crate's signature
-    /// and the same symbol. Declared in this crate rather than taken from
-    /// the `libc` crate so that a Kani harness can stub it: Kani 0.68
-    /// stubs a foreign function only where this crate declares it, and
-    /// silently ignores a stub on `libc::pthread_key_create`.
+    /// and the same symbol (premise C7 of `verus/kani/premises.md`).
+    /// Declared in this crate rather than taken from the `libc` crate so
+    /// that `kani_key` can stub it: Kani 0.68 stubs a foreign function
+    /// only where this crate declares it, and silently ignores a stub on
+    /// `libc::pthread_key_create`.
     fn pthread_key_create(
         key: *mut libc::pthread_key_t,
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -4236,5 +4237,70 @@ mod kani_guard_word {
         line._pad = [0, 0];
         let want = gm as u64 | (tz as u64) << 32 | (lg as u64) << 40;
         assert_eq!(line.guard_word_load(), want);
+    }
+}
+
+/// Kani check of `ThreadKey::create` (`verus/ledger/src/heap/shared.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_key {
+    use super::{ThreadKey, heap_destructor};
+    use core::ffi::{c_int, c_void};
+
+    /// What the stand-in for `pthread_key_create` returns, and the key it
+    /// stores when that is 0.
+    static mut RC: c_int = 0;
+    static mut KEY: libc::pthread_key_t = 0;
+    /// How many times it was called, and the destructor it was passed (0
+    /// for none).
+    static mut CALLS: usize = 0;
+    static mut DTOR: usize = 0;
+
+    /// A stand-in for glibc's `pthread_key_create` (premise C7): it
+    /// records its call and the destructor, checks that `key` is writable,
+    /// and returns `RC`, storing `KEY` in `*key` only when `RC` is 0.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn key_create_model(
+        key: *mut libc::pthread_key_t,
+        dtor: Option<unsafe extern "C" fn(*mut c_void)>,
+    ) -> c_int {
+        assert!(kani::mem::can_write(key));
+        // SAFETY: the harness's own statics, and `key`, writable (checked
+        // above); no other code runs in a harness.
+        unsafe {
+            CALLS += 1;
+            DTOR = dtor.map_or(0, |f| f as usize);
+            if RC == 0 {
+                *key = KEY;
+            }
+            RC
+        }
+    }
+
+    /// `ThreadKey::create`: no `ensures`; it returns, and (beyond the
+    /// contract) calls `pthread_key_create` once with `heap_destructor`,
+    /// and keeps the key it stored, valid exactly when the call returned
+    /// 0, for any return value and key.
+    #[kani::proof]
+    #[kani::stub(super::pthread_key_create, key_create_model)]
+    fn create_keeps_the_key() {
+        let rc: c_int = kani::any();
+        let key: libc::pthread_key_t = kani::any();
+        kani::cover!(rc == 0);
+        kani::cover!(rc != 0);
+        // SAFETY: as in `key_create_model`.
+        unsafe {
+            RC = rc;
+            KEY = key;
+        }
+        let k = ThreadKey::create();
+        // SAFETY: as in `key_create_model`.
+        let (calls, dtor) = unsafe { (CALLS, DTOR) };
+        assert_eq!(calls, 1);
+        assert_eq!(dtor, heap_destructor as *const () as usize);
+        assert_eq!(k.valid, rc == 0);
+        if rc == 0 {
+            assert_eq!(k.key, key);
+        }
     }
 }

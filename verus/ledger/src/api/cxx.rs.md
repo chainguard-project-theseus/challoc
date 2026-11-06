@@ -80,7 +80,7 @@ fn call_get_new_handler(get: *const c_void) -> Option<Handler>
 ## `call_throw_bad_alloc`
 
 src/api/cxx.rs:188. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: api::cxx::kani_cxx::call_throw_bad_alloc_leaves_by_panic and api::cxx::kani_cxx::call_throw_bad_alloc_calls_once; not checked: what std::__throw_bad_alloc does (C6), and that its throw unwinds through `throw_bad_alloc` and its callers (`oom`, or the aligned operator's frame) to the caller of `operator new`, undefined in Rust and resting on the unwind tables rustc emits (module doc)).
 
 > Call `std::__throw_bad_alloc` at `t`, its non-null address ([`is_throw_bad_alloc`]).
 
@@ -157,7 +157,7 @@ fn oom(
 
 ## `axiom_c_call`
 
-src/api/cxx.rs:636. Kind: axiom. Category: C-program contract.
+src/api/cxx.rs:675. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C++ call that hands over the block at `p` to an `operator delete` ([`CCall`], [`CEntry::Frees`]).
