@@ -1,0 +1,67 @@
+# GenMC: the weak-memory harnesses of tests/genmc (verus/WEAKMEM.md,
+# "GenMC"). Each runs challoc's own vspec wrappers and src/sync.rs,
+# compiled unchanged, under GenMC's exhaustive exploration with no bound
+# on store history, under RC11, IMM and (for the larger cases) ARMv8;
+# each control (a mutant ordering or step) must fail with its expected
+# report, as loom's #[should_panic] models do.
+#
+# The genmc package is pinned to the release the harnesses were checked
+# with. It brings the rust stream whose LLVM major version its build
+# matches (rust-1.99, LLVM 22: GenMC interprets rustc's LLVM IR), so
+# this file installs no rust-1.98 (the two cannot be installed
+# together), and clang. GenMC has no futex, so the harnesses take
+# genmc-std's Mutex for a `RawLock`.
+version: 1
+
+environment:
+  packages: [genmc~0.20.0, busybox]
+
+checks:
+  genmc:
+    description: >-
+      tests/genmc/run.sh: every GenMC case in tests/genmc/cases (the
+      dispatch byte, the hand-out watermark and its copy, the arena bound
+      counts, the arena count and table, the slot state byte, the slab
+      bitmap and two litmus shapes loom cannot produce) under each memory
+      model it names; a pass case must pass and a control must fail with
+      its expected report. Runs on pull requests that change the wrappers,
+      src/sync.rs, the source files the harnesses copy steps from,
+      Cargo.toml, tests/genmc/, tests/loom/src/vspec.rs or this file.
+    # The wrappers, the loom crate's vspec.rs that declares them, and
+    # src/sync.rs, which the harnesses compile; the files whose steps the
+    # harnesses copy (no source test ties those copies to the code, so a
+    # change there reruns the copies and asks for a look);
+    # the root Cargo.toml (the vstd pin tests/genmc/Cargo.toml follows).
+    when:
+      changed:
+        - "src/sync.rs"
+        - "src/vspec/**"
+        - "src/api/mod.rs"
+        - "src/arena.rs"
+        - "src/bitmap.rs"
+        - "src/class/mod.rs"
+        - "src/class/table.rs"
+        - "src/heap/mod.rs"
+        - "src/heap/shared.rs"
+        - "src/heap/slotstate.rs"
+        - "src/policy.rs"
+        - "src/slab.rs"
+        - "Cargo.toml"
+        - "tests/genmc/**"
+        - "tests/loom/src/vspec.rs"
+        - ".chainguard/ci/genmc.yaml"
+    resources: medium
+    timeout: 20m
+    network:
+      egress: [index.crates.io, static.crates.io]
+    steps:
+      - name: rustfmt (tests/genmc)
+        # The templates (run.sh --templates: not prelude.rs, whose #[path]
+        # modules rustfmt would follow into src/ and
+        # tests/loom/src/vspec.rs, which lint.yaml's rustfmt and loom
+        # checks format with their own rustfmt).
+        cmd: [sh, -c, "cd tests/genmc && rustfmt --check --edition 2024 $(sh run.sh --templates) src/lib.rs"]
+      - name: an unnamed template fails setup
+        cmd: [sh, tests/genmc/run.sh, --self-test]
+      - name: GenMC cases
+        cmd: [sh, tests/genmc/run.sh]
