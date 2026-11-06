@@ -551,6 +551,12 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
                     } else {
                         tls::set((raw ^ bit) as *mut c_void, Tracked::assume_new());
                     }
+                    // Under the debug TLS check (`heap::tlscheck`) a poisoned
+                    // slot value fails the check before it is used, and its
+                    // deep pass can catch a poisoned entry: a real abort
+                    // then, since a panic in a fork child can hang.
+                    #[cfg(challoc_tls_check)]
+                    crate::sys::test_real_aborts();
                     let q = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
                     core::ptr::write_volatile(q, 1);
                     libc::_exit(3);
@@ -559,6 +565,22 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
             let mut status = 0;
             // SAFETY: `pid` is this process's child; `status` is a local.
             assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+            #[cfg(challoc_tls_check)]
+            if !pac::fpac() {
+                let aborted = (libc::WIFSIGNALED(status)
+                    && libc::WTERMSIG(status) == libc::SIGABRT)
+                    || (libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 134);
+                assert!(
+                    aborted || target == "entry",
+                    "tls: the tls check did not catch a corrupted slot: status {status:#x}"
+                );
+                if aborted {
+                    std::eprintln!(
+                        "pac: corrupted {target} -> caught by the tls check (fpac=false)"
+                    );
+                    continue;
+                }
+            }
             assert!(
                 libc::WIFSIGNALED(status),
                 "{target}: the child survived a corrupted pointer: status {status:#x}"

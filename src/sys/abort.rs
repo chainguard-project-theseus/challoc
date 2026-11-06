@@ -291,6 +291,16 @@ fn test_unwind(args: fmt::Arguments<'_>) {
     }
 }
 
+/// Test builds: every later [`abort_fmt`] in this process aborts for real
+/// instead of unwinding. For a test's `fork` child that expects an abort:
+/// a panic there runs the panic hook, whose locks another thread of the
+/// parent may have held at the `fork`, so the child could hang. Only the
+/// debug TLS check's tests (`heap::tlscheck`) need it.
+#[cfg(all(test, challoc_tls_check))]
+pub(crate) fn test_real_aborts() {
+    tests::REAL_ABORT.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

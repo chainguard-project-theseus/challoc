@@ -38,6 +38,8 @@ mod cache;
 mod compact;
 mod flush;
 mod fresh;
+#[cfg(any(test, challoc_tls_check))]
+mod heap_facts;
 pub(crate) mod live;
 pub mod mallocx;
 mod others;
@@ -46,6 +48,8 @@ mod shared;
 pub(crate) mod slotstate;
 mod tcaches;
 mod thread;
+#[cfg(challoc_tls_check)]
+pub(crate) mod tlscheck;
 mod zero;
 
 #[cfg(test)]

@@ -1619,6 +1619,8 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 #[cfg(test)]
 pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> Option<usize> {
     let (class, slab) = shared.set_slot(p)?;
+    #[cfg(challoc_tls_check)]
+    super::tlscheck::adopt(h as *mut Heap);
     // `h` as the slot value `heap_from_slot` turns back into it: signed
     // with the thread pointer when `flags` carries `PUSH_PAC`.
     let (_, tp) = crate::sys::tls::get_tp(Tracked::assume_new());
