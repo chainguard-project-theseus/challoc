@@ -3250,6 +3250,7 @@ mod tests {
             &[
                 "purge/background.rs:request",
                 "purge/background.rs:start",
+                "purge/background.rs:present_or_creating",
                 "purge/background.rs:start_requested",
                 "purge/background.rs:auto_tick",
                 "purge/background.rs:main",
@@ -4639,6 +4640,11 @@ mod tests {
                 &[
                     ("purge/background.rs:", "pub fn request(", "state()"),
                     ("purge/background.rs:", "pub fn start(", "state()"),
+                    (
+                        "purge/background.rs:",
+                        "pub fn present_or_creating(",
+                        "state()",
+                    ),
                     ("purge/background.rs:", "pub fn start_requested(", "state()"),
                     ("purge/background.rs:", "pub fn auto_tick(", "state()"),
                     ("purge/background.rs:", "extern \"C\" fn main(", "state()"),
