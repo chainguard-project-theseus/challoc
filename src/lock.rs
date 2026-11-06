@@ -1208,6 +1208,7 @@ mod tests {
     // The values the tests below lock; their invariant is not stated.
     impl LockSpec for u32 {}
     impl LockSpec for u64 {}
+    impl LockSpec for [u64; 4] {}
     impl<T> LockSpec for Vec<T> {}
 
     /// Every lock axiom outside this file states [`assumed_inv`] or
@@ -1857,6 +1858,68 @@ mod tests {
             released_at - acquired_at
         );
         assert_eq!(l.state.load(Ordering::Relaxed), UNLOCKED);
+    }
+
+    /// Weak-memory stress of `RawLock` (ignored; `CHALLOC_STRESS_SECS`).
+    /// Twice the CPUs take one lock, check that its four plain words are
+    /// equal and bump them all. A holder that reads two different words,
+    /// or a final value below the acquisitions, saw a critical section
+    /// whose writes were not ordered before its own: the edge from
+    /// `release`'s `swap(Release)` to the next `try_acquire` or
+    /// `swap(CONTENDED, Acquire)` (WEAKMEM.md, P2). Twice the CPUs keep
+    /// some lockers on the futex path.
+    #[test]
+    #[ignore]
+    fn stress_lock_edges() {
+        use core::sync::atomic::{AtomicBool, AtomicU64};
+        let threads = 2 * crate::testutil::stress_threads();
+        let l = Lock::new([0u64; 4], Ghost::assume_new());
+        let stop = AtomicBool::new(false);
+        let torn = AtomicU64::new(0);
+        let first_torn = AtomicU64::new(u64::MAX);
+        let started = std::time::Instant::now();
+        let total: u64 = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..threads)
+                .map(|_| {
+                    s.spawn(|| {
+                        let mut n = 0u64;
+                        while !stop.load(Ordering::Relaxed) {
+                            let mut g = l.lock_t();
+                            let v = g[0];
+                            if g[1] != v || g[2] != v || g[3] != v {
+                                torn.fetch_add(1, Ordering::Relaxed);
+                                first_torn.fetch_min(v, Ordering::Relaxed);
+                            }
+                            let m = v.max(g[1]).max(g[2]).max(g[3]) + 1;
+                            g[0] = m;
+                            g[1] = m;
+                            g[2] = m;
+                            g[3] = m;
+                            drop(g);
+                            n += 1;
+                        }
+                        n
+                    })
+                })
+                .collect();
+            std::thread::sleep(crate::testutil::stress_duration());
+            stop.store(true, Ordering::Relaxed);
+            hs.into_iter().map(|h| h.join().unwrap()).sum()
+        });
+        let end = *l.lock_t();
+        let lost = total - end[0].min(total);
+        crate::testutil::stress_report(
+            "lock_edges",
+            &std::format!(
+                "threads={threads} acquisitions={total} secs={:.1} torn={} first_torn_at={} lost={lost}",
+                started.elapsed().as_secs_f64(),
+                torn.load(Ordering::Relaxed),
+                first_torn.load(Ordering::Relaxed) as i64,
+            ),
+        );
+        assert_eq!(torn.load(Ordering::Relaxed), 0, "a holder read torn words");
+        assert_eq!(end, [total; 4], "lost updates: {lost}");
+        assert_eq!(l.raw().state.load(Ordering::Relaxed), UNLOCKED);
     }
 }
 

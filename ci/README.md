@@ -60,6 +60,9 @@ repository (`extended.yaml`'s header says why it does not yet):
 - `extended.yaml`: `fuzz` (50M operations: default, hardened, sized, q8),
   `oscillate` (the 600 s soak), `check-needed`, `consumers` (the Valkey and
   Ruby builds), each on both arches.
+- `weakmem.yaml`: `weakmem-stress`, the three weak-memory stress tests
+  (`verus/WEAKMEM.md`, "Hardware stress tests"), 60 s each, on aarch64
+  only.
 
 `chainctl checks run` plans a commit without a pull request; name the
 checks to run with `--check`. The floor checks run only on main, where

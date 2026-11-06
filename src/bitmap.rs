@@ -4580,4 +4580,96 @@ mod tests {
         v.release_t(0, 1 << 6);
         v.allocated(6);
     }
+
+    /// Weak-memory stress of the claim and release edge (ignored;
+    /// `CHALLOC_STRESS_SECS`). The CPUs share one word of 4 slots, each
+    /// with 4 plain words of data. A claimer finds its slot's data 0
+    /// (what the last owner wrote before `release`), writes its own token
+    /// to all four words, checks them, writes 0 and releases. A claimer
+    /// that reads a token, or a holder whose token changed, saw a release
+    /// not ordered before the next claim: `release`'s `fetch_and(Release)`
+    /// to `claim_word`'s `fetch_or(Acquire)` (WEAKMEM.md, P1).
+    #[test]
+    #[ignore]
+    fn stress_bitmap_claim_release_edge() {
+        use core::cell::UnsafeCell;
+        use core::sync::atomic::AtomicBool;
+        const SLOTS: usize = 4;
+        struct Data([UnsafeCell<[u64; 4]>; SLOTS]);
+        // SAFETY: each slot's data is touched only by the thread holding
+        // the slot's bit, which is the property under test.
+        unsafe impl Sync for Data {}
+        let word = [AtomicU64::new(0)];
+        let bm = AtomicBitmap::from_words_t(&word);
+        bm.init_t(SLOTS);
+        let data = Data(core::array::from_fn(|_| UnsafeCell::new([0; 4])));
+        let threads = crate::testutil::stress_threads();
+        let stop = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        // Per thread: (claims, stale data seen on claim, token changed
+        // while held, the claim count at the first anomaly).
+        let res: Vec<(u64, u64, u64, u64)> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..threads)
+                .map(|t| {
+                    let (bm, data, stop) = (&bm, &data, &stop);
+                    s.spawn(move || {
+                        let (mut n, mut stale, mut changed, mut first) =
+                            (0u64, 0u64, 0u64, u64::MAX);
+                        while !stop.load(Ordering::Relaxed) {
+                            let Some((i, m)) = bm.claim(1) else {
+                                core::hint::spin_loop();
+                                continue;
+                            };
+                            assert_eq!(i, 0);
+                            let p = data.0[m.trailing_zeros() as usize].get().cast::<u64>();
+                            let token = ((t as u64 + 1) << 40) | (n + 1);
+                            // SAFETY: the claimed bit makes this thread the
+                            // slot's one holder; the four words are in `data`.
+                            unsafe {
+                                if (0..4).any(|k| p.add(k).read_volatile() != 0) {
+                                    stale += 1;
+                                    first = first.min(n);
+                                }
+                                for k in 0..4 {
+                                    p.add(k).write_volatile(token);
+                                }
+                                if (0..4).any(|k| p.add(k).read_volatile() != token) {
+                                    changed += 1;
+                                    first = first.min(n);
+                                }
+                                for k in 0..4 {
+                                    p.add(k).write_volatile(0);
+                                }
+                            }
+                            let (prev, _) = bm.release_t(0, m);
+                            assert_eq!(prev & m, m, "double release");
+                            n += 1;
+                        }
+                        (n, stale, changed, first)
+                    })
+                })
+                .collect();
+            std::thread::sleep(crate::testutil::stress_duration());
+            stop.store(true, Ordering::Relaxed);
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let claims: u64 = res.iter().map(|r| r.0).sum();
+        let stale: u64 = res.iter().map(|r| r.1).sum();
+        let changed: u64 = res.iter().map(|r| r.2).sum();
+        let first = res.iter().map(|r| r.3).min().unwrap_or(u64::MAX);
+        crate::testutil::stress_report(
+            "bitmap_claim_release_edge",
+            &std::format!(
+                "threads={threads} claims={claims} secs={:.1} stale={stale} changed={changed} first_anomaly_thread_claim={}",
+                started.elapsed().as_secs_f64(),
+                first as i64,
+            ),
+        );
+        assert_eq!(
+            (stale, changed),
+            (0, 0),
+            "a claim saw another holder's data"
+        );
+        assert_eq!(word[0].load(Ordering::Relaxed), !0u64 << SLOTS);
+    }
 }
