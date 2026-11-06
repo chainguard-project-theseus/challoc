@@ -17,7 +17,7 @@ file.
 ## `store_usize`
 
 src/vspec/atom.rs:109. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; the C11 argument above that the permission's value is the watermark's last write, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the table steps, in the configurations their files state; the C11 argument above that the permission's value is the watermark's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -39,7 +39,7 @@ pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm):
 ## `load_usize`
 
 src/vspec/atom.rs:134. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_load_usize, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the table steps, in the configurations their files state; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_load_usize, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the table steps, in the configurations their files state; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
@@ -78,7 +78,7 @@ pub(crate) fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
 ## `store_usize_at`
 
 src/vspec/atom.rs:178. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize_at, and loom: watermark::loom_watermark_mirror_follows, watermark::loom_watermark_mirror_installed_concurrently and free::loom_free_after_synchronised_handoff; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; that `p` reaches the copy `usize_ptr` made it from (`usize_ptr`'s provenance, itself trusted); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_store_usize_at, and loom: watermark::loom_watermark_mirror_follows, watermark::loom_watermark_mirror_installed_concurrently and free::loom_free_after_synchronised_handoff; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the table steps, in the configurations their files state; that `p` reaches the copy `usize_ptr` made it from (`usize_ptr`'s provenance, itself trusted); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `(*p).store(v, ordering)` through a pointer to an atomic, with the permission of the atomic it names (it panics for an `Acquire` or `AcqRel` ordering).
 
@@ -100,7 +100,7 @@ pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering
 ## `load_usize_seen`
 
 src/vspec/atom.rs:220. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff, free::loom_free_after_relaxed_handoff and bitmap::loom_bitmap_init_is_published; not checked: this body, which the models replace with loom's `Acquire` load inside copies of the table steps, in the configurations their files state; the ghost half (the invariant opened around the load, the persistent set duplicated and frozen), an argument about vstd's resource algebra that no tool checks; the C11 argument above that the permission's value is the watermark's last write, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff, free::loom_free_after_relaxed_handoff and bitmap::loom_bitmap_init_is_published; not checked: this body beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the table steps, in the configurations their files state; the ghost half (the invariant opened around the load, the persistent set duplicated and frozen), an argument about vstd's resource algebra that no tool checks; the C11 argument above that the permission's value is the watermark's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `a.load(ordering)` inside `inv`, an invariant that holds `a`'s permission with a persistent set and a ghost variable's half ([`SeenVal`]): the permission's value, so a value the predicate admits, and a copy of the set the invariant held with it, frozen (the ghost variable stays in the invariant).
 
@@ -127,7 +127,7 @@ pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(
 ## `load_u16_at`
 
 src/vspec/atom.rs:260. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_load_u16_at, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the table steps, in the configurations their files state; that every write to the owner word is `class::table::store_owner`'s (itself trusted) or vstd's `AtomicU16::store` spec, apart from the test helper `SlabTable::corrupt_owner_word`, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::atom_load_u16_at, and loom: watermark::loom_watermark_take_group_publishes, free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the table steps, in the configurations their files state; that every write to the owner word is `class::table::store_owner`'s (itself trusted) or vstd's `AtomicU16::store` spec, apart from the test helper `SlabTable::corrupt_owner_word`, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `(*p).load(ordering)` through `perm`, the permission to the atomic at `p`: the value the permission holds ([`u16_value`]).
 

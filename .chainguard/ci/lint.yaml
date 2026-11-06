@@ -75,26 +75,29 @@ checks:
 
   # count::loom_count_bind_assign_unbind took about 6 of the loom check's
   # 7 minutes, so it is #[ignore]d there and runs here, on pull requests
-  # that change the loom crate or the code the count model copies: the
-  # Arenas counts of src/arena.rs, vspec/count.rs's wrappers, the RawLock
-  # of src/lock.rs (tests/loom/src/lock.rs), and src/heap/mod.rs, whose
-  # try_rehome calls try_bind_idle without a lock (tests/loom/src/count.rs,
-  # tests/loom/tests/pins.rs). The pins in `loom` still fail on every pull
-  # request that changes a copied line. `--ignored` runs every ignored
-  # model, so a later slow one belongs in this list's paths too.
+  # that change the loom crate, the code the count model copies (the
+  # Arenas counts of src/arena.rs, the RawLock of src/lock.rs
+  # (tests/loom/src/lock.rs), and src/heap/mod.rs, whose try_rehome calls
+  # try_bind_idle without a lock: tests/loom/src/count.rs,
+  # tests/loom/tests/pins.rs), or the code it runs: vspec/count.rs's
+  # wrappers, over the atomics of src/sync.rs. The pins in `loom` still
+  # fail on every pull request that changes a copied line. `--ignored`
+  # runs every ignored model, so a later slow one belongs in this list's
+  # paths too.
   loom-count:
     description: >-
       The loom count model with the shipped orderings
       (count::loom_count_bind_assign_unbind, ignored in the loom check):
       tests/loom/run.sh -- --ignored, under loom 0.7.2 with the DPOR patch.
-      Runs on pull requests that change tests/loom/ or the arena counts,
-      lock and wrappers the model copies.
+      Runs on pull requests that change tests/loom/, the arena counts and
+      lock the model copies, or the wrappers it runs and src/sync.rs.
     when:
       changed:
         - "tests/loom/**"
         - "src/arena.rs"
         - "src/lock.rs"
         - "src/vspec/count.rs"
+        - "src/sync.rs"
         - "src/heap/mod.rs"
         - ".chainguard/ci/lint.yaml"
     resources: medium

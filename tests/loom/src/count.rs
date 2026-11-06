@@ -1,8 +1,8 @@
 //! The arena registry's bound counts (`src/arena.rs`, `Arenas::bound`), a
 //! copy of the `Arenas` steps that touch them through `vspec/count.rs`'s
-//! wrappers (`fetch_add`, `fetch_sub`, `load`, `compare_exchange`, each
-//! the bare `core` operation with the caller's ordering), with their
-//! orderings (all `Relaxed`):
+//! wrappers (`fetch_add`, `fetch_sub`, `load`, `compare_exchange`), which
+//! run here as they are, over loom's `AtomicU32` (`crate::vspec`), with
+//! the steps' orderings (all `Relaxed`):
 //!
 //! - [`Arenas::count_in`] is `Arenas::count_in` (and `bind`, its one-line
 //!   caller): `fetch_add(1)`;
@@ -29,9 +29,11 @@
 //! pattern), building an arena, and the `u32` wrap (2^32 tickets).
 
 use crate::lock::RawLock;
+use crate::vspec::count;
 use crate::{leak, model};
 use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
+use vstd::prelude::Tracked;
 
 const NARENAS: usize = 2;
 
@@ -63,7 +65,7 @@ impl Arenas {
 
     /// `Arenas::load_bound`.
     fn load_bound(&self, i: usize) -> u32 {
-        self.bound[i].load(Ordering::Relaxed)
+        count::load(&self.bound[i], Ordering::Relaxed, Tracked::assume_new())
     }
 
     /// `Arenas::count_in`: a fresh ticket for arena `i`.
@@ -72,13 +74,13 @@ impl Arenas {
             let n = self.bound[i].load(Ordering::Relaxed);
             self.bound[i].store(n.wrapping_add(1), Ordering::Relaxed);
         } else {
-            self.bound[i].fetch_add(1, Ordering::Relaxed);
+            count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());
         }
     }
 
     /// `Arenas::unbind`: the ticket for arena `i` goes back.
     fn unbind(&self, i: usize) {
-        let prev = self.bound[i].fetch_sub(1, Ordering::Relaxed);
+        let prev = count::fetch_sub(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());
         assert!(
             prev != 0,
             "arena {i}: unbinding a heap that was never bound (count 0)"
@@ -119,9 +121,15 @@ impl Arenas {
             self.bound[i].store(1, Ordering::Relaxed);
             true
         } else {
-            self.bound[i]
-                .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
+            count::compare_exchange(
+                &self.bound[i],
+                0,
+                1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                Tracked::assume_new(),
+            )
+            .is_ok()
         }
     }
 }
@@ -160,7 +168,7 @@ fn run(split: bool) {
 /// runs it with `--ignored` on changes to this model or the code it
 /// copies: `sh tests/loom/run.sh -- --ignored`.
 ///
-/// Covers copies of `vspec::count::fetch_add`, `vspec::count::fetch_sub` and
+/// Runs `vspec::count::fetch_add`, `vspec::count::fetch_sub` and
 /// `vspec::count::load`.
 #[test]
 #[ignore = "slow: the loom-count check runs it (sh tests/loom/run.sh -- --ignored)"]
@@ -228,7 +236,7 @@ fn run_idle(split_cas: bool, rival: bool) {
 /// most one heap wins the arena, and every count stays the number of
 /// tickets out.
 ///
-/// Covers copies of `vspec::count::compare_exchange`,
+/// Runs `vspec::count::compare_exchange`,
 /// `vspec::count::fetch_add`, `vspec::count::fetch_sub` and
 /// `vspec::count::load`.
 #[test]
@@ -241,7 +249,7 @@ fn loom_count_try_bind_idle_rival() {
 /// strong one), so this checks the copy's use of it, not that the
 /// strong form has no spurious failure.
 ///
-/// Covers copies of `vspec::count::compare_exchange` and
+/// Runs `vspec::count::compare_exchange` and
 /// `vspec::count::load`.
 #[test]
 fn loom_count_try_bind_idle_one_wins() {

@@ -54,7 +54,7 @@
 //!   at, for as long as it stays in place: the class lines' copies live in
 //!   the `Shared`, which never moves (`Shared::init`'s contract).
 
-use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 use vstd::raw_ptr::PointsTo;

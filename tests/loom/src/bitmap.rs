@@ -2,7 +2,9 @@
 //!
 //! [`AtomicBitmap`] is a copy of `src/bitmap.rs`'s steps for a slab whose
 //! bitmap is whole words (`mask == !0`, the only shape a model here
-//! uses), over loom's atomics, one word for a slab of [`NSLOTS`] slots:
+//! uses), over loom's atomics, one word for a slab of [`NSLOTS`] slots,
+//! calling `vspec/word.rs`'s wrappers, which run here as they are
+//! (`crate::vspec`):
 //!
 //! - [`AtomicBitmap::init`] is `AtomicBitmap::init`'s whole-word branch:
 //!   each word's padding (the bits at and above `nbits`) stored `Relaxed`
@@ -47,10 +49,12 @@
 //! whose `init` is a `fetch_and` and a `fetch_or`; the ghost tokens.
 
 use crate::lock::RawLock;
+use crate::vspec::{self, atom, word};
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use loom::thread;
+use vstd::prelude::Tracked;
 
 const NSLOTS: usize = 2;
 const SLAB_MASK: u64 = (1 << NSLOTS) - 1;
@@ -92,7 +96,7 @@ impl<'a> AtomicBitmap<'a> {
             } else {
                 !0u64 << (nbits - lo)
             };
-            w.store(pad, Ordering::Relaxed);
+            word::store(w, pad, Ordering::Relaxed, Tracked::assume_new());
         }
     }
 
@@ -104,7 +108,7 @@ impl<'a> AtomicBitmap<'a> {
         if want == 0 {
             return 0;
         }
-        let prev = w.fetch_or(want, Ordering::Acquire);
+        let prev = word::fetch_or(w, want, Ordering::Acquire, Tracked::assume_new());
         want & !prev
     }
 
@@ -132,7 +136,12 @@ impl<'a> AtomicBitmap<'a> {
 
     /// `AtomicBitmap::release`: the word's previous value.
     pub(crate) fn release(&self, i: usize, mask: u64) -> u64 {
-        self.words[i].fetch_and(!mask, Ordering::Release)
+        word::fetch_and(
+            &self.words[i],
+            !mask,
+            Ordering::Release,
+            Tracked::assume_new(),
+        )
     }
 }
 
@@ -308,7 +317,7 @@ fn release_then_reserve(mutant: Mutant) {
 /// yet: then only the bitmap's `Release` and `Acquire` order the two
 /// owners' writes (the two controls below).
 ///
-/// Covers copies of `vspec::word::fetch_or`, `vspec::word::fetch_and` and
+/// Runs `vspec::word::fetch_or`, `vspec::word::fetch_and` and
 /// `vspec::word::store` (`vspec/word.rs`), over one
 /// `vspec::word::WordPerm`'s word.
 #[test]
@@ -337,7 +346,7 @@ fn loom_bitmap_relaxed_claim_is_a_race() {
 /// next pass, so each is met within two passes, and the slots are
 /// disjoint.
 ///
-/// Covers copies of `vspec::word::fetch_or`, `vspec::word::fetch_and` and
+/// Runs `vspec::word::fetch_or`, `vspec::word::fetch_and` and
 /// `vspec::word::store` (`vspec/word.rs`), over one
 /// `vspec::word::WordPerm`'s word.
 #[test]
@@ -380,9 +389,9 @@ fn init_published(publish: Ordering) {
         let committed = leak(AtomicUsize::new(0));
         let t = thread::spawn(move || {
             s.bitmap().init(NSLOTS);
-            committed.store(1, publish);
+            atom::store_usize(committed, 1, publish, Tracked::assume_new());
         });
-        if committed.load(Ordering::Acquire) == 1 {
+        if vspec::load_usize_seen(committed, Ordering::Acquire) == 1 {
             let hint = s.words[0].load(Ordering::Relaxed);
             assert_eq!(
                 hint & !SLAB_MASK,
@@ -398,7 +407,7 @@ fn init_published(publish: Ordering) {
 
 /// The shipped orderings.
 ///
-/// Covers copies of `vspec::word::store`, `vspec::word::fetch_or` and, for
+/// Runs `vspec::word::store`, `vspec::word::fetch_or` and, for
 /// the commit count, `vspec::atom::store_usize` and
 /// `vspec::atom::load_usize_seen` (`vspec/atom.rs`), over one
 /// `vspec::word::WordPerm`'s word.

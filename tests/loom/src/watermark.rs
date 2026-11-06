@@ -1,7 +1,8 @@
 //! The class table's hand-out watermark (`src/class/table.rs`,
 //! `committed_slabs`) and its copy in the class line (`heap::ClassLine`'s
 //! `committed`), a copy of the `SlabTable` steps that write and read
-//! them, with their orderings:
+//! them, with their orderings, calling `vspec/atom.rs`'s wrappers, which
+//! run here as they are, over loom's atomics (`crate::vspec`):
 //!
 //! - [`Table::take_group`] is `SlabTable::take_group` without the
 //!   commits: under the commit lock (the copy of `RawLock`; the lock's
@@ -42,10 +43,12 @@
 //! the THP advice after the store, and groups of more than one slab.
 
 use crate::lock::RawLock;
+use crate::vspec::{self, atom};
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use loom::thread;
+use vstd::prelude::Tracked;
 
 /// Slabs in the region, one per group (`lg_group` 0).
 const NSLABS: usize = 2;
@@ -93,7 +96,11 @@ impl Table {
     /// `SlabTable::committed_slabs` (`Acquire`) and
     /// `SlabTable::watermark`.
     fn watermark(&self, order: Ordering) -> usize {
-        self.committed.load(order)
+        if order == Ordering::Acquire {
+            vspec::load_usize_seen(&self.committed, order)
+        } else {
+            atom::load_usize(&self.committed, order, Tracked::assume_new())
+        }
     }
 
     /// `SlabTable::take_group` for `arena`: the group `[s, s + 1)`.
@@ -108,13 +115,13 @@ impl Table {
         let end = s + 1;
         assert_eq!(
             s,
-            self.committed.load(Ordering::Relaxed),
+            self.watermark(Ordering::Relaxed),
             "check_zero: take_group at next_slab {s} but the watermark differs"
         );
         self.owners[s].store(arena, Ordering::Relaxed);
         // SAFETY: under the lock.
         self.next.with_mut(|p| unsafe { *p = end });
-        self.committed.store(end, self.publish);
+        atom::store_usize(&self.committed, end, self.publish, Tracked::assume_new());
         // SAFETY: under the lock.
         let installed = self.installed.with(|p| unsafe { *p });
         if installed {
@@ -138,7 +145,15 @@ impl Table {
 
     /// The copy's store, `store_usize_at(.., Release)`.
     fn store_mirror(&self, v: usize) {
-        self.mirror.store(v, Ordering::Release);
+        // SAFETY: `mirror` is a live atomic in the leaked table.
+        unsafe {
+            atom::store_usize_at(
+                atom::usize_ptr(&self.mirror),
+                v,
+                Ordering::Release,
+                Tracked::assume_new(),
+            )
+        }
     }
 
     /// `SlabTable::mirror_watermark`: under the lock, the lock's value
@@ -155,7 +170,7 @@ impl Table {
 
     /// A load of the copy (`ClassLine::set_slab`'s, `Relaxed`).
     fn read_mirror(&self) -> usize {
-        let m = self.mirror.load(Ordering::Relaxed);
+        let m = atom::load_usize(&self.mirror, Ordering::Relaxed, Tracked::assume_new());
         assert!(m <= NSLABS, "copy {m} above the slab count");
         m
     }
@@ -166,9 +181,12 @@ impl Table {
         let w = self.watermark(Ordering::Acquire);
         assert!(w <= NSLABS, "watermark {w} above the slab count");
         for slab in 0..w {
+            // SAFETY: the owner word is a live atomic in the leaked table.
+            let owner = unsafe {
+                atom::load_u16_at(&self.owners[slab], Ordering::Relaxed, Tracked::assume_new())
+            };
             assert_ne!(
-                self.owners[slab].load(Ordering::Relaxed),
-                0,
+                owner, 0,
                 "slab {slab} below an Acquire watermark {w} has no owner"
             );
         }
@@ -197,7 +215,7 @@ fn run(publish: Ordering) {
 
 /// The shipped orderings.
 ///
-/// Covers copies of `table::store_owner` (`src/class/table.rs`) and
+/// Covers a copy of `table::store_owner` (`src/class/table.rs`) and runs
 /// `vspec::atom::store_usize`, `vspec::atom::load_usize`,
 /// `vspec::atom::load_usize_seen` and `vspec::atom::load_u16_at`
 /// (`vspec/atom.rs`).
@@ -254,7 +272,7 @@ fn run_mirror(install_first: bool, unlocked: bool) {
 /// (the watermark), a reader's loads never go back, and once every
 /// thread is joined the copy is the slab count.
 ///
-/// Covers copies of `vspec::atom::store_usize_at` and
+/// Runs `vspec::atom::store_usize_at` and
 /// `vspec::atom::store_usize` (`vspec/atom.rs`).
 #[test]
 fn loom_watermark_mirror_follows() {
@@ -265,7 +283,7 @@ fn loom_watermark_mirror_follows() {
 /// `mirror_watermark` stores the `next_slab` it reads under the lock,
 /// before or after the hand-out's.
 ///
-/// Covers copies of `vspec::atom::store_usize_at` and
+/// Runs `vspec::atom::store_usize_at` and
 /// `vspec::atom::store_usize` (`vspec/atom.rs`).
 #[test]
 fn loom_watermark_mirror_installed_concurrently() {

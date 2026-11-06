@@ -16,7 +16,7 @@ file.
 ## `WordPerm`
 
 src/vspec/word.rs:41. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: that the type's value is its word's last write, the C11 argument above (the models check the wrappers' orderings on copies, in the configurations tests/loom/src/bitmap.rs states, and no model sees the ghost value), which tests/loom/tests/access.rs backs by matching source text, for the bitmap words, and for `FORK_SIGMASK` only that `api::save_sigmask`'s raw `store` is its one write (its permission's value is `api::resume::axiom_fork_resumed`'s premise, and no model covers it)).
+Tool: loom/GenMC. Status: trusted (partly checked, loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: that the type's value is its word's last write, the C11 argument above (the models check the wrappers' orderings, running the wrappers as they are, in the configurations tests/loom/src/bitmap.rs states, and no model sees the ghost value), which tests/loom/tests/access.rs backs by matching source text, for the bitmap words, and for `FORK_SIGMASK` only that `api::save_sigmask`'s raw `store` is its one write (its permission's value is `api::resume::axiom_fork_resumed`'s premise, and no model covers it)).
 
 > Ghost permission to the word at [`addr`](WordPerm::addr): its current [`value`](WordPerm::value).
 
@@ -29,7 +29,7 @@ pub tracked struct WordPerm
 ## `fetch_or`
 
 src/vspec/word.rs:57. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_or, and loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency, which the models replace with loom's `fetch_or` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only); the C11 argument above that the permission's value is the word's last write, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_or, and loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only); the C11 argument above that the permission's value is the word's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `w.fetch_or(v, ordering)`.
 
@@ -50,7 +50,7 @@ pub fn fetch_or(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracke
 ## `store`
 
 src/vspec/word.rs:75. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_store, and loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency, which the models replace with loom's `store` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_store, and loom: bitmap::loom_bitmap_release_then_reserve, bitmap::loom_bitmap_two_claimers and bitmap::loom_bitmap_init_is_published; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `w.store(v, ordering)`, which panics for an `Acquire` or `AcqRel` ordering.
 
@@ -72,7 +72,7 @@ pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&
 ## `load`
 
 src/vspec/word.rs:96. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_load, and loom: free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency, which the models replace with loom's `load` inside copies of the free path's steps, in the configurations tests/loom/src/free.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text, for the bitmap words, and for `FORK_SIGMASK` only that `api::save_sigmask`'s raw `store` is its one write (its permission's value is `api::resume::axiom_fork_resumed`'s premise, and no model covers it)).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_load, and loom: free::loom_free_after_synchronised_handoff and free::loom_free_after_relaxed_handoff; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the free path's steps, in the configurations tests/loom/src/free.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text, for the bitmap words, and for `FORK_SIGMASK` only that `api::save_sigmask`'s raw `store` is its one write (its permission's value is `api::resume::axiom_fork_resumed`'s premise, and no model covers it)).
 
 > `w.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
@@ -93,7 +93,7 @@ pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>
 ## `fetch_and`
 
 src/vspec/word.rs:113. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_and, and loom: bitmap::loom_bitmap_release_then_reserve and bitmap::loom_bitmap_two_claimers; not checked: this body under concurrency, which the models replace with loom's `fetch_and` inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only, so not `init`'s sub-word branch); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_fetch_and, and loom: bitmap::loom_bitmap_release_then_reserve and bitmap::loom_bitmap_two_claimers; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the bitmap steps, in the configurations tests/loom/src/bitmap.rs states (whole-word slabs only, so not `init`'s sub-word branch); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `w.fetch_and(v, ordering)`.
 

@@ -67,6 +67,9 @@ pub(crate) mod purge;
 pub(crate) mod rseq;
 pub(crate) mod slab;
 pub(crate) mod stats;
+// `core`'s atomics, or loom's when the loom crate compiles the `vspec`
+// wrappers (`tests/loom`).
+pub(crate) mod sync;
 pub(crate) mod sys;
 #[cfg(test)]
 mod testutil;
