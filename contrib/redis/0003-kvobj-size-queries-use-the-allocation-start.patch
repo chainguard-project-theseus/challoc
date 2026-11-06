@@ -1,0 +1,52 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH 3/3] Pass the allocation start to zmalloc_size for kvobj in
+ DEBUG SDSLEN and MEMORY USAGE
+
+A kvobj with metadata (an expire) has its metadata in front of the
+object, so the kvobj pointer is not the start of its allocation:
+kvobjGetAllocPtr() is, as decrRefCount() and the defrag code already use.
+DEBUG SDSLEN (debug.c) and MEMORY USAGE of a module key
+(kvobjComputeSize, object.c) asked zmalloc_usable_size()/zmalloc_size()
+for the kvobj pointer itself.
+
+The bundled jemalloc looks sizes up by address and answers for an
+interior pointer too, so the results there are unchanged. An allocator
+that checks the pointer it is given (challoc aborts on a pointer that is
+not a block start; libc's malloc_usable_size reads the header in front of
+it and returns garbage) does not: under challoc the unit/type/string test
+"Check MEMORY USAGE for embedded key strings with jemalloc" crashed the
+server. Independent of the allocator patches; still present on Redis's
+unstable branch.
+---
+ src/debug.c  | 4 +++-
+ src/object.c | 4 +++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/debug.c b/src/debug.c
+--- a/src/debug.c
++++ b/src/debug.c
+@@ -759,7 +759,9 @@ NULL
+         } else {
+             /* The key's allocation size reflects the entire robj allocation.  
+              * For embedded values, report an allocation size of 0. */
+-            size_t obj_alloc = zmalloc_usable_size(val);
++            /* With metadata (an expire) in front of the object, val is not
++             * the start of its allocation: ask for the block kvobj lives in. */
++            size_t obj_alloc = zmalloc_usable_size(kvobjGetAllocPtr(val));
+             size_t val_alloc = val->encoding == OBJ_ENCODING_RAW ? sdsAllocSize(val->ptr) : 0;
+             addReplyStatusFormat(c,
+                 "key_sds_len:%lld, key_sds_avail:%lld, key_zmalloc: %lld, "
+diff --git a/src/object.c b/src/object.c
+--- a/src/object.c
++++ b/src/object.c
+@@ -1339,7 +1339,9 @@ size_t kvobjComputeSize(robj *key, kvobj *o, size_t sample_size, int dbid) {
+     {
+         return kvobjAllocSize(o);
+     } else if (o->type == OBJ_MODULE) {
+-        return zmalloc_size(o) + moduleGetMemUsage(key, o, sample_size, dbid);
++        /* The allocation starts at kvobjGetAllocPtr(o) when metadata (an
++         * expire) precedes the object. */
++        return zmalloc_size(kvobjGetAllocPtr(o)) + moduleGetMemUsage(key, o, sample_size, dbid);
+     }
+     serverPanic("Unknown object type");
+ }
