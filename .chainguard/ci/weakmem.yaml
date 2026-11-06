@@ -1,0 +1,45 @@
+# The weak-memory stress tests on aarch64 hardware: the three ignored
+# `stress_` unit tests (verus/WEAKMEM.md, "Hardware stress tests";
+# docs/testing.md), 60 s each, each in its own step and the class test
+# last: the class protocol's checks abort the process rather than panic,
+# which ends the test binary. aarch64 only: none of the weakened orderings tried
+# against these tests was caught on x86_64 (TSO), which lets only a later
+# load pass an earlier store.
+#
+# Like the extended checks (extended.yaml's header), this runs only on
+# request: the label ci/run:weakmem-stress on a pull request, or
+# `chainctl checks run . --check weakmem-stress` for any pushed commit.
+# The toolchain runs in the guest directly, no container.
+version: 1
+
+environment:
+  packages:
+    - rust-1.98        # Dockerfile.dev's stream
+    - build-base       # cc and g++ for build.rs (src/api/cxx_handler.cpp)
+    - bash
+
+checks:
+  weakmem-stress:
+    when: {requested: true}
+    description: >-
+      cargo test --release of lock::tests::stress_lock_edges,
+      bitmap::tests::stress_bitmap_claim_release_edge and
+      class::tests::stress_class_cross_thread_release (ignored in the
+      default run), 60 s each, on aarch64 hardware. Worth running on
+      changes to the orderings of RawLock (src/lock.rs), the slab bitmap
+      (src/bitmap.rs), the class protocol (src/class/), their vspec
+      atomic wrappers (src/vspec/) or src/sync.rs.
+    resources: medium-arm64
+    timeout: 20m
+    network:
+      egress: [index.crates.io, static.crates.io]
+    vars: {CHALLOC_STRESS_SECS: "60"}
+    steps:
+      - name: build
+        cmd: [cargo, test, --release, --lib, --no-run]
+      - name: lock
+        cmd: [cargo, test, --release, --lib, --, --ignored, --exact, --nocapture, lock::tests::stress_lock_edges]
+      - name: bitmap
+        cmd: [cargo, test, --release, --lib, --, --ignored, --exact, --nocapture, bitmap::tests::stress_bitmap_claim_release_edge]
+      - name: class
+        cmd: [cargo, test, --release, --lib, --, --ignored, --exact, --nocapture, class::tests::stress_class_cross_thread_release]

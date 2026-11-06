@@ -4,7 +4,9 @@
 //! process-wide allocator's settings, [`mlock_or_skip`] for the tests of
 //! purges that fail on locked memory, and the source scans of the guard
 //! tests and other source checks ([`grant_sites`], [`assert_only_at`],
-//! [`shipped_sources`], [`lock_spec_impls`]).
+//! [`shipped_sources`], [`lock_spec_impls`]), and the weak-memory stress
+//! tests' settings and report ([`stress_duration`], [`stress_threads`],
+//! [`stress_report`]).
 
 use core::mem::MaybeUninit;
 use std::boxed::Box;
@@ -597,4 +599,33 @@ pub(crate) fn lock_spec_impls() -> std::vec::Vec<LockSpecImpl> {
         }
     }
     out
+}
+
+/// How long one weak-memory stress test runs: `CHALLOC_STRESS_SECS`
+/// seconds, 5 by default. The stress tests are `#[ignore]`d, outside the
+/// default run; `cargo test --release --lib -- --ignored stress_` runs
+/// them.
+pub(crate) fn stress_duration() -> std::time::Duration {
+    let secs = std::env::var("CHALLOC_STRESS_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(5);
+    std::time::Duration::from_secs(secs)
+}
+
+/// The stress tests' thread count: `CHALLOC_STRESS_THREADS`, else the
+/// CPUs the process may run on.
+pub(crate) fn stress_threads() -> usize {
+    std::env::var("CHALLOC_STRESS_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()))
+}
+
+/// Print one stress test's result on a line of its own, in one write:
+/// `STRESS <test> key=value ...`.
+pub(crate) fn stress_report(test: &str, fields: &str) {
+    use std::io::Write;
+    let line = std::format!("\nSTRESS {test} {fields}\n");
+    let _ = std::io::stderr().write_all(line.as_bytes());
 }
