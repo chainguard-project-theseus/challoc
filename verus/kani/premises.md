@@ -2,7 +2,8 @@
 
 A Kani harness runs a trusted item's own body on the inputs and statics
 the harness sets up. What the C program stores in those statics, and
-what the program's own callbacks do while challoc calls them, and what
+what the program's own callbacks, and the functions of the C++ runtime
+it links, do while challoc calls them, and what
 glibc's loader and the Linux kernel place at the addresses the item
 reads, are outside its reach. A seam whose harness covers its whole
 contract except for such facts is `discharged on premises (Kani:
@@ -14,12 +15,13 @@ labels for the loader and the kernel.
 
 Each premise is a fact about what the C program that calls challoc
 stores in, or passes through, challoc's exported C symbols, or about
-what the program's own callback does while challoc calls it, as a K
-premise of `verus/isla/seams.md` states the kernel's side of a system
-call. The harness assumes it in the values it stores before it runs the
-item, in running the item on one thread, and in running a recording
-stand-in in place of the program's callback; its comment states those
-values.
+what the program's own callback, or a function of the C++ runtime it
+links, does while challoc calls it, as a K premise of
+`verus/isla/seams.md` states the kernel's side of a system call. The
+harness assumes it in the values it stores before it runs the item, in
+running the item on one thread, and in running a recording stand-in in
+place of the program's callback or the runtime's function; its comment
+states those values.
 `verus/count` reads the labels of this section's bullets and of the next
 section's, and fails on a Kani status that names any other.
 
@@ -82,6 +84,67 @@ section's, and fails on a Kani status that names any other.
   allow it, as from a function called through a `"C"` function
   pointer). That neither callback `longjmp`s out of the call is assumed,
   with no source.
+- **C4, the program's `new_handler`.** The handler the C++ runtime's
+  `std::get_new_handler` returns (C5), when not null, is the address of
+  a function of type `void (*)()` that the program installed with
+  `std::set_new_handler`. While challoc calls it, it keeps the C++
+  contract of a `new_handler` and the C allocation contract: it makes
+  more storage available and returns, throws `std::bad_alloc` or an
+  exception of a type derived from it, or ends the program without
+  returning; it does not `longjmp` out of the call, is not cancelled and
+  does not call `pthread_exit` during it; and any call it makes into
+  challoc passes only pointers it owns and frees only live blocks.
+  challoc calls it from `operator new`'s failure loop (`api::cxx::oom`),
+  on the thread whose `operator new` failed, with no arguments, after
+  the failed attempt has returned and without disabling cancellation:
+  the throwing forms directly (`api::cxx::call_handler`), the
+  `nothrow_t` forms through `challoc_call_new_handler` in
+  `src/api/cxx_handler.cpp` (`api::cxx::call_handler_caught`), which
+  catches what it throws. A throw from a handler the throwing forms call
+  unwinds through `oom` (and, for the aligned forms, their operator's
+  frame) to the caller of `operator new`. The Rust Reference makes that
+  unwind undefined behaviour; it works because the frames rustc emits
+  have unwind tables and no personality routine (the `api::cxx` module
+  documentation), which is a fact about challoc's compiled code, not
+  about the program, so it is outside this premise and a status that
+  rests on it stays partly checked. Each harness runs its item with a
+  recording handler in the program's place. Source: ISO C++ [new.handler] (a
+  `new_handler` "shall perform one of the following": make more storage
+  available and return, throw `bad_alloc` or a class derived from it, or
+  terminate without returning) and [new.delete.single] (the throwing
+  `operator new` loops: it tries to allocate, throws `bad_alloc` when
+  no `new_handler` is installed, and otherwise calls the current one and
+  repeats when it returns); the C allocation contract
+  (`verus/RESULTS.md`, "Trust base") for the calls into challoc. That
+  the handler does not `longjmp` out of the call, is not cancelled and
+  does not call `pthread_exit` during it is assumed, with no source.
+- **C5, the C++ runtime's `std::get_new_handler`.** A non-null address
+  the loader resolves challoc's weak reference `_ZSt15get_new_handlerv`
+  to (the GOT entry `api::cxx::get_new_handler_addr` loads, which P8 of
+  `verus/isla/seams.md` says holds the address of the definition symbol
+  resolution picks; `api::cxx::is_get_new_handler`) is that of the C++
+  runtime's `std::get_new_handler()` (libstdc++'s, or libc++abi's, which
+  is assumed to do the same, with no source): a
+  function with the C calling convention (the Itanium C++ ABI gives a
+  non-member function the platform's C convention) that takes no
+  arguments, does not throw, and returns null or the handler the program
+  last installed with `std::set_new_handler`, read with a load that
+  races with no `std::set_new_handler` on another thread. A program that
+  defines that symbol itself, interposing on the runtime's, is outside
+  this premise unless its definition does the same. challoc only calls
+  the address, as an `asm!` output turned into a function pointer, and
+  reads no byte through it. The harness runs the item with a stand-in,
+  a Rust function, that records its call and returns none or one of two
+  handlers. Source: ISO C++ [get.new.handler] (it returns the current
+  `new_handler`, which may be a null pointer value) and
+  [handler.functions] ("Calling the set_* and get_* functions shall not
+  incur a data race", and a `set_*` call synchronizes with later calls
+  of the same `set_*` function and of the corresponding `get_*`
+  function); libstdc++ `libsupc++/new_handler.cc`
+  (`std::get_new_handler`, `noexcept`: an `__atomic_load` with
+  `__ATOMIC_ACQUIRE`, or a load under a mutex where pointers are not
+  lock-free) and `libsupc++/new` (`new_handler get_new_handler()
+  noexcept;`), as read on gcc's master branch on 2026-11-06.
 
 ## Loader and kernel premises
 

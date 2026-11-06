@@ -51,6 +51,7 @@ checks:
       changed:
         - "src/kani/**"
         - "src/vspec/**"
+        - "src/api/cxx.rs"
         - "src/api/jemalloc.rs"
         - "src/api/print.rs"
         - "src/config.rs"

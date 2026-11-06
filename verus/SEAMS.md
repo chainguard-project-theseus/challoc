@@ -143,9 +143,10 @@ the same status for Kani harnesses that run the item's own body and
 cover its whole contract, as for `discharged (Kani: ...)`, except for
 facts no harness reaches: what the C program stores in, or passes
 through, challoc's exported C symbols, and what the program's own
-callback does while challoc calls it (as a K premise states the kernel's
-side of a system call; the harness runs a recording stand-in in the
-callback's place, the one stub it may use of code that is not verified),
+callback, or a function of the C++ runtime it links, does while challoc
+calls it (as a K premise states the kernel's side of a system call; the
+harness runs a recording stand-in in that function's place, the one
+stub it may use of code that is not verified),
 which are the C premises of `verus/kani/premises.md` ("Premises"); and
 what glibc's loader and the Linux kernel place at an address challoc
 reads but does not allocate (its L premises, "Loader and kernel

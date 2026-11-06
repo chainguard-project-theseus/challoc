@@ -75,12 +75,20 @@ unsafe extern "C" {
 
 verus! {
 
+/// `g` is what [`get_new_handler_addr`] read: the address of the
+/// definition of `std::get_new_handler()` that symbol resolution picks,
+/// or null.
+uninterp spec fn is_get_new_handler(g: *const c_void) -> bool;
+
 /// Address of libstdc++'s `std::get_new_handler()`, or null when no
 /// libstdc++ is loaded in the process.
 /// Trusted: inline assembly.
 #[verifier::external_body]
 #[inline(never)]
-fn get_new_handler_addr() -> *const c_void {
+fn get_new_handler_addr() -> (r: *const c_void)
+    ensures
+        is_get_new_handler(r),
+{
     let out: *const c_void;
     // SAFETY: a GOT load of a weak undefined symbol; no memory is written.
     unsafe {
@@ -142,16 +150,15 @@ fn throw_bad_alloc_addr() -> (r: *const c_void)
 #[verifier::external_body]
 struct Handler(unsafe extern "C" fn());
 
-/// Call `std::get_new_handler` at `get`, its non-null address: the
-/// installed `new_handler`, if one is set.
-/// Trusted: calls a function pointer and reads one from libstdc++. That
-/// `get` is the address [`get_new_handler_addr`] returned is not stated;
-/// [`installed_handler`] is the one caller.
+/// Call `std::get_new_handler` at `get`, its non-null address
+/// ([`is_get_new_handler`]): the installed `new_handler`, if one is set.
+/// Trusted: calls a function pointer and reads one from libstdc++.
 #[verifier::external_body]
 #[inline(always)]
 fn call_get_new_handler(get: *const c_void) -> Option<Handler>
     requires
         crate::sys::may_syscall(),
+        is_get_new_handler(get),
         get@.addr != 0,
 {
     // SAFETY: `std::get_new_handler` takes no arguments and returns a plain
@@ -487,6 +494,123 @@ pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): T
 }
 
 } // verus!
+
+/// Kani checks of `call_get_new_handler`, `call_handler` and
+/// `call_handler_caught` (`verus/ledger/src/api/cxx.rs.md`; `cfg(kani)`
+/// only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_cxx {
+    use super::{Handler, NewHandler, call_get_new_handler, call_handler, call_handler_caught};
+    use core::ffi::{c_int, c_void};
+    use vstd::prelude::Tracked;
+
+    /// How many times `record` was called.
+    static mut HANDLED: usize = 0;
+
+    /// A `new_handler` that records its call.
+    unsafe extern "C" fn record() {
+        // SAFETY: the harness's own statics; no other code runs in a
+        // harness.
+        unsafe { HANDLED += 1 };
+    }
+
+    unsafe extern "C" fn other() {}
+
+    /// `call_handler`: no `ensures`; it returns when the handler returns
+    /// (the token is ghost), and (beyond the contract) calls the handler
+    /// once.
+    #[kani::proof]
+    fn call_handler_calls_once() {
+        call_handler(Handler(record), Tracked::assume_new());
+        // SAFETY: as in `record`.
+        assert_eq!(unsafe { HANDLED }, 1);
+    }
+
+    /// The handler the stand-in for `std::get_new_handler` returns, and
+    /// how many times it was called.
+    static mut INSTALLED: NewHandler = None;
+    static mut GETS: usize = 0;
+
+    /// A `std::get_new_handler` that returns `INSTALLED` and records its
+    /// call.
+    unsafe extern "C" fn get_installed() -> NewHandler {
+        // SAFETY: as in `record`.
+        unsafe {
+            GETS += 1;
+            INSTALLED
+        }
+    }
+
+    /// The address of a handler, 0 for none.
+    fn addr(h: NewHandler) -> usize {
+        h.map_or(0, |f| f as usize)
+    }
+
+    /// `call_get_new_handler`: no `ensures`; it returns for the address
+    /// of a `std::get_new_handler` (its `requires`), and (beyond the
+    /// contract) calls it once and gives the handler it returned, for
+    /// none or one of two handlers.
+    #[kani::proof]
+    fn call_get_new_handler_gives_installed() {
+        let h: NewHandler = if kani::any() {
+            None
+        } else if kani::any() {
+            Some(record)
+        } else {
+            Some(other)
+        };
+        // SAFETY: as in `record`.
+        unsafe { INSTALLED = h };
+        kani::cover!(h.is_none());
+        kani::cover!(addr(h) == record as *const () as usize);
+        kani::cover!(addr(h) == other as *const () as usize);
+        assert_ne!(record as *const () as usize, other as *const () as usize);
+        let got = call_get_new_handler(get_installed as *const c_void);
+        // SAFETY: as in `record`.
+        assert_eq!(unsafe { GETS }, 1);
+        assert_eq!(addr(got.map(|g| g.0)), addr(h));
+    }
+
+    /// Whether the stand-in for `cxx_handler.cpp`'s shim reports a throw,
+    /// and the handler it was passed.
+    static mut THREW: bool = false;
+    static mut PASSED: usize = 0;
+
+    /// A stand-in for `challoc_call_new_handler`: when `THREW`, the
+    /// handler threw before any effect and the shim caught it (0);
+    /// otherwise it calls the handler and returns 1.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn caught_model(handler: unsafe extern "C" fn()) -> c_int {
+        // SAFETY: as in `record`; `handler` is the harness's `record`.
+        unsafe {
+            PASSED = handler as usize;
+            if THREW {
+                return 0;
+            }
+            handler();
+        }
+        1
+    }
+
+    /// `call_handler_caught` with the shim replaced by `caught_model`:
+    /// it passes the handler on and reports the shim's 0 as `false`, its 1
+    /// as `true`. What the shim does is not checked.
+    #[kani::proof]
+    #[kani::stub(super::challoc_call_new_handler, caught_model)]
+    fn call_handler_caught_reports_shim() {
+        let threw: bool = kani::any();
+        kani::cover!(threw);
+        kani::cover!(!threw);
+        // SAFETY: as in `record`.
+        unsafe { THREW = threw };
+        let r = call_handler_caught(Handler(record), Tracked::assume_new());
+        assert_eq!(r, !threw);
+        // SAFETY: as in `record`.
+        let (passed, handled) = unsafe { (PASSED, HANDLED) };
+        assert_eq!(passed, record as *const () as usize);
+        assert_eq!(handled, if threw { 0 } else { 1 });
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Itanium C++ ABI symbols (identical on x86_64 and aarch64: `m` is
