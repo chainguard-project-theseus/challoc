@@ -13,7 +13,7 @@ file.
 
 ## `HeapPerm`
 
-src/heap/thread.rs:128. Kind: external_body type. Category: allocator invariant.
+src/heap/thread.rs:129. Kind: external_body type. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Ghost: the permission to a thread heap, linear: the heap loan of the thread's TLS slot token holds it while the slot holds the heap ([`HeapLoan`](crate::sys::tls::HeapLoan), [`slot_ok`]), and [`slot_heap_ref`] lends the heap out of the loan, for as long as the loan is lent.
@@ -26,15 +26,15 @@ pub tracked struct HeapPerm
 
 ## `HeapPerm::assemble`
 
-src/heap/thread.rs:155. Kind: axiom. Category: allocator invariant.
+src/heap/thread.rs:160. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the field writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound` and `mark_rehome`, verified), used up here, and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)), which the caller installs as the heap's ghost state.
+> The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the field writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound` and `mark_rehome`, verified), and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)).
 
-Hashes: contract 3202173898, body none.
+Hashes: contract 1966992394, body none.
 
 ```rust
-pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
+pub(super) axiom fn assemble(tracked s: &super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
     requires
         super::heap_head(s.heap(), s.head()),
         perms.fresh(s.heap()),
@@ -49,7 +49,7 @@ pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super:
 
 ## `slot_heap_ref`
 
-src/heap/thread.rs:207. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:212. Kind: external_body. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The heap whose permission the heap loan holds, at `h`, as a reference, for as long as the loan is lent.

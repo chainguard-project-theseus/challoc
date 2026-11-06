@@ -1,8 +1,10 @@
 # An abstract linear token: its `addr` and `value` get meaning only from
 # `HeapPerm::assemble` and `slot_heap_ref`; no separation fact is stated.
 HeapPerm	allocator invariant	none (assumption)
-# The whole-heap permission is abstract: joining what `init_fields` wrote
-# through the raw permission with it is trusted, once per heap.
+# The whole-heap permission is abstract: that its value holds what
+# `init_fields` wrote through the raw permission (borrowed here, then kept
+# in the heap's ghost state, `Heap::head`) is trusted. Called once per heap,
+# at `heap_new` (pinned by `trusted_mint_sites_are_pinned`).
 HeapPerm::assemble	allocator invariant	none (assumption)
 # A raw-pointer dereference through the abstract heap permission.
 slot_heap_ref	raw pointer (internal)	none (assumption)

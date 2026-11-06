@@ -3291,6 +3291,17 @@ pub struct Heap {
     /// rest of the block, and its claim.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     heads: Tracked<Map<*mut ArenaCaches, others::NodeHead>>,
+    /// Ghost (no bytes): what the heap keeps of its own block besides its
+    /// home headers' permissions: the permission to its plain fields, the
+    /// 128 bytes before `caches` ([`heap_head`]), and the block's metadata
+    /// claim ([`Heap::home_at`]). A thread heap's creation puts them here
+    /// ([`tcaches::heap_new`]); [`Heap::destroy`], on the heap
+    /// `tcaches::heap_at` hands it (whose premise covers them as it covers
+    /// the home headers' permissions), takes them out and frees the block
+    /// with them. Those are the only stores and takes
+    /// (`crate::tests::trusted_mint_sites_are_pinned`).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    head: Tracked<(vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>,
     /// Makes `Heap` `!Unpin`. `Heap`'s methods write the home headers in
     /// `caches` through the raw pointer [`Heap::cache_ptr`] returns while a
     /// `&mut Heap` is live, and pass both to `&mut self` calls such as
@@ -3388,10 +3399,15 @@ impl Heap {
 
     /// The heap's home headers are those inside the heap at `h`
     /// ([`home_hdr`]), and the heap's block, from `h`, does not wrap the
-    /// address space (it is a metadata block).
+    /// address space (it is a metadata block). The heap keeps the rest of
+    /// its block ([`Heap::head`]): the permission to the 128 bytes before
+    /// the home headers, and the block's claim.
     pub(super) closed spec fn home_at(&self, h: *mut Heap) -> bool {
         &&& self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c))
         &&& h@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX
+        &&& self.head@.0.is_range(h@.addr as int, 128)
+        &&& self.head@.0.provenance() == h@.provenance
+        &&& heap_claim(h, self.head@.1)
     }
 
     /// The home header for `class` ([`Heap::home_ok`]).
@@ -4325,6 +4341,7 @@ impl Heap {
             new.shared == old.shared,
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
+            new.head == old.head,
             forall|p2: *mut CacheHeader, j: int|
                 old.perms@.hdrs.contains_key(p2) && p2 != cache && 0 <= j < old.perms@.hdr(p2).cap
                     ==> new.perms@.slots[#[trigger] old.perms@.ent(p2, j)] == old.perms@.slots[old.perms@.ent(p2, j)],
@@ -4607,6 +4624,19 @@ pub(super) open spec fn heap_head(h: *mut Heap, head: vstd::raw_ptr::PointsToRaw
     &&& h@.addr != 0
     &&& h@.addr as int % 64 == 0
     &&& h@.addr + 128 <= usize::MAX
+}
+
+/// `claim` is the metadata claim to the heap block at `h`, a `Heap`'s
+/// size and alignment, made by the process's `Meta`: what
+/// [`Heap::create_detached`] gets from `Meta::alloc_raw` with the block
+/// and [`Heap::destroy`] hands back to `Meta::free`.
+pub(super) open spec fn heap_claim(h: *mut Heap, claim: crate::meta::MetaClaim) -> bool {
+    claim.held(
+        crate::meta::process_live_id(),
+        h as *mut u8,
+        vstd::layout::size_of::<Heap>() as int,
+        vstd::layout::align_of::<Heap>() as int,
+    )
 }
 
 /// [`Arenas::assign`](crate::arena::Arenas::assign) on the process's
@@ -5162,8 +5192,9 @@ impl Heap {
     /// region is exhausted. Does not touch TLS or the thread key. With
     /// the heap, the permissions to its caches ([`CachePerms::fresh`]),
     /// and the heap's ticket for its home arena ([`Homed`]) with the
-    /// permission to the heap's plain fields and what was stored in its
-    /// `shared`, `arena` and `bound` ([`FreshHeap`]); on null, the ticket
+    /// permission to the heap's plain fields, the block's claim and what
+    /// was stored in its `shared`, `arena` and `bound` ([`FreshHeap`]); on
+    /// null, the ticket
     /// is given back (`unbind`).
     // The tracked results are part of the signature.
     #[allow(clippy::type_complexity)]
@@ -5179,7 +5210,7 @@ impl Heap {
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
             r.0@.addr != 0 ==> (r.2@ matches Some((t, s)) && homed_on(t, t.arena) && s.heap() == r.0 && s.arena() == t.arena
-                && s.bound() && heap_head(r.0, s.head()) && s.shared() == Shared::storage() as *const Shared),
+                && s.bound() && heap_head(r.0, s.head()) && heap_claim(r.0, s.claim()) && s.shared() == Shared::storage() as *const Shared),
             *final(ord) == *old(ord),
     {
         proof {
@@ -5210,7 +5241,7 @@ impl Heap {
     /// before it is registered). Null if the region is exhausted. With the
     /// heap, the permissions to its caches ([`CachePerms::fresh`]) and the
     /// token holding the permission to its plain fields, with what was
-    /// stored in them ([`FreshHeap`]).
+    /// stored in them, and the block's claim ([`FreshHeap`]).
     fn create_detached(
         shared: &Shared,
         arena: u16,
@@ -5223,7 +5254,7 @@ impl Heap {
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
             r.0@.addr != 0 ==> (r.2@ matches Some(st) && st.heap() == r.0 && st.arena() == arena as int && !st.bound()
-                && heap_head(r.0, st.head()) && st.shared() == Shared::storage() as *const Shared),
+                && heap_head(r.0, st.head()) && heap_claim(r.0, st.claim()) && st.shared() == Shared::storage() as *const Shared),
             *final(ord) == *old(ord),
     {
         proof {
@@ -5244,6 +5275,10 @@ impl Heap {
             assert(size == 128 + 64 * NCLASSES);
             crate::vspec::ptr::axiom_raw_readable(&raw, block, size);
             crate::vspec::ptr::axiom_ptr_add_addr(block, 128);
+            // The block's claim, which goes on with the head.
+            shared.lemma_wf_slow();
+            assert(h as *mut u8 == block);
+            assert(heap_claim(h, claim));
         }
         let tracked (head, mut rest) = raw.split(Set::range(base, base + 128));
         // SAFETY: `h` is a fresh, exclusively owned metadata block of the
@@ -5438,52 +5473,6 @@ proof fn take_hdr_run(
     }
 }
 
-/// The block of the heap `heap` at `h`, which `Heap::create` took from
-/// [`Meta::alloc_raw`](crate::meta::Meta::alloc_raw), for `Heap::destroy`
-/// to give back: the permission to the block's `size_of::<Heap>()` bytes
-/// and the block's claim, for the permissions to the heap's home headers
-/// (the run from `h + 128`, [`home_hdr`]), which this takes out of the
-/// heap's cache permissions `perms` and uses up. Only a well-formed heap's
-/// own home headers qualify (`heap` is the heap `perms` are the ghost state
-/// of, and its home headers are at `h`, [`Heap::home_at`]; a premise, not
-/// checked: the caller passes the heap's own value, `*heap` of the
-/// reference `tcaches::heap_at` returned, never one it built), and they are
-/// used up, so the block comes back once per heap: the heap owns one
-/// permission to each of its home headers, and the trusted source of an
-/// existing heap (`tcaches::heap_at`) lends one reference per
-/// `tcaches::HeapUse` token, whose premise (`tcaches::axiom_heap_use`) is
-/// what keeps two ghost copies of a heap from being destroyed. Its one caller
-/// is `Heap::destroy`, on the heap's last reference; any other proof code
-/// holding a well-formed `&mut Heap` meets these requires too, so calling
-/// it anywhere else would hand out a live heap's block. Trusted: creation
-/// split the block's permission into the home headers'
-/// (`CachePerms::fresh`) and the head's, the 128 bytes of plain fields
-/// before them, which went to [`init_fields`] and on into the
-/// [`FreshHeap`] that creation returns; and `init_fields` drops the claim
-/// (what it takes has the type `alloc_raw` returns, for the erased
-/// `Tracked` instances, see `init_fields`). So this states that the head
-/// and the claim are still the heap's while its home headers' permissions
-/// are, which holds while the heap is live and nothing kept the
-/// [`FreshHeap`]: every creator drops it (`Tcaches::create`'s and
-/// `create_heap_for_thread`'s `let (h, _, _)`). A caller that kept the
-/// [`FreshHeap`] and also destroyed the heap would hold the head's
-/// permission twice.
-///
-/// Checked by `crate::tests::trusted_mint_sites_are_pinned`, which pins its
-/// call sites to the ones named here: a new one is named here, with its
-/// premise, and added to that test's list in the same change.
-axiom fn axiom_heap_block(h: *mut Heap, heap: Heap, tracked perms: &mut CachePerms) -> (tracked r: (vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim))
-    requires
-        heap.wf(),
-        heap.home_at(h),
-        *old(perms) == heap.perms@,
-    ensures
-        *final(perms) == (CachePerms { hdrs: old(perms).hdrs.remove_keys(run_set(h@.addr + 128, h@.provenance, NCLASSES as int)), ..*old(perms) }),
-        r.0.is_range(h@.addr as int, vstd::layout::size_of::<Heap>() as int),
-        r.0.provenance() == h@.provenance,
-        r.1.held(crate::meta::process_live_id(), h as *mut u8, vstd::layout::size_of::<Heap>() as int, vstd::layout::align_of::<Heap>() as int),
-;
-
 impl Heap {
     /// The heap with its first `others` node given up (`destroy`, once
     /// the node's caches are freed): the node's headers out of the cache
@@ -5587,8 +5576,9 @@ impl Heap {
     /// `others` node's permissions and its block's claim
     /// ([`others::block_ok`]: the node is freed as the walk passes it,
     /// and the heap stays well formed without it, [`Heap::lemma_pop_node`]),
-    /// and the home headers' permissions, which stand for the heap's own
-    /// block ([`axiom_heap_block`]). A counted heap (`bound`) is unbound
+    /// and the heap's own block: its home headers' permissions, with the
+    /// permission to its plain fields and the block's claim, which the
+    /// heap keeps ([`Heap::head`], [`Heap::home_at`]). A counted heap (`bound`) is unbound
     /// from its home arena with its ticket before the flush
     /// ([`Heap::homed_ok`]) and is not counted from then on: `bound` and
     /// `rehome` are cleared with the ticket gone (nothing reads them again
@@ -5802,13 +5792,27 @@ impl Heap {
                 }
             }
         }
-        // The heap's own block: the permissions to its home headers stand
-        // for it, with the head and the block's claim
-        // ([`axiom_heap_block`], which takes them out of the heap's).
+        // The heap's own block, from what the heap keeps of it: the
+        // permission to its plain fields and the block's claim
+        // ([`Heap::head`], [`Heap::home_at`]), and its home headers'
+        // permissions, made raw again.
         let tracked mut blk = (vstd::raw_ptr::PointsToRaw::empty(h@.provenance), crate::meta::MetaClaim::tracked_none());
         proof {
-            let ghost hv = *heap;
-            blk = axiom_heap_block(h, hv, heap.perms.borrow_mut());
+            broadcast use vstd::raw_ptr::group_raw_ptr_axioms;
+
+            let ghost size = vstd::layout::size_of::<Heap>() as int;
+            assert(size == 128 + 64 * NCLASSES);
+            assert forall|c: int| 0 <= c < NCLASSES implies #[trigger] run_hdr(h@.addr + 128, h@.provenance, c) == heap.home_hdrs@[c] by {
+                assert(heap.home_hdrs@[c] == home_hdr(h, c));
+                assert(heap.owns(heap.home_hdrs@[c]));
+            }
+            let tracked hr = take_hdr_run(&mut heap.perms.borrow_mut().hdrs, h@.addr + 128, h@.provenance, NCLASSES as int);
+            let tracked mut hb = (vstd::raw_ptr::PointsToRaw::empty(h@.provenance), crate::meta::MetaClaim::tracked_none());
+            vstd::modes::tracked_swap(heap.head.borrow_mut(), &mut hb);
+            let tracked (hd, claim) = hb;
+            let tracked raw = hd.join(hr);
+            assert(raw.dom() =~= Set::range(h@.addr as int, h@.addr + size));
+            blk = (raw, claim);
         }
         shared.meta.free(h as *mut u8, Layout::new::<Heap>(), Tracked(blk), Tracked(ord));
     }
@@ -6102,6 +6106,7 @@ impl Heap {
             new.shared == old.shared,
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
+            new.head == old.head,
             v.len == 0 && v.cap == 0 && v.low_water == 0 && v.zeroed == 0 && v.run_end == 0,
             forall|q: *mut CacheHeader|
                 #[trigger] old.perms@.hdrs.contains_key(q) && q != cache && old.perms@.hdr(q).cap != 0 ==> stack_claimed(old.perms@.hdr(q), new.perms@.blocks),
@@ -7086,7 +7091,8 @@ impl Heap {
     /// `self` is `old` with at most its headers' values changed: the same
     /// headers, caching the same classes, the same `others` list and
     /// keys (and the permissions to its nodes' `arena` and `next`), home
-    /// headers and home arena.
+    /// headers and home arena, and what it keeps of its own block
+    /// ([`Heap::head`]).
     pub closed spec fn same_shape(&self, old: Heap) -> bool {
         &&& self.perms@.hdrs.dom() == old.perms@.hdrs.dom()
         &&& self.perms@.cls == old.perms@.cls
@@ -7100,6 +7106,7 @@ impl Heap {
         &&& self.shared == old.shared
         &&& self.home_hdrs == old.home_hdrs
         &&& self.heads == old.heads
+        &&& self.head == old.head
     }
 
     /// [`Heap::same_shape`] keeps [`Heap::owns_node`].
@@ -7152,6 +7159,7 @@ impl Heap {
         &&& self.shared == old.shared
         &&& self.home_hdrs == old.home_hdrs
         &&& self.heads == old.heads
+        &&& self.head == old.head
     }
 
     /// Trade the values of owned headers `a` and `b` of one class

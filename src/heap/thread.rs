@@ -114,7 +114,8 @@ pub proof fn lemma_exited_final(old: usize, new: usize)
 /// [`value`](HeapPerm::value) the heap, its ghost fields with it: what the
 /// heap held when the loan was last lent. Abstract rather than a
 /// `vstd` `PointsTo<Heap>`: a heap's ghost fields own the permissions to
-/// its own home headers ([`super::CachePerms`]), so a `PointsTo` to the
+/// its own home headers ([`super::CachePerms`]) and to its plain fields
+/// (`Heap::head`), so a `PointsTo` to the
 /// whole `Heap` would own those bytes a second time, and `ptr_mut_read`
 /// with `PointsTo::is_disjoint` would prove `false` from the pair.
 /// Made once per thread heap, by [`super::tcaches::heap_new`]
@@ -140,19 +141,23 @@ impl HeapPerm {
     /// `s.heap()`, from the token holding the permission to its plain
     /// fields and what the field writers stored in them
     /// ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound` and
-    /// `mark_rehome`, verified), used up here, and with its
+    /// `mark_rehome`, verified), and with its
     /// home headers written
-    /// `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)),
-    /// which the caller installs as the heap's ghost state. The heap's
+    /// `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)).
+    /// Both are borrowed: the caller installs them as the heap's ghost
+    /// state (`perms` as its cache permissions, and the permission `s`
+    /// holds, with the block's claim, as `Heap::head`). The heap's
     /// `others` is null and its `shared`, `arena` and `bound` are what `s`
     /// records; nothing is claimed about its other fields or its ghost
     /// fields. Trusted: `init_fields`, `mark_bound` and `mark_rehome` store
     /// the fields before the home headers through the raw permission `s`
     /// holds, which forgets the values, and the whole-`Heap` permission is
     /// abstract (above), so nothing verified joins the two.
-    /// Made once per heap: `s` is linear and made once per heap by
-    /// `init_fields`.
-    pub(super) axiom fn assemble(tracked s: super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
+    /// Called once per heap, at `tcaches::heap_new`, before the token is
+    /// used up (`FreshHeap::into_block`); `tests::trusted_mint_sites_are_pinned`
+    /// pins that call. A convention, not a proof fact: like any
+    /// `HeapPerm` (above), the one it makes carries no uniqueness.
+    pub(super) axiom fn assemble(tracked s: &super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
         requires
             super::heap_head(s.heap(), s.head()),
             perms.fresh(s.heap()),
@@ -246,7 +251,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     proof {
         // The heap is about to be freed: its permission leaves the token
         // (`Heap::destroy` gives the heap's block back from the heap's own
-        // ghost state, `heap::axiom_heap_block`, not from it).
+        // ghost state, `Heap::head` and its home headers' permissions, not
+        // from it).
         let tracked _heap = tls.loan.take();
     }
     crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void, Tracked(&mut tls.cell));

@@ -739,7 +739,15 @@ pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
 /// registered with it), so it has the address and the provenance the
 /// heap's home headers were recorded with; `Heap::destroy` gives the
 /// heap's block back from it, a metadata block, which does not wrap the
-/// address space. No memory precondition is stated: no caller can show
+/// address space. `Heap::home_at` also includes the rest of that block
+/// the heap keeps (`Heap::head`): the permission to the 128 bytes before
+/// the home headers and the block's claim. This asserts them as it
+/// asserts the home headers' permissions: creation returns them (a thread
+/// heap's go into its ghost state at [`heap_new`]; `Tcaches::create`
+/// drops them with the cache permissions), and `Heap::destroy`, the one
+/// place that takes them out, frees the block with them, so the block
+/// goes back once per heap on the same premise as the ticket. No
+/// memory precondition is stated: no caller can show
 /// one. `Tcaches::get` has a pointer loaded from its table, the thread
 /// key's destructor the one the C library hands it, and `Heap::destroy`
 /// the one either of them hands on; the permissions creation returned
@@ -769,7 +777,10 @@ pub(super) unsafe fn heap_at(p: *mut Heap, Tracked(_u): Tracked<&mut HeapUse>) -
 /// [`HeapPerm::assemble`]) and is lent for as long as the reference
 /// lives: its `others` field is null, as `init_fields` stored it, and its
 /// `shared`, `arena` and `bound` are what `s` records (`init_fields` and
-/// `mark_bound` stored them). Nothing is claimed about the heap's ghost
+/// `mark_bound` stored them). The permission to the heap's plain fields
+/// and the block's claim, which `s` holds, go into the heap's ghost state
+/// (`Heap::head`, [`FreshHeap::into_block`]), for `Heap::destroy` to free
+/// the block with. Nothing else is claimed about the heap's ghost
 /// fields: the caller installs the permissions and the ticket creation
 /// returned (`create_heap_for_thread`), through the reference, so the
 /// loan's permission describes the heap with them once the reference
@@ -788,6 +799,7 @@ pub(super) unsafe fn heap_new<'a>(
     requires
         s.heap() == p,
         super::heap_head(p, s.head()),
+        super::heap_claim(p, s.claim()),
         perms.fresh(p),
         old(loan).heap() is None,
     ensures
@@ -795,14 +807,19 @@ pub(super) unsafe fn heap_new<'a>(
         r.arena as int == s.arena(),
         r.bound == s.bound(),
         r.shared == s.shared(),
+        r.head@ == (s.head(), s.claim()),
         final(loan).heap() matches Some(hp) && hp.addr() == p@.addr && hp.value() == *final(r),
 {
-    let tracked hp = HeapPerm::assemble(s, perms);
+    let tracked hp = HeapPerm::assemble(&s, perms);
     proof {
         loan.put(hp);
     }
     // SAFETY: guaranteed by the caller.
-    unsafe { slot_heap_ref(p, Tracked(loan)) }
+    let r = unsafe { slot_heap_ref(p, Tracked(loan)) };
+    proof {
+        r.head = Tracked(s.into_block());
+    }
+    r
 }
 
 impl Tcaches {
