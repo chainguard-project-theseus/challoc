@@ -47,10 +47,32 @@ class VariantSpec:
     # Host knobs (bench/cb/knobs.py) set before each of this variant's runs
     # and restored after it, so they get the same ABBA pairing as a library.
     knobs: dict[str, str] = dataclasses.field(default_factory=dict)
+    # Cargo features of this challoc variant's builds, merged into every
+    # row's (variants.merge_features): a quantum feature here replaces the
+    # row's, e.g. `q16=head+features:quantum16` on a quantum8 row.
+    features: str = ""
 
     @property
     def mallctl(self) -> bool:
         return self.kind == "challoc" or bool(STOCK.get(self.source, {}).get("mallctl"))
+
+    def launch_entry(self) -> dict[str, Any]:
+        """This variant as launch.json carries it to the VMs (gce.py);
+        `from_launch` reads it back there (run.py)."""
+        return {
+            "label": self.label,
+            "kind": self.kind,
+            "source": self.source,
+            "conf": self.conf,
+            "role": self.role,
+            "knobs": dict(self.knobs),
+            "features": self.features,
+        }
+
+    @classmethod
+    def from_launch(cls, v: dict[str, Any]) -> VariantSpec:
+        """The variant a launch.json entry (`launch_entry`) stands for."""
+        return cls(v["label"], v["kind"], v["source"], v.get("conf", ""), v.get("role", "variant"), dict(v.get("knobs") or {}), v.get("features", ""))
 
     def can_run(self, requires: list[str], allocs: list[str] | None = None) -> bool:
         for r in requires:
@@ -70,18 +92,23 @@ def parse_variant(item: Any, refs: dict[str, str], role: str = "variant") -> Var
     `label=tree`, `jemalloc`/`glibc`/`tcmalloc`/`mimalloc`, or a table
     {name, src, conf, knobs}. A trailing `@CONF` sets MALLOC_CONF; each
     `+knob:NAME=VALUE` after it a host knob (bench/cb/knobs.py), e.g.
-    `chl-llc=head+knob:sched.llc_balancing=1`."""
+    `chl-llc=head+knob:sched.llc_balancing=1`, and a last
+    `+features:F1 F2...` the variant's cargo features, e.g.
+    `q16=head+features:quantum16`."""
     knobs: dict[str, str] = {}
+    features = ""
     if isinstance(item, dict):
         label = item.get("name") or item.get("label")
         src = item.get("src", label)
         conf = item.get("conf", "")
         knobs = {str(k): str(v) for k, v in (item.get("knobs") or {}).items()}
+        features = str(item.get("features", ""))
         if not label:
             raise SpecError(f"variant {item!r}: needs a name")
     else:
         s = str(item)
         conf = ""
+        s, _, features = s.partition("+features:")
         parts = s.split("+knob:")
         s = parts[0]
         for kv in parts[1:]:
@@ -98,13 +125,15 @@ def parse_variant(item: Any, refs: dict[str, str], role: str = "variant") -> Var
 
         check_names(knobs, f"variant {item!r}")
     if src in STOCK:
+        if features:
+            raise SpecError(f"variant {item!r}: +features applies to challoc variants only")
         return VariantSpec(label, "stock", src, conf, role, knobs)
     if src.startswith("git:"):
-        return VariantSpec(label, "challoc", src[4:], conf, role, knobs)
+        return VariantSpec(label, "challoc", src[4:], conf, role, knobs, features)
     if src == "tree":
-        return VariantSpec(label, "challoc", "tree", conf, role, knobs)
+        return VariantSpec(label, "challoc", "tree", conf, role, knobs, features)
     if src in refs:
-        return VariantSpec(label, "challoc", refs[src], conf, role, knobs)
+        return VariantSpec(label, "challoc", refs[src], conf, role, knobs, features)
     raise SpecError(f"variant {item!r}: source {src!r} is not base, head, git:REV, tree or a stock allocator")
 
 

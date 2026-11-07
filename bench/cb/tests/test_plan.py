@@ -109,6 +109,63 @@ class Variants(unittest.TestCase):
         with self.assertRaises(spec.SpecError):
             parse_variant("nope", refs)
 
+    def test_features(self):
+        from cb.variants import merge_features
+
+        refs = {"base": "origin/main", "head": "HEAD"}
+        v = parse_variant("q16=head@a:b+knob:thp=never+features:quantum16", refs)
+        self.assertEqual((v.source, v.conf, v.knobs, v.features), ("HEAD", "a:b", {"thp": "never"}, "quantum16"))
+        with self.assertRaises(spec.SpecError):
+            parse_variant("jemalloc+features:quantum16", refs)
+        self.assertEqual(merge_features("quantum8", "quantum16"), "quantum16")
+        self.assertEqual(merge_features("jemalloc-soname", "quantum8"), "jemalloc-soname,quantum8")
+        self.assertEqual(merge_features("quantum8", ""), "quantum8")
+
+    def test_features_survive_launch_json(self):
+        # gce.py writes each variant with launch_entry, run.py reads it back
+        # with from_launch: a dropped `features` would run the row's build
+        # under the variant's label.
+        import json
+
+        refs = {"base": "origin/main", "head": "HEAD"}
+        for item in ("q16=head@a:b+knob:thp=never+features:quantum16", "head", "jemalloc@background_thread:true"):
+            v = parse_variant(item, refs)
+            back = VariantSpec.from_launch(json.loads(json.dumps(v.launch_entry())))
+            self.assertEqual(back, v, item)
+        # An entry written before `features` existed reads as none.
+        old = {"label": "head", "kind": "challoc", "source": "HEAD"}
+        self.assertEqual(VariantSpec.from_launch(old).features, "")
+
+    def test_variant_features_pick_the_build(self):
+        # prepare builds each (tree, merged features) once, and lib_for gives
+        # a variant with features its own build for every row, a row with
+        # no features included; a variant without features keeps its base
+        # library on such a row.
+        from unittest import mock
+
+        from cb import variants
+
+        refs = {"base": "origin/main", "head": "HEAD"}
+        main = parse_variant("main=head", refs)
+        q16 = parse_variant("q16=head+features:quantum16", refs)
+        built = []
+
+        def fake_prepare(root, specs, work, values, log=print):
+            return [variants.Variant(s, f"{s.label}-base.so", "base", tree="T") for s in specs]
+
+        def fake_build(root, spec, work, log=print, features=""):
+            built.append(features)
+            return variants.Variant(spec, f"T-{features}.so", f"sha-{features}", tree="T")
+
+        with mock.patch.object(variants, "_prepare", fake_prepare), mock.patch.object(variants, "build_challoc", fake_build):
+            out = {v.label: v for v in variants.prepare("/r", [main, q16], "/w", {}, log=lambda *_: None, features=["quantum8"])}
+        self.assertEqual(sorted(built), ["quantum16", "quantum8"], "one build per (tree, merged features)")
+        self.assertEqual(out["main"].lib_for("quantum8"), ("T-quantum8.so", "sha-quantum8"))
+        self.assertEqual(out["q16"].lib_for("quantum8"), ("T-quantum16.so", "sha-quantum16"))
+        self.assertEqual(out["q16"].lib_for(""), ("T-quantum16.so", "sha-quantum16"))
+        self.assertEqual(out["main"].lib_for(""), ("main-base.so", "base"))
+        self.assertEqual(variants.identity_notes(list(out.values())), [], "no tree-vs-sha note across feature sets")
+
     def test_can_run(self):
         refs = {"base": "b", "head": "h"}
         self.assertTrue(parse_variant("head", refs).can_run(["challoc", "mallctl"]))

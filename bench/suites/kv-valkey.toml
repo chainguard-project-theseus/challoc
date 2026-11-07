@@ -1,0 +1,26 @@
+# kv-valkey: Valkey 9.1 under every allocator (bench/drivers/kv.sh,
+# kv-ops.sh, valkey-soak.sh). The gate pair is Valkey as it ships upstream
+# (its bundled jemalloc 5.3.0) against challoc as Wolfi ships it (the
+# patched runpath build, quantum8); the controls are preloaded on one
+# MALLOC=libc build of the same tag: jemalloc 5.4.0 and 5.3.0 (the release
+# tarballs), glibc, tcmalloc-minimal, mimalloc 3.x, and challoc itself
+# (`challoc-preload`), which separates the allocator from the integration
+# (sized frees, the usable-size pair, active defrag).
+#
+# The ops rows are paired (every VM runs every variant in Williams blocks);
+# the soak is one variant per VM, 20 minutes, compared unpaired. Shorter
+# soaks for a check: --var valkey_soak_secs=300.
+description = "Valkey: challoc (Wolfi build) vs bundled jemalloc (gate); jemalloc 5.3/5.4, glibc, tcmalloc, mimalloc, challoc preloaded (controls)"
+cells = "tag:gate"
+variants = ["jemalloc", "challoc=head"]
+controls = ["jemalloc54", "jemalloc53", "glibc", "tcmalloc", "mimalloc", "challoc-preload=head"]
+rows = ["valkey-ops", "valkey-ops-d1k", "valkey-soak"]
+replicas = 3
+blocks = 2
+warmup_blocks = 0
+shard_seconds = 1500
+looks = 1
+budget_usd = 30
+
+[local]
+blocks = 1

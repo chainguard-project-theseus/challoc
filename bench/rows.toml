@@ -64,6 +64,9 @@ churn_secs = "8"
 # passes --var valkey_soak_secs=60 and so on).
 valkey_soak_secs = "1200"
 valkey_soak_settle = "60"
+# The Redis / Valkey command-mix rows (bench/drivers/kv-ops.sh).
+kv_keys = "1000000"
+kv_reqs = "1000000"
 ruby_soak_secs = "600"
 jvm_soak_secs = "1200"
 jvm_server_secs = "300"
@@ -363,7 +366,9 @@ needs = ["{root}/bench/probes/python/json_bench.py"]
 # Valkey under valkey-benchmark and memtier: write phase, delete phase,
 # settle (bench/drivers/valkey-soak.sh). challoc swaps in under the fixed
 # runpath /opt/challoc/lib (one Valkey build, quantum8); jemalloc is the
-# same tag with its bundled jemalloc 5.3.0.
+# same tag with its bundled jemalloc 5.3.0; the other stock allocators
+# (and a challoc variant labelled `*preload*`) are preloaded on one
+# MALLOC=libc build of the tag, with active defrag off (bench/drivers/kv.sh).
 [row.valkey-soak]
 kind = "soak"
 driver = "drivers/valkey-soak.sh"
@@ -372,7 +377,7 @@ unit = "req/s"
 better = "higher"
 class = "soak"
 features = "quantum8"
-allocs = ["challoc", "jemalloc"]
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54", "glibc", "tcmalloc", "mimalloc"]
 placement = "one-variant-per-vm"
 env = { DURATION = "{valkey_soak_secs}", SETTLE = "{valkey_soak_settle}", KEY_PATTERN = "stock" }
 metrics = [
@@ -382,6 +387,105 @@ metrics = [
   { name = "rss_settle_mib", unit = "MiB", better = "lower", class = "soak-rss" },
 ]
 est_s = 1500
+
+# The same soak on Redis (SERVER=redis): challoc is the runpath build of
+# Redis with contrib/redis/000{1,2,3} (quantum8, the bundled jemalloc's
+# lg_quantum=3 geometry), or preloaded on the MALLOC=libc build for a
+# `*preload*` variant; jemalloc is Redis's bundled jemalloc 5.3.0. Active
+# defrag is on wherever the build has it.
+[row.redis-soak]
+kind = "soak"
+driver = "drivers/valkey-soak.sh"
+metric = "write_mt_rps"
+unit = "req/s"
+better = "higher"
+class = "soak"
+features = "quantum8"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54", "glibc", "tcmalloc", "mimalloc"]
+placement = "one-variant-per-vm"
+env = { SERVER = "redis", DURATION = "{valkey_soak_secs}", SETTLE = "{valkey_soak_settle}", KEY_PATTERN = "stock" }
+metrics = [
+  { name = "delete_mt_rps", unit = "req/s", better = "higher", class = "soak" },
+  { name = "write_mt_p99_ms", unit = "ms", better = "lower", class = "soak" },
+  { name = "vmhwm_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_settle_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 1500
+
+# The paired command mix (bench/drivers/kv-ops.sh): a fresh server per
+# run, a fill of {kv_keys} keys, then <server>-benchmark over SET, GET,
+# INCR, LPUSH, RPUSH, LPOP, RPOP, SADD, HSET, SPOP, ZADD, ZPOPMIN
+# ({kv_reqs} requests each), LRANGE_100 ({kv_reqs}/20) and MSET
+# ({kv_reqs}/5), -P 16, 50 clients, one client thread, scored by the
+# geometric mean of the tests' req/s. The
+# builds are kv.sh's, as in the soaks; active defrag is off everywhere.
+# -ops: 64-byte values; -ops-d1k: 1 KiB values. One client thread: with
+# --threads the client times a test in 250 ms steps (25% at a 1 s test),
+# and a server with --io-threads outruns one client thread on the cheap
+# commands, so there is no io-threads row (the soak takes IO_THREADS).
+[row.valkey-ops]
+kind = "driver"
+driver = "drivers/kv-ops.sh"
+metric = "ops_gmean"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54", "glibc", "tcmalloc", "mimalloc"]
+env = { SERVER = "valkey", SIZE = "64", KEYS = "{kv_keys}", REQS = "{kv_reqs}" }
+metrics = [
+  { name = "vmhwm_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_end_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 35
+
+[row.valkey-ops-d1k]
+kind = "driver"
+driver = "drivers/kv-ops.sh"
+metric = "ops_gmean"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54", "glibc", "tcmalloc", "mimalloc"]
+env = { SERVER = "valkey", SIZE = "1024", KEYS = "{kv_keys}", REQS = "{kv_reqs}" }
+metrics = [
+  { name = "vmhwm_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_end_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 50
+
+[row.redis-ops]
+kind = "driver"
+driver = "drivers/kv-ops.sh"
+metric = "ops_gmean"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54", "glibc", "tcmalloc", "mimalloc"]
+env = { SERVER = "redis", SIZE = "64", KEYS = "{kv_keys}", REQS = "{kv_reqs}" }
+metrics = [
+  { name = "vmhwm_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_end_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 35
+
+[row.redis-ops-d1k]
+kind = "driver"
+driver = "drivers/kv-ops.sh"
+metric = "ops_gmean"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54", "glibc", "tcmalloc", "mimalloc"]
+env = { SERVER = "redis", SIZE = "1024", KEYS = "{kv_keys}", REQS = "{kv_reqs}" }
+metrics = [
+  { name = "vmhwm_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_end_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 50
 
 # The Sidekiq-shaped Ruby process (bench/drivers/ruby-soak.sh): the
 # --with-jemalloc Ruby, challoc preloaded under libjemalloc.so.2.
