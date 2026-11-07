@@ -2,7 +2,7 @@
 //! reached through thread-local storage and its sentinels, thread exit and
 //! the destructor, fork, several threads sharing slabs, and pointer
 //! authentication (signed entries, faults on a corrupted one). Tests of the
-//! heap's own bookkeeping belong in `tests.rs`.
+//! heap's own bookkeeping belong in `tests/`.
 
 use super::*;
 use crate::config::Config;
