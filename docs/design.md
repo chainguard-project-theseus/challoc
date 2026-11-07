@@ -752,6 +752,29 @@ that needs more falls back to `rallocx`, as jemalloc's contract allows.
   a pair that straddles the split is exactly a released entry equal to
   the kept maximum, and one compare aborts it; a pair kept together stays
   cached and consistent until a flush releases it.
+
+  Why the flush orders no more than that: a full `sort_unstable` of the
+  slot array per flush would be the largest single cost under tiny-object
+  churn (glibc-simple, the Python json row). On xmalloc-test's consumer
+  side a cache is pushed in the order a producer's refill batch was handed
+  out, where even a sort's O(n) presorted path costs about 1.25k cycles
+  per flush, hence the direct split of a sorted array; the consumers'
+  whole flushes of the `FOREIGN` cache release the producers' slots in
+  allocation order, and skipping `group_by_slab`'s two sweeps over such a
+  sorted batch saved about 5% of the row. Leaving the kept half scrambled
+  for good would keep a cache that left the sorted path (its first fill,
+  a producer moving to a lower slab) on the selection forever, a
+  measurable loss on xmalloc-test; sorting it at every flush gives back
+  all that the selection saves on glibc-simple and Python, so a cache
+  pushed in arbitrary order pays two sorts of half the array and then one
+  in 32. Not done: a sort of the released half after the selection (the
+  selection scrambles it, so that is a full sort); an in-place bucket pass
+  over the whole array by address (about 10 cycles per entry: a full
+  sort's cost on random input and ten times its cost on sorted input); the
+  selection alone (a cache that leaves the sorted path never returns to
+  it). The straddling-pair check is one compare, the same strength as the
+  sorted form's neighbour compare at the split; a pass over the kept half
+  instead was measured at 4.9% / 7.3% of xmalloc-test.
 - **Scheduled pop** (the compacting cache, `heap/compact.rs`): every
   `2^COMPACT_SHIFT` pops of a class (`COMPACT_SHIFT = 3`, one pop in 8)
   are served from the *run* of low addresses `slots[..run_end]`
