@@ -48,7 +48,7 @@ use vstd::string::*;
 verus! {
 
 /// Largest accepted `tcache_nslots_small_max`. A cache array is allocated
-/// from the metadata region as one object, and `Meta::alloc` serves layouts
+/// from the metadata region as one object, and `Meta::alloc_raw` serves layouts
 /// up to 1 MiB; 65536 slots is 512 KiB plus the header, well inside that.
 pub const MAX_NSLOTS: u32 = 65_536;
 /// Default `tcache_max`: jemalloc's. Slots of classes above it are never

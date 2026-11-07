@@ -154,8 +154,8 @@ pub proof fn theorem_overflow_reach(p: *mut u8, size: int, align: int, a: int, b
 /// writes it:
 ///
 /// - Every range in the process's `Meta`'s region, the metadata region
-///   ([`Meta::holds`](crate::meta::Meta::holds), which `Meta::alloc`,
-///   `alloc_zeroed`, `reserve`, `reserve_committed` and `reserve_table`
+///   ([`Meta::holds`](crate::meta::Meta::holds), which `Meta::alloc_raw`,
+///   `alloc_zeroed`, `reserve`, `reserve_committed_raw` and `reserve_table`
 ///   ensure of their results; the other metadata conjuncts name parts of
 ///   it by kind): heaps, `others` nodes, cache stacks, huge descriptors
 ///   and tables, arenas, set tables, the background thread's stack, and
