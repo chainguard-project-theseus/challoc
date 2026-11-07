@@ -62,8 +62,8 @@ leave out (theorem 33). Remaining work is tracked in
   of `env_var` returns, so `config::load` reads neither `MALLOC_CONF`
   nor `CHALLOC_CONF`. That `env_var` is the only reader of the
   environment is a source test (`environment_has_one_reader`,
-  `config.rs`), not Verus. The theorem does not state that the loaded
-  `Config` equals the one with neither variable set.
+  `config/linux_tests.rs`), not Verus. The theorem does not state that
+  the loaded `Config` equals the one with neither variable set.
 - **Overflow reach** (`heap::theorem_overflow_reach`, `heap/theorems.rs`):
   between any byte of a block that `fits` and any byte of the metadata
   region, the `Shared` static, another class region or the huge region,
