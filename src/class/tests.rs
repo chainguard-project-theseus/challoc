@@ -1056,6 +1056,7 @@ fn a_slab_whose_discard_fails_stays_empty() {
     let retry = t0 + W + crate::purge::DISCARD_RETRY_NS;
     assert_eq!(cs.decay(t0 + W, W), Some(retry));
     only_slab_1_empty();
+    // SAFETY: `locked..locked + page` is the page this test locked above; `munlock` only unpins it.
     unsafe { libc::munlock(locked as *const _, page) };
     // No walk until the back-off ends, then the purge.
     assert_eq!(cs.decay(t0 + 2 * W, W), Some(retry));
@@ -1814,6 +1815,7 @@ fn purge_never_races_a_claim() {
         let (p, claim) = env.claim(&cs, k);
         assert_eq!(claim.n, k);
         for &q in &p {
+            // SAFETY: `q` is a slot this claim just handed out, of a class of at least 16 bytes, aligned.
             unsafe {
                 if claim.zeroed {
                     assert_eq!(*(q as *const u32), 0, "iteration {i}: purged slot not zero");
@@ -1823,6 +1825,7 @@ fn purge_never_races_a_claim() {
         }
         for &q in &p {
             assert_eq!(
+                // SAFETY: as above: `q` is still live.
                 unsafe { *(q as *const u32) },
                 i,
                 "iteration {i}: slot lost its value"
@@ -1846,6 +1849,7 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     let (p, claim) = env.claim(cs, 5);
     assert!(claim.zeroed);
     for &q in &p {
+        // SAFETY: `q` is a live slot of `small_class` (64 bytes) this claim handed out.
         unsafe {
             assert_eq!(*q, 0);
             *q = 0xAB;
@@ -1855,6 +1859,7 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     let (q, claim) = env.claim(cs, 5);
     assert_eq!(q, p);
     assert!(!claim.zeroed);
+    // SAFETY: `q[0]` is a live slot again, the same as `p[0]`.
     assert_eq!(unsafe { *q[0] }, 0xAB);
     cs.release(&q);
     assert_eq!(
@@ -1865,6 +1870,7 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     assert_eq!(r, p);
     assert!(claim.zeroed);
     for &s in &r {
+        // SAFETY: `s` is a live slot again, the same as one of `p`.
         assert_eq!(unsafe { *s }, 0);
     }
     let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
@@ -1903,6 +1909,7 @@ fn check_zero_passes_fresh_and_purged_slabs() {
     let (p, claim) = env.claim(cs, 5);
     assert!(claim.zeroed);
     for &q in &p {
+        // SAFETY: `q` is a live slot of `small_class` this claim handed out.
         unsafe { *q = 0xAB };
     }
     cs.release(&p);
@@ -1932,6 +1939,7 @@ fn check_zero_aborts_on_a_dirty_purged_slab() {
     );
     // The last word of the second slot: the check reads both ends.
     let size = cs.class().size();
+    // SAFETY: `p[1]` lies in a purged slab that is still mapped read-write; the write is the corruption the check must catch.
     unsafe { ptr::write_volatile(p[1].add(size - 8) as *mut u64, 0xDEAD_BEEF) };
     let _ = env.claim(cs, 2);
 }
@@ -1997,6 +2005,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             0,
             "B refills from the slab A reserved in"
         );
+        // SAFETY: `b[0]` is the live slot B's claim just handed out.
         unsafe {
             ptr::write_volatile(b[0], 0xAB);
         }
@@ -2036,6 +2045,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             "B saw A's bit and took the next slot"
         );
         assert_eq!(
+            // SAFETY: `out[0]` is the live slot A's claim handed out.
             unsafe { ptr::read_volatile(out[0]) },
             0,
             "round {round}: A's slot reads zero"

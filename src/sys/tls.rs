@@ -536,6 +536,7 @@ mod tests {
             #[cfg(target_arch = "aarch64")]
             {
                 let mrs: usize;
+                // SAFETY: `mrs` of `tpidr_el0` only reads a system register into `mrs`.
                 unsafe { asm!("mrs {}, tpidr_el0", out(reg) mrs, options(nomem, nostack, preserves_flags)) };
                 assert_eq!(tp, mrs);
                 assert_ne!(tp, 0);

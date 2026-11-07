@@ -58,3 +58,8 @@ verify = true
 # modules of other files). The loom crate (`tests/loom`) sets `loom` when
 # it compiles the `vspec` atomic wrappers (`src/sync.rs`).
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)", "cfg(kani)", "cfg(loom)", "cfg(challoc_tls_check)"] }
+
+[lints.clippy]
+# CONTRIBUTING.md, "Code style": every `unsafe` block names the invariant it
+# relies on in a `// SAFETY:` comment. CI's clippy runs with `-D warnings`.
+undocumented_unsafe_blocks = "warn"

@@ -103,6 +103,7 @@ pub fn probe() -> (r: Probe)
     let flags = if sf.is_null() {
         0
     } else {
+        // SAFETY: the non-null address of the loader's `__rseq_flags` (`unsigned int`) global, read once like the two above.
         unsafe { read_global(sf) }
     };
     let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {

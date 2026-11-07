@@ -711,6 +711,7 @@ mod tests {
             let kv = unsafe { libc::pthread_getspecific(key) };
             assert_eq!(kv as usize, v);
             assert_eq!(
+                // SAFETY: as above: the live key, cleared as glibc clears it.
                 unsafe { libc::pthread_setspecific(key, core::ptr::null()) },
                 0
             );
@@ -880,6 +881,7 @@ mod tests {
                 (*h).rehome = rehome;
                 (*h).bound = bound;
             }
+            // SAFETY: this thread's live heap, restored above; read only by the check.
             deep(v, unsafe { &*h }, "after the restore");
         })
         .join()
