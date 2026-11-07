@@ -32,11 +32,10 @@ from typing import Any
 
 from . import host as hostmod
 from . import report
-from .plan import Plan, VariantSpec, env_pad, make_plan, parse_variant
-from .rows import parse
+from .plan import VariantSpec, env_pad, make_plan, parse_variant
 from .knobs import KnobError, Knobs
-from .rows import Parsed
-from .spec import BENCH_DIR, ROOT_DIR, Row, Rows, SpecError, Suite, container_key, expand, load_cells, load_rows, load_suite, parse_container
+from .rows import Parsed, parse
+from .spec import BENCH_DIR, ROOT_DIR, Cell, Row, SpecError, Suite, container_key, expand, load_cells, load_rows, load_suite, parse_container
 from .variants import BuildError, Variant, git, identity_notes, pin_sources, prepare
 
 TOOLS = {
@@ -134,6 +133,20 @@ def _read_rt(rt_file: str, rc: int | None, timeout: float) -> dict[str, Any]:
     return rt
 
 
+def _run_under_rt(cmd: list[str], env: dict[str, str], out_file: str, rt_file: str, timeout: float) -> dict[str, Any]:
+    """Run cmd (tools/rt wrapping the program) in its own session with its
+    output in out_file; on timeout kill the whole session. Returns rt's
+    record from rt_file (_read_rt)."""
+    with open(out_file, "wb") as f:
+        p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+    return _read_rt(rt_file, p.returncode, timeout)
+
+
 def run_driver(
     row: Row,
     variant: Variant,
@@ -178,14 +191,7 @@ def run_driver(
     )
     cmd = [os.path.join(tools_dir, "rt"), "sh", os.path.join(BENCH_DIR, row.driver)]
     timeout = row.timeout_s or max(600.0, row.est_s * 2 + 300)
-    with open(out_file, "wb") as f:
-        p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, start_new_session=True)
-        try:
-            p.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL)
-            p.wait()
-    rt = _read_rt(rt_file, p.returncode, timeout)
+    rt = _run_under_rt(cmd, env, out_file, rt_file, timeout)
     metrics: dict[str, float] = {}
     try:
         with open(jsonl) as f:
@@ -217,9 +223,8 @@ def run_one(
 ) -> tuple[dict[str, Any], str]:
     rt_file = os.path.join(logs, f"{tag}.rt")
     out_file = os.path.join(logs, f"{tag}.out")
-    for p in (rt_file,):
-        if os.path.exists(p):
-            os.unlink(p)
+    if os.path.exists(rt_file):
+        os.unlink(rt_file)
     env = clean_env()
     env.update({"RT_OUT": rt_file, "RT_JSON": "1", "CB_PAD": "x" * pad})
     # `rt env VARS prog`: the allocator is loaded into the program, not rt.
@@ -233,16 +238,14 @@ def run_one(
         inner.append(f"MALLOC_CONF={variant.spec.conf}")
     cmd = [os.path.join(tools_dir, "rt"), *inner, *argv]
     timeout = max(60.0, row.est_s * 6)
-    with open(out_file, "wb") as f:
-        p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, start_new_session=True)
-        try:
-            p.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL)
-            p.wait()
-    rt = _read_rt(rt_file, p.returncode, timeout)
+    rt = _run_under_rt(cmd, env, out_file, rt_file, timeout)
     text = open(out_file, encoding="utf-8", errors="replace").read()
     return rt, text
+
+
+def _utc_now() -> str:
+    """The current UTC time to the second, ISO 8601."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
 def default_run_id(suite: str, head: str) -> str:
@@ -272,8 +275,6 @@ def execute(args) -> int:
     if launch is not None and args.cell not in cells:
         # A cell from an overlay the launcher was given (--cells-path) that
         # this tree does not load: the launch file carries what the VM needs.
-        from .spec import Cell
-
         ci = launch["cells"][args.cell]
         cells[args.cell] = Cell(args.cell, "gce", dict(ci), [], "launch.json")
     if args.cell not in cells:
@@ -371,10 +372,10 @@ def execute(args) -> int:
         h["requested"] = {k: ci.get(k) for k in ("family", "image", "image_project", "machine")}
         exp = ci.get("expect") or {}
         if exp.get("kernel") and not re.match(exp["kernel"], h["kernel"]):
-            _write_json(os.path.join(out, "host.json"), h)
+            report.write_json(os.path.join(out, "host.json"), h)
             raise SpecError(f"cell {cell.name}: booted kernel {h['kernel']} does not match the expected {exp['kernel']!r} of image family {ci.get('family')}")
         if exp.get("page_size") and int(exp["page_size"]) != h["page_size"]:
-            _write_json(os.path.join(out, "host.json"), h)
+            report.write_json(os.path.join(out, "host.json"), h)
             raise SpecError(f"cell {cell.name}: page size {h['page_size']}, expected {exp['page_size']}")
     quiet = cell.get("quiet", {"load1": 4.0, "wait_s": 30})
     log(f"   {h['kernel']} {h['arch']} {h['cpu'].get('model')} nproc {h['nproc']} THP {h['thp'].get('enabled')} governor {h['governor']} load {h['loadavg'][0]:.2f}")
@@ -405,18 +406,18 @@ def execute(args) -> int:
         "refs": refs,
         "argv": sys.argv,
         "values": values,
-        "started": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "started": _utc_now(),
     }
-    _write_json(os.path.join(out, "plan.json"), plan.to_json())
-    _write_json(os.path.join(out, "host.json"), h)
-    _write_json(os.path.join(out, "manifest.json"), manifest)
+    report.write_json(os.path.join(out, "plan.json"), plan.to_json())
+    report.write_json(os.path.join(out, "host.json"), h)
+    report.write_json(os.path.join(out, "manifest.json"), manifest)
 
     if "running" in quiet:
         gate = hostmod.quiet_gate_running(float(quiet["running"]), float(quiet.get("wait_s", 30)), log)
     else:
         gate = hostmod.quiet_gate(float(quiet.get("load1", 4.0)), float(quiet.get("wait_s", 30)), log)
     h["quiet_gate"] = gate
-    _write_json(os.path.join(out, "host.json"), h)
+    report.write_json(os.path.join(out, "host.json"), h)
 
     by_label = {v.label: v for v in variants}
     if launch is not None:
@@ -437,7 +438,7 @@ def execute(args) -> int:
             raise SpecError(str(e)) from None
         log(f"== knobs: host values {knobs.original}")
         h["knobs_original"] = knobs.original
-        _write_json(os.path.join(out, "host.json"), h)
+        report.write_json(os.path.join(out, "host.json"), h)
     try:
         for blk in plan.blocks:
             t0, s0 = hostmod.cpu_times()
@@ -501,7 +502,7 @@ def execute(args) -> int:
                         "health": {"sentinel_ms": sentinel.get("total_ms"), "load1": load_start},
                         "env": {"pad": pad, "pin": None},
                         "error": err or check_fail,
-                        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                        "ts": _utc_now(),
                     }
                     with open(samples_path, "a") as f:
                         f.write(json.dumps(sample, separators=(",", ":")) + "\n")
@@ -518,9 +519,9 @@ def execute(args) -> int:
     finally:
         if knobs is not None:
             knobs.restore()
-    manifest["finished"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    manifest["finished"] = _utc_now()
     manifest["wall_s"] = round(time.monotonic() - t_start, 1)
-    _write_json(os.path.join(out, "manifest.json"), manifest)
+    report.write_json(os.path.join(out, "manifest.json"), manifest)
     with open(os.path.join(out, "done.json"), "w") as f:
         json.dump({"run": run_id, "failures": failures, "wall_s": manifest["wall_s"]}, f)
 
@@ -532,18 +533,10 @@ def execute(args) -> int:
         log(f"== shard {shard} r{replicate} done: {plan.runs()} runs, {failures} failed, {manifest['wall_s']:.0f} s")
         return 0
     summary = report.analyze_dirs([out], rows)
-    _write_json(os.path.join(out, "summary.json"), summary)
+    report.write_json(os.path.join(out, "summary.json"), summary)
     text = report.render(summary)
     with open(os.path.join(out, "report.md"), "w") as f:
         f.write(text)
     print()
     print(text)
     return summary["exit"]
-
-
-def _write_json(path: str, obj: Any) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f, indent=1, default=str)
-        f.write("\n")
-    os.replace(tmp, path)
