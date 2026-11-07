@@ -107,6 +107,7 @@ mod abort;
 mod complete;
 mod decay;
 mod fresh;
+mod pages;
 mod sets;
 mod table;
 #[cfg(test)]
@@ -1144,6 +1145,12 @@ struct Inner {
     /// [`ClassState::next_fresh_slab`]).
     group_next: usize,
     group_end: usize,
+    /// Slab pages (docs/proposals/slab-pages.md, 3.2): the slots the
+    /// closed pages of this arena's `Active` slabs hide, a straddling slot
+    /// counted once, which the statistics add back to `curregs`; and the
+    /// partial slab the next closing walk starts at.
+    closed_slots: usize,
+    pages_cursor: usize,
     /// Ghost: the slabs this arena owns (their group's owner word names
     /// this arena, guard slabs included), each with the state its
     /// descriptor holds while this lock is held. The accessors that tie it
@@ -1271,7 +1278,11 @@ pub struct ClassState {
     /// includes its slots); a count that keeps growing while nothing is
     /// freed is a bookkeeping bug. Printed in the bins table.
     clamped: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 64],
+    /// When the next slab-pages walk is due (coarse monotonic
+    /// nanoseconds; 0, now): read without the class lock by the decay
+    /// driver, written by the walk under it (`close_pages`).
+    pages_due: AtomicU64,
+    _tail: [u8; PAD_ALIGN - 72],
 }
 
 } // verus!
@@ -2341,6 +2352,8 @@ impl ClassState {
             },
             group_next: 0,
             group_end: 0,
+            closed_slots: 0,
+            pages_cursor: 0,
             // No slab owned or committed yet.
             states: Ghost(Map::empty()),
             committed: Ghost(vstd::set::Set::empty()),
@@ -2385,7 +2398,8 @@ impl ClassState {
             compact_off: AtomicU64::new(0),
             gate_refill: AtomicU64::new(0),
             clamped: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 64],
+            pages_due: AtomicU64::new(0),
+            _tail: [0; PAD_ALIGN - 72],
         })
     }
 
@@ -5052,6 +5066,24 @@ impl ClassState {
         }
         let desc = self.desc(slab);
         if desc.live() == 0 && self.state_locked(&*g, desc, slab) == State::Active {
+            // Slab pages (docs/proposals/slab-pages.md, 3.4): the slab
+            // leaves `curslabs`, so its closed slots leave `closed_slots`,
+            // and every page opens again. Its closed pages were discarded,
+            // its purge discards the rest, and a reuse opens the slab
+            // whole, as a `Fresh` one: no slab but an `Active` one has a
+            // closed page.
+            if let Some(pg) = self.table().pages(slab) {
+                let (closed, stamp) = Self::pages_locked(&*g, pg, slab);
+                if closed != 0 || stamp != 0 {
+                    let n = self.table().page_view().with_closed(closed).closed_slots();
+                    let ghost gc = g@;
+                    g.closed_slots = g.closed_slots.saturating_sub(n);
+                    proof {
+                        pages::lemma_walk_frame(self, gc, g@);
+                    }
+                    self.set_pages_locked(&mut *g, pg, slab, 0, 0);
+                }
+            }
             // Never 0: an `Empty` slab's stamp is not 0
             // (`Inner::slab_core`).
             let now = crate::sys::now_coarse_ns().max(1);
@@ -6059,15 +6091,18 @@ verus! {
 /// `ClassState::new` proves the invariant of the value it creates the
 /// lock with (`Lock::new` requires it). Each holder outside the tests
 /// (`ClassState::plan`, `reopen`, `on_live_zero`, `bin_stats`,
-/// `lowest_partial`, `is_partial`, and `decay.rs`'s `empty_bytes`,
-/// `purge_empty` and `purge_curve`) ends with `LockGuard::unlock`, which
+/// `lowest_partial`, `is_partial`, `decay.rs`'s `empty_bytes`,
+/// `purge_empty` and `purge_curve`, and `pages.rs`'s `close_pages`) ends
+/// with `LockGuard::unlock`, which
 /// requires both, on every path to a return
 /// (`api::tests::guards_end_in_unlock`). A panic aborts
 /// (`panic = "abort"`) outside the tests, so it never releases. The other
 /// holders are the tests, but for those that break the counts on purpose
 /// to reach an abort; the test helper `set_membership` only reads. Each
-/// of the others writes an owned slab's state and stamp only through the
-/// bridges (`set_state_locked`, `set_dirty_locked`), which write the
+/// of the others writes an owned slab's state and stamps only through the
+/// bridges (`set_state_locked`, `set_dirty_locked`, and for its page state
+/// `set_pages_locked`, which `close_pages` and `on_live_zero` call, and
+/// which keeps `Inner::inv` itself, verified), which write the
 /// descriptor through the permission the value holds and update the ghost
 /// state and stamp with it: verified, so they keep `Inner::descs` when
 /// their callers meet their preconditions, which nothing checks at these

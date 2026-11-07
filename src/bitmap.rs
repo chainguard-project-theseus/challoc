@@ -1432,6 +1432,43 @@ impl<'a> AtomicBitmap<'a> {
         (v & self.mask) >> self.shift
     }
 
+    /// The slab's bits in word `i` (slab coordinates, padding included),
+    /// read with a read-modify-write that changes nothing (`fetch_or(0)`,
+    /// `AcqRel`): the slab-pages walk's step 2
+    /// (docs/proposals/slab-pages.md, 3.4). Unlike a load it takes a place
+    /// in the word's modification order against every claim's `fetch_or`,
+    /// so a claim that comes after it reads from it and, through its
+    /// `Release` half, sees the page the walk closed before it.
+    pub fn probe(&self, i: usize) -> (r: u64)
+        requires
+            i < self.spec_words(),
+        ensures
+            subset(r, self.slab_mask()),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let ghost j = self.first@ / 64 + i;
+        assert(word_ok(self.words@[i as int], j, self.slots@, *self.invs@));
+        let tracked inv = self.invs.borrow().tracked_borrow(j);
+        let w = &self.words[i];
+        let prev;
+        vstd::open_atomic_invariant!(inv => pair => {
+            let tracked (mut perm, g, u, d, sn) = pair;
+            prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));
+            proof {
+                assert(prev | 0u64 == prev) by (bit_vector);
+                pair = (perm, g, u, d, sn);
+            }
+        });
+        proof {
+            let s = self.shift;
+            let sm = self.mask;
+            assert(subset((prev & sm) >> s, sm >> s)) by (bit_vector);
+        }
+        (prev & self.mask) >> self.shift
+    }
+
     /// Set slot bits, padding excluded: the slab's allocated (or cached)
     /// slots for a class with `nslots` real slots. An integrity check
     /// (`sys::may_abort_corrupt`): a cleared padding bit aborts.

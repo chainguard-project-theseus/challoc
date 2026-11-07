@@ -1641,6 +1641,11 @@ impl Arena {
             if let Some(d) = cs.decay_with(now, decay_ns, keep16, Tracked(ord)) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
+            // The closable pages of the class's partial slabs, on the same
+            // curve (docs/proposals/slab-pages.md, 3.4).
+            if let Some(d) = cs.close_pages(now, decay_ns, false, Tracked(ord)) {
+                next = Some(next.map_or(d, |n| n.min(d)));
+            }
         }
         next
     }
@@ -1737,6 +1742,9 @@ impl Arena {
             cs.nslabs_fit();
             let tracked mut lc = Ghost(Left::none());
             sum += cs.purge_empty(u64::MAX, Tracked(&mut lc), Tracked(ord));
+            // An explicit purge closes every closable page of the class's
+            // partial slabs too (docs/proposals/slab-pages.md, 7.1).
+            let _ = cs.close_pages(crate::sys::now_coarse_ns(), 0, true, Tracked(ord));
             proof {
                 use_type_invariant(self);
                 let l0 = left@;

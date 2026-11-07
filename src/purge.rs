@@ -413,6 +413,27 @@ proof fn lemma_well_formed(addr: int, len: int)
     reveal(well_formed);
 }
 
+/// A page-aligned piece of a well-formed range is one (the slab-pages
+/// walk's discard of one page of a slab, `class::ClassState::close_page`).
+pub proof fn lemma_well_formed_sub(a: int, l: int, off: int, len: int)
+    requires
+        well_formed(a, l),
+        0 <= off,
+        0 < len,
+        off + len <= l,
+        off % page_bytes() == 0,
+        len % page_bytes() == 0,
+    ensures
+        well_formed(a + off, len),
+{
+    reveal(well_formed);
+    vstd::arithmetic::div_mod::lemma_add_mod_noop(a, off, page_bytes());
+    vstd::arithmetic::div_mod::lemma_small_mod(0, page_bytes() as nat);
+    assert forall|b: int| a + off <= b < a + off + len implies #[trigger] discardable(b) by {
+        assert(a <= b < a + l);
+    }
+}
+
 /// Two adjacent well-formed ranges make one ([`Batch::push`]'s merge).
 proof fn lemma_well_formed_join(a: int, l1: int, l2: int)
     requires

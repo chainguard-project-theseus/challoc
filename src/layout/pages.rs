@@ -419,6 +419,15 @@ impl OpenView {
         &&& self.nslots <= 0x10000
     }
 
+    /// [`paged`](OpenView::paged), at run time.
+    pub fn is_paged(&self) -> (r: bool)
+        ensures
+            r == self.paged(),
+    {
+        1 <= self.size && self.size <= 0x10000 && 4096 <= self.pg && self.pg <= 0x10000 && 2 <= self.pages
+            && self.pages <= MAX_MASK_PAGES && self.nslots <= 0x10000
+    }
+
     /// Slot `s` is open: every page it overlaps is open.
     pub open spec fn open(&self, s: int) -> bool {
         slot_open(self.size as int, self.pg as int, self.pages as int, !self.closed, s)
@@ -470,6 +479,46 @@ impl OpenView {
             return !0u64;
         }
         open_slots_word(self.size, self.nslots, self.pg, self.pages, !self.closed, w)
+    }
+
+    /// The slots of page `p` ([`page_slots`]), for a paged view.
+    pub fn page_slots_of(&self, p: usize) -> (r: (usize, usize))
+        requires
+            self.paged(),
+            p < self.pages,
+        ensures
+            r.0 <= r.1 <= self.nslots,
+            forall|s: int| (r.0 <= s < r.1) <==> (0 <= s < self.nslots && #[trigger] overlaps(self.size as int, self.pg as int, p as int, s)),
+    {
+        page_slots(self.size, self.nslots, self.pg, p)
+    }
+
+    /// The bits of word `w` (slab coordinates) whose slots overlap page
+    /// `p`: what the walk reads to find the page closable, and probes
+    /// before it discards the page.
+    pub fn page_word(&self, p: usize, w: usize) -> (r: u64)
+        requires
+            self.paged(),
+            p < self.pages,
+            w < 1024,
+        ensures
+            forall|i: int| 0 <= i < 64 ==> (#[trigger] bit(r, i) <==> (64 * w + i < self.nslots
+                && overlaps(self.size as int, self.pg as int, p as int, 64 * w + i))),
+    {
+        let (first, end) = page_slots(self.size, self.nslots, self.pg, p);
+        let base = 64 * w;
+        let lo = if first <= base { 0 } else if first - base >= 64 { 64 } else { first - base };
+        let hi = if end <= base { 0 } else if end - base >= 64 { 64 } else { end - base };
+        let lo = if lo > hi { hi } else { lo };
+        let m = range_mask(lo as u64, hi as u64);
+        proof {
+            assert forall|i: int| 0 <= i < 64 implies (#[trigger] bit(m, i) <==> (64 * w + i < self.nslots
+                && overlaps(self.size as int, self.pg as int, p as int, 64 * w + i))) by {
+                assert(bit(m, i) <==> (lo <= i < hi));
+                assert((first <= base + i < end) <==> (0 <= base + i < self.nslots && overlaps(self.size as int, self.pg as int, p as int, base + i)));
+            }
+        }
+        m
     }
 
     /// The slots the closed pages hide ([`closed_below`]): a straddling

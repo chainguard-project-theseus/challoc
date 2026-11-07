@@ -1062,7 +1062,7 @@ proof fn lemma_page_group_owned(g: Inner, t: SlabTable, slab: usize, spp: usize)
 /// page group's bytes are page multiples (`groups_paged`), so the group
 /// starts and ends on a page boundary, and its slabs lie in the class
 /// region and share `slab`'s page group, so none is a guard slab.
-proof fn lemma_group_well_formed(t: SlabTable, slab: usize, spp: usize, first: usize)
+pub(super) proof fn lemma_group_well_formed(t: SlabTable, slab: usize, spp: usize, first: usize)
     requires
         t.inv(),
         t.is_process(),

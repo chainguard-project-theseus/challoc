@@ -142,7 +142,7 @@ pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabPages::pages_held`
 
-src/slab.rs:657. Kind: external_body. Category: atomics primitive.
+src/slab.rs:628. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > The closed pages and the stamp, read by a holder of `m`, the permissions a class lock value holds: the values the permission under `k` records when it is this slab's.
@@ -157,7 +157,7 @@ pub fn pages_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 
 ## `SlabPages::set_pages`
 
-src/slab.rs:673. Kind: external_body. Category: atomics primitive.
+src/slab.rs:644. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > Write the closed pages and the stamp.

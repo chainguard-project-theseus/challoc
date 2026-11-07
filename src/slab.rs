@@ -602,36 +602,7 @@ pub open spec fn pages_for(m: Map<nat, DescPerm>, k: nat, pg: &SlabPages) -> boo
     m.contains_key(k) && pages_id(pg) == m[k].id() + 16
 }
 
-// The claim's re-check and the decay walk call these (slab-pages,
-// milestone 1); until then only the tests and Kani do.
-#[allow(dead_code)]
 impl SlabPages {
-    /// The [`SlabPages`] of slab `slab` in the descriptor array for
-    /// `class` starting at `base`, read through `perm`, the permission to
-    /// it, as [`SlabDesc::at`].
-    ///
-    /// # Safety
-    /// As [`SlabDesc::at`], and `class`'s stride is at least 32.
-    #[inline]
-    pub unsafe fn at(
-        base: usize,
-        class: usize,
-        slab: usize,
-        Tracked(perm): Tracked<&PointsTo<SlabPages>>,
-    ) -> (r: &SlabPages)
-        requires
-            class < NCLASSES,
-            base + slab * stride_of(class as int) + 16 <= usize::MAX,
-            perm.ptr() == ptr_mut_from_data::<SlabPages>(
-                PtrData { addr: (base + slab * stride_of(class as int) + 16) as usize, provenance: cast_provenance(), metadata: () },
-            ),
-            perm.is_init(),
-        ensures
-            *r == perm.value(),
-    {
-        ptr_ref(addr_to_ptr(base + slab * desc_stride(class) + HEADER) as *const SlabPages, Tracked(perm))
-    }
-
     /// The closed pages, without the class lock: a claim's view
     /// (docs/proposals/slab-pages.md, 3.4). `Acquire`, against
     /// [`set_pages`](SlabPages::set_pages)' `Release`, so that a claim

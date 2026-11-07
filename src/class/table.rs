@@ -3950,6 +3950,60 @@ impl SlabTable {
         self.base + (slab << self.class().lg_slab)
     }
 
+    /// The bytes of page `p` of slab `slab`, a page of the process's size
+    /// (`purge::page_bytes`): a well-formed purge range, the slab being no
+    /// guard slab (the slab-pages walk's discard,
+    /// docs/proposals/slab-pages.md, 3.4). `None` when the slab is smaller
+    /// than a page or the page is past the slab's end.
+    pub(super) fn page_range(&self, slab: usize, p: usize) -> (r: Option<(usize, usize)>)
+        requires
+            self.is_process(),
+            slab < self.spec_nslabs(),
+            !self.spec_is_guard(slab),
+        ensures
+            r matches Some((a, l)) ==> crate::purge::well_formed(a as int, l as int) && a + l <= usize::MAX,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let start = self.slab_addr(slab);
+        let lg = self.lg_page;
+        let sz = 1usize << self.class().lg_slab;
+        if self.slabs_per_page != 1 || lg >= 32 {
+            return None;
+        }
+        proof {
+            assert((1usize << lg) >= 1) by (bit_vector)
+                requires lg < 32;
+        }
+        let page = 1usize << lg;
+        if p >= 0x10000 {
+            return None;
+        }
+        proof {
+            assert((1usize << lg) <= 0x8000_0000) by (bit_vector)
+                requires lg < 32;
+            assert((p + 1) * page <= 0x10000 * 0x8000_0000) by (nonlinear_arith)
+                requires p < 0x10000, page <= 0x8000_0000;
+        }
+        if (p + 1) * page > sz {
+            return None;
+        }
+        proof {
+            broadcast use {lemma_spec_slabs_per_page};
+            assert(slab & !((1usize - 1) as usize) == slab) by (bit_vector);
+            crate::vspec::class::lemma_class_table_wf(self.class as int);
+            super::decay::lemma_group_well_formed(*self, slab, 1, slab);
+            assert(self.lg_page == crate::layout::process_regions().lg_page);
+            assert(crate::purge::page_bytes() == page as int);
+            vstd::arithmetic::div_mod::lemma_mod_multiples_basic(p as int, page as int);
+            vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
+            assert(p * page + page == (p + 1) * page) by (nonlinear_arith);
+            crate::purge::lemma_well_formed_sub(start as int, sz as int, (p * page) as int, page as int);
+        }
+        Some((start + p * page, page))
+    }
+
     /// The start of slot `slot` of slab `slab`: `slot_at` of the
     /// process's regions, a pointer of the address-cast provenance.
     #[inline]
