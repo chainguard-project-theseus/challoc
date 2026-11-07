@@ -1555,10 +1555,10 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Trac
     ensures
         r == 0 || r == -1,
         r == -1 <==> options != 0 || stream@.addr == 0,
-        r == -1 ==> final(errno).val() == crate::sys::Errno::EINVAL.0,
+        r == -1 ==> final(errno).val() == crate::sys::errno::EINVAL,
 {
     if options != 0 || stream.is_null() {
-        set_errno(crate::sys::Errno::EINVAL.0, Tracked(errno));
+        set_errno(crate::sys::errno::EINVAL, Tracked(errno));
         return -1;
     }
     let shared = super::shared();
