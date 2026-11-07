@@ -4419,6 +4419,22 @@ impl ClassState {
         (pg.nslots - shut, closed)
     }
 
+    /// Slab pages (design 5): the slots of `slab` its open-page mask has
+    /// closed, 0 for a class that is not paged. Read under the class lock,
+    /// which every write of the mask holds. Out of line: the flush path
+    /// (`release_slab`) reaches it only when a slab's `live` reaches zero.
+    #[inline(never)]
+    fn closed_slots(&self, slab: usize) -> usize
+        requires
+            slab < self.spec_nslabs(),
+    {
+        let t = self.table();
+        match t.pages() {
+            Some(pg) => pg.closed_count(t.open_mask(slab).load(Ordering::Relaxed)),
+            None => 0,
+        }
+    }
+
     /// The slots of a zero pick, decided under the class lock. A `Fresh`
     /// or `Purged` slab has `live == 0` and no bit
     /// set, so its lowest `n` bits are free and nothing contends for them.
@@ -5047,14 +5063,12 @@ impl ClassState {
                 g@.lemma_close(slab as nat);
             }
             // The slab leaves `curslabs`, and its closed slots the count.
-            if let Some(pg) = self.table().pages() {
-                let m = self.table().open_mask(slab).load(Ordering::Relaxed);
-                let ghost gp = g@;
-                g.stats.closed = g.stats.closed.wrapping_sub(pg.closed_count(m));
-                proof {
-                    assert forall|x: nat| #[trigger] g@.slab_ok(x) by {
-                        assert(gp.slab_ok(x));
-                    }
+            let shut = self.closed_slots(slab);
+            let ghost gp = g@;
+            g.stats.closed = g.stats.closed.wrapping_sub(shut);
+            proof {
+                assert forall|x: nat| #[trigger] g@.slab_ok(x) by {
+                    assert(gp.slab_ok(x));
                 }
             }
             if self.gate.note_first_empty(now) {

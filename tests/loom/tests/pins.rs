@@ -433,12 +433,6 @@ const WAIVED: &[(&str, &str, &str, &str)] = &[
         "slab pages' open-page mask (design 5): written only under the class lock and only grown while the slab is `Active`, so a claim that reads it stale takes fewer slots and rescans; the models' slabs are wholly open (allow all ones), so the claim's atomics are the ones bitmap.rs copies",
     ),
     (
-        "src/class/mod.rs",
-        "on_live_zero",
-        "let m = self.table().open_mask(slab).load(Ordering::Relaxed);",
-        "slab pages' open-page mask read under the class lock, which every write of it holds: no race to model",
-    ),
-    (
         "src/heap/slotstate.rs",
         "step",
         "let v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(&perm));",
