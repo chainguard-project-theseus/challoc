@@ -1,0 +1,79 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH 4/4] memefficiency: start the replicaof flush defrag test lower
+ under challoc
+
+"Active defrag can't be triggered during replicaof database flush. See
+issue #14267" needs active defrag to start on what the sync's flush
+leaves: the flush runs within a few ms of REPLICAOF, before the next
+cron tick. The bundled jemalloc leaves about 22 MB of fragmentation
+there. challoc returns the freed slots (an epoch write runs the main
+thread's cache GC, challoc PR #576), leaving 1.6 to 3.4 MB, so at the
+stock 2mb active-defrag-ignore-bytes defrag sometimes never starts ("defrag
+not started."). Under MALLOC=challoc the replica starts at 1mb and goes
+back to 2mb once defrag runs.
+
+The change goes through a helper, challoc_or, which returns the challoc
+value when mem_allocator contains "challoc" and the stock value
+otherwise, so the bundled-jemalloc build runs the file unchanged.
+
+Not calibrated: the tests whose targets challoc misses because of its
+slab floor ("eval scripts", "IDMP streams", the three "HFE" tests, "argv
+retained by the main thread from IO thread", "big list", "template-encoded
+hashes"). challoc keeps at least one 64 KiB slab per size class in use,
+and a few long-lived small objects can hold many such slabs, so after
+defrag it leaves 1.4 to 5 MB that no pass can recover, where jemalloc
+leaves 0.5 to 2.5 MB. That is a challoc issue, not the tests'. Neither is
+"main dictionary", which needs challoc PR #576, or "big keys", whose
+defrag-cycle latency is intermittently 14 to 33 ms against its 30 ms
+limit under challoc.
+---
+ tests/unit/memefficiency.tcl | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/tests/unit/memefficiency.tcl b/tests/unit/memefficiency.tcl
+--- a/tests/unit/memefficiency.tcl
++++ b/tests/unit/memefficiency.tcl
+@@ -85,6 +85,17 @@ test "Active defrag handles equal fragmentation thresholds" {
+ } {} {defrag external:skip tsan:skip standalone}
+ 
+ run_solo {defrag} {
++    # challoc_or CHALLOC_VALUE VALUE: CHALLOC_VALUE under MALLOC=challoc
++    # (mem_allocator contains "challoc"), VALUE otherwise, for a figure a
++    # test takes from the bundled jemalloc's behaviour where challoc's
++    # differs. The bundled-jemalloc build runs the file unchanged.
++    proc challoc_or {challoc_value value} {
++        if {[string match {*challoc*} [s mem_allocator]]} {
++            return $challoc_value
++        }
++        return $value
++    }
++
+     proc wait_for_defrag_stop {maxtries delay {expect_frag 0}} {
+         wait_for_condition $maxtries $delay {
+             [s active_defrag_running] eq 0 && ($expect_frag == 0 || [s allocator_frag_ratio] <= $expect_frag)
+@@ -1429,7 +1440,16 @@ run_solo {defrag} {
+                 $replica config set active-defrag-threshold-lower 5
+                 $replica config set active-defrag-cycle-min 65
+                 $replica config set active-defrag-cycle-max 75
+-                $replica config set active-defrag-ignore-bytes 2mb
++                # challoc: the sync's flush runs within a few ms of
++                # REPLICAOF, before the next cron tick, so defrag starts on
++                # what the flush leaves. The bundled jemalloc leaves about
++                # 22 MB of fragmentation there; challoc returns the freed
++                # slots (an epoch write runs the main thread's cache GC),
++                # leaving 1.6 to 3.4 MB, and at 2mb defrag sometimes never
++                # starts. Start at 1mb, and go back to 2mb once defrag
++                # runs: at 1mb it would keep running on challoc's slab
++                # floor, a known challoc issue this file does not calibrate.
++                $replica config set active-defrag-ignore-bytes [challoc_or 1mb 2mb]
+ 
+                 # add a mass of string keys
+                 set count 0
+@@ -1468,6 +1488,7 @@ run_solo {defrag} {
+                         puts [$replica memory malloc-stats]
+                         fail "defrag not started."
+                     }
++                    $replica config set active-defrag-ignore-bytes 2mb
+ 
+                     wait_for_sync $replica
+ 
