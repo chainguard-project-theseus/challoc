@@ -683,6 +683,18 @@ macro_rules! bool_key {
     };
 }
 
+/// A [`TABLE`] entry for a numeric key: `field` of type `$t`, parsed by
+/// [`num`] in `[$min, $max]` and read back as `Value::$kind` of `$u`.
+macro_rules! num_key {
+    ($name:literal, $field:ident: $t:ty, [$min:expr, $max:expr] => $kind:ident($u:ty)) => {
+        Key {
+            name: $name,
+            parse: Parse(|c, k, v| num(c, k, v, $min, $max, |c, v| c.$field = v as $t)),
+            read: Read(|c| Value::$kind(c.$field as $u)),
+        }
+    };
+}
+
 /// Every tunable, in table order (the order of the `opt.` namespace, the
 /// report and `KEYS`). A new key is one entry here plus its field; the
 /// tests check that every entry reads back, round-trips through `set`
@@ -700,21 +712,9 @@ const ENTRIES: &[Key] = &[
         }),
         read: Read(|c| Value::Bool(c.background_thread == Some(true))),
     },
-    Key {
-        name: "dirty_decay_ms",
-        parse: Parse(|c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v)),
-        read: Read(|c| Value::Int(c.dirty_decay_ms)),
-    },
-    Key {
-        name: "muzzy_decay_ms",
-        parse: Parse(|c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v)),
-        read: Read(|c| Value::Int(c.muzzy_decay_ms)),
-    },
-    Key {
-        name: "narenas",
-        parse: Parse(|c, k, v| num(c, k, v, 0, u32::MAX as i64, |c, v| c.narenas = v as u32)),
-        read: Read(|c| Value::Uint(c.narenas as u64)),
-    },
+    num_key!("dirty_decay_ms", dirty_decay_ms: i64, [-1, MAX_INTERVAL_MS] => Int(i64)),
+    num_key!("muzzy_decay_ms", muzzy_decay_ms: i64, [-1, MAX_INTERVAL_MS] => Int(i64)),
+    num_key!("narenas", narenas: u32, [0, u32::MAX as i64] => Uint(u64)),
     Key {
         name: "percpu_arena",
         parse: Parse(|c, k, v| {
@@ -732,38 +732,11 @@ const ENTRIES: &[Key] = &[
         read: Read(|c| Value::Str(Name::PercpuArena(c.percpu_arena))),
     },
     bool_key!("tcache", tcache),
-    Key {
-        name: "tcache_max",
-        parse: Parse(|c, k, v| {
-            num(c, k, v, 0, crate::layout::MEDIUM_MAX as i64, |c, v| {
-                c.tcache_max = v as usize
-            })
-        }),
-        read: Read(|c| Value::Size(c.tcache_max)),
-    },
-    Key {
-        name: "tcache_nslots_small_max",
-        parse: Parse(|c, k, v| {
-            num(c, k, v, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| {
-                c.tcache_nslots_small_max = v as u32
-            })
-        }),
-        read: Read(|c| Value::Uint(c.tcache_nslots_small_max as u64)),
-    },
-    Key {
-        name: "lg_tcache_nslots_mul",
-        parse: Parse(|c, k, v| {
-            num(
-                c,
-                k,
-                v,
-                LG_NSLOTS_MUL_MIN as i64,
-                LG_NSLOTS_MUL_MAX as i64,
-                |c, v| c.lg_tcache_nslots_mul = v as i32,
-            )
-        }),
-        read: Read(|c| Value::Int(c.lg_tcache_nslots_mul as i64)),
-    },
+    num_key!("tcache_max", tcache_max: usize, [0, crate::layout::MEDIUM_MAX as i64] => Size(usize)),
+    num_key!("tcache_nslots_small_max", tcache_nslots_small_max: u32,
+        [MIN_CAP as i64, MAX_NSLOTS as i64] => Uint(u64)),
+    num_key!("lg_tcache_nslots_mul", lg_tcache_nslots_mul: i32,
+        [LG_NSLOTS_MUL_MIN as i64, LG_NSLOTS_MUL_MAX as i64] => Int(i64)),
     Key {
         // `default` is jemalloc's spelling of `never`.
         name: "thp",
@@ -815,15 +788,8 @@ const ENTRIES: &[Key] = &[
         }),
         read: Read(|c| Value::Uint(c.guard_slab_interval as u64)),
     },
-    Key {
-        name: "huge_retain_max",
-        parse: Parse(|c, k, v| {
-            num(c, k, v, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| {
-                c.huge_retain_max = v as usize
-            })
-        }),
-        read: Read(|c| Value::Size(c.huge_retain_max)),
-    },
+    num_key!("huge_retain_max", huge_retain_max: usize,
+        [0, MAX_HUGE_RETAIN_MAX as i64] => Size(usize)),
     Key {
         // Unset it follows `dirty_decay_ms`, which is what it reads back.
         name: "huge_dirty_decay_ms",
