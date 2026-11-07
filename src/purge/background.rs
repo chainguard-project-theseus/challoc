@@ -475,6 +475,32 @@ pub fn set_auto(shared: Option<&Shared>) {
     AUTO_FAILS.store(0, Ordering::Relaxed);
 }
 
+/// The glibc functions [`pthread_join`] calls, one of which shares its
+/// name.
+mod glibc {
+    use core::ffi::c_void;
+
+    /// glibc's `PTHREAD_CANCEL_DISABLE`, the same on both targets.
+    pub(super) const PTHREAD_CANCEL_DISABLE: i32 = 1;
+
+    unsafe extern "C" {
+        /// glibc's `pthread_join(3)`, with the `libc` crate's signature
+        /// and the same symbol. Declared in this crate rather than taken
+        /// from the `libc` crate so that a Kani harness can stub it: Kani
+        /// 0.68 stubs a foreign function only where this crate declares
+        /// it, and silently ignores a stub on `libc::pthread_join`. In a
+        /// module of its own because the trusted wrapper that calls it,
+        /// `super::pthread_join`, has its name.
+        pub(super) fn pthread_join(
+            native: libc::pthread_t,
+            value: *mut *mut c_void,
+        ) -> core::ffi::c_int;
+        /// glibc's `pthread_setcancelstate(3)`, which the `libc` crate
+        /// does not bind.
+        pub(super) fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
+    }
+}
+
 verus! {
 
 /// `pthread_join(t, NULL)`: 0 or an error number. Trusted: a raw libc
@@ -510,19 +536,13 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
     ensures
         final(cell).kept(*old(cell)),
 {
-    // glibc's, which the `libc` crate does not bind; the same on both
-    // targets.
-    const PTHREAD_CANCEL_DISABLE: i32 = 1;
-    unsafe extern "C" {
-        fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
-    }
     // SAFETY: guaranteed by the caller; `old` is a live int the
     // cancel-state calls write.
     unsafe {
         let mut old = 0;
-        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &mut old);
-        let rc = ::libc::pthread_join(t, core::ptr::null_mut());
-        pthread_setcancelstate(old, &mut old);
+        glibc::pthread_setcancelstate(glibc::PTHREAD_CANCEL_DISABLE, &mut old);
+        let rc = glibc::pthread_join(t, core::ptr::null_mut());
+        glibc::pthread_setcancelstate(old, &mut old);
         rc
     }
 }

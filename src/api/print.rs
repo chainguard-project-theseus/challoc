@@ -65,6 +65,12 @@ pub struct WriteCallback(pub WriteCb);
 const PTHREAD_CANCEL_DISABLE: i32 = 1;
 unsafe extern "C" {
     fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
+    /// glibc's `fwrite(3)`, with the `libc` crate's signature and the same
+    /// symbol: what [`write_file`] calls. Declared in this crate rather
+    /// than taken from the `libc` crate so that a Kani harness can stub
+    /// it: Kani 0.68 stubs a foreign function only where this crate
+    /// declares it, and silently ignores a stub on `libc::fwrite`.
+    fn fwrite(ptr: *const c_void, size: usize, nobj: usize, stream: *mut libc::FILE) -> usize;
 }
 
 verus! {
@@ -211,7 +217,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 {
     let old = cancel_disable();
     // SAFETY: `f` is the caller's open stream; `s` is readable.
-    unsafe { libc::fwrite(s.as_ptr() as *const c_void, 1, s.len(), f) };
+    unsafe { fwrite(s.as_ptr() as *const c_void, 1, s.len(), f) };
     cancel_restore(old);
 }
 
