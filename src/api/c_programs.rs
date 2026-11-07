@@ -337,7 +337,7 @@ fn run_row(test: &str, row: &CTest<'_>) {
         Gate::GuardInstall => {
             // Guard slabs exist only where the kernel installs guard regions
             // (`Shared::init` zeroes the interval otherwise); the Rust test
-            // `heap::tests::sized_slot_rejects_guard_slabs` forces them on.
+            // `heap::tests::class_lines::sized_slot_rejects_guard_slabs` forces them on.
             if !crate::sys::features::Features::probe(true).guard_install {
                 skip!(
                     test,

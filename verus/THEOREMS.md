@@ -6446,7 +6446,7 @@ moves the wrapped count by the same one. `Shared::init` gets
 
 **Findings.** None: the code matches the statement. The tests
 `automatic_arenas_are_assigned_least_loaded_and_built_lazily` and
-`heap_churn_reuses_the_vacated_arena` (`heap/tests.rs`) exercise the
+`heap_churn_reuses_the_vacated_arena` (`heap/tests/arenas.rs`) exercise the
 order and the counts; `rehoming_only_takes_an_idle_automatic_arena`
 and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
 `try_bind_idle` and the moved binding.

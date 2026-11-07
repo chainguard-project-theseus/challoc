@@ -516,8 +516,8 @@ pub(crate) fn assert_only_at(call: &str, sites: &[(&str, &str, usize)]) {
 /// or `#[cfg(kani)]` on a `mod name {` at column 0, through the next `}`
 /// at column 0) blanked to empty lines, so line numbers are kept. Files
 /// that are test-only or Kani-only as a whole are skipped: `tests.rs`,
-/// `*_tests.rs`, this file, `api/c_programs.rs`, and the `model/` and
-/// `kani/` trees.
+/// `*_tests.rs`, the files of a `tests/` module directory, this file,
+/// `api/c_programs.rs`, and the `model/` and `kani/` trees.
 pub(crate) fn shipped_sources() -> std::vec::Vec<(std::string::String, std::string::String)> {
     use std::string::{String, ToString};
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -529,6 +529,7 @@ pub(crate) fn shipped_sources() -> std::vec::Vec<(std::string::String, std::stri
         let name = rel.rsplit('/').next().unwrap();
         if name == "tests.rs"
             || name.ends_with("_tests.rs")
+            || rel.contains("/tests/")
             || rel == "testutil.rs"
             || rel == "api/c_programs.rs"
             || rel.starts_with("model/")
