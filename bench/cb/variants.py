@@ -129,9 +129,26 @@ def cargo_feature_args(features: str) -> list[str]:
     return ["--features", ",".join(fs)]
 
 
+def _cgroup_memory_limit() -> int | None:
+    """This cgroup's memory limit in bytes (cgroup v2 `memory.max`), or
+    None when there is none."""
+    try:
+        v = open("/sys/fs/cgroup/memory.max", encoding="ascii").read().strip()
+    except OSError:
+        return None
+    return int(v) if v.isdigit() else None
+
+
 def _cargo_build(srcdir: str, tdir: str, log: str, features: str = "") -> None:
     env = dict(os.environ)
     env["CARGO_TARGET_DIR"] = tdir
+    # A memory-limited container (the sidecar suite's 512 MiB) cannot hold
+    # sixteen rustc jobs with debuginfo: build one job at a time, without
+    # debuginfo, which leaves the code, and so the measurement, alone.
+    lim = _cgroup_memory_limit()
+    if lim is not None and lim < 4 << 30:
+        env.setdefault("CARGO_BUILD_JOBS", "1")
+        env.setdefault("CARGO_PROFILE_RELEASE_DEBUG", "0")
     env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + f" --remap-path-prefix={srcdir}=/challoc").strip()
     cmd = ["cargo", "build", "--release", *cargo_feature_args(features)]
     with open(log, "wb") as f:

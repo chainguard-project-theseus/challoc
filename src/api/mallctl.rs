@@ -2197,7 +2197,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Util
         committed: false,
         live: 0,
         found: false,
-        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed_slots: 0, closed_pages: 0 },
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed_slots: 0, closed_pages: 0, closable_slots: 0 },
         curregs: 0,
         lowest: None,
         run: None,
@@ -2659,7 +2659,7 @@ fn arena_figure(m: &[usize], fig: Fig, Tracked(mark): Tracked<&'static ReadyMark
                     // Slab pages (docs/proposals/slab-pages.md, 3.6): with the
                     // closed slots, so `nregs * curslabs - curregs` counts only
                     // open free slots (Redis's and Valkey's fragmentation).
-                    Some(b) => Ok(Size(stats::fig_add(b.curregs, b.closed_slots))),
+                    Some(b) => Ok(Size(stats::fig_add(stats::fig_add(b.curregs, b.closed_slots), b.closable_slots))),
                     None => Err(ENOENT),
                 },
                 Fig::Curslabs => match bin {

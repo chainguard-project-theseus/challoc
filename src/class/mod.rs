@@ -167,6 +167,11 @@ pub struct ClassStats {
     /// they belong to; 0 in the lock value's own copy.
     pub closed_slots: usize,
     pub closed_pages: usize,
+    /// The slots of whole free pages the walk last found closable and has
+    /// not closed yet: dirty memory the walk gives back by itself, which
+    /// the reported `curregs` adds, as jemalloc's bins leave out an empty
+    /// slab (docs/design.md 13.4). Filled by `bin_stats` as the two above.
+    pub closable_slots: usize,
 }
 
 impl ClassStats {
@@ -1158,6 +1163,10 @@ struct Inner {
     closed_slots: usize,
     closed_pages: usize,
     pages_cursor: usize,
+    /// The closable slots the walks found on this pass over the partial set
+    /// so far, and the last full pass's ([`ClassStats::closable_slots`]).
+    closable_cycle: usize,
+    closable_slots: usize,
     /// Ghost: the slabs this arena owns (their group's owner word names
     /// this arena, guard slabs included), each with the state its
     /// descriptor holds while this lock is held. The accessors that tie it
@@ -2359,6 +2368,7 @@ impl ClassState {
             stats: ClassStats {
                 closed_slots: 0,
                 closed_pages: 0,
+                closable_slots: 0,
                 committed: 0,
                 guards: 0,
                 empty: 0,
@@ -2370,6 +2380,8 @@ impl ClassState {
             closed_slots: 0,
             closed_pages: 0,
             pages_cursor: 0,
+            closable_cycle: 0,
+            closable_slots: 0,
             // No slab owned or committed yet.
             states: Ghost(Map::empty()),
             committed: Ghost(vstd::set::Set::empty()),
@@ -5776,7 +5788,7 @@ impl ClassState {
     /// slab-set counts the older tests compare.
     #[cfg(test)]
     pub fn stats(&self) -> ClassStats {
-        ClassStats { closed_slots: 0, closed_pages: 0, ..self.bin_stats(Tracked::assume_new()).0 }
+        ClassStats { closed_slots: 0, closed_pages: 0, closable_slots: 0, ..self.bin_stats(Tracked::assume_new()).0 }
     }
 
     /// The slab counts and `curregs` (slots out of this arena's bitmaps:
@@ -5812,7 +5824,7 @@ impl ClassState {
         let released = self.released.load(Ordering::Relaxed);
         let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut s = g.stats;
-        let (closed_slots, closed_pages) = (g.closed_slots, g.closed_pages);
+        let (closed_slots, closed_pages, closable_slots) = (g.closed_slots, g.closed_pages, g.closable_slots);
         let claimed = self.claimed.load(Ordering::Relaxed);
         g.unlock();
         s.guards = self.table().guards(Tracked(ord));
@@ -5835,6 +5847,7 @@ impl ClassState {
         // clear, so no claim counted them; reported with `curregs` they
         // never exceed the slabs' slots, nor the closed pages the slabs.
         s.closed_slots = closed_slots.min(cap - curregs);
+        s.closable_slots = closable_slots.min(cap - curregs - s.closed_slots);
         let pages = self.table().page_view().pages;
         s.closed_pages = closed_pages.min(if pages == 0 { 0 } else { s.curslabs().saturating_mul(pages) });
         (s, curregs)
