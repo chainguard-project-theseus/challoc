@@ -61,9 +61,10 @@ architecture, or for the other one with its standard library installed
 x86_64 it also fetches rems-project/sail-x86-from-acl2 at
 `0c6c023dccc7c20d8d9dbfc481f01d9bb49d62bf` and builds the x86 model
 (`verus/isla/x86/build-ir.sh`, about 15 seconds) unless `ISLA_X86_IR`
-names one. `ISLA_CARGO_FLAGS` passes cargo flags, such as
-`--no-default-features --features quantum8`. The header of `run.sh`
-lists its other variables.
+names one. `make isla` builds the library at `QUANTUM` (`make isla
+QUANTUM=8`) by passing `ISLA_CARGO_FLAGS`, which `run.sh` run directly
+takes as cargo flags, such as `--no-default-features --features
+quantum8`. The header of `run.sh` lists its other variables.
 
 ## Setup
 

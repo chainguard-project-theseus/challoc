@@ -80,9 +80,9 @@ checks:
         - ".chainguard/ci/isla.yaml"
     foreach:
       - name: arm64-q16
-        vars: {ISLA_TARGETS: aarch64}
+        vars: {ISLA_TARGETS: aarch64, QUANTUM: "16"}
       - name: arm64-q8
-        vars: {ISLA_TARGETS: aarch64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}
+        vars: {ISLA_TARGETS: aarch64, QUANTUM: "8"}
     # The aarch64 half traces 36 PAC instructions in 36 configurations and
     # checks 2,820 PAC jobs, one process per CPU (verus/isla/run-aarch64.sh,
     # section 6): about 18 minutes on medium-arm64's 4 vCPUs, past
@@ -123,10 +123,10 @@ checks:
     # sail-x86-from-acl2.
     foreach:
       - name: arm64-q16
-        vars: {ISLA_TARGETS: aarch64}
+        vars: {ISLA_TARGETS: aarch64, QUANTUM: "16"}
         network: *crates
       - name: arm64-q8
-        vars: {ISLA_TARGETS: aarch64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}
+        vars: {ISLA_TARGETS: aarch64, QUANTUM: "8"}
         network: *crates
       # The x86_64 half has no PAC jobs: about 6 minutes on medium-amd64
       # with the x86 model build, most of it the GOT, TLS and rseq::symbols
@@ -134,11 +134,11 @@ checks:
       - name: amd64-q16
         resources: medium-amd64
         timeout: 15m
-        vars: {ISLA_TARGETS: x86_64}
+        vars: {ISLA_TARGETS: x86_64, QUANTUM: "16"}
       - name: amd64-q8
         resources: medium-amd64
         timeout: 15m
-        vars: {ISLA_TARGETS: x86_64, ISLA_CARGO_FLAGS: "--no-default-features --features quantum8"}
+        vars: {ISLA_TARGETS: x86_64, QUANTUM: "8"}
     resources: *isla-resources
     timeout: *isla-timeout
     network:
