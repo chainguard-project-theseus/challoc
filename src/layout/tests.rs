@@ -1,15 +1,6 @@
 use super::*;
+use crate::testutil::xorshift;
 use std::vec::Vec;
-
-/// Deterministic xorshift for synthetic offsets.
-fn xorshift(state: &mut u64) -> u64 {
-    let mut x = *state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x
-}
 
 fn synthetic(lg_region: u32, lg_stride: u32) -> Regions {
     let mut s = 0x9E37_79B9_7F4A_7C15u64;

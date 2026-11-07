@@ -5,12 +5,7 @@ use std::sync::Arc;
 use std::vec;
 use std::vec::Vec;
 
-/// The page size the environment is built with: the kernel's (the
-/// reservations are real, so a 64 KiB-page kernel needs 64 KiB runs and
-/// guards).
-pub(super) fn page_size() -> usize {
-    crate::sys::features::page_size()
-}
+pub(super) use crate::testutil::{page_size, xorshift};
 
 const LG_REGION: u32 = LG_MAX_SLAB;
 const LG_STRIDE: u32 = LG_REGION + 2;
@@ -193,15 +188,6 @@ impl Drop for Env {
 /// Guard mode under test: the probed kernel support.
 pub(super) fn guard_mode() -> bool {
     crate::sys::features::probe_guard_install(page_size())
-}
-
-fn xorshift(state: &mut u64) -> u64 {
-    let mut x = *state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x
 }
 
 #[test]
