@@ -134,6 +134,8 @@ a compiler barrier.
   free's. loom's `SeqCst` fence is stronger than C++20's (it joins the
   fenced threads' views into one clock), so a passing model rests on
   that argument; the failing controls are behaviours C++20 allows.
+  GenMC's port (`tests/genmc/background.rs`, "GenMC" below) checks the
+  pair under RC11's `SeqCst` fences, and under IMM and ARMv8.
 - Both fences are off the fast paths: `wake` runs on a class's first
   `Empty` slab and on a decay-period change, `start` once per thread
   start. Making the four accesses `SeqCst` instead is also correct under
@@ -333,6 +335,52 @@ copies, as the loom models' are:
 - `bitmap.rs` (P1, `vspec::word`): release then reserve, two claimers,
   and `init`'s publication through the commit count.
 - `litmus.rs` (`vspec::count`): the two shapes of loom's limits above.
+- `init.rs` (P4, `api/mod.rs`'s own functions over `STATE` and
+  `INIT_TID`, no `vspec` wrapper, so a copy through and through): one,
+  two and three callers with a free, a re-entrant `init`, and the
+  publisher's read-back. Three callers put two waiters on `STATE` at
+  once, which loom cannot run.
+- `background.rs`, `exit.rs`, `publish.rs` (P3): the background
+  thread's wake-up against a class's first `Empty` slab, its exit after
+  `request(false)` (also with another kick in between), and `start`'s
+  publication against its exit, each also with two spurious wake-ups
+  of the thread.
+
+The P3 harnesses wait on `SEQ` through `prelude.rs`'s futex stand-in,
+since GenMC has no futex: `futex_wait(word, val)` blocks until a
+`Relaxed` load of the word reads another value than `val`, and
+`futex_wake` does nothing. Each harness has one waiter, as the code
+has (`FUTEX_WAKE` of one). The stand-in assumes of the kernel no lost
+wake-up given the value check: a waiter whose compare read `val` is
+woken by a wake that follows a change of the word. It wakes the waiter
+at the change itself, which holds the code to `kick`'s `fetch_add`
+then `futex_wake` (both pinned); that `kick` is the only writer of
+`SEQ` rests on review, not a test. Spurious wake-ups are allowed: a
+case's `SPURIOUS` makes the thread's first `SPURIOUS` waits return at
+once, with no compare (GenMC explores every interleaving, so at once
+stands for at any later point in that wait). The wait adds no ordering
+(the kernel's hash-bucket lock would), so the callers' own `SEQ` loads
+are all that order them. The wait, and `init.rs`'s spin on `STATE`, are
+`await_until!`, GenMC's manual spin-assume markers: one pass of the
+loop's loads, which blocks the thread when it fails. A case run with
+`+live` checks liveness (`--check-liveness`): a thread blocked with
+each load of its last pass reading its location's last write is a
+reported "Liveness violation", which is how a lost wake-up, or a
+waiter left spinning, fails. Those runs turn GenMC's automatic
+spin-assume pass off: it might take the background thread's loop,
+which sleeps in the wait, for a spin on its loads, and the liveness
+check assumes a blocked spin would later read newer values, so it
+would not report a thread asleep on a stale `REQUESTED`. Under RC11
+`background.rs` checks `wake`'s and `start`'s fences with RC11's
+`SeqCst` fences, the semantics C++20 took from RC11 (P0668), not
+loom's stronger ones (P3 above). GenMC 0.20 cannot run a thread
+created by a thread other than the main one under IMM and ARMv8
+(`Attempt to access non-allocated memory!` on the new thread's
+closure, or the `allocInfoMap_` internal check), so the main thread
+spawns the background thread first, and it waits (`prelude.rs`'s
+`created`) for a `Release` store where its creator would create it:
+the happens-before edge `pthread_create` gives.
+
 
 `tests/loom/tests/pins.rs` ties the copies to the code from both sides
 (`genmc_copies_in_place`). `GENMC_PINS` pairs each source line a harness
@@ -354,15 +402,18 @@ run in the `loom` check, which runs on every pull request.
 
 Every case loom also runs has loom's controls (the `Release` stores made
 `Relaxed`, a read-modify-write split into a load and a store), each a
-`fail` case that must fail with its expected report. `sh
-tests/genmc/run.sh` runs every case under each model it names and
-checks each verdict: 70 runs, all as expected, in 42 to 44 s from a
-cold cargo cache (27 s of it the cases) on an 8-vCPU guest. Runs skip
+`fail` case that must fail with its expected report. Two controls loom's
+models do not have: `exit.rs`'s kick before the `REQUESTED` store, and
+`publish.rs`'s `Relaxed` `SEQ` load, each of which leaves the thread
+asleep. `sh tests/genmc/run.sh`
+runs every case under each model it names and checks each verdict: 126
+runs, all as expected, in 63 s from a cold cargo cache (43 s of it the
+cases) on a 4-vCPU guest. Runs skip
 GenMC's random estimation pass (`--disable-estimation`), so each
 explores in the same order every time and reports the same error.
 Every shipped configuration passes under RC11; all but `narenas` and
 `bitmap_two_claimers` also pass under IMM, so they do not rely on the
-absence of load buffering, and six pass under ARMv8 as well (the cases
+absence of load buffering, and eleven pass under ARMv8 as well (the cases
 file names the models of each). Under ARMv8 GenMC 0.20 did not report
 the race of `bitmap_relaxed_release` (that run passed), so the ARMv8
 runs are evidence for the harnesses' assertions, not for their race
@@ -375,11 +426,15 @@ the wrappers, `src/sync.rs`, the files the harnesses copy steps from,
 `Cargo.toml`, `tests/genmc/` or `tests/loom/src/vspec.rs`. GenMC found no bug in challoc.
 
 The seam ledger cites the `pass` cases next to loom, as evidence only
-(`GenMC: <case> [<models>]`, [SEAMS.md](SEAMS.md), "Status"), in 22
+(`GenMC: <case> [<models>]`, [SEAMS.md](SEAMS.md), "Status"), in 25
 statuses (`grep -rh 'Status: .*GenMC:' verus/ledger/src`): the 19
-`vspec` atomic wrappers whose bodies a case runs, and
-`table::store_owner`, `api::state_load` and `api::state_publish`, whose
-atomic line a harness copies, pinned in `GENMC_PINS`. The cases erase
+`vspec` atomic wrappers whose bodies a case runs;
+`table::store_owner`, `api::state_load`, `api::state_claim` and
+`api::state_publish`, whose atomic line a harness copies; and
+`api::init_slow` and `background::main`, whose steps `init.rs` and the
+P3 harnesses copy; each copy pinned in `GENMC_PINS`. The P3 citations
+also rest on the futex stand-in's assumptions, which their statuses
+name. The cases erase
 every permission (`Tracked::assume_new()`), so none checks a wrapper's
 contract or sees a ghost value; what they show is that the callers'
 hand-offs hold in the cases' configurations, under the models each case
@@ -390,13 +445,25 @@ under, a copy run in place of the body.
 What GenMC does not check here:
 
 - No futex. The harnesses take genmc-std's `Mutex` for the `RawLock`
-  copy, so they say nothing of P2, and P3's wake-up is not modelled.
-- P4's `Shared` publication: the loom model (`tests/loom/src/init.rs`)
-  copies `api/mod.rs`'s own functions, with no `vspec` wrapper, so a
-  GenMC port would be a copy through and through, tied to the code only
-  by line pins. The flags harness does copy `STATE`'s `Acquire` load and
-  `READY` store, pinned, but only as the publication of `put_flags`'
-  writes to the dispatch byte's readers.
+  copy, so they say nothing of P2. P3's harnesses rest on the futex
+  stand-in's assumptions above, and none of them takes a timeout (the
+  models' worst case, no deadline).
+- A `+live` run cannot see a wait the compiler emptied of loads. When
+  nothing in a case writes a private static (loom's no-kick exit
+  control writes no `SEQ`), rustc at `-Copt-level=1` treats it as a
+  constant: the IR has no `SEQ`, the wait is `await_until!` with no
+  load (`__VERIFIER_spin_end(false)`), and GenMC explores 1 execution
+  and reports no error and no blocked execution, also with
+  `--disable-load-annotation`. `futex_wait` guards its own word by
+  passing it through `black_box`, after which that control fails with
+  "Liveness violation" (`exit_no_kick`); `init.rs`'s wait on `STATE`,
+  which every case writes, has no such guard.
+- `init.rs` (P4) is a copy of `api/mod.rs`'s functions through and
+  through, tied to the code only by its line pins; so are the P3
+  harnesses' steps, which call no `vspec` wrapper either. They leave
+  out what their headers name, as the loom models do (the fork gate in
+  `init.rs`, the class lock and the state lock in `background.rs`, the
+  state lock in `exit.rs`).
 - The GenMC pins match whole lines, not what they do. A harness step
   that is not a line-for-line copy is not pinned: `bitmap.rs`'s
   `lowest_n_bits`, which the harness writes its own way, `RawLock`'s own
@@ -646,8 +713,10 @@ citation makes a seam at most partly checked; the status names what the models
 leave unchecked. Where the ledger also cites Kani, the Kani harness
 checks the wrapper's own body on one thread. Where it also cites GenMC
 (`GenMC: <case> [<models>]`, "GenMC" above), the cases run the wrapper's
-own body, or for `store_owner`, `state_load` and `state_publish` a
-pinned copy of its atomic line, over `core`'s atomics with the
+own body, or for `store_owner`, `state_load`, `state_claim` and
+`state_publish` a pinned copy of its atomic line, and for `init_slow`
+and `background::main` a pinned copy of their steps, over `core`'s
+atomics with the
 permissions erased: evidence for the callers' hand-offs under the models
 named, which moves no status (the "status" column marks a copy).
 
@@ -661,17 +730,17 @@ another thread's exchange as often as other threads retake the lock.
 | ledger file (`verus/ledger/src/`) | seam | status |
 |---|---|---|
 | `api/mod.rs.md` | `state_load` | partly checked (loom, GenMC copy) |
-| `api/mod.rs.md` | `state_claim` | partly checked (loom) |
+| `api/mod.rs.md` | `state_claim` | partly checked (loom, GenMC copy) |
 | `api/mod.rs.md` | `state_publish` | partly checked (loom, GenMC copy) |
 | `api/mod.rs.md` | `line_load` | partly checked (loom) |
 | `api/mod.rs.md` | `line_compare_exchange` | partly checked (loom) |
 | `api/mod.rs.md` | `line_store` | partly checked (loom) |
-| `api/mod.rs.md` | `init_slow` | partly checked (loom) |
+| `api/mod.rs.md` | `init_slow` | partly checked (loom, GenMC copy) |
 | `class/table.rs.md` | `store_owner` | partly checked (loom, GenMC copy) |
 | `lock.rs.md` | `RawLock::lock_slow` | trusted |
 | `lock.rs.md` | `axiom_acquired` | partly checked (loom) |
 | `lock.rs.md` | `LockGuard::drop` | partly checked (loom) |
-| `purge/background.rs.md` | `main` | partly checked (loom) |
+| `purge/background.rs.md` | `main` | partly checked (loom, GenMC copy) |
 | `slab.rs.md` | `SlabDesc::init` | partly checked (loom) |
 | `slab.rs.md` | `SlabDesc::state_byte_held` | partly checked (loom) |
 | `slab.rs.md` | `SlabDesc::dirty_held` | partly checked (loom) |

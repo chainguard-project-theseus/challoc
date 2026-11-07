@@ -140,12 +140,23 @@ while IFS= read -r line; do
 	} > "$dir/main.rs"
 
 	for model in $models; do
-		case $model in
+		case ${model%+live} in
 			rc11) opts= ;;
 			imm) opts=--imm ;;
 			arm8) opts=--arm8 ;;
 			*) echo "genmc: case $name: unknown model $model" >&2; exit 2 ;;
 		esac
+		# `+live`: a thread blocked for good at a spin loop is an error,
+		# not an execution GenMC drops. The spin loops are then only the
+		# harnesses' own (prelude.rs's `await_until!`), with GenMC's
+		# automatic spin-assume pass off. Otherwise the pass may take the
+		# background thread's loop, which sleeps in the futex stand-in,
+		# for a spin on its loads, and the liveness check assumes a
+		# blocked spin would later read newer values, so it would not
+		# report a thread asleep on a stale `REQUESTED`. (With the pass
+		# on, background, exit_waker and publish explored one execution
+		# fewer each, with the same verdicts.)
+		case $model in *+live) opts="$opts --check-liveness --disable-spin-assume" ;; esac
 		log=$dir/$model.log
 		t0=$(date +%s)
 		rc=0
@@ -154,7 +165,7 @@ while IFS= read -r line; do
 		# to estimate the state space, and an error found there makes the
 		# report (which error, and whether an internal check trips) vary
 		# from run to run.
-		# shellcheck disable=SC2086 # $opts and $skip_build are one word or none
+		# shellcheck disable=SC2086 # $opts and $skip_build are words to split
 		(cd "$dir" && RUSTC_BOOTSTRAP=1 genmc --disable-estimation $opts $skip_build -- \
 			-Copt-level=1 -Zshare-generics=no -Cdebuginfo=2 --edition 2024 -A warnings \
 			-L "dependency=$deps" --extern "vstd=$vstd" main.rs) > "$log" 2>&1 || rc=$?
