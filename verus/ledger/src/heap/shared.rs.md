@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `ClassLin...ard_word` | external_body | inline asm | Islaris/Isla | trusted |
 | `ThreadKey::create` | external_body | function pointer | Kani | discharged |
-| `pthread...ecific` | external_body | FFI/syscall | none (assumption) | trusted |
+| `pthread_setspecific` | external_body | FFI/syscall | Kani | discharged |
 | `S_LINES` | external_body const | core library | Kani | discharged |
 | `S_FREE_FLAGS` | external_body const | core library | Kani | discharged |
 | `S_PUSH_FLAGS` | external_body const | core library | Kani | discharged |
@@ -53,7 +53,7 @@ fn guard_word(&self) -> (r: u64)
 
 ## `ThreadKey::create`
 
-src/heap/shared.rs:1092. Kind: external_body. Category: function pointer.
+src/heap/shared.rs:1093. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged on premises (Kani: heap::shared::kani_key::create_keeps_the_key; premises: C7 (glibc's pthread_key_create stores the key and returns 0, or returns an error number)).
 
 > A new key whose destructor is `heap_destructor`; `valid` says whether `pthread_key_create` gave one.
@@ -68,8 +68,8 @@ pub fn create() -> ThreadKey
 
 ## `pthread_setspecific`
 
-src/heap/shared.rs:1173. Kind: external_body. Category: FFI/syscall.
-Tool: none (assumption). Status: trusted.
+src/heap/shared.rs:1178. Kind: external_body. Category: FFI/syscall.
+Tool: Kani. Status: discharged on premises (Kani: heap::shared::kani_setspecific::setspecific_passes_key_and_value; premises: C10 (glibc's pthread_setspecific records the value under the key without reading it, or returns an error number, without calling into challoc, outside a process whose challoc key is 32 or above with no block for it on the thread)).
 
 > `pthread_setspecific(3)`: stores `value` for the calling thread under `key` without dereferencing it; 0 on success, an error number otherwise (nothing is claimed about it).
 
@@ -86,7 +86,7 @@ unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tr
 
 ## `S_LINES`
 
-src/heap/shared.rs:1368. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1373. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 2770929303, body none.
@@ -97,7 +97,7 @@ const S_LINES: usize = core::mem::offset_of!(Shared, lines);
 
 ## `S_FREE_FLAGS`
 
-src/heap/shared.rs:1370. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1375. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 2443053768, body none.
@@ -108,7 +108,7 @@ const S_FREE_FLAGS: usize = core::mem::offset_of!(Shared, free_flags);
 
 ## `S_PUSH_FLAGS`
 
-src/heap/shared.rs:1372. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1377. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 3077670975, body none.
@@ -119,7 +119,7 @@ const S_PUSH_FLAGS: usize = core::mem::offset_of!(Shared, push_flags);
 
 ## `S_REGION_HI`
 
-src/heap/shared.rs:1374. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1379. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 663929462, body none.
@@ -130,7 +130,7 @@ const S_REGION_HI: usize = core::mem::offset_of!(Shared, region_hi);
 
 ## `S_REGIONS`
 
-src/heap/shared.rs:1376. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1381. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 4146282308, body none.
@@ -141,7 +141,7 @@ const S_REGIONS: usize = core::mem::offset_of!(Shared, regions);
 
 ## `S_TABLES`
 
-src/heap/shared.rs:1378. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1383. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 4010556042, body none.
@@ -152,7 +152,7 @@ const S_TABLES: usize = core::mem::offset_of!(Shared, tables);
 
 ## `S_ARENA0`
 
-src/heap/shared.rs:1380. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1385. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 454506752, body none.
@@ -163,7 +163,7 @@ const S_ARENA0: usize = core::mem::offset_of!(Shared, arena0);
 
 ## `S_META`
 
-src/heap/shared.rs:1382. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1387. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 2493252749, body none.
@@ -174,7 +174,7 @@ const S_META: usize = core::mem::offset_of!(Shared, meta);
 
 ## `S_HUGE`
 
-src/heap/shared.rs:1384. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1389. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 3071001454, body none.
@@ -185,7 +185,7 @@ const S_HUGE: usize = core::mem::offset_of!(Shared, huge);
 
 ## `S_GC_INTERVAL_NS`
 
-src/heap/shared.rs:1386. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1391. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 1444629391, body none.
@@ -196,7 +196,7 @@ const S_GC_INTERVAL_NS: usize = core::mem::offset_of!(Shared, gc_interval_ns);
 
 ## `S_POLICY`
 
-src/heap/shared.rs:1388. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1393. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 1779571104, body none.
@@ -207,7 +207,7 @@ const S_POLICY: usize = core::mem::offset_of!(Shared, policy);
 
 ## `S_CONFIG`
 
-src/heap/shared.rs:1390. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1395. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 1226576741, body none.
@@ -218,7 +218,7 @@ const S_CONFIG: usize = core::mem::offset_of!(Shared, config);
 
 ## `S_KEY`
 
-src/heap/shared.rs:1392. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1397. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 286361478, body none.
@@ -229,7 +229,7 @@ const S_KEY: usize = core::mem::offset_of!(Shared, key);
 
 ## `S_ARENAS`
 
-src/heap/shared.rs:1394. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1399. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 886266886, body none.
@@ -240,7 +240,7 @@ const S_ARENAS: usize = core::mem::offset_of!(Shared, arenas);
 
 ## `S_TCACHES`
 
-src/heap/shared.rs:1396. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1401. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 1262348297, body none.
@@ -251,7 +251,7 @@ const S_TCACHES: usize = core::mem::offset_of!(Shared, tcaches);
 
 ## `S_STATS`
 
-src/heap/shared.rs:1398. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1403. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 3982933550, body none.
@@ -262,7 +262,7 @@ const S_STATS: usize = core::mem::offset_of!(Shared, stats);
 
 ## `S_CGROUP`
 
-src/heap/shared.rs:1400. Kind: external_body const. Category: core library.
+src/heap/shared.rs:1405. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 Hashes: contract 2964860936, body none.
@@ -273,7 +273,7 @@ const S_CGROUP: usize = core::mem::offset_of!(Shared, cgroup);
 
 ## `axiom_shared_layout`
 
-src/heap/shared.rs:1406. Kind: axiom. Category: core library.
+src/heap/shared.rs:1411. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs).
 
 > `Shared`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size.
@@ -314,7 +314,7 @@ axiom fn axiom_shared_layout()
 
 ## `axiom_shared_built`
 
-src/heap/shared.rs:1584. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1589. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Shared` at `p` (`Shared::split`'s parts and class lines, every one initialised, and the tables), joined into the permission to the whole value, the value [`shared_at`] names, frozen (`&'static`): readers share it, and nothing can write through it.
@@ -364,7 +364,7 @@ axiom fn axiom_shared_built(
 
 ## `axiom_shared_regions`
 
-src/heap/shared.rs:1636. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1641. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The regions of the `Shared` at `p` are what the permission to its `regions` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`] writes the field): no verified code can write the field again, so the value is the built one.
@@ -383,7 +383,7 @@ axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Sh
 
 ## `axiom_shared_meta`
 
-src/heap/shared.rs:1658. Kind: axiom. Category: raw pointer (internal).
+src/heap/shared.rs:1663. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The metadata allocator of the `Shared` at `p` is what the permission to its `meta` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, in [`Shared::put_head`], right after it writes the field), as [`axiom_shared_regions`] states of the regions: no verified code can write the field again, so the value is the built one.
@@ -402,12 +402,12 @@ axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
 
 ## `Shared::begin`
 
-src/heap/shared.rs:1684. Kind: external_body. Category: raw pointer from C caller.
+src/heap/shared.rs:1689. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The permission to `init`'s storage, uninitialised, for `once`, the process's token of this step.
 
-Body mints Tracked at line 1693.
+Body mints Tracked at line 1698.
 
 Hashes: contract 475739801, body 3603367423.
 

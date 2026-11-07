@@ -11,4 +11,10 @@ axiom_thread_mask	platform/kernel fact	none (assumption)
 trap	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past the trap))	contract 1016438138, body 2141251898
 # glibc's thread pointer: tells threads of one process apart, kept by the
 # forking thread in a fork child (the fork window's holder, the init/fork gate).
-pthread_self	FFI/syscall	none (assumption)
+# Kani runs the body with glibc's pthread_self replaced by a recording
+# stand-in; what glibc's function does is C12. The item's contract claims
+# only that the call returns. What callers rely on of the value is stated
+# where they use it: distinct and kept in a fork child by
+# lock::axiom_child_window, never 0, 1 or 2 by the init gate's values
+# (api::GATE_IDLE and its kin, whose code claims nothing).
+pthread_self	FFI/syscall	Kani	discharged on premises (Kani: sys::linux::kani_self::pthread_self_returns_the_id; premises: C12 (glibc's pthread_self returns the calling thread's ID without failing, writing memory or calling into challoc))	contract 1280841326, body 1536309758

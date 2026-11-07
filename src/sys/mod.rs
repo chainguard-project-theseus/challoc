@@ -611,10 +611,11 @@ mod linux {
     mod glibc {
         unsafe extern "C" {
             /// glibc's `pthread_self(3)`, with the `libc` crate's signature
-            /// and the same symbol. Declared in this crate rather than
-            /// taken from the `libc` crate so that a Kani harness can stub
-            /// it: Kani 0.68 stubs a foreign function only where this crate
-            /// declares it, and silently ignores a stub on
+            /// and the same symbol (premise C12 of
+            /// `verus/kani/premises.md`). Declared in this crate rather
+            /// than taken from the `libc` crate so that `kani_self` can
+            /// stub it: Kani 0.68 stubs a foreign function only where this
+            /// crate declares it, and silently ignores a stub on
             /// `libc::pthread_self`. In a module of its own because the
             /// trusted wrapper that calls it, `super::pthread_self`, has its
             /// name.
@@ -1199,9 +1200,13 @@ mod linux {
 
     /// The calling thread's `pthread_self`: the forking thread keeps it in
     /// the child of a `fork`, where its kernel thread ID (`gettid`) is
-    /// new. Trusted: libc (glibc's thread pointer); nothing is claimed of
-    /// the value but that it tells threads of one process apart and is
-    /// never 0, 1 or 2 (a thread descriptor's address).
+    /// new. Trusted: libc (glibc's thread pointer); the contract claims
+    /// only that the call returns, which `kani_self` checks on premise C12
+    /// of `verus/kani/premises.md`. What callers assume of the value (a
+    /// thread descriptor's address) is theirs to state: that it tells the
+    /// threads of one process apart and stays the forking thread's in a
+    /// fork child, `lock::axiom_child_window`; that it is never 0, 1 or
+    /// 2, the init gate's values (`api::GATE_IDLE` and its kin).
     #[verifier::external_body]
     #[inline(always)]
     pub fn pthread_self() -> usize {
@@ -1586,6 +1591,46 @@ mod linux {
     }
 
     } // verus!
+
+    /// Kani check of `pthread_self` (`verus/ledger/src/sys/mod.rs.md`;
+    /// `cfg(kani)` only, see `verus/README.md`, "Kani").
+    #[cfg(kani)]
+    mod kani_self {
+        use super::pthread_self;
+
+        /// What the stand-in for glibc's `pthread_self` returns, and how
+        /// many times it was called.
+        static mut ID: libc::pthread_t = 0;
+        static mut CALLS: usize = 0;
+
+        /// A stand-in for glibc's `pthread_self` (premise C12): it records
+        /// its call and returns `ID`.
+        #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+        unsafe extern "C" fn self_model() -> libc::pthread_t {
+            // SAFETY: the harness's own statics; no other code runs in a
+            // harness.
+            unsafe {
+                CALLS += 1;
+                ID
+            }
+        }
+
+        /// `pthread_self`: no `requires`, no `ensures`; it returns, and
+        /// (beyond the contract) calls glibc's function once and returns
+        /// its ID unchanged, as a `usize`, for any ID.
+        #[kani::proof]
+        #[kani::stub(super::glibc::pthread_self, self_model)]
+        fn pthread_self_returns_the_id() {
+            let id: libc::pthread_t = kani::any();
+            // SAFETY: as in `self_model`.
+            unsafe { ID = id };
+            let r = pthread_self();
+            // SAFETY: as in `self_model`.
+            let calls = unsafe { CALLS };
+            assert_eq!(calls, 1);
+            assert_eq!(r as u64, id);
+        }
+    }
 }
 
 #[cfg(test)]

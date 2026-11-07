@@ -3095,7 +3095,11 @@ it).
 - `heap::shared::pthread_setspecific` (`external_body`): an FFI call
   whose nested allocator entries reach the slot only through the cores
   (or, at a benign value, `create`, which then writes nothing), holding
-  the token it is lent.
+  the token it is lent. Discharged on premise C10 of
+  `verus/kani/premises.md`, under which glibc's call makes no call into
+  challoc; the nested entries are those of a process outside C10, one in
+  which challoc's key is 32 or above and the thread has no block for it,
+  where glibc's `calloc` of the block re-enters the allocator.
 - `sys::tls::get`, `get_tp`, `set` (inline asm, `external_body`): a read
   returns the token's value; a write makes it the token's value and leaves its thread pointer and
   heap permission alone; the aarch64 `get_tp` returns the token's thread
@@ -9136,10 +9140,13 @@ unchanged). The theorem follows from the readers' `ensures`: at a
   `pthread_create`) is lent the outer token, and that a user is done
   with its token before another top-level user runs (the two frees'
   slow paths).
-- The nested-entry specs, trusted: `pthread_setspecific`
-  (`heap/shared.rs`) leaves a sentinel unchanged; `pthread_join`
-  and `spawn` (`purge/background.rs`) keep a non-empty cell
-  (`TlsCell::kept`).
+- The nested-entry specs: `pthread_setspecific` (`heap/shared.rs`)
+  leaves a sentinel unchanged, discharged on premise C10 of
+  `verus/kani/premises.md`, which leaves outside it a process in which
+  challoc's key is 32 or above and the thread has no block for it
+  (there glibc's `calloc` re-enters the allocator); trusted:
+  `pthread_join` and `spawn` (`purge/background.rs`) keep a non-empty
+  cell (`TlsCell::kept`).
 - The slot accessors (`get`, `get_tp`, `set`): inline asm, partly
   checked by Isla (`verus/isla/seams.md`); that only these sequences
   touch the slot (no exported accessor; `shared_object_uses_initial_exec_tls`

@@ -247,6 +247,115 @@ section's, and fails on a Kani status that names any other.
   `malloc/dynarray-skeleton.c` and `malloc/dynarray_emplace_enlarge.c`
   (the in-place table and the `malloc` past it), as read on glibc's
   master branch on 2026-11-06 (a mirror).
+- **C10, glibc's `pthread_setspecific`.** The symbol
+  `pthread_setspecific` resolves to glibc's `int
+  pthread_setspecific(pthread_key_t key, const void *value)`, the
+  signature of challoc's declaration of it in `heap/shared.rs` (its
+  `glibc` module), with `pthread_key_t` an `unsigned int`. A program or
+  preloaded library that defines that symbol itself, interposing on
+  glibc's, is outside this premise unless its definition does the same,
+  and so is a thread challoc runs on that glibc did not create (a raw
+  `clone`), whose thread pointer names no descriptor of its own.
+  Called by `heap::shared::pthread_setspecific` with any key and any
+  `value`, on the calling thread, it returns 0 and records `value` as
+  that thread's value for the key, or returns a nonzero error number:
+  `EINVAL` for a key that is not live (a key of `PTHREAD_KEYS_MAX`
+  (1024) or more, or one whose sequence number in glibc's key table is
+  even, never created or deleted), recording nothing. It does not read
+  or write through `value`, returns to its caller, writes no `errno`
+  and no memory of challoc's (its statics, its TLS slot, its stack),
+  reads none of that memory, and makes no call into challoc while it
+  runs. For a key below 32 (`PTHREAD_KEY_2NDLEVEL_SIZE`) glibc stores
+  the value in the first block of 32 entries the thread's descriptor
+  holds, allocating nothing; for a key of 32 or above it stores it in
+  that key's block of 32, which the thread's first call that records a
+  non-null value for a key of the block `calloc`s, and which in a
+  process whose allocator is challoc is a call into challoc (it returns
+  `ENOMEM` when the `calloc` fails). A call made while challoc's key
+  (the one `heap::shared::ThreadKey::create` stored) is 32 or above
+  and the calling thread has no block for it is outside this premise,
+  and so is any other call that `calloc`s a block. What glibc later
+  does with the value (passes it to the key's destructor at the
+  thread's exit, theorem 10 of `verus/THEOREMS.md`) is not part of the
+  call, and not of this premise. The harness runs the item with
+  `pthread_setspecific` replaced by a stand-in that records its call,
+  the key and the address of `value`, and returns any value. Source:
+  POSIX `pthread_setspecific` ("The pthread_setspecific() function
+  shall associate a thread-specific value with a key obtained via a
+  previous call to pthread_key_create()"; "If successful, the
+  pthread_setspecific() function shall return zero; otherwise, an
+  error number shall be returned to indicate the error"; a key not
+  obtained from `pthread_key_create()` is undefined there, so the
+  `EINVAL` return for any other key is glibc's); glibc
+  `nptl/pthread_setspecific.c` (`___pthread_setspecific`: the `EINVAL`
+  checks, the first block, and the `calloc` of a second-level block),
+  `sysdeps/nptl/internaltypes.h` (`KEY_UNUSED`, an even sequence
+  number), `nptl/descr.h` (`PTHREAD_KEY_2NDLEVEL_SIZE`,
+  `specific_1stblock`, `specific`) and
+  `sysdeps/unix/sysv/linux/bits/local_lim.h` (`PTHREAD_KEYS_MAX`), as
+  read on glibc's master branch on 2026-11-06 (a mirror).
+- **C11, glibc's `__errno_location`.** The symbol `__errno_location`
+  resolves to glibc's `int *__errno_location(void)`, the signature of
+  challoc's declaration of it in `vspec/errno.rs`. A program or
+  preloaded library that defines that symbol itself, interposing on
+  glibc's, is outside this premise unless its definition does the same,
+  and so is a thread challoc runs on that glibc did not create (a raw
+  `clone`), which may share another thread's `errno`. Called by
+  `vspec::errno::set_errno` and `vspec::errno::get_errno` with no
+  arguments, it returns the address of the calling thread's `errno`:
+  glibc's thread-local `int errno`, in libc's static TLS block of the
+  thread, aligned for an `int`, live while the thread runs, the same
+  address on every call by that thread, and another object than any
+  other thread's. No Rust allocation of challoc's (a stack frame, a
+  static, a `Box`) contains those bytes, and no thread but the calling
+  one writes them. It returns to its caller, writes no memory, reads
+  none of challoc's (only glibc's GOT entry for the TLS offset and the
+  thread pointer), and makes no call into challoc while it runs. The
+  pointer it returns may read and write that `int`: its provenance,
+  which Kani cannot observe, is that of memory outside the Rust
+  abstract machine, exposed ("Provenance of the addresses" below). Any
+  write to `errno` by other code on the thread (a libc call in trusted
+  code, a signal handler that does not restore it) between challoc's
+  write and its read is outside this premise (`vspec::errno`'s
+  `ThreadErrno`). The harnesses run each item with `__errno_location`
+  replaced by a stand-in that records its call and returns the address
+  of a Rust static, holding any value. Source: POSIX `<errno.h>`
+  (`errno` expands "to a modifiable lvalue of type int and thread local
+  storage duration") and XSH section 2.3, Error Numbers ("For each
+  thread of a process, the value of errno shall not be affected by
+  function calls or assignments to errno by other threads"); glibc
+  `csu/errno-loc.c` (`__errno_location`, `return &errno;`),
+  `csu/errno.c` (`__thread int errno;`) and `include/errno.h` (`extern
+  __thread int errno attribute_tls_model_ie;`, and `__errno_location`
+  declared `__attribute_const__`), as read on glibc's master branch on
+  2026-11-06 (a mirror).
+- **C12, glibc's `pthread_self`.** The symbol `pthread_self` resolves
+  to glibc's `pthread_t pthread_self(void)`, the signature of challoc's
+  declaration of it in `sys/mod.rs` (`linux`'s `glibc` module), with
+  `pthread_t` an `unsigned long`. A program or preloaded library that
+  defines that symbol itself, interposing on glibc's, is outside this
+  premise unless its definition does the same, and so is a thread
+  challoc runs on that glibc did not create (a raw `clone`), for which
+  it returns another thread's ID. Called by `sys::pthread_self` with no
+  arguments, it returns the calling thread's ID, the address of its
+  thread descriptor (`struct pthread`), and does not fail. It returns
+  to its caller, writes no memory, reads none of challoc's (the thread
+  pointer, and on x86_64 the descriptor's `header.self` word at
+  `%fs:16`), and makes no call into challoc while it runs. What callers
+  rely on of the ID is not part of the call, and not of this premise:
+  that it tells the live threads of a process apart and stays the
+  forking thread's in a `fork` child is what `lock::axiom_child_window`
+  assumes, and that it is never 0, 1 or 2 is what the init gate's
+  values assume (`api::GATE_IDLE`, `GATE_DONE` and `GATE_FORKING`;
+  their code claims nothing). The harness runs the item with
+  `pthread_self` replaced by a stand-in that records its call and
+  returns any value. Source: POSIX `pthread_self` ("The pthread_self()
+  function shall return the thread ID of the calling thread"; "No
+  errors are defined."); glibc `nptl/pthread_self.c` (`__pthread_self`,
+  `return (pthread_t) THREAD_SELF;`), `sysdeps/x86_64/nptl/tls.h` and
+  `sysdeps/aarch64/nptl/tls.h` (`THREAD_SELF`: the `header.self` word
+  through `%fs`, and the thread pointer less one `struct pthread`), as
+  read on glibc's master branch on 2026-11-06 (a mirror).
 
 ## Loader and kernel premises
 
@@ -320,16 +429,17 @@ branch as read on 2026-11-05 (a mirror at 2.42.9000), not a release tag.
 ## Provenance of the addresses
 
 Kani cannot observe a pointer's provenance (verus/SEAMS.md, "Status"),
-so a seam that reads through an address L1 or L2 describes rests on
-this argument too, which no tool checks. challoc allocates none of that
-memory: the three globals are glibc's objects in ld.so, which challoc
-reaches only through `.weak` references, and the rseq area lies in
-glibc's TLS block of the thread, in bytes no Rust allocation of
-challoc's (a stack frame, a static, a `Box`) contains. `core::ptr`'s
-documentation ("Exposed Provenance") says that memory outside the
-control of the Rust abstract machine "is always considered to be
-exposed, so long as this memory is disjoint from memory that will be
-used by the abstract machine such as the stack, heap, and statics".
+so a seam that reads through an address L1 or L2 describes, or reads
+or writes through the address C11's `__errno_location` returns, rests
+on this argument too, which no tool checks. challoc allocates none of
+that memory: the three globals are glibc's objects in ld.so, which
+challoc reaches only through `.weak` references, and the rseq area and
+`errno` lie in glibc's TLS block of the thread, in bytes no Rust
+allocation of challoc's (a stack frame, a static, a `Box`) contains.
+`core::ptr`'s documentation ("Exposed Provenance") says that memory
+outside the control of the Rust abstract machine "is always considered
+to be exposed, so long as this memory is disjoint from memory that will
+be used by the abstract machine such as the stack, heap, and statics".
 So:
 
 - `rseq::area` makes the area's address into a pointer with
@@ -345,12 +455,19 @@ So:
   exposed. That step rests on how Rust treats pointers from outside
   Rust, not on L1, and a seam that cites L1 for an `asm!` output names
   it in its gloss.
+- `vspec::errno::set_errno` and `vspec::errno::get_errno` write and read
+  through the pointer `__errno_location` returns (C11), a foreign
+  function's return value into memory outside the abstract machine:
+  one whose provenance is that memory's, exposed, on the same step as
+  for an `asm!` output above. The pointer may write and read the `int`
+  C11 describes.
 
 A thread stack the program provides (`pthread_attr_setstack`) may lie in
-memory challoc handed out, and glibc then places the thread's TLS block,
-rseq area included, there. Those bytes are in challoc's own mappings,
-which challoc reaches only through addresses, never through a Rust
-allocation of its own, so they are exposed on the same footing. A
+memory challoc handed out, and glibc then places the thread's TLS
+block, rseq area and `errno` included, there. Those bytes are in
+challoc's own mappings, which challoc reaches only through addresses,
+never through a Rust allocation of its own, so they are exposed on the
+same footing. A
 program written in Rust whose own Rust allocation (a `Vec` from its
 global allocator) is that stack is outside this argument: the bytes are
 then that program's abstract-machine memory, not disjoint from it.
