@@ -472,9 +472,9 @@ fn retain_cap_decides_purged_or_empty_at_free() {
     let (_y, _) = env.alloc(&h, page_size(), 1);
     let (small, _) = env.alloc(&h, page_size(), 1);
     let (_z, _) = env.alloc(&h, page_size(), 1);
-    let t0 = now_ns().max(1);
+    let t0 = sys::now_coarse_ns().max(1);
     env.free(&h, at_cap);
-    let t1 = now_ns().max(1);
+    let t1 = sys::now_coarse_ns().max(1);
     let e = h
         .lookup(
             env.page_of(at_cap),
@@ -561,7 +561,7 @@ fn discarded_total() -> u64 {
 
 /// Wait until the coarse clock is past `t`.
 fn wait_past(t: u64) {
-    while now_ns() <= t {
+    while sys::now_coarse_ns() <= t {
         std::thread::sleep(core::time::Duration::from_millis(1));
     }
 }
@@ -1040,7 +1040,7 @@ fn randomised_model_check() {
                 let cutoff = if xorshift(&mut rng).is_multiple_of(2) {
                     u64::MAX
                 } else {
-                    now_ns().saturating_sub(5)
+                    sys::now_coarse_ns().saturating_sub(5)
                 };
                 h.purge_empty(cutoff, Tracked::assume_new(), Tracked::assume_new());
                 h.audit();
@@ -1595,4 +1595,155 @@ fn zero_axioms_called_from_listed_sites() {
         table_calls, 1,
         "fresh-mapping zero axiom calls in SlabTable::new: got = {table_calls}, want = 1"
     );
+}
+
+// The test-only `Huge` helpers the tests here and in `linux_tests` call.
+
+impl Huge {
+    /// [`Huge::alloc_run`] for a zeroing caller, as the pointer and the
+    /// zero flag alone.
+    pub fn alloc(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
+        self.alloc_wanting(meta, size, align, arena, true)
+    }
+
+    /// [`Huge::alloc_run`] with its `zero` argument, as the pointer and the
+    /// zero flag alone.
+    pub fn alloc_wanting(
+        &self,
+        meta: &Meta,
+        size: usize,
+        align: usize,
+        arena: u16,
+        zero: bool,
+    ) -> (*mut u8, bool) {
+        let r = self
+            .alloc_run(
+                meta,
+                size,
+                align,
+                arena,
+                zero,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            )
+            .0;
+        (r.ptr, r.zeroed)
+    }
+}
+
+impl Huge {
+    /// [`Huge::free_run`] returning only the usable bytes released.
+    pub fn free(&self, meta: &Meta, page: usize) -> usize {
+        self.free_run(meta, page, Tracked::assume_new(), Tracked::assume_new())
+            .usable
+    }
+}
+
+impl Huge {
+    /// Oldest `Empty` extent's `dirty_at`, read under the lock (the decay
+    /// driver reads the copy in [`Huge::oldest_empty`] instead).
+    pub fn oldest_dirty_at(&self) -> Option<u64> {
+        let g = self.inner.lock_t();
+        if g.empty_head.is_null() {
+            None
+        } else {
+            // SAFETY: list members are live.
+            Some(unsafe { (*g.empty_head).dirty_at })
+        }
+    }
+
+    /// Walk every structure and check the invariants; for tests.
+    pub(super) fn audit(&self) {
+        let g = self.inner.lock_t();
+        let st = g.stats;
+        assert_eq!(
+            st.run_pages + st.empty_pages + st.purged_pages,
+            st.next_page,
+            "{st:?}"
+        );
+        assert_eq!(st.next_page, g.next_page);
+        let mut p = 0;
+        let mut counts = HugeStats::default();
+        let mut prev_free = false;
+        let mut keys = 0;
+        while p < g.next_page {
+            let d = g.table.get(p);
+            assert!(!d.is_null(), "page {p} has no extent");
+            // SAFETY: a non-null table entry is a live extent descriptor, and `g`
+            // holds the huge lock.
+            let (start, pages, state) = unsafe { ((*d).start(), (*d).pages(), (*d).state()) };
+            assert_eq!(start, p, "extent at {p} starts at {start}");
+            assert!(pages > 0);
+            keys += 1;
+            counts.add(state, pages);
+            match state {
+                RunState::Active => {
+                    assert_eq!(
+                        // SAFETY: as above.
+                        unsafe { (*d).usable },
+                        (pages - GUARD_PAGES) << self.lg_page
+                    );
+                    for q in p..p + pages {
+                        assert!(!g.free.map.is_set(q), "page {q} of run {p} marked free");
+                    }
+                    prev_free = false;
+                }
+                _ => {
+                    assert!(!prev_free, "adjacent free extents at {p}");
+                    for q in p..p + pages {
+                        assert!(
+                            g.free.map.is_set(q),
+                            "page {q} of free extent {p} not marked free"
+                        );
+                    }
+                    if pages > 1 {
+                        assert_eq!(
+                            g.table.get(p + pages - 1),
+                            d,
+                            "last-page key of {p} missing"
+                        );
+                        keys += 1;
+                    }
+                    prev_free = true;
+                }
+            }
+            p += pages;
+        }
+        assert_eq!(p, g.next_page);
+        assert_eq!((counts.runs, counts.run_pages), (st.runs, st.run_pages));
+        assert_eq!(
+            (counts.empty, counts.empty_pages),
+            (st.empty, st.empty_pages)
+        );
+        assert_eq!(
+            (counts.purged, counts.purged_pages),
+            (st.purged, st.purged_pages)
+        );
+        assert_eq!(keys, g.table.count, "table holds stale keys");
+        assert_eq!(g.free.map.lowest_set_from(g.next_page), None);
+        // The Empty list holds exactly the Empty extents, oldest first.
+        let mut n = 0;
+        let mut d = g.empty_head;
+        let mut last_dirty = 0;
+        let mut prev = ptr::null_mut();
+        while !d.is_null() {
+            // SAFETY: the Empty list links live descriptors; `g` holds the lock.
+            unsafe {
+                assert_eq!((*d).state(), RunState::Empty);
+                assert!((*d).dirty_at >= last_dirty, "empty list out of order");
+                assert_eq!((*d).prev, prev);
+                last_dirty = (*d).dirty_at;
+                prev = d;
+                d = (*d).next;
+            }
+        }
+        assert_eq!(prev, g.empty_tail);
+        d = g.empty_head;
+        while !d.is_null() {
+            n += 1;
+            // SAFETY: as above.
+            d = unsafe { (*d).next };
+        }
+        assert_eq!(n, st.empty);
+    }
 }

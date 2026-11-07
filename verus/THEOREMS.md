@@ -72,7 +72,7 @@ leave out (theorem 33). Remaining work is tracked in
   trusted facts are in [RESULTS.md](RESULTS.md#exploit-techniques).
 - **Commits avoid guards** (`class::table::theorem_slab_commit_avoids_guards`,
   `class/table.rs`; `huge::theorem_huge_commit_avoids_guards`,
-  `huge/mod.rs`): every `mprotect` read-write commit of a class region
+  `huge/kernel.rs`): every `mprotect` read-write commit of a class region
   stays in the region and shares no byte with a guard slab, except one
   starting in the range's first page for which an `MADV_GUARD_INSTALL`
   of that page succeeded (the marker stays; the rest of the slab is
@@ -3556,7 +3556,7 @@ coalesced: in every value the huge lock admits, no free extent
 existing `wf` conjuncts (live extents pairwise apart, inside
 `next_page`), every maximal stretch of pages covered by free extents is
 exactly one descriptor. This is the "adjacent free extents" check of
-`Huge::audit` (`huge/mod.rs`, the assert in its loop), stated as a
+`Huge::audit` (`huge/tests.rs`, the assert in its loop), stated as a
 conjunct of `Inner::wf`, the huge lock's invariant.
 
 **How it is kept.** `wf` has two conjuncts for it: `coalesced`, and
@@ -3870,7 +3870,7 @@ run authority stay those the batch's `free` was made from. The makers:
   range: each flush site proves the batch's `free` from the lock value
   it holds; no lemma states "the bytes of this flush" as a set.
 - Only `purge::Batch` discards are covered. `MADV_GUARD_INSTALL`
-  (`class/table.rs`, `huge/mod.rs`) also drops page contents, of guard
+  (`class/table.rs`, `huge/kernel.rs`) also drops page contents, of guard
   pages only (theorem 7), outside any batch.
 - Theorem 6's purge premise rests on trust. `axiom_discarded_zero`
   takes any range whose `MADV_DONTNEED` the kernel answered with
@@ -5615,7 +5615,7 @@ itself (`huge/free.rs`): `cap` is the `retain_max()` it
 read, `over` is `usable > cap`, `pof` is `!over && self.purge_on_free()`
 (the flag's value when it was read, at or below the cap, and `false`
 when it was not), and `purge` is `over || pof`. `now` is its clock
-reading (`now_ns().max(1)`), and `discarded` whether the run was
+reading (`sys::now_coarse_ns().max(1)`), and `discarded` whether the run was
 discarded: the ghost `st == Purged`, which `free_run` sets
 only when `purge` holds and `purge::discard_one` of the run's whole
 range, `[addr, addr + n * page_size)`, returns true (a discard `madvise` refuses, on `mlock`ed pages, leaves the
@@ -7772,7 +7772,7 @@ so through `purge_arena`'s contract).
   `discarded()` is not exported above the batch (`purge::Left`, theorem
   38, carries the byte count and the refused slabs and extents).
 - Only `purge::Batch` discards are covered; `MADV_GUARD_INSTALL`
-  (`class/table.rs`, `huge/mod.rs`) and `MADV_GUARD_REMOVE` drop or keep
+  (`class/table.rs`, `huge/kernel.rs`) and `MADV_GUARD_REMOVE` drop or keep
   contents of guard pages outside any batch (theorem 7).
 - The unit tests build batches over an unconstrained ghost predicate
   (`Batch::new_t`) and push arbitrary ranges; they are not verified code.
