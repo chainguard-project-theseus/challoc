@@ -1,5 +1,7 @@
 //! Test fixtures shared across modules: [`TestShared`], the one builder of
-//! a [`Shared`] over a synthetic layout, a deterministic [`xorshift`],
+//! a [`Shared`] over a synthetic layout, that layout ([`regions_at`]) and
+//! its real reservations ([`Reservation`]), [`map_rw`] for scratch
+//! memory, a deterministic [`xorshift`],
 //! [`global_state`], the guard of the tests that write or assert the
 //! process-wide allocator's settings, [`mlock_or_skip`] for the tests of
 //! purges that fail on locked memory, and the source scans of the guard
@@ -14,11 +16,19 @@ use std::boxed::Box;
 use crate::config::Config;
 use crate::heap::Shared;
 use crate::layout::{LG_MAX_SLAB, MAX_SLAB, Mapping, NCLASSES, Regions};
+use crate::meta::Meta;
 use crate::sys::pac;
 
-const LG_REGION: u32 = LG_MAX_SLAB;
-const LG_STRIDE: u32 = LG_REGION + 2;
-const META_LEN: usize = 16 << 20;
+/// The synthetic layout's class regions: the smallest `from_parts`
+/// accepts, 4 MiB, so the 64 KiB classes have 64 slabs and the 4 MiB
+/// class has one.
+pub(crate) const LG_REGION: u32 = LG_MAX_SLAB;
+pub(crate) const LG_STRIDE: u32 = LG_REGION + 2;
+/// The synthetic layout's superblock: every class region and the slack
+/// that aligns the first.
+pub(crate) const SB_LEN: usize = (NCLASSES << LG_STRIDE) + MAX_SLAB;
+/// The synthetic layout's metadata region.
+pub(crate) const META_LEN: usize = 16 << 20;
 /// 64 MiB huge region, reserved for real.
 const HUGE_LEN: usize = 64 << 20;
 
@@ -30,9 +40,16 @@ pub(crate) fn page_size() -> usize {
 
 pub(crate) use crate::meta::align_up;
 
-fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regions {
-    let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
-    let huge = (huge_base, HUGE_LEN);
+/// The synthetic layout: [`SB_LEN`] bytes of class regions at
+/// `superblock`, `huge` and `meta` as `(base, len)`, and a
+/// `1 << lg_page`-byte page. The addresses need not be mapped; the tests
+/// that touch memory pass [`Reservation`]s.
+pub(crate) fn regions_at(
+    superblock: usize,
+    huge: (usize, usize),
+    meta: (usize, usize),
+    lg_page: u32,
+) -> Regions {
     Regions::from_parts(
         superblock,
         LG_REGION,
@@ -40,11 +57,11 @@ fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regi
         &[0usize; NCLASSES],
         huge,
         meta,
-        page_size().trailing_zeros(),
+        lg_page,
         [
             Mapping {
                 addr: superblock,
-                len: sb_len,
+                len: SB_LEN,
             },
             Mapping {
                 addr: huge.0,
@@ -56,6 +73,86 @@ fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regi
             },
         ],
     )
+}
+
+/// A real `PROT_NONE`, `MAP_NORESERVE` reservation, unmapped on drop: `len`
+/// bytes from `base`. Bind it before anything that points into it (a
+/// [`Meta`], a [`Regions`]), so that those drop first.
+pub(crate) struct Reservation {
+    pub(crate) base: usize,
+    pub(crate) len: usize,
+    /// The whole mapping, alignment slack included.
+    mapping: (usize, usize),
+}
+
+impl Reservation {
+    /// `len` bytes at a page-aligned base.
+    pub(crate) fn new(len: usize) -> Reservation {
+        Reservation::aligned(len, page_size())
+    }
+
+    /// `len` bytes at a base aligned to `align`, a power of two: `mmap`
+    /// only promises the page, so this reserves `align - page` bytes of
+    /// slack beyond `len`.
+    pub(crate) fn aligned(len: usize, align: usize) -> Reservation {
+        use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
+        let total = len + align.saturating_sub(page_size());
+        // SAFETY: a fresh anonymous reservation at an address the kernel
+        // picks replaces nothing.
+        let raw = unsafe {
+            crate::sys::mmap(
+                0,
+                total,
+                PROT_NONE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                -1,
+                0,
+            )
+        }
+        .expect("reserve");
+        Reservation {
+            base: align_up(raw, align),
+            len,
+            mapping: (raw, total),
+        }
+    }
+
+    /// The whole mapping as `(addr, len)`, alignment slack included.
+    pub(crate) fn mapping(&self) -> (usize, usize) {
+        self.mapping
+    }
+
+    /// A metadata allocator over `base..base + len` at the kernel's page.
+    pub(crate) fn meta(&self) -> Meta {
+        Meta::new(self.base, self.len, page_size())
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        // SAFETY: the mapping `aligned` made; its users were bound after
+        // it and are gone.
+        unsafe { crate::sys::munmap(self.mapping.0, self.mapping.1) }.unwrap();
+    }
+}
+
+/// A fresh anonymous read-write mapping of `len` bytes; the caller
+/// unmaps it, or leaves it to the process.
+pub(crate) fn map_rw(len: usize) -> usize {
+    use crate::sys::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+    // SAFETY: a fresh anonymous mapping at an address the kernel picks
+    // replaces nothing.
+    unsafe {
+        crate::sys::mmap(
+            0,
+            len,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    }
+    .expect("map")
 }
 
 /// A `Shared` over a synthetic 4 MiB-per-class layout. The regions are
@@ -116,33 +213,15 @@ impl TestShared {
     }
 
     pub(crate) fn build(self) -> &'static Shared {
-        let (sb, mb, hb) = {
-            use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
-            let reserve = |len: usize| -> usize {
-                // SAFETY: a fresh reservation at an address the kernel
-                // picks replaces nothing.
-                unsafe {
-                    crate::sys::mmap(
-                        0,
-                        len,
-                        PROT_NONE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                        -1,
-                        0,
-                    )
-                }
-                .expect("reserve")
-            };
-            (
-                reserve((NCLASSES << LG_STRIDE) + MAX_SLAB),
-                reserve(META_LEN),
-                reserve(HUGE_LEN),
-            )
-        };
+        // Leaked with the `Shared`.
+        let sb = core::mem::ManuallyDrop::new(Reservation::aligned(SB_LEN, MAX_SLAB));
+        let meta = core::mem::ManuallyDrop::new(Reservation::new(META_LEN));
+        let huge = core::mem::ManuallyDrop::new(Reservation::new(HUGE_LEN));
         let regions = regions_at(
-            align_up(sb, MAX_SLAB),
-            (align_up(mb, page_size()), META_LEN),
-            hb,
+            sb.base,
+            (huge.base, huge.len),
+            (meta.base, meta.len),
+            page_size().trailing_zeros(),
         );
         // One raw pointer for `init`, the field edit and the returned
         // `&Shared`, as in `api::init`: `init` keeps pointers derived from

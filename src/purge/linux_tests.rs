@@ -1,5 +1,6 @@
 use super::*;
-use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+use crate::sys::{self, PROT_READ};
+use crate::testutil::map_rw;
 
 /// Resident pages of `[addr, addr + len)` via `mincore`.
 fn resident(addr: usize, len: usize, page: usize) -> usize {
@@ -18,17 +19,7 @@ fn batch_discards_every_range() {
     let _advice = super::tests::serial();
     let page = crate::sys::features::page_size();
     let len = 8 * page;
-    let addr = unsafe {
-        sys::mmap(
-            0,
-            len,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
-            -1,
-            0,
-        )
-    }
-    .unwrap();
+    let addr = map_rw(len);
     for p in 0..8 {
         unsafe { *((addr + p * page) as *mut u8) = 0xA5 };
     }
@@ -62,17 +53,7 @@ fn a_locked_range_is_reported_and_left_alone() {
         super::tests::forget_other_threads_explicit_purges();
         let page = crate::sys::features::page_size();
         let len = 4 * page;
-        let addr = unsafe {
-            sys::mmap(
-                0,
-                len,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        }
-        .unwrap();
+        let addr = map_rw(len);
         let locked = addr + 2 * page;
         if !crate::testutil::mlock_or_skip(
             "a_locked_range_is_reported_and_left_alone",
@@ -153,18 +134,7 @@ fn an_unmapped_range_aborts() {
         super::tests::forget_other_threads_explicit_purges();
         set_headroom(false, false);
         let page = crate::sys::features::page_size();
-        // SAFETY: a fresh anonymous mapping at an address the kernel picks.
-        let addr = unsafe {
-            sys::mmap(
-                0,
-                page,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        }
-        .unwrap();
+        let addr = map_rw(page);
         // SAFETY: the page just mapped, which nothing else uses.
         unsafe { sys::munmap(addr, page) }.unwrap();
         let r = std::panic::catch_unwind(|| discard_one(addr, page, Ghost::assume_new()));
@@ -184,18 +154,7 @@ fn a_sealed_range_aborts() {
         super::tests::forget_other_threads_explicit_purges();
         set_headroom(false, false);
         let page = crate::sys::features::page_size();
-        // SAFETY: a fresh anonymous mapping at an address the kernel picks.
-        let addr = unsafe {
-            sys::mmap(
-                0,
-                page,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        }
-        .unwrap();
+        let addr = map_rw(page);
         // SAFETY: `addr` is that read-write page.
         unsafe { *(addr as *mut u8) = 0xA5 };
         // SAFETY: the test's own page; only its protection changes.
@@ -260,18 +219,7 @@ fn refused_merged_ranges_cost_few_calls() {
         super::tests::forget_other_threads_explicit_purges();
         set_headroom(false, false);
         let page = crate::sys::features::page_size();
-        // SAFETY: a fresh anonymous mapping at an address the kernel picks.
-        let addr = unsafe {
-            sys::mmap(
-                0,
-                16 * page,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        }
-        .unwrap();
+        let addr = map_rw(16 * page);
         let only = |locked: &[usize]| {
             (0..16)
                 .map(|p| !locked.contains(&p))
