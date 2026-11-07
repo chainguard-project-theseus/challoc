@@ -14,5 +14,9 @@ word_index	inline asm	Islaris/Isla	discharged (emptyasm: word_index in src/class
 # ordered is the reader's premise (`load_u16_at`'s witness). Under the
 # watermark's `Release` store the claimer's `Acquire` load supplies that
 # order; the free and watermark models check it on copies of the
-# `SlabTable` steps (tests/loom/tests/pins.rs).
-store_owner	atomics primitive	loom/GenMC	trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes; not checked: this body, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)	contract 516326162, body 3738076363
+# `SlabTable` steps (tests/loom/tests/pins.rs). The GenMC watermark cases
+# check it on a copy too: `take_group`'s owner-word store, written onto
+# `core`'s atomic and pinned to this body's store (tests/genmc/watermark.rs,
+# `GENMC_PINS`), which the readers' `Acquire` watermark load orders before
+# their owner loads.
+store_owner	atomics primitive	loom/GenMC	trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes, and GenMC: wm [rc11 imm] and wm3 [rc11 imm arm8]; not checked: this body, which the models replace with loom's `store` and the GenMC cases with `core`'s `store` (a line tests/loom/tests/pins.rs pins to this body's), inside copies of the table steps, in the configurations their files state, the cases each only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); the free path's steps, which no case runs; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only)	contract 516326162, body 3738076363

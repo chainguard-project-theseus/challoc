@@ -22,6 +22,14 @@
 // published by the commit count's store (ordered `PUBLISH`), as a
 // claimer that sees the slab committed reads them. `MODE` 3 is
 // `loom_bitmap_unclaimed_write_is_a_race`, a control.
+//
+// The seam ledger cites this template's pass cases (verus/SEAMS.md,
+// "Status") for `word::store` (`bitmap_init_published` only),
+// `word::fetch_or`, `word::fetch_and`, `atom::store_usize` and
+// `atom::load_usize_seen`, as evidence only: the
+// permissions are erased (`Tracked::assume_new()`, and an erased
+// invariant for `load_usize_seen`), so no case checks a wrapper's
+// contract.
 
 use crate::vspec::{atom, word};
 use core::cell::UnsafeCell;

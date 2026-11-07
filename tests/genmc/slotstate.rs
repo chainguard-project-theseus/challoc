@@ -9,6 +9,12 @@
 // Checked: exactly one of the two frees finds the slot `LIVE` and moves
 // it, and the byte ends as the passing free's target. `LOAD_STORE` is
 // loom's control: the load-then-store form of the step lets both pass.
+//
+// The seam ledger cites the pass case (verus/SEAMS.md, "Status") for
+// `byte::compare_exchange` (`src/vspec/byte.rs`), as evidence only: the
+// permission is erased (`Tracked::assume_new()`), so it checks no
+// wrapper's contract, and the byte is a slot's state byte (the call in
+// `slotstate::step`), not the `Deferred` phase the loom models check.
 
 use crate::vspec::byte;
 use std::sync::atomic::{AtomicU8, Ordering};

@@ -372,8 +372,20 @@ forbids it, and is reached under IMM and ARMv8; the first of 8 stores
 is read after the flag under RC11 and IMM. The `genmc` check
 (`.chainguard/ci/genmc.yaml`) runs `run.sh` on pull requests that change
 the wrappers, `src/sync.rs`, the files the harnesses copy steps from,
-`Cargo.toml`, `tests/genmc/` or `tests/loom/src/vspec.rs`. GenMC found no bug in challoc. The seam ledger cites
-loom alone.
+`Cargo.toml`, `tests/genmc/` or `tests/loom/src/vspec.rs`. GenMC found no bug in challoc.
+
+The seam ledger cites the `pass` cases next to loom, as evidence only
+(`GenMC: <case> [<models>]`, [SEAMS.md](SEAMS.md), "Status"), in 22
+statuses (`grep -rh 'Status: .*GenMC:' verus/ledger/src`): the 19
+`vspec` atomic wrappers whose bodies a case runs, and
+`table::store_owner`, `api::state_load` and `api::state_publish`, whose
+atomic line a harness copies, pinned in `GENMC_PINS`. The cases erase
+every permission (`Tracked::assume_new()`), so none checks a wrapper's
+contract or sees a ghost value; what they show is that the callers'
+hand-offs hold in the cases' configurations, under the models each case
+names. Every such status stays partly checked and names what the cases
+leave out for it: other call sites, the models a case does not run
+under, a copy run in place of the body.
 
 What GenMC does not check here:
 
@@ -382,7 +394,9 @@ What GenMC does not check here:
 - P4's `Shared` publication: the loom model (`tests/loom/src/init.rs`)
   copies `api/mod.rs`'s own functions, with no `vspec` wrapper, so a
   GenMC port would be a copy through and through, tied to the code only
-  by line pins.
+  by line pins. The flags harness does copy `STATE`'s `Acquire` load and
+  `READY` store, pinned, but only as the publication of `put_flags`'
+  writes to the dispatch byte's readers.
 - The GenMC pins match whole lines, not what they do. A harness step
   that is not a line-for-line copy is not pinned: `bitmap.rs`'s
   `lowest_n_bits`, which the harness writes its own way, `RawLock`'s own
@@ -630,7 +644,12 @@ C11 argument. Because a model runs a copy of the code, and runs a
 wrapper's own body only within the part of C11 loom models, a loom
 citation makes a seam at most partly checked; the status names what the models
 leave unchecked. Where the ledger also cites Kani, the Kani harness
-checks the wrapper's own body on one thread.
+checks the wrapper's own body on one thread. Where it also cites GenMC
+(`GenMC: <case> [<models>]`, "GenMC" above), the cases run the wrapper's
+own body, or for `store_owner`, `state_load` and `state_publish` a
+pinned copy of its atomic line, over `core`'s atomics with the
+permissions erased: evidence for the callers' hand-offs under the models
+named, which moves no status (the "status" column marks a copy).
 
 40 seams cite loom, and every one is partly checked
 (`grep -rh 'Status: .*loom:' verus/ledger/src`). `RawLock::lock_slow`
@@ -641,14 +660,14 @@ another thread's exchange as often as other threads retake the lock.
 
 | ledger file (`verus/ledger/src/`) | seam | status |
 |---|---|---|
-| `api/mod.rs.md` | `state_load` | partly checked (loom) |
+| `api/mod.rs.md` | `state_load` | partly checked (loom, GenMC copy) |
 | `api/mod.rs.md` | `state_claim` | partly checked (loom) |
-| `api/mod.rs.md` | `state_publish` | partly checked (loom) |
+| `api/mod.rs.md` | `state_publish` | partly checked (loom, GenMC copy) |
 | `api/mod.rs.md` | `line_load` | partly checked (loom) |
 | `api/mod.rs.md` | `line_compare_exchange` | partly checked (loom) |
 | `api/mod.rs.md` | `line_store` | partly checked (loom) |
 | `api/mod.rs.md` | `init_slow` | partly checked (loom) |
-| `class/table.rs.md` | `store_owner` | partly checked (loom) |
+| `class/table.rs.md` | `store_owner` | partly checked (loom, GenMC copy) |
 | `lock.rs.md` | `RawLock::lock_slow` | trusted |
 | `lock.rs.md` | `LockGuard::drop` | partly checked (loom) |
 | `purge/background.rs.md` | `main` | partly checked (loom) |
@@ -658,30 +677,30 @@ another thread's exchange as often as other threads retake the lock.
 | `slab.rs.md` | `SlabDesc::set_state` | partly checked (loom) |
 | `slab.rs.md` | `SlabDesc::arena_held` | partly checked (loom) |
 | `slab.rs.md` | `SlabDesc::set_dirty_at` | partly checked (loom) |
-| `vspec/atom.rs.md` | `store_usize` | partly checked (Kani, loom) |
-| `vspec/atom.rs.md` | `load_usize` | partly checked (Kani, loom) |
-| `vspec/atom.rs.md` | `store_usize_at` | partly checked (Kani, loom) |
-| `vspec/atom.rs.md` | `load_usize_seen` | partly checked (loom) |
-| `vspec/atom.rs.md` | `load_u16_at` | partly checked (Kani, loom) |
+| `vspec/atom.rs.md` | `store_usize` | partly checked (Kani, loom, GenMC) |
+| `vspec/atom.rs.md` | `load_usize` | partly checked (Kani, loom, GenMC) |
+| `vspec/atom.rs.md` | `store_usize_at` | partly checked (Kani, loom, GenMC) |
+| `vspec/atom.rs.md` | `load_usize_seen` | partly checked (loom, GenMC) |
+| `vspec/atom.rs.md` | `load_u16_at` | partly checked (Kani, loom, GenMC) |
 | `vspec/byte.rs.md` | `load` | partly checked (Kani, loom) |
 | `vspec/byte.rs.md` | `store` | partly checked (Kani, loom) |
-| `vspec/byte.rs.md` | `compare_exchange` | partly checked (Kani, loom) |
-| `vspec/count.rs.md` | `fetch_add` | partly checked (Kani, loom) |
-| `vspec/count.rs.md` | `fetch_sub` | partly checked (Kani, loom) |
-| `vspec/count.rs.md` | `store` | partly checked (Kani, loom) |
-| `vspec/count.rs.md` | `load` | partly checked (Kani, loom) |
+| `vspec/byte.rs.md` | `compare_exchange` | partly checked (Kani, loom, GenMC) |
+| `vspec/count.rs.md` | `fetch_add` | partly checked (Kani, loom, GenMC) |
+| `vspec/count.rs.md` | `fetch_sub` | partly checked (Kani, loom, GenMC) |
+| `vspec/count.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
+| `vspec/count.rs.md` | `load` | partly checked (Kani, loom, GenMC) |
 | `vspec/count.rs.md` | `swap` | partly checked (Kani, loom) |
-| `vspec/count.rs.md` | `compare_exchange` | partly checked (Kani, loom) |
-| `vspec/entry.rs.md` | `store` | partly checked (Kani, loom) |
-| `vspec/entry.rs.md` | `load` | partly checked (Kani, loom) |
-| `vspec/flags.rs.md` | `new` | partly checked (Kani, loom) |
-| `vspec/flags.rs.md` | `load` | partly checked (Kani, loom) |
-| `vspec/flags.rs.md` | `fetch_or` | partly checked (Kani, loom) |
+| `vspec/count.rs.md` | `compare_exchange` | partly checked (Kani, loom, GenMC) |
+| `vspec/entry.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
+| `vspec/entry.rs.md` | `load` | partly checked (Kani, loom, GenMC) |
+| `vspec/flags.rs.md` | `new` | partly checked (Kani, loom, GenMC) |
+| `vspec/flags.rs.md` | `load` | partly checked (Kani, loom, GenMC) |
+| `vspec/flags.rs.md` | `fetch_or` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `WordPerm` | partly checked (loom) |
-| `vspec/word.rs.md` | `fetch_or` | partly checked (Kani, loom) |
-| `vspec/word.rs.md` | `store` | partly checked (Kani, loom) |
+| `vspec/word.rs.md` | `fetch_or` | partly checked (Kani, loom, GenMC) |
+| `vspec/word.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `load` | partly checked (Kani, loom) |
-| `vspec/word.rs.md` | `fetch_and` | partly checked (Kani, loom) |
+| `vspec/word.rs.md` | `fetch_and` | partly checked (Kani, loom, GenMC) |
 
 The arguments, by group (the overrides comments give each in full):
 
@@ -743,8 +762,11 @@ The arguments, by group (the overrides comments give each in full):
 
 The checks leave out what the statuses list: the bodies themselves
 (the models run copies, and the wrappers' own bodies only within
-loom's part of C11), configurations larger than the models', the
-kernel's futex (replaced by the stand-in), and the C11 arguments, which
-`access.rs` backs by matching source text only. Remaining weak-memory
+loom's part of C11; the GenMC cases run them only in their
+configurations and under the models each names), configurations larger
+than the models' and the cases', the kernel's futex (replaced by the
+stand-in), and the C11 arguments, which `access.rs` backs by matching
+source text only and which no GenMC case checks, since the cases erase
+the permissions. Remaining weak-memory
 work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).

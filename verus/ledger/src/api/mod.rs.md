@@ -116,7 +116,7 @@ axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, Sta
 ## `state_load`
 
 src/api/mod.rs:610. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready; not checked: this body, which the models replace with loom's `load` inside a copy of the init steps, with the callers tests/loom/src/init.rs states; the C11 argument above that the permission's value is `STATE`'s last write, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready, and GenMC: flags1 [rc11 imm] and flags2 [rc11 imm arm8]; not checked: this body, which the models replace with loom's `load` inside a copy of the init steps, with the callers tests/loom/src/init.rs states, and the GenMC cases with `core`'s `load` (a line tests/loom/tests/pins.rs pins to this body's) inside a copy of the dispatch byte's steps, which publishes `put_flags`' writes only, each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); `Shared`'s publication and the rest of the init steps (P4), which no case runs; the C11 argument above that the permission's value is `STATE`'s last write, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only).
 
 > `STATE.load(Acquire)`: the permission's value.
 
@@ -151,7 +151,7 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
 ## `state_publish`
 
 src/api/mod.rs:641. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready; not checked: this body, which the models replace with loom's `store` inside a copy of the init steps, with the callers tests/loom/src/init.rs states (the readback after the store is a load the model adds); the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready, and GenMC: flags1 [rc11 imm] and flags2 [rc11 imm arm8]; not checked: this body, which the models replace with loom's `store` inside a copy of the init steps, with the callers tests/loom/src/init.rs states (the readback after the store is a load the model adds), and the GenMC cases with `core`'s `store` (a line tests/loom/tests/pins.rs pins to this body's) inside a copy of the dispatch byte's steps, which publishes `put_flags`' writes only, each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); `Shared`'s publication and the rest of the init steps (P4), which no case runs; the C11 argument above, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only).
 
 > `STATE`'s `READY` store, `Release`.
 

@@ -6,6 +6,15 @@
 // `watermark`, `mirror_watermark` and `ClassLine::set_slab`'s load are
 // copies, as in the loom model. The commit lock is genmc-std's `Mutex`
 // (GenMC's own lock), not the `RawLock` copy: GenMC has no futex.
+//
+// The seam ledger cites this template's pass cases (verus/SEAMS.md,
+// "Status") for `atom::store_usize`, `atom::load_usize`,
+// `atom::load_usize_seen`, `atom::load_u16_at` and `atom::store_usize_at`,
+// whose bodies run, and for `table::store_owner` (`src/class/table.rs`),
+// whose owner-word store `take_group` copies onto `core`'s atomic. It is
+// evidence only: the permissions are erased (`Tracked::assume_new()`, and
+// an erased invariant for `load_usize_seen`), so no case checks a seam's
+// contract.
 
 use crate::vspec::atom;
 use core::cell::UnsafeCell;

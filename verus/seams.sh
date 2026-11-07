@@ -69,7 +69,11 @@
 # no `#[test]` fn <test> outside `#[should_panic]` whose doc comment or
 # body names the seam's function, or the file does not name the seam's
 # source file, or the status is "discharged" (a loom model runs a copy,
-# or a vspec wrapper under loom's bounded model);
+# or a vspec wrapper under loom's bounded model); or `GenMC: <case>
+# [<models>]` and tests/genmc/cases has no `pass` case <case> run under
+# exactly <models>, or the case's template does not name the seam's
+# function and source file, or the status is "discharged" (GenMC erases
+# the permissions, so it checks no wrapper's contract);
 # and when a line verus/kani/pins.txt lists (the source a Kani harness
 # runs a copy of) is not in place, or a copy those lines mark differs from
 # its original but for the rows marked `-only`; or a Kani status names
@@ -654,7 +658,7 @@ function claimsnothing(e, ok,    at, nm, own) {
         print at "claims nothing, but the item is not external_body, so Verus sees inside it" > drift
     if (ehc[e] ~ /(^|[^A-Za-z0-9_])(requires|ensures|returns|[a-z_]*_recursive_types[a-z_]*)([^A-Za-z0-9_]|$)/)
         print at "claims nothing, but its contract holds requires, ensures, returns or a _recursive_types attribute" > drift
-    if (estat[e] ~ /(Kani|const assert|Isla|emptyasm|loom|callers): /)
+    if (estat[e] ~ /(Kani|const assert|Isla|emptyasm|loom|GenMC|callers): /)
         print at "claims nothing, but the status cites a check" > drift
     if (etool[e] != "none (assumption)")
         print at "claims nothing, but proposes the tool " etool[e] ", want none (assumption)" > drift
@@ -705,19 +709,21 @@ gen() {
 
 # The checks the overrides statuses cite: one line `<overrides file> <tag>
 # <item>` per item of each `Kani: a, b and c`, `const assert: a, b and
-# c`, `Isla: FILE`, `emptyasm: a`, `loom: a` or `callers: a` list (up to
-# `;`, `)` or
+# c`, `Isla: FILE`, `emptyasm: a`, `loom: a`, `GenMC: a` or `callers: a`
+# list (up to `;`, `)` or
 # the next tag), tag `Kani`, `assert`, `Isla` (its item `<seam> in FILE`),
-# `emptyasm` (its item `<seam> @ <fn> in <file>`) or `loom` (its item
-# `<seam> @ <mod>::<test>`) or `callers` (a guard test); `none` for a
+# `emptyasm` (its item `<seam> @ <fn> in <file>`), `loom` (its item
+# `<seam> @ <mod>::<test>`), `GenMC` (its item `<seam> @ <case>
+# [<models>]`) or `callers` (a guard test); `none` for a
 # "discharged" or "partly checked" status, or a list, that cites nothing;
 # and `loomdischarged` (its item the seam) for a "discharged" status that
 # cites `loom:`, which a model running a copy, or loom's bounded model,
-# cannot give. Reads the
+# cannot give, and `genmcdischarged` for one that cites `GenMC:`, whose
+# cases erase the permissions. Reads the
 # overrides files given.
 cites() {
   for o in "$@"; do
-    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla"; tag["emptyasm: "] = "emptyasm"; tag["loom: "] = "loom"; tag["callers: "] = "callers" }
+    awk -F '\t' -v o="$o" 'BEGIN { tag["Kani: "] = "Kani"; tag["const assert: "] = "assert"; tag["Isla: "] = "Isla"; tag["emptyasm: "] = "emptyasm"; tag["loom: "] = "loom"; tag["GenMC: "] = "GenMC"; tag["callers: "] = "callers" }
     !/^#/ && NF >= 4 {
       k = 0
       for (t in tag) {
@@ -727,13 +733,14 @@ cites() {
           n = split(l, h, /,? and |, */); m = 0
           for (j = 1; j <= n; j++) {
             if (index(h[j], ": ")) break
-            if (h[j] != "") { print o, tag[t], (tag[t] == "Isla" ? $1 " in " h[j] : (tag[t] == "emptyasm" || tag[t] == "loom" ? $1 " @ " h[j] : h[j])); m++ }
+            if (h[j] != "") { print o, tag[t], (tag[t] == "Isla" ? $1 " in " h[j] : (tag[t] == "emptyasm" || tag[t] == "loom" || tag[t] == "GenMC" ? $1 " @ " h[j] : h[j])); m++ }
           }
           k++; if (m == 0) print o, "none", $1
         }
       }
       if (k == 0 && $4 ~ /^(discharged|trusted \(partly checked)/) print o, "none", $1
       if ($4 ~ /^discharged/ && index($4, "loom: ")) print o, "loomdischarged", $1
+      if ($4 ~ /^discharged/ && index($4, "GenMC: ")) print o, "genmcdischarged", $1
     }' "$o"
   done
 }
@@ -957,6 +964,53 @@ loomtest() {
   ' "$1/$lt_mod.rs"
 }
 
+# genmctest DIR OVERRIDES '<seam> @ <case> [<models>]': exit 0 if
+# DIR/cases (DIR is tests/genmc, the GenMC harnesses) has a line for
+# <case> whose expected verdict is `pass` alone (a `fail` case is a
+# control) and whose models are <models>, the same words in the same
+# order, so a citation states every model the case runs under and no
+# other; and the case's template, DIR/<template>.rs, names the source file
+# of OVERRIDES and the seam's function in backquotes, matched as loomtest
+# matches them, anywhere in the file.
+genmctest() {
+  gt_c=${3#* @ }
+  case $gt_c in *' ['*']') ;; *) return 1 ;; esac
+  gt_case=${gt_c%% \[*}; gt_models=${gt_c#* \[}; gt_models=${gt_models%\]}
+  case $gt_case in *[!A-Za-z0-9_]* | '') return 1 ;; esac
+  [ -n "$gt_models" ] || return 1
+  gt_src=${2#*verus/ledger/}; gt_src=${gt_src%.overrides}; gt_name=${3%% @ *}; gt_name=${gt_name%%#*}
+  case $gt_name in
+    *::*) ;;
+    *) gt_m=${gt_src%.rs}; case $gt_m in */mod) gt_m=${gt_m%/mod} ;; esac
+       gt_name=${gt_m##*/}::$gt_name ;;
+  esac
+  gt_s2=${gt_src#src/}; case $gt_s2 in */*) ;; *) gt_s2=$gt_src ;; esac
+  [ -f "$1/cases" ] || return 1
+  gt_t=$(awk -F '|' -v c="$gt_case" -v want="$gt_models" '
+    function trim(s) { gsub(/[ \t]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); return s }
+    /^#/ || NF < 5 { next }
+    trim($1) == c && NF == 5 && trim($5) == "pass" && trim($3) == want { print trim($2) }
+  ' "$1/cases")
+  case $gt_t in *[!A-Za-z0-9_]* | '') return 1 ;; esac
+  [ -f "$1/$gt_t.rs" ] || return 1
+  awk -v name="$gt_name" -v s1="\`$gt_src\`" -v s2="\`$gt_s2\`" '
+    # Whether a backquoted span of s is name, or a path ending in ::name.
+    function names(s,    n, p, i, sp, k) {
+      n = split(s, p, "`"); k = length(name)
+      for (i = 2; i <= n; i += 2) {
+        sp = p[i]
+        if (sp == name) return 1
+        if (length(sp) > k + 2 && substr(sp, length(sp) - k - 1) == "::" name &&
+          substr(sp, 1, length(sp) - k - 2) ~ /^[A-Za-z0-9_]+(::[A-Za-z0-9_]+)*$/) return 1
+      }
+      return 0
+    }
+    index($0, s1) || index($0, s2) { file = 1 }
+    names($0) { found = 1 }
+    END { exit !(found && file) }
+  ' "$1/$gt_t.rs"
+}
+
 # guardrow PATH: exit 0 if the guard-test table of verus/README.md (or of
 # $guardmd, for the self-tests; the
 # `| test | what it pins |` table under "## Guard tests") has a row whose
@@ -977,7 +1031,11 @@ guardrow() {
 # (tests/loom/src/lib.rs), not the item's own body, but for the vspec
 # atomic wrappers, which it runs as they are; either way loom models only
 # part of C11, so a status citing one is at most partly checked:
-# `loomdischarged` is always an error.
+# `loomdischarged` is always an error. Its GenMC cases are in $genmcdir,
+# tests/genmc by default. A GenMC case runs a vspec wrapper's own body
+# with its permissions erased (`Tracked::assume_new()`), so it sees no
+# ghost value and checks no wrapper's contract: `genmcdischarged` is
+# always an error too.
 checkcite() {
   case $2 in
     Kani) harness "$3" || echo "seams: $1: Kani: $3 names no #[kani::proof] fn" ;;
@@ -990,6 +1048,8 @@ checkcite() {
       elif ! guardrow "$3"; then echo "seams: $1: callers: $3 has no row in the guard-test table of verus/README.md with its Mutants killed: and Known escapes: parts"
       fi ;;
     loomdischarged) echo "seams: $1: $3: discharged by a loom model, which runs a copy or checks only part of C11 (at most partly checked)" ;;
+    GenMC) genmctest "${genmcdir:-tests/genmc}" "$1" "$3" || echo "seams: $1: GenMC: ${3#* @ } is no pass case of ${genmcdir:-tests/genmc}/cases run under exactly those models, whose template names ${3%% @ *} and its source file" ;;
+    genmcdischarged) echo "seams: $1: $3: discharged by GenMC cases, which run copies or erase the permissions, so check no seam's contract (at most partly checked)" ;;
     *) echo "seams: $1: $3: the status cites no check" ;;
   esac
 }
@@ -1255,6 +1315,66 @@ case $mode in
       r=$(cites "$o" | while read -r ro rt rc; do loomdir="$tmp/loom" checkcite "$ro" "$rt" "$rc"; done)
       [ -n "$r" ] || echo "seams: self-test: loom: status $st accepted, want refused" >> "$tmp/cites"
     done
+    # Self-test: a GenMC citation resolves only for a `pass` case (no
+    # control) whose models are the cited ones exactly, and whose template
+    # names the seam's function (a method by `Type::fn`) and source file;
+    # and a discharged status citing GenMC is refused.
+    mkdir -p "$tmp/genmc"
+    printf '%s\n' '# name | template | models | constants | expected' \
+      'g_ok | t | rc11 imm | const X: u32 = 0; | pass' \
+      'g_ctl | t | rc11 imm | const X: u32 = 1; | fail | text' \
+      'g_other | u | rc11 | const X: u32 = 0; | pass' \
+      'g_nosrc | v | rc11 | const X: u32 = 0; | pass' \
+      'g_method | w | imm arm8 | const X: u32 = 0; | pass' \
+      'g_lock | x | rc11 | const X: u32 = 0; | pass' \
+      '# g_old | t | rc11 | const X: u32 = 0; | pass' > "$tmp/genmc/cases"
+    # shellcheck disable=SC2016
+    printf '%s\n' '// A port of `vspec/count.rs`: `count::fetch_add`.' 'fn harness() {}' > "$tmp/genmc/t.rs"
+    # shellcheck disable=SC2016
+    printf '%s\n' '// A port of `vspec/count.rs`: `count::fetch_add_split`, `fetch_add` and count::fetch_add.' > "$tmp/genmc/u.rs"
+    # shellcheck disable=SC2016
+    printf '%s\n' '// A port of `count.rs`, not by its path: `count::fetch_add`.' > "$tmp/genmc/v.rs"
+    # shellcheck disable=SC2016
+    printf '%s\n' '// A port of `src/slab.rs`: `init` and `SlabDesc::set_state`.' > "$tmp/genmc/w.rs"
+    # shellcheck disable=SC2016
+    printf '%s\n' '// A port of `lock.rs`, not by its path: `RawLock::lock_slow`.' > "$tmp/genmc/x.rs"
+    for c in 'fetch_add @ g_ok [rc11 imm]' 'fetch_add#2 @ g_ok [rc11 imm]'; do
+      genmctest "$tmp/genmc" verus/ledger/src/vspec/count.rs.overrides "$c" ||
+        echo "seams: self-test: GenMC: $c rejected, want resolved"
+    done >> "$tmp/cites"
+    genmctest "$tmp/genmc" verus/ledger/src/slab.rs.overrides 'SlabDesc::set_state @ g_method [imm arm8]' ||
+      echo "seams: self-test: GenMC: SlabDesc::set_state @ g_method [imm arm8] rejected, want resolved" >> "$tmp/cites"
+    for c in 'fetch_add @ g_ctl [rc11 imm]' 'fetch_add @ g_ok [rc11]' 'fetch_add @ g_ok [rc11 imm arm8]' \
+        'fetch_add @ g_ok [imm rc11]' 'fetch_add @ g_ok' 'fetch_add @ g_ok []' 'fetch_add @ no_such [rc11 imm]' \
+        'store @ g_ok [rc11 imm]' 'fetch_add @ g_other [rc11]' 'fetch_add @ g_nosrc [rc11]' \
+        'fetch_add @ g_old [rc11]' 'fetch_add @ t [rc11 imm]'; do
+      if genmctest "$tmp/genmc" verus/ledger/src/vspec/count.rs.overrides "$c"; then echo "seams: self-test: GenMC: $c resolved, want rejected"; fi
+    done >> "$tmp/cites"
+    if genmctest "$tmp/genmc" verus/ledger/src/vspec/byte.rs.overrides 'fetch_add @ g_ok [rc11 imm]'; then
+      echo "seams: self-test: GenMC: fetch_add @ g_ok [rc11 imm] from src/vspec/byte.rs resolved, want rejected" >> "$tmp/cites"
+    fi
+    if genmctest "$tmp/genmc" verus/ledger/src/slab.rs.overrides 'SlabDesc::init @ g_method [imm arm8]'; then
+      echo "seams: self-test: GenMC: SlabDesc::init @ g_method [imm arm8] resolved, want rejected" >> "$tmp/cites"
+    fi
+    if genmctest "$tmp/genmc" verus/ledger/src/lock.rs.overrides 'RawLock::lock_slow @ g_lock [rc11]'; then
+      echo "seams: self-test: GenMC: RawLock::lock_slow @ g_lock [rc11] (template names lock.rs only) resolved, want rejected" >> "$tmp/cites"
+    fi
+    # End to end, through cites and checkcite: a partly checked status
+    # citing a loom model and a GenMC case passes; the same discharged is
+    # refused, and so is one citing a control or a case's models wrongly.
+    printf 'fetch_add\tatomics primitive\tloom/GenMC\t%s\n' \
+      'trusted (partly checked, loom: m::loom_ok, and GenMC: g_ok [rc11 imm]; not checked: x)' > "$o"
+    r=$(cites "$o" | while read -r ro rt rc; do loomdir="$tmp/loom" genmcdir="$tmp/genmc" checkcite "$ro" "$rt" "$rc"; done)
+    [ -z "$r" ] || echo "seams: self-test: GenMC: a partly checked status citing g_ok refused, want accepted: $r" >> "$tmp/cites"
+    for st in 'discharged (GenMC: g_ok [rc11 imm])' 'trusted (partly checked, GenMC: g_ctl [rc11 imm]; not checked: x)' \
+        'trusted (partly checked, loom: m::loom_ok, and GenMC: g_ok [rc11 imm arm8]; not checked: x)' \
+        'trusted (partly checked, GenMC: ; not checked: x)'; do
+      printf 'fetch_add\tatomics primitive\tloom/GenMC\t%s\n' "$st" > "$o"
+      r=$(cites "$o" | while read -r ro rt rc; do loomdir="$tmp/loom" genmcdir="$tmp/genmc" checkcite "$ro" "$rt" "$rc"; done)
+      [ -n "$r" ] || echo "seams: self-test: GenMC: status $st accepted, want refused" >> "$tmp/cites"
+    done
+    r=$(hty '#[verifier::external_body]' | hs 'trusted (claims nothing: GenMC: g_ok [rc11 imm])' "$cn_h" F)
+    case $r in *'cites a check'*) ;; *) echo "seams: self-test: claims nothing: a status citing GenMC accepted: $r" >> "$tmp/cites" ;; esac
     # Self-test: paths that name no harness must be rejected, so a change
     # that makes the resolver accept everything fails here.
     for c in kani_proofs::ptr::no_such_harness kani::ptr::ptr_add \
