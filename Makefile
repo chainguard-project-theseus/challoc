@@ -268,9 +268,10 @@ verus: ## the seam ledger, the Verus proofs, then the coverage floor (verus/READ
 # isla runs where it is invoked, not in the dev container: it needs the
 # isla, isla-snapshots, sail, isla-sail, z3 and llvm packages
 # (verus/ISLA.md). ISLA_TARGETS picks the targets (default both); a target
-# other than the host's needs its rust standard library.
-isla: ## Isla over the inline-assembly seams verus/isla/seams.md lists (verus/ISLA.md; ISLA_TARGETS, ISLA_X86_IR)
-	sh verus/isla/run.sh
+# other than the host's needs its rust standard library. The library is
+# built at QUANTUM.
+isla: ## Isla over the inline-assembly seams verus/isla/seams.md lists (verus/ISLA.md; QUANTUM, ISLA_TARGETS, ISLA_X86_IR)
+	ISLA_CARGO_FLAGS='$(FEATURES)' sh verus/isla/run.sh
 
 # emptyasm runs where it is invoked, not in the dev container: it needs
 # cargo and rustc (rust-1.98), a C++ compiler for build.rs (build-base),
