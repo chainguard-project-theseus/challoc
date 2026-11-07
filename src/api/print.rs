@@ -489,10 +489,10 @@ impl Opts {
     }
 }
 
-// The last impl of the module: rustc numbers a module's impls in order,
-// the number enters the mangled names of each impl's items, and those
-// names order `.text`, so an impl placed earlier would renumber the ones
-// after it.
+// New impls go at the end of the module, after this one: rustc numbers a
+// module's impls in order, the number enters the mangled names of each
+// impl's items, and those names order `.text`, so an impl placed earlier
+// would renumber the ones after it.
 impl Report for Sink {
     proof fn lend<'b>(tracked &'b mut self) -> (tracked o: LockOrder<'b>) {
         use_type_invariant(&*self);
