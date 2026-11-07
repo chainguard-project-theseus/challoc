@@ -2,9 +2,10 @@
 # bench/drivers/kv-ops.sh: the paired Redis / Valkey command-mix rows
 # (redis-ops*, valkey-ops*; bench/rows.toml). One run is one fresh server
 # from bench/drivers/kv.sh under the variant's allocator (`jemalloc`: the
-# bundled jemalloc 5.3.0 build; challoc: Valkey's runpath build, or
-# preloaded on the libc build for Redis and for a variant labelled
-# `*preload*`; every other allocator preloaded on the libc build), a fill,
+# bundled jemalloc 5.3.0 build; challoc: the server's runpath build with
+# its challoc integration (contrib/valkey, contrib/redis), or preloaded on
+# the libc build for a variant labelled `*preload*`; every other allocator
+# preloaded on the libc build), a fill,
 # then one <server>-benchmark pass over the command mix, then the server's
 # memory figures. The client is the bundled-jemalloc build's benchmark,
 # never the library under test. Active defrag is off (both servers'
@@ -57,7 +58,9 @@ cleanup() { [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null; :; }
 trap cleanup EXIT
 
 conf_env=${KV_PRELOAD:+LD_PRELOAD=$KV_PRELOAD}
-[ "$CB_ALLOC" = challoc ] && [ -n "$CB_CONF" ] && conf_env="$conf_env MALLOC_CONF=$CB_CONF"
+# The variant's conf reaches whichever allocator it names (kv_conf_env).
+conf_word=$(kv_conf_env "$CB_ALLOC" "${CB_CONF:-}") || exit 1
+conf_env="$conf_env${conf_word:+ $conf_word}"
 log "$CB_ALLOC ($KV_BUILD build): $KV_SRV${KV_PRELOAD:+ LD_PRELOAD=$KV_PRELOAD}"
 # shellcheck disable=SC2086 # conf_env is VAR=value words; IO_THREADS empty means no flag
 env $conf_env "$KV_SRV" --port "$PORT" --bind 127.0.0.1 --save "" --appendonly no --daemonize no \

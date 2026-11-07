@@ -7,8 +7,9 @@
 # SERVER=valkey (default) or redis picks the server (bench/drivers/kv.sh:
 # the pinned tags, the bundled-jemalloc, libc and runpath builds). Any
 # allocator kv.sh knows can be soaked: `jemalloc` is the server's bundled
-# jemalloc 5.3.0 (the stock build), `challoc` the runpath build on Valkey
-# (CHALLOC_LINK=native, the default) or preloaded on the libc build
+# jemalloc 5.3.0 (the stock build), `challoc` the server's runpath build
+# with its challoc integration (contrib/valkey, contrib/redis;
+# CHALLOC_LINK=native, the default) or preloaded on the libc build
 # (CHALLOC_LINK=preload), and glibc, jemalloc53,
 # jemalloc54, tcmalloc and mimalloc are preloaded on the libc build. Active
 # defrag (DEFRAG) runs only on the builds that have it (bundled jemalloc,
@@ -23,8 +24,8 @@
 # VALKEY_RUNPATH (default /opt/challoc/lib): one Valkey build, linked with
 # -Wl,-rpath,/opt/challoc/lib -Wl,--enable-new-dtags (a RUNPATH), serves
 # every variant, and /opt/challoc/lib/libchalloc.so.0 is pointed at the
-# variant's file before the server starts. CB_CONF is the challoc server's
-# MALLOC_CONF. The client binaries (valkey-cli, valkey-benchmark) come from
+# variant's file before the server starts. CB_CONF is the variant's conf,
+# handed to whichever allocator it names (kv.sh's kv_conf_env). The client binaries (valkey-cli, valkey-benchmark) come from
 # the jemalloc build, so they never load the library under test. Sources
 # are cloned from GitHub at VALKEY_TAG when target/valkey has no tree.
 #
@@ -166,7 +167,7 @@ if [ -n "${CB_ALLOC:-}" ]; then
   case $CB_ALLOC in
     challoc) [ -f "${CB_LIB:-}" ] || { echo "valkey-soak: CB_LIB='${CB_LIB:-}' is not a file" >&2; exit 1; }
              CHALLOC_CONF=${CB_CONF:-};;
-    jemalloc|jemalloc53|jemalloc54|glibc|tcmalloc|mimalloc) ;;
+    jemalloc|jemalloc53|jemalloc54|glibc|tcmalloc|mimalloc) STOCK_CONF=${CB_CONF:-};;
     *) echo "valkey-soak: allocator $CB_ALLOC is not one kv.sh knows" >&2; exit 1;;
   esac
   ALLOCS=$CB_ALLOC
@@ -341,15 +342,19 @@ soak() { # alloc
   step "$alloc: $server${PRELOAD:+ (LD_PRELOAD=$PRELOAD)}"
   "$server" --version | tee "$D/version.txt"
   # $IO_THREADS unquoted on purpose: empty means no flag. CHALLOC_CONF
-  # reaches the challoc server only, and so does CHALLOC_LIB: a directory
+  # reaches the challoc server only, a cb variant's conf (STOCK_CONF) the
+  # stock allocator it names, each in the variable that allocator reads
+  # (kv_conf_env), and CHALLOC_LIB the challoc server only: a directory
   # holding a libchalloc.so.0 (a quantum8 A/B build of a `.tmp-<v>` source
   # copy) that is LD_PRELOADed under its soname, so the binary's DT_NEEDED
   # libchalloc.so.0 resolves to it whether the link left an RPATH or a
   # RUNPATH and the same valkey-server runs on a src/ variant; the mapped
   # library and its sha256 are checked and recorded below.
   conf_env=${PRELOAD:+LD_PRELOAD=$PRELOAD}
+  case $alloc in challoc) conf=${CHALLOC_CONF:-};; *) conf=${STOCK_CONF:-};; esac
+  conf_word=$(kv_conf_env "$alloc" "$conf") || exit 1
+  conf_env="$conf_env${conf_word:+ $conf_word}"
   case $alloc in challoc)
-    [ -n "${CHALLOC_CONF:-}" ] && conf_env="MALLOC_CONF=$CHALLOC_CONF"
     [ -n "${CHALLOC_LIB:-}" ] && { [ -f "$CHALLOC_LIB/libchalloc.so.0" ] || { echo "valkey-soak: CHALLOC_LIB=$CHALLOC_LIB has no libchalloc.so.0" >&2; exit 1; }; conf_env="$conf_env LD_PRELOAD=$CHALLOC_LIB/libchalloc.so.0"; };;
   esac
   # shellcheck disable=SC2086 # conf_env is VAR=value words for env
@@ -544,6 +549,7 @@ ALLOCS=$SUMMARY_ALLOCS
   for alloc in $ALLOCS; do echo "- $alloc server: $(cat "$OUT/$alloc/version.txt") (build: $(cat "$OUT/$alloc/build.txt" 2>/dev/null || echo cached); activedefrag $(cat "$OUT/$alloc/activedefrag.txt" 2>/dev/null || echo -))"; done
   echo "- clients: $(basename "$VB") from $(dirname "$(dirname "$VB")"), $(memtier_benchmark --version 2>&1 | head -1)"
   [ -n "${CHALLOC_CONF:-}" ] && echo "- challoc server MALLOC_CONF: $CHALLOC_CONF (CHALLOC_CONF; the jemalloc server runs stock)"
+  [ -n "${STOCK_CONF:-}" ] && echo "- $ALLOCS server conf: $(kv_conf_env "$ALLOCS" "$STOCK_CONF")"
   for alloc in $ALLOCS; do [ -f "$OUT/$alloc/lib.txt" ] && echo "- $alloc allocator library (path, sha256 prefix): $(cat "$OUT/$alloc/lib.txt")${CHALLOC_LIB:+$([ "$alloc" = challoc ] && echo " (CHALLOC_LIB=$CHALLOC_LIB, an A/B build preloaded under the soname)")}"; done
   # shellcheck disable=SC2086 # the first word of ALLOCS, whatever whitespace separates them
   echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; io-threads $(cat "$OUT/$(echo $ALLOCS | cut -d' ' -f1)/io-threads.txt" 2>/dev/null || echo "${IO_THREADS:-default}"); INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
