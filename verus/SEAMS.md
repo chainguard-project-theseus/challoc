@@ -183,13 +183,17 @@ caller obligation, or on one no such test confines, stays `trusted
 (partly checked, ...)`.
 The other is the provenance of an address an L premise defines (a
 value the loader resolved, or one computed from such values as the
-premise states): for an item that reads through such an address, the
-argument of `verus/kani/premises.md` ("Provenance of the addresses")
-covers it instead, showing that the memory lies outside the Rust
-abstract machine and so is exposed. No tool checks that argument; a
-status whose pointer comes from an `asm!` output names it in its gloss.
-The harness runs such an item on a stand-in for the memory no larger
-and no more aligned than the premises state, holding any value.
+premise states), for an item that reads through it, or of a pointer
+that a runtime function a C premise describes returns into memory
+outside every Rust allocation of challoc's (as premise C11 of
+`verus/kani/premises.md` describes `errno`), for an item that reads or
+writes through it: the argument of `verus/kani/premises.md`
+("Provenance of the addresses") covers it instead, showing that the
+memory lies outside the Rust abstract machine and so is exposed. No
+tool checks that argument; a status whose pointer comes from an
+`asm!` output names it in its gloss. The harness runs such an item on
+a stand-in for the memory no larger and no more aligned than the
+premises state, holding any value.
 Only Isla's and Kani's checks take this status: `verus/count` fails on
 one that cites another check or both, names no premise, or names
 anything but labels the cited check's file defines: it reads the

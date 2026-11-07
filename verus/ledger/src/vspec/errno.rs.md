@@ -9,17 +9,17 @@ file.
 |---|---|---|---|---|
 | `lend` | external_body | C-program contract | none (assumption) | trusted |
 | `axiom_e...return` | axiom | C-program contract | none (assumption) | trusted |
-| `set_errno` | external_body | FFI/syscall | none (assumption) | trusted |
-| `get_errno` | external_body | FFI/syscall | none (assumption) | trusted |
+| `set_errno` | external_body | FFI/syscall | Kani | discharged |
+| `get_errno` | external_body | FFI/syscall | Kani | trusted |
 
 ## `lend`
 
-src/vspec/errno.rs:53. Kind: external_body. Category: C-program contract.
+src/vspec/errno.rs:54. Kind: external_body. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: lends the calling thread's `errno` to one call into challoc, with its value unknown.
 
-Body mints Tracked at line 54.
+Body mints Tracked at line 55.
 
 Hashes: contract 2401819564, body 3603367423.
 
@@ -29,7 +29,7 @@ pub fn lend() -> (e: Tracked<ThreadErrno>)
 
 ## `axiom_errno_at_return`
 
-src/vspec/errno.rs:100. Kind: axiom. Category: C-program contract.
+src/vspec/errno.rs:101. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C-program contract of `errno`): when an export returns and `failed` holds, the `errno` its C caller reads ([`c_errno`]) is the value of the token the export lent ([`lend`]), as the token stands after its last use.
@@ -45,8 +45,8 @@ pub axiom fn axiom_errno_at_return(tracked e: ThreadErrno, failed: bool)
 
 ## `set_errno`
 
-src/vspec/errno.rs:109. Kind: external_body. Category: FFI/syscall.
-Tool: none (assumption). Status: trusted.
+src/vspec/errno.rs:111. Kind: external_body. Category: FFI/syscall.
+Tool: Kani. Status: discharged on premises (Kani: vspec::errno::kani_errno::set_errno_writes_errno; premises: C11 (glibc's __errno_location returns the address of the calling thread's errno, outside the Rust abstract machine and so exposed)).
 
 > Trusted: writes `e` to the calling thread's `errno` through libc's pointer.
 
@@ -60,8 +60,8 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
 
 ## `get_errno`
 
-src/vspec/errno.rs:141. Kind: external_body. Category: FFI/syscall.
-Tool: none (assumption). Status: trusted.
+src/vspec/errno.rs:146. Kind: external_body. Category: FFI/syscall.
+Tool: Kani. Status: trusted (partly checked, Kani: vspec::errno::kani_errno::get_errno_reads_errno; not checked: what glibc's `__errno_location` returns (premise C11 of verus/kani/premises.md), and that the value read is the token's: that no libc call in trusted code, and no other code on the thread (a signal handler that does not restore it), wrote `errno` since challoc's last write through it, or, before any, since the C call began).
 
 > Trusted: reads the calling thread's `errno` through libc's pointer, and claims the value is the token's ([`ThreadErrno::val`]): challoc's last write through it, or the caller's `errno` before any.
 

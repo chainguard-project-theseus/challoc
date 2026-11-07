@@ -10,10 +10,11 @@ use vstd::prelude::*;
 
 unsafe extern "C" {
     /// glibc's `__errno_location`, with the `libc` crate's signature and
-    /// the same symbol. Declared in this crate rather than taken from the
-    /// `libc` crate so that a Kani harness can stub it: Kani 0.68 stubs a
-    /// foreign function only where this crate declares it, and silently
-    /// ignores a stub on `libc::__errno_location`.
+    /// the same symbol (premise C11 of `verus/kani/premises.md`). Declared
+    /// in this crate rather than taken from the `libc` crate so that
+    /// `kani_errno` can stub it: Kani 0.68 stubs a foreign function only
+    /// where this crate declares it, and silently ignores a stub on
+    /// `libc::__errno_location`.
     fn __errno_location() -> *mut c_int;
 }
 
@@ -103,7 +104,8 @@ pub axiom fn axiom_errno_at_return(tracked e: ThreadErrno, failed: bool)
 ;
 
 /// Trusted: writes `e` to the calling thread's `errno` through libc's
-/// pointer.
+/// pointer. `kani_errno` checks the write on premise C11 of
+/// `verus/kani/premises.md`.
 #[verifier::external_body]
 #[inline(always)]
 pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
@@ -117,7 +119,10 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
 /// Trusted: reads the calling thread's `errno` through libc's pointer,
 /// and claims the value is the token's ([`ThreadErrno::val`]): challoc's
 /// last write through it, or the caller's `errno` before any. That is an
-/// assumption: no libc call in trusted code has written `errno` since.
+/// assumption: no libc call in trusted code, and no other code on the
+/// thread (a signal handler that does not restore it), has written
+/// `errno` since. `kani_errno` checks the read itself on premise C11 of
+/// `verus/kani/premises.md`.
 /// The one caller, [`crate::purge::background::start`], reads it before
 /// the thread creation (`pthread_create`, `pthread_join`) and writes it
 /// back. Only an allocation's tick and `mallctl("background_thread")`
@@ -147,3 +152,67 @@ pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> (r: c_int)
 }
 
 } // verus!
+
+/// Kani checks of `set_errno` and `get_errno`
+/// (`verus/ledger/src/vspec/errno.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_errno {
+    use super::{get_errno, set_errno};
+    use core::ffi::c_int;
+    use vstd::prelude::Tracked;
+
+    /// The `errno` the stand-in for `__errno_location` gives the address
+    /// of, and how many times it was called.
+    static mut ERRNO: c_int = 0;
+    static mut CALLS: usize = 0;
+
+    /// A stand-in for glibc's `__errno_location` (premise C11): it records
+    /// its call and returns the address of `ERRNO`.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn errno_location_model() -> *mut c_int {
+        // SAFETY: the harness's own static; no other code runs in a
+        // harness.
+        unsafe {
+            CALLS += 1;
+            &raw mut ERRNO
+        }
+    }
+
+    /// `set_errno`: its `ensures` is that the token's value is `e`; the
+    /// fact it stands for is that the thread's `errno` reads `e`. For any
+    /// earlier `errno` and any `e`, it calls `__errno_location` once and
+    /// leaves `e` in the `int` whose address that returned.
+    #[kani::proof]
+    #[kani::stub(super::__errno_location, errno_location_model)]
+    fn set_errno_writes_errno() {
+        let before: c_int = kani::any();
+        let e: c_int = kani::any();
+        kani::cover!(before != e);
+        // SAFETY: as in `errno_location_model`.
+        unsafe { ERRNO = before };
+        set_errno(e, Tracked::assume_new());
+        // SAFETY: as in `errno_location_model`.
+        let (calls, errno) = unsafe { (CALLS, ERRNO) };
+        assert_eq!(calls, 1);
+        assert_eq!(errno, e);
+    }
+
+    /// `get_errno`: its `ensures` is that the result is the token's value;
+    /// what a harness can show of it is that, for any `errno`, it calls
+    /// `__errno_location` once and returns the `int` at the address that
+    /// returned, leaving it unchanged.
+    #[kani::proof]
+    #[kani::stub(super::__errno_location, errno_location_model)]
+    fn get_errno_reads_errno() {
+        let v: c_int = kani::any();
+        // SAFETY: as in `errno_location_model`.
+        unsafe { ERRNO = v };
+        let r = get_errno(Tracked::assume_new());
+        // SAFETY: as in `errno_location_model`.
+        let (calls, errno) = unsafe { (CALLS, ERRNO) };
+        assert_eq!(calls, 1);
+        assert_eq!(r, v);
+        assert_eq!(errno, v);
+    }
+}

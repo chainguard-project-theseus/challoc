@@ -62,6 +62,7 @@ checks:
         - "src/rseq.rs"
         - "src/slab.rs"
         - "src/sys/cgroup.rs"
+        - "src/sys/mod.rs"
         - ".chainguard/ci/kani.yaml"
     foreach:
       - {name: q16, vars: {QUANTUM: "16"}}
