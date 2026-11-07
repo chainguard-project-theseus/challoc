@@ -4060,10 +4060,6 @@ impl ClassState {
         let mut remaining = want;
         let mut next = g.partial.map.lowest_set();
         let ghost mut seen: Map<nat, usize> = Map::empty();
-        // The lowest partial slab with no open free slot but closed pages
-        // (docs/proposals/slab-pages.md, 3.3, step 2): the batch reopens
-        // its pages if no partial slab has an open free slot for it.
-        let mut reopenable: Option<usize> = None;
         while let Some(s) = next
             invariant
                 crate::sys::may_abort(),
@@ -4088,7 +4084,6 @@ impl ClassState {
                 picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
                 picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
                 next matches Some(x) ==> x < self.spec_nslabs() && g@.partial.map@.contains(x as nat),
-                reopenable matches Some(x) ==> x < self.spec_nslabs() && g@.owns(x as nat) && g@.st(x as nat) == State::Active,
             decreases
                 match next {
                     Some(x) => self.spec_nslabs() - x,
@@ -4106,16 +4101,27 @@ impl ClassState {
             let live = desc.live();
             // Slots of closed pages are clear but not claimable
             // (docs/proposals/slab-pages.md, 3.4).
-            let nclosed = self.closed_locked(&g, s).1;
+            let mut nclosed = self.closed_locked(&g, s).1;
+            // Slab pages (docs/proposals/slab-pages.md, 3.3): a slab whose
+            // open free slots fall short of the batch opens closed pages for
+            // it here,
+            // in address order, before any higher slab: address-ordered
+            // first fit, which a defragmenter's moves converge under (its
+            // hint keeps objects in the slab claims take from next,
+            // `lowest_partial`).
+            if nclosed > 0 && live.saturating_add(nclosed).saturating_add(remaining) > cls.nslots() {
+                proof {
+                    assert(g@.slab_ok(s as nat));
+                }
+                self.reopen_pages(&mut g, s, remaining);
+                nclosed = self.closed_locked(&g, s).1;
+            }
             let busy = live.saturating_add(nclosed);
             if busy >= cls.nslots() {
                 let ghost g0 = g@;
                 proof {
                     seen = seen.insert(s as nat, busy);
                     assert(g@.slab_ok(s as nat));
-                }
-                if nclosed > 0 && reopenable.is_none() {
-                    reopenable = Some(s);
                 }
                 if desc.state() == State::Active {
                     let (full, seen_full) = self.table().bits(s).is_full_seen();
@@ -4136,11 +4142,6 @@ impl ClassState {
                 let ghost t0 = *ptoks;
                 let ghost m0 = *pm;
                 self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm));
-                // A slab whose open slots this took may still have closed
-                // pages for the rest of the batch.
-                if nclosed > 0 && reopenable.is_none() {
-                    reopenable = Some(s);
-                }
                 proof {
                     lemma_picks_zero_step(self.spec_table(), before, picks@, k as int, z0, *pz);
                     lemma_picks_sum(before, picks@, k as int);
@@ -4154,41 +4155,6 @@ impl ClassState {
                 }
             }
             next = g.partial.map.lowest_set_from(s + 1);
-        }
-        // Step 2 of the selection order: no partial slab has an open free
-        // slot left for the batch, so the lowest one with closed pages
-        // opens as many as the batch needs, before an idle slab is taken.
-        let short = remaining > 0 && np < MAX_PICKS;
-        if let (true, Some(x)) = (short, reopenable) {
-            {
-                proof {
-                    assert(g@.slab_ok(x as nat));
-                    assert(forall|y: nat| #[trigger] g@.slab_ok(y));
-                }
-                self.reopen_pages(&mut g, x, remaining);
-                proof {
-                    assert(g@.slab_ok(x as nat));
-                    assert(g@.st(x as nat) == State::Active);
-                    assert(g@.group_ok(x as nat));
-                }
-                let ghost before = picks@;
-                let ghost k = np;
-                let ghost z0 = *pz;
-                let ghost t0 = *ptoks;
-                let ghost m0 = *pm;
-                self.take(&mut g, x, &mut remaining, picks, &mut np, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm));
-                proof {
-                    lemma_picks_zero_step(self.spec_table(), before, picks@, k as int, z0, *pz);
-                    lemma_picks_sum(before, picks@, k as int);
-                    lemma_picks_toks_step(self.spec_table(), before, picks@, k as int, t0, *ptoks);
-                    lemma_picks_marks_step(self.spec_table(), before, picks@, k as int, m0, *pm);
-                    assert forall|j: int| 0 <= j < k + 1 implies slab_owner(self.spec_class() as int, (#[trigger] picks@[j]).slab as int) == self.arena by {
-                        if j < k {
-                            assert(picks@[j] == before[j]);
-                        }
-                    }
-                }
-            }
         }
         let ghost mut dry = false;
         while remaining > 0 && np < MAX_PICKS
@@ -6007,7 +5973,54 @@ impl ClassState {
             use_type_invariant(self);
         }
         let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-        let r = g.partial.map.lowest_set();
+        let first = g.partial.map.lowest_set();
+        // Slab pages (docs/proposals/slab-pages.md, 3.3): the slab a claim
+        // takes from next is the lowest partial one with an open free slot
+        // or closed pages to reopen; a lower one with neither (every slot
+        // reserved by claims in flight) is skipped. Jemalloc's `slabcur`, which
+        // the defrag hint must not move objects out of (an object moved out
+        // of the slab its copy lands in is churn). Bounded: the hint asks
+        // once per pointer. With none in reach, the lowest, whose pages a
+        // refill reopens.
+        let t = self.table();
+        let v0 = t.page_view();
+        let nslots = self.class().nslots();
+        let mut next = first;
+        let mut seen: usize = 0;
+        let mut r = first;
+        while let Some(s) = next
+            invariant
+                next matches Some(x) ==> x < self.spec_nslabs(),
+                first matches Some(x) ==> x < self.spec_nslabs(),
+                r matches Some(x) ==> x < self.spec_nslabs(),
+                *t == self.spec_table(),
+                g@.inv(),
+                g@.nbits() == self.spec_nslabs(),
+                next matches Some(x) ==> g@.partial.map@.contains(x as nat),
+            decreases
+                match next {
+                    Some(x) => self.spec_nslabs() - x,
+                    None => 0,
+                },
+        {
+            if seen >= pages::WALK_SLABS || !v0.is_paged() {
+                break;
+            }
+            seen += 1;
+            let closed = match t.pages_if_committed(s) {
+                Some(pg) => v0.with_closed(pg.closed()).closed_slots(),
+                None => 0,
+            };
+            let live = match t.desc_if_committed(s) {
+                Some(d) => d.live(),
+                None => 0,
+            };
+            if live.saturating_add(closed) < nslots || closed > 0 {
+                r = Some(s);
+                break;
+            }
+            next = g.partial.map.lowest_set_from(s + 1);
+        }
         g.unlock();
         r
     }
