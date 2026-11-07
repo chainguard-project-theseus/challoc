@@ -74,8 +74,8 @@ use crate::lock::{axiom_entry, rank_class};
 use crate::purge;
 use crate::stats::{self, ArenaStats};
 use crate::sys;
-use crate::sys::Errno;
 use crate::sys::bytes_is;
+use crate::sys::errno::{EAGAIN, EFAULT, EINVAL, ENOENT, EPERM};
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::cbuf::CCall;
 #[cfg(verus_keep_ghost)]
@@ -95,13 +95,6 @@ use vstd::raw_ptr::ptr_ref;
 use vstd::string::*;
 
 verus! {
-
-// `mallctl`'s return codes as `c_int`; the numbers live in `sys::errno`.
-const EPERM: c_int = Errno::EPERM.0;
-const ENOENT: c_int = Errno::ENOENT.0;
-const EAGAIN: c_int = Errno::EAGAIN.0;
-const EFAULT: c_int = Errno::EFAULT.0;
-const EINVAL: c_int = Errno::EINVAL.0;
 
 /// [`VERSION_STR`] for verified code, its value opaque to the verifier.
 /// `VERSION_STR` is outside `verus!`, in the form scripts/install.sh
