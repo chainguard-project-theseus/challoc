@@ -37,7 +37,7 @@
  * 1, 2, 3, 5, 10, 20, 30, 50, 70 and 90, for the highest peak seen, and
  * at the end. What is not anon is not the allocator's.
  */
-#include "common.h"
+#include "cgroup.h"
 #include <stdbool.h>
 #include <time.h>
 
@@ -68,7 +68,6 @@ struct obj {
 static struct obj objs[MAX_OBJECTS];
 static size_t nobjs, live_bytes;
 static long page_size;
-static char cgroup_dir[8192];
 static int have_cgroup;
 static long long current_peak = -1;
 static size_t rss_peak;
@@ -87,56 +86,6 @@ static size_t rss_now(void)
     return r;
 }
 
-static int find_cgroup(void)
-{
-    char line[4096], path[4096] = "", mount[4096] = "";
-    FILE *f = fopen("/proc/self/cgroup", "r");
-    if (!f)
-        return 0;
-    while (fgets(line, sizeof line, f))
-        if (strncmp(line, "0::/", 4) == 0) {
-            snprintf(path, sizeof path, "%s", line + 3);
-            path[strcspn(path, "\n")] = 0;
-        }
-    fclose(f);
-    f = fopen("/proc/self/mountinfo", "r");
-    if (!f)
-        return 0;
-    while (fgets(line, sizeof line, f)) {
-        char *sep = strstr(line, " - ");
-        if (sep && strncmp(sep + 3, "cgroup2 ", 8) == 0 && !mount[0]) {
-            *sep = 0;
-            char *save = NULL, *tok = strtok_r(line, " ", &save);
-            for (int i = 0; tok && i < 4; i++)
-                tok = strtok_r(NULL, " ", &save);
-            if (tok)
-                snprintf(mount, sizeof mount, "%s", tok);
-        }
-    }
-    fclose(f);
-    if (!path[0] || !mount[0])
-        return 0;
-    snprintf(cgroup_dir, sizeof cgroup_dir, "%s%s", mount, strcmp(path, "/") == 0 ? "" : path);
-    return 1;
-}
-
-static long long read_cgroup_ll(const char *file)
-{
-    if (!have_cgroup)
-        return -1;
-    char p[8192 + 64];
-    snprintf(p, sizeof p, "%s/%s", cgroup_dir, file);
-    FILE *f = fopen(p, "r");
-    if (!f)
-        return -1;
-    char buf[64];
-    long long v = -1;
-    if (fgets(buf, sizeof buf, f))
-        v = strncmp(buf, "max", 3) == 0 ? -2 : atoll(buf);
-    fclose(f);
-    return v;
-}
-
 static long long sample_current(void)
 {
     long long c = read_cgroup_ll("memory.current");
@@ -144,8 +93,6 @@ static long long sample_current(void)
         current_peak = c;
     return c;
 }
-
-static const char *fmt_mib(long long v, char *buf, size_t n);
 
 /* One `memory.stat` field (bytes), -1 when absent. */
 static long long memstat(const char *key)
@@ -204,7 +151,7 @@ static void read_comp(struct comp *c)
 static void print_comp(const char *tag, const struct comp *c)
 {
     char b[6][32];
-    printf("composition %s: current %s anon %s file %s kernel %s (slab %s pagetables %s) MiB, rss %zu MiB", tag, fmt_mib(c->current, b[0], 32),
+    printf("composition %s: current %s anon %s file %s kernel %s (slab %s pagetables %s), rss %zu MiB", tag, fmt_mib(c->current, b[0], 32),
            fmt_mib(c->anon, b[1], 32), fmt_mib(c->file, b[2], 32), fmt_mib(c->kernel, b[3], 32), fmt_mib(c->slab, b[4], 32),
            fmt_mib(c->pagetables, b[5], 32), c->rss / MIB);
     if (c->challoc)
@@ -257,17 +204,6 @@ static long long events_field(const char *events, const char *key)
         s++;
     }
     return -1;
-}
-
-static const char *fmt_mib(long long v, char *buf, size_t n)
-{
-    if (v == -2)
-        snprintf(buf, n, "max");
-    else if (v < 0)
-        snprintf(buf, n, "n/a");
-    else
-        snprintf(buf, n, "%lld", v / (long long)MIB);
-    return buf;
 }
 
 static void trickle(void)
@@ -391,11 +327,11 @@ int main(int argc, char **argv)
         printf("cgroup_oscillate: page size %ld: the default high target is %zu MiB, %d MiB under the 4 KiB default (the page-rounding envelope, see the header)\n",
                page_size, high_mib, LARGE_PAGE_ENVELOPE_MIB);
     }
-    have_cgroup = find_cgroup();
+    have_cgroup = find_cgroup(false);
     char b1[32], b2[32], ev0[512], ev1[512];
     long long limit = read_cgroup_ll("memory.max");
     events_line(ev0, sizeof ev0);
-    printf("cgroup_oscillate: %zu..%zu MiB live for %ld s, hold %ld ms; cgroup %s memory.max %s MiB memory.current %s MiB rss %zu MiB\n",
+    printf("cgroup_oscillate: %zu..%zu MiB live for %ld s, hold %ld ms; cgroup %s memory.max %s memory.current %s rss %zu MiB\n",
            low_mib, high_mib, seconds, hold_ms, have_cgroup ? cgroup_dir : "(none)", fmt_mib(limit, b1, sizeof b1),
            fmt_mib(sample_current(), b2, sizeof b2), rss_now() / MIB);
     printf("memory.events before: %s\n", ev0);
@@ -440,7 +376,7 @@ int main(int argc, char **argv)
         size_t rss_lo = rss_now();
         hold(hold_ms);
         cycles++;
-        printf("cycle %3ld at %5ld s: up %zu MiB in %ld ms (rss %zu, current %s MiB), down to %zu MiB in %ld ms (rss %zu, current %s MiB), %zu objects\n",
+        printf("cycle %3ld at %5ld s: up %zu MiB in %ld ms (rss %zu MiB, current %s), down to %zu MiB in %ld ms (rss %zu MiB, current %s), %zu objects\n",
                cycles, (now_ms() - t_start) / 1000, high_mib, t_up - t0, rss_hi / MIB, fmt_mib(cur_hi, b1, sizeof b1), low_mib,
                t_down - t_up - hold_ms, rss_lo / MIB, fmt_mib(cur_lo, b2, sizeof b2), nobjs);
         fflush(stdout);

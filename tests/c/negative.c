@@ -125,34 +125,9 @@ static void drain(void)
     }
 }
 
-static unsigned ctl_uint(const char *name)
-{
-    unsigned v = 0;
-    size_t len = sizeof v;
-    REQUIRE(mallctl != NULL, "mallctl not exported");
-    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
-    return v;
-}
-
-static bool ctl_bool(const char *name)
-{
-    bool v = false;
-    size_t len = sizeof v;
-    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
-    return v;
-}
-
 static ssize_t ctl_ssize(const char *name)
 {
     ssize_t v = 0;
-    size_t len = sizeof v;
-    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
-    return v;
-}
-
-static size_t ctl_size(const char *name)
-{
-    size_t v = 0;
     size_t len = sizeof v;
     REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
     return v;
@@ -167,12 +142,6 @@ static unsigned small_cache_cap(void)
     ssize_t lg_mul = ctl_ssize("opt.lg_tcache_nslots_mul");
     unsigned cap = lg_mul >= 1 ? max : max >> (1 - lg_mul);
     return cap < 8 ? 8 : cap;
-}
-
-static int cmp_ptr(const void *a, const void *b)
-{
-    uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
-    return x < y ? -1 : x > y;
 }
 
 /* Fill enough of the 64-byte class that the arena walks past its first

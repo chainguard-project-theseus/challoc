@@ -24,41 +24,17 @@ static void prepare_handler(void)
     window_create_rc = mallctl("arenas.create", &a, &alen, NULL, 0);
 }
 
-/* Registered from the program's .preinit_array, which runs before every
- * library's constructor, challoc's among them: before challoc registers
- * its own handlers, so these run inside challoc's fork window (design 9).
- * A handler registered later, from a constructor, runs outside it
- * (tests/c/atfork_pool.c). */
-static void register_first(void)
-{
-    if (pthread_atfork(prepare_handler, NULL, NULL) != 0)
-        _exit(3);
-}
-
-__attribute__((section(".preinit_array"), used)) static void (*const preinit_register)(void) = register_first;
+ATFORK_FIRST(prepare_handler, NULL, NULL);
 
 /* malloc_stats_print hands its text over in 1 KiB chunks that can split a
  * line anywhere, so the callback accumulates the whole report and the
  * `Arenas:` line is parsed afterwards. */
 static char report[1 << 16];
-static size_t report_len;
-
-static void append(void *opaque, const char *s)
-{
-    (void)opaque;
-    size_t n = strlen(s);
-    if (report_len + n < sizeof report) {
-        memcpy(report + report_len, s, n);
-        report_len += n;
-    }
-}
 
 /* The arenas built: the report's `Arenas:` count, those the scan found. */
 static unsigned built_arenas(void)
 {
-    report_len = 0;
-    malloc_stats_print(append, NULL, "ab");
-    report[report_len] = 0;
+    stats_report(malloc_stats_print, "ab", report, sizeof report);
     const char *a = strstr(report, "Arenas: ");
     REQUIRE(a != NULL, "no Arenas: line");
     unsigned seen = (unsigned)strtoul(a + 8, NULL, 10);

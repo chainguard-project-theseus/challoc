@@ -12,31 +12,8 @@
  * thread yet (`background_thread` unset, the default).
  */
 #include "common.h"
-#include <dirent.h>
 
 const char *malloc_conf = "dirty_decay_ms:500";
-
-static int bg_threads(void)
-{
-    DIR *d = opendir("/proc/self/task");
-    if (!d)
-        return -1;
-    struct dirent *e;
-    int n = 0;
-    char path[300], name[64];
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof path, "/proc/self/task/%s/comm", e->d_name);
-        FILE *f = fopen(path, "r");
-        if (f && fgets(name, sizeof name, f) && strncmp(name, "challoc-bg", 10) == 0)
-            n++;
-        if (f)
-            fclose(f);
-    }
-    closedir(d);
-    return n;
-}
 
 static volatile int in_window_threads = -1;
 
@@ -87,13 +64,7 @@ static void child_handler(void)
     in_window_threads = bg_threads();
 }
 
-static void register_first(void)
-{
-    if (pthread_atfork(NULL, NULL, child_handler) != 0)
-        _exit(3);
-}
-
-__attribute__((section(".preinit_array"), used)) static void (*const preinit_register)(void) = register_first;
+ATFORK_FIRST(NULL, NULL, child_handler);
 
 static int in_child(void)
 {

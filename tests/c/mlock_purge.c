@@ -52,25 +52,12 @@ static size_t resident(uintptr_t p, size_t len)
 /* malloc_stats_print hands its text over in 1 KiB chunks that can split a
  * line anywhere, so the callback accumulates the whole report. */
 static char report[1 << 18];
-static size_t report_len;
-
-static void append(void *opaque, const char *s)
-{
-    (void)opaque;
-    size_t n = strlen(s);
-    if (report_len + n < sizeof report) {
-        memcpy(report + report_len, s, n);
-        report_len += n;
-    }
-}
 
 /* The report's `failed_discards N` (ranges whose discard failed so far),
  * -1 when the report has no such count. */
 static long failed_discards(void)
 {
-    report_len = 0;
-    malloc_stats_print(append, NULL, NULL);
-    report[report_len] = 0;
+    stats_report(malloc_stats_print, NULL, report, sizeof report);
     const char *f = strstr(report, "failed_discards ");
     return f ? strtol(f + strlen("failed_discards "), NULL, 10) : -1;
 }
