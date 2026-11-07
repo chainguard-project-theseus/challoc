@@ -7,31 +7,12 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `write_zero` | external_body | UnsafeCell/volatile/transmute | RefinedRust | trusted |
 | `axiom_f...n_zero` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `axiom_d...d_zero` | axiom | platform/kernel fact | none (assumption) | trusted |
 
-## `write_zero`
-
-src/huge/mod.rs:1778. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: RefinedRust. Status: trusted (requires, checked at every caller: the huge lock held, `held_by`, the byte committed, `vspec::unbacked::committed`, the byte in the region apart from every live run's guard, `spares_guards`, and the byte in no live run, `apart_from_runs`; not checked: that the byte is still read-write, as `committed` never expires, which below the mark in guard-install mode rests on `Huge::mixed_guards` being set whenever a `PROT_NONE` page outside a live run's guard may exist).
-
-> Write a zero to the byte at `addr`, the first byte of a run being placed (`split_guard`), to give its VMA an `anon_vma` by a write fault when `MADV_POPULATE_WRITE` is refused.
-
-Hashes: contract 3039576649, body 2972789721.
-
-```rust
-fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>)
-    requires
-        held_by(h, *lk, vstd::raw_ptr::ptr_null_mut()),
-        crate::vspec::unbacked::committed(addr as int),
-        spares_guards(h, *lk.value(), vstd::raw_ptr::ptr_null_mut(), addr as int, 1),
-        apart_from_runs(h, *lk.value(), addr as int, 1),
-```
-
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:2196. Kind: axiom. Category: platform/kernel fact.
+src/huge/mod.rs:1814. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -50,7 +31,7 @@ pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Ze
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:2221. Kind: axiom. Category: platform/kernel fact.
+src/huge/mod.rs:1839. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted (requires, checked at its one caller, zero_run, from Huge::take: some MADV_DONTNEED of exactly these bytes succeeded, `sys::madvise_ok`, at that call site Huge::rediscard's; not checked: that nothing has written them since take's rediscard call).
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).

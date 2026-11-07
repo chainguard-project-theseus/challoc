@@ -1,0 +1,3 @@
+# write_zero: Verus checks its requires at every caller (split_guard, from
+# Huge::prepare); its body, the write, is trusted.
+write_zero	UnsafeCell/volatile/transmute	RefinedRust	trusted (requires, checked at every caller: the huge lock held, `held_by`, the byte committed, `vspec::unbacked::committed`, the byte in the region apart from every live run's guard, `spares_guards`, and the byte in no live run, `apart_from_runs`; not checked: that the byte is still read-write, as `committed` never expires, which below the mark in guard-install mode rests on `Huge::mixed_guards` being set whenever a `PROT_NONE` page outside a live run's guard may exist)
