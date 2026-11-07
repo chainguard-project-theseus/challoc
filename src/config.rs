@@ -169,7 +169,8 @@ pub struct Config {
     pub lg_tcache_nslots_mul: i32,
     /// Transparent huge pages for the regions ([`Thp`], `thp.rs`).
     pub thp: Thp,
-    /// `MADV_FREE` for purges under 70% of a known cgroup limit (`purge`).
+    /// `MADV_FREE` for purges under 70% of a known cgroup limit (`purge`);
+    /// off by default, an opt-in.
     pub lazy_band: bool,
     /// Guard slabs and guards after huge runs.
     pub guards: bool,
