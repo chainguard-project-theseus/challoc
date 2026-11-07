@@ -31,7 +31,7 @@ mallocx/dallocx with MALLOCX_TCACHE_NONE for defrag, MALLOCX_ARENA and
 MALLOCX_TCACHE for the Lua heap, je_malloc_conf's tcache tuning), which
 challoc implements. Patch 2/4 adds challoc's size-returning entry points;
 patch 3/4 is an upstream bug fix the test suite needs; patch 4/4
-calibrates the active defrag tests for challoc's slab geometry.
+starts the replicaof flush defrag test lower under challoc.
 
 Build, with challoc-dev installed:
        make MALLOC=challoc BUILD_TLS=yes
