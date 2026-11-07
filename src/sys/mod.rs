@@ -2366,8 +2366,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// A fresh read/write private anonymous mapping of `len` bytes, for
-    /// this module's tests and `features::linux_tests`.
+    /// One fresh read/write private anonymous page, for this module's
+    /// tests.
     fn map_page() -> usize {
         crate::testutil::map_rw(PAGE)
     }
