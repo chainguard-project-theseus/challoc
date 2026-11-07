@@ -100,6 +100,13 @@ pub struct BinStats {
     /// (`ClassState::bin_stats`): transient is normal, growing while
     /// nothing is freed is a bookkeeping bug.
     pub clamped: u64,
+    /// Slab pages (docs/proposals/slab-pages.md, 3.6): the slots the
+    /// closed pages of the bin's live-capable slabs hide, which the
+    /// reported `curregs` adds back (they are neither in use nor
+    /// claimable, so not fragmentation), and those pages' bytes, which
+    /// `active` and `resident` leave out.
+    pub closed_slots: usize,
+    pub closed_bytes: usize,
 }
 
 impl BinStats {
@@ -118,6 +125,8 @@ impl BinStats {
         compact_off: 0,
         gate_refill: 0,
         clamped: 0,
+        closed_slots: 0,
+        closed_bytes: 0,
     };
 
     /// Bytes allocated: `curregs * size`.
@@ -185,6 +194,8 @@ impl BinStats {
         &&& self.compact_off + o.compact_off <= u64::MAX
         &&& self.gate_refill + o.gate_refill <= u64::MAX
         &&& self.clamped + o.clamped <= u64::MAX
+        &&& self.closed_slots + o.closed_slots <= usize::MAX
+        &&& self.closed_bytes + o.closed_bytes <= usize::MAX
     }
 
     /// `o` merged into `self`: the geometry from `o` where `self` has none,
@@ -206,6 +217,8 @@ impl BinStats {
             compact_off: (self.compact_off + o.compact_off) as u64,
             gate_refill: (self.gate_refill + o.gate_refill) as u64,
             clamped: (self.clamped + o.clamped) as u64,
+            closed_slots: (self.closed_slots + o.closed_slots) as usize,
+            closed_bytes: (self.closed_bytes + o.closed_bytes) as usize,
         }
     }
 
@@ -215,6 +228,7 @@ impl BinStats {
     /// bytes (`layout::regions::LG_REGION_PREFERRED`).
     pub open spec fn fits(self) -> bool {
         &&& self.curregs * self.size <= self.curslabs * self.slab_size
+        &&& self.curregs * self.size + self.closed_bytes <= self.curslabs * self.slab_size
         &&& (self.curslabs + self.empty_slabs + self.purged_slabs) * self.slab_size <= 0x40_0000_0000
     }
 }
@@ -342,7 +356,7 @@ impl ArenaStats {
 
     /// Reset to [`ArenaStats::empty`]`(index)` in place: every head field
     /// and every bin, so a [`Scratch`]'s record (zero, or a previous
-    /// call's figures) starts from nothing, without the 6 KiB value on the
+    /// call's figures) starts from nothing, without the 7 KiB value on the
     /// stack.
     pub fn clear(&mut self, index: u16)
         ensures
@@ -738,6 +752,8 @@ impl ArenaStats {
             b.compact_off = fig_add64(b.compact_off, ob.compact_off);
             b.gate_refill = fig_add64(b.gate_refill, ob.gate_refill);
             b.clamped = fig_add64(b.clamped, ob.clamped);
+            b.closed_slots = fig_add(b.closed_slots, ob.closed_slots);
+            b.closed_bytes = fig_add(b.closed_bytes, ob.closed_bytes);
             proof {
                 if old(self).can_add(*o) {
                     assert(old(self).bins[c as int].can_add(o.bins[c as int]));
@@ -907,6 +923,25 @@ pub fn collect_bin(cs: &ClassState, Tracked(ord): Tracked<&mut LockOrder>) -> (r
         ;
     }
     let (compacted, compact_on, compact_off, gate_refill) = cs.compaction_stats();
+    // Slab pages: the closed pages' bytes, at most what `active` holds
+    // above `allocated`, so a bin's active bytes never fall below its
+    // allocated ones.
+    proof {
+        let (lr, ls) = (crate::layout::process_regions().lg_region, cls.lg_slab);
+        let lsu = ls as usize;
+        assert((1usize << lsu) == (1usize << ls)) by (bit_vector)
+            requires lsu == ls as usize;
+        let n = cs.spec_nslabs() as int;
+        let sl = (1usize << lsu) as int;
+        let (u, m) = ((s.committed - s.empty - s.purged) as int, s.committed as int);
+        assert(u * sl <= m * sl) by (nonlinear_arith)
+            requires 0 <= u <= m, sl >= 0;
+    }
+    let active_b = s.curslabs() * cls.slab_size();
+    let alloc_b = curregs * cls.size();
+    let room = active_b - alloc_b;
+    let pg = cs.table().page_view().pg;
+    let closed_bytes = s.closed_pages.saturating_mul(pg).min(room);
     BinStats {
         size: cls.size(),
         nregs: cls.nslots(),
@@ -922,6 +957,8 @@ pub fn collect_bin(cs: &ClassState, Tracked(ord): Tracked<&mut LockOrder>) -> (r
         compact_off,
         gate_refill,
         clamped: cs.clamped(),
+        closed_slots: s.closed_slots,
+        closed_bytes,
     }
 }
 
@@ -1031,7 +1068,7 @@ fn collect_arena_with(
         if c < NBINS {
             let (al, ac, di, re) = (
                 fig_mul(bin.curregs, bin.size),
-                fig_mul(bin.curslabs, bin.slab_size),
+                fig_mul(bin.curslabs, bin.slab_size).saturating_sub(bin.closed_bytes),
                 fig_mul(bin.empty_slabs, bin.slab_size),
                 fig_mul(bin.purged_slabs, bin.slab_size),
             );
@@ -1046,7 +1083,7 @@ fn collect_arena_with(
             // Slab-allocated, but reported as large (see `layout::BIN_MAX`).
             let (al, ac, di, re) = (
                 fig_mul(bin.curregs, bin.size),
-                fig_mul(bin.curslabs, bin.slab_size),
+                fig_mul(bin.curslabs, bin.slab_size).saturating_sub(bin.closed_bytes),
                 fig_mul(bin.empty_slabs, bin.slab_size),
                 fig_mul(bin.purged_slabs, bin.slab_size),
             );
@@ -1881,9 +1918,9 @@ verus! {
 // records of the head (an index and 18 figures) and one `BinStats` per
 // class.
 #[cfg(feature = "quantum16")]
-global layout StatsPair is size == 11952, align == 8;
+global layout StatsPair is size == 13616, align == 8;
 #[cfg(feature = "quantum8")]
-global layout StatsPair is size == 12848, align == 8;
+global layout StatsPair is size == 14640, align == 8;
 
 /// The two records a statistics entry point collects into: `a` (the
 /// arena, or the sum) and `b` (each arena of a sum in turn).
@@ -1893,7 +1930,7 @@ pub struct StatsPair {
 }
 
 /// A statistics entry point's records ([`StatsPair`]) in a metadata object
-/// (design 13.8): the entry points collect an arena's figures (about 6 KiB
+/// (design 13.8): the entry points collect an arena's figures (about 7 KiB
 /// with its bins) into these rather than onto their caller's stack, so
 /// they run on a `PTHREAD_STACK_MIN` thread. Each entry point takes one
 /// before any lock and gives it back before it returns; no lock is held
@@ -2650,9 +2687,13 @@ mod tests {
             "{slabs256} slabs"
         );
         assert_eq!(a.small_allocated, live(s, c16) * 16 + live(s, c256) * 256);
+        // Less the closed pages of slabs opened on demand
+        // (docs/proposals/slab-pages.md, 3.3 and 3.6).
         assert_eq!(
             a.small_active,
             CLASSES[c16].slab_size() + slabs256 * CLASSES[c256].slab_size()
+                - b16.closed_bytes
+                - b256.closed_bytes
         );
         assert_eq!((a.small_dirty, a.small_retained), (0, 0));
         let bmed = a.bins[cmed];

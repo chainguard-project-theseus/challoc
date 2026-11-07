@@ -3453,6 +3453,31 @@ impl SlabTable {
         ptr_ref(p, Tracked(self.desc_perms.borrow().tracked_borrow(slab as int)))
     }
 
+    /// [`pages`](SlabTable::pages) of a slab below the watermark, `None`
+    /// otherwise or where the class has no page state: no abort, as
+    /// [`desc_if_committed`](SlabTable::desc_if_committed) (the
+    /// utilization query, which may not abort).
+    pub fn pages_if_committed(&self, slab: usize) -> (r: Option<&SlabPages>)
+        ensures
+            r matches Some(p) ==> *p == pages_at(*self, slab) && pages_id(p) == desc_id(&desc_at(*self, slab)) + 16,
+    {
+        if slab >= self.watermark(Ordering::Relaxed) || (self.desc_stride as usize) < 32 {
+            return None;
+        }
+        proof {
+            use_type_invariant(self);
+            let d = self.desc_stride as int;
+            assert(slab * d <= self.nslabs * d) by (nonlinear_arith)
+                requires slab < self.nslabs, d >= 0;
+            assert(self.pages_perms@.contains_key(slab as int));
+            assert(self.desc_perms@.contains_key(slab as int));
+        }
+        let p = addr_to_ptr(self.desc_base + slab * self.desc_stride as usize + HEADER) as *const SlabPages;
+        // SAFETY: `slab` is below a value the watermark held, so its
+        // descriptor, `SlabPages` included, is committed.
+        Some(ptr_ref(p, Tracked(self.pages_perms.borrow().tracked_borrow(slab as int))))
+    }
+
     /// The page geometry of the class's slabs, every page open, where the
     /// class has page state ([`SlabPages`]: a stride of 32 or 64) and a
     /// slab spans two to 16 pages; [`OpenView::none`] otherwise.

@@ -38,6 +38,10 @@ verus! {
 /// thousand word loads (docs/proposals/slab-pages.md, 3.4).
 pub const WALK_SLABS: usize = 64;
 
+/// The shortest interval between two defragmenter hints that arm a class's
+/// walk (docs/proposals/slab-pages.md, 7.1): 100 ms.
+pub const HINT_NS: u64 = 100_000_000;
+
 /// The bytes the discard of page `[a, a + len)` frees: the page's, while
 /// bit `p` of the closed mask the lock holder wrote is set (as
 /// `decay::idle_byte` names an `Empty` slab's).
@@ -81,7 +85,7 @@ fn cut_of(counts: &[u16; STEPS], need: usize) -> (r: (usize, usize))
 }
 
 /// The pages a mask names.
-fn page_count(m: u16) -> (r: usize)
+pub(super) fn page_count(m: u16) -> (r: usize)
     ensures
         r <= 16,
 {
@@ -177,6 +181,84 @@ impl ClassState {
             super::lemma_descs_update(g0, *g, k);
             lemma_walk_frame(self, g0, *g);
         }
+    }
+
+    /// [`set_pages_locked`](ClassState::set_pages_locked) for a lock value
+    /// whose invariant is broken at `slab` (`take`, between the hand-out of
+    /// a `Fresh` slab and its claim): only the descriptor permissions'
+    /// agreement is kept, as `set_dirty_locked` keeps it.
+    // `g` and `slab` are read only by the specification (ghost), but for
+    // the descriptor permission they hold.
+    #[allow(unused_variables)]
+    pub(super) fn set_pages_raw(&self, g: &mut Inner, pg: &SlabPages, slab: usize, closed: u16, stamp: u64)
+        requires
+            old(g).descs(),
+            old(g).table@ == self.spec_table(),
+            old(g).owns(slab as nat),
+            pages_id(pg) == desc_id(&desc_at(self.spec_table(), slab)) + 16,
+        ensures
+            final(g).descs(),
+            final(g).states == old(g).states,
+            final(g).dirty == old(g).dirty,
+            final(g).partial == old(g).partial,
+            final(g).empty == old(g).empty,
+            final(g).purged == old(g).purged,
+            final(g).stats == old(g).stats,
+            final(g).group_next == old(g).group_next,
+            final(g).group_end == old(g).group_end,
+            final(g).committed == old(g).committed,
+            final(g).arena == old(g).arena,
+            final(g).table == old(g).table,
+            final(g).inited == old(g).inited,
+            final(g).seen == old(g).seen,
+            final(g).oauth == old(g).oauth,
+            final(g).zeros == old(g).zeros,
+            final(g).closed_slots == old(g).closed_slots,
+            final(g).closed_pages == old(g).closed_pages,
+            final(g).pages_cursor == old(g).pages_cursor,
+    {
+        let ghost g0 = *g;
+        let ghost k = slab as nat;
+        proof {
+            g.lemma_desc(k);
+        }
+        let tracked mut p = g.dperms.borrow_mut().tracked_remove(k);
+        pg.set_pages(closed, stamp, Tracked(&mut p));
+        proof {
+            g.dperms.borrow_mut().tracked_insert(k, p);
+            super::lemma_descs_update(g0, *g, k);
+        }
+    }
+
+    /// Opening on demand (docs/proposals/slab-pages.md, 3.3): the closed
+    /// mask of a slab whose first `n` slots are its only claimed ones: the
+    /// pages past the one slot `n - 1` ends in. Every slot below `n` stays
+    /// open; a slot straddling into the first closed page is closed.
+    pub(super) fn first_claim_mask(v: OpenView, n: usize) -> u16
+        requires
+            v.paged(),
+    {
+        if n == 0 || n >= v.nslots {
+            return 0;
+        }
+        proof {
+            assert(1 <= n * v.size <= 0x10000 * 0x10000) by (nonlinear_arith)
+                requires 1 <= n <= 0x10000, 1 <= v.size <= 0x10000;
+        }
+        let last = (n * v.size - 1) / v.pg;
+        if last + 1 >= v.pages {
+            return 0;
+        }
+        let (np, nl) = (v.pages as u32, (last + 1) as u32);
+        proof {
+            assert((1u32 << np) >= 1u32 && (1u32 << np) - 1u32 <= 0xffffu32) by (bit_vector)
+                requires np <= 16;
+            assert((1u32 << nl) >= 1u32 && (1u32 << nl) - 1u32 <= 0xffffu32) by (bit_vector)
+                requires nl <= 16;
+        }
+        let all = ((1u32 << np) - 1) as u16;
+        let open = ((1u32 << nl) - 1) as u16;
+        all & !open
     }
 
     /// Slab `slab`'s closed pages and stamp, read under this arena's class
@@ -317,6 +399,7 @@ impl ClassState {
         // Step 4.
         let ghost g0 = *g;
         g.closed_slots = g.closed_slots.saturating_add(n_new.saturating_sub(n_old));
+        g.closed_pages = g.closed_pages.saturating_add(1);
         proof {
             lemma_walk_frame(self, g0, *g);
         }
@@ -376,10 +459,30 @@ impl ClassState {
         let n_new = v0.with_closed(c).closed_slots();
         let ghost g0 = *g;
         g.closed_slots = g.closed_slots.saturating_sub(n_old.saturating_sub(n_new));
+        g.closed_pages = g.closed_pages.saturating_sub(page_count(closed & !c));
         proof {
             lemma_walk_frame(self, g0, *g);
         }
         self.set_pages_locked(g, pg, slab, c, stamp);
+    }
+
+    /// A defragmenter asked about a slot of this class
+    /// (`get_defrag_hint`): at most once per [`HINT_NS`], arm the next
+    /// slab-pages walk to run at once and close every page closable for a
+    /// curve step, and wake the background thread (docs/proposals/
+    /// slab-pages.md, 7.1). Lock-free: the hint runs once per pointer a
+    /// defragmenter scans.
+    pub fn note_defrag_hint(&self)
+        requires
+            crate::sys::may_syscall(),
+    {
+        let now = crate::sys::now_coarse_ns();
+        if now >= self.hint_due.load(Ordering::Relaxed) {
+            self.hint_due.store(now.saturating_add(HINT_NS), Ordering::Relaxed);
+            self.hint_armed.store(1, Ordering::Relaxed);
+            self.pages_due.store(0, Ordering::Relaxed);
+            crate::purge::note_pages();
+        }
     }
 
     /// The slab-pages walk (docs/proposals/slab-pages.md, 3.4 and 7.1),
@@ -412,6 +515,9 @@ impl ClassState {
             return Some(due);
         }
         let curve = Curve::new(decay_ns);
+        // A defragmenter's hint: every page closable for a curve step (its
+        // stamp's step at least 1) closes, beside the curve's choice.
+        let hinted = self.hint_armed.swap(0, Ordering::Relaxed) != 0;
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut found = [Found { slab: 0, pages: 0, step: 0 }; WALK_SLABS];
         let mut nf: usize = 0;
@@ -464,6 +570,7 @@ impl ClassState {
             }
             let ghost gp = g@.partial;
             let ghost fh = found;
+            let ghost nfh = nf;
             visited += 1;
             proof {
                 assert(g@.slab_ok(s as nat));
@@ -549,6 +656,16 @@ impl ClassState {
                     }
                 }
             }
+            proof {
+                assert(g@.partial == gp);
+                assert forall|j: int| 0 <= j < nf implies #[trigger] g@.partial.map@.contains(found[j].slab as nat)
+                    && found[j].slab < self.spec_nslabs() && found[j].step < STEPS by {
+                    if j < nfh {
+                        assert(found[j] == fh[j]);
+                        assert(gp.map@.contains(fh[j].slab as nat));
+                    }
+                }
+            }
             next = g.partial.map.lowest_set_from(s + 1);
         }
         let ghost gc = g@;
@@ -558,10 +675,11 @@ impl ClassState {
         }
         // Pass 2: close every closable page in a step older than the cut,
         // and all but the lowest `keep` of the cut's step.
-        let allow = Curve::allowance(weighted);
+        let allow = if hinted { 0 } else { Curve::allowance(weighted) };
         let mut left = total > 0;
         if total > allow {
-            let (cut, mut keep) = cut_of(&counts, total - allow);
+            // Hinted: every closable page in a step from 1 on closes.
+            let (cut, mut keep) = if hinted { (1, 0) } else { cut_of(&counts, total - allow) };
             left = false;
             let mut i: usize = 0;
             while i < nf

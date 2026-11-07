@@ -1108,7 +1108,7 @@ impl Arena {
 
     /// The per-arena statistics lock, free, over [`ArenaStats::empty`],
     /// written at `p` through its permission. Out of line, so the record
-    /// (about 6 KiB with its bins) is built in place at `p` rather than in
+    /// (about 7 KiB with its bins) is built in place at `p` rather than in
     /// [`Arena::init`]'s frame and copied, on the first `malloc` of a
     /// thread whose arena is not built yet.
     ///
@@ -1119,7 +1119,7 @@ impl Arena {
     /// and an all-zero record but its `index`; the test
     /// `put_stats_writes_lock_new_of_empty` compares them), which has the
     /// arena's statistics rank. Rust has no placement construction, and
-    /// through `ptr_mut_write` the record went through a 6 KiB stack copy.
+    /// through `ptr_mut_write` the record went through a 7 KiB stack copy.
     #[verifier::external_body]
     #[inline(never)]
     unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)

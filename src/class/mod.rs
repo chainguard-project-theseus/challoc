@@ -161,6 +161,12 @@ pub struct ClassStats {
     pub purged: usize,
     /// Slabs in the partial set (jemalloc's `nonfull_slabs`).
     pub nonfull: usize,
+    /// Slab pages (docs/proposals/slab-pages.md, 3.6): the slots the closed
+    /// pages of the `Active` slabs hide, and those pages. Filled by
+    /// `ClassState::bin_stats` from the lock value, clamped to the slabs
+    /// they belong to; 0 in the lock value's own copy.
+    pub closed_slots: usize,
+    pub closed_pages: usize,
 }
 
 impl ClassStats {
@@ -1150,6 +1156,7 @@ struct Inner {
     /// counted once, which the statistics add back to `curregs`; and the
     /// partial slab the next closing walk starts at.
     closed_slots: usize,
+    closed_pages: usize,
     pages_cursor: usize,
     /// Ghost: the slabs this arena owns (their group's owner word names
     /// this arena, guard slabs included), each with the state its
@@ -1282,7 +1289,13 @@ pub struct ClassState {
     /// nanoseconds; 0, now): read without the class lock by the decay
     /// driver, written by the walk under it (`close_pages`).
     pages_due: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 72],
+    /// A defragmenter's hint (`get_defrag_hint`, design 13.5) armed the
+    /// next walk (1), which then also closes every page closable for a
+    /// curve step; and the earliest time the next hint may arm it (100 ms
+    /// on, per class: docs/proposals/slab-pages.md, 7.1).
+    hint_armed: AtomicU64,
+    hint_due: AtomicU64,
+    _tail: [u8; PAD_ALIGN - 88],
 }
 
 } // verus!
@@ -2344,6 +2357,8 @@ impl ClassState {
             empty,
             purged,
             stats: ClassStats {
+                closed_slots: 0,
+                closed_pages: 0,
                 committed: 0,
                 guards: 0,
                 empty: 0,
@@ -2353,6 +2368,7 @@ impl ClassState {
             group_next: 0,
             group_end: 0,
             closed_slots: 0,
+            closed_pages: 0,
             pages_cursor: 0,
             // No slab owned or committed yet.
             states: Ghost(Map::empty()),
@@ -2399,7 +2415,9 @@ impl ClassState {
             gate_refill: AtomicU64::new(0),
             clamped: AtomicU64::new(0),
             pages_due: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 72],
+            hint_armed: AtomicU64::new(0),
+            hint_due: AtomicU64::new(0),
+            _tail: [0; PAD_ALIGN - 88],
         })
     }
 
@@ -4118,6 +4136,11 @@ impl ClassState {
                 let ghost t0 = *ptoks;
                 let ghost m0 = *pm;
                 self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm));
+                // A slab whose open slots this took may still have closed
+                // pages for the rest of the batch.
+                if nclosed > 0 && reopenable.is_none() {
+                    reopenable = Some(s);
+                }
                 proof {
                     lemma_picks_zero_step(self.spec_table(), before, picks@, k as int, z0, *pz);
                     lemma_picks_sum(before, picks@, k as int);
@@ -4135,9 +4158,9 @@ impl ClassState {
         // Step 2 of the selection order: no partial slab has an open free
         // slot left for the batch, so the lowest one with closed pages
         // opens as many as the batch needs, before an idle slab is taken.
-        if remaining > 0 && np < MAX_PICKS {
-            if let Some(x) = reopenable {
-                let ghost gr = g@;
+        let short = remaining > 0 && np < MAX_PICKS;
+        if let (true, Some(x)) = (short, reopenable) {
+            {
                 proof {
                     assert(g@.slab_ok(x as nat));
                     assert(forall|y: nat| #[trigger] g@.slab_ok(y));
@@ -4312,7 +4335,7 @@ impl ClassState {
         // open free slots. The decay walk closes a page only while
         // `live + closed <= nslots` stays true, under this lock, and a
         // release only lowers `live`.
-        let (closed, nclosed) = self.closed_locked(&*g, slab);
+        let (closed, mut nclosed) = self.closed_locked(&*g, slab);
         // `live + closed > nslots` would reserve a wrapped count (the
         // release profile does not check overflow; the dev profile does).
         if !(live <= self.class().nslots() - nclosed) {
@@ -4321,6 +4344,42 @@ impl ClassState {
         let avail = self.class().nslots() - nclosed - live;
         let n = avail.min(*remaining);
         let state = self.state_locked(&*g, desc, slab);
+        // Opening on demand (docs/proposals/slab-pages.md, 3.3): a `Fresh`
+        // or `Purged` slab opens only the pages its first claim covers; the
+        // rest start closed, untouched, and cost no memory and no discard.
+        // A later refill reopens them (`reopen_pages`). Its closed slots are
+        // above `n`, so `live + closed <= nslots` holds.
+        if state.is_zero() && closed == 0 {
+            let v0 = self.table().page_view();
+            // Two `if`s, not a let chain: Verus takes no let chain.
+            #[allow(clippy::collapsible_if)]
+            if v0.is_paged() {
+                if let Some(pg) = self.table().pages(slab) {
+                    let m = Self::first_claim_mask(v0, n);
+                    if m != 0 {
+                        let k = v0.with_closed(m).closed_slots();
+                        if 0 < k && k <= self.class().nslots() - n {
+                            proof {
+                                g.lemma_desc(slab as nat);
+                            }
+                            let ghost ge = *g;
+                            self.set_pages_raw(g, pg, slab, m, 0);
+                            g.closed_slots = g.closed_slots.saturating_add(k);
+                            g.closed_pages = g.closed_pages.saturating_add(pages::page_count(m));
+                            nclosed = k;
+                            proof {
+                                // Only the descriptor permissions and the
+                                // page counts changed: the slab is ready.
+                                assert forall|x: nat| x != slab as nat implies #[trigger] g.slab_ok(x) by {
+                                    assert(ge.slab_ok(x));
+                                }
+                                assert(g.ready(slab as nat));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if purge::check_zero() {
             self.check_shadow(slab, "take");
             if state == State::Fresh {
@@ -5123,6 +5182,7 @@ impl ClassState {
                     let n = self.table().page_view().with_closed(closed).closed_slots();
                     let ghost gc = g@;
                     g.closed_slots = g.closed_slots.saturating_sub(n);
+                    g.closed_pages = g.closed_pages.saturating_sub(pages::page_count(closed));
                     proof {
                         pages::lemma_walk_frame(self, gc, g@);
                     }
@@ -5746,9 +5806,11 @@ verus! {
 impl ClassState {
     /// This arena's slab counts; `guards` is the class-wide count from the
     /// table, since guard slabs belong to no arena.
+    /// Its slab-pages counts left out (they have their own tests): the
+    /// slab-set counts the older tests compare.
     #[cfg(test)]
     pub fn stats(&self) -> ClassStats {
-        self.bin_stats(Tracked::assume_new()).0
+        ClassStats { closed_slots: 0, closed_pages: 0, ..self.bin_stats(Tracked::assume_new()).0 }
     }
 
     /// The slab counts and `curregs` (slots out of this arena's bitmaps:
@@ -5772,6 +5834,8 @@ impl ClassState {
             (r.0.committed as int) * (class_table()[self.spec_class() as int].nslots as int) <= usize::MAX,
             // The clamp: no more slots out than the live-capable slabs hold.
             (r.1 as int) <= ((r.0.committed - r.0.empty - r.0.purged) as int) * (class_table()[self.spec_class() as int].nslots as int),
+            // Slab pages: the closed slots fit beside the slots out.
+            (r.1 + r.0.closed_slots) as int <= ((r.0.committed - r.0.empty - r.0.purged) as int) * (class_table()[self.spec_class() as int].nslots as int),
             *final(ord) == *old(ord),
     {
         broadcast use lemma_inv_counts;
@@ -5782,6 +5846,7 @@ impl ClassState {
         let released = self.released.load(Ordering::Relaxed);
         let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let mut s = g.stats;
+        let (closed_slots, closed_pages) = (g.closed_slots, g.closed_pages);
         let claimed = self.claimed.load(Ordering::Relaxed);
         g.unlock();
         s.guards = self.table().guards(Tracked(ord));
@@ -5800,6 +5865,12 @@ impl ClassState {
         } else {
             out
         };
+        // Slab pages (docs/proposals/slab-pages.md, 3.6): closed slots are
+        // clear, so no claim counted them; reported with `curregs` they
+        // never exceed the slabs' slots, nor the closed pages the slabs.
+        s.closed_slots = closed_slots.min(cap - curregs);
+        let pages = self.table().page_view().pages;
+        s.closed_pages = closed_pages.min(if pages == 0 { 0 } else { s.curslabs().saturating_mul(pages) });
         (s, curregs)
     }
 
@@ -5898,7 +5969,8 @@ impl ClassState {
                 requires s.committed <= self.spec_nslabs(), k >= 0;
         }
         let capacity = s.curslabs() * self.class().nslots();
-        (capacity.saturating_sub(curregs), capacity)
+        // A closed page's slots are no holes: no slot can be moved there.
+        (capacity.saturating_sub(curregs).saturating_sub(s.closed_slots), capacity)
     }
 }
 
