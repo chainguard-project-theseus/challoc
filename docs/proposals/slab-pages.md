@@ -149,8 +149,10 @@ kernels and 4 pages on 16 KiB pages. Out of scope:
   The rest of `open` starts clear. A closed page that was never touched
   costs no RSS and needs no discard later.
 - **Opening is a class-lock step:** `open.fetch_or(pages)` (release),
-  `closed_slots` down, and the `closed` and `partial` sets updated. The
-  bits need no change; they are already clear.
+  `closed_slots` down by `closed_slot_count(old) - closed_slot_count(new)`
+  (a straddling slot leaves the count only when its last closed page
+  opens), and the `closed` and `partial` sets updated. The bits need no
+  change; they are already clear.
 - **Zero tracking.** A page that was closed by an eager discard, or never
   touched, is zero. Its slots could be reported zero exactly as a
   `Purged` slab's are, under `purge::purged_is_zero` (design 8). The
@@ -189,7 +191,10 @@ kernels and 4 pages on 16 KiB pages. Out of scope:
      it.
   3. Otherwise `p` joins the walk's `purge::Batch`, with adjacent pages of
      one slab merged, and is discarded.
-  4. `closed_slots` goes up, and the slab joins `closed`.
+  4. `closed_slots` goes up by `closed_slot_count(new) -
+     closed_slot_count(old)`, the slots that were open and are closed now,
+     so a slot that also overlaps an already closed page is not counted
+     again. The slab joins `closed`.
 
   A refused discard (`EINVAL`, `mlock`ed pages) reopens `p` and keeps its
   age, as an `Empty` slab stays `Empty` (design 8).
@@ -199,11 +204,14 @@ kernels and 4 pages on 16 KiB pages. Out of scope:
      open_slots(m, w)`;
   2. `old = word.fetch_or(want)` (acquire-release); the claim got
      `got = want & !old`;
-  3. `m2 = open.load(acquire)`. Any slot of `got` on a page `m2` shows
-     closed goes straight back (`fetch_and`, never handed out), and the
-     claim retries.
-- **Why no claimed slot is discarded.** Take a slot `s` of `p` that a
-  claim got. If the claim's `fetch_or` came before the walk's step 2 in
+  3. `m2 = open.load(acquire)`. `got & !open_slots(m2, w)` goes straight
+     back (`fetch_and`, never handed out), and the claim retries. These
+     are the slots with any overlapped page closed, not only the page the
+     slot starts on: a 96 B slot that spans pages `p - 1` and `p` goes
+     back when either is closed.
+- **Why no claimed slot is discarded.** Take a slot `s` that overlaps `p`,
+  wherever it starts, that a claim got. Step 2 reads every word holding a
+  slot that overlaps `p`, so `s`'s word is among them. If the claim's `fetch_or` came before the walk's step 2 in
   the word's modification order, step 2 sees `s` set and the walk skips
   `p`. If it came after, it read a value in the release sequence of the
   walk's read-modify-write, so the walk's step 1 happens before the
@@ -283,7 +291,8 @@ design 13.4 must say so:
   orders every set change.
 - **Verus.**
   - The claim's contract gains the open mask. A claimed slot's token
-    requires its page open at the claim's step 3.
+    requires every page the slot overlaps open at the claim's step 3:
+    `s` is in `open_slots(m2, w)`.
   - Discarding part of an `Active` slab needs a proof that no slot of the
     discarded pages is, or will be, handed out. Its premises are the
     page's closed state under the class lock, step 2's read finding the
