@@ -1749,8 +1749,6 @@ fn lock_holders_match_inv_docs() {
                 ("huge/decay.rs:", "fn purge_curve(", "inner"),
                 ("huge/decay.rs:", "pub fn empty_bytes(", "inner"),
                 ("huge/decay.rs:", "pub fn stats(", "inner"),
-                ("huge/mod.rs:", "pub fn oldest_dirty_at(", "inner"),
-                ("huge/mod.rs:", "fn audit(", "inner"),
             ],
         ),
         // `meta::Inner`'s `LockSpec` impl.

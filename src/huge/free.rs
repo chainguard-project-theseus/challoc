@@ -1304,7 +1304,7 @@ impl Huge {
                 self.mixed_guards.store(true, Ordering::Relaxed);
             }
         }
-        let now = now_ns().max(1);
+        let now = sys::now_coarse_ns().max(1);
         // Purged at once: above `huge_retain_max`, or under a zero huge
         // decay period (`huge_dirty_decay_ms:0`). A run the discard fails
         // on is kept `Empty` for decay or the next explicit purge.

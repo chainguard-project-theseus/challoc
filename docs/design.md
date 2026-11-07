@@ -2281,6 +2281,7 @@ src/heap/mallocx.rs   MALLOCX_* flag decoding and the mallocx/dallocx routing
 src/heap/tests.rs, src/heap/linux_tests.rs   heap tests
 src/heap/heap_at_tests.rs, src/api/heap_at_tests.rs   test-only: the heap_at checker on every heap heap_at hands out, and through the C API's MALLOCX_TCACHE paths
 src/huge/mod.rs       huge allocator: extents, guards, first fit, the audit
+src/huge/kernel.rs    commits, guard pages and the zeroing write; theorem_huge_commit_avoids_guards
 src/huge/free.rs      free_run and its Merge model, the retention cap, usable_size and lookup
 src/huge/decay.rs     the huge purge and decay walks (purge_empty, decay_with) and their Tally
 src/huge/table.rs     the open-addressing descriptor table (page number to HugeDesc)

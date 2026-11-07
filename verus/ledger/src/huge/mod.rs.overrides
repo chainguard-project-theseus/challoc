@@ -13,6 +13,3 @@ axiom_fresh_anon_zero	platform/kernel fact	none (assumption)
 # madvise(2)'s MADV_DONTNEED zero fill of a private anonymous mapping
 # that nothing has written since take's rediscard call.
 axiom_discarded_zero	platform/kernel fact	none (assumption)	trusted (requires, checked at its one caller, zero_run, from Huge::take: some MADV_DONTNEED of exactly these bytes succeeded, `sys::madvise_ok`, at that call site Huge::rediscard's; not checked: that nothing has written them since take's rediscard call)
-# write_zero: Verus checks its requires at every caller (split_guard, from
-# Huge::prepare); its body, the write, is trusted.
-write_zero	UnsafeCell/volatile/transmute	RefinedRust	trusted (requires, checked at every caller: the huge lock held, `held_by`, the byte committed, `vspec::unbacked::committed`, the byte in the region apart from every live run's guard, `spares_guards`, and the byte in no live run, `apart_from_runs`; not checked: that the byte is still read-write, as `committed` never expires, which below the mark in guard-install mode rests on `Huge::mixed_guards` being set whenever a `PROT_NONE` page outside a live run's guard may exist)
