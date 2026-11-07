@@ -607,6 +607,21 @@ mod linux {
     use crate::vspec::core_int::popcount;
     use vstd::prelude::*;
 
+    /// The glibc function that shares a name with an item of this module.
+    mod glibc {
+        unsafe extern "C" {
+            /// glibc's `pthread_self(3)`, with the `libc` crate's signature
+            /// and the same symbol. Declared in this crate rather than
+            /// taken from the `libc` crate so that a Kani harness can stub
+            /// it: Kani 0.68 stubs a foreign function only where this crate
+            /// declares it, and silently ignores a stub on
+            /// `libc::pthread_self`. In a module of its own because the
+            /// trusted wrapper that calls it, `super::pthread_self`, has its
+            /// name.
+            pub(super) fn pthread_self() -> libc::pthread_t;
+        }
+    }
+
     verus! {
 
     // ---- structs ---------------------------------------------------------
@@ -1191,7 +1206,7 @@ mod linux {
     #[inline(always)]
     pub fn pthread_self() -> usize {
         // SAFETY: `pthread_self` has no preconditions and cannot fail.
-        unsafe { ::libc::pthread_self() as usize }
+        unsafe { glibc::pthread_self() as usize }
     }
 
     /// Whether thread `tid` of this process has exited: `tgkill` with

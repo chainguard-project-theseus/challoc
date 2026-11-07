@@ -14,12 +14,12 @@ file.
 
 ## `lend`
 
-src/vspec/errno.rs:44. Kind: external_body. Category: C-program contract.
+src/vspec/errno.rs:53. Kind: external_body. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: lends the calling thread's `errno` to one call into challoc, with its value unknown.
 
-Body mints Tracked at line 45.
+Body mints Tracked at line 54.
 
 Hashes: contract 2401819564, body 3603367423.
 
@@ -29,7 +29,7 @@ pub fn lend() -> (e: Tracked<ThreadErrno>)
 
 ## `axiom_errno_at_return`
 
-src/vspec/errno.rs:91. Kind: axiom. Category: C-program contract.
+src/vspec/errno.rs:100. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C-program contract of `errno`): when an export returns and `failed` holds, the `errno` its C caller reads ([`c_errno`]) is the value of the token the export lent ([`lend`]), as the token stands after its last use.
@@ -45,12 +45,12 @@ pub axiom fn axiom_errno_at_return(tracked e: ThreadErrno, failed: bool)
 
 ## `set_errno`
 
-src/vspec/errno.rs:100. Kind: external_body. Category: FFI/syscall.
+src/vspec/errno.rs:109. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: writes `e` to the calling thread's `errno` through libc's pointer.
 
-Hashes: contract 633168062, body 2648169643.
+Hashes: contract 633168062, body 3907694617.
 
 ```rust
 pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
@@ -60,12 +60,12 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
 
 ## `get_errno`
 
-src/vspec/errno.rs:132. Kind: external_body. Category: FFI/syscall.
+src/vspec/errno.rs:141. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: reads the calling thread's `errno` through libc's pointer, and claims the value is the token's ([`ThreadErrno::val`]): challoc's last write through it, or the caller's `errno` before any.
 
-Hashes: contract 1335728985, body 567661657.
+Hashes: contract 1335728985, body 3378553109.
 
 ```rust
 pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> (r: c_int)
