@@ -7,6 +7,7 @@ use super::Inner;
 use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, owner_mismatch};
 #[cfg(verus_keep_ghost)]
 use super::owned_rec;
+use super::pages::Pages;
 use super::sets::Lazy;
 use crate::arena::Published;
 #[cfg(verus_keep_ghost)]
@@ -24,7 +25,7 @@ use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 use crate::lock::{lock_init, rank_meta, rank_table};
 use crate::meta::Meta;
 use crate::purge;
-use crate::slab::{DESC_ALIGN, DescPerm, HEADER, SlabDesc, desc_stride};
+use crate::slab::{DESC_ALIGN, DescPerm, HEADER, PAGES_END, PAGES_OFFSET, SlabDesc, desc_stride};
 #[cfg(verus_keep_ghost)]
 use crate::slab::{desc_id, stride_of};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
@@ -3398,6 +3399,64 @@ impl SlabTable {
         }
         let p = addr_to_ptr(self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc;
         ptr_ref(p, Tracked(self.desc_perms.borrow().tracked_borrow(slab as int)))
+    }
+
+    /// The class's slabs as pages, when they are managed a page at a time
+    /// (slab pages, design 5): the slab spans more than one page, at most
+    /// [`MAX_PAGES`](super::pages::MAX_PAGES), and its descriptor stride
+    /// leaves room for the open-page mask after the header
+    /// ([`SlabTable::open_mask`]). The small classes, quantum to 448
+    /// bytes, on 4 KiB and 16 KiB pages.
+    #[inline]
+    pub fn pages(&self) -> (r: Option<Pages>)
+        ensures
+            r matches Some(p) ==> {
+                &&& p.wf()
+                &&& self.spec_paged()
+                &&& p.size == class_table()[self.spec_class() as int].size
+                &&& p.nslots == class_table()[self.spec_class() as int].nslots
+            },
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let cls = self.class();
+        if (self.desc_stride as usize) < PAGES_END || self.lg_page < 12 || self.lg_page >= cls.lg_slab as u32 || cls.lg_slab > 16 {
+            return None;
+        }
+        Some(Pages::new(cls, self.lg_page))
+    }
+
+    /// The descriptor stride has room for the open-page mask.
+    pub closed spec fn spec_paged(&self) -> bool {
+        self.desc_stride as usize >= PAGES_END
+    }
+
+    /// The open-page mask of `slab` (slab pages, design 5): bit `p` set
+    /// when page `p` of the slab is open. It is the `AtomicU16` at byte
+    /// [`PAGES_OFFSET`] of the slab's descriptor stride, after the header,
+    /// in the bytes the stride of a paged class leaves spare.
+    ///
+    /// Trusted: the descriptor array is reserved at `nslabs * stride`
+    /// bytes and committed a page at a time as the hand-out watermark
+    /// rises, before the watermark covers a slab (`Lazy::ensure`), so for
+    /// a slab below the watermark the whole stride is committed and read
+    /// as zero until written; `PAGES_END <= stride` keeps the field inside
+    /// the slab's own stride; and no other code reads or writes those
+    /// bytes. The caller has checked the slab against the watermark
+    /// (`desc`, which aborts otherwise).
+    #[inline(always)]
+    #[verifier::external_body]
+    pub fn open_mask(&self, slab: usize) -> &AtomicU16
+        requires
+            slab < self.spec_nslabs(),
+            self.spec_paged(),
+    {
+        debug_assert!(self.desc_stride as usize >= PAGES_END);
+        let a = self.desc_base + slab * self.desc_stride as usize + PAGES_OFFSET;
+        // SAFETY: as the doc comment says; the address is 2-aligned (the
+        // stride and `DESC_ALIGN` are multiples of 16).
+        unsafe { &*(addr_to_ptr(a) as *const AtomicU16) }
     }
 
     /// The slot bits of a handed-out slab (design 4). Aborts for a

@@ -1086,7 +1086,7 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
         live: 0,
         found: false,
         lowest: None,
-        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0 },
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed: 0 },
         curregs: 0,
         cur_live: None,
     };

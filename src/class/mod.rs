@@ -107,6 +107,7 @@ mod abort;
 mod complete;
 mod decay;
 mod fresh;
+pub(crate) mod pages;
 mod sets;
 mod table;
 #[cfg(test)]
@@ -119,6 +120,7 @@ use abort::{
     double_free, guard_free, live_above_slots, owner_mismatch, release_into_fresh_slab,
     reservation_unmet, wrong_arena, zero_slab_had_bits_set,
 };
+pub use pages::Pages;
 #[cfg(test)]
 pub use sets::SET_GROUPS;
 pub(crate) use sets::Set;
@@ -160,6 +162,10 @@ pub struct ClassStats {
     pub purged: usize,
     /// Slabs in the partial set (jemalloc's `nonfull_slabs`).
     pub nonfull: usize,
+    /// Slots on the closed pages of the slabs `curslabs` counts (slab
+    /// pages, design 5): never claimed, so not in `curregs`, and not free
+    /// memory either. The reported `bins.<j>.curregs` adds them.
+    pub closed: usize,
 }
 
 impl ClassStats {
@@ -2338,6 +2344,7 @@ impl ClassState {
                 empty: 0,
                 purged: 0,
                 nonfull: 0,
+                closed: 0,
             },
             group_next: 0,
             group_end: 0,
@@ -3393,6 +3400,16 @@ impl ClassState {
             let t = self.table();
             let bm = t.bits(slab);
             let words = bm.words();
+            // A paged slab's claim takes open slots only (slab pages,
+            // design 5): `take` opened enough for the reservation.
+            let pg = t.pages();
+            // `Option::map`, spelled out: the closure would need
+            // `open_mask`'s preconditions as its own.
+            #[allow(clippy::manual_map)]
+            let open = match pg {
+                Some(ref p) => Some((p, t.open_mask(slab))),
+                None => None,
+            };
             let mut k: usize = 0;
             let mut word = match rng.as_deref_mut() {
                 Some(r) => (xorshift(r) as usize) % words,
@@ -3446,10 +3463,11 @@ impl ClassState {
                     picks_marks(*_t0, picks@, i, picks@.len() as int, pm),
                     bm.inited_by(cm),
                     bm.seen_by(cs),
+                    open matches Some((p, _)) ==> p.wf(),
                 decreases want - k, MAX_EMPTY_PASSES - empty_passes,
             {
                 let tracked mut wt = t.empty_tokens();
-                let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {
+                let Some((w, bits)) = bm.claim_from(word, want - k, open, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {
                     // Every word was full when inspected. `plan` reserved
                     // no more than `nslots - live` and set bits never
                     // exceed `live`, so the slots exist: a concurrent
@@ -4162,9 +4180,15 @@ impl ClassState {
         if !(live <= self.class().nslots()) {
             live_above_slots();
         }
-        let avail = self.class().nslots() - live;
-        let n = avail.min(*remaining);
         let state = self.state_locked(&*g, desc, slab);
+        // The slots this hold can reserve: the open ones of a paged slab,
+        // after opening what the claim needs (slab pages, design 5).
+        let (cap, closed) = self.open_pages(slab, state, live, *remaining, g.stats.closed);
+        if !(live <= cap) {
+            live_above_slots();
+        }
+        let avail = cap - live;
+        let n = avail.min(*remaining);
         if purge::check_zero() {
             self.check_shadow(slab, "take");
             if state == State::Fresh {
@@ -4225,10 +4249,17 @@ impl ClassState {
         desc.add_live(n);
         // Under the lock (`g`), so a plain load-add-store is exclusive.
         self.claimed.store(self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64), Ordering::Relaxed);
-        if live == 0 && n == avail {
+        if live == 0 && n == avail && cap == self.class().nslots() {
             g.clear_partial(slab);
         } else {
             g.set_partial(slab);
+        }
+        let ghost gp = *g;
+        g.stats.closed = closed;
+        proof {
+            assert forall|x: nat| #[trigger] g.slab_ok(x) by {
+                assert(gp.slab_ok(x));
+            }
         }
         // `Purged` memory is zero only while every discard so far was
         // `MADV_DONTNEED` (`purge::purged_is_zero`); the read comes with its
@@ -4343,6 +4374,51 @@ impl ClassState {
         }
     }
 
+    /// Slab pages (design 5): open the pages of `slab` that a claim of
+    /// `remaining` more slots needs, under the class lock, and return
+    /// the slab's open slots and `closed`, the class's count of closed
+    /// slots on slabs `curslabs` counts, updated for the slab, which this
+    /// hold makes `Active` from `state`. A `Fresh` or `Purged` slab starts
+    /// with every page closed (nothing was ever opened, or the purge
+    /// discarded them all); an `Empty` one with the pages it had. The
+    /// lowest closed pages open first, so a `Fresh` slab's open slots are
+    /// a prefix, which a zero claim (`claim_prefix`) takes. A class that
+    /// is not paged has every slot open.
+    ///
+    /// The mask is written only under the class lock; a claim reads it
+    /// without the lock (`AtomicBitmap::claim_from`), and while a slab is
+    /// `Active` it only grows, so a claim's reservation stays coverable.
+    fn open_pages(&self, slab: usize, state: State, live: usize, remaining: usize, closed: usize) -> (r: (usize, usize))
+        requires
+            slab < self.spec_nslabs(),
+            live <= class_table()[self.spec_class() as int].nslots,
+        ensures
+            r.0 <= class_table()[self.spec_class() as int].nslots,
+    {
+        let t = self.table();
+        let Some(pg) = t.pages() else {
+            return (self.class().nslots(), closed);
+        };
+        let mask = t.open_mask(slab);
+        let old = if state == State::Fresh || state == State::Purged {
+            0
+        } else {
+            mask.load(Ordering::Relaxed)
+        };
+        let more = if remaining < pg.nslots { remaining } else { pg.nslots };
+        let new = pg.open_for(old, live + more);
+        if new != old || state != State::Active {
+            mask.store(new, Ordering::Release);
+        }
+        let shut = pg.closed_count(new);
+        let closed = if state == State::Active {
+            closed.wrapping_sub(pg.closed_count(old)).wrapping_add(shut)
+        } else {
+            closed.wrapping_add(shut)
+        };
+        (pg.nslots - shut, closed)
+    }
+
     /// The slots of a zero pick, decided under the class lock. A `Fresh`
     /// or `Purged` slab has `live == 0` and no bit
     /// set, so its lowest `n` bits are free and nothing contends for them.
@@ -4436,7 +4512,7 @@ impl ClassState {
                 assert(want < 64 ==> (1u64 << want) >= 1u64) by (bit_vector);
             }
             let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
-            let got = bm.claim_word(w, want, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
+            let got = bm.claim_word(w, want, !0, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
             if got != expect {
                 zero_slab_had_bits_set(self.class as usize, slab, self.arena, state, live, w, got, expect);
             }
@@ -4969,6 +5045,17 @@ impl ClassState {
             proof {
                 assert(g@.slab_ok(slab as nat));
                 g@.lemma_close(slab as nat);
+            }
+            // The slab leaves `curslabs`, and its closed slots the count.
+            if let Some(pg) = self.table().pages() {
+                let m = self.table().open_mask(slab).load(Ordering::Relaxed);
+                let ghost gp = g@;
+                g.stats.closed = g.stats.closed.wrapping_sub(pg.closed_count(m));
+                proof {
+                    assert forall|x: nat| #[trigger] g@.slab_ok(x) by {
+                        assert(gp.slab_ok(x));
+                    }
+                }
             }
             if self.gate.note_first_empty(now) {
                 first = true;

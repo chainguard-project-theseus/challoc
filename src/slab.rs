@@ -32,6 +32,12 @@ verus! {
 
 /// Size of the descriptor in bytes.
 pub const HEADER: usize = 16;
+/// Offset in a descriptor's stride of a paged class's open-page mask
+/// (`class::table::SlabTable::open_mask`), right after the header.
+pub const PAGES_OFFSET: usize = HEADER;
+/// End of the open-page mask: a class whose stride is at least this has
+/// room for it.
+pub const PAGES_END: usize = PAGES_OFFSET + 2;
 /// Descriptor arrays are cache-line aligned, and a line of descriptors
 /// never spans two arenas' slab groups (see [`desc_stride`]).
 pub const DESC_ALIGN: usize = 64;

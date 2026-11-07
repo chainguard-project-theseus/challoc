@@ -2183,7 +2183,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Util
         committed: false,
         live: 0,
         found: false,
-        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0 },
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed: 0 },
         curregs: 0,
         lowest: None,
         run: None,
@@ -2619,8 +2619,11 @@ fn arena_figure(m: &[usize], fig: Fig, Tracked(mark): Tracked<&'static ReadyMark
                 Fig::Resident => Ok(Size(a.resident)),
                 Fig::Mapped => Ok(Size(a.mapped)),
                 Fig::Retained => Ok(Size(a.retained)),
+                // The slots out of the bitmaps and those on closed pages
+                // (`stats::BinStats::closed`): what a consumer's small-bin
+                // fragmentation figure takes as not free.
                 Fig::Curregs => match bin {
-                    Some(b) => Ok(Size(b.curregs)),
+                    Some(b) => Ok(Size(stats::fig_add(b.curregs, b.closed))),
                     None => Err(ENOENT),
                 },
                 Fig::Curslabs => match bin {

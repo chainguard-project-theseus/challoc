@@ -172,6 +172,23 @@ fn set_scans_never_read_uncommitted_words() {
     assert_eq!(set.map.lowest_set_from(0), None);
 }
 
+/// The class's closed slots recounted from the open-page masks of this
+/// arena's `Active` slabs (slab pages, design 5): what
+/// `ClassStats::closed` must equal after every transition.
+fn closed_recount(cs: &ClassState) -> usize {
+    let Some(pg) = cs.table().pages() else {
+        return 0;
+    };
+    (0..cs.committed_slabs())
+        .filter(|&s| {
+            !cs.is_guard_slab(s)
+                && cs.desc(s).arena() == cs.arena()
+                && cs.desc(s).state() == State::Active
+        })
+        .map(|s| pg.closed_count(cs.table().open_mask(s).load(Ordering::Relaxed)))
+        .sum()
+}
+
 /// A class with 64 KiB slabs and a handful of bitmap words.
 fn small_class() -> usize {
     // 64 bytes: 1024 slots, 16 words.
@@ -587,6 +604,7 @@ fn first_claim_is_lowest_addresses_and_zero() {
         ClassStats {
             committed: 1,
             nonfull: 1,
+            closed: closed_recount(cs),
             ..Default::default()
         }
     );
@@ -671,6 +689,7 @@ fn filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan() {
         ClassStats {
             committed: 2,
             nonfull: 1,
+            closed: closed_recount(cs),
             ..Default::default()
         }
     );
@@ -805,6 +824,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
         ClassStats {
             committed: 1,
             nonfull: 1,
+            closed: closed_recount(cs),
             ..Default::default()
         }
     );
@@ -844,6 +864,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
         ClassStats {
             committed: 1,
             nonfull: 1,
+            closed: closed_recount(cs),
             ..Default::default()
         }
     );
@@ -2369,6 +2390,7 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
         cs.table().bits(1).claim_word(
             0,
             1,
+            !0,
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new()
@@ -2840,4 +2862,165 @@ fn stress_class_cross_thread_release() {
     let st = cs.stats();
     assert_eq!(st.empty + st.purged, st.committed, "{st:?}");
     assert_eq!(st.nonfull, 0, "{st:?}");
+}
+
+/// The open-page mask of slab `s` of `cs`'s paged class.
+fn open_of(cs: &ClassState, s: usize) -> u16 {
+    cs.table().open_mask(s).load(Ordering::Relaxed)
+}
+
+/// Every slot `p` names lies on pages `open` has open.
+fn on_open_pages(env: &Env, cs: &ClassState, c: usize, p: &[*mut u8]) {
+    let pg = cs.table().pages().unwrap();
+    for &q in p {
+        let (slab, slot) = cs.locate(q);
+        let open = open_of(cs, slab);
+        let off = q as usize - env.regions.slab_addr(c, slab);
+        let (first, last) = (off >> pg.lg_page, (off + pg.size - 1) >> pg.lg_page);
+        for page in first..=last {
+            assert!(
+                open >> page & 1 == 1,
+                "slot {slot} of slab {slab} on closed page {page} (mask {open:#x})"
+            );
+        }
+    }
+}
+
+/// Slab pages (design 5): a `Fresh` slab opens only the pages its first
+/// claim covers, later claims open the next pages as they need them, a
+/// claim of the whole slab opens it whole and leaves the partial set,
+/// and every slot handed out lies on open pages. The closed slots are
+/// counted in `ClassStats::closed` through every transition: claims,
+/// `Empty` (the slab leaves the count and keeps its mask), reuse of the
+/// `Empty` slab, `Purged` and reuse of the `Purged` slab (every page
+/// closed again, then the claim's opened).
+#[test]
+fn fresh_slab_opens_only_the_pages_its_claim_needs() {
+    let env = Env::new();
+    let c = small_class();
+    let cs = env.class(c, 0);
+    let Some(pg) = cs.table().pages() else {
+        crate::testutil::print_skip(
+            "fresh_slab_opens_only_the_pages_its_claim_needs",
+            &std::format!("a {} B page leaves the 64 KiB slab unpaged", page_size()),
+        );
+        return;
+    };
+    let n = pg.nslots;
+    let per_page = (1usize << pg.lg_page) / pg.size;
+    let check = |what: &str| assert_eq!(cs.stats().closed, closed_recount(cs), "{what}");
+    let (a, _) = env.claim(cs, 10);
+    assert_eq!(open_of(cs, 0), 0b1);
+    assert_eq!(cs.stats().closed, n - per_page);
+    check("first claim");
+    on_open_pages(&env, cs, c, &a);
+    // Past the first page: the next two pages open, no more.
+    let (b, _) = env.claim(cs, 2 * per_page);
+    assert_eq!(open_of(cs, 0), 0b111);
+    assert_eq!(cs.stats().closed, n - 3 * per_page);
+    check("second claim");
+    on_open_pages(&env, cs, c, &b);
+    assert!(cs.is_partial(0, Tracked::assume_new()));
+    // The rest of the slab: every page opens, and the slab is full.
+    let (r, _) = env.claim(cs, n - 10 - 2 * per_page);
+    assert_eq!(open_of(cs, 0), pg.full());
+    assert_eq!(cs.stats().closed, 0);
+    check("whole slab");
+    on_open_pages(&env, cs, c, &r);
+    // `Empty` keeps the mask; the slab leaves the count.
+    cs.release(&a);
+    cs.release(&b);
+    cs.release(&r);
+    assert_eq!(cs.desc(0).state(), State::Empty);
+    assert_eq!(open_of(cs, 0), pg.full());
+    check("empty");
+    let (e, _) = env.claim(cs, 3);
+    assert_eq!(open_of(cs, 0), pg.full());
+    assert_eq!(cs.stats().closed, 0);
+    check("empty reused");
+    cs.release(&e);
+    // `Purged`: every page closed again; the claim opens what it needs.
+    assert_eq!(
+        cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+        1
+    );
+    assert_eq!(cs.desc(0).state(), State::Purged);
+    check("purged");
+    let (z, claim) = env.claim(cs, per_page + 1);
+    assert!(claim.zeroed);
+    assert_eq!(open_of(cs, 0), 0b11);
+    assert_eq!(cs.stats().closed, n - 2 * per_page);
+    check("purged reused");
+    on_open_pages(&env, cs, c, &z);
+}
+
+/// Slab pages with slots that straddle a page boundary (48 bytes): a
+/// straddling slot is open only when both its pages are, and a claim
+/// never hands one out with a page closed.
+#[test]
+fn straddling_slots_are_claimed_only_with_both_pages_open() {
+    let env = Env::new();
+    let c = CLASSES.iter().position(|c| c.size() == 48).unwrap();
+    let cs = env.class(c, 0);
+    let Some(pg) = cs.table().pages() else {
+        crate::testutil::print_skip(
+            "straddling_slots_are_claimed_only_with_both_pages_open",
+            &std::format!("a {} B page leaves the 64 KiB slab unpaged", page_size()),
+        );
+        return;
+    };
+    // Every slot wholly on page 0, then one more: that one straddles
+    // pages 0 and 1, so both open.
+    let whole = (1usize << pg.lg_page) / pg.size;
+    let (a, _) = env.claim(cs, whole);
+    assert_eq!(open_of(cs, 0), 0b1);
+    on_open_pages(&env, cs, c, &a);
+    let (b, _) = env.claim(cs, 1);
+    assert_eq!(open_of(cs, 0), 0b11);
+    on_open_pages(&env, cs, c, &b);
+    assert_eq!(cs.stats().closed, pg.closed_count(0b11));
+    assert_eq!(cs.stats().closed, closed_recount(cs));
+}
+
+/// A release of a slot on a closed page aborts as any release of a slot
+/// no cache holds: the page's bits are clear (slab pages, design 5).
+#[test]
+#[should_panic(expected = "double free of")]
+fn release_into_a_closed_page_aborts() {
+    let env = Env::new();
+    let c = small_class();
+    let cs = env.class(c, 0);
+    let (p, _) = env.claim(cs, 3);
+    match cs.table().pages() {
+        Some(_) => assert_eq!(open_of(cs, 0), 0b1),
+        None => crate::testutil::print_skip(
+            "release_into_a_closed_page_aborts",
+            "unpaged class: the slot is only unclaimed",
+        ),
+    }
+    // The last slot of the slab: on the last page, closed.
+    let last = (env.regions.slot_addr(c, 0, cs.class().nslots() - 1)) as *mut u8;
+    let _ = p;
+    cs.release(&[last]);
+}
+
+/// The figures a statistics reader gets (`stats::collect_bin`): the
+/// slots out of the bitmaps stay `curregs`, and the slots on closed
+/// pages come apart in `closed`, which the reported `bins.<j>.curregs`
+/// adds, so a consumer's `(nregs * curslabs - curregs) * size` counts
+/// only open free slots.
+#[test]
+fn bin_figures_count_closed_slots_apart() {
+    let env = Env::new();
+    let c = small_class();
+    let cs = env.class(c, 0);
+    let (_p, _) = env.claim(cs, 10);
+    let b = crate::stats::collect_bin(cs, Tracked::assume_new());
+    assert_eq!(b.curregs, 10);
+    assert_eq!(b.closed, cs.stats().closed);
+    assert!(b.curregs + b.closed <= b.curslabs * b.nregs);
+    if let Some(pg) = cs.table().pages() {
+        let per_page = (1usize << pg.lg_page) / pg.size;
+        assert_eq!(b.nregs * b.curslabs - (b.curregs + b.closed), per_page - 10);
+    }
 }

@@ -122,12 +122,12 @@ const PINS: &[(&str, &[&str])] = &[
             "!0u64 << (nbits - lo)",
             "crate::vspec::word::store(w, pad, Ordering::Relaxed, Tracked(&mut perm));",
             "let cur = w.load(Ordering::Relaxed);",
-            "let want = lowest_n_bits(!cur & self.mask, n);",
+            "let want = lowest_n_bits(free, n);",
             "if want == 0 {",
             "return 0;",
             "prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));",
             "(want & !prev) >> self.shift",
-            "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
+            "let got = self.claim_word(i, n, allow, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
             "if got != 0 {",
             "return Some((i, got));",
             "i += 1;",
@@ -142,12 +142,12 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/class/mod.rs",
         &[
-            "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
+            "let Some((w, bits)) = bm.claim_from(word, want - k, open, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
             "empty_passes += 1;",
             "if empty_passes == MAX_EMPTY_PASSES {",
             "fn take(",
             "let live = desc.live();",
-            "let avail = self.class().nslots() - live;",
+            "let avail = cap - live;",
             "let n = avail.min(*remaining);",
             "desc.add_live(n);",
             "if self.desc(slab).sub_live(n) == n {",
@@ -426,6 +426,18 @@ const PINS: &[(&str, &[&str])] = &[
 /// futex call and are deliberately not pinned:
 /// `(file, enclosing fn, line, reason)`.
 const WAIVED: &[(&str, &str, &str, &str)] = &[
+    (
+        "src/bitmap.rs",
+        "claim_from",
+        "let o = m.load(Ordering::Acquire);",
+        "slab pages' open-page mask (design 5): written only under the class lock and only grown while the slab is `Active`, so a claim that reads it stale takes fewer slots and rescans; the models' slabs are wholly open (allow all ones), so the claim's atomics are the ones bitmap.rs copies",
+    ),
+    (
+        "src/class/mod.rs",
+        "on_live_zero",
+        "let m = self.table().open_mask(slab).load(Ordering::Relaxed);",
+        "slab pages' open-page mask read under the class lock, which every write of it holds: no race to model",
+    ),
     (
         "src/heap/slotstate.rs",
         "step",
@@ -951,7 +963,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "let cur = w.load(Ordering::Relaxed);",
             ),
             (
-                "let want = lowest_n_bits(!cur & self.mask, n);",
+                "let want = lowest_n_bits(free, n);",
                 "let want = lowest_n_bits(!cur, n);",
             ),
             ("if want == 0 {", "if want == 0 {"),
@@ -964,7 +976,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("pub fn claim_from(", ""),
             ("let len = self.words.len();", "let len = self.words.len();"),
             (
-                "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
+                "let got = self.claim_word(i, n, allow, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
                 "let got = self.claim_word(i, n);",
             ),
             ("if got != 0 {", "if got != 0 {"),
@@ -989,7 +1001,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         "src/class/mod.rs",
         &[
             (
-                "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
+                "let Some((w, bits)) = bm.claim_from(word, want - k, open, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
                 "match self.claim_from(0, want - got.count_ones() as usize) {",
             ),
             ("empty_passes += 1;", "empty += 1;"),
@@ -1004,7 +1016,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "let live = self.live.load(Ordering::Acquire) as usize;",
             ),
             (
-                "let avail = self.class().nslots() - live;",
+                "let avail = cap - live;",
                 "let n = min(NSLOTS - live, want);",
             ),
             (

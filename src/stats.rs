@@ -78,6 +78,12 @@ pub struct BinStats {
     pub slab_size: usize,
     /// Slots out of the bitmaps: in a cache or in use.
     pub curregs: usize,
+    /// Slots on the closed pages of the `curslabs` slabs (slab pages,
+    /// design 5): neither out of the bitmaps nor free memory. The reported
+    /// `bins.<j>.curregs` is `curregs + closed`, so that a consumer's
+    /// `(nregs * curslabs - curregs) * size` counts only open free slots;
+    /// `allocated` stays `curregs * size`.
+    pub closed: usize,
     /// Slabs that are neither `Empty` nor `Purged`.
     pub curslabs: usize,
     /// Slabs in the partial set.
@@ -108,6 +114,7 @@ impl BinStats {
         nregs: 0,
         slab_size: 0,
         curregs: 0,
+        closed: 0,
         curslabs: 0,
         nonfull_slabs: 0,
         empty_slabs: 0,
@@ -175,6 +182,7 @@ impl BinStats {
     /// Every sum the merge of `o` into `self` forms fits its type.
     pub open spec fn can_add(self, o: BinStats) -> bool {
         &&& self.curregs + o.curregs <= usize::MAX
+        &&& self.closed + o.closed <= usize::MAX
         &&& self.curslabs + o.curslabs <= usize::MAX
         &&& self.nonfull_slabs + o.nonfull_slabs <= usize::MAX
         &&& self.empty_slabs + o.empty_slabs <= usize::MAX
@@ -196,6 +204,7 @@ impl BinStats {
             nregs: g.nregs,
             slab_size: g.slab_size,
             curregs: (self.curregs + o.curregs) as usize,
+            closed: (self.closed + o.closed) as usize,
             curslabs: (self.curslabs + o.curslabs) as usize,
             nonfull_slabs: (self.nonfull_slabs + o.nonfull_slabs) as usize,
             empty_slabs: (self.empty_slabs + o.empty_slabs) as usize,
@@ -728,6 +737,7 @@ impl ArenaStats {
                 b.slab_size = ob.slab_size;
             }
             b.curregs = fig_add(b.curregs, ob.curregs);
+            b.closed = fig_add(b.closed, ob.closed);
             b.curslabs = fig_add(b.curslabs, ob.curslabs);
             b.nonfull_slabs = fig_add(b.nonfull_slabs, ob.nonfull_slabs);
             b.empty_slabs = fig_add(b.empty_slabs, ob.empty_slabs);
@@ -907,11 +917,21 @@ pub fn collect_bin(cs: &ClassState, Tracked(ord): Tracked<&mut LockOrder>) -> (r
         ;
     }
     let (compacted, compact_on, compact_off, gate_refill) = cs.compaction_stats();
+    // At most the open free slots: the reported `curregs + closed` stays
+    // within `curslabs * nregs`, as `curregs` does (`bin_stats`'s clamp).
+    proof {
+        let (u, c, k) = ((s.committed - s.empty - s.purged) as int, s.committed as int, cls.nslots as int);
+        assert(u * k <= c * k) by (nonlinear_arith)
+            requires 0 <= u <= c, k >= 0;
+    }
+    let room = s.curslabs() * cls.nslots() - curregs;
+    let closed = if s.closed < room { s.closed } else { room };
     BinStats {
         size: cls.size(),
         nregs: cls.nslots(),
         slab_size: cls.slab_size(),
         curregs,
+        closed,
         curslabs: s.curslabs(),
         nonfull_slabs: s.nonfull,
         empty_slabs: s.empty,
@@ -1881,9 +1901,9 @@ verus! {
 // records of the head (an index and 18 figures) and one `BinStats` per
 // class.
 #[cfg(feature = "quantum16")]
-global layout StatsPair is size == 11952, align == 8;
+global layout StatsPair is size == 12784, align == 8;
 #[cfg(feature = "quantum8")]
-global layout StatsPair is size == 12848, align == 8;
+global layout StatsPair is size == 13744, align == 8;
 
 /// The two records a statistics entry point collects into: `a` (the
 /// arena, or the sum) and `b` (each arena of a sum in turn).

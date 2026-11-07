@@ -349,7 +349,7 @@ struct ClassState {                   // one per (arena, class)
     gate:   purge::Decayer,           // oldest Empty dirty_at (read lock-free by decay), next walk deadline
     inner:  Padded<Lock<{             // the class lock, taken on slab transitions only
         partial, empty, purged,       // Sets of slab numbers
-        stats,                        // committed, guards, empty, purged, nonfull
+        stats,                        // committed, guards, empty, purged, nonfull, closed
         group_next, group_end,        // this arena's current slab group
     }>>,
     claimed, released, refilled,      // slot counters: curregs = claimed - released
@@ -429,6 +429,26 @@ around the slab.
 
 Address-ordered first fit is deliberate. It is what jemalloc does, and it
 is what keeps long-lived heaps dense and makes defragmentation converge.
+
+Slab pages (`class/pages.rs`, `docs/proposals/slab-pages.md`): a class
+whose 64 KiB slab spans several kernel pages and whose descriptor stride
+leaves room after the header (the small classes, quantum to 448 bytes, on
+4 KiB and 16 KiB pages; `SlabTable::pages`) keeps an open-page mask per
+slab, a `u16` at byte 16 of the descriptor's stride
+(`SlabTable::open_mask`). A slot is open when every page it overlaps is
+open, and a claim takes open slots only (`AtomicBitmap::claim_from`
+reloads the mask for each word it tries). A `Fresh` or `Purged` slab
+starts with every page closed and an `Empty` one with the pages it had;
+`take` opens the lowest closed pages, in the lock hold that reserves the
+slots, until the open free slots cover the claim, and reserves at most
+`open slots - live`. The mask only grows while a slab is `Active`, so a
+claim's reservation stays coverable. A slab with a closed page always
+has a clear bit, so it stays in the partial set; a slab leaves the set
+on a whole-slab claim only when every page is open. Closed slots' bits
+stay clear, so a release of one aborts as the release of any slot no
+cache holds. The class's closed slots on its `Active` slabs are counted
+under the class lock (`ClassStats::closed`, section 13.4). The `malloc`
+and `free` fast paths never read the mask.
 
 Guard slabs: with `guards` on, every `guard_slab_interval`-th 64 KiB of
 slabs is a *guard slab* that is never handed out
@@ -1713,6 +1733,14 @@ are not `Empty` or `Purged`; `resident` is `active` plus `Empty` bytes
 plus committed metadata; `retained` is `Purged` bytes; `mapped` is
 `resident + retained`.
 
+`stats.arenas.<i>.bins.<j>.curregs` reports the slots out of the
+bitmaps plus the slots on the closed pages of the bin's `Active` slabs
+(section 5, slab pages; `stats::BinStats::closed`), so that a consumer's
+`(nregs * curslabs - curregs) * size`, Redis's and Valkey's small-bin
+fragmentation, counts only open free slots. That differs from jemalloc,
+where the reported `curregs * size` equals the bin's `small.allocated`:
+`allocated` here stays the slots out of the bitmaps times the size.
+
 `experimental.utilization.batch_query` fills `(nfree, nregs, size)` per
 pointer in jemalloc's layout, and the verbose `query` adds `(bin_nfree,
 bin_nregs, slabcur_addr)`; `nfree` is `nslots - live` and `slabcur_addr`
@@ -2257,6 +2285,7 @@ src/class/mod.rs      ClassState: claim, release, reopen, holes, stats; the test
 src/class/table.rs    SlabTable: descriptors, slot bitmap, owner array, guard slabs, take_group, commit_run, commit_slab
 src/class/sets.rs     Lazy (a lazily committed metadata table), Set, SetTable
 src/class/fresh.rs    the fresh-slab path: next slab of the arena's group, next group
+src/class/pages.rs    slab pages: a paged slab's page geometry and open-page masks (section 5)
 src/class/complete.rs ghost model of one class's slab state per arena: a refill's claim never misses free capacity
 src/class/decay.rs    purge_empty and the decay walk (section 8)
 src/class/verify.rs   the check_zero debug mode and the test-only pointer checks

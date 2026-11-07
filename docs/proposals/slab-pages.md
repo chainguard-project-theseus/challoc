@@ -1,7 +1,28 @@
 # Proposal: slab pages (smaller initial slabs for the small classes)
 
-Status: proposal, not built. Nothing here describes the allocator as it
-is; `docs/design.md` does, and its sections are cited as "design N.M".
+Status: being built. Stage 1, the open-page mask, claims that honour it,
+opening on demand and the reported `curregs` (5, step 2, and the
+statistics of 3.6), is in; design 5 describes it. Closing (5, step 1)
+and `experimental.utilization` (step 3) are not built yet. Sections are
+cited as "design N.M".
+
+Where the build departs from the text below (wolfi-dev/challoc#660):
+
+- **The reservation bound.** A claim reserves at most `open slots -
+  live`, and a close must keep the open slots at or above `live` (under
+  the class lock, where `live` only grows); otherwise a close racing a
+  claim leaves its reservation unmeetable (`reservation_unmet`).
+- **No `closed` set.** A slab with a closed page has a clear bit, so it
+  stays in `partial` under the set's existing meaning, and `take` opens
+  its lowest closed pages when the open free slots do not cover the
+  claim. A lower slab's closed page is therefore reopened before a
+  higher slab's open free slot is used (3.3's order puts them the other
+  way round).
+- **Page ranges are computed** (`Pages::page_slots`, one division per
+  page on the refill path), not stored in the class table: `Class` has
+  12 spare bytes, not the 64 a table needs.
+- **`active` is still whole slabs** (3.6): only the bins' `curregs`
+  reports closed slots.
 
 The measurements of 1.1 were taken with the Redis harness of #597
 (`contrib/redis`, `tests/consumers/redis-build.sh`), and the validation

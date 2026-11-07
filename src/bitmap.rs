@@ -1000,6 +1000,7 @@ impl<'a> AtomicBitmap<'a> {
         &self,
         i: usize,
         n: usize,
+        allow: u64,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
         Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
         Tracked(seen): Tracked<&GhostPersistentSubset<int>>,
@@ -1022,14 +1023,16 @@ impl<'a> AtomicBitmap<'a> {
         }
         let w = &self.words[i];
         let cur = w.load(Ordering::Relaxed);
-        let want = lowest_n_bits(!cur & self.mask, n);
+        let free = !cur & self.mask & (allow << self.shift);
+        let want = lowest_n_bits(free, n);
         proof {
             let s = self.shift;
             let mask = self.mask;
             assert(subset(0u64, mask >> s)) by (bit_vector);
-            assert(subset(!cur & mask, mask)) by (bit_vector);
-            lemma_subset_bits(want, !cur & mask);
-            lemma_subset_bits(!cur & mask, mask);
+            assert(subset(free, mask)) by (bit_vector)
+                requires free == !cur & mask & (allow << s);
+            lemma_subset_bits(want, free);
+            lemma_subset_bits(free, mask);
             lemma_subset_bits(want, mask);
             assert(subset(0u64 >> s, mask >> s)) by (bit_vector);
             lemma_count_zero(0u64 >> s, 64);
@@ -1183,12 +1186,14 @@ impl<'a> AtomicBitmap<'a> {
         &self,
         start: usize,
         n: usize,
+        open: Option<(&crate::class::Pages, &core::sync::atomic::AtomicU16)>,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
         Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
         Tracked(seen): Tracked<&GhostPersistentSubset<int>>,
     ) -> (r: Option<(usize, u64)>)
         requires
             start < self.spec_words(),
+            open matches Some((pg, _)) ==> pg.wf(),
             old(toks).id() == self.spec_slots().loc,
             self.inited_by(*inited),
             self.seen_by(*seen),
@@ -1212,8 +1217,27 @@ impl<'a> AtomicBitmap<'a> {
                 old(toks).id() == self.spec_slots().loc,
                 self.inited_by(*inited),
                 self.seen_by(*seen),
+                open matches Some((pg, _)) ==> pg.wf(),
         {
-            let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
+            proof {
+                use_type_invariant(self);
+            }
+            // A paged slab's open slots only (slab pages, design 5). The
+            // mask is loaded for each word: it only grows while the slab
+            // holds this claim's reservation, and a claim that saw it
+            // smaller must see the pages a later reservation opened.
+            let allow = match open {
+                Some((pg, m)) => {
+                    let o = m.load(Ordering::Acquire);
+                    if o == pg.full() {
+                        !0
+                    } else {
+                        pg.open_slots(o, i)
+                    }
+                },
+                None => !0,
+            };
+            let got = self.claim_word(i, n, allow, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
             if got != 0 {
                 return Some((i, got));
             }
@@ -1586,7 +1610,7 @@ proof fn lemma_word_mask(mask: u64, lo: u64, hi: u64)
 
 /// The mask of bits `lo..hi` of a word.
 #[inline(always)]
-fn word_mask(lo: usize, hi: usize) -> (m: u64)
+pub(crate) fn word_mask(lo: usize, hi: usize) -> (m: u64)
     requires
         lo < hi <= 64,
     ensures
@@ -3808,6 +3832,7 @@ impl<'a> AtomicBitmap<'a> {
         self.claim_from(
             start,
             n,
+            None,
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
