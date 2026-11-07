@@ -1056,6 +1056,26 @@ unsafe extern "C" {
     ) -> core::ffi::c_int;
 }
 
+/// The glibc function that shares a name with an item of this module.
+mod glibc {
+    use core::ffi::c_void;
+
+    unsafe extern "C" {
+        /// glibc's `pthread_setspecific(3)`, with the `libc` crate's
+        /// signature and the same symbol. Declared in this crate rather
+        /// than taken from the `libc` crate so that a Kani harness can stub
+        /// it: Kani 0.68 stubs a foreign function only where this crate
+        /// declares it, and silently ignores a stub on
+        /// `libc::pthread_setspecific`. In a module of its own because the
+        /// trusted wrapper that calls it, `super::pthread_setspecific`,
+        /// has its name.
+        pub(super) fn pthread_setspecific(
+            key: libc::pthread_key_t,
+            value: *const c_void,
+        ) -> core::ffi::c_int;
+    }
+}
+
 verus! {
 
 /// The `pthread_key` whose destructor tears down a thread's heap.
@@ -1158,7 +1178,7 @@ unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tr
         *final(tls) == *old(tls),
 {
     // SAFETY: guaranteed by the caller.
-    unsafe { libc::pthread_setspecific(key, value) }
+    unsafe { glibc::pthread_setspecific(key, value) }
 }
 
 } // verus!

@@ -8,6 +8,15 @@
 use core::ffi::c_int;
 use vstd::prelude::*;
 
+unsafe extern "C" {
+    /// glibc's `__errno_location`, with the `libc` crate's signature and
+    /// the same symbol. Declared in this crate rather than taken from the
+    /// `libc` crate so that a Kani harness can stub it: Kani 0.68 stubs a
+    /// foreign function only where this crate declares it, and silently
+    /// ignores a stub on `libc::__errno_location`.
+    fn __errno_location() -> *mut c_int;
+}
+
 verus! {
 
 /// Ghost resource: the calling thread's `errno` for the length of one
@@ -102,7 +111,7 @@ pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
         final(errno).val() == e,
 {
     // SAFETY: `__errno_location` returns the calling thread's `errno`.
-    unsafe { *::libc::__errno_location() = e };
+    unsafe { *__errno_location() = e };
 }
 
 /// Trusted: reads the calling thread's `errno` through libc's pointer,
@@ -134,7 +143,7 @@ pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> (r: c_int)
         r == errno.val(),
 {
     // SAFETY: `__errno_location` returns the calling thread's `errno`.
-    unsafe { *::libc::__errno_location() }
+    unsafe { *__errno_location() }
 }
 
 } // verus!
