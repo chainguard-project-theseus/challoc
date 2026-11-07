@@ -192,7 +192,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 
 ## `trap`
 
-src/sys/mod.rs:1616. Kind: external_body. Category: inline asm.
+src/sys/mod.rs:1618. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past the trap)).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
