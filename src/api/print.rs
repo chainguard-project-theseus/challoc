@@ -495,9 +495,8 @@ impl Report for Sink {
 }
 
 /// A configuration value's name (`config::Value::Str`, the `thp` and
-/// `percpu_arena` keys): the text of [`Name::cstr`]. Trusted; nothing is
-/// claimed about the result.
-#[verifier::external_body]
+/// `percpu_arena` keys): the text of [`Name::cstr`]
+/// (`tests::word_is_the_c_name` checks).
 fn word(n: Name) -> &'static str {
     match n {
         Name::Thp(Thp::Never) => "never",
@@ -2909,12 +2908,11 @@ mod tests {
 }
 
 /// Kani harnesses for this file's seams that Kani can run
-/// (`verus/ledger/src/api/print.rs.md`): `word`, `hist_line` and
-/// `call_back`; `kani_cancel` below checks `cancel_disable` and
-/// `cancel_restore`.
+/// (`verus/ledger/src/api/print.rs.md`): `hist_line` and `call_back`;
+/// `kani_cancel` below checks `cancel_disable` and `cancel_restore`.
 #[cfg(kani)]
 mod kani_print {
-    use super::{Name, PercpuArena, Thp, WriteCallback, call_back, hist_line, word};
+    use super::{WriteCallback, call_back, hist_line};
     use core::ffi::{c_char, c_void};
     use core::ptr;
     use vstd::prelude::Tracked;
@@ -2955,19 +2953,6 @@ mod kani_print {
         if called {
             assert_eq!(got, (opaque as usize, buf.as_ptr() as usize));
         }
-    }
-
-    /// `word`, no `requires`, no `ensures`: it returns for every `Name`.
-    #[kani::proof]
-    fn word_returns() {
-        let _ = word(match kani::any::<u8>() {
-            0 => Name::Thp(Thp::Never),
-            1 => Name::Thp(Thp::Auto),
-            2 => Name::Thp(Thp::Always),
-            3 => Name::PercpuArena(PercpuArena::Disabled),
-            4 => Name::PercpuArena(PercpuArena::Percpu),
-            _ => Name::PercpuArena(PercpuArena::Phycpu),
-        });
     }
 
     /// `hist_line`, no `requires`, no `ensures`: it returns for every
