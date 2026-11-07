@@ -1,3 +1,9 @@
+//! Heap tests whose claim is about the process or the hardware: the heap
+//! reached through thread-local storage and its sentinels, thread exit and
+//! the destructor, fork, several threads sharing slabs, and pointer
+//! authentication (signed entries, faults on a corrupted one). Tests of the
+//! heap's own bookkeeping belong in `tests.rs`.
+
 use super::*;
 use crate::config::Config;
 use crate::layout::class_of;

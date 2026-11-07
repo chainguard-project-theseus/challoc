@@ -1,3 +1,9 @@
+//! Huge-allocator tests whose claim is about what the kernel does with the
+//! pages: run memory is writable and zero when the flag says so, purged and
+//! reused runs, guard pages fault and their VMAs stay bounded, a failed
+//! discard leaves an extent empty. Tests of the allocator's own bookkeeping
+//! belong in `tests.rs`.
+
 use super::tests::{Env, guard_mode, page_size};
 use super::*;
 use std::vec::Vec;

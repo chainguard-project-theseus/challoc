@@ -1,3 +1,8 @@
+//! Layout tests of pure arithmetic: the size classes, slab geometry, slot
+//! arithmetic and pointer classification over layouts built in memory, with
+//! no mapping. A test that reserves, commits or seals real address space
+//! belongs in `linux_tests.rs`.
+
 use super::*;
 use crate::testutil::xorshift;
 use std::vec::Vec;

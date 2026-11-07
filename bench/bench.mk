@@ -11,7 +11,8 @@
 #   make bench-unit                                          (on the host)
 #
 # The GCE fan-out (`cb launch`, on the host: python3 >= 3.11 and gcloud
-# authenticated for the project in bench/cells [defaults]):
+# authenticated for your project, named by --project, CB_PROJECT or an
+# untracked overlay's [defaults]; bench/README.md, "Operating on GCE"):
 #
 #   make quick | bench-launch-quick [BASE=main] [HEAD=HEAD] [CB_ARGS=...]  cb launch quick on the gate cells
 #   make bench-launch SUITE=<suite> [BASE=] [HEAD=] [CB_ARGS=...]          full, apps, soak, aa, sidecar, exp-*

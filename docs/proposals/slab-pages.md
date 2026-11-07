@@ -3,11 +3,10 @@
 Status: proposal, not built. Nothing here describes the allocator as it
 is; `docs/design.md` does, and its sections are cited as "design N.M".
 
-Depends on #597 for the Redis harness it cites (`contrib/redis`,
-`tests/consumers/redis-build.sh`): the measurements of 1.1 were taken with
-it, and the validation of 6 un-skips tests in it. Until #597 lands those
-files exist only on its branch. The measurements also use the cache GC
-from defrag hints and `epoch` writes, #576, merged.
+The measurements of 1.1 were taken with the Redis harness of #597
+(`contrib/redis`, `tests/consumers/redis-build.sh`), and the validation
+of 6 un-skips tests in it. They also use the cache GC from defrag hints
+and `epoch` writes, #576.
 
 ## 1. Problem
 

@@ -1,3 +1,9 @@
+//! Purge tests of what the kernel does with a discard: `Batch` frees every
+//! range's pages (checked with `mincore`), a locked range is reported and
+//! left alone, an unmapped or sealed range aborts, and refused merged
+//! ranges cost few calls. Tests of the decay driver's logic belong in
+//! `tests.rs`.
+
 use super::*;
 use crate::sys::{self, PROT_READ};
 use crate::testutil::map_rw;
