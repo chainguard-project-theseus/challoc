@@ -728,7 +728,7 @@ mod linux_tests {
         if f.guard_install {
             // Usable exactly as reported.
             let page = f.page_size;
-            let addr = sys::tests::map_anon(page);
+            let addr = crate::testutil::map_rw(page);
             // SAFETY: our page, mapped above and unmapped here.
             unsafe {
                 sys::madvise(addr, page, sys::MADV_GUARD_INSTALL).unwrap();
@@ -764,7 +764,7 @@ mod linux_tests {
         }
         if f.anon_name {
             let page = f.page_size;
-            let addr = sys::tests::map_anon(page);
+            let addr = crate::testutil::map_rw(page);
             // SAFETY: our page, static name.
             unsafe { sys::set_vma_anon_name(addr, page, b"challoc:probe2\0").unwrap() };
             let maps = std::fs::read_to_string("/proc/self/maps").unwrap();

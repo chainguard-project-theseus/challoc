@@ -1,5 +1,5 @@
 use super::*;
-use crate::testutil::page_size;
+use crate::testutil::{map_rw, page_size};
 
 /// The owners' decay step (`ClassState::decay_with`, `Huge::decay_with`)
 /// with `walk` for the owner's walk.
@@ -109,28 +109,11 @@ fn decayer_backs_off_after_a_failed_discard() {
     assert_eq!(walks.get(), 5);
 }
 
-/// Pages the bookkeeping test may point a batch at: a real mapping, since
-/// the flush really discards.
-fn scratch(pages: usize, page: usize) -> usize {
-    use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-    unsafe {
-        sys::mmap(
-            0,
-            pages * page,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
-            -1,
-            0,
-        )
-    }
-    .unwrap()
-}
-
 #[test]
 fn batch_merges_adjacent_ranges() {
     let _serial = serial();
     let page = page_size();
-    let base = scratch(8, page);
+    let base = map_rw(8 * page);
     let mut b = Batch::new_t();
     b.push_t(base, page, |_, _, done| assert!(done));
     b.push_t(base + page, page, |_, _, done| assert!(done));
@@ -155,7 +138,7 @@ fn batch_fills_and_flushes() {
     let _serial = serial();
     let (_, eager0) = batches();
     let page = page_size();
-    let base = scratch(2 * MAX_BATCH + 4, page);
+    let base = map_rw((2 * MAX_BATCH + 4) * page);
     let mut b = Batch::new_t();
     assert!(b.is_empty());
     // Every other page, so nothing merges.
