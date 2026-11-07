@@ -1062,8 +1062,9 @@ mod glibc {
 
     unsafe extern "C" {
         /// glibc's `pthread_setspecific(3)`, with the `libc` crate's
-        /// signature and the same symbol. Declared in this crate rather
-        /// than taken from the `libc` crate so that a Kani harness can stub
+        /// signature and the same symbol (premise C10 of
+        /// `verus/kani/premises.md`). Declared in this crate rather than
+        /// taken from the `libc` crate so that `kani_setspecific` can stub
         /// it: Kani 0.68 stubs a foreign function only where this crate
         /// declares it, and silently ignores a stub on
         /// `libc::pthread_setspecific`. In a module of its own because the
@@ -1163,8 +1164,12 @@ impl ThreadKey {
 /// ([`heap_for_thread_in`](super::thread::heap_for_thread_in),
 /// [`existing_heap_in`](super::thread::existing_heap_in)), and the
 /// background thread's `create` writes nothing, so the call leaves `tls`
-/// unchanged. Trusted: an FFI call, and the premise that every nested
-/// entry reaches the slot through those.
+/// unchanged. Trusted: an FFI call. `kani_setspecific` checks it on
+/// premise C10 of `verus/kani/premises.md`, under which glibc's call
+/// makes no call into challoc. The nested entries come only from a call
+/// outside C10 (challoc's key 32 or above, with no block for it on the
+/// thread); there the contract rests on the slot premise, that every
+/// nested entry reaches the slot through the cores above.
 ///
 /// # Safety
 /// `key` was created by `pthread_key_create`.
@@ -4327,5 +4332,66 @@ mod kani_key {
         if rc == 0 {
             assert_eq!(k.key, key);
         }
+    }
+}
+
+/// Kani check of `pthread_setspecific` (`verus/ledger/src/heap/shared.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_setspecific {
+    use super::pthread_setspecific;
+    use core::ffi::{c_int, c_void};
+    use vstd::prelude::Tracked;
+
+    /// What the stand-in for glibc's `pthread_setspecific` returns.
+    static mut RC: c_int = 0;
+    /// How many times it was called, and the key and the address of the
+    /// value it was passed.
+    static mut CALLS: usize = 0;
+    static mut PASSED: (libc::pthread_key_t, usize) = (0, 0);
+
+    /// A stand-in for glibc's `pthread_setspecific` (premise C10): it
+    /// records its call, the key and the value's address, without
+    /// reading through it, and returns `RC`.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn setspecific_model(
+        key: libc::pthread_key_t,
+        value: *const c_void,
+    ) -> c_int {
+        // SAFETY: the harness's own statics; no other code runs in a
+        // harness.
+        unsafe {
+            CALLS += 1;
+            PASSED = (key, value as usize);
+            RC
+        }
+    }
+
+    /// `pthread_setspecific`: its `requires` (`may_syscall`, a benign
+    /// slot value) and its `ensures` (the slot cell unchanged) are about
+    /// ghost state; the body does not touch the cell, and under C10
+    /// glibc's function makes no call into challoc, so nothing writes the
+    /// slot (C10 leaves outside it the process where glibc's `calloc`
+    /// would re-enter). It returns for any key and any value, and (beyond
+    /// the contract) calls glibc's function once with that key and value
+    /// and returns its result unchanged, for any result.
+    #[kani::proof]
+    #[kani::stub(super::glibc::pthread_setspecific, setspecific_model)]
+    fn setspecific_passes_key_and_value() {
+        let key: libc::pthread_key_t = kani::any();
+        let value: *const c_void = core::ptr::without_provenance(kani::any());
+        let rc: c_int = kani::any();
+        kani::cover!(rc == 0);
+        kani::cover!(rc != 0);
+        // SAFETY: as in `setspecific_model`.
+        unsafe { RC = rc };
+        // SAFETY: under C10 the call is defined for any key; the stand-in
+        // does not read through `value`.
+        let r = unsafe { pthread_setspecific(key, value, Tracked::assume_new()) };
+        // SAFETY: as in `setspecific_model`.
+        let (calls, passed) = unsafe { (CALLS, PASSED) };
+        assert_eq!(r, rc);
+        assert_eq!(calls, 1);
+        assert_eq!(passed, (key, value as usize));
     }
 }

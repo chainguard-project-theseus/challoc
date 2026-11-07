@@ -29,8 +29,15 @@ axiom_shared_built	raw pointer (internal)	none (assumption)
 # The caller's storage (`init`'s safety contract), once per process.
 Shared::begin	raw pointer from C caller	none (assumption)
 # An FFI call that may re-enter the allocator: the nested entries leave
-# the token as they found it (the slot premise).
-pthread_setspecific	FFI/syscall	none (assumption)
+# the token as they found it (the slot premise). Kani runs the body with
+# glibc's pthread_setspecific replaced by a recording stand-in; what
+# glibc's function does is C10, which leaves outside it a process in which
+# challoc's key is 32 or above and the thread has no block for it, the
+# case where glibc's calloc re-enters the allocator, so within C10 no
+# nested entry runs and the body leaves the token untouched. Under C10
+# glibc returns EINVAL for any key that is not live, so the harness runs
+# any key and the `# Safety` clause is not what makes the call defined.
+pthread_setspecific	FFI/syscall	Kani	discharged on premises (Kani: heap::shared::kani_setspecific::setspecific_passes_key_and_value; premises: C10 (glibc's pthread_setspecific records the value under the key without reading it, or returns an error number, without calling into challoc, outside a process whose challoc key is 32 or above with no block for it on the thread))	contract 2714888459, body 1699412956
 # Empty-template register hint: verus/emptyasm/run.sh checks the block adds
 # no instruction to the shipped code (a verus/emptyasm/blocks.txt row);
 # Kani checks the load, on a copy whose lines seams.sh --check requires
