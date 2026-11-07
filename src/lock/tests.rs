@@ -7,7 +7,7 @@ impl LockSpec for u64 {}
 impl LockSpec for [u64; 4] {}
 impl<T> LockSpec for Vec<T> {}
 
-/// Every lock axiom outside this file states [`assumed_inv`] or
+/// Every lock axiom outside `lock.rs` states [`assumed_inv`] or
 /// [`assumed_frame`], never [`lock_inv`], [`lock_frame`] or a
 /// [`LockSpec`] method: an axiom on those could contradict a real impl
 /// added later and prove `false`, while one on the `assumed_*`
@@ -82,7 +82,7 @@ fn lock_axioms_state_assumed_specs() {
         .collect();
     let mut axioms: Vec<(String, String, String)> = Vec::new();
     // Every `axiom fn` the scan reads, lock axiom or not: no lock axiom
-    // is left outside this file, so the scan's health is that it sees
+    // is left outside `lock.rs`, so the scan's health is that it sees
     // the others.
     let mut seen = 0;
     for (rel, text) in crate::testutil::shipped_sources() {
@@ -191,7 +191,7 @@ fn lock_axioms_state_assumed_specs() {
 /// at once would prove `false` (vstd's `PointsTo::is_exclusive`): it is
 /// called only where `Lock::lock` and `Lock::try_lock` build their
 /// guard and where `Lock::lock_held_perm` hands the permission to its
-/// holder, each right after an acquire. It is private to this file.
+/// holder, each right after an acquire. It is private to `lock.rs`.
 #[test]
 fn permission_axioms_are_called_only_at_acquisitions() {
     // Spelled in parts, so that this test's own lines match nothing.
