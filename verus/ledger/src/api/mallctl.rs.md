@@ -13,7 +13,7 @@ file.
 
 ## `VERSION`
 
-src/api/mallctl.rs:105. Kind: external_body const. Category: core library.
+src/api/mallctl.rs:107. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::mallctl::kani_root::version_is_version_str).
 
 > [`VERSION_STR`] for verified code, its value opaque to the verifier.
@@ -26,7 +26,7 @@ pub(crate) const VERSION: &'static str = VERSION_STR;
 
 ## `root`
 
-src/api/mallctl.rs:1161. Kind: external_body. Category: allocator invariant.
+src/api/mallctl.rs:1085. Kind: external_body. Category: allocator invariant.
 Tool: Kani. Status: discharged (Kani: api::mallctl::kani_root::root_returns).
 
 > [`ROOT`].
@@ -41,7 +41,7 @@ fn root() -> (r: &'static [Node])
 
 ## `axiom_c_call`
 
-src/api/mallctl.rs:3515. Kind: axiom. Category: C-program contract.
+src/api/mallctl.rs:3439. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).

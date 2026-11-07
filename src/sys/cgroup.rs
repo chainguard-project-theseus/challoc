@@ -94,15 +94,6 @@ pub const LEVELS: usize = 16;
 
 verus! {
 
-/// Leading decimal number of `bytes`, ignoring what follows the digits.
-/// `None` without a digit or on overflow (`sys::parse_decimal`).
-fn parse_u64_prefix(bytes: &[u8]) -> (r: Option<u64>)
-    ensures
-        r == parse_decimal_spec(bytes@),
-{
-    parse_decimal(bytes)
-}
-
 /// An ASCII whitespace byte (`u8::is_ascii_whitespace`).
 pub open spec fn is_ws(b: u8) -> bool {
     b == 32 || b == 9 || b == 10 || b == 12 || b == 13
@@ -511,7 +502,7 @@ pub fn parse_limit(contents: &[u8]) -> (r: Option<u64>)
     if bytes_is(t, &[b'm', b'a', b'x']) {
         return Some(UNLIMITED);
     }
-    parse_u64_prefix(t)
+    parse_decimal(t)
 }
 
 /// The counters of `memory.events` (cgroup v2 format, one `key value` per
@@ -592,7 +583,7 @@ fn events_note_line(e: Events, line: &[u8]) -> (r: Events)
     }
     if k < line.len() {
         let key = &line[..k];
-        if let Some(v) = parse_u64_prefix(trim(&line[k + 1..])) {
+        if let Some(v) = parse_decimal(trim(&line[k + 1..])) {
             proof {
                 assert(seq![b'l', b'o', b'w'] =~= seq![108u8, 111, 119]);
                 assert(seq![b'h', b'i', b'g', b'h'] =~= seq![104u8, 105, 103, 104]);
@@ -2581,8 +2572,6 @@ mod tests {
         assert_eq!(parse_limit(b"\n"), None);
         assert_eq!(parse_limit(b"maxx\n"), None);
         assert_eq!(parse_limit(b"-1\n"), None);
-        assert_eq!(parse_u64_prefix(b"42 x"), Some(42));
-        assert_eq!(parse_u64_prefix(b""), None);
     }
 
     #[test]
