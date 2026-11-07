@@ -614,7 +614,7 @@ mod linux {
     use super::{
         AT_FDCWD, BLOCKABLE_SIGNALS, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG,
         FUTEX_WAIT, FUTEX_WAKE, O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIG_BLOCK,
-        SIG_SETMASK, SIGSET_WORDS_BYTES, SigMask, abort_fmt, abort_kernel,
+        SIG_SETMASK, SIGSET_WORDS_BYTES, SigMask, abort_kernel,
     };
     #[cfg(verus_keep_ghost)]
     use super::{all_blocked, effective, lemma_effective_idempotent};
