@@ -9,7 +9,7 @@ file.
 |---|---|---|---|---|
 | `HeapPerm` | external_body type | allocator invariant | none (assumption) | trusted |
 | `HeapPerm::assemble` | axiom | allocator invariant | Kani | trusted |
-| `slot_heap_ref` | external_body | raw pointer (internal) | none (assumption) | trusted |
+| `slot_heap_ref` | external_body | raw pointer (internal) | Kani | trusted |
 
 ## `HeapPerm`
 
@@ -50,7 +50,7 @@ pub(super) axiom fn assemble(tracked s: &super::FreshHeap, tracked perms: &super
 ## `slot_heap_ref`
 
 src/heap/thread.rs:216. Kind: external_body. Category: raw pointer (internal).
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: heap::tcaches::kani_slot_heap_ref::slot_heap_ref_is_the_heap; not checked: the abstract value of the loan's `HeapPerm` (that it describes the heap at `h` before the call and what the reference holds when it ends), a premise of Verus's own model that no tool checks; that nothing else reaches the heap while the reference lives, which the loan's linear `HeapPerm` gives verified code; and the provenance of `h` and of the reference, which Kani cannot observe (the harness compares addresses)).
 
 > The heap whose permission the heap loan holds, at `h`, as a reference, for as long as the loan is lent.
 
