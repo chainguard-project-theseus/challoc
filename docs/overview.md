@@ -34,8 +34,8 @@ In priority order:
    limit, the decay window shrinking towards 1 s between 70% and 90% of
    it, everything freed purged at once above 90%, a full purge when the
    kernel starts reclaiming (`memory.events` `high`), thread caches collected at every periodic tick
-   above 90%, `MADV_FREE` below 70% of a known limit and `MADV_DONTNEED`
-   above, and `thp:always` forced to `never` under a 1 GiB limit. The
+   above 90%, `MADV_DONTNEED` purges (`MADV_FREE` below 70% of a known
+   limit with `lazy_band:true`), and `thp:always` forced to `never` under a 1 GiB limit. The
    policy is `docs/design.md` section 11 (`src/policy.rs`), exercised by
    the container tests (`make test-cgroup`).
 5. **Modern and memory safe.** `no_std` Rust, abort on panic, unsafe confined
@@ -118,12 +118,11 @@ capped at 5% of `min(memory.high, memory.max)`, the decay window shortens
 linearly from `dirty_decay_ms` at 70% of the limit to 1 s at 90%, and
 above 90% the window is zero and the cache GC runs at every periodic tick;
 a rise of `memory.events` `high` purges everything freed once. The advice
-follows the same bands: under 70% of a known limit the return is
-`MADV_FREE` (the pages stay charged until the kernel wants them, and a
-reuse before that costs no page fault), everywhere else, with no limit
-included, `MADV_DONTNEED` (RSS drops at once; lazily freed pages would
-mislead a fragmentation ratio or an autoscaler); `lazy_band:false` makes
-every return eager, and
+is `MADV_DONTNEED` (RSS drops at once; lazily freed pages would mislead
+a fragmentation ratio or an autoscaler); `lazy_band:true` makes the
+return under 70% of a known limit `MADV_FREE` (the pages stay charged
+until the kernel wants them, and a reuse before that costs no page
+fault), and
 `malloc_trim(0)` is always eager. Read `stats.cgroup.decay_ms`,
 `stats.cgroup.retention_cap`, `stats.cgroup.empty_bytes` and
 `stats.cgroup.purge_advice` to see the policy at work. Measured in a

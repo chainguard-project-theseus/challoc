@@ -76,8 +76,9 @@ pub const MAX_BATCH: usize = 64;
 /// zero or short period would otherwise retry it at every tick.
 pub const DISCARD_RETRY_NS: u64 = 1_000_000_000;
 
-/// `lazy_band` (default true): `MADV_FREE` under the headroom band.
-exec static LAZY_BAND: AtomicBool = AtomicBool::new(true);
+/// `lazy_band` (default false): `MADV_FREE` under the headroom band, an
+/// opt-in (docs/tuning.md, section 1).
+exec static LAZY_BAND: AtomicBool = AtomicBool::new(false);
 /// The policy's last evaluation put usage under 70% of a known limit with
 /// no eager return of the excess over the cap in progress
 /// (`policy::evaluate` mirrors `Policy::headroom` here).
@@ -130,7 +131,8 @@ pub fn advice() -> Advice {
 }
 
 /// Why [`advice`] is what it is, for the report:
-/// `under 70% of the limit`, `explicit purge`, `lazy_band:false`,
+/// `under 70% of the limit`, `explicit purge`, `lazy_band:false` (under
+/// 70% of the limit with the lazy band off, the default),
 /// `returning the excess over the cap` (an eager return in progress,
 /// `Policy::eager_excess`), or `no headroom known` (no limit, or 70% and
 /// above).
@@ -138,10 +140,8 @@ pub fn advice() -> Advice {
 pub fn advice_reason() -> &'static str {
     if EXPLICIT.load(Ordering::Relaxed) != 0 {
         "explicit purge"
-    } else if !LAZY_BAND.load(Ordering::Relaxed) {
-        "lazy_band:false"
     } else if HEADROOM.load(Ordering::Relaxed) {
-        "under 70% of the limit"
+        if LAZY_BAND.load(Ordering::Relaxed) { "under 70% of the limit" } else { "lazy_band:false" }
     } else if EAGER_EXCESS.load(Ordering::Relaxed) {
         "returning the excess over the cap"
     } else {

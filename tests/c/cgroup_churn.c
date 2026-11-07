@@ -26,7 +26,7 @@
  * So a passing run may end with RSS well over the threshold; the RSS fall
  * itself is pinned by `cgroup_policy.c` (after freeing at 80% of the
  * limit, RSS back to its base plus the cap and one extent) and by `cgroup_lazy.c`'s `eager` control
- * (RSS under a quarter of the churn with `lazy_band:false`).
+ * (RSS under a quarter of the churn with the default eager purges).
  *
  *   cgroup_churn MODE [MiB] [threshold_MiB] [--any-allocator]
  *

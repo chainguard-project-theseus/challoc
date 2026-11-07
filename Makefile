@@ -175,16 +175,16 @@ endif
 
 # test-cgroup-lazy (about 20 s, in `make test`): tests/c/cgroup_lazy.c
 # allocates 200 MiB, frees it and idles under --memory=512m, about 50% of
-# the limit, the policy's headroom band: the purge must be MADV_FREE
+# the limit, the policy's headroom band: by default (`eager`) the purge is
+# MADV_DONTNEED and RSS falls under a quarter of the churn within 2 s; with
+# the opt-in MALLOC_CONF=lazy_band:true (`lazy`) it must be MADV_FREE
 # (`stats.cgroup.lazy_purges` rises, RSS and memory.current stay,
 # memory.stat pglazyfree grows) and the pages must be reclaimable (a 380 MiB
-# set of a fresh class fits, pglazyfreed rises); with MALLOC_CONF=
-# lazy_band:false (`eager`, the control) the same run purges with
-# MADV_DONTNEED and RSS falls under a quarter of the churn within 2 s.
-test-cgroup-lazy: image ## the two-advice purge under --memory=512m at ~50% usage and its lazy_band:false control (in `make test`)
+# set of a fresh class fits, pglazyfreed rises).
+test-cgroup-lazy: image ## the two-advice purge under --memory=512m at ~50% usage: the eager default and the lazy_band:true opt-in (in `make test`)
 	$(DOCKER_RUN) cargo build --release $(FEATURES)
-	$(call cgroup_run,512m,lazy challoc lazy 200)
-	$(call cgroup_run,512m,lazy challoc-eager eager 200)
+	$(call cgroup_run,512m,lazy challoc eager 200)
+	$(call cgroup_run,512m,lazy challoc-lazy lazy 200)
 
 test-cgroup: test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate ## the three cgroup tests above
 
