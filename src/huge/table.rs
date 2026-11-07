@@ -824,15 +824,22 @@ impl Table {
         }
     }
 
-    /// Slot index holding `key`, if present. Terminates because the table
-    /// always has an empty slot (`insert` keeps `count < cap`).
-    fn find(&self, key: usize) -> (r: Option<usize>)
+    /// Probe for `key` from its ideal slot: the first slot that is empty
+    /// or holds `key`, and whether it holds `key`. Terminates because the
+    /// table always has an empty slot (`insert` keeps `count < cap`).
+    #[inline(always)]
+    fn probe(&self, key: usize) -> (r: (usize, bool))
         requires
             self.wf(),
         ensures
-            r matches Some(i) ==> i < self.spec_cap() && occupied(self.view()[i as int]) && self.view()[i
-                as int].key == key,
-            r is None ==> !holds(self.view(), key),
+            0 <= ideal(key, self.lg_cap) < self.spec_cap(),
+            r.0 < self.spec_cap(),
+            r.1 ==> occupied(self.view()[r.0 as int]) && self.view()[r.0 as int].key == key,
+            !r.1 ==> !occupied(self.view()[r.0 as int]) && !holds(self.view(), key),
+            !r.1 ==> forall|d: int|
+                0 <= d < dist(ideal(key, self.lg_cap), r.0 as int, self.spec_cap()) ==> occupied(
+                    #[trigger] self.view()[at(ideal(key, self.lg_cap), d, self.spec_cap())],
+                ),
     {
         let ghost cap = self.spec_cap();
         let ghost v = self.view();
@@ -867,17 +874,35 @@ impl Table {
             if e.desc.is_null() {
                 proof {
                     lemma_probe_misses(v, self.lg_cap, key, h, s);
+                    assert(dist(h, i as int, cap) == s);
                 }
-                return None;
+                return (i, false);
             }
             if e.key == key {
-                return Some(i);
+                return (i, true);
             }
             proof {
                 lemma_next(i, self.lg_cap);
                 s = s + 1;
             }
             i = (i + 1) & mask;
+        }
+    }
+
+    /// Slot index holding `key`, if present.
+    fn find(&self, key: usize) -> (r: Option<usize>)
+        requires
+            self.wf(),
+        ensures
+            r matches Some(i) ==> i < self.spec_cap() && occupied(self.view()[i as int]) && self.view()[i
+                as int].key == key,
+            r is None ==> !holds(self.view(), key),
+    {
+        let (i, found) = self.probe(key);
+        if found {
+            Some(i)
+        } else {
+            None
         }
     }
 
@@ -931,53 +956,18 @@ impl Table {
         if !(self.count + 1 < self.cap()) {
             crate::sys::abort_pending(format_args!("huge: descriptor table full"));
         }
-        let ghost cap = self.spec_cap();
+        let (i, found) = self.probe(key);
+        assert!(!found, "huge: key inserted twice");
         let ghost v = self.view();
-        let mask = self.cap() - 1;
-        let mut i = self.hash(key);
-        let ghost h = i as int;
-        let ghost mut s: int = 0;
+        let ghost h = ideal(key, self.lg_cap);
+        let ghost s = dist(h, i as int, v.len() as int);
         proof {
-            let _ = lemma_empty_exists(v);
+            lemma_at_dist(h, i as int, v.len() as int);
         }
-        let ghost z = choose|z: int| 0 <= z < cap && !occupied(#[trigger] v[z]);
+        self.set_slot(i, Entry { key, desc });
+        self.count += 1;
         proof {
-            lemma_at_dist(h, z, cap);
-        }
-        loop
-            invariant
-                self.wf(),
-                self.count + 1 < cap,
-                cap == self.spec_cap(),
-                v == self.view(),
-                *self == *old(self),
-                !holds(v, key),
-                desc@.addr != 0,
-                mask == cap - 1,
-                0 <= h < cap,
-                h == ideal(key, self.lg_cap),
-                0 <= z < cap,
-                !occupied(v[z]),
-                0 <= s <= dist(h, z, cap),
-                i == at(h, s, cap),
-                forall|d: int| 0 <= d < s ==> occupied(#[trigger] v[at(h, d, cap)]),
-            decreases dist(h, z, cap) - s,
-        {
-            let e = self.slot(i);
-            if e.desc.is_null() {
-                self.set_slot(i, Entry { key, desc });
-                self.count += 1;
-                proof {
-                    lemma_insert_keeps_wf(v, self.view(), self.lg_cap, i as int, key, desc, h, s);
-                }
-                return;
-            }
-            assert!(e.key != key, "huge: key inserted twice");
-            proof {
-                lemma_next(i, self.lg_cap);
-                s = s + 1;
-            }
-            i = (i + 1) & mask;
+            lemma_insert_keeps_wf(v, self.view(), self.lg_cap, i as int, key, desc, h, s);
         }
     }
 
