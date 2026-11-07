@@ -417,30 +417,42 @@ pub proof fn lemma_decimal_value_nonneg(s: Seq<u8>)
     }
 }
 
+/// The number of leading decimal digits of `bytes`: its [`digit_run`].
+/// (A `while` loop, not `iter().take_while(..).count()`: Verus does not
+/// specify those adapters.)
+pub fn leading_digits(bytes: &[u8]) -> (k: usize)
+    ensures
+        k <= bytes@.len(),
+        k == digit_run(bytes@),
+        forall|j: int| 0 <= j < k ==> is_digit(#[trigger] bytes@[j]),
+{
+    let mut k = 0;
+    while k < bytes.len() && bytes[k].is_ascii_digit()
+        invariant
+            k <= bytes@.len(),
+            forall|j: int| 0 <= j < k ==> is_digit(#[trigger] bytes@[j]),
+        decreases bytes@.len() - k,
+    {
+        k += 1;
+    }
+    proof {
+        lemma_digit_run(bytes@, k as int);
+    }
+    k
+}
+
 /// The leading decimal digits of `bytes` as a `u64`, whatever follows
 /// them: `42 x` and `2097152\n` read 42 and 2097152 (a `memory.events`
 /// value, a sysfs number with its newline). `None` without a digit or on
-/// overflow. (The digit run and its value as `while` loops, not the
-/// `take_while` and `try_fold` iterator chain: Verus does not specify
-/// those adapters.)
+/// overflow. (The value as a `while` loop, not a `try_fold`: Verus does
+/// not specify that adapter.)
 // Verus does not support `?` on `Option` here.
 #[allow(clippy::question_mark)]
 pub fn parse_decimal(bytes: &[u8]) -> (r: Option<u64>)
     ensures
         r == parse_decimal_spec(bytes@),
 {
-    let mut digits = 0;
-    while digits < bytes.len() && bytes[digits].is_ascii_digit()
-        invariant
-            digits <= bytes@.len(),
-            forall|j: int| 0 <= j < digits ==> is_digit(#[trigger] bytes@[j]),
-        decreases bytes@.len() - digits,
-    {
-        digits += 1;
-    }
-    proof {
-        lemma_digit_run(bytes@, digits as int);
-    }
+    let digits = leading_digits(bytes);
     if digits == 0 {
         return None;
     }

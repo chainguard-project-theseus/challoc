@@ -76,6 +76,8 @@ use crate::stats::{self, ArenaStats};
 use crate::sys;
 use crate::sys::bytes_is;
 use crate::sys::errno::{EAGAIN, EFAULT, EINVAL, ENOENT, EPERM};
+#[cfg(verus_keep_ghost)]
+use crate::sys::{decimal_value, digit_run};
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::cbuf::CCall;
 #[cfg(verus_keep_ghost)]
@@ -997,54 +999,6 @@ static ROOT: [Node; 12] = [
 
 verus! {
 
-/// The decimal value of the digits `s` (`strtoumax(.., 10)` without the
-/// overflow clamp).
-spec fn decimal(s: Seq<u8>) -> int
-    decreases s.len(),
-{
-    if s.len() == 0 {
-        0
-    } else {
-        decimal(s.drop_last()) * 10 + (s.last() - 48)
-    }
-}
-
-/// Every byte of `s` is `0`..`9`.
-spec fn all_digits(s: Seq<u8>) -> bool {
-    forall|i: int| 0 <= i < s.len() ==> 48 <= #[trigger] s[i] <= 57
-}
-
-/// Digits spell a non-negative number that only grows as digits are
-/// appended.
-proof fn lemma_decimal_grows(s: Seq<u8>, j: int)
-    requires
-        all_digits(s),
-        0 <= j <= s.len(),
-    ensures
-        0 <= decimal(s.subrange(0, j)) <= decimal(s),
-    decreases s.len(),
-{
-    if s.len() > 0 {
-        let d = s.drop_last();
-        assert(all_digits(d)) by {
-            assert forall|i: int| 0 <= i < d.len() implies 48 <= #[trigger] d[i] <= 57 by {
-                assert(d[i] == s[i]);
-            }
-        }
-        lemma_decimal_grows(d, d.len() as int);
-        assert(d.subrange(0, d.len() as int) =~= d);
-        if j < s.len() {
-            lemma_decimal_grows(d, j);
-            assert(d.subrange(0, j) =~= s.subrange(0, j));
-        } else {
-            assert(s.subrange(0, j) =~= s);
-        }
-        assert(48 <= s[s.len() - 1] <= 57);
-    } else {
-        assert(s.subrange(0, j) =~= s);
-    }
-}
-
 /// The first component of a dotted name and the rest after its dot, if
 /// there is a dot.
 fn split_component(name: &[u8]) -> (r: (&[u8], Option<&[u8]>))
@@ -1082,56 +1036,26 @@ fn split_component(name: &[u8]) -> (r: (&[u8], Option<&[u8]>))
 /// digit, or does not fit a `size_t`.
 fn parse_index(s: &[u8]) -> (r: Option<usize>)
     ensures
-        r is Some <==> s@.len() > 0 && all_digits(s@) && decimal(s@) <= usize::MAX,
-        r matches Some(v) ==> v == decimal(s@),
+        r is Some <==> s@.len() > 0 && digit_run(s@) == s@.len() && decimal_value(s@) <= usize::MAX,
+        r matches Some(v) ==> v == decimal_value(s@),
 {
-    if s.is_empty() {
+    // The whole component is digits: `parse_decimal` alone would also
+    // take `1x` as 1.
+    if sys::leading_digits(s) != s.len() {
         return None;
     }
-    let mut v: usize = 0;
-    // `for &b in s`, spelled out with an index for the invariant.
-    let mut k = 0;
-    while k < s.len()
-        invariant
-            k <= s@.len(),
-            all_digits(s@.subrange(0, k as int)),
-            v == decimal(s@.subrange(0, k as int)),
-        decreases s@.len() - k,
-    {
-        let b = s[k];
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        let ghost next = s@.subrange(0, k + 1);
-        proof {
-            assert(next.drop_last() =~= s@.subrange(0, k as int));
-            assert(all_digits(next));
-        }
-        // `v.checked_mul(10)?.checked_add(..)?`, each `?` spelled out so
-        // the proof can say why the overflow means no number fits.
-        let Some(t) = v.checked_mul(10) else {
-            proof {
-                if all_digits(s@) {
-                    lemma_decimal_grows(s@, k + 1);
-                }
-            }
-            return None;
-        };
-        let Some(w) = t.checked_add((b - b'0') as usize) else {
-            proof {
-                if all_digits(s@) {
-                    lemma_decimal_grows(s@, k + 1);
-                }
-            }
-            return None;
-        };
-        v = w;
-        k += 1;
-    }
     proof {
-        assert(s@.subrange(0, k as int) =~= s@);
+        assert(s@.take(s@.len() as int) =~= s@);
     }
-    Some(v)
+    match sys::parse_decimal(s) {
+        Some(v) => {
+            proof {
+                sys::lemma_decimal_value_nonneg(s@);
+            }
+            Some(v as usize)
+        },
+        None => None,
+    }
 }
 
 /// The node is the numeric wildcard [`NUMERIC`].
@@ -1210,7 +1134,7 @@ spec fn resolve(nodes: Seq<Node>, mib: Seq<usize>) -> Option<Node>
 /// number and `i` its value; otherwise `i` indexes a child named `c`.
 spec fn names(nodes: Seq<Node>, c: Seq<u8>, i: usize) -> Option<Node> {
     if nodes.len() == 1 && numeric(nodes[0]) {
-        if c.len() > 0 && all_digits(c) && i == decimal(c) {
+        if c.len() > 0 && digit_run(c) == c.len() && i == decimal_value(c) {
             Some(nodes[0])
         } else {
             None
@@ -1303,8 +1227,8 @@ proof fn lemma_walk_resolves(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usi
 /// a child named by the component.
 spec fn entry_named(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>, j: int) -> bool {
     let l = level(nodes, mib, j);
-    &&& l.len() == 1 && numeric(l[0]) ==> comps[j].len() > 0 && all_digits(comps[j]) && mib[j]
-        == decimal(comps[j])
+    &&& l.len() == 1 && numeric(l[0]) ==> comps[j].len() > 0 && digit_run(comps[j]) == comps[j].len() && mib[j]
+        == decimal_value(comps[j])
     &&& !(l.len() == 1 && numeric(l[0])) ==> mib[j] < l.len() && l[mib[j] as int].name.spec_bytes()
         == comps[j]
 }
