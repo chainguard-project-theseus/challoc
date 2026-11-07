@@ -2493,6 +2493,31 @@ pub(super) broadcast proof fn lemma_spec_class(t: SlabTable)
 {
 }
 
+/// The class region's `nslabs` slabs of `1 << lg_slab` bytes from `base`
+/// fit in a `usize` and end at or below `2^57`.
+pub(super) proof fn lemma_slabs_fit(t: SlabTable)
+    requires
+        t.inv(),
+    ensures
+        (1usize << class_table()[t.spec_class() as int].lg_slab) as int >= 1,
+        t.spec_nslabs() * ((1usize << class_table()[t.spec_class() as int].lg_slab) as int) <= usize::MAX - t.base,
+        t.base + t.spec_nslabs() * ((1usize << class_table()[t.spec_class() as int].lg_slab) as int)
+            <= 0x200_0000_0000_0000,
+{
+    let c = class_table()[t.class as int];
+    let lg = c.lg_slab as usize;
+    let n = t.nslabs;
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, (usize::MAX - t.base) as usize);
+    let m57 = ((1usize << 57usize) - t.base) as usize;
+    assert((1usize << 57usize) == 0x200_0000_0000_0000usize) by (bit_vector);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, m57);
+    let l8 = c.lg_slab;
+    assert((1usize << l8) == (1usize << lg)) by (bit_vector)
+        requires lg == l8 as usize;
+}
+
 /// `spec_slabs_per_page` is the field, for the rest of `class/`.
 pub(super) broadcast proof fn lemma_spec_slabs_per_page(t: SlabTable)
     ensures

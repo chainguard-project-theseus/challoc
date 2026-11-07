@@ -2230,21 +2230,10 @@ proof fn lemma_slots_fit(t: SlabTable)
         (t.spec_nslabs() as int) * (class_table()[t.spec_class() as int].nslots as int) <= 0x200_0000_0000_0000,
 {
     broadcast use {table::lemma_spec_nslabs, table::lemma_spec_class};
+    table::lemma_slabs_fit(t);
     let c = class_table()[t.spec_class() as int];
-    let lg = c.lg_slab as usize;
     let n = t.spec_nslabs();
-    let m = (usize::MAX - t.base) as usize;
-    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
-    vstd::bits::lemma_usize_shl_is_mul(1, lg);
-    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, m);
-    let m57 = ((1usize << 57usize) - t.base) as usize;
-    assert((1usize << 57usize) == 0x200_0000_0000_0000usize) by (bit_vector);
-    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, m57);
-    let l8 = c.lg_slab;
-    assert((1usize << l8) == (1usize << lg)) by (bit_vector)
-        requires lg == l8 as usize;
-    let p = (1usize << lg) as int;
-    assert(n as int * p <= usize::MAX);
+    let p = (1usize << c.lg_slab) as int;
     assert((c.nslots as int) <= p) by (nonlinear_arith)
         requires (c.nslots as int) * (c.size as int) <= p, c.size >= 1;
     assert((n as int) * (c.nslots as int) <= (n as int) * p) by (nonlinear_arith)
