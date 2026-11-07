@@ -3786,7 +3786,7 @@ extents to `Purged`, so the lock value's ownership, `Active`-ness and
 run authority stay those the batch's `free` was made from. The makers:
 
 - **Huge purges** (`Huge::purge_empty`, `purge_curve`,
-  `huge/decay.rs`; `free_run`, `huge/mod.rs`): `free` is
+  `huge/decay.rs`; `free_run`, `huge/free.rs`): `free` is
   `free_page_byte(base, page, npages, S, _)`, where `S` is the set of
   the run-page authority the huge lock's value holds when the batch is
   made (`Inner::wf`: the `Active` descriptors' pages, `active_pages`).
@@ -5560,7 +5560,7 @@ only when its usable bytes exceed the configured retain cap or
 refused the discard advice. Stated at the huge lock's release inside `Huge::free_run`, over the cap
 and flag values the free read: no `ensures` exports it (below).
 
-**Statement** (`huge/mod.rs`; proved by
+**Statement** (`huge/free.rs`; proved by
 `lemma_retain_cap`, called in `free_run` before `drop(g)`):
 
 ```rust
@@ -5611,7 +5611,7 @@ lemma_retain_cap(g0, g@, survivor, survivor != d, page as int, n as int,
 `RunState::Purged as u8`/`RunState::Empty as u8`.) `g0` is the huge lock
 value `free_run` takes, `g@` the one it releases, and `[page, page + n)`
 the freed run's pages (guard included). `free_run` binds the reads
-itself (`huge/mod.rs`): `cap` is the `retain_max()` it
+itself (`huge/free.rs`): `cap` is the `retain_max()` it
 read, `over` is `usable > cap`, `pof` is `!over && self.purge_on_free()`
 (the flag's value when it was read, at or below the cap, and `false`
 when it was not), and `purge` is `over || pof`. `now` is its clock
@@ -6228,7 +6228,7 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
   `alloc_declined`, `alloc_zeroed` (`heap/paths.rs`); `pop_compact`,
   `pop_compact_run`, `rebuild_run` (`heap/compact.rs`); the `mallocx`
   routes (`heap/mallocx.rs`); `libc::alloc_huge`,
-  `malloc_trim` (`api/libc.rs`); `Huge::usable_size` (`huge/mod.rs`,
+  `malloc_trim` (`api/libc.rs`); `Huge::usable_size` (`huge/free.rs`,
   called from the `api::libc` and `api::jemalloc` entry points and
   `Shared::zero_huge` on the free paths); `Shared::check_size_hint`
   (`heap/shared.rs`, the sized frees' slow paths); `ctl`,
@@ -8191,7 +8191,7 @@ How it is proved:
   with the region: any placement starts at or after it.
 - `check_size_hint` (`heap/shared.rs`): for a huge page start it
   looks the run up with the caller's run token (`Huge::lookup`,
-  `huge/mod.rs`, ensures that with a token of a run starting
+  `huge/free.rs`, ensures that with a token of a run starting
   at `page` the result is that run's `Active` descriptor with the
   token's usable bytes: the token's extent is in the lock's run
   authority, which names one `Active` descriptor starting there, and
@@ -8475,7 +8475,7 @@ allow, these cannot fire:
   `heap/mod.rs`): `try_rehome` (`heap/mod.rs`) re-keys the
   home headers after the home flush emptied them and the `FOREIGN`
   flush kept them.
-- **Not a run, already free** (`Huge::free_run`, `huge/mod.rs`, two
+- **Not a run, already free** (`Huge::free_run`, `huge/free.rs`, two
   `not_a_run` and `already_free`; `Huge::usable_size`, which
   `zero_on_free`'s `Shared::zero_huge`, `heap/shared.rs`, and the
   lookups reach): the run token's extent is in the lock's run
