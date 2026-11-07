@@ -33,9 +33,11 @@
 //! `kani_*` module of the item's own file (`config.rs`'s `kani_config`,
 //! for one). Not every seam the ledger gives to Kani has a harness: some
 //! private items, the layout constants (`arena.rs`'s `A_*` and `AR_*`,
-//! `heap/shared.rs`'s `S_*` and others), `hint::spin_loop`, the `panic`
-//! accessors of `vspec/panic.rs` and the `ExWrite` trait specification
-//! have none.
+//! `heap/shared.rs`'s `S_*` and others), `hint::spin_loop` (on x86_64
+//! its body is the `pause` intrinsic, `llvm.x86.sse2.pause`, which Kani
+//! 0.68 does not support), the `PanicInfo` accessors of `vspec/panic.rs`
+//! (`panic.rs` here says why) and the `ExWrite` trait specification have
+//! none.
 
 mod abort;
 mod atomic;
@@ -43,6 +45,7 @@ mod core_int;
 mod eq;
 pub(crate) mod fmt;
 mod misc;
+mod panic;
 mod ptr;
 mod report;
 mod slice;

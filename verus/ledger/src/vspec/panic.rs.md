@@ -13,7 +13,7 @@ file.
 | `panic::Panic...a>::location` | assume_spec | core library | Kani | trusted |
 | `panic::Panic...'a>::message` | assume_spec | core library | Kani | trusted |
 | `panic::Location::<'a>::file` | assume_spec | core library | Kani | trusted |
-| `panic::Location::<'a>::line` | assume_spec | core library | Kani | trusted |
+| `panic::Loca...<'a>::line` | assume_spec | core library | Kani | discharged |
 | `axiom_fmt...c_message` | axiom | panic/abort | none (assumption) | trusted |
 
 ## `core::panic::PanicInfo<'a>`
@@ -78,7 +78,7 @@ pub assume_specification<'a, 'b>[ core::panic::PanicInfo::<'a>::message ](info: 
 ## `core::panic::Location::<'a>::file`
 
 src/vspec/panic.rs:33. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::panic::location_file_returns; not checked: that `file` returns a valid `str` for every `Location`, which rests on `core`'s invariant on its private `filename` field (the harness checks one `Location`, which the compiler builds in a constant)).
 
 > `Location::file`: the source file's name.
 
@@ -91,7 +91,7 @@ pub assume_specification<'a>[ core::panic::Location::<'a>::file ](loc: &core::pa
 ## `core::panic::Location::<'a>::line`
 
 src/vspec/panic.rs:36. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: trusted.
+Tool: Kani. Status: discharged (Kani: kani_proofs::panic::location_line_returns).
 
 > `Location::line`: the line number.
 

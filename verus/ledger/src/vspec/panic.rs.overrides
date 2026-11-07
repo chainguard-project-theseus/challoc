@@ -3,3 +3,6 @@ axiom_fmt_req_all_panic_message	panic/abort	none (assumption)
 core::panic::PanicInfo<'a>	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 4226533340, body none
 core::panic::Location<'a>	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 1417247462, body none
 core::panic::PanicMessage<'a>	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 3864003794, body none
+# Checked by the Kani harnesses the status names (verus/README.md, "Kani").
+core::panic::Location::<'a>::file	core library	Kani	trusted (partly checked, Kani: kani_proofs::panic::location_file_returns; not checked: that `file` returns a valid `str` for every `Location`, which rests on `core`'s invariant on its private `filename` field (the harness checks one `Location`, which the compiler builds in a constant))	contract 1656922357, body none
+core::panic::Location::<'a>::line	core library	Kani	discharged (Kani: kani_proofs::panic::location_line_returns)	contract 3968685142, body none
