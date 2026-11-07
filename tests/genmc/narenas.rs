@@ -17,6 +17,11 @@
 // is a non-atomic race. The readers' plain reads are volatile: at
 // `-Copt-level=1` LLVM may hoist a plain read of a static above the
 // null test that guards it, a race the source does not have.
+//
+// The seam ledger cites this template's pass cases (verus/SEAMS.md,
+// "Status") for `count::store`, `count::load`, `entry::store` and
+// `entry::load`, as evidence only: the permissions are erased
+// (`Tracked::assume_new()`), so no case checks a wrapper's contract.
 
 use crate::vspec::{count, entry};
 use core::cell::UnsafeCell;

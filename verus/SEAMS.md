@@ -247,13 +247,43 @@ edges the models check) is the comment above the seam's overrides line,
 with `verus/WEAKMEM.md`; `tests/loom/tests/access.rs` checks, by
 matching source text, the source-wide facts those arguments state
 (atomic writes only through the wrappers, one permission per atomic).
+`GenMC: <case> [<models>]` names a case of `tests/genmc/cases`, which
+the `genmc` check (`.chainguard/ci/genmc.yaml`) runs with
+`tests/genmc/run.sh` under each memory model the line names (`rc11`,
+`imm`, `arm8`), exploring every execution of the case under that model
+with no bound on store history (`verus/WEAKMEM.md`, "GenMC"). The
+brackets list the case's models exactly as its line does, so a citation
+states which models the evidence holds under: an `rc11`-only case says
+nothing of load buffering, which RC11 forbids, and GenMC 0.20's `arm8`
+runs check assertions only, since they did not report a race a control
+has. A GenMC citation is evidence, never a discharge. A case runs a `vspec` wrapper's
+own body over `core`'s atomics inside copies of its callers' steps (or,
+for a non-`vspec` seam, a copy of its atomic line, pinned to the body by
+`GENMC_PINS` in `tests/loom/tests/pins.rs`), with every permission
+erased (`Tracked::assume_new()`), so no case sees a ghost value or checks
+the item's contract. It is evidence for the callers' hand-offs in the
+case's configuration, the part of the C11 argument the comment above the
+seam's overrides line gives, on the `-Copt-level=1` IR rather than the
+release build. So a seam that cites one is at most partly checked, and
+its status says, in its `not checked:` part, what the cases leave out
+for it (its other call sites, the models a case does not run under, a
+copy run in place of its body). `seams.sh --check` fails on a
+"discharged" status that cites `GenMC:`. It also fails unless the case
+is a `pass` case (not a `fail` control) whose models are the cited ones
+in the same order, and the case's template names the seam's function
+and its source file in backquotes, matched as for loom, anywhere in the
+template. It does not check that the cited case's mode runs the seam:
+a template's cases share its text, so that a case runs the seam at all,
+and concurrently, rests on review of the template. `sh
+verus/seams-mutants.sh` checks that `--check`'s self-tests catch
+weakened forms of this rule too.
 A check that covers only part of the contract leaves the
 status "trusted", with a note that names the check and what it does
 not cover: `trusted (partly checked, <check>; not checked: <what>)`,
 where `<check>` is `Kani: <harness path>`, `const assert: <label> in
 <file>`, `Isla: <file>`, `emptyasm: <fn> in <file>`, `loom:
-<mod>::<test>`, or several joined by `, and`. A list separates
-its items with `, ` or ` and `, and ends at `;`, `)` or the next tag.
+<mod>::<test>`, `GenMC: <case> [<models>]`, or several joined by
+`, and`. A list separates its items with `, ` or ` and `, and ends at `;`, `)` or the next tag.
 A trusted body whose `requires` Verus checks at every caller (no tool
 checks the body) keeps the status "trusted", with a note that names
 what the `requires` states and what it leaves out: `trusted (requires,

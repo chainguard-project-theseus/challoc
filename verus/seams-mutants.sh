@@ -1,8 +1,9 @@
 #!/bin/sh
 # verus/seams-mutants.sh: check that verus/seams.sh's self-tests have
 # teeth, and that its hashes catch an edited seam. Each script mutant
-# below is one sed edit of seams.sh that weakens the `loom:` citation rule,
-# the hash rule or the claims nothing rule; the mutated copy's `--check`
+# below is one sed edit of seams.sh that weakens the `loom:` citation
+# rule, the `GenMC:` citation rule, the hash rule or the claims nothing
+# rule; the mutated copy's `--check`
 # must report a self-test failure of that rule. Each tree mutant is one
 # sed edit of a source file in a copy of the tree, followed by `--write`
 # and `--check` there: an edit to a discharged seam's attribute,
@@ -94,6 +95,23 @@ checkcite accepts loomdischarged|s/^    loomdischarged) echo .*/    loomdischarg
 EOF
 
 # shellcheck disable=SC2016 # sed scripts, not shell expansions
+script 'self-test: GenMC' <<'EOF'
+a fail control is accepted|s/ \&\& NF == 5 \&\& trim(\$5) == "pass"//
+the models need not match|s/ \&\& trim(\$3) == want//
+the template need not name the fn|s/^    names(\$0) { found = 1 }$/    { found = 1 }/
+the template need not name the source|s/END { exit !(found \&\& file) }/END { exit !found }/
+a method seam matches without its Type::|s/gt_name=\${gt_name%%#\*}$/gt_name=${gt_name%%#*}; gt_name=${gt_name##*::}/
+no module prefix needed|s/^       gt_name=\${gt_m##\*\/}::\$gt_name ;;$/       ;;/
+a top-level file without src/|s/gt_s2=\$gt_src ;; esac/;; esac/
+cites reads no GenMC tag|s/ tag\["GenMC: "\] = "GenMC";//
+cites drops the seam from a GenMC item|s/ || tag\[t\] == "GenMC" ? / ? /
+cites emits no genmcdischarged|/print o, "genmcdischarged", \$1/d
+checkcite skips GenMC cites|s/^    GenMC) genmctest .*/    GenMC) ;;/
+checkcite accepts genmcdischarged|s/^    genmcdischarged) echo .*/    genmcdischarged) ;;/
+any case name resolves|s/trim(\$1) == c \&\& //
+EOF
+
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
 script 'self-test: hash' <<'EOF'
 comments are hashed|s/t = trim(c); r = strip(raw, c)$/t = trim(c); r = raw/
 whitespace is hashed as written|/^function norm(s)/s/gsub([^;]*; //
@@ -114,6 +132,7 @@ an item need not be external_body|s/print at "claims nothing, but the item is no
 a contract may hold ensures|s/print at "claims nothing, but its contract holds.*/at = at/
 accept_recursive_types is allowed|s/|\[a-z_\]\*_recursive_types\[a-z_\]\*)(/)(/
 a check may be cited|s/print at "claims nothing, but the status cites a check.*/at = at/
+GenMC may be cited|s/|loom|GenMC|callers): /|loom|callers): /
 any tool may be proposed|s/print at "claims nothing, but proposes the tool.*/at = at/
 a tracked type may claim nothing|s/print at "claims nothing, but the item is a tracked type.*/at = at/
 the specified type's unsafe impls are allowed|s/^    if (nm in unsafeimpl)$/    if (0)/

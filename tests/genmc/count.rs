@@ -14,6 +14,12 @@
 // with (`RIVAL`) the main thread counting a heap in and out of it.
 // `SPLIT` and `SPLIT_CAS` are loom's controls: the `fetch_add` or the
 // `compare_exchange` split into a load and a store.
+//
+// The seam ledger cites this template's pass cases (verus/SEAMS.md,
+// "Status") for `count::fetch_add`, `count::fetch_sub`, `count::load`
+// and `count::compare_exchange`, as evidence only: the permissions are
+// erased (`Tracked::assume_new()`), so no case checks a wrapper's
+// contract.
 
 use crate::vspec::count;
 use std::sync::Mutex;
