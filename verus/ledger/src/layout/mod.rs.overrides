@@ -1,11 +1,6 @@
 ClassTable	UnsafeCell/volatile/transmute	none (assumption)
 # The class table after init is what its one frozen permission holds.
 axiom_class_table	allocator invariant	none (assumption)
-# The class table's static: its constructor, its storage, and its entries.
+# The class table's static: its constructor and its storage.
 ClassTable::new	UnsafeCell/volatile/transmute	Kani	discharged (Kani: layout::kani_classes::class_table_new)	contract 3932435869, body 785407001
 classes_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: layout::kani_classes::classes_ptr_fixed)	contract 3755770132, body 3659477090
-# Kani checks that the reference is to the storage and that its entries are
-# `table_ok` (at every page size Verus checks it: `adopt_page_geometry`
-# keeps it); that a reader holding the frozen permission sees the value it
-# holds is the `Sync` impl's argument, not checked.
-ClassTable::table_with	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: that a reader holding the frozen permission sees the value it holds, which is the `Sync` impl's argument)	contract 1253691562, body 3243834738

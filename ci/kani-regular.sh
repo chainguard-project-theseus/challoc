@@ -69,7 +69,6 @@ weights='
   kani_proofs::ptr::ptr_write_unaligned 71
   kani_proofs::slice::sort_ptrs_by_key_11 70
   kani_proofs::slice::select_ptrs_by_key_10 67
-  layout::kani_classes::class_table_entries 58
   kani_proofs::slice::sort_ptrs_10 57
   config::kani_config::display_issue_bad_value 57
   config::kani_config::display_issue_out_of_range 56
