@@ -134,12 +134,12 @@ const PINS: &[(&str, &[&str])] = &[
             "!0u64 << (nbits - lo)",
             "crate::vspec::word::store(w, pad, Ordering::Relaxed, Tracked(&mut perm));",
             "let cur = w.load(Ordering::Relaxed);",
-            "let want = lowest_n_bits(!cur & self.mask, n);",
+            "let want = lowest_n_bits(!cur & self.mask & (allow << self.shift), n);",
             "if want == 0 {",
             "return 0;",
             "prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));",
             "(want & !prev) >> self.shift",
-            "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
+            "let got = self.claim_word(i, n, view.word(i), Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
             "if got != 0 {",
             "return Some((i, got));",
             "i += 1;",
@@ -154,12 +154,12 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/class/mod.rs",
         &[
-            "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
+            "let Some((w, won)) = bm.claim_from(word, want - k, view, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
             "empty_passes += 1;",
             "if empty_passes == MAX_EMPTY_PASSES {",
             "fn take(",
             "let live = desc.live();",
-            "let avail = self.class().nslots() - live;",
+            "let avail = self.class().nslots() - nclosed - live;",
             "let n = avail.min(*remaining);",
             "desc.add_live(n);",
             "if self.desc(slab).sub_live(n) == n {",
@@ -963,7 +963,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "let cur = w.load(Ordering::Relaxed);",
             ),
             (
-                "let want = lowest_n_bits(!cur & self.mask, n);",
+                "let want = lowest_n_bits(!cur & self.mask & (allow << self.shift), n);",
                 "let want = lowest_n_bits(!cur, n);",
             ),
             ("if want == 0 {", "if want == 0 {"),
@@ -976,7 +976,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("pub fn claim_from(", ""),
             ("let len = self.words.len();", "let len = self.words.len();"),
             (
-                "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
+                "let got = self.claim_word(i, n, view.word(i), Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
                 "let got = self.claim_word(i, n);",
             ),
             ("if got != 0 {", "if got != 0 {"),
@@ -1001,7 +1001,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         "src/class/mod.rs",
         &[
             (
-                "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
+                "let Some((w, won)) = bm.claim_from(word, want - k, view, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
                 "match self.claim_from(0, want - got.count_ones() as usize) {",
             ),
             ("empty_passes += 1;", "empty += 1;"),
@@ -1016,7 +1016,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "let live = self.live.load(Ordering::Acquire) as usize;",
             ),
             (
-                "let avail = self.class().nslots() - live;",
+                "let avail = self.class().nslots() - nclosed - live;",
                 "let n = min(NSLOTS - live, want);",
             ),
             (

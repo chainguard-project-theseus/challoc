@@ -2369,6 +2369,7 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
         cs.table().bits(1).claim_word(
             0,
             1,
+            !0,
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new()
@@ -2908,4 +2909,63 @@ fn slab_pages_sit_after_the_header_where_the_stride_has_room() {
         cs.release(&p);
     }
     assert!(with > 0);
+}
+
+/// Slab pages, the claim (docs/proposals/slab-pages.md, 3.4): with pages
+/// of an `Active` slab closed, refills take exactly the slab's open slots
+/// (a slot straddling an open and a closed page is closed), because
+/// `take` reserves only open free slots and the claim takes only open
+/// slots; the reservation is met without the `reservation_unmet` abort,
+/// and the refill moves on to the next slab.
+#[test]
+fn claims_take_only_the_slots_of_open_pages() {
+    let env = Env::new();
+    let mut tested = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        let view = cs.table().page_view();
+        if view.pages < 2 {
+            continue;
+        }
+        let (p0, _) = env.claim(cs, 1);
+        let (s0, k0) = cs.locate(p0[0]);
+        assert_eq!(k0, 0, "class {c}");
+        let pg = cs.table().pages(s0).unwrap();
+        // Every page closed but the first and the last.
+        let all = ((1u32 << view.pages) - 1) as u16;
+        let closed = all & !1 & !(1 << (view.pages - 1));
+        pg.set_pages(closed, 0, Tracked::assume_new());
+        let v = view.with_closed(closed);
+        let open: Vec<usize> = (0..view.nslots)
+            .filter(|&s| v.word(s / 64) >> (s % 64) & 1 == 1)
+            .collect();
+        assert!(open.len() < view.nslots, "class {c}");
+        let mut held = p0.clone();
+        let mut in_s0 = vec![k0];
+        loop {
+            let (q, _) = env.claim(cs, view.nslots);
+            assert!(!q.is_empty(), "class {c}");
+            let mut other = false;
+            for &x in &q {
+                let (s, k) = cs.locate(x);
+                if s == s0 {
+                    in_s0.push(k);
+                } else {
+                    other = true;
+                }
+            }
+            held.extend(q);
+            if other {
+                break;
+            }
+        }
+        in_s0.sort_unstable();
+        assert_eq!(in_s0, open, "class {c}: slots taken on slab {s0}");
+        assert_eq!(cs.desc(s0).live(), open.len(), "class {c}");
+        pg.set_pages(0, 0, Tracked::assume_new());
+        cs.release(&held);
+        tested += 1;
+    }
+    // A 64 KiB-page kernel has one page per small slab: nothing to close.
+    assert!(tested > 0 || page_size() >= 0x10000);
 }
