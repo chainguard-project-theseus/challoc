@@ -574,7 +574,12 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
     match tcache {
         Tcache::Default => crate::heap::free(shared, p, Tracked(blk), Tracked(errno)),
         Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u)) {
-            Some(h) => h.free(shared, p, Tracked(blk), Tracked(errno)),
+            Some(h) => {
+                // The calling thread's slot cell, for the explicit cache's
+                // tick (`purge::on_tick`).
+                let tracked tls = crate::sys::tls::TlsSlot::entry();
+                h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell))
+            },
             None => invalid_tcache(t),
         },
         Tcache::None => crate::heap::free_direct(shared, p, Tracked(blk)),

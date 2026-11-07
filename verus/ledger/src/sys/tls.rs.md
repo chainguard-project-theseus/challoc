@@ -14,7 +14,7 @@ file.
 
 ## `TlsSlot::entry`
 
-src/sys/tls.rs:316. Kind: axiom. Category: allocator invariant.
+src/sys/tls.rs:319. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The calling thread's token at a top-level user of the slot, as the slot's last user left it: what [`heap::thread::slot_ok`] states of the value it holds (a heap value comes with the heap's permission, the heap well formed, and nothing else with one), and `tp` this thread's thread pointer.
@@ -31,7 +31,7 @@ pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
 
 ## `get`
 
-src/sys/tls.rs:345. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:348. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise).
 
 > Read the calling thread's slot.
@@ -47,7 +47,7 @@ pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
 
 ## `get_tp`
 
-src/sys/tls.rs:400. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:403. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset), the TLS slot premise and TlsCell::tp (TPIDR_EL0 is the cell's tp)).
 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
@@ -64,7 +64,7 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
 
 ## `set`
 
-src/sys/tls.rs:430. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:433. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise).
 
 > Write the calling thread's slot.

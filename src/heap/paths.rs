@@ -27,7 +27,7 @@ use super::{
     lemma_hint_ok, lemma_plain_stored, pac_mode, regions_ok, slot_ok, slot_ptr, slot_start,
     slot_token,
 };
-use super::{FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap, heap_for_thread};
+use super::{FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
 #[cfg(verus_keep_ghost)]
@@ -236,7 +236,7 @@ impl Heap {
     /// [`FOREIGN`] cache for the class (design 6.3 step 4). `blk` is the
     /// caller's token for `p` ([`Live::claims`]).
     #[inline(always)]
-    pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
             crate::sys::may_syscall(),
@@ -245,6 +245,7 @@ impl Heap {
             blk.claims(p),
         ensures
             final(errno).val() == old(errno).val(),
+            final(cell).kept(*old(cell)),
             final(self).wf(),
             free_target(p),
             blk.block(p),
@@ -261,9 +262,9 @@ impl Heap {
                 }
                 // The freed slot's token, with the permission to its bytes.
                 if arena == self.arena {
-                    self.push(shared, class, p, Tracked(blk), Tracked(errno))
+                    self.push(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell))
                 } else {
-                    self.free_other(shared, class, p, Tracked(blk), Tracked(errno))
+                    self.free_other(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell))
                 }
             }
             Err(page) => {
@@ -680,6 +681,7 @@ impl Heap {
         p: *mut u8,
         Tracked(blk): Tracked<Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -691,6 +693,7 @@ impl Heap {
             old(self).wf(),
         ensures
             final(errno).val() == old(errno).val(),
+            final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
         decreases (if old(self).spec_rehome() { 1int } else { 0int }), 2int,
     {
@@ -704,7 +707,7 @@ impl Heap {
             }
         }
         let arena = self.arena;
-        self.free_slow_in(shared, arena, class, p, Tracked(blk), Tracked(errno))
+        self.free_slow_in(shared, arena, class, p, Tracked(blk), Tracked(errno), Tracked(cell))
     }
 
     /// The slow free path for any arena. With `zero_on_free` every cached
@@ -714,6 +717,9 @@ impl Heap {
     /// on the plain path; the size hint on the sized path, as the push
     /// trusts it, so a stale pointer of the right shape is cleared as it
     /// is cached, exactly as it would be handed out; design 6.3).
+    // The tracked tokens (`blk`, `errno`, the slot cell) are ghost:
+    // erased from the build.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn free_slow_in(
         &mut self,
         shared: &Shared,
@@ -722,6 +728,7 @@ impl Heap {
         p: *mut u8,
         Tracked(blk): Tracked<Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -733,6 +740,7 @@ impl Heap {
             old(self).wf(),
         ensures
             final(errno).val() == old(errno).val(),
+            final(cell).kept(*old(cell)),
             final(self).wf(),
             // Only a young heap's cross-arena free can move the home
             // (`rehome_on_free`).
@@ -750,7 +758,7 @@ impl Heap {
         if arena == FOREIGN
             && self.rehome
             && !shared.double_free_scan()
-            && self.rehome_on_free(shared, class, p, Tracked(&mut blk), Tracked(&mut ord), Tracked(&mut *errno))
+            && self.rehome_on_free(shared, class, p, Tracked(&mut blk), Tracked(&mut ord), Tracked(&mut *errno), Tracked(&mut *cell))
         {
             return;
         }
@@ -792,7 +800,7 @@ impl Heap {
         }
         let tracked tok = blk.take_slot(class as int);
         if cache.is_null() {
-            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(None));
+            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(Some(&mut *cell)));
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to (the state goes on to `FREE`).
             if shared.double_free_scan() {
@@ -800,11 +808,12 @@ impl Heap {
             }
             shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut ord));
             self.count_direct_free(class);
+            crate::purge::background::note_released(class_size(class) as u64);
             return;
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
-            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(None));
+            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(Some(&mut *cell)));
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.
@@ -814,6 +823,8 @@ impl Heap {
                     (self.hdr_ref(cache).cap / 2).max(1)
                 };
                 self.flush(shared, arena, cache, class, n as usize, Tracked(&mut ord));
+                // Towards the lazy start's early look (design 8.1).
+                crate::purge::background::note_released((n as u64).wrapping_mul(class_size(class) as u64));
                 proof {
                     // Cache routing: a full `FOREIGN` cache is released whole.
                     if arena == FOREIGN {
@@ -1186,8 +1197,11 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(er
         free_target(p),
         blk.block(p),
 {
-    match heap_for_thread(shared) {
-        Some(h) => h.free(shared, p, Tracked(blk), Tracked(errno)),
+    // The slot's cell goes down the free path for its tick, which may
+    // start the background thread (`purge::on_tick`).
+    let tracked tls = TlsSlot::entry();
+    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
+        Some(h) => h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell)),
         None => free_direct(shared, p, Tracked(blk)),
     }
 }
@@ -1349,7 +1363,7 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -1362,7 +1376,7 @@ fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    h.free(shared, p, Tracked(blk), Tracked(errno));
+    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell));
 }
 
 /// A sized free (`free_sized`, `sdallocx`, `free_aligned_sized`) of a
@@ -1382,7 +1396,7 @@ fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -1411,7 +1425,7 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         blk.lemma_claimed_block(p);
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk));
-    h.free(shared, p, Tracked(blk), Tracked(errno));
+    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell));
 }
 
 /// The sized free of [`theorem_valid_sized_free_never_aborts`] through no
@@ -1462,7 +1476,7 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1484,7 +1498,7 @@ fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usi
         assert(!pushed && *h == h0 && blk == b0);
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk));
-    h.free(shared, p, Tracked(blk), Tracked(errno));
+    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell));
 }
 
 /// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`
