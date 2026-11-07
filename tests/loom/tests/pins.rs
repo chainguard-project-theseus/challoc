@@ -112,6 +112,18 @@ const PINS: &[(&str, &[&str])] = &[
             "self.dirty_at.store(ns, Ordering::Relaxed);",
         ],
     ),
+    // `SlabPages`' accessors of the lock-protected fields: pages_held,
+    // set_pages (tests/loom/src/slab.rs).
+    (
+        "src/slab.rs",
+        &[
+            "pub fn pages_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: (u16, u64))",
+            "(self.closed.load(Ordering::Relaxed), self.stamp.load(Ordering::Relaxed))",
+            "pub fn set_pages(&self, closed: u16, stamp: u64, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.stamp.store(stamp, Ordering::Relaxed);",
+            "self.closed.store(closed, Ordering::Release);",
+        ],
+    ),
     // `AtomicBitmap`: init's whole-word padding, claim_word, claim_from
     // and release (tests/loom/src/bitmap.rs).
     (

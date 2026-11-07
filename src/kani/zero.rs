@@ -1,7 +1,7 @@
 //! The axioms that read bytes known to be zero as typed values:
 //! `vspec::zero::axiom_zero_word` (a `u64`) and `class::table`'s
-//! `axiom_zero_owner` (an `AtomicU16`), `axiom_zero_desc` (a `SlabDesc`)
-//! and `axiom_fresh_words` (`AtomicU64`s) (`verus/ledger/src/`), checked
+//! `axiom_zero_owner` (an `AtomicU16`), `axiom_zero_desc` (a `SlabDesc`,
+//! and a `SlabPages` after it) and `axiom_fresh_words` (`AtomicU64`s) (`verus/ledger/src/`), checked
 //! against their contracts (`huge::table::axiom_zero_entry`, an `Entry`,
 //! is checked next to its private type, in `huge::table::kani_table`). Each turns a `ZeroRaw`, ghost bytes that read
 //! as zero, into the permissions `PointsToRaw::into_typed` would give,
@@ -22,7 +22,8 @@
 
 use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
-use crate::slab::{SlabDesc, State};
+use crate::slab::{SlabDesc, SlabPages, State};
+use vstd::prelude::{Ghost, Tracked};
 
 /// The buffer's length: two descriptors, four words.
 const N: usize = 32;
@@ -84,29 +85,44 @@ fn zero_owner_loads_zero() {
     }
 }
 
-/// `class::table::axiom_zero_desc`, `requires z.is_range(addr, 16)`,
-/// `0 < addr`, `addr % 16 == 0`, `ensures perm_at(r.0, addr)`,
-/// `desc_id(&r.0.value()) == addr`, `desc_fresh(r.1, addr)`: at both
-/// 16-aligned offsets of the buffer whose 16 bytes there are zero, the
-/// pointer is what a read of a `SlabDesc` needs, and the descriptor's
-/// accessors read what `desc_fresh` records: state byte 0
-/// (`state_byte(State::Fresh)`, read as `Fresh`), `dirty_at` 0 and arena
-/// 0. Not checked: `perm_at`'s provenance, and `desc_id` and the
-/// permission's `id`, ghost identities.
+/// `class::table::axiom_zero_desc`, `requires z.is_range(addr, piece)`
+/// (`piece` 16 or 32), `0 < addr`, `addr % 16 == 0`, `ensures perm_at(r.0,
+/// addr)`, `desc_id(&r.0.value()) == addr`, `desc_fresh(r.1, addr)` and,
+/// for 32, `perm_at` of the `SlabPages` at `addr + 16`: at every
+/// 16-aligned offset of the buffer whose `piece` bytes there are zero,
+/// the pointers are what a read of a `SlabDesc`, and of a `SlabPages`
+/// after it, needs, and the accessors read what `desc_fresh` records:
+/// state byte 0 (`state_byte(State::Fresh)`, read as `Fresh`), `dirty_at`
+/// 0 and arena 0, no page closed and no stamp. Not checked: `perm_at`'s
+/// provenance, and `desc_id`, `pages_id` and the permission's `id`, ghost
+/// identities.
 #[kani::proof]
 fn zero_desc_reads_fresh() {
-    let mut i = 0;
-    while i + 16 <= N {
-        let b = zeroed(i, 16);
-        let p = at::<SlabDesc>(&b, i);
-        assert!(kani::mem::can_dereference(p));
-        // SAFETY: `can_dereference`, checked above.
-        let d = unsafe { &*p };
-        assert_eq!(d.state_bytes().0, 0);
-        assert!(matches!(d.state(), State::Fresh));
-        assert_eq!(d.dirty_at(), 0);
-        assert_eq!(d.arena(), 0);
-        i += 16;
+    for piece in [16, 32] {
+        let mut i = 0;
+        while i + piece <= N {
+            let b = zeroed(i, piece);
+            let p = at::<SlabDesc>(&b, i);
+            assert!(kani::mem::can_dereference(p));
+            // SAFETY: `can_dereference`, checked above.
+            let d = unsafe { &*p };
+            assert_eq!(d.state_bytes().0, 0);
+            assert!(matches!(d.state(), State::Fresh));
+            assert_eq!(d.dirty_at(), 0);
+            assert_eq!(d.arena(), 0);
+            if piece == 32 {
+                let q = at::<SlabPages>(&b, i + 16);
+                assert!(kani::mem::can_dereference(q));
+                // SAFETY: `can_dereference`, checked above.
+                let g = unsafe { &*q };
+                assert_eq!(g.closed(), 0);
+                assert_eq!(
+                    g.pages_held(Ghost::assume_new(), Tracked::assume_new()),
+                    (0, 0)
+                );
+            }
+            i += 16;
+        }
     }
 }
 
