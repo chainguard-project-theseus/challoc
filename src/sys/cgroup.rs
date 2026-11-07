@@ -3334,9 +3334,9 @@ mod linux_tests {
     fn sampling_is_rate_limited_to_ten_milliseconds() {
         let cg = Cgroup::discover(true);
         if !cg.tracked() {
-            eprintln!(
-                "cgroup: untracked here ({}), skipping the rate-limit test",
-                cg.state() as u8
+            crate::testutil::skip(
+                "sampling_is_rate_limited_to_ten_milliseconds",
+                &format!("cgroup untracked here (state {})", cg.state() as u8),
             );
             return;
         }
@@ -3385,7 +3385,10 @@ mod linux_tests {
     fn current_tracks_a_large_allocation() {
         let cg = Cgroup::discover(true);
         if !cg.tracked() || !cg.has_current() {
-            eprintln!("cgroup: no memory.current here, skipping");
+            crate::testutil::skip(
+                "current_tracks_a_large_allocation",
+                "no cgroup memory.current here",
+            );
             return;
         }
         let before = cg.current();

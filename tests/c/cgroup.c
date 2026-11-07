@@ -127,6 +127,7 @@ static void mode_bg(void)
     fprintf(stderr, "%s\n", line);
     if (!tracked) {
         CHECK(strncmp(line, "cgroup: not tracked", 19) == 0, "%s", line);
+        skip_note("cgroup/bg", "no cgroup2 here: the tracked line and current not checked");
         return;
     }
     CHECK(strncmp(line, "cgroup: /", 9) == 0, "%s", line);
@@ -136,6 +137,8 @@ static void mode_bg(void)
     if (kernel > 0) {
         size_t diff = current > kernel ? current - kernel : kernel - current;
         CHECK(diff <= (32u << 20), "stats.cgroup.current %zu vs memory.current %zu", current, kernel);
+    } else {
+        skip_note("cgroup/bg", "no memory.current here: stats.cgroup.current not compared");
     }
     fprintf(stderr, "cgroup: background thread present, stats.cgroup.current %zu (kernel says %zu)\n", current, kernel);
 }

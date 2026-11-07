@@ -340,7 +340,10 @@ fn seal_locks_the_gaps_and_leaves_the_regions_usable() {
     );
     let code = libc::WEXITSTATUS(status);
     if code == SKIPPED {
-        eprintln!("seal: mseal unavailable here (kernel < 6.10 or seccomp), skipped");
+        crate::testutil::skip(
+            "seal_locks_the_gaps_and_leaves_the_regions_usable",
+            "mseal unavailable here (a kernel before 6.10, or seccomp)",
+        );
         return;
     }
     assert_eq!(code, 0, "{code} seal checks failed (see stderr)");

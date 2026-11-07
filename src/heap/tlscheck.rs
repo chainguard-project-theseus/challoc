@@ -914,7 +914,10 @@ mod tests {
     fn corrupted_signed_slot_faults_or_is_caught() {
         let s = crate::testutil::shared();
         if !s.pac() {
-            std::eprintln!("tlscheck pac: off on this host, skipping");
+            crate::testutil::print_skip(
+                "corrupted_signed_slot_faults_or_is_caught",
+                "no pointer authentication",
+            );
             return;
         }
         std::thread::spawn(move || {

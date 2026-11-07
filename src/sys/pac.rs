@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn mismatched_modifier_faults() {
         if !available() {
-            std::eprintln!("pac: not available on this host, skipping");
+            crate::testutil::print_skip("mismatched_modifier_faults", "no pointer authentication");
             return;
         }
         let word = std::boxed::Box::new(42u64);
@@ -466,14 +466,16 @@ mod tests {
         assert_eq!(available(), want, "{line}");
     }
 
-    /// The HWCAP constants against the installed kernel header, where the
-    /// container has one for this architecture.
+    /// The HWCAP constants against the installed kernel header (the dev
+    /// container's linux-headers).
     #[test]
     fn hwcap_constants_match_the_header() {
-        let Ok(text) = std::fs::read_to_string("/usr/include/asm/hwcap.h") else {
-            std::eprintln!("no /usr/include/asm/hwcap.h here, skipping");
+        if !cfg!(target_arch = "aarch64") {
+            // Nothing to compare: x86_64 has no `asm/hwcap.h`, and
+            // `available` never reads these bits there.
             return;
-        };
+        }
+        let text = std::fs::read_to_string("/usr/include/asm/hwcap.h").expect("asm/hwcap.h");
         let value = |name: &str| -> Option<u64> {
             let l = text
                 .lines()
@@ -483,10 +485,7 @@ mod tests {
             Some(1u64 << shift)
         };
         for (name, ours) in [("HWCAP_PACA", HWCAP_PACA), ("HWCAP_PACG", HWCAP_PACG)] {
-            match value(name) {
-                Some(v) => assert_eq!(ours, v, "{name}"),
-                None => std::eprintln!("{name} not in the header, skipping"),
-            }
+            assert_eq!(Some(ours), value(name), "{name}");
         }
     }
 }

@@ -499,14 +499,13 @@ mod tests {
     /// pin refused) the test says so and skips it, never passes it.
     fn pinned_threads_read_their_cpu(p: Probe) {
         let Some(allowed) = allowed_cpus() else {
-            std::eprintln!("rseq: skip the pinned check: sched_getaffinity failed");
+            crate::testutil::skip("rseq/pinned", "sched_getaffinity failed");
             return;
         };
         if allowed.len() < 2 {
-            std::eprintln!(
-                "rseq: skip the pinned check: {} CPU allowed ({:?})",
-                allowed.len(),
-                allowed
+            crate::testutil::skip(
+                "rseq/pinned",
+                &std::format!("{} CPU allowed ({allowed:?})", allowed.len()),
             );
             return;
         }
@@ -538,9 +537,9 @@ mod tests {
             hs.into_iter().map(|h| h.join().unwrap()).collect();
         std::eprintln!("rseq: {} threads pinned to CPUs {:?}", rs.len(), cpus);
         if let Some(r) = rs.iter().find(|r| !r.1) {
-            std::eprintln!(
-                "rseq: skip the pinned check: sched_setaffinity to CPU {} refused",
-                r.0
+            crate::testutil::skip(
+                "rseq/pinned",
+                &std::format!("sched_setaffinity to CPU {} refused", r.0),
             );
             return;
         }
