@@ -17,7 +17,7 @@ file.
 
 ## `WriteCallback`
 
-src/api/print.rs:77. Kind: ext_type_spec. Category: function pointer.
+src/api/print.rs:83. Kind: ext_type_spec. Category: function pointer.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > Opaque: `WriteCallback` holds a function pointer type, which Verus rejects.
@@ -30,7 +30,7 @@ pub struct ExWriteCallback(WriteCallback);
 
 ## `call_back`
 
-src/api/print.rs:122. Kind: external_body. Category: function pointer.
+src/api/print.rs:128. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged on premises (Kani: api::print::kani_print::call_back_calls_once; premises: C3 (the program's `write_cb` is null or a report callback that keeps the C allocation contract)).
 
 > Call the caller's callback `cb`, when it gave one, with `opaque` and the C string in `buf`, which holds a NUL; whether it did.
@@ -52,7 +52,7 @@ fn call_back(
 
 ## `cancel_disable`
 
-src/api/print.rs:169. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:175. Kind: external_body. Category: FFI/syscall.
 Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::disable_keeps_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point)).
 
 > Disable the calling thread's cancellation (`pthread_setcancelstate`); the state it had, for [`cancel_restore`].
@@ -67,7 +67,7 @@ pub(super) fn cancel_disable() -> i32
 
 ## `cancel_restore`
 
-src/api/print.rs:184. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:190. Kind: external_body. Category: FFI/syscall.
 Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::restore_passes_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point)).
 
 > Give the calling thread back the cancel state `old` that [`cancel_disable`] returned (`pthread_setcancelstate`).
@@ -82,12 +82,12 @@ pub(super) fn cancel_restore(old: i32)
 
 ## `write_file`
 
-src/api/print.rs:207. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:213. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `fwrite` of `s` to the caller's stream `f`.
 
-Hashes: contract 931825622, body 77406128.
+Hashes: contract 931825622, body 3828165736.
 
 ```rust
 fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
@@ -98,7 +98,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 
 ## `hist_line`
 
-src/api/print.rs:1027. Kind: external_body. Category: core library.
+src/api/print.rs:1033. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
@@ -119,7 +119,7 @@ fn hist_line<W: Write>(
 
 ## `axiom_c_call`
 
-src/api/print.rs:1697. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1703. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).

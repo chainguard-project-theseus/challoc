@@ -15,12 +15,12 @@ file.
 
 ## `pthread_join`
 
-src/purge/background.rs:506. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:532. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_join(t, NULL)`: 0 or an error number.
 
-Hashes: contract 2838171325, body 3975953447.
+Hashes: contract 2838171325, body 3874947256.
 
 ```rust
 unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell>) -> i32
@@ -33,12 +33,12 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
 
 ## `spawn`
 
-src/purge/background.rs:694. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:714. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
 
-Body mints Tracked at line 714; mints Tracked at line 722.
+Body mints Tracked at line 734; mints Tracked at line 742.
 
 Hashes: contract 1600496607, body 1049282638.
 
@@ -55,7 +55,7 @@ fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut T
 
 ## `shared_arg`
 
-src/purge/background.rs:784. Kind: external_body. Category: raw pointer from C caller.
+src/purge/background.rs:804. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -70,7 +70,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ## `main`
 
-src/purge/background.rs:800. Kind: no_decreases. Category: termination.
+src/purge/background.rs:820. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: exit::loom_exit_after_withdrawal and exit::loom_exit_after_withdrawal_with_waker, and GenMC: background [rc11+live imm+live arm8+live], exit [rc11+live imm+live arm8+live], exit_waker [rc11+live imm+live arm8+live] and publish [rc11+live imm+live arm8+live]; not checked: this body, which the models and the GenMC cases replace with a copy of the loop (its lines pinned by tests/loom/tests/pins.rs) whose pass is its worst case for this property (no deadline); that each pass and the exit's state lock return; a `request(true)` after the withdrawal, which rightly keeps the thread running; the kernel's futex, which the models replace with a stand-in, loom's a mutex and condition variable, GenMC's tests/genmc/prelude.rs's `futex_wait`, which assumes no lost wake-up given the value check, wakes the waiter at the word's change rather than at a wake, so it rests on `kick` being `SEQ`'s only writer (review, not a test), adds no ordering, and returns spuriously only at the thread's first waits; a lost wake-up whose wait the compiler emptied of loads, which GenMC's liveness check (`+live`) cannot see, and which the stand-in's `black_box` guards against only for its own word (verus/WEAKMEM.md, "GenMC"); the thread's creation, which the GenMC cases replace with a `Release` store its creator makes and an `Acquire` wait in the thread; each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build)).
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -83,7 +83,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:901. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:921. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_static`] is [`STATE`].
