@@ -13,7 +13,7 @@ file.
 
 ## `write_zero`
 
-src/huge/mod.rs:1776. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/huge/mod.rs:1778. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: RefinedRust. Status: trusted (requires, checked at every caller: the huge lock held, `held_by`, the byte committed, `vspec::unbacked::committed`, the byte in the region apart from every live run's guard, `spares_guards`, and the byte in no live run, `apart_from_runs`; not checked: that the byte is still read-write, as `committed` never expires, which below the mark in guard-install mode rests on `Huge::mixed_guards` being set whenever a `PROT_NONE` page outside a live run's guard may exist).
 
 > Write a zero to the byte at `addr`, the first byte of a run being placed (`split_guard`), to give its VMA an `anon_vma` by a write fault when `MADV_POPULATE_WRITE` is refused.
@@ -31,7 +31,7 @@ fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm
 
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:2194. Kind: axiom. Category: platform/kernel fact.
+src/huge/mod.rs:2196. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -50,7 +50,7 @@ pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Ze
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:2219. Kind: axiom. Category: platform/kernel fact.
+src/huge/mod.rs:2221. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted (requires, checked at its one caller, zero_run, from Huge::take: some MADV_DONTNEED of exactly these bytes succeeded, `sys::madvise_ok`, at that call site Huge::rediscard's; not checked: that nothing has written them since take's rediscard call).
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).

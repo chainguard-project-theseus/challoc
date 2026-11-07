@@ -436,7 +436,7 @@ fn entry_lock_order_uses_are_listed() {
         concat!("axiom_", "entry("),
         &[
             // `Huge::usable_size`, `Shared::check_size_hint`.
-            ("huge/mod.rs:", "pub fn usable_size(", ANY),
+            ("huge/free.rs:", "pub fn usable_size(", ANY),
             ("heap/shared.rs:", "pub fn check_size_hint(", ANY),
             // `Heap::alloc_huge_in`, `Heap::free_huge`.
             ("heap/paths.rs:", "pub fn alloc_huge_in(", ANY),
