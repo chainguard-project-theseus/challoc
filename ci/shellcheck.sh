@@ -1,8 +1,6 @@
 #!/bin/sh
-# ci/shellcheck.sh: lint every shell script in the tree (the lint check):
-# ci/, verus/ (with verus/emptyasm), scripts/, tests/ (with tests/loom,
-# tests/genmc, tests/consumers and tests/tlscheck), bench/ (the build
-# script, cb, the drivers and the probes) and the CI services.
+# ci/shellcheck.sh: lint every *.sh file git tracks (the lint check), so
+# a new script is covered as soon as it is added.
 # .shellcheckrc at the root lets it follow the drivers' `. "$(dirname
 # "$0")/cb.sh"` includes. Run it from the repository root.
 # Wolfi does not package the linter, so this fetches the pinned upstream
@@ -23,9 +21,9 @@ curl -sSfL -o "$tarball" \
 echo "$sum  $tarball" | sha256sum -c -
 tar -xJf "$tarball" -C "$dir"
 "$dir/shellcheck-$version/shellcheck" --version
-"$dir/shellcheck-$version/shellcheck" \
-  ci/*.sh verus/*.sh verus/emptyasm/*.sh scripts/*.sh \
-  tests/*.sh tests/loom/*.sh tests/genmc/*.sh tests/consumers/*.sh \
-  tests/tlscheck/*.sh \
-  bench/*.sh bench/cb/*.sh bench/drivers/*.sh bench/probes/*.sh \
-  .chainguard/ci/services/*/*.sh
+# A command substitution, not a pipe, so a git failure stops the script.
+files=$(git -c safe.directory='*' ls-files -- '*.sh')
+test -n "$files"
+# The paths have no spaces; split them into arguments.
+# shellcheck disable=SC2086
+"$dir/shellcheck-$version/shellcheck" $files

@@ -14,6 +14,7 @@ environment:
     - build-base       # cc and g++ for build.rs (src/api/cxx_handler.cpp)
     - bash
     - curl             # ci/shellcheck.sh fetches the pinned release
+    - git              # ci/shellcheck.sh lists the scripts with git ls-files
     - xz
     - patch            # tests/loom/run.sh applies the loom DPOR patch
 
@@ -107,9 +108,8 @@ checks:
 
   shellcheck:
     description: >-
-      shellcheck (pinned upstream release) over every shell script in the
-      tree: ci/, verus/, scripts/, tests/, bench/ and the CI services
-      (ci/shellcheck.sh).
+      shellcheck (pinned upstream release) over every *.sh file git
+      tracks (ci/shellcheck.sh).
     timeout: 5m
     network:
       egress:
