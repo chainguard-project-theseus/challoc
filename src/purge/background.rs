@@ -96,6 +96,17 @@ exec static AUTO_SINCE: AtomicU64 = AtomicU64::new(0);
 /// only what it adds above the inherited set (as that set decays) counts
 /// towards a start.
 exec static AUTO_BASE: AtomicU64 = AtomicU64::new(0);
+/// Bytes of slots the free slow paths have flushed back to their slabs
+/// while the lazy start was armed and no thread was present
+/// ([`note_released`]); wraps. Unsynchronised: a lost add between threads
+/// only delays an early look.
+exec static RELEASED: AtomicU64 = AtomicU64::new(0);
+/// [`RELEASED`] at the last look: once [`AUTO_BURST`] more has been
+/// released since, the next look comes early, without waiting out
+/// [`AUTO_CHECK_NS`]. A burst of frees shorter than that window would
+/// otherwise see one look, at its start, and a process that then idles
+/// would see none until its next allocation.
+exec static AUTO_RELEASED: AtomicU64 = AtomicU64::new(0);
 
 /// Dirty bytes that start the thread at the first look.
 pub const AUTO_BURST: u64 = 64 << 20;
@@ -153,6 +164,52 @@ pub fn configure(setting: Option<bool>) {
 #[inline]
 pub fn auto() -> bool {
     AUTO.load(Ordering::Relaxed)
+}
+
+/// A free slow path flushed `bytes` of slots back to their slabs: counted
+/// in [`RELEASED`] for an early look while the lazy start is armed and no
+/// thread is present, nothing otherwise.
+#[inline]
+pub fn note_released(bytes: u64) {
+    if AUTO.load(Ordering::Relaxed) && !PRESENT.load(Ordering::Relaxed) {
+        RELEASED.store(RELEASED.load(Ordering::Relaxed).wrapping_add(bytes), Ordering::Relaxed);
+    }
+}
+
+/// glibc's `__libc_single_threaded` (2.32; the floor is 2.44): nonzero
+/// until the process first calls `pthread_create`, which clears it before
+/// it takes any lock, and never set again in a process that has created a
+/// thread. While it is set no thread can hold glibc's stack cache lock
+/// (only `pthread_create`, `pthread_join` and thread exit take it), so a
+/// `free` may create the thread (`purge::on_tick`). A fork child of a
+/// multithreaded parent may read it set again with the parent's stacks
+/// in its cache, but the lock is reset in the child and taken only by
+/// those calls, the first of which clears the flag. `false` when the
+/// symbol does not resolve (not glibc).
+#[verifier::external_body]
+#[inline(never)]
+pub fn single_threaded() -> bool {
+    let p: *const u8;
+    // SAFETY: a GOT load of a weak symbol; the byte read is glibc's
+    // variable when it resolves.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            ".weak __libc_single_threaded",
+            "mov {p}, qword ptr [rip + __libc_single_threaded@GOTPCREL]",
+            p = out(reg) p,
+            options(nostack, readonly, preserves_flags),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            ".weak __libc_single_threaded",
+            "adrp {p}, :got:__libc_single_threaded",
+            "ldr {p}, [{p}, :got_lo12:__libc_single_threaded]",
+            p = out(reg) p,
+            options(nostack, readonly, preserves_flags),
+        );
+        !p.is_null() && core::ptr::read_volatile(p) != 0
+    }
 }
 
 /// Ask for (or, with `false`, stop asking for) a background thread. The
@@ -224,10 +281,13 @@ fn kick()
 /// `mallctl("background_thread")`, and glibc's `pthread_create` /
 /// `pthread_join` may set it on their way.
 /// `cell` is the calling thread's slot cell, which [`create`] parks the
-/// slot through.
-pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool
+/// slot through. `free`: the caller is a `free`'s tick, with only
+/// [`crate::sys::valid_aborts`]; such a start joins no previous thread
+/// (whose failed join aborts) and returns `false` where one is recorded,
+/// which in a single-threaded process ([`single_threaded`]) it never is.
+pub fn start(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (free && crate::sys::valid_aborts()),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_meta()),
@@ -250,7 +310,7 @@ pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(err
             g.unlock();
             return true;
         }
-        if g.creating {
+        if g.creating || (free && g.thread.is_some()) {
             g.unlock();
             return false;
         }
@@ -314,7 +374,9 @@ pub fn present_or_creating(Tracked(ord): Tracked<&mut LockOrder>) -> bool
     r
 }
 
-/// [`start`] for an allocation's tick that found the thread requested.
+/// [`start`] for a periodic tick that found the thread requested (an
+/// allocation's, or with `free` a `free`'s in a single-threaded process,
+/// `purge::on_tick`).
 /// A lazy request (the lazy start still armed) whose start failed, and
 /// is not merely in progress on another thread, withdraws itself: the
 /// process keeps purging in the foreground, as with
@@ -322,9 +384,9 @@ pub fn present_or_creating(Tracked(ord): Tracked<&mut LockOrder>) -> bool
 /// than [`AUTO_RETRY_NS`] later, up to [`AUTO_TRIES`] failures in all,
 /// after which it is off for good. An explicit request stays, and the
 /// next tick tries again.
-pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool
+pub fn start_requested(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (free && crate::sys::valid_aborts()),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_meta()),
@@ -338,11 +400,13 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, T
     if crate::lock::in_fork_window() {
         return false;
     }
-    if start(shared, Tracked(ord), Tracked(&mut *errno), Tracked(&mut *cell)) {
+    if start(shared, free, Tracked(ord), Tracked(&mut *errno), Tracked(&mut *cell)) {
         return true;
     }
     let g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-    if !g.creating && !g.present && AUTO.load(Ordering::Relaxed) {
+    // A `free`'s start refused for a recorded thread (one to join) is no
+    // failed start: the next allocation's tick joins it and starts.
+    if !g.creating && !g.present && !(free && g.thread.is_some()) && AUTO.load(Ordering::Relaxed) {
         REQUESTED.store(false, Ordering::Relaxed);
         // `+ 1` as the release build computes it (overflow checks are off
         // there): the count only ever reaches `AUTO_TRIES`, but it is an
@@ -374,7 +438,7 @@ pub fn start_requested(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, T
 #[inline(never)]
 pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<Option<&mut TlsCell>>)
     requires
-        alloc ==> cell is Some,
+        cell is Some,
         crate::sys::may_abort() || (crate::sys::valid_aborts() && !alloc),
         crate::sys::may_syscall(),
         shared.wf(),
@@ -391,8 +455,14 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
     if AUTO_ONLY.load(Ordering::Relaxed) != shared as *const Shared as usize {
         return;
     }
+    // Early, inside the window, once a burst's worth was flushed back
+    // since the last look.
+    let released = RELEASED.load(Ordering::Relaxed);
+    let early = released.wrapping_sub(AUTO_RELEASED.load(Ordering::Relaxed)) >= AUTO_BURST;
     let next = AUTO_NEXT.load(Ordering::Relaxed);
-    if now < next
+    if early {
+        AUTO_NEXT.store(now.saturating_add(AUTO_CHECK_NS), Ordering::Relaxed);
+    } else if now < next
         || AUTO_NEXT
             .compare_exchange(
                 next,
@@ -404,6 +474,7 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
     {
         return;
     }
+    AUTO_RELEASED.store(released, Ordering::Relaxed);
     let dirty = crate::policy::empty_bytes(shared, Tracked(ord));
     let base = AUTO_BASE.load(Ordering::Relaxed).min(dirty);
     AUTO_BASE.store(base, Ordering::Relaxed);
@@ -420,8 +491,10 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
         REQUESTED.store(true, Ordering::Relaxed);
         g.unlock();
     }
-    if alloc {
-        start_requested(shared, Tracked(ord), Tracked(&mut *errno), Tracked(cell.tracked_unwrap()));
+    // A `free`'s tick only in a process that never had a thread, as in
+    // `purge::on_tick`.
+    if alloc || single_threaded() {
+        start_requested(shared, !alloc, Tracked(ord), Tracked(&mut *errno), Tracked(cell.tracked_unwrap()));
     }
 }
 
@@ -568,7 +641,7 @@ fn create(
     Tracked(cell): Tracked<&mut TlsCell>,
 ) -> (r: (usize, Option<::libc::pthread_t>))
     requires
-        crate::sys::may_abort(),
+        crate::sys::may_abort() || (previous is None && crate::sys::valid_aborts()),
         crate::sys::may_syscall(),
         shared.wf(),
         stack + STACK_SIZE <= usize::MAX,
@@ -713,7 +786,9 @@ fn create(
 #[verifier::external_body]
 fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
     requires
-        crate::sys::may_abort(),
+        // Its aborts are the two signal-mask calls' at a failed
+        // `rt_sigprocmask`, a resource failure.
+        crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(cell).value() == 0 || crate::heap::reentry_benign(old(cell).value()),

@@ -658,6 +658,7 @@ impl Heap {
         p: *mut u8,
         Tracked(blk): Tracked<Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -670,6 +671,7 @@ impl Heap {
         ensures
             final(errno).val() == old(errno).val(),
             final(self).keeps(*old(self)),
+            final(cell).kept(*old(cell)),
         // With `free_slow`, `free_slow_in` and `Heap::rehome_on_free`, whose
         // push follows a move of the home, which clears `rehome`.
         decreases (if old(self).spec_rehome() { 1int } else { 0int }), 3int,
@@ -690,7 +692,7 @@ impl Heap {
             proof {
                 blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
             }
-            self.free_slow(shared, class, p, Tracked(blk), Tracked(errno));
+            self.free_slow(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell));
         }
     }
 

@@ -663,6 +663,7 @@ impl Heap {
         p: *mut u8,
         Tracked(blk): Tracked<super::Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -675,6 +676,7 @@ impl Heap {
         ensures
             final(errno).val() == old(errno).val(),
             final(self).wf(),
+            final(cell).kept(*old(cell)),
     {
         // As in `Heap::push`.
         let tracked mut blk = blk;
@@ -709,7 +711,7 @@ impl Heap {
         proof {
             blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
         }
-        self.free_slow_in(shared, FOREIGN, class, p, Tracked(blk), Tracked(errno))
+        self.free_slow_in(shared, FOREIGN, class, p, Tracked(blk), Tracked(errno), Tracked(cell))
     }
 
     /// The header for `(arena, class)`, creating the `others` node if

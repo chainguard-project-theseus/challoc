@@ -65,7 +65,7 @@ fn assert_rekey_flushed(len: &u32)
 
 ## `Heap::arena_volatile`
 
-src/heap/mod.rs:4484. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/heap/mod.rs:4487. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: heap::kani_volatile::arena_volatile_reads_arena).
 
 > [`Heap::arena`] through a volatile load, for the `free` check's arena test ([`Shared::home_owns`]): a plain load is hoisted above the multi-arena test (`FREE_ROUTE`) and touches the heap's header line on every single-arena `free`.

@@ -240,7 +240,7 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
     assert_eq!(s.arena0.classes[c].desc(0).arena(), 1);
     assert_eq!(s.classify_free(p, Tracked::assume_new()), Ok((c, 1)));
     t.heap()
-        .free(s, p, Tracked::assume_new(), Tracked::assume_new());
+        .free(s, p, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(t.heap().cache(c).unwrap().len(), HALF);
     // `thread.arena` moves the binding with the heap.
     t.heap().set_arena(
@@ -718,8 +718,8 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert!(!free_fast(s, h, p2, s.free_flags()));
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert!(h.cache_in(FOREIGN, c).is_none());
-    h.free(s, p1, Tracked::assume_new(), Tracked::assume_new());
-    h.free(s, p2, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p1, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p2, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
     assert_eq!(
         h.cache_in(FOREIGN, c).unwrap().cap(),
@@ -749,8 +749,8 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     assert_eq!(st.deallocated, 3 * 64);
     // Flushing returns everything to the right owner: every slot of the
     // three arenas is back in its bitmap and the refills' slabs are Empty.
-    h.free(s, p0, Tracked::assume_new(), Tracked::assume_new());
-    h.free(s, p3, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p0, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p3, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 3);
     h.flush_all(s, Tracked::assume_new());
     assert_eq!(h.cache(c).unwrap().len(), 0);
@@ -816,9 +816,9 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
     let pa = a.alloc(c);
     let pb = b.alloc(c);
     a.heap()
-        .free(s, pa, Tracked::assume_new(), Tracked::assume_new());
+        .free(s, pa, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     b.heap()
-        .free(s, pb, Tracked::assume_new(), Tracked::assume_new());
+        .free(s, pb, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     let per_refill = HALF.div_ceil(CLASSES[c].nslots());
     // Arena 1 loses its only heap: flushed and purged.
     b.destroy();
@@ -831,7 +831,7 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
     assert_eq!(b3.heap().arena(), 1);
     let pb3 = b3.alloc(c);
     b3.heap()
-        .free(s, pb3, Tracked::assume_new(), Tracked::assume_new());
+        .free(s, pb3, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     b3.destroy();
     let s1 = s.arena(1, Tracked::assume_new()).unwrap().0.classes[c].stats();
     assert_eq!(
@@ -927,9 +927,9 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
     assert!(h.cache(c).is_none());
     let st = h.stats();
     assert_eq!(st.allocated, 3 * 64 * 1024);
-    h.free(s, d, Tracked::assume_new(), Tracked::assume_new());
-    h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
-    h.free(s, q, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, d, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, q, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(
         s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
         before
@@ -956,7 +956,7 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
     let p = t.alloc(c);
     let q = t.alloc(c);
     let h = t.heap();
-    h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     let before = h.stats();
     assert_eq!((before.allocated, before.deallocated), (128, 64));
     let meta_before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
@@ -971,7 +971,7 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
         (after.allocated, after.deallocated),
         (before.allocated, before.deallocated)
     );
-    h.free(s, q, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, q, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     let again = h.stats();
     assert_eq!((again.allocated, again.deallocated), (128, 128));
     assert!(h.cache(c).is_some(), "the slow path created a new cache");
@@ -1020,8 +1020,8 @@ fn set_arena_swaps_cache_arrays() {
     assert_eq!(s.classify_free(q, Tracked::assume_new()), Ok((c, a1)));
     assert!(free_fast(s, h, p1, s.free_flags()));
     assert!(!free_fast(s, h, p0, s.free_flags()));
-    h.free(s, p0, Tracked::assume_new(), Tracked::assume_new());
-    h.free(s, q, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p0, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, q, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert_eq!(h.cache_in(0, c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 1);
@@ -1074,7 +1074,7 @@ fn explicit_caches_create_flush_destroy() {
     );
     assert!(!p.is_null());
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
-    h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert!(s.tcaches.flush(s, t0, Tracked::assume_new()));
     assert_eq!(
@@ -1167,8 +1167,8 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     );
     // The plain frees of the two arenas' slots create the FOREIGN node,
     // the newest.
-    h.free(s, p1, Tracked::assume_new(), Tracked::assume_new());
-    h.free(s, p2, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p1, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p2, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(h.stats().deallocated, 2 * 64);
     let arenas: Vec<u16> = Heap::nodes(h.others)
         // SAFETY: as above.
@@ -1233,7 +1233,7 @@ fn a_free_routed_to_an_unbuilt_arena_aborts() {
     assert!(s.arenas.get_existing(5).is_none());
     table.corrupt_owner_word(&s.meta, slab as usize / table.group(), 5);
     assert_eq!(s.classify_free(p, Tracked::assume_new()), Ok((c, 5)));
-    h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     h.flush_all(s, Tracked::assume_new());
 }
 
@@ -1268,7 +1268,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
             .arena,
         2
     );
-    h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(a2.large(), (0, 0));
     // SAFETY: `hp` came from `Heap::create_detached` on `s` (as for
     // `tcache.destroy`) and is not used again.
@@ -1303,12 +1303,12 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
     );
     assert!(s.arenas.get_existing(2).is_none());
     assert_eq!(s.arena0.large().0, runs0 + 1);
-    h.free(s, p, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, p, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     // The pressure lifted: the next allocation builds arena 2.
     let (q, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
     assert!(!q.is_null());
     assert!(s.arenas.get_existing(2).is_some(), "built on retry");
-    h.free(s, q, Tracked::assume_new(), Tracked::assume_new());
+    h.free(s, q, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new());
     // SAFETY: `hp` came from `Heap::create_detached` on `s` and is not
     // used again.
     unsafe { Heap::destroy(hp, s, Tracked::assume_new(), Tracked::assume_new()) };

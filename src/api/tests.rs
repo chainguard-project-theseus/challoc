@@ -1987,6 +1987,7 @@ fn background_thread_starts_purges_and_is_absent_after_fork() {
     assert!(
         purge::background::start(
             s,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new()
@@ -1997,6 +1998,7 @@ fn background_thread_starts_purges_and_is_absent_after_fork() {
     assert!(
         purge::background::start(
             s,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new()
@@ -2384,6 +2386,7 @@ fn background_thread_purges_an_empty_from_its_startup() {
     );
     let started = purge::background::start(
         s,
+        false,
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -2482,6 +2485,7 @@ fn background_thread_that_exits_before_its_start_publishes_is_not_present() {
     );
     purge::background::start(
         s,
+        false,
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -2498,6 +2502,7 @@ fn background_thread_that_exits_before_its_start_publishes_is_not_present() {
     );
     let restarted = purge::background::start(
         s,
+        false,
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -2561,6 +2566,7 @@ fn background_stack_is_reused_across_restarts() {
     assert!(
         purge::background::start(
             s,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new()
@@ -2586,6 +2592,7 @@ fn background_stack_is_reused_across_restarts() {
         assert!(
             purge::background::start(
                 s,
+                false,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new()

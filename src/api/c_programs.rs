@@ -838,7 +838,9 @@ ctests! {
     /// `tests/c/lazy_bg.c`: the lazy background thread under the default
     /// configuration (design 8.1). A small workload stays single-threaded
     /// and can unshare a user namespace; a burst starts the thread and it
-    /// purges the idle process; a fork child and an exec stay
+    /// purges the idle process; frees followed by no allocator call at
+    /// all start it in a process that never had a thread, and not in one
+    /// that did (the next allocation does); a fork child and an exec stay
     /// single-threaded; dirty memory over the floor starts it after the
     /// hold; `background_thread:false` and a filter that refuses `clone`
     /// start nothing, a thread limit that frees up is retried; a fork
@@ -848,6 +850,8 @@ ctests! {
         CTest { prog: "lazy_bg", args: &["small"], conf: Some("abort_conf:true"), ..BASE },
         CTest { prog: "lazy_bg", args: &["burst"], conf: Some("abort_conf:true,dirty_decay_ms:500"),
             stdout_has: &["burst: exec small"], ..BASE },
+        CTest { prog: "lazy_bg", args: &["idle"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["idlemt"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },
         CTest { prog: "lazy_bg", args: &["hold"], conf: Some("abort_conf:true,dirty_decay_ms:5000"), ..BASE },
         CTest { prog: "lazy_bg", args: &["optout"], conf: Some("abort_conf:true,background_thread:false,dirty_decay_ms:500"), ..BASE },
         CTest { prog: "lazy_bg", args: &["seccomp"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },

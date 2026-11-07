@@ -82,12 +82,15 @@ verus! {
 /// `api::libc::free_block`, `api::libc::free_usable_block`, the heap
 /// entry points `heap::paths::alloc`, `alloc_declined` and `alloc_zeroed`,
 /// `heap::mallocx::alloc` (once in each of its two cache arms, which
-/// exclude each other), `mallctl`'s `background_thread` write
+/// exclude each other), the free entry `heap::paths::free` (whose cell
+/// goes down the free path for its tick's thread start), the explicit
+/// cache arm of `heap::mallocx::free` (its default arm calls
+/// `heap::paths::free`), `mallctl`'s `background_thread` write
 /// (`api::mallctl::ctl`), and, in verification only, the two free paths
 /// of `api::libc::theorem_no_syscall_on_fast_paths`, which restate the
 /// two frees' fast paths. The two frees use their token only on their
 /// fast path; the slow path they take after a declined fast path reaches
-/// `heap_for_thread`, which makes its own after they are done with the
+/// `heap::paths::free`, which makes its own after they are done with the
 /// first.
 /// An entry nested in another (the allocator re-entered from `pthread_setspecific`,
 /// or from `pthread_create` and `pthread_join` in the background thread's
@@ -499,6 +502,8 @@ mod tests {
                 ("heap/paths.rs:", "pub fn alloc_declined(", 1),
                 ("heap/paths.rs:", "pub fn alloc_zeroed(", 1),
                 ("heap/mallocx.rs:", "pub fn alloc(", 2),
+                ("heap/paths.rs:", "pub fn free(", 1),
+                ("heap/mallocx.rs:", "pub fn free(", 1),
                 ("api/mallctl.rs:", "fn ctl(", 1),
                 ("api/libc.rs:", "fn theorem_no_syscall_on_fast_paths(", 2),
             ],
