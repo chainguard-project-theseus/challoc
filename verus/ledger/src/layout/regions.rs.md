@@ -17,7 +17,7 @@ file.
 
 ## `Reserved`
 
-src/layout/regions.rs:2119. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:2093. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
@@ -30,7 +30,7 @@ pub tracked struct Reserved
 
 ## `Reserved::is_apart_from_static`
 
-src/layout/regions.rs:2136. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2110. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
@@ -47,7 +47,7 @@ pub proof fn is_apart_from_static(tracked &self)
 
 ## `Reserved::is_disjoint`
 
-src/layout/regions.rs:2153. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2127. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
@@ -66,7 +66,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
 
 ## `Reserved::into_unbacked`
 
-src/layout/regions.rs:2172. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2146. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
@@ -82,12 +82,12 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
 
 ## `try_reserve`
 
-src/layout/regions.rs:2192. Kind: external_body. Category: FFI/syscall.
+src/layout/regions.rs:2166. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 2209.
+Body mints Tracked at line 2183.
 
 Hashes: contract 3469794050, body 1440593640.
 
@@ -101,7 +101,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ## `word`
 
-src/layout/regions.rs:2489. Kind: external_body. Category: core library.
+src/layout/regions.rs:2463. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: layout::regions::linux::kani_word::word_returns).
 
 > Word `i` of the random bytes (`8 * i` on, the target's byte order).
@@ -116,7 +116,7 @@ fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
 
 ## `entry_barrier`
 
-src/layout/regions.rs:3184. Kind: external_body. Category: inline asm.
+src/layout/regions.rs:3158. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: entry_barrier in src/layout/regions.rs; not checked: the pointer's provenance, the check shows only that no instruction is emitted).
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.
