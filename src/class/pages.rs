@@ -408,6 +408,48 @@ impl ClassState {
         hid
     }
 
+    /// A slab about to become `Empty` (`on_live_zero`) leaves `curslabs`:
+    /// its closed slots and pages leave the counts, and every page opens
+    /// again (docs/proposals/slab-pages.md, 9). Its closed pages were
+    /// discarded, its purge discards the rest, and a reuse opens it whole,
+    /// as a `Fresh` one, so no slab but an `Active` one has a closed page.
+    /// Out of line and cold: it runs once per emptied slab, and the
+    /// release path it hangs off stays as it was.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn reset_pages_on_empty(&self, g: &mut Inner, slab: usize)
+        requires
+            crate::sys::may_abort_pending(),
+            walk_ok(self, *old(g)),
+            old(g).owns(slab as nat),
+        ensures
+            walk_ok(self, *final(g)),
+            final(g).states == old(g).states,
+            final(g).partial == old(g).partial,
+            final(g).empty == old(g).empty,
+            final(g).purged == old(g).purged,
+            final(g).committed == old(g).committed,
+            final(g).dirty == old(g).dirty,
+            final(g).group_next == old(g).group_next,
+            final(g).group_end == old(g).group_end,
+            final(g).stats == old(g).stats,
+            final(g).zeros == old(g).zeros,
+    {
+        if let Some(pg) = self.table().pages(slab) {
+            let (closed, stamp) = Self::pages_locked(&*g, pg, slab);
+            if closed != 0 || stamp != 0 {
+                let n = self.table().page_view().with_closed(closed).closed_slots();
+                let ghost gc = *g;
+                g.closed_slots = g.closed_slots.saturating_sub(n);
+                g.closed_pages = g.closed_pages.saturating_sub(page_count(closed));
+                proof {
+                    lemma_walk_frame(self, gc, *g);
+                }
+                self.set_pages_locked(g, pg, slab, 0, 0);
+            }
+        }
+    }
+
     /// Open the lowest closed pages of slab `slab` until its open free
     /// slots cover `need`, or every page is open (a refill's step 2,
     /// docs/proposals/slab-pages.md, 3.3), under this arena's class lock
