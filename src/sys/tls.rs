@@ -467,9 +467,10 @@ pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::c_programs::release_so;
     use std::process::Command;
     use std::string::String;
-    use std::{env, format, vec::Vec};
+    use std::vec::Vec;
     use vstd::prelude::Tracked;
 
     /// `TlsSlot::entry` makes a slot token only at the top-level slot users
@@ -583,19 +584,6 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), 64, "two threads observed the same slot value");
-    }
-
-    /// `target/release/libchalloc.so`, built by `make test` before the tests
-    /// run. Honours `CARGO_TARGET_DIR` for people who set one.
-    fn release_so() -> String {
-        let target = env::var("CARGO_TARGET_DIR")
-            .unwrap_or_else(|_| format!("{}/target", env!("CARGO_MANIFEST_DIR")));
-        let so = format!("{target}/release/libchalloc.so");
-        assert!(
-            std::path::Path::new(&so).exists(),
-            "{so} missing: run `cargo build --release` first (`make test` does)"
-        );
-        so
     }
 
     fn readelf(args: &[&str]) -> String {

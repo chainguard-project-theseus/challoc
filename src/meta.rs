@@ -3675,12 +3675,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    /// The page size the tests compute with: the kernel's, not a 4 KiB
-    /// constant (the reservations are real, so the commit arithmetic
-    /// follows the kernel's page, 64 KiB on some aarch64 kernels).
-    fn page_size() -> usize {
-        crate::sys::features::page_size()
-    }
+    use crate::testutil::{page_size, xorshift};
 
     /// The object side's commit step: [`COMMIT_CHUNK`] rounded up to the
     /// page, so 16 pages under 4 KiB pages and one under 64 KiB pages.
@@ -3754,15 +3749,6 @@ mod tests {
             // tests bind it before the `Meta` over it, which therefore drops first.
             unsafe { crate::sys::munmap(self.base, self.len) }.unwrap();
         }
-    }
-
-    fn xorshift(state: &mut u64) -> u64 {
-        let mut x = *state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *state = x;
-        x
     }
 
     fn layout(size: usize, align: usize) -> Layout {

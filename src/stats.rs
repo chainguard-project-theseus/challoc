@@ -2525,7 +2525,7 @@ mod tests {
     use super::*;
     use crate::heap::tests::{TestHeap, class_with, live};
     use crate::layout::CLASSES;
-    use crate::testutil::{page_size, shared};
+    use crate::testutil::{page_size, shared, xorshift};
     use std::vec::Vec;
 
     // The by-value forms the tests read the figures through (on the test
@@ -2548,15 +2548,6 @@ mod tests {
         let mut out = ArenaStats::empty(0);
         a.stats_into(&mut out, Tracked::assume_new());
         out
-    }
-
-    fn xorshift(state: &mut u64) -> u64 {
-        let mut x = *state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *state = x;
-        x
     }
 
     /// Before the first epoch everything is zero; after it the totals are

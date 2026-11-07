@@ -28,9 +28,7 @@ pub(crate) fn page_size() -> usize {
     crate::sys::features::page_size()
 }
 
-pub(crate) fn align_up(x: usize, a: usize) -> usize {
-    (x + a - 1) & !(a - 1)
-}
+pub(crate) use crate::meta::align_up;
 
 fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regions {
     let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
@@ -183,14 +181,7 @@ pub(crate) fn shared() -> &'static Shared {
 }
 
 /// One step of Marsaglia's xorshift64; `state` must not be zero.
-pub(crate) fn xorshift(state: &mut u64) -> u64 {
-    let mut x = *state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x
-}
+pub(crate) use crate::class::xorshift;
 
 /// The tests of the process-wide allocator (`api::shared()`) that write a
 /// process-wide setting (decay, the background thread request, the stats
