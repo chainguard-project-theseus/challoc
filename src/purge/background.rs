@@ -186,31 +186,46 @@ pub fn note_released(bytes: u64) {
 /// in its cache, but the lock is reset in the child and taken only by
 /// those calls, the first of which clears the flag. `false` when the
 /// symbol does not resolve (not glibc).
+pub fn single_threaded() -> bool {
+    let p = single_threaded_addr();
+    if p.is_null() {
+        return false;
+    }
+    // SAFETY: the symbol resolved to glibc's `char` variable. A plain
+    // read, as libstdc++'s: glibc writes it only in `pthread_create`, and
+    // this caller acts on it only while it reads as set.
+    unsafe { crate::config::byte_at(p, 0) != 0 }
+}
+
+/// Address of the weak `__libc_single_threaded` global, or null. The same
+/// `.weak` + GOT form as `config.rs`'s `je_malloc_conf_addr` (stable Rust
+/// has no weak statics). Trusted: inline assembly; nothing is claimed
+/// about the address.
 #[verifier::external_body]
 #[inline(never)]
-pub fn single_threaded() -> bool {
-    let p: *const u8;
-    // SAFETY: a GOT load of a weak symbol; the byte read is glibc's
-    // variable when it resolves.
+fn single_threaded_addr() -> *const u8 {
+    let out: *const u8;
+    // SAFETY: a GOT load of a weak data symbol; no memory is written.
     unsafe {
         #[cfg(target_arch = "x86_64")]
         core::arch::asm!(
             ".weak __libc_single_threaded",
-            "mov {p}, qword ptr [rip + __libc_single_threaded@GOTPCREL]",
-            p = out(reg) p,
+            "mov {out}, qword ptr [rip + __libc_single_threaded@GOTPCREL]",
+            out = out(reg) out,
             options(nostack, readonly, preserves_flags),
         );
         #[cfg(target_arch = "aarch64")]
         core::arch::asm!(
             ".weak __libc_single_threaded",
-            "adrp {p}, :got:__libc_single_threaded",
-            "ldr {p}, [{p}, :got_lo12:__libc_single_threaded]",
-            p = out(reg) p,
+            "adrp {out}, :got:__libc_single_threaded",
+            "ldr {out}, [{out}, :got_lo12:__libc_single_threaded]",
+            out = out(reg) out,
             options(nostack, readonly, preserves_flags),
         );
-        !p.is_null() && core::ptr::read_volatile(p) != 0
     }
+    out
 }
+
 
 /// Ask for (or, with `false`, stop asking for) a background thread. The
 /// next periodic tick creates it; a running thread that finds the
