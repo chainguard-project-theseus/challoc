@@ -4,7 +4,7 @@
  * malloc stays glibc's, and loading the library must not initialise
  * challoc (no region reservation, no fork handlers for an allocator
  * nothing uses). Run bare, with the library's path as the argument, by the
- * `api::` test `atfork_handlers_of_linked_libraries_may_allocate`; not a
+ * `api::` test `dlopen_late_does_not_initialise`; not a
  * preloaded row (it is the one program that wants glibc's malloc).
  */
 #define _GNU_SOURCE

@@ -16,7 +16,7 @@
  * the gate, as the forking thread under a new kernel thread ID, and its
  * `mallocx` (challoc's init) must pass the gate. Run bare, with the library's path as the
  * argument, by the `api::` test
- * `atfork_handlers_of_linked_libraries_may_allocate`.
+ * `fork_during_late_init_completes`.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
