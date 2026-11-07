@@ -56,6 +56,24 @@ class VariantSpec:
     def mallctl(self) -> bool:
         return self.kind == "challoc" or bool(STOCK.get(self.source, {}).get("mallctl"))
 
+    def launch_entry(self) -> dict[str, Any]:
+        """This variant as launch.json carries it to the VMs (gce.py);
+        `from_launch` reads it back there (run.py)."""
+        return {
+            "label": self.label,
+            "kind": self.kind,
+            "source": self.source,
+            "conf": self.conf,
+            "role": self.role,
+            "knobs": dict(self.knobs),
+            "features": self.features,
+        }
+
+    @classmethod
+    def from_launch(cls, v: dict[str, Any]) -> VariantSpec:
+        """The variant a launch.json entry (`launch_entry`) stands for."""
+        return cls(v["label"], v["kind"], v["source"], v.get("conf", ""), v.get("role", "variant"), dict(v.get("knobs") or {}), v.get("features", ""))
+
     def can_run(self, requires: list[str], allocs: list[str] | None = None) -> bool:
         for r in requires:
             if r == "mallctl" and not self.mallctl:
