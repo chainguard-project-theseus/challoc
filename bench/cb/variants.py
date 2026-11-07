@@ -256,7 +256,12 @@ def _prepare(root: str, specs: list[VariantSpec], work: str, values: dict[str, s
             key = s.source if s.source == "tree" else resolve_rev(root, s.source)[1]
             first.setdefault(key, s)
     built: dict[str, Variant] = {}
-    if len(first) > 1:
+    lim = _cgroup_memory_limit()
+    if len(first) > 1 and lim is not None and lim < 4 << 30:
+        # One build at a time in a memory-limited container (`_cargo_build`).
+        for k, s in first.items():
+            built[k] = build_challoc(root, s, work, log)
+    elif len(first) > 1:
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(len(first)) as ex:
