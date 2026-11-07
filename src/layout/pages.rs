@@ -371,6 +371,133 @@ pub fn closed_slot_count(size: usize, nslots: usize, pg: usize, pages: usize, ma
     n
 }
 
+/// Every slot below `n` is open when no page is closed.
+pub proof fn lemma_closed_below_all_open(size: int, pg: int, pages: int, n: int)
+    requires
+        pages <= 16,
+    ensures
+        closed_below(size, pg, pages, !0u16, n) == 0,
+    decreases n,
+{
+    if n > 0 {
+        lemma_closed_below_all_open(size, pg, pages, n - 1);
+        assert forall|p: int| 0 <= p < pages && #[trigger] overlaps(size, pg, p, n - 1) implies page_open(!0u16, p) by {
+            let pu = p as u16;
+            assert((!0u16 >> pu) & 1u16 == 1u16) by (bit_vector)
+                requires pu < 16;
+        }
+    }
+}
+
+/// A slab's page geometry and closed-page mask, as a claim or the class
+/// lock holder sees them: `closed` bit `p` set is page `p` closed (the
+/// complement of `slot_open`'s mask). `pages == 0` is a slab without page
+/// state (a class whose descriptor has no `SlabPages`), every slot open.
+#[derive(Clone, Copy)]
+pub struct OpenView {
+    pub size: usize,
+    pub nslots: usize,
+    pub pg: usize,
+    pub pages: usize,
+    pub closed: u16,
+}
+
+impl OpenView {
+    /// No page state: every slot open.
+    pub const fn none() -> (r: OpenView)
+        ensures
+            !r.paged(),
+    {
+        OpenView { size: 0, nslots: 0, pg: 0, pages: 0, closed: 0 }
+    }
+
+    /// The geometry the page functions accept: a slab of two to 16 pages.
+    pub open spec fn paged(&self) -> bool {
+        &&& 1 <= self.size <= 0x10000
+        &&& 4096 <= self.pg <= 0x10000
+        &&& 2 <= self.pages <= MAX_MASK_PAGES
+        &&& self.nslots <= 0x10000
+    }
+
+    /// Slot `s` is open: every page it overlaps is open.
+    pub open spec fn open(&self, s: int) -> bool {
+        slot_open(self.size as int, self.pg as int, self.pages as int, !self.closed, s)
+    }
+
+    /// The same view with another closed mask.
+    pub fn with_closed(&self, closed: u16) -> (r: OpenView)
+        ensures
+            r == (OpenView { closed, ..*self }),
+    {
+        OpenView { closed, ..*self }
+    }
+
+    /// The bits of word `w` of the slab (slab coordinates: slot `64 * w +
+    /// i`) a claim may take: for a paged view, bit `i` of a slot below
+    /// `nslots` is set exactly when the slot is open; every other bit is
+    /// set, and so is every bit of a view without page state.
+    pub fn word(&self, w: usize) -> (r: u64)
+        ensures
+            self.paged() ==> forall|i: int| 0 <= i < 64 && 64 * w + i < self.nslots ==> (#[trigger] bit(r, i) <==> self.open(64 * w + i)),
+            !self.paged() ==> r == !0u64,
+    {
+        let paged = 1 <= self.size && self.size <= 0x10000 && 4096 <= self.pg && self.pg <= 0x10000 && 2 <= self.pages
+            && self.pages <= MAX_MASK_PAGES && self.nslots <= 0x10000;
+        if !paged || self.closed == 0 || w >= 1024 {
+            proof {
+                if paged {
+                    assert forall|i: int| 0 <= i < 64 && 64 * w + i < self.nslots implies (#[trigger] bit(!0u64, i) <==> self.open(64 * w + i)) by {
+                        let iu = i as u64;
+                        assert((!0u64 >> iu) & 1u64 == 1u64) by (bit_vector)
+                            requires iu < 64;
+                        if self.closed == 0 {
+                            let c = self.closed;
+                            assert(!c == !0u16) by (bit_vector)
+                                requires c == 0u16;
+                            assert forall|p: int| 0 <= p < self.pages && #[trigger] overlaps(self.size as int, self.pg as int, p, 64 * w + i)
+                                implies page_open(!self.closed, p) by {
+                                let pu = p as u16;
+                                assert((!0u16 >> pu) & 1u16 == 1u16) by (bit_vector)
+                                    requires pu < 16;
+                            }
+                        } else {
+                            // w >= 1024: no slot of the slab is in the word.
+                            assert(64 * w + i >= 0x10000);
+                        }
+                    }
+                }
+            }
+            return !0u64;
+        }
+        open_slots_word(self.size, self.nslots, self.pg, self.pages, !self.closed, w)
+    }
+
+    /// The slots the closed pages hide ([`closed_below`]): a straddling
+    /// slot counts once. 0 for a view without page state.
+    pub fn closed_slots(&self) -> (r: usize)
+        ensures
+            self.paged() ==> r == closed_below(self.size as int, self.pg as int, self.pages as int, !self.closed, self.nslots as int),
+            !self.paged() ==> r == 0,
+            r <= self.nslots,
+    {
+        let paged = 1 <= self.size && self.size <= 0x10000 && 4096 <= self.pg && self.pg <= 0x10000 && 2 <= self.pages
+            && self.pages <= MAX_MASK_PAGES && self.nslots <= 0x10000;
+        if !paged {
+            return 0;
+        }
+        if self.closed == 0 {
+            proof {
+                let c = self.closed;
+                assert(!c == !0u16) by (bit_vector)
+                    requires c == 0u16;
+                lemma_closed_below_all_open(self.size as int, self.pg as int, self.pages as int, self.nslots as int);
+            }
+            return 0;
+        }
+        closed_slot_count(self.size, self.nslots, self.pg, self.pages, !self.closed)
+    }
+}
+
 } // verus!
 
 #[cfg(test)]

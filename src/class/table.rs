@@ -16,6 +16,7 @@ use crate::bitmap::{AtomicBitmap, WordInv};
 use crate::bitmap::{
     Slots, fresh_mark, fresh_marks, has_bit, init_mark, init_marks, subset, words_wf,
 };
+use crate::layout::pages::OpenView;
 use crate::layout::{CLASSES, Class, Regions};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
@@ -3450,6 +3451,43 @@ impl SlabTable {
         }
         let p = addr_to_ptr(self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc;
         ptr_ref(p, Tracked(self.desc_perms.borrow().tracked_borrow(slab as int)))
+    }
+
+    /// The page geometry of the class's slabs, every page open, where the
+    /// class has page state ([`SlabPages`]: a stride of 32 or 64) and a
+    /// slab spans two to 16 pages; [`OpenView::none`] otherwise.
+    // Verus specifies the comparisons, not `RangeInclusive::contains`.
+    #[allow(clippy::manual_range_contains)]
+    pub fn page_view(&self) -> (r: OpenView)
+        ensures
+            r.paged() ==> self.spec_desc_stride() >= 32 && r.closed == 0
+                && r.size == class_table()[self.spec_class() as int].size
+                && r.nslots == class_table()[self.spec_class() as int].nslots,
+    {
+        proof {
+            use_type_invariant(self);
+            crate::vspec::class::lemma_class_table_wf(self.class as int);
+        }
+        if (self.desc_stride as usize) < 32 || self.lg_page >= 32 {
+            return OpenView::none();
+        }
+        let cls = &CLASSES.table()[self.class as usize];
+        let lg = self.lg_page;
+        proof {
+            assert((1usize << lg) >= 1) by (bit_vector)
+                requires lg < 32;
+        }
+        let pg = 1usize << lg;
+        let slab = cls.slab_size();
+        let pages = slab / pg;
+        // The small tier only (docs/proposals/slab-pages.md, 3.1): a slab
+        // of the page or less has nothing to close, and one of more than
+        // 16 pages (the medium tier, a follow-up) has more pages than the
+        // mask.
+        if pages < 2 || pages > crate::layout::pages::MAX_MASK_PAGES {
+            return OpenView::none();
+        }
+        OpenView { size: cls.size(), nslots: cls.nslots(), pg, pages, closed: 0 }
     }
 
     /// The page state of a handed-out slab ([`SlabPages`]), where its

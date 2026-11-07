@@ -191,8 +191,9 @@ impl Model<'_> {
                         p.n, p.slab
                     )
                 } else {
-                    // `let Some((w, bits)) = bm.claim_from(word, want - k)`:
-                    // `claim_word`: `want = lowest_n_bits(!cur & mask, n)`;
+                    // `let Some((w, won)) = bm.claim_from(word, want - k, view)`:
+                    // `claim_word`: `want = lowest_n_bits(!cur & mask & allow, n)`,
+                    // every page open here (the model has no page state);
                     // `prev = w.fetch_or(want)`; `(want & !prev)`.
                     let wantbits = lowest_n_clear(s.bits, p.n - p.claimed);
                     assert!(wantbits != 0, "model: finish stepped with no clear bit");

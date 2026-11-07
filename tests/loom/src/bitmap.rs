@@ -12,7 +12,9 @@
 //! - [`AtomicBitmap::claim_word`] is `AtomicBitmap::claim_word`: a
 //!   `Relaxed` load of the word as a hint, the lowest `n` clear bits
 //!   (`lowest_n_bits`), then `vspec::word::fetch_or` of them `Acquire`,
-//!   which wins the bits that were clear;
+//!   which wins the bits that were clear; every page of the slab is open
+//!   here (`allow` is all ones: the slab-pages mask, its claim-side
+//!   re-check and give-back are left out, below);
 //! - [`AtomicBitmap::claim_from`] is `AtomicBitmap::claim_from`: the first
 //!   word, from `start` round, whose claim wins a bit;
 //! - [`AtomicBitmap::release`] is `AtomicBitmap::release`:
@@ -26,8 +28,8 @@
 //!   read-modify-writes;
 //! - a reservation is `ClassState::take` (`src/class/mod.rs`, from
 //!   `let live = desc.live()` to `desc.add_live(n)`): under the class
-//!   lock (the copy of `RawLock`), `avail = nslots - live`, reserve
-//!   `min(avail, want)`;
+//!   lock (the copy of `RawLock`), `avail = nslots - nclosed - live` with
+//!   no closed page (`nclosed` 0), reserve `min(avail, want)`;
 //! - the claim loop is the bitmap pass of `src/class/mod.rs` (`claim_from`
 //!   until `want` slots are held, an empty pass counted towards
 //!   `MAX_EMPTY_PASSES` and the `reservation_unmet` abort; the model yields
@@ -46,7 +48,10 @@
 //! promised (the abort's bound, 2^22 passes, is far above it).
 //!
 //! Left out: sub-word bitmaps (`mask != !0`, several slabs in one word),
-//! whose `init` is a `fetch_and` and a `fetch_or`; the ghost tokens.
+//! whose `init` is a `fetch_and` and a `fetch_or`; the ghost tokens; the
+//! slab-pages state (`SlabPages::closed`, the claim's re-check after its
+//! `fetch_or` and the give-back through `release`), which the decay
+//! walk's model covers with the walk that closes pages.
 
 use crate::lock::RawLock;
 use crate::vspec::{self, atom, word};

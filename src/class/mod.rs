@@ -2625,6 +2625,31 @@ impl ClassState {
         r
     }
 
+    /// Slab `slab`'s closed pages and the slots they hide
+    /// (`layout::pages::OpenView::closed_slots`: a straddling slot counts
+    /// once), read under this arena's class lock (`g`) through the
+    /// permission `g` holds, as [`state_locked`] reads the state; none for
+    /// a class without page state. Every write of the mask goes through
+    /// that permission (`SlabPages::set_pages`, under the lock).
+    ///
+    /// [`state_locked`]: ClassState::state_locked
+    // `g` is read only by the specification (ghost).
+    #[allow(unused_variables)]
+    fn closed_locked(&self, g: &Inner, slab: usize) -> (r: (u16, usize))
+        requires
+            crate::sys::may_abort_pending(),
+        ensures
+            r.1 <= class_table()[self.spec_class() as int].nslots,
+    {
+        match self.table().pages(slab) {
+            Some(pg) => {
+                let (closed, _) = pg.pages_held(Ghost(slab as nat), Tracked(g.dperms.borrow()));
+                (closed, self.table().page_view().with_closed(closed).closed_slots())
+            },
+            None => (0, 0),
+        }
+    }
+
     /// The `dirty_at` stamp of slab `slab`'s descriptor `d`, read under
     /// this arena's class lock (`g`) through the permission `g` holds, as
     /// [`state_locked`] reads the state. Every write of a stamp goes
@@ -3393,6 +3418,11 @@ impl ClassState {
             let t = self.table();
             let bm = t.bits(slab);
             let words = bm.words();
+            // The slab's page state (docs/proposals/slab-pages.md, 3.4):
+            // a claim takes only slots of open pages, and gives back what
+            // it won on a page that closed meanwhile.
+            let pages = t.pages(slab);
+            let geometry = t.page_view();
             let mut k: usize = 0;
             let mut word = match rng.as_deref_mut() {
                 Some(r) => (xorshift(r) as usize) % words,
@@ -3449,12 +3479,18 @@ impl ClassState {
                 decreases want - k, MAX_EMPTY_PASSES - empty_passes,
             {
                 let tracked mut wt = t.empty_tokens();
-                let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {
+                // Step 1: the open pages as the claim starts.
+                let view = match pages {
+                    Some(pg) => geometry.with_closed(pg.closed()),
+                    None => geometry,
+                };
+                let Some((w, won)) = bm.claim_from(word, want - k, view, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {
                     // Every word was full when inspected. `plan` reserved
-                    // no more than `nslots - live` and set bits never
-                    // exceed `live`, so the slots exist: a concurrent
-                    // claimer took the bits we looked at and left ours
-                    // in a word we had already passed. Scan again.
+                    // no more than `nslots - closed - live` open slots and
+                    // set bits never exceed `live`, so the slots exist: a
+                    // concurrent claimer took the bits we looked at and
+                    // left ours in a word we had already passed. Scan
+                    // again.
                     empty_passes += 1;
                     if empty_passes == MAX_EMPTY_PASSES {
                         let d = self.desc(slab);
@@ -3463,11 +3499,59 @@ impl ClassState {
                     word = 0;
                     continue;
                 };
+                // Step 3, after the claim's `fetch_or` (step 2): a slot on a
+                // page closed since step 1 goes straight back, never handed
+                // out. The walk closes a page before it reads the page's
+                // words with a read-modify-write, so a claim whose
+                // `fetch_or` came after that read sees the page closed here
+                // (`SlabPages::closed`, `Acquire`); one whose `fetch_or` came
+                // before it left its bit set, and the walk keeps the page.
+                let closed = match pages {
+                    Some(pg) => pg.closed(),
+                    None => 0,
+                };
+                let open = if closed == 0 { !0u64 } else { geometry.with_closed(closed).word(w) };
+                let back = won & !open;
+                let bits = won & !back;
+                proof {
+                    assert(subset(back, won)) by (bit_vector)
+                        requires back == won & !open;
+                    bm.lemma_give_back(w as int, won, back);
+                    assert(VSet::<int>::empty().union(bm.slot_addrs(w as int, won)) =~= bm.slot_addrs(w as int, won));
+                    lemma_subset_bits(bits, won);
+                    lemma_subset_bits(won, slab_mask_of(sb));
+                    assert(subset(bits, slab_mask_of(sb))) by (bit_vector)
+                        requires subset(bits, won), subset(won, slab_mask_of(sb));
+                    let sm = bm.slab_mask();
+                    assert(subset(back, sm)) by (bit_vector)
+                        requires subset(back, won), subset(won, sm);
+                }
+                if back != 0 {
+                    let tracked mut bt = wt.split(bm.slot_addrs(w as int, back));
+                    let _ = bm.release(w, back, Tracked(&mut bt));
+                } else {
+                    proof {
+                        assert(bits == won) by (bit_vector)
+                            requires back == 0u64, bits == won & !back;
+                    }
+                }
+                proof {
+                    assert(wt@ == bm.slot_addrs(w as int, bits));
+                }
+                if bits == 0 {
+                    // Everything it won was on a closed page: a pass with no
+                    // progress, as an empty one.
+                    empty_passes += 1;
+                    if empty_passes == MAX_EMPTY_PASSES {
+                        let d = self.desc(slab);
+                        reservation_unmet(self.class as usize, slab, want, k, d.live(), bm.allocated(cls.nslots()), cls.nslots());
+                    }
+                    continue;
+                }
                 let mut m = bits;
                 let ghost k0 = k;
                 proof {
                     lemma_popcount_clear_lowest(m);
-                    assert(VSet::<int>::empty().union(bm.slot_addrs(w as int, bits)) =~= bm.slot_addrs(w as int, bits));
                     assert(subset(bits, bits)) by (bit_vector);
                 }
                 while m != 0
@@ -3836,7 +3920,8 @@ impl ClassState {
     /// What a refill's lock hold that reserved nothing saw (claim
     /// completeness): the lock value `g` it left,
     /// with the invariant, both idle sets empty, and each partial slab's
-    /// `live` load, kept in `seen`, at `nslots` or more. With the link,
+    /// `live` load plus its closed slots, kept in `seen`, at `nslots` or
+    /// more: no open free slot. With the link,
     /// every committed slab of the arena is then `Active`
     /// ([`ClassState::lemma_exhausted`]).
     spec fn exhausted(&self, g: Inner, seen: Map<nat, usize>) -> bool {
@@ -3852,7 +3937,7 @@ impl ClassState {
     }
 
     /// `plan`'s scan so far: every partial slab below `lim` has its `live`
-    /// load in `seen`, at `nslots` or more.
+    /// load plus its closed slots in `seen`, at `nslots` or more.
     spec fn seen_below(&self, g: Inner, seen: Map<nat, usize>, lim: int) -> bool {
         &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) && x < lim ==> seen.contains_key(x)
         &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) && x < lim ==> seen[x] >= class_table()[self.spec_class() as int].nslots
@@ -3881,9 +3966,12 @@ impl ClassState {
     /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
     /// picks written. Zero picks means nothing more can be committed.
     ///
-    /// `nslots - live` is a lower bound on a slab's claimable slots: every
-    /// claimer reserves in `live` under this lock before it sets bits, and
-    /// every releaser clears bits before it subtracts. So a reservation of
+    /// `nslots - closed - live` is a lower bound on a slab's claimable
+    /// slots, `closed` the slots its closed pages hide
+    /// (docs/proposals/slab-pages.md, 3.4): every claimer reserves in
+    /// `live` under this lock before it sets bits, every releaser clears
+    /// bits before it subtracts, and pages close and open only under this
+    /// lock, a page closing only while `live + closed <= nslots` holds. So a reservation of
     /// at most that many is always met (the claimer may have to rescan when
     /// a concurrent claimer wins the bits it looked at), and a partial slab
     /// whose bound is zero is either full (its bit is cleared here, the
@@ -3979,10 +4067,13 @@ impl ClassState {
             }
             let desc = self.desc(s);
             let live = desc.live();
-            if live >= cls.nslots() {
+            // Slots of closed pages are clear but not claimable
+            // (docs/proposals/slab-pages.md, 3.4).
+            let busy = live.saturating_add(self.closed_locked(&g, s).1);
+            if busy >= cls.nslots() {
                 let ghost g0 = g@;
                 proof {
-                    seen = seen.insert(s as nat, live);
+                    seen = seen.insert(s as nat, busy);
                 }
                 if desc.state() == State::Active {
                     let (full, seen_full) = self.table().bits(s).is_full_seen();
@@ -4157,12 +4248,18 @@ impl ClassState {
         let desc = self.desc(slab);
         let live = desc.live();
         self.take_checks(&*g, desc, slab, live);
-        // `live > nslots` would reserve a wrapped count (the release
-        // profile does not check overflow; the dev profile does).
-        if !(live <= self.class().nslots()) {
+        // The slots of closed pages are clear but no claim may take them
+        // (docs/proposals/slab-pages.md, 3.4): the reservation counts only
+        // open free slots. The decay walk closes a page only while
+        // `live + closed <= nslots` stays true, under this lock, and a
+        // release only lowers `live`.
+        let (closed, nclosed) = self.closed_locked(&*g, slab);
+        // `live + closed > nslots` would reserve a wrapped count (the
+        // release profile does not check overflow; the dev profile does).
+        if !(live <= self.class().nslots() - nclosed) {
             live_above_slots();
         }
-        let avail = self.class().nslots() - live;
+        let avail = self.class().nslots() - nclosed - live;
         let n = avail.min(*remaining);
         let state = self.state_locked(&*g, desc, slab);
         if purge::check_zero() {
@@ -4225,7 +4322,9 @@ impl ClassState {
         desc.add_live(n);
         // Under the lock (`g`), so a plain load-add-store is exclusive.
         self.claimed.store(self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64), Ordering::Relaxed);
-        if live == 0 && n == avail {
+        // A slab with closed pages keeps its partial bit even when every
+        // open slot is reserved here: its closed slots are not reserved.
+        if live == 0 && n == avail && nclosed == 0 {
             g.clear_partial(slab);
         } else {
             g.set_partial(slab);
@@ -4238,7 +4337,10 @@ impl ClassState {
         } else {
             (true, Tracked(None))
         };
-        let zero = state.is_zero() && purged_zero;
+        // A zero pick claims slots `0..n` under the lock (`claim_prefix`),
+        // which closed pages would break; `Fresh` and `Purged` slabs have
+        // none (every page open).
+        let zero = state.is_zero() && purged_zero && closed == 0;
         // The table, named for the proof's facts about it.
         let _t = self.table();
         let tracked mut pt = _t.empty_tokens();
@@ -4436,7 +4538,8 @@ impl ClassState {
                 assert(want < 64 ==> (1u64 << want) >= 1u64) by (bit_vector);
             }
             let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
-            let got = bm.claim_word(w, want, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
+            // A zero pick's slab has no closed page (`take`): every slot is open.
+            let got = bm.claim_word(w, want, !0, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
             if got != expect {
                 zero_slab_had_bits_set(self.class as usize, slab, self.arena, state, live, w, got, expect);
             }
