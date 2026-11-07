@@ -2,7 +2,8 @@
 //! `DescPerm`), a copy. The accessors below are `SlabDesc`'s bodies line
 //! for line: `init`'s five `Relaxed` stores, the `Relaxed` loads of
 //! `state_byte_held`, `dirty_held` and `arena_held`, `set_state`'s two
-//! stores and `set_dirty_at`'s one. The locks are the copy of `RawLock`
+//! stores and `set_dirty_at`'s one, and `SlabPages`' `pages_held` (two
+//! `Relaxed` loads) and `set_pages` (a `Relaxed` and a `Release` store). The locks are the copy of `RawLock`
 //! (`lock.rs`), and [`Perm`] is the ghost `DescPerm` made concrete: the
 //! three values the last write through the permission stored, in a loom
 //! `UnsafeCell` under the lock whose value holds the permission, as the
@@ -19,7 +20,7 @@
 //! lock the slab goes `Active` (`set_state`). Another thread, under the
 //! class lock, reads the three fields through the permission when the
 //! value has it and writes `Empty` and a stamp (`set_state`,
-//! `set_dirty_at`).
+//! `set_dirty_at`) and closes pages (`set_pages`).
 //!
 //! Checked: every read through the permission returns the value the
 //! permission records, the last write through it (a stale read fails an
@@ -31,7 +32,8 @@
 //!
 //! Left out: `live` (an `AcqRel` read-modify-write count, `bitmap.rs`'s),
 //! which `init` also stores before the slab is published; `shadow`, which
-//! no permission records; the class code between the steps, which is
+//! no permission records; `SlabPages::closed`, the claims' `Acquire` load
+//! outside the lock, which the claim model checks; the class code between the steps, which is
 //! verified (sequentially consistent) and touches the descriptor only
 //! through these accessors.
 
@@ -107,21 +109,50 @@ impl SlabDesc {
     }
 }
 
-/// `DescPerm`'s three values.
+/// `slab::SlabPages`' fields, zero as the kernel hands them out (every
+/// page open, no stamp): `SlabDesc::init` does not write them.
+struct SlabPages {
+    closed: AtomicU16,
+    stamp: AtomicU64,
+}
+
+impl SlabPages {
+    /// `SlabPages::pages_held`.
+    fn pages_held(&self) -> (u16, u64) {
+        (
+            self.closed.load(Ordering::Relaxed),
+            self.stamp.load(Ordering::Relaxed),
+        )
+    }
+
+    /// `SlabPages::set_pages`.
+    fn set_pages(&self, closed: u16, stamp: u64) {
+        self.stamp.store(stamp, Ordering::Relaxed);
+        self.closed.store(closed, Ordering::Release);
+    }
+}
+
+/// `DescPerm`'s five values.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Perm {
     state: u8,
     dirty: u64,
     arena: u16,
+    closed: u16,
+    stamp: u64,
 }
 
 /// The arena `take_group` hands the slab to.
 const ARENA: u16 = 3;
 /// The stamp the second holder writes.
 const STAMP: u64 = 9;
+/// The pages the second holder closes, and their stamp.
+const CLOSED: u16 = 0b0110;
+const PAGES_STAMP: u64 = 11;
 
 struct World {
     desc: SlabDesc,
+    pages: SlabPages,
     /// The class table's commit lock and its value's permission.
     commit: RawLock,
     table_perm: UnsafeCell<Option<Perm>>,
@@ -137,21 +168,28 @@ struct World {
 // the model checks.
 unsafe impl Sync for World {}
 
-/// The three reads through the permission `p`.
-fn check_held(d: &SlabDesc, p: Perm) {
+/// The four reads through the permission `p`.
+fn check_held(d: &SlabDesc, g: &SlabPages, p: Perm) {
     assert_eq!(d.state_byte_held(), p.state, "stale state");
     assert_eq!(d.dirty_held(), p.dirty, "stale dirty_at");
     assert_eq!(d.arena_held(), p.arena, "stale arena");
+    assert_eq!(g.pages_held(), (p.closed, p.stamp), "stale pages");
 }
 
 fn world() -> &'static World {
     leak(World {
         desc: SlabDesc::zero(),
+        pages: SlabPages {
+            closed: AtomicU16::new(0),
+            stamp: AtomicU64::new(0),
+        },
         commit: RawLock::new(),
         table_perm: UnsafeCell::new(Some(Perm {
             state: 0,
             dirty: 0,
             arena: 0,
+            closed: 0,
+            stamp: 0,
         })),
         class: RawLock::new(),
         class_perm: UnsafeCell::new(None),
@@ -172,6 +210,8 @@ fn take_and_activate(w: &World) {
         state: State::Fresh as u8,
         dirty: 0,
         arena: ARENA,
+        closed: 0,
+        stamp: 0,
     };
     w.commit.unlock();
     w.desc.set_state(State::Active);
@@ -188,7 +228,10 @@ fn read_and_empty(w: &World) {
     w.class.lock();
     // SAFETY: under the class lock.
     if let Some(mut p) = w.class_perm.with(|c| unsafe { *c }) {
-        check_held(&w.desc, p);
+        check_held(&w.desc, &w.pages, p);
+        w.pages.set_pages(CLOSED, PAGES_STAMP);
+        p.closed = CLOSED;
+        p.stamp = PAGES_STAMP;
         w.desc.set_state(State::Empty);
         p.state = State::Empty as u8;
         w.desc.set_dirty_at(STAMP);
@@ -203,8 +246,9 @@ fn read_and_empty(w: &World) {
 /// the joins.
 ///
 /// Covers copies of `SlabDesc::init`, `SlabDesc::state_byte_held`,
-/// `SlabDesc::dirty_held`, `SlabDesc::set_state`, `SlabDesc::arena_held` and
-/// `SlabDesc::set_dirty_at`.
+/// `SlabDesc::dirty_held`, `SlabDesc::set_state`, `SlabDesc::arena_held`,
+/// `SlabDesc::set_dirty_at`, `SlabPages::pages_held` and
+/// `SlabPages::set_pages`.
 #[test]
 fn loom_slab_desc_reads_through_the_lock() {
     model(|| {
@@ -215,7 +259,7 @@ fn loom_slab_desc_reads_through_the_lock() {
         u.join().unwrap();
         // SAFETY: both threads are joined.
         let p = w.class_perm.with(|c| unsafe { *c }).unwrap();
-        check_held(&w.desc, p);
+        check_held(&w.desc, &w.pages, p);
     });
 }
 

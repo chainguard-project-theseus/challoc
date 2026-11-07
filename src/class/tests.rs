@@ -2841,3 +2841,71 @@ fn stress_class_cross_thread_release() {
     assert_eq!(st.empty + st.purged, st.committed, "{st:?}");
     assert_eq!(st.nonfull, 0, "{st:?}");
 }
+
+/// Every class whose descriptor stride leaves room (32 or 64 bytes) has a
+/// `SlabPages` 16 bytes after each slab's header, zero (every page open)
+/// when the slab is handed out; a write through it reads back through the
+/// permission and the claims' load, and touches neither its own header
+/// nor the next slab's. Classes with the bare header have none.
+#[test]
+fn slab_pages_sit_after_the_header_where_the_stride_has_room() {
+    let env = Env::new();
+    let mut with = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        // Claims until a second slab is taken (a claim returns at most a
+        // batch).
+        let mut p = Vec::new();
+        let (s0, _) = {
+            p.extend(env.claim(cs, 1).0);
+            cs.locate(p[0])
+        };
+        let s1 = loop {
+            let (q, _) = env.claim(cs, cs.class().nslots());
+            if q.is_empty() {
+                break None;
+            }
+            p.extend(q);
+            let (s, _) = cs.locate(p[p.len() - 1]);
+            if s != s0 {
+                break Some(s);
+            }
+        };
+        // The largest classes have one slab in the test region.
+        let Some(s1) = s1 else {
+            cs.release(&p);
+            continue;
+        };
+        assert_ne!(s0, s1, "class {c}");
+        let stride = crate::slab::DESC_STRIDE[c] as usize;
+        let Some(pg) = cs.table().pages(s0) else {
+            assert!(stride < 32, "class {c}: stride {stride} has no SlabPages");
+            continue;
+        };
+        with += 1;
+        assert!(stride >= 32, "class {c}");
+        let (d0, d1) = (cs.desc(s0), cs.desc(s1));
+        assert_eq!(
+            pg as *const _ as usize,
+            d0 as *const _ as usize + 16,
+            "class {c}"
+        );
+        assert_eq!(pg.closed(), 0, "class {c}");
+        pg.set_pages(0b1010_0101, 77, Tracked::assume_new());
+        assert_eq!(
+            pg.pages_held(Ghost::assume_new(), Tracked::assume_new()),
+            (0b1010_0101, 77),
+            "class {c}"
+        );
+        assert_eq!(pg.closed(), 0b1010_0101, "class {c}");
+        for d in [d0, d1] {
+            assert_eq!(d.state(), State::Active, "class {c}");
+            assert_eq!(d.state_bytes(), (1, 2), "class {c}");
+            assert_eq!((d.arena(), d.dirty_at()), (0, 0), "class {c}");
+        }
+        assert_eq!(cs.table().pages(s1).unwrap().closed(), 0, "class {c}");
+        pg.set_pages(0, 0, Tracked::assume_new());
+        cs.release(&p);
+    }
+    assert!(with > 0);
+}

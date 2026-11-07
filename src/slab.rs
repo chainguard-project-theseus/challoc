@@ -16,6 +16,11 @@
 //! `class/`); it is what drives the `Active -> Empty` transition.
 //! `dirty_at` is the coarse monotonic time the slab became `Empty`, or 0 in
 //! any other state.
+//!
+//! A class whose stride leaves room (32 or 64 bytes, [`desc_stride`]) has
+//! a [`SlabPages`] in the 16 bytes after the header: which of the slab's
+//! pages are closed, and when the slab last had a closable one
+//! (docs/proposals/slab-pages.md, 3.2).
 
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
@@ -133,7 +138,9 @@ pub struct SlabDesc {
 /// Ghost permission to one descriptor (`id`, its address): the `state`,
 /// `dirty_at` and `arena` values it holds, the fields the class locks
 /// protect (`init` and `set_state` also write `shadow`, and `init`
-/// `live`, which it does not track). The slab-table proofs give it to the
+/// `live`, which it does not track), and the `closed` mask and `stamp`
+/// of the descriptor's [`SlabPages`], at `id + 16`, where its class has
+/// one (zero, and never written, where it has not). The slab-table proofs give it to the
 /// holder of the lock that protects them. Not `Copy`, and its fields are
 /// private to this module, which has no constructor: the one source is
 /// the trusted `class::table::axiom_zero_desc`, once per descriptor of a
@@ -147,6 +154,8 @@ pub tracked struct DescPerm {
     ghost state: u8,
     ghost dirty: u64,
     ghost arena: u16,
+    ghost closed: u16,
+    ghost stamp: u64,
 }
 
 impl DescPerm {
@@ -168,6 +177,25 @@ impl DescPerm {
     /// The descriptor's arena.
     pub closed spec fn arena(&self) -> u16 {
         self.arena
+    }
+
+    /// The slab's closed pages ([`SlabPages`]).
+    pub closed spec fn closed(&self) -> u16 {
+        self.closed
+    }
+
+    /// The slab's closable-page stamp ([`SlabPages`]).
+    pub closed spec fn stamp(&self) -> u64 {
+        self.stamp
+    }
+
+    /// Everything but the `state` byte and the `dirty_at` stamp is as
+    /// in `o`: what a write of those through the permission keeps.
+    pub open spec fn keeps_pages(&self, o: DescPerm) -> bool {
+        &&& self.id() == o.id()
+        &&& self.arena() == o.arena()
+        &&& self.closed() == o.closed()
+        &&& self.stamp() == o.stamp()
     }
 
     /// A ticket of the state this permission records now, for a claim
@@ -352,6 +380,8 @@ impl SlabDesc {
             final(p).state() == state_byte(State::Fresh),
             final(p).dirty() == 0,
             final(p).arena() == arena,
+            final(p).closed() == old(p).closed(),
+            final(p).stamp() == old(p).stamp(),
     {
         self.state.store(State::Fresh as u8, Ordering::Relaxed);
         self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);
@@ -428,10 +458,9 @@ impl SlabDesc {
         requires
             old(p).id() == desc_id(self),
         ensures
-            final(p).id() == old(p).id(),
+            final(p).keeps_pages(*old(p)),
             final(p).state() == state_byte(s),
             final(p).dirty() == old(p).dirty(),
-            final(p).arena() == old(p).arena(),
     {
         self.state.store(s as u8, Ordering::Relaxed);
         self.shadow.store(s as u8 + 1, Ordering::Relaxed);
@@ -526,10 +555,9 @@ impl SlabDesc {
         requires
             old(p).id() == desc_id(self),
         ensures
-            final(p).id() == old(p).id(),
+            final(p).keeps_pages(*old(p)),
             final(p).state() == old(p).state(),
             final(p).dirty() == ns,
-            final(p).arena() == old(p).arena(),
     {
         self.dirty_at.store(ns, Ordering::Relaxed);
     }
@@ -545,9 +573,123 @@ impl SlabDesc {
     }
 }
 
+/// The page state of a slab (docs/proposals/slab-pages.md, 3.2), in the
+/// 16 bytes after its descriptor's header, for a class whose stride is
+/// 32 or 64 bytes. Zero, as the kernel hands the metadata pages out, is
+/// every page open and no stamp, which is what a `Fresh` slab needs, so
+/// `SlabDesc::init` does not write it.
+#[repr(C, align(16))]
+pub struct SlabPages {
+    /// Bit `p` set: page `p` of the slab is closed, its slots unavailable
+    /// to a claim. The complement of the proposal's `open` mask, so that
+    /// zero is all open. Written under the class lock, `Release`; read by
+    /// claims without it, `Acquire`.
+    closed: AtomicU16,
+    /// When the decay walk last found one of the slab's open pages
+    /// closable (coarse monotonic nanoseconds), or 0.
+    stamp: AtomicU64,
+}
+
+/// The address of a [`SlabPages`]: the identity a [`DescPerm`] at
+/// `pages_id - 16` tracks its fields for. `class::table`'s
+/// `axiom_zero_desc` ties it to the address when it mints the
+/// permission to the bytes.
+pub uninterp spec fn pages_id(pg: &SlabPages) -> usize;
+
+/// `m` holds, under key `k`, the permission of the descriptor whose
+/// [`SlabPages`] `pg` is.
+pub open spec fn pages_for(m: Map<nat, DescPerm>, k: nat, pg: &SlabPages) -> bool {
+    m.contains_key(k) && pages_id(pg) == m[k].id() + 16
+}
+
+// The claim's re-check and the decay walk call these (slab-pages,
+// milestone 1); until then only the tests and Kani do.
+#[allow(dead_code)]
+impl SlabPages {
+    /// The [`SlabPages`] of slab `slab` in the descriptor array for
+    /// `class` starting at `base`, read through `perm`, the permission to
+    /// it, as [`SlabDesc::at`].
+    ///
+    /// # Safety
+    /// As [`SlabDesc::at`], and `class`'s stride is at least 32.
+    #[inline]
+    pub unsafe fn at(
+        base: usize,
+        class: usize,
+        slab: usize,
+        Tracked(perm): Tracked<&PointsTo<SlabPages>>,
+    ) -> (r: &SlabPages)
+        requires
+            class < NCLASSES,
+            base + slab * stride_of(class as int) + 16 <= usize::MAX,
+            perm.ptr() == ptr_mut_from_data::<SlabPages>(
+                PtrData { addr: (base + slab * stride_of(class as int) + 16) as usize, provenance: cast_provenance(), metadata: () },
+            ),
+            perm.is_init(),
+        ensures
+            *r == perm.value(),
+    {
+        ptr_ref(addr_to_ptr(base + slab * desc_stride(class) + HEADER) as *const SlabPages, Tracked(perm))
+    }
+
+    /// The closed pages, without the class lock: a claim's view
+    /// (docs/proposals/slab-pages.md, 3.4). `Acquire`, against
+    /// [`set_pages`](SlabPages::set_pages)' `Release`, so that a claim
+    /// that sees a page reopened sees everything the lock holder did
+    /// before reopening it.
+    #[inline]
+    pub fn closed(&self) -> u16 {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// The closed pages and the stamp, read by a holder of `m`, the
+    /// permissions a class lock value holds: the values the permission
+    /// under `k` records when it is this slab's. Trusted ([`DescPerm`]):
+    /// every write of the fields (`set_pages`) takes the descriptor's
+    /// permission and records the values written in it, and before the
+    /// first both are zero, as the permission (`class::table`'s
+    /// `axiom_zero_desc`) records; only the unit tests pass a permission
+    /// they made up (`Tracked::assume_new()`).
+    // `k` and `m` are read only by the specification (ghost).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    pub fn pages_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: (u16, u64))
+        ensures
+            pages_for(*m, k, self) ==> r.0 == m[k].closed() && r.1 == m[k].stamp(),
+    {
+        (self.closed.load(Ordering::Relaxed), self.stamp.load(Ordering::Relaxed))
+    }
+
+    /// Write the closed pages and the stamp. Only ever called with the
+    /// class lock held, which holds `p`, the descriptor's permission
+    /// (ghost), which records the new values. Trusted ([`DescPerm`]): the
+    /// two stores write the values the permission records; the mask's is
+    /// `Release` for [`closed`](SlabPages::closed).
+    // `p` is read only by the specification (ghost).
+    #[allow(unused_variables)]
+    #[inline]
+    #[verifier::external_body]
+    pub fn set_pages(&self, closed: u16, stamp: u64, Tracked(p): Tracked<&mut DescPerm>)
+        requires
+            pages_id(self) == old(p).id() + 16,
+        ensures
+            final(p).id() == old(p).id(),
+            final(p).state() == old(p).state(),
+            final(p).dirty() == old(p).dirty(),
+            final(p).arena() == old(p).arena(),
+            final(p).closed() == closed,
+            final(p).stamp() == stamp,
+    {
+        self.stamp.store(stamp, Ordering::Relaxed);
+        self.closed.store(closed, Ordering::Release);
+    }
+}
+
 } // verus!
 
 const _: () = assert!(core::mem::size_of::<SlabDesc>() == HEADER);
+const _: () = assert!(core::mem::size_of::<SlabPages>() == HEADER);
 const _: () = assert!(
     strides_match_every_page(),
     "a page-sized slab geometry changes a descriptor stride"
