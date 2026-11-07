@@ -266,6 +266,7 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         )
         .is_null()
     );
+    // SAFETY: as above: the failed `rallocx` left `s` live.
     assert_eq!(unsafe { *s.add(9) }, 9);
     dallocx(
         s,
