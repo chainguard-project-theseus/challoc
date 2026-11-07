@@ -10,7 +10,7 @@ file.
 | `WriteCallback` | ext_type_spec | function pointer | none (assumption) | trusted |
 | `call_back` | external_body | function pointer | Kani | discharged |
 | `write_file` | external_body | FFI/syscall | none (assumption) | trusted |
-| `word` | external_body | core library | Kani | trusted |
+| `word` | external_body | core library | Kani | discharged |
 | `hist_line` | external_body | core library | Kani | discharged |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
 
@@ -68,19 +68,19 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 ## `word`
 
 src/api/print.rs:452. Kind: external_body. Category: core library.
-Tool: Kani. Status: trusted (partly checked, Kani: api::print::kani_print::word_returns; not checked: the harness checks C strings up to 3 bytes; `core::str::from_utf8`'s word-at-a-time ASCII path (16 bytes and longer) is not reached).
+Tool: Kani. Status: discharged (Kani: api::print::kani_print::word_returns).
 
-> A configuration value's name (`config::Value::Str`, the `thp` key).
+> A configuration value's name (`config::Value::Str`, the `thp` and `percpu_arena` keys): the text of [`Name::cstr`].
 
-Hashes: contract 2777297539, body 2814324046.
+Hashes: contract 653785749, body 199771204.
 
 ```rust
-fn word(s: &CStr) -> &str
+fn word(n: Name) -> &'static str
 ```
 
 ## `hist_line`
 
-src/api/print.rs:972. Kind: external_body. Category: core library.
+src/api/print.rs:979. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
@@ -101,7 +101,7 @@ fn hist_line<W: Write>(
 
 ## `axiom_c_call`
 
-src/api/print.rs:1642. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1649. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
