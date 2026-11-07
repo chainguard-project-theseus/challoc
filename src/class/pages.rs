@@ -323,6 +323,65 @@ impl ClassState {
         true
     }
 
+    /// Open the lowest closed pages of slab `slab` until its open free
+    /// slots cover `need`, or every page is open (a refill's step 2,
+    /// docs/proposals/slab-pages.md, 3.3), under this arena's class lock
+    /// (`g`); `closed_slots` goes down by the slots that open. The bits
+    /// need no change: a closed page's are clear. The pages were
+    /// discarded, so the claim touches them again; the `Release` store of
+    /// the mask (`SlabPages::set_pages`) orders the claim after it.
+    pub(super) fn reopen_pages(&self, g: &mut Inner, slab: usize, need: usize)
+        requires
+            crate::sys::may_abort_pending(),
+            walk_ok(self, *old(g)),
+            old(g).owns(slab as nat),
+        ensures
+            walk_ok(self, *final(g)),
+            final(g).states == old(g).states,
+            final(g).partial == old(g).partial,
+            final(g).empty == old(g).empty,
+            final(g).purged == old(g).purged,
+            final(g).committed == old(g).committed,
+            final(g).group_next == old(g).group_next,
+            final(g).group_end == old(g).group_end,
+    {
+        let t = self.table();
+        let v0 = t.page_view();
+        if !v0.is_paged() {
+            return;
+        }
+        let Some(pg) = t.pages(slab) else {
+            return;
+        };
+        let (closed, stamp) = Self::pages_locked(&*g, pg, slab);
+        if closed == 0 {
+            return;
+        }
+        let live = self.desc(slab).live();
+        let mut c = closed;
+        while c != 0 && v0.nslots - v0.with_closed(c).closed_slots() < live.saturating_add(need)
+            invariant
+                v0.paged(),
+            decreases c,
+        {
+            // The lowest closed page opens: `c & (c - 1)` clears the lowest
+            // set bit.
+            proof {
+                assert(c & sub(c, 1) < c) by (bit_vector)
+                    requires c != 0u16;
+            }
+            c &= c - 1;
+        }
+        let n_old = v0.with_closed(closed).closed_slots();
+        let n_new = v0.with_closed(c).closed_slots();
+        let ghost g0 = *g;
+        g.closed_slots = g.closed_slots.saturating_sub(n_old.saturating_sub(n_new));
+        proof {
+            lemma_walk_frame(self, g0, *g);
+        }
+        self.set_pages_locked(g, pg, slab, c, stamp);
+    }
+
     /// The slab-pages walk (docs/proposals/slab-pages.md, 3.4 and 7.1),
     /// once its gate (`pages_due`) is due at `now`: the closable pages of
     /// up to [`WALK_SLABS`] partial slabs from the cursor, closed along the

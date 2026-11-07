@@ -2911,12 +2911,13 @@ fn slab_pages_sit_after_the_header_where_the_stride_has_room() {
     assert!(with > 0);
 }
 
-/// Slab pages, the claim (docs/proposals/slab-pages.md, 3.4): with pages
-/// of an `Active` slab closed, refills take exactly the slab's open slots
-/// (a slot straddling an open and a closed page is closed), because
-/// `take` reserves only open free slots and the claim takes only open
-/// slots; the reservation is met without the `reservation_unmet` abort,
-/// and the refill moves on to the next slab.
+/// Slab pages, the claim (docs/proposals/slab-pages.md, 3.3 and 3.4):
+/// with pages of an `Active` slab closed, refills take the slab's open
+/// slots first (a slot straddling an open and a closed page is closed),
+/// since `take` reserves only open free slots and the claim takes only
+/// open slots, met without the `reservation_unmet` abort; then the next
+/// refill reopens the slab's lowest closed page rather than take another
+/// slab.
 #[test]
 fn claims_take_only_the_slots_of_open_pages() {
     let env = Env::new();
@@ -2942,26 +2943,32 @@ fn claims_take_only_the_slots_of_open_pages() {
         assert!(open.len() < view.nslots, "class {c}");
         let mut held = p0.clone();
         let mut in_s0 = vec![k0];
-        loop {
-            let (q, _) = env.claim(cs, view.nslots);
+        while in_s0.len() < open.len() {
+            let (q, _) = env.claim(cs, open.len() - in_s0.len());
             assert!(!q.is_empty(), "class {c}");
-            let mut other = false;
             for &x in &q {
                 let (s, k) = cs.locate(x);
-                if s == s0 {
-                    in_s0.push(k);
-                } else {
-                    other = true;
-                }
+                assert_eq!(
+                    s, s0,
+                    "class {c}: another slab before the open slots ran out"
+                );
+                in_s0.push(k);
             }
             held.extend(q);
-            if other {
-                break;
-            }
         }
         in_s0.sort_unstable();
         assert_eq!(in_s0, open, "class {c}: slots taken on slab {s0}");
         assert_eq!(cs.desc(s0).live(), open.len(), "class {c}");
+        // The next refill reopens the lowest closed page.
+        let (q, _) = env.claim(cs, 1);
+        let (s, _) = cs.locate(q[0]);
+        assert_eq!(s, s0, "class {c}: a closed page reopens before a new slab");
+        assert_eq!(
+            pg.closed(),
+            closed & (closed - 1),
+            "class {c}: the lowest closed page reopened"
+        );
+        held.extend(q);
         pg.set_pages(0, 0, Tracked::assume_new());
         cs.release(&held);
         tested += 1;
@@ -3013,8 +3020,27 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
         assert_eq!(pg.closed(), want, "class {c}: closed pages");
         let hidden = view.with_closed(want).closed_slots();
         assert_eq!(closed_slots_t(cs), hidden, "class {c}");
-        // Refills take the slab's open free slots only.
+        // Refills take the slab's open free slots, then reopen its closed
+        // pages (counted out of `closed_slots`), and only then another slab.
+        let v = view.with_closed(want);
+        let open_free = (0..n)
+            .filter(|&k| v.word(k / 64) >> (k % 64) & 1 == 1)
+            .count()
+            - kept.len();
         let mut more: Vec<*mut u8> = Vec::new();
+        while more.len() < open_free {
+            let (q, _) = env.claim(cs, open_free - more.len());
+            more.extend(q);
+        }
+        for &x in &more {
+            let (s, k) = cs.locate(x);
+            assert_eq!(s, s0, "class {c}");
+            assert_eq!(
+                v.word(k / 64) >> (k % 64) & 1,
+                1,
+                "class {c}: slot {k} on a closed page"
+            );
+        }
         loop {
             let (q, _) = env.claim(cs, n);
             let done = q.iter().any(|&x| cs.locate(x).0 != s0);
@@ -3023,17 +3049,13 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
                 break;
             }
         }
-        let v = view.with_closed(want);
-        for &x in &more {
-            let (s, k) = cs.locate(x);
-            if s == s0 {
-                assert_eq!(
-                    v.word(k / 64) >> (k % 64) & 1,
-                    1,
-                    "class {c}: slot {k} on a closed page"
-                );
-            }
-        }
+        assert_eq!(
+            pg.closed(),
+            0,
+            "class {c}: every page reopened before another slab"
+        );
+        assert_eq!(closed_slots_t(cs), 0, "class {c}");
+        assert_eq!(cs.desc(s0).live(), n, "class {c}");
         cs.release(&more);
         cs.release(&kept);
         assert_eq!(
