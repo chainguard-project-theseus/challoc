@@ -514,6 +514,29 @@ fn word(n: Name) -> &'static str {
     }
 }
 
+/// A configuration value as both reports print it: a bool or number as
+/// itself, a name ([`word`]) in double quotes.
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::Int(i) => write!(f, "{}", i),
+            Value::Uint(u) => write!(f, "{}", u),
+            Value::Size(n) => write!(f, "{}", n),
+            Value::Str(s) => write!(f, "\"{}\"", word(*s)),
+        }
+    }
+}
+
+// `Value` formats under any formatter. Ghost only: ordinary builds have
+// no `std_specs`.
+#[cfg(verus_keep_ghost)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Value {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Text report.
 // ---------------------------------------------------------------------------
@@ -576,13 +599,8 @@ fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapsho
         } else {
             ""
         };
-        match shared.config.get(key.as_bytes()) {
-            Some(Value::Bool(b)) => writeln!(out, "  opt.{}: {}{}", key, b, note)?,
-            Some(Value::Int(i)) => writeln!(out, "  opt.{}: {}{}", key, i, note)?,
-            Some(Value::Uint(u)) => writeln!(out, "  opt.{}: {}{}", key, u, note)?,
-            Some(Value::Size(n)) => writeln!(out, "  opt.{}: {}{}", key, n, note)?,
-            Some(Value::Str(s)) => writeln!(out, "  opt.{}: \"{}\"{}", key, word(s), note)?,
-            None => {}
+        if let Some(v) = shared.config.get(key.as_bytes()) {
+            writeln!(out, "  opt.{}: {}{}", key, v, note)?;
         }
     }
     // An inert key (`config::INERT_KEYS`) is parsed and validated but has
@@ -1107,13 +1125,7 @@ fn json_general<W: Write + Report>(
                 writeln!(out, ",")?;
             }
             first = false;
-            match v {
-                Value::Bool(b) => write!(out, "\t\t\t\"{key}\": {b}")?,
-                Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
-                Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
-                Value::Size(n) => write!(out, "\t\t\t\"{key}\": {n}")?,
-                Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{}\"", word(s))?,
-            }
+            write!(out, "\t\t\t\"{key}\": {v}")?;
         }
     }
     writeln!(out)?;
