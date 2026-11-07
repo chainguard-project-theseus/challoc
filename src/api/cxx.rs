@@ -254,8 +254,9 @@ fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> b
 /// The `operator new` failure protocol: call the `new_handler` and retry
 /// until an attempt succeeds or no handler is installed, then throw
 /// `std::bad_alloc` (or return null for the `nothrow_t` forms, also when
-/// the handler throws). `align` is 0 for the unaligned operators. `blk`
-/// gets the block's token.
+/// the handler throws). `align` is 0 for the unaligned operators, else
+/// the power of two `new_aligned_block` checked. `blk` gets the block's
+/// token.
 #[cold]
 #[inline(never)]
 // Ends only when the program's handler frees memory, is removed or throws.
@@ -270,12 +271,10 @@ fn oom(
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        align == 0 || is_pow2(align),
     ensures
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
-        align != 0 && is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
-        // A non-zero alignment that is not a power of two never gets a
-        // block: `aligned_alloc` refuses it on every attempt.
-        align != 0 && !is_pow2(align) ==> r@.addr == 0,
+        align != 0 ==> crate::heap::fits(r, size as int, align as int),
         final(blk).gives(r, size as int),
         !nothrow ==> r@.addr != 0,
 {
@@ -283,6 +282,7 @@ fn oom(
         invariant
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            align == 0 || is_pow2(align),
     {
         let Some(handler) = installed_handler() else {
             if nothrow {
@@ -300,7 +300,7 @@ fn oom(
         let p = if align == 0 {
             libc::malloc_block(size, Tracked(blk), Tracked(errno))
         } else {
-            libc::aligned_alloc_block(align, size, Tracked(blk), Tracked(errno))
+            libc::alloc_aligned(align, size, Tracked(blk), Tracked(errno))
         };
         if !p.is_null() {
             return p;
@@ -435,7 +435,7 @@ pub fn new_aligned_block(
     proof {
         crate::meta::lemma_pow2_bits(align);
     }
-    let p = libc::aligned_alloc_block(align, size, Tracked(blk), Tracked(errno));
+    let p = libc::alloc_aligned(align, size, Tracked(blk), Tracked(errno));
     if p.is_null() {
         oom(size, align, nothrow, Tracked(blk), Tracked(errno))
     } else {
