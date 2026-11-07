@@ -975,17 +975,19 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
   class state and one in the huge allocator. `-1` is never.
 - `muzzy_decay_ms` is accepted and ignored. Two advices instead
   (`policy::Advice`): a purge is `MADV_DONTNEED` (eager: the pages leave
-  RSS and the cgroup's charge at once) except under 70% of a known cgroup
-  limit (section 11), where it is `MADV_FREE` (lazy: the pages stay mapped
-  and charged until the kernel reclaims them, which it does first as the
-  cgroup nears its limit, and a reuse before that costs no fault). With no
-  limit, the common case, the advice is eager, because lazily freed pages
-  stay visible in RSS and mislead autoscalers and Redis's fragmentation
-  ratio. Every explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the
+  RSS and the cgroup's charge at once). With `lazy_band:true` (an opt-in;
+  the default is false) a purge under 70% of a known cgroup limit
+  (section 11) is `MADV_FREE` instead (lazy: the pages stay mapped and
+  charged until the kernel reclaims them, which it does first as the
+  cgroup nears its limit, and a reuse before that costs no fault). Eager
+  is the default everywhere because lazily freed pages stay visible in RSS
+  and mislead autoscalers and Redis's fragmentation ratio, and the refault
+  saving did not show in throughput (docs/tuning.md, section 4). Under the
+  opt-in, every explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the
   `high`-rise full purge) is eager, and so is the whole return of an excess
   over the retention cap first seen at 70% or above
   (`Policy::eager_excess`), since its first eager walks bring usage under
-  70% before the rest is purged. `lazy_band:false` turns the saving off.
+  70% before the rest is purged.
   The advice is read at each batch flush from the band as last evaluated.
 - `Purged` memory and zero: `MADV_DONTNEED`ed pages read as zero,
   `MADV_FREE`d pages do not. One process-wide sticky flag
@@ -1389,7 +1391,7 @@ beyond `LEVELS`:
 | Usage vs limit (worst level)      | Behaviour                                                  | Purge advice (section 8) |
 |-----------------------------------|------------------------------------------------------------|---------------------------|
 | No limit                          | Defaults; nothing beyond the sample is done                | `MADV_DONTNEED`           |
-| < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit              | `MADV_FREE` (`lazy_band`) |
+| < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit              | `MADV_DONTNEED`; `MADV_FREE` with `lazy_band` |
 | 70% .. 90%                        | `dirty_decay_ms` scaled down linearly to 1000; the cap     | `MADV_DONTNEED`           |
 | >= 90%                            | Period 0: purge at the next pass; cache GC every tick      | `MADV_DONTNEED`           |
 | `memory.events` `high` increased  | Full purge once, at the next decay pass                    | `MADV_DONTNEED`           |
@@ -1418,7 +1420,7 @@ started reclaiming from this cgroup) requests one full purge, run by the
 next decay pass; the count at init is the baseline. A limit that goes
 away resets the outcome to the defaults.
 
-Lazily returned pages stay charged to `memory.current` until the kernel
+Under `lazy_band`, lazily returned pages stay charged to `memory.current` until the kernel
 reclaims them, so the sample counts them and the band moves toward 70%
 sooner than live memory alone would. That flips the advice to eager while
 memory is plentiful, an error in the safe direction, and the lazy pages
@@ -1488,7 +1490,7 @@ Format is jemalloc's `key:value,key:value`. The keys, in `TABLE` order:
 | `tcache_nslots_small_max` | 1024    | `8`..`65536`; 6.2                       |
 | `lg_tcache_nslots_mul`    | 1       | `-16`..`16`; 6.2                        |
 | `thp`                     | never   | `never` (alias `default`), `auto`, `always`; 17.1 |
-| `lazy_band`               | true    | `MADV_FREE` under 70% of a known limit; 8, 11 |
+| `lazy_band`               | false   | `MADV_FREE` under 70% of a known limit; 8, 11 |
 | `guards`                  | true    | guard slabs and huge-run guards; 5, 7   |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs; 0 off, 1 clamps to 2, a non-power of two rounds up; max 2^22 |
 | `huge_retain_max`         | 67108864 | bytes; freed huge runs above it are purged at once; 7 |
@@ -2105,7 +2107,7 @@ table is decided at build time.
 |---|---|---|---|
 | Page size (`AT_PAGESZ`) | kernel, the auxiliary vector | the granularity of every mapping, slab and purge (4, 16 or 64 KiB; page-sized slabs, section 3) | none: init aborts without it |
 | `MADV_GUARD_INSTALL` | kernel 6.13 | guard slabs between slabs and guards after huge runs (sections 5, 7) | a `PROT_NONE` page after huge runs; no guard slabs |
-| `MADV_FREE` | every supported kernel (4.5+) | lazy purges under 70% of a known cgroup limit (sections 8, 11) | not needed; `MADV_DONTNEED` everywhere else |
+| `MADV_FREE` | every supported kernel (4.5+) | lazy purges under 70% of a known cgroup limit with `lazy_band` (sections 8, 11) | not needed; `MADV_DONTNEED` everywhere else |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | rseq registration | glibc 2.44's registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, and the area's own `cpu_id`; `rseq::probe`) | the feature line's `rseq` and `rseq_size` words, nothing else | `rseq=no rseq_size=0` without a registration (`glibc.pthread.rseq=0`, a kernel without `CONFIG_RSEQ`) |

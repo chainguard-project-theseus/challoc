@@ -72,6 +72,8 @@ fn a_locked_range_is_reported_and_left_alone() {
         ) {
             return;
         }
+        // Both advices: the lazy one is the `lazy_band:true` opt-in.
+        configure_advice(true);
         for lazy in [false, true] {
             set_headroom(lazy, false);
             assert_eq!(advice() == Advice::Lazy, lazy);

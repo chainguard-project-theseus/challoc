@@ -211,6 +211,8 @@ fn advice_follows_headroom_band_key_and_explicit_purges() {
     crate::testutil::in_fork_child("purge advice", 30_000, || {
         forget_other_threads_explicit_purges();
         assert_eq!(advice(), Advice::Eager);
+        // The headroom band's lazy advice is an opt-in (`lazy_band:true`).
+        configure_advice(true);
         set_headroom(true, false);
         assert_eq!(advice(), Advice::Lazy);
         assert_eq!(advice_reason(), "under 70% of the limit");

@@ -48,8 +48,8 @@ fn defaults_match_the_design_table() {
     assert_eq!(d.tcache_nslots_small_max, 1024);
     assert_eq!(d.lg_tcache_nslots_mul, 1);
     assert_eq!(d.thp, Thp::Never);
-    assert!(d.lazy_band);
-    assert!(!clean("lazy_band:false").lazy_band);
+    assert!(!d.lazy_band);
+    assert!(clean("lazy_band:true").lazy_band);
     assert!(d.guards);
     assert_eq!(d.guard_slab_interval, 8);
     assert_eq!(d.huge_retain_max, 64 << 20);
