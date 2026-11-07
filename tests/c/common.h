@@ -18,6 +18,7 @@
 #define CHALLOC_TESTS_COMMON_H
 
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <malloc.h>
@@ -127,6 +128,74 @@ static inline mallctl_fn mallctl_dl(void)
     return (mallctl_fn)dlsym(RTLD_DEFAULT, "mallctl");
 }
 
+/* Read a `size_t` key: mallctl's return code, the value in `*out`. */
+static inline int read_size(const char *key, size_t *out)
+{
+    size_t len = sizeof *out;
+    return mallctl(key, out, &len, NULL, 0);
+}
+
+/* Read an `unsigned`, `bool` or `size_t` key that must exist; a missing
+ * `mallctl` or key is fatal. */
+static inline unsigned ctl_uint(const char *name)
+{
+    unsigned v = 0;
+    size_t len = sizeof v;
+    REQUIRE(mallctl != NULL, "mallctl not exported");
+    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
+    return v;
+}
+
+static inline bool ctl_bool(const char *name)
+{
+    bool v = false;
+    size_t len = sizeof v;
+    REQUIRE(mallctl != NULL, "mallctl not exported");
+    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
+    return v;
+}
+
+static inline size_t ctl_size(const char *name)
+{
+    size_t v = 0;
+    size_t len = sizeof v;
+    REQUIRE(mallctl != NULL, "mallctl not exported");
+    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
+    return v;
+}
+
+/* `malloc_stats_print`'s type, for the programs that look it up with
+ * `dlsym`. */
+typedef void (*stats_print_fn)(void (*)(void *, const char *), void *, const char *);
+
+struct stats_buf {
+    char *buf;
+    size_t cap, len;
+};
+
+/* The `stats_report` callback: append `s` when it fits with room for the
+ * terminating NUL, drop it otherwise. */
+static inline void stats_buf_append(void *opaque, const char *s)
+{
+    struct stats_buf *b = (struct stats_buf *)opaque;
+    size_t n = strlen(s);
+    if (b->len + n < b->cap) {
+        memcpy(b->buf + b->len, s, n);
+        b->len += n;
+    }
+}
+
+/* Run `print` (malloc_stats_print) with `opts` and collect the whole
+ * report in `buf`, NUL-terminated; returns `buf`. The report comes in
+ * chunks that can split a line anywhere, so it is parsed only once whole. */
+static inline char *stats_report(stats_print_fn print, const char *opts, char *buf, size_t cap)
+{
+    struct stats_buf b = { buf, cap, 0 };
+    print(stats_buf_append, &b, opts);
+    buf[b.len] = 0;
+    return buf;
+}
+
 /* Fill `n` bytes with a pattern derived from `seed`; `check_fill` verifies
  * it. The pattern depends on the offset so a block shifted by one byte or a
  * block overwritten by a neighbour's pattern is caught. */
@@ -227,6 +296,51 @@ static inline int expect_signal(int sig, void (*fn)(void *), void *arg)
     while (waitpid(pid, &status, 0) != pid)
         REQUIRE(errno == EINTR, "waitpid: %s", strerror(errno));
     return WIFSIGNALED(status) && WTERMSIG(status) == sig;
+}
+
+/* Register `pthread_atfork(prepare, parent, child)` from the program's
+ * .preinit_array, which runs before every library's constructor, challoc's
+ * among them: before challoc registers its own handlers, so these run
+ * inside challoc's fork window (design 9). A handler registered later,
+ * from a constructor, runs outside it (tests/c/atfork_pool.c). Exits 3
+ * when the registration fails. */
+#define ATFORK_FIRST(prepare, parent, child)                                                         \
+    static void register_first(void)                                                                 \
+    {                                                                                                \
+        if (pthread_atfork(prepare, parent, child) != 0)                                             \
+            _exit(3);                                                                                \
+    }                                                                                                \
+    __attribute__((section(".preinit_array"), used)) static void (*const preinit_register)(void) = \
+        register_first
+
+/* The number of this process's threads named `challoc-bg` (the background
+ * thread), from /proc/self/task. */
+static inline int bg_threads(void)
+{
+    DIR *d = opendir("/proc/self/task");
+    REQUIRE(d, "opendir /proc/self/task");
+    struct dirent *e;
+    int n = 0;
+    char path[300], name[64];
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.')
+            continue;
+        snprintf(path, sizeof path, "/proc/self/task/%s/comm", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (f && fgets(name, sizeof name, f) && strncmp(name, "challoc-bg", 10) == 0)
+            n++;
+        if (f)
+            fclose(f);
+    }
+    closedir(d);
+    return n;
+}
+
+/* qsort comparator for an array of pointers, by address. */
+static inline int cmp_ptr(const void *a, const void *b)
+{
+    uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
+    return x < y ? -1 : x > y;
 }
 
 /* Exits 1 unless challoc is really serving malloc. malloc(1) on glibc has

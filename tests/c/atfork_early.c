@@ -59,20 +59,9 @@ static void child(void)
     child_after++;
 }
 
-/* Registered from the program's .preinit_array, which runs before every
- * library's constructor, challoc's among them: before challoc registers
- * its own handlers, so these run inside challoc's fork window (design 9).
- * A handler registered later, from a constructor, runs outside it
- * (tests/c/atfork_pool.c). */
-static void register_first(void)
-{
-    /* No allocation before this: glibc's pthread_atfork does not allocate
-     * for the first handlers. */
-    if (pthread_atfork(prepare, parent, child) != 0)
-        _exit(3);
-}
-
-__attribute__((section(".preinit_array"), used)) static void (*const preinit_register)(void) = register_first;
+/* No allocation before this: glibc's pthread_atfork does not allocate for
+ * the first handlers. */
+ATFORK_FIRST(prepare, parent, child);
 #endif
 
 static int work(void)

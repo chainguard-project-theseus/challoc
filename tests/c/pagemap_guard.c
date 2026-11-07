@@ -110,33 +110,6 @@ static int scan_errno, guard_cat_errno;
 
 /* ---- geometry from the public keys (as tests/c/guard_slab.c) ------------ */
 
-static unsigned ctl_uint(const char *name)
-{
-    unsigned v = 0;
-    size_t len = sizeof v;
-    REQUIRE(mallctl != NULL, "mallctl not exported");
-    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
-    return v;
-}
-
-static bool ctl_bool(const char *name)
-{
-    bool v = false;
-    size_t len = sizeof v;
-    REQUIRE(mallctl != NULL, "mallctl not exported");
-    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
-    return v;
-}
-
-static size_t ctl_size(const char *name)
-{
-    size_t v = 0;
-    size_t len = sizeof v;
-    REQUIRE(mallctl != NULL, "mallctl not exported");
-    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
-    return v;
-}
-
 /* Bin index of the class whose slot size is exactly `size`, -1 if none. */
 static int bin_of(size_t size)
 {
@@ -184,12 +157,6 @@ static bool guard_install_available(void)
     bool ok = madvise(p, page_size, MADV_GUARD_INSTALL) == 0;
     munmap(p, 2 * page_size);
     return ok;
-}
-
-static int cmp_ptr(const void *a, const void *b)
-{
-    uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
-    return x < y ? -1 : x > y;
 }
 
 /* ---- PAGEMAP_SCAN ---------------------------------------------------------- */

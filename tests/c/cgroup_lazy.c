@@ -45,7 +45,7 @@
  * Single-threaded, no `malloc_trim`, no background thread: the periodic
  * tick is the only purge path, as in cgroup_churn.c.
  */
-#include "common.h"
+#include "cgroup.h"
 #include <fcntl.h>
 #include <stdbool.h>
 #include <time.h>
@@ -54,63 +54,7 @@
 enum { WINDOW_MS = 2000, STEP_MS = 100, TRICKLE_MS = 10, PRESSURE_MIB = 380, PRESSURE_OBJ = 8192 };
 
 static long page_size;
-static char cgroup_dir[8192];
 static int have_cgroup;
-
-/* The cgroup directory, found the way the library finds it (design 11). */
-static int find_cgroup(void)
-{
-    char line[4096], path[4096] = "", mount[4096] = "";
-    FILE *f = fopen("/proc/self/cgroup", "r");
-    if (!f)
-        return 0;
-    while (fgets(line, sizeof line, f))
-        if (strncmp(line, "0::/", 4) == 0) {
-            snprintf(path, sizeof path, "%s", line + 3);
-            path[strcspn(path, "\n")] = 0;
-        }
-    fclose(f);
-    f = fopen("/proc/self/mountinfo", "r");
-    if (!f)
-        return 0;
-    while (fgets(line, sizeof line, f)) {
-        char *sep = strstr(line, " - ");
-        if (sep && strncmp(sep + 3, "cgroup2 ", 8) == 0 && !mount[0]) {
-            *sep = 0;
-            char *save = NULL, *tok = strtok_r(line, " ", &save);
-            for (int i = 0; tok && i < 4; i++)
-                tok = strtok_r(NULL, " ", &save);
-            if (tok)
-                snprintf(mount, sizeof mount, "%s", tok);
-        }
-    }
-    fclose(f);
-    if (!path[0] || !mount[0])
-        return 0;
-    snprintf(cgroup_dir, sizeof cgroup_dir, "%s%s", mount, strcmp(path, "/") == 0 ? "" : path);
-    return 1;
-}
-
-static long long read_cgroup_ll(const char *file)
-{
-    if (!have_cgroup)
-        return -1;
-    char p[8192 + 64];
-    snprintf(p, sizeof p, "%s/%s", cgroup_dir, file);
-    FILE *f = fopen(p, "r");
-    if (!f)
-        return -1;
-    char buf[64];
-    long long v = -1;
-    if (fgets(buf, sizeof buf, f)) {
-        if (strncmp(buf, "max", 3) == 0)
-            v = -2;
-        else
-            v = atoll(buf);
-    }
-    fclose(f);
-    return v;
-}
 
 /* The kernel's view of this cgroup's memory (memory.stat, cgroup v2): the
  * anonymous and file bytes, the inactive file list (where lazy-free pages
@@ -147,17 +91,6 @@ static struct memstat read_memstat(void)
     }
     fclose(f);
     return m;
-}
-
-static const char *fmt_mib(long long v, char *buf, size_t n)
-{
-    if (v == -2)
-        snprintf(buf, n, "max");
-    else if (v < 0)
-        snprintf(buf, n, "n/a");
-    else
-        snprintf(buf, n, "%lld MiB", v / (long long)MIB);
-    return buf;
 }
 
 static void print_memstat(const char *when, const struct memstat *m)
@@ -357,7 +290,7 @@ int main(int argc, char **argv)
     if (!any)
         require_challoc();
     page_size = sysconf(_SC_PAGESIZE);
-    have_cgroup = find_cgroup();
+    have_cgroup = find_cgroup(false);
     char b1[32], b2[32];
     long long limit = read_cgroup_ll("memory.max"), cur0 = read_cgroup_ll("memory.current");
     size_t rss0 = rss_bytes();

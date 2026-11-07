@@ -35,29 +35,13 @@
 #define SYS_mseal 462
 #endif
 
-typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
-
 static int stats_sealed, stats_total;
 static char report[1 << 18];
-static size_t report_len;
-
-/* malloc_stats_print callback: accumulate the report. */
-static void stats_cb(void *opaque, const char *s)
-{
-    (void)opaque;
-    size_t n = strlen(s);
-    if (report_len + n < sizeof report) {
-        memcpy(report + report_len, s, n);
-        report_len += n;
-    }
-}
 
 /* Run malloc_stats_print and pick out "Sealed ranges: N of M". */
 static void read_sealed_stats(stats_print_fn msp)
 {
-    report_len = 0;
-    msp(stats_cb, NULL, "");
-    report[report_len] = 0;
+    stats_report(msp, "", report, sizeof report);
     const char *at = strstr(report, "Sealed ranges: ");
     if (at)
         sscanf(at, "Sealed ranges: %d of %d", &stats_sealed, &stats_total);
