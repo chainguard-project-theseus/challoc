@@ -362,7 +362,9 @@ design 13.4 must say so:
   the floor bytes as its score, against jemalloc.
 - **Redis `unit/memefficiency`:** the eight skipped tests pass at their
   stock thresholds, and their skips leave `tests/consumers/redis-build.sh`.
-  For Valkey, `contrib/valkey/0001`'s eval-scripts calibration goes.
+  For Valkey, `contrib/valkey/0001`'s eval-scripts calibration goes, and
+  so does the `Active Defrag eval scripts: standalone` skip in
+  `tests/consumers/valkey-build.sh` (its pre-defrag ratio check).
 - **Benchmarks:**
   - `make quick`, with `xmalloc-test`, the row the 16 KiB slabs lost, and
     the `churn1024` occupancy probe;

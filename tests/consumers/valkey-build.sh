@@ -83,15 +83,16 @@ check_server ./src/valkey-server "$LIB"
 
 # 5. Tests.
 find_tclsh
-# Known challoc issue, skipped rather than calibrated: the test's first
-# check, the allocator fragmentation ratio right after it loads its data
-# (before any delete or defrag), must be below 1.05, and challoc measures
-# 1.046, which Valkey rounds to 1.05. Valkey writes `epoch` from its cron,
-# and since #576 the cache GC that runs on epoch writes returns the main
-# thread's cached slots to their slabs, so about 13 size classes each show
-# one mostly empty 64 KiB slab (jemalloc's slabs for these classes are 4 to
-# 28 KiB). It fails the same way on main on both arches. The real fix is
-# the slab-pages design, tracked by wolfi-dev/challoc#604; remove the
-# pattern once challoc passes the test.
-echo "skipping (known challoc issue, slab floor, wolfi-dev/challoc#604): Active Defrag eval scripts"
-run_stages --skiptest "/^Active Defrag eval scripts"
+# Known challoc issue: "Active Defrag eval scripts: standalone" fails its
+# first check, the allocator fragmentation ratio right after it loads its
+# data (before any delete or defrag), which must be below 1.05; challoc
+# measures 1.046, which Valkey rounds to 1.05. The cache GC that runs on
+# Valkey's cron epoch writes returns the main thread's cached slots to
+# their slabs, so about 13 size classes each show one mostly empty 64 KiB
+# slab (jemalloc's slabs for these classes are 4 to 28 KiB). contrib/valkey
+# 0001's ignore_bytes calibration covers the defrag phase that follows, so
+# it cannot help this check; it stays for the ": cluster" variant, which
+# passes and still runs. Tracked by wolfi-dev/challoc#604 (slab pages);
+# remove the pattern once challoc passes the test.
+echo "skipping (known challoc issue, slab floor, wolfi-dev/challoc#604): Active Defrag eval scripts: standalone"
+run_stages --skiptest "/^Active Defrag eval scripts: standalone"
