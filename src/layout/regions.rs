@@ -1637,18 +1637,7 @@ impl Regions {
         } else {
             let c = choose|c: int|
                 0 <= c < NCLASSES && #[trigger] self.class_base[c] <= p && p + n <= self.class_base[c] + (1usize << self.lg_region);
-            assert(self.superblock + c * stride <= self.class_base[c]);
-            assert(self.class_base[c] + (1usize << self.lg_region) <= self.superblock + (c + 1) * stride);
-            assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
-                requires
-                    c < NCLASSES,
-                    stride >= 0,
-            ;
-            assert(0 <= c * stride) by (nonlinear_arith)
-                requires
-                    c >= 0,
-                    stride >= 0,
-            ;
+            self.lemma_class_in_strides(c);
             assert(disjoint(self.superblock as int, NCLASSES * stride, self.meta_base as int, self.meta_len as int));
         }
     }
@@ -1668,24 +1657,12 @@ impl Regions {
         ensures
             disjoint(p as int, if size < 1 { 1 } else { size }, a, len),
     {
-        let stride = (1usize << self.lg_stride) as int;
         let n = if size < 1 { 1 } else { size };
         self.lemma_user_block_separated(p, size);
         if !(self.huge_base <= p && p + n <= self.huge_base + self.huge_len) {
             let c = choose|c: int|
                 0 <= c < NCLASSES && #[trigger] self.class_base[c] <= p && p + n <= self.class_base[c] + (1usize << self.lg_region);
-            assert(self.superblock + c * stride <= self.class_base[c]);
-            assert(self.class_base[c] + (1usize << self.lg_region) <= self.superblock + (c + 1) * stride);
-            assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
-                requires
-                    c < NCLASSES,
-                    stride >= 0,
-            ;
-            assert(0 <= c * stride) by (nonlinear_arith)
-                requires
-                    c >= 0,
-                    stride >= 0,
-            ;
+            self.lemma_class_in_strides(c);
         }
     }
 
