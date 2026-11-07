@@ -56,7 +56,7 @@ from typing import Any
 
 from . import report
 from .plan import derive_seed, pack_shards, parse_variant, row_vm_seconds
-from .spec import BENCH_DIR, ROOT_DIR, Cell, SpecError, load_cells, load_rows, load_suite, parse_container, select_cells
+from .spec import BENCH_DIR, ROOT_DIR, SpecError, load_cells, load_rows, load_suite, parse_container, select_cells
 from .variants import BuildError, git, resolve_rev
 
 BOOT_SH = os.path.join(BENCH_DIR, "cb", "boot.sh")
@@ -974,7 +974,7 @@ def launch(args: Any) -> int:
     os.makedirs(out, exist_ok=True)
     if not L.vms:
         log(f"cb launch: every cell is PENDING ({'; '.join(f'{k}: {v}' for k, v in L.pending_cells.items())}); nothing to run")
-        _write(os.path.join(out, "launch-summary.json"), {"run": L.run, "headline": "PENDING", "pending_cells": L.pending_cells})
+        report.write_json(os.path.join(out, "launch-summary.json"), {"run": L.run, "headline": "PENDING", "pending_cells": L.pending_cells})
         return 2
     try:
         log("== bundle")
@@ -1006,7 +1006,7 @@ def launch(args: Any) -> int:
         log(f"cb launch: {e}")
         created = [n for n, s in L.state.items() if s["status"] in ("created", "creating")]
         L.delete([n for n in created if L.state[n].get("zone")])
-        _write(os.path.join(out, "launch-summary.json"), {"run": L.run, "error": str(e), "cost": L.cost()})
+        report.write_json(os.path.join(out, "launch-summary.json"), {"run": L.run, "error": str(e), "cost": L.cost()})
         return 3
     finally:
         L.times["verdict"] = time.time() - L.t0
@@ -1029,12 +1029,12 @@ def launch(args: Any) -> int:
         "images": {n: {k: ci.get(k) for k in ("family", "image", "image_project", "image_created")} for n, ci in L.cell_info.items()},
         "headline": summary["headline"] if summary else "INFRA",
     }
-    _write(os.path.join(out, "launch-summary.json"), ls)
+    report.write_json(os.path.join(out, "launch-summary.json"), ls)
     if not summary:
         log("cb launch: no samples came back")
         return 3
     summary["launch"] = {k: ls[k] for k in ("wall_s", "vm_times_median_s", "cost", "looks", "shards_lost", "pending_cells", "images")}
-    _write(os.path.join(out, "summary.json"), summary)
+    report.write_json(os.path.join(out, "summary.json"), summary)
     text = report.render(summary)
     text += (
         f"\nwall clock {L.times['verdict'] / 60:.1f} min (bundle {L.times.get('bundled', 0):.0f} s, created {L.times.get('created', 0):.0f} s, "
@@ -1110,13 +1110,6 @@ def _dur_s(s: str) -> float:
     if s[-1] in mult:
         return float(s[:-1]) * mult[s[-1]]
     return float(s)
-
-
-def _write(path: str, obj: Any) -> None:
-    with open(path + ".tmp", "w") as f:
-        json.dump(obj, f, indent=1, default=str)
-        f.write("\n")
-    os.replace(path + ".tmp", path)
 
 
 def gc_select(items: list[dict[str, Any]], now: datetime.datetime, *, run: str | None, older_than_min: float) -> list[tuple[dict[str, Any], str]]:
