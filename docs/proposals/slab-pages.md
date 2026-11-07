@@ -1,7 +1,9 @@
 # Proposal: slab pages (smaller initial slabs for the small classes)
 
-Status: proposal, not built. Nothing here describes the allocator as it
-is; `docs/design.md` does, and its sections are cited as "design N.M".
+Status: built (milestones 1 to 3 and the medium tier's 64 KiB slabs); the
+implementation departs from this text where section 9 says. The rest is
+the proposal as it was accepted; `docs/design.md` describes the allocator,
+and its sections are cited as "design N.M".
 
 The measurements of 1.1 were taken with the Redis harness of #597
 (`contrib/redis`, `tests/consumers/redis-build.sh`), and the validation
@@ -481,3 +483,55 @@ Classes above 4096 bytes are 16 to 25 slots per slab, so this is one
   slots). Every slot covers whole pages. The unit closed is the slot: a 32-bit
   closed-slot mask (at most 25 slots per slab), whose slot closes when it
   is free and opens when a claim wants it.
+
+## 9. As built
+
+The code is in `src/layout/pages.rs` (the geometry), `src/slab.rs`
+(`SlabPages`), `src/class/pages.rs` (the walk) and the claim and
+selection steps of `src/class/mod.rs`. Where it departs from the text
+above, and why:
+
+- **A closed mask, not an open one.** `SlabPages::closed` is the
+  complement of 3.2's `open`, so that the zero metadata pages read as
+  every page open and `SlabDesc::init` writes nothing new.
+- **Every class has page state.** The smallest descriptor stride is 32
+  bytes (the header and `SlabPages`), so the 1280..4096 B classes' 64 KiB
+  slabs and the 512..1024 classes' 8 and 16 KiB slabs close pages with
+  the small tier's mechanism: section 8's 64 KiB classes without the side
+  array. Slabs of more than 16 pages (above 4096 B) are still out.
+- **Address-ordered first fit, reopening in place.** A refill reopens a
+  slab's closed pages in the partial walk, as soon as the slab's open
+  free slots fall short of the batch, rather than after every partial
+  slab's open slots (3.3's step 2). Under the proposal's order a
+  defragmenter's copies spread over higher, sparse slabs, which its next
+  pass moved again: Redis's "argv retained" test left 1.2 MB it never
+  recovered. The hint's `slabcur` is the lowest partial slab with an open
+  free slot or a closed page, where a claim takes from next.
+- **The walk respects reservations.** A slot `take` reserved is clear
+  until its claim sets it, so a page closes only while `live + closed <=
+  nslots` holds after it, the bound the reservation rests on.
+- **Closable slots are not fragmentation.** The reported `curregs` also
+  adds the slots of whole free pages the walk has found closable and not
+  closed yet (design 13.4), as jemalloc's bins leave an empty slab out.
+- **The defrag hint arms the walk.** `get_defrag_hint` stays lock-free:
+  at most once per 100 ms per class it sets the class's walk due and
+  wakes the background thread, and the hinted walk closes every page
+  closable for a curve step.
+- **The walk's deadline.** A class with partial slabs keeps its walk a
+  curve step ahead (3.4), but tells the decay driver only while closable
+  pages are left, so partial slabs alone neither keep a background thread
+  awake nor start one.
+- **An `Empty` slab opens every page** (3.4's transitions): reuse opens it
+  whole, and a `Fresh` or `Purged` one opens on demand (3.3), so only an
+  `Active` slab has closed pages, which the zero pick relies on.
+
+Validation (6): Redis 8.10.3's `unit/memefficiency` passes, 32 tests at
+their stock targets, and so does its full suite; Valkey's
+`unit/memefficiency` passes, 33 tests, with `contrib/valkey/0001`'s
+eval-scripts calibration gone;
+`contrib/redis/0004` keeps one change (the replicaof flush test waits for
+defrag to start before REPLICAOF under challoc). A loom model of the walk
+racing a claim (`tests/loom/src/pages.rs`) checks that no slot a claim
+keeps is discarded, and its controls show that the claim's re-check and
+the walk's read-modify-write are each needed.
+

@@ -1738,7 +1738,13 @@ bitmaps plus the slots the closed pages of the bin's slabs hide, so that
 memory the closed pages gave back. Reported `curregs * size` is then no
 longer `small.allocated` bin by bin, as it is in jemalloc;
 `small.allocated` itself, and the defrag hint's average (13.5), use the
-slots out of the bitmaps alone.
+slots out of the bitmaps alone. The reported `curregs` also adds the
+slots of whole free pages that the slab-pages walk has found closable and
+not closed yet: dirty memory the walk gives back by itself, as jemalloc's
+bins leave an empty slab out of `curslabs`, so `frag_smallbins` counts
+only what moving objects can reclaim. The defrag hint's `slabcur` is the
+lowest partial slab with an open free slot or a closed page to reopen,
+the slab a claim takes from next.
 
 `experimental.utilization.batch_query` fills `(nfree, nregs, size)` per
 pointer in jemalloc's layout, and the verbose `query` adds `(bin_nfree,
