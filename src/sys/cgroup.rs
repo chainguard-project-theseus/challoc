@@ -3467,6 +3467,42 @@ mod kani_in_place {
     }
 }
 
+/// The Kani harness of [`discovery_scratch`], next to the private function
+/// and its static.
+#[cfg(kani)]
+mod kani_discovery_scratch {
+    use super::{DISCOVERY_SCRATCH, Scratch, discovery_scratch};
+    use core::mem::size_of;
+    use vstd::prelude::Tracked;
+
+    /// `discovery_scratch`: no `ensures`; the call is defined, and the
+    /// `&'static mut Scratch` it returns is `DISCOVERY_SCRATCH`
+    /// (`core::ptr::eq`), writable (`kani::mem::can_write`), and a byte
+    /// written at any offset of it reads back there. The harness runs the
+    /// body a build outside `cfg(test)` has. Not checked: that no two
+    /// references are live at once, which rests on the process having one
+    /// `Deferred` record, whose exchange from `PENDING` to `RUNNING` lets
+    /// one thread through to the item's one caller,
+    /// `Deferred::cell_discover`, and which fails in the residue
+    /// `axiom_cell_orphaned` states (a second discovery in the child of a
+    /// `fork` from a signal handler that interrupted one, when the handler
+    /// allocates).
+    #[kani::proof]
+    fn discovery_scratch_is_the_static() {
+        let r = discovery_scratch(Tracked::assume_new());
+        let p: *mut Scratch = r;
+        assert!(core::ptr::eq(p, core::ptr::addr_of_mut!(DISCOVERY_SCRATCH)));
+        assert!(kani::mem::can_write(p));
+        let (i, v): (usize, u8) = (kani::any(), kani::any());
+        kani::assume(i < size_of::<Scratch>());
+        // SAFETY: `p` is `r`, the only reference, writable above, and `i`
+        // is inside it.
+        unsafe { p.cast::<u8>().add(i).write(v) };
+        // SAFETY: as above.
+        assert_eq!(unsafe { p.cast::<u8>().add(i).read() }, v);
+    }
+}
+
 /// Kani harness for the `Display` of `Cgroup`, run under the real
 /// `core::fmt` (Verus checks it against the `Formatter` specifications of
 /// `vspec/fmt.rs`).

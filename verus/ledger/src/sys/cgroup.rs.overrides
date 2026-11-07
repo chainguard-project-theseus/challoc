@@ -5,8 +5,9 @@ axiom_cell_orphaned	platform/kernel fact	none (assumption)
 # Runs until the reader reports the end or an error.
 scan_lines	termination	none (assumption)
 # The discovery scratch is the claim winner's alone: the record's PENDING->RUNNING
-# exchange lets one thread through (the fork-child residue aside).
-discovery_scratch	allocator invariant	none (assumption)
+# exchange lets one thread through (the fork-child residue aside). The
+# harness checks the reference is `DISCOVERY_SCRATCH`'s and writable.
+discovery_scratch	allocator invariant	Kani	trusted (partly checked, Kani: sys::cgroup::kani_discovery_scratch::discovery_scratch_is_the_static; not checked: that no two references are live at once, which rests on the process having one `Deferred` record, whose exchange from `PENDING` to `RUNNING` lets one thread through to the item's one caller, `Deferred::cell_discover`, and which fails in the residue `axiom_cell_orphaned` states (a second discovery in the child of a `fork` from a signal handler that interrupted one, when the handler allocates))	contract 1688138844, body 141014262
 # A raw in-place write, like `Arena::put_stats`: zero bytes are a valid
 # `Cgroup`, then the state and the UNLIMITED stores. The harness runs the
 # body on a slot of arbitrary bytes and checks its writes, the value's
