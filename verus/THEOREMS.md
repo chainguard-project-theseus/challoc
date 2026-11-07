@@ -3241,7 +3241,7 @@ reaches them.
 
 **Run-time check.** The tests
 `a_report_callback_may_reenter_the_allocator` and
-`a_malloc_info_stream_may_reenter_the_allocator` (`api/print.rs`)
+`a_malloc_info_stream_may_reenter_the_allocator` (`api/print/tests.rs`)
 re-enter the allocator from every call out of a text report, a JSON
 report and `malloc_info` (through an unbuffered `fopencookie` stream), and
 fail when a call does not finish within a bound: the run-time evidence
@@ -3988,7 +3988,7 @@ with the same tokens: no cache gains or loses a slot. The proof adds
 only ghost code.
 
 The test `api::jemalloc::tests::tcache_none_leaves_every_cache_alone`
-(`api/jemalloc.rs`) checks the
+(`api/jemalloc/tests.rs`) checks the
 same at run time against the real allocator: with entries
 in the thread's home caches, another arena's, the foreign cache and an
 explicit cache, direct `mallocx`, `rallocx`, `dallocx` and `sdallocx`
@@ -6753,7 +6753,7 @@ elsewhere.
 **Findings.** None: the code matches the statement. The tests
 `utilization_queries_answer_valkeys_defragmenter` (`api/mallctl.rs`)
 and `get_defrag_hint_follows_the_utilization_data`
-(`api/jemalloc.rs`) exercise the shapes and the rule at run time.
+(`api/jemalloc/tests.rs`) exercise the shapes and the rule at run time.
 
 **Premises beyond the common ones.**
 - The loads Verus does not constrain are the reads: the bitmap word, the
