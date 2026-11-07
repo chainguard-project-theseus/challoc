@@ -107,7 +107,7 @@ One row per key, in `TABLE` order. "Values" is the grammar
 | `tcache_nslots_small_max` | `8`..`65536` | `1024` | Cache capacity for classes up to 128 bytes; the capacity halves per doubling of the class size above that (the ladder), down to a floor of 8. | To trade cache RSS for refill frequency: `512` halves every cache. | More refills and flushes (slow paths) per operation. |
 | `lg_tcache_nslots_mul` | `-16`..`16` | `1` | Shifts the whole ladder by `lg_tcache_nslots_mul - 1` doublings (jemalloc's key; Redis's `je_malloc_conf` sets `3`). | As `tcache_nslots_small_max`. | As above; the result is clamped to `[8, tcache_nslots_small_max]`. |
 | `thp` | `never` (alias `default`), `auto`, `always` | `never` | Transparent huge pages for challoc's regions (section 5). `never`: `MADV_NOHUGEPAGE` on the class superblock and the metadata region; the huge region (allocations above 256 KiB) follows the host's policy. `auto`: `MADV_HUGEPAGE` for sub-PMD folios (64 KiB) on slab groups and metadata, never a 2 MiB page; inert where no such size is enabled or the 2 MiB size is `madvise`-gated. `always`: 2 MiB chunks over the class regions, huge runs and metadata (jemalloc's `thp:always`); forced to `never` under a cgroup limit below 1 GiB. | `always` for a single-tenant, cache-shaped heap with RSS to spare that does not fork. `auto` on an aarch64 host with `hugepages-64kB` enabled and dTLB-bound rows. | `always`: the Valkey model's `SET` loop 5..18% faster for about +10% peak RSS on that heap and +30..66% on allocation microbenchmarks. `auto`: about 1.6% slower on `larson` and 7..19% more RSS on small heaps. |
-| `lazy_band` | `true`, `false` | `true` | `MADV_FREE` for purges made under 70% of a known cgroup limit (the headroom band); `false` makes every purge `MADV_DONTNEED`. | `false` when the container's RSS figure must track live memory exactly even with headroom (an autoscaler, a fragmentation ratio). | Refaults on reuse: re-allocating a lazily purged range costs a small fraction of refaulting an eagerly purged one. |
+| `lazy_band` | `true`, `false` | `false` | `true` makes purges made under 70% of a known cgroup limit (the headroom band) `MADV_FREE`; by default every purge is `MADV_DONTNEED`. | `true` only with a measurement showing refaults of reused purged memory cost more than the RSS it holds: lazily freed pages stay in RSS and `memory.current` until the kernel reclaims them, which misleads an autoscaler or a fragmentation ratio. | Default: a reuse of a purged range refaults it. `true`: RSS stays at its peak in the headroom band (a 2 GiB container settled about five times higher, section 4). |
 | `guards` | `true`, `false` | `true` | Guard slabs between slabs (kernel 6.13+, `MADV_GUARD_INSTALL`) and a guard after every huge run (a `PROT_NONE` page on older kernels). With `MADV_GUARD_INSTALL` the guards split no VMA; a `PROT_NONE` guard costs at most two more VMAs per live huge run, released when the run is freed, and keeps each new huge run's first page resident from the start (a 2 MiB page for a PMD-aligned run under host THP `always`), so that the VMAs can merge again; a `fork` child may keep the splits of the runs live at the fork (`docs/design.md` 7). | Never. | `false` removes an overflow barrier: no guard slabs and no guard after huge runs, in either mode, and no VMA split. |
 | `guard_slab_interval` | `0`, or `2`..`4194304`, a power of two | `8` | One guard slab per N x 64 KiB of slabs (every Nth slab for the 64 KiB-slab classes; the same span in bytes for the classes with smaller slabs). `0` is none; `1` is out of range and clamps to `2`; a non-power of two rounds up and is reported. | To trade address space and slab count for guard density. | A denser interval costs slabs; it never costs a fast-path instruction (the test is a mask). No guard slabs exist before kernel 6.13 whatever the value. |
 | `huge_retain_max` | `0`..`1099511627776` | `67108864` | Freed huge runs (allocations above 256 KiB) with more usable bytes than this are purged the moment they are freed instead of waiting for decay; smaller ones are retained for reuse and decay (`opt.huge_retain_max` reads as a `size_t`). | A process churns large buffers and their retention shows in RSS between bursts (Node's 1 MiB `Buffer` bodies kept tens of MiB of `challoc:huge` at the end of a load). | A lower value refaults every reused large buffer. |
@@ -155,9 +155,10 @@ smaller ones, and does not meet the budget a shared or memory-limited
 host needs (section 5). The hardening opt-ins (`zero_on_free`,
 `slot_randomize`, `pac_pointers`, `double_free_scan`) each cost more than
 a default-on hardening may, and `exact_sized_free` sends every sized free
-to the slow path (not measured); `lazy_band:true` with eager purges when no
-limit is known is chosen so RSS never lies where nothing knows the
-headroom.
+to the slow path (not measured); `lazy_band` is off so RSS tracks live
+memory under a limit as well as without one: in a 2 GiB container the lazy
+band held settled RSS about five times higher at the same throughput
+(section 4).
 
 ## 3. Consumers
 
@@ -199,11 +200,12 @@ patch changes one Valkey test threshold (`memefficiency.tcl`,
 too, so the Lua heap sits in its bins). Nothing about defrag is tunable
 on the challoc side; the decision rule is Valkey's.
 
-RSS-derived metrics under a cgroup limit: below 70% of the limit purges
-are `MADV_FREE` (section 4), so `allocator_resident`, RSS and therefore
-`allocator_frag_ratio` include lazily freed pages until the kernel
-reclaims them. If those figures drive alerting or an autoscaler, set
-`lazy_band:false`. With no limit at all the default is already eager.
+RSS-derived metrics under a cgroup limit: purges are eager by default,
+so `allocator_resident`, RSS and `allocator_frag_ratio` follow what is
+freed. With `lazy_band:true`, purges below 70% of the limit are
+`MADV_FREE` (section 4) and those figures include lazily freed pages until
+the kernel reclaims them; leave it off where they drive alerting or an
+autoscaler.
 
 THP: Valkey warns about THP `always` because of fork copy-on-write cost.
 challoc's default `never` keeps the class and metadata regions off huge
@@ -290,7 +292,7 @@ read per sample.
 | usage | decay period | retention | cache GC | purge advice |
 |---|---|---|---|---|
 | no limit | as configured | as configured | as configured | eager (`MADV_DONTNEED`) |
-| under 70% | as configured | capped at 5% of the limit | as configured | lazy (`MADV_FREE`) |
+| under 70% | as configured | capped at 5% of the limit | as configured | eager; lazy (`MADV_FREE`) with `lazy_band:true` |
 | 70% to 90% | `dirty_decay_ms` scaled linearly down to 1000 ms at 90% | capped at 5% | as configured | eager |
 | 90% and above | 0: everything `Empty` purged at the next pass | (everything goes) | every periodic tick | eager |
 | `memory.events` `high` rose | one full purge at the next decay pass | | | eager |
@@ -305,20 +307,23 @@ defaults. The `high` baseline is the count at discovery, so a container
 that already had `high` events does not start with a full purge.
 
 The two-advice purge. A purge is `MADV_DONTNEED` (the pages leave RSS
-and the charge at once; the next touch faults in a zero page) except
-under 70% of a known limit, where it is `MADV_FREE` (the pages stay
-mapped until the kernel wants them, which it does before anything else
-as the cgroup nears its limit, and a reuse before that costs no fault).
-With no limit the advice is eager on purpose: lazily freed pages would
-stay in RSS and mislead a fragmentation ratio or an autoscaler. Every
-explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the `high`-rise full
+and the charge at once; the next touch faults in a zero page). With
+`lazy_band:true` a purge under 70% of a known limit is `MADV_FREE`
+instead (the pages stay mapped until the kernel wants them, which it does
+before anything else as the cgroup nears its limit, and a reuse before
+that costs no fault). Eager is the default because lazily freed pages
+stay in RSS and mislead a fragmentation ratio or an autoscaler, and the
+saving did not show in throughput: in a 2 GiB container, Valkey's soak
+settled at 110 MiB eager against 594 MiB lazy (jemalloc: 133), with the
+paired `valkey-ops` and `redis-ops` rows within 1%, and a 512 MiB sidecar
+at 15 to 18 MiB against 117. With `lazy_band:true`, every explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the `high`-rise full
 purge) is eager, and so is the whole return of an excess over the
 retention cap first seen at 70% or above, even after the first eager
 walks bring usage back under 70% (the cap is a promise about charged
 memory).
 
-`MADV_FREE`d pages stay charged to `memory.current` until the kernel
-reclaims them, so the band moves toward 70% sooner than live memory alone
+Under `lazy_band:true`, `MADV_FREE`d pages stay charged to
+`memory.current` until the kernel reclaims them, so the band moves toward 70% sooner than live memory alone
 would, which flips the advice to eager early. That is an error in the safe
 direction, and the lazy pages are the first thing the kernel reclaims near
 `memory.high` or `memory.max`.
@@ -354,7 +359,7 @@ The knobs that move the policy:
 |---|---|
 | `cgroup:false` | nothing is read or applied; every row is "no limit" |
 | `dirty_decay_ms:N` | the configured period the scaled band starts from; `-1` is never touched by any band |
-| `lazy_band:false` | every band eager |
+| `lazy_band:true` | lazy (`MADV_FREE`) purges under 70% of the limit |
 | `background_thread:true` | sampling and decay run while the process idles |
 | `huge_retain_max:N` | how much freed huge memory waits for decay rather than going at once (retention the cap then counts) |
 | `thp:always` | forced to `never` when the effective limit at init is under 1 GiB; `auto` is not forced |
@@ -497,7 +502,7 @@ are fixed by measurement:
 
 Change `dirty_decay_ms`, `background_thread`, `narenas` (many-thread
 processes), `huge_retain_max` and `huge_dirty_decay_ms` (large-buffer
-churn), `lazy_band` (RSS-derived metrics under a limit) and `thp`
+churn), `lazy_band` (lazy purges in the headroom band, an opt-in) and `thp`
 (section 5) with a measurement in hand; leave the rest.
 
 ## 8. Known limitations

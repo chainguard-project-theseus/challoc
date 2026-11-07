@@ -149,8 +149,9 @@ static void mode_malloc_trim_idle(void)
     malloc_trim(0); /* the stdio slabs of rss_bytes again */
     size_t set = (size_t)TRIM_N * TRIM_SIZE + TRIM_HUGE;
     /* RSS falls only when the purge advice is MADV_DONTNEED; under a cgroup
-     * limit in the policy's headroom band it is MADV_FREE and the pages
-     * stay resident until the kernel wants them (tests/c/cgroup_lazy.c). */
+     * limit in the policy's headroom band with lazy_band:true it is
+     * MADV_FREE and the pages stay resident until the kernel wants them
+     * (tests/c/cgroup_lazy.c). */
     size_t advice = 0, len = sizeof advice;
     int lazy = mallctl != NULL && mallctl("stats.cgroup.purge_advice", &advice, &len, NULL, 0) == 0 && advice == 1;
     if (lazy)
