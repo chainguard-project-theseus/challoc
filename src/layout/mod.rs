@@ -2051,6 +2051,9 @@ pub fn class_size_of(n: usize) -> Option<usize> {
 
 const _: () = assert!(MAX_SLAB_WORDS == max_slab_words());
 
+// The claim's re-check and the decay walk call these (slab-pages, milestone 1).
+#[cfg_attr(not(test), allow(dead_code))]
+mod pages;
 mod regions;
 
 #[cfg(all(verus_keep_ghost, not(test)))]
