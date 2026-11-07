@@ -130,10 +130,12 @@ set --
 # slots to their slabs, and Redis counts them there as fragmentation. Redis prints each as
 # [skip]; the line below says why. Tracked by wolfi-dev/challoc#604 (the
 # slab-pages proposal); remove a pattern once challoc passes the test.
+if [ "${SLAB_FLOOR_SKIPS:-1}" = 1 ]; then
 for t in "Active defrag eval scripts" "Active defrag IDMP streams" "Active Defrag HFE with" \
     "Active defrag for argv retained by the main thread from IO thread" "Active defrag big list" \
     "Active defrag template-encoded hashes" "Reduce defrag CPU usage when module data can"; do
     set -- "$@" --skiptest "/^$t"
 done
 echo "skipping (known challoc issue, slab floor, wolfi-dev/challoc#604): eval scripts, IDMP streams, HFE x3, argv retained, big list, template-encoded hashes, moduleapi/datatype defrag CPU"
+fi
 run_stages "$@"
