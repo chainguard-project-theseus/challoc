@@ -986,19 +986,9 @@ proof fn lemma_run_fits(t: SlabTable, first: usize, k: usize)
             <= 0x200_0000_0000_0000,
 {
     broadcast use {super::table::lemma_spec_nslabs, super::table::lemma_spec_class};
-    let c = class_table()[t.spec_class() as int];
-    let lg = c.lg_slab as usize;
+    super::table::lemma_slabs_fit(t);
     let n = t.spec_nslabs();
-    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
-    vstd::bits::lemma_usize_shl_is_mul(1, lg);
-    let m57 = ((1usize << 57usize) - t.base) as usize;
-    assert((1usize << 57usize) == 0x200_0000_0000_0000usize) by (bit_vector);
-    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, m57);
-    let l8 = c.lg_slab;
-    assert((1usize << l8) == (1usize << lg)) by (bit_vector)
-        requires lg == l8 as usize;
-    let p = (1usize << lg) as int;
-    assert(n as int * p <= m57);
+    let p = (1usize << class_table()[t.spec_class() as int].lg_slab) as int;
     assert((first as int + k as int) * p <= n as int * p) by (nonlinear_arith)
         requires first + k <= n, p >= 0;
 }
