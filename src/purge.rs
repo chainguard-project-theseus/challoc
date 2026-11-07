@@ -64,7 +64,7 @@ mod linux_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub use curve::{Curve, NEVER, STEPS, decay_ns_from_ms};
+pub use curve::{Curve, NEVER, STEPS, decay_ns_from_ms, ms_of};
 
 verus! {
 

@@ -29,6 +29,19 @@ pub const fn decay_ns_from_ms(ms: i64) -> (ns: u64)
     }
 }
 
+/// A nanosecond period as `dirty_decay_ms` reads it back, the inverse of
+/// [`decay_ns_from_ms`]: [`NEVER`] is -1, anything else whole milliseconds.
+pub const fn ms_of(ns: u64) -> (ms: i64)
+    ensures
+        ms == if ns == NEVER { -1 } else { (ns / 1_000_000) as int },
+{
+    if ns == NEVER {
+        -1
+    } else {
+        (ns / 1_000_000) as i64
+    }
+}
+
 /// Steps of the decay curve over one window (jemalloc's
 /// `SMOOTHSTEP_NSTEPS`).
 pub const STEPS: usize = 200;
