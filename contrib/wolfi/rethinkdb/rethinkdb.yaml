@@ -15,9 +15,9 @@
 # (default_static="tcmalloc jemalloc", libjemalloc.a from jemalloc-dev's
 # split/dev), which is how Wolfi's rethinkdb carries jemalloc 5.3.1 today
 # with no DT_NEEDED for it. The compat package ships no static library
-# (the Phase 1 decision holds for the system packages until a static link
-# is tested), so --dynamic jemalloc makes the link -ljemalloc and the
-# binary record libjemalloc.so.2, which is what the swap needs anyway.
+# (no static link is tested yet; contrib/wolfi/README.md), so --dynamic
+# jemalloc makes the link -ljemalloc and the binary record
+# libjemalloc.so.2, which is what the swap needs anyway.
 package:
   name: rethinkdb
   version: 2.4.4

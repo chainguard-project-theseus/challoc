@@ -24,9 +24,9 @@
 #                            unprefixed API as challoc exports it); the file
 #                            set of Wolfi's jemalloc-dev, which it provides,
 #                            for a consumer that includes <jemalloc/jemalloc.h>
-#                            (Ruby's --with-jemalloc; plan Phase 3 task 3)
+#                            (Ruby's --with-jemalloc)
 #
-# Valkey's private quantum8 build is task 2 and lives in valkey.yaml, not
+# Valkey's private quantum8 build lives in valkey.yaml, not
 # here (two libraries with one soname cannot share /usr/lib).
 #
 # Local build (contrib/wolfi/README.md has the full recipe): from the
@@ -198,7 +198,7 @@ subpackages:
       # `so:libjemalloc.so.2` provide is what a jemalloc consumer's own
       # automatic dependency resolves to once this package is chosen. The
       # link name, the pc file and the header are the -dev package's, as
-      # jemalloc-dev's are (Phase 3 task 3; task 1 had the first two here).
+      # jemalloc-dev's are.
       provides:
         - libjemalloc2=${{package.full-version}}
     pipeline:
@@ -246,8 +246,7 @@ subpackages:
       # jemalloc-dev` mirrors the runtime's `provides: libjemalloc2`: a
       # dependency on jemalloc-dev is satisfied once this package is
       # installed, and no provider-priority, so nothing flips merely because
-      # it exists (Phase 3 task 1 decision; contrib/wolfi/README.md,
-      # "Swapping"). Wolfi may prefer no provides here: it is one line.
+      # it exists (contrib/wolfi/README.md, "Swapping"). Wolfi may prefer no provides here: it is one line.
       provides:
         - jemalloc-dev=${{package.full-version}}
     pipeline:

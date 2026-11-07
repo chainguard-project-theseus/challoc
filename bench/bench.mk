@@ -20,7 +20,7 @@
 #
 # Results land in target/results/cb/<run>/ (readable on the host). Local
 # numbers are `indicative`: plumbing and a first look, never a verdict of
-# record (those come from the GCE cells, `cb launch`, M1b).
+# record (those come from the GCE cells, `cb launch`).
 
 BASE ?= main
 HEAD ?= HEAD

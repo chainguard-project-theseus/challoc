@@ -3,7 +3,7 @@
 # same / sub-threshold / inconclusive / broken against the row class's
 # margin, the headline NEUTRAL / IMPROVEMENT / REGRESSION / INCONCLUSIVE.
 #
-# On GCE (cb launch, M1b) every gate cell gets `replicas` VMs of `blocks`
+# On GCE (cb launch) every gate cell gets `replicas` VMs of `blocks`
 # blocks each after `warmup_blocks` discarded ones; a local run (cb run on
 # one host) has one "VM" and runs [local].blocks blocks instead.
 description = "PR go/no-go: head vs base on the gate cells"

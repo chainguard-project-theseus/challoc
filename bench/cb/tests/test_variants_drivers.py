@@ -1,5 +1,5 @@
-"""M1c: knob and container syntax, driver rows and their metric rows,
-the unpaired (one-variant-per-vm) comparison."""
+"""Variant knob and feature syntax, container profiles, driver rows and
+their metric rows, and the unpaired (one-variant-per-VM) comparison."""
 
 import json
 import os
