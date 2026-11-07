@@ -3885,15 +3885,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    /// Deterministic xorshift, as in `layout::tests`.
-    fn xorshift(state: &mut u64) -> u64 {
-        let mut x = *state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *state = x;
-        x
-    }
+    use crate::testutil::xorshift;
 
     fn atomic_words(n: usize) -> Vec<AtomicU64> {
         (0..n).map(|_| AtomicU64::new(0)).collect()

@@ -1,4 +1,5 @@
 use super::*;
+use crate::testutil::page_size;
 
 /// The owners' decay step (`ClassState::decay_with`, `Huge::decay_with`)
 /// with `walk` for the owner's walk.
@@ -123,12 +124,6 @@ fn scratch(pages: usize, page: usize) -> usize {
         )
     }
     .unwrap()
-}
-
-/// The page the batch tests work in: the kernel's (the flush really
-/// discards, so the ranges must be page-aligned).
-fn page_size() -> usize {
-    crate::sys::features::page_size()
 }
 
 #[test]

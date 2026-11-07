@@ -558,12 +558,9 @@ mod tests {
     use super::*;
     use crate::layout::BASE_CLASSES;
     use crate::layout::CLASSES;
+    use crate::meta::align_up;
     use std::vec;
     use std::vec::Vec;
-
-    fn align_up(x: usize, a: usize) -> usize {
-        (x + a - 1) & !(a - 1)
-    }
 
     /// A descriptor array for one class backed by a `Vec`, aligned to a
     /// cache line.

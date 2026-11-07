@@ -104,7 +104,7 @@ pub mod mallctl;
 pub mod print;
 
 #[cfg(test)]
-mod c_programs;
+pub(crate) mod c_programs;
 #[cfg(test)]
 mod restated;
 

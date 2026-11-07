@@ -3,18 +3,12 @@
 
 use super::*;
 use crate::layout::{Kind, LG_MAX_SLAB, LG_MIN_SLAB, MAX_SLAB, MIN_SLAB, Mapping, NCLASSES};
+use crate::testutil::{align_up, page_size};
 use core::ptr;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::vec;
 use std::vec::Vec;
-
-/// The page size the environment is built with: the kernel's, never a
-/// 4 KiB constant, because the reservations are real and must hold on
-/// 16 and 64 KiB-page hosts too.
-fn page_size() -> usize {
-    crate::sys::features::page_size()
-}
 
 /// Smallest layout `from_parts` accepts: 4 MiB class regions, so the
 /// 64 KiB classes have 64 slabs and the 4 MiB class has one.
@@ -36,10 +30,6 @@ struct Env {
     meta: Meta,
     regions: Regions,
     maps: [(usize, usize); 2],
-}
-
-fn align_up(x: usize, a: usize) -> usize {
-    (x + a - 1) & !(a - 1)
 }
 
 fn regions_at(superblock: usize, meta: (usize, usize), lg_page: u32) -> Regions {
