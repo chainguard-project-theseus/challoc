@@ -10,8 +10,9 @@
 //!   large, fixed-address arrays that are never freed. They are carved
 //!   downward from the top of the region and handed back uncommitted; the
 //!   owner calls [`Meta::commit`] on the pages it starts to use
-//!   ([`Meta::reserve_committed`] commits the whole range at once).
-//! - **Objects** ([`Meta::alloc`] / [`Meta::free`]) are small: heaps, cache
+//!   ([`Meta::reserve_committed_raw`] commits the whole range at once).
+//! - **Objects** ([`Meta::alloc_raw`], [`Meta::alloc_zeroed`] /
+//!   [`Meta::free`]) are small: heaps, cache
 //!   slot stacks, node blocks, set tables, huge descriptors. They come from
 //!   a bump pointer growing upward from the base, committed ahead of the
 //!   bump in [`COMMIT_CHUNK`] steps, and freed objects go on one of
@@ -92,10 +93,10 @@ const _: () = assert!(CACHE_LINE == crate::lock::PAD_ALIGN);
 
 verus! {
 
-/// Largest alignment [`Meta::alloc`] accepts. Anything needing more (a
+/// Largest alignment an object ([`Meta::alloc_raw`]) accepts. Anything needing more (a
 /// thread stack) is a reservation.
 pub const MAX_ALIGN: usize = CACHE_LINE;
-/// Largest object [`Meta::alloc`] serves. Bigger things are reservations.
+/// Largest object [`Meta::alloc_raw`] serves. Bigger things are reservations.
 pub const LG_MAX_BINNED: u32 = 20;
 pub const MAX_BINNED: usize = 1 << LG_MAX_BINNED;
 /// Bins: 16, 32, 48, 64, 128, 256, then `1.5 * 2^(k-1)` and `2^k` for `k`
@@ -521,6 +522,28 @@ pub const fn bin_for(layout: Layout) -> (r: Option<usize>)
     }
 }
 
+/// The bin of an object of `layout`, aborting for a layout
+/// [`Meta`]'s objects do not serve (`align > MAX_ALIGN` or `size >
+/// MAX_BINNED`): the prologue of every object allocation.
+#[inline(always)]
+fn object_bin(layout: Layout) -> (bin: usize)
+    requires
+        layout_align(layout) <= MAX_ALIGN,
+        layout_size(layout) <= MAX_BINNED,
+    ensures
+        layout_ok(layout),
+        bin < NBINS,
+        bin as int == bin_for_spec(layout),
+        layout_size(layout) <= bin_size(bin as int),
+        layout_align(layout) > MIN_ALIGN ==> bin >= 4,
+{
+    assert!(layout.align() <= MAX_ALIGN, "meta: alignment too large for an object");
+    let Some(bin) = bin_for(layout) else {
+        panic!("meta: object too large")
+    };
+    bin
+}
+
 /// Counters for `stats.metadata` and diagnostics. Identities:
 /// `allocated + eager <= bumped <= writable <= len`, `committed <=
 /// writable` and `bumped + reserved <= len` (`committed` counts the bump
@@ -614,14 +637,9 @@ impl Meta {
         self.inner.spec_raw()
     }
 
-    /// Allocate an object. Contents are unspecified: fresh memory is zero,
-    /// reused memory holds whatever its last owner left. Null when the region
-    /// is exhausted or the kernel refuses to commit.
-    ///
-    /// Aborts for a layout this allocator does not serve (`size >
-    /// MAX_BINNED` or `align > MAX_ALIGN`): that is a bug, not a resource
-    /// failure.
-    #[allow(dead_code, reason = "Meta's general entry; outside the tests every caller uses alloc_raw")]
+    /// Allocate an object, without the permission and claim
+    /// [`alloc_raw`](Meta::alloc_raw) hands out with it (the tests' entry).
+    #[allow(dead_code, reason = "outside the tests every caller uses alloc_raw or alloc_zeroed")]
     pub fn alloc(&self, layout: Layout, Tracked(ord): Tracked<&mut LockOrder>) -> (p: *mut u8)
         requires
             crate::sys::may_syscall(),
@@ -633,29 +651,18 @@ impl Meta {
             p as usize != 0 ==> self.holds(p as usize as int, layout_size(layout) as int),
             *final(ord) == *old(ord),
     {
-        proof {
-            use_type_invariant(self);
-        }
-
-        assert!(
-            layout.align() <= MAX_ALIGN,
-            "meta: alignment too large for an object"
-        );
-        let Some(bin) = bin_for(layout) else {
-            panic!("meta: object too large")
-        };
-        proof {
-            lemma_align_in_bin(layout, bin);
-        }
-        let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-        let p = g.alloc(bin).0;
-        g.unlock();
-        p
+        self.alloc_raw(layout, Tracked(ord)).0
     }
 
-    /// [`alloc`](Meta::alloc), with the permission to the object's
-    /// `layout.size()` bytes and the [`MetaClaim`] that [`free`](Meta::free)
-    /// takes back with them.
+    /// Allocate an object, with the permission to its `layout.size()`
+    /// bytes and the [`MetaClaim`] that [`free`](Meta::free) takes back
+    /// with them. Contents are unspecified: fresh memory is zero, reused
+    /// memory holds whatever its last owner left. Null when the region is
+    /// exhausted or the kernel refuses to commit.
+    ///
+    /// Aborts for a layout this allocator does not serve (`size >
+    /// MAX_BINNED` or `align > MAX_ALIGN`): that is a bug, not a resource
+    /// failure.
     // The tracked results are part of the signature.
     #[allow(clippy::type_complexity)]
     pub fn alloc_raw(
@@ -680,13 +687,7 @@ impl Meta {
             use_type_invariant(self);
         }
 
-        assert!(
-            layout.align() <= MAX_ALIGN,
-            "meta: alignment too large for an object"
-        );
-        let Some(bin) = bin_for(layout) else {
-            panic!("meta: object too large")
-        };
+        let bin = object_bin(layout);
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let (p, Tracked(blk)) = g.alloc(bin);
         g.unlock();
@@ -700,7 +701,7 @@ impl Meta {
         (p, Tracked((obj, mc)))
     }
 
-    /// [`alloc`](Meta::alloc), then zero the object if it was reused; with
+    /// [`alloc_raw`](Meta::alloc_raw), then zero the object if it was reused; with
     /// the permission to the object's `layout.size()` bytes and its
     /// [`MetaClaim`], which [`free`](Meta::free) takes back, and the token
     /// that they read as zero: a reused object is cleared here
@@ -732,13 +733,7 @@ impl Meta {
             use_type_invariant(self);
         }
 
-        assert!(
-            layout.align() <= MAX_ALIGN,
-            "meta: alignment too large for an object"
-        );
-        let Some(bin) = bin_for(layout) else {
-            panic!("meta: object too large")
-        };
+        let bin = object_bin(layout);
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let before = g.bump;
         let (p, Tracked(blk)) = g.alloc(bin);
@@ -1261,8 +1256,8 @@ pub(crate) struct Inner {
     top: usize,
     free: [*mut FreeNode; NBINS],
     stats: MetaStats,
-    // The fields below sit after the fields the inlined object paths
-    // (`Meta::alloc` in `claim_with`, `Meta::free`) address, so those
+    // The fields below sit after the fields the object paths
+    // (`Meta::alloc_raw`, `Meta::alloc_zeroed`, `Meta::free`) address, so those
     // offsets, and their machine code, do not depend on them. New fields
     // go here too.
     /// Bytes committed on the reservation side (`commit` above `top`).
@@ -3622,7 +3617,7 @@ verus! {
 ///
 /// `Meta::owning` builds the value (`Lock::new` requires `wf`), and both
 /// are checked at every release: each holder outside the tests
-/// (`Meta::alloc`, `alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
+/// (`Meta::alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
 /// `reserve_table`, `commit`, `reserve_committed_raw` and `stats`) ends
 /// with `LockGuard::unlock`, which requires both, on every path to a
 /// return (`api::tests::guards_end_in_unlock`). A panic aborts
