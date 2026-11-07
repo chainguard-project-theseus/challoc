@@ -29,7 +29,7 @@ false or unsound and corrected it; the reason gives the corrected
 contract. Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 51 seams listed: 49 sound, 2 fixed.
+Totals for the 52 seams listed: 50 sound, 2 fixed.
 
 ## Verdicts
 
