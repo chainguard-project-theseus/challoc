@@ -35,6 +35,8 @@ verus! {
 pub const PROT_NONE: i32 = 0;
 pub const PROT_READ: i32 = 1;
 pub const PROT_WRITE: i32 = 2;
+/// `PROT_READ | PROT_WRITE`.
+pub const PROT_RW: i32 = PROT_READ | PROT_WRITE;
 
 #[cfg(test)]
 pub const MAP_SHARED: i32 = 0x01;
@@ -52,6 +54,8 @@ pub const MADV_HUGEPAGE: i32 = 14;
 pub const MADV_NOHUGEPAGE: i32 = 15;
 pub const MADV_GUARD_INSTALL: i32 = 102;
 pub const MADV_GUARD_REMOVE: i32 = 103;
+/// `MADV_POPULATE_WRITE` (Linux 5.14, `include/uapi/asm-generic/mman-common.h`).
+pub const MADV_POPULATE_WRITE: i32 = 23;
 
 /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name)`.
 pub const PR_SET_VMA: i32 = 0x5356_4d41;
