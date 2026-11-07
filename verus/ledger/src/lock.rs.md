@@ -11,7 +11,7 @@ file.
 | `axiom_entry` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_fork_entry` | axiom | C-program contract | none (assumption) | trusted |
 | `axiom_c...window` | axiom | platform/kernel fact | none (assumption) | trusted |
-| `axiom_acquired` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_acquired` | axiom | allocator invariant | loom/GenMC | trusted |
 | `Lock::value_ptr` | external_body | raw pointer (internal) | Kani | trusted |
 | `LockGuard::drop` | external_body | atomics primitive | loom/GenMC | trusted |
 
@@ -87,7 +87,7 @@ axiom fn axiom_child_window(h: usize, me: usize, pid: u32, now: u32)
 ## `axiom_acquired`
 
 src/lock.rs:800. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: the permission hand-off itself, a fact of Verus's own model (that the one `PointsTo` the invariant holds while the lock is free, taken out at each acquisition, stands for the cell's contents under the edge the models check); the `lock_inv` and `lock_frame` clauses, which rest on the holders' releases (`LockGuard::unlock` and `Lock::unlock_held_perm` require them, a dropped guard's release does not), not on the atomics; the first acquisition, at which `lock_frame` of the initial value with itself is checked by nothing (`Lock::new` does not check it) and the initial value's visibility rests on the lock's publication, not on the edge the models check; the call discipline (only right after an acquire, never while an earlier permission is alive), which `lock::tests::permission_axioms_are_called_only_at_acquisitions` backs by matching source text only; the fork window's second permission, which rests on that window's premise; and the shipped `RawLock`, which the models replace with a copy, with two lockers and with three bounded at 5 preemptions, and the kernel's futex, which they replace with a stand-in).
 
 > The lock invariant's assumption where it enters, at an acquisition: a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
 

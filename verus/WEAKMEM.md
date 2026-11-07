@@ -632,7 +632,7 @@ citation makes a seam at most partly checked; the status names what the models
 leave unchecked. Where the ledger also cites Kani, the Kani harness
 checks the wrapper's own body on one thread.
 
-40 seams cite loom, and every one is partly checked
+41 seams cite loom, and every one is partly checked
 (`grep -rh 'Status: .*loom:' verus/ledger/src`). `RawLock::lock_slow`
 (`lock.rs.md`, tool loom/GenMC) stays trusted: its contract is
 termination, and the lock models show deadlock freedom only. Drepper's
@@ -650,6 +650,7 @@ another thread's exchange as often as other threads retake the lock.
 | `api/mod.rs.md` | `init_slow` | partly checked (loom) |
 | `class/table.rs.md` | `store_owner` | partly checked (loom) |
 | `lock.rs.md` | `RawLock::lock_slow` | trusted |
+| `lock.rs.md` | `axiom_acquired` | partly checked (loom) |
 | `lock.rs.md` | `LockGuard::drop` | partly checked (loom) |
 | `purge/background.rs.md` | `main` | partly checked (loom) |
 | `slab.rs.md` | `SlabDesc::init` | partly checked (loom) |
@@ -696,6 +697,12 @@ The arguments, by group (the overrides comments give each in full):
   `request(false)`, given each pass returns and the exit takes the state
   lock.
 - `LockGuard::drop` (P2 models): its body is `RawLock::release`.
+- `axiom_acquired` (P2 models): the permission passes from holder to
+  holder across `RawLock`'s mutual exclusion and its acquire/release
+  edge, which the models check; the permission itself is Verus's model,
+  its invariant and frame rest on the holders' releases, and at the first
+  acquisition the initial value's frame is checked by nothing and its
+  visibility rests on the lock's publication.
 - The bitmap word wrappers (`vspec/word.rs`): C11 per-location
   coherence gives each contract, and the P1 and P5 models check the
   cross-location edges the SC proof needs. The proofs use `load` only

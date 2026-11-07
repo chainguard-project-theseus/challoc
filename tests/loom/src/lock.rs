@@ -140,7 +140,9 @@ fn contend<L: Mutex>(threads: u32) -> impl Fn() + Sync + Send + 'static {
 /// Two lockers: the CAS fast path against the spin and the sleep.
 ///
 /// Covers copies of `RawLock::lock_slow` and `LockGuard::drop`
-/// (`RawLock::release`).
+/// (`RawLock::release`), and the hand-off `lock::axiom_acquired`
+/// assumes of them: one holder at a time, each seeing the writes of the
+/// holder before it.
 #[test]
 fn loom_lock_two_threads() {
     model(contend::<RawLock>(2));
@@ -151,7 +153,8 @@ fn loom_lock_two_threads() {
 /// Bounded at 5 preemptions: too large to exhaust.
 ///
 /// Covers copies of `RawLock::lock_slow` and `LockGuard::drop`
-/// (`RawLock::release`).
+/// (`RawLock::release`), and the hand-off `lock::axiom_acquired`
+/// assumes of them, as `loom_lock_two_threads` does.
 #[test]
 fn loom_lock_three_threads() {
     model_bounded(5, contend::<RawLock>(3));
