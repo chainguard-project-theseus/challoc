@@ -67,6 +67,21 @@ KV_BIN=${CB_BIN:-$ROOT/target/bench-bin}
 
 kv_log() { echo "kv.sh: $*" >&2; }
 kv_die() { echo "kv.sh: $*" >&2; exit 1; }
+# kv_conf_env ALLOC CONF: the env word that hands CONF to ALLOC's allocator,
+# nothing for an empty CONF: MALLOC_CONF for challoc and the preloaded
+# jemalloc 5.3 and 5.4, JE_MALLOC_CONF for the server's bundled jemalloc
+# (built --with-jemalloc-prefix=je_, which reads the prefixed name).
+# glibc, tcmalloc and mimalloc read no MALLOC_CONF: a CONF for them fails
+# (status 1, a message on stderr) rather than run the variant without it.
+# Call it as `w=$(kv_conf_env ...) || exit 1`.
+kv_conf_env() {
+  [ -n "$2" ] || return 0
+  case $1 in
+    challoc|jemalloc53|jemalloc54) printf 'MALLOC_CONF=%s' "$2";;
+    jemalloc) printf 'JE_MALLOC_CONF=%s' "$2";;
+    *) echo "kv.sh: allocator $1 reads no MALLOC_CONF; refusing the variant's conf '$2'" >&2; return 1;;
+  esac
+}
 
 # kv_clone DIR: a pristine tree of KV_TAG in DIR, from the by-hand tree
 # (target/<server>/src-<tag>, tests/consumers/valkey-build.sh) when there
