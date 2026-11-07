@@ -3,9 +3,9 @@
 //! - [`Batch`], the discard primitive. Callers collect up to [`MAX_BATCH`]
 //!   ranges, merging adjacent ones, and flush them with a loop of
 //!   `madvise`. The advice is decided at each flush ([`advice`], design 8
-//!   and 11): `MADV_FREE` under the cgroup policy's headroom band
-//!   ([`set_headroom`]), `MADV_DONTNEED` everywhere else and always for an
-//!   explicit purge ([`purge_all`], [`purge_arena`]). The flush reports
+//!   and 11): with `lazy_band:true`, `MADV_FREE` under the cgroup
+//!   policy's headroom band ([`set_headroom`]); `MADV_DONTNEED` by default,
+//!   everywhere else, and always for an explicit purge ([`purge_all`], [`purge_arena`]). The flush reports
 //!   each range to the caller as discarded or not, and the caller changes
 //!   state only for the discarded ones: a range `madvise` refuses (`EINVAL`
 //!   on `mlock`ed pages) stays `Empty`, dirty and never assumed zero, and

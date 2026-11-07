@@ -13,15 +13,16 @@
  * printed every 100 ms. The purge criterion is on *held* memory, RSS less
  * `LazyFree`; the keep criterion is on RSS.
  *
- * Why held memory: the purge is eager while the excess over the cap was
- * first seen at 70% of the limit or above, and lazy (`MADV_FREE`, which
- * stays in RSS until the kernel reclaims it) under 70% (design 8 and 11).
- * When walks return the slab and medium objects before the huge runs are
- * freed, retention comes back within the cap, which ends that eager
- * return; the huge runs' excess is then a new one, seen under 70%, and
- * goes lazily, as designed. Either way the allocator no longer holds the
- * memory; lazily freed pages stay in RSS and `memory.current` until the
- * kernel reclaims them. The eager return at 70% and above is checked
+ * Why held memory: the purge is eager by default. With `lazy_band:true`
+ * it is eager while the excess over the cap was first seen at 70% of the
+ * limit or above, and lazy (`MADV_FREE`, which stays in RSS until the
+ * kernel reclaims it) under 70% (design 8 and 11): when walks return the
+ * slab and medium objects before the huge runs are freed, retention comes
+ * back within the cap, which ends that eager return, and the huge runs'
+ * excess is then a new one, seen under 70%, that goes lazily. Either way
+ * the allocator no longer holds the memory; lazily freed pages stay in RSS
+ * and `memory.current` until the kernel reclaims them, so the criterion
+ * holds under both settings. The eager return at 70% and above is checked
  * through `stats.cgroup.eager_purges`, which must rise after the frees.
  * So a passing run may end with RSS well over the threshold; the RSS fall
  * itself is pinned by `cgroup_policy.c` (after freeing at 80% of the

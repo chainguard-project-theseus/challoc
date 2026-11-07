@@ -6,9 +6,9 @@
 //! policy that acts on the figures is `policy.rs` (design 11): the
 //! headroom band over the effective limit (the retention cap, the decay
 //! window, cache GC at every tick and the immediate purge above 90%), the
-//! lazy-or-eager purge advice (`MADV_FREE` under 70% of a known limit,
-//! `MADV_DONTNEED` above), the full purge on a `high` event and the
-//! `thp:always` force to `never` under 1 GiB; `stats.cgroup.*` and
+//! purge advice (`MADV_DONTNEED`, or with the `lazy_band:true` opt-in
+//! `MADV_FREE` under 70% of a known limit), the full purge on a `high`
+//! event and the `thp:always` force to `never` under 1 GiB; `stats.cgroup.*` and
 //! `malloc_stats_print` expose the same figures.
 //!
 //! Everything is read with raw `open`/`read`/`close` on fixed-size stack
