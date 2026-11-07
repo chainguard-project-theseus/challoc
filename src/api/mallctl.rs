@@ -648,12 +648,9 @@ fn cgroup_decay_ms(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> 
         crate::sys::may_syscall(),
 {
     tracked(Tracked(mark))?;
-    Ok(Size(
-        match shared(Tracked(mark)).policy.effective_decay_ns(shared(Tracked(mark)).decay_ns()) {
-            purge::NEVER => usize::MAX,
-            ns => (ns / 1_000_000) as usize,
-        },
-    ))
+    let ns = shared(Tracked(mark)).policy.effective_decay_ns(shared(Tracked(mark)).decay_ns());
+    // `NEVER` reads back as -1, which is `usize::MAX` here.
+    Ok(Size(purge::ms_of(ns) as usize))
 }
 
 fn cgroup_retention_cap(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Result<Reading, c_int>
@@ -2641,18 +2638,6 @@ fn all_arenas(shared: &Shared, i: usize) -> (r: bool)
     i == ARENAS_ALL as usize || i == shared.arenas.count() as usize
 }
 
-/// `arena.<i>.dirty_decay_ms` value of a period in nanoseconds.
-fn ms_of(ns: u64) -> (r: isize)
-    ensures
-        r == if ns == purge::NEVER { -1 } else { (ns / 1_000_000) as int },
-{
-    if ns == purge::NEVER {
-        -1
-    } else {
-        (ns / 1_000_000) as isize
-    }
-}
-
 /// The figure of an arena's stored statistics a `stats.arenas.<i>.*`
 /// reader returns ([`arena_figure`]).
 enum Fig {
@@ -2991,14 +2976,14 @@ fn ctl(
             // The old period is read before the new one is applied, so a
             // read error changes nothing.
             if i == ARENAS_ALL as usize {
-                io.read(ms_of(shared.decay_ns()), Tracked(cc))?;
+                io.read(purge::ms_of(shared.decay_ns()) as isize, Tracked(cc))?;
                 if let Some(ms) = new {
                     shared.set_decay_ms(ms as i64, Tracked(&*cc), Tracked(&mut *fx));
                 }
                 return Ok(());
             }
             let arena = shared.arena(arena_index(i)?, Tracked(&mut ord)).ok_or(ENOENT)?;
-            io.read(ms_of(arena.0.decay_ns()), Tracked(cc))?;
+            io.read(purge::ms_of(arena.0.decay_ns()) as isize, Tracked(cc))?;
             if let Some(ms) = new {
                 arena.0.set_decay_ms(ms as i64, Tracked(&*cc), Tracked(&mut *fx));
             }

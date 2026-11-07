@@ -98,7 +98,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 
 ## `hist_line`
 
-src/api/print.rs:1033. Kind: external_body. Category: core library.
+src/api/print.rs:1018. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
@@ -119,7 +119,7 @@ fn hist_line<W: Write>(
 
 ## `axiom_c_call`
 
-src/api/print.rs:1703. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1685. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).

@@ -514,21 +514,6 @@ fn word(n: Name) -> &'static str {
     }
 }
 
-fn decay_ms(ns: u64) -> (r: i64)
-    ensures
-        r == if ns == purge::NEVER {
-            -1
-        } else {
-            (ns / 1_000_000) as int
-        },
-{
-    if ns == purge::NEVER {
-        -1
-    } else {
-        (ns / 1_000_000) as i64
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Text report.
 // ---------------------------------------------------------------------------
@@ -672,7 +657,7 @@ fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapsho
         write!(
             out,
             ", dirty_decay_ms {} (huge_dirty_decay_ms)",
-            decay_ms(shared.huge_decay_ns())
+            purge::ms_of(shared.huge_decay_ns())
         )?;
     }
     writeln!(out)?;
@@ -784,13 +769,13 @@ fn policy_line<W: Write + Report>(out: &mut W, shared: &Shared) -> fmt::Result
     write!(
         out,
         " decay_ms {}",
-        decay_ms(p.effective_decay_ns(shared.decay_ns()))
+        purge::ms_of(p.effective_decay_ns(shared.decay_ns()))
     )?;
     if shared.huge_decay_ns() != shared.decay_ns() {
         write!(
             out,
             " huge_decay_ms {}",
-            decay_ms(p.effective_decay_ns(shared.huge_decay_ns()))
+            purge::ms_of(p.effective_decay_ns(shared.huge_decay_ns()))
         )?;
     }
     match p.cap() {
@@ -853,7 +838,7 @@ fn text_arena<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats, bin
         crate::sys::may_syscall(),
 {
     writeln!(out, "arenas[{}]:", arena.index())?;
-    writeln!(out, "  dirty_decay_ms: {}", decay_ms(arena.decay_ns()))?;
+    writeln!(out, "  dirty_decay_ms: {}", purge::ms_of(arena.decay_ns()))?;
     writeln!(
         out,
         "  pactive: {}, pdirty: {}, pmuzzy: {}",
@@ -1177,10 +1162,7 @@ fn json_general<W: Write + Report>(
         cg.limit(),
         cg.high(),
         cg.current(),
-        match shared.policy.effective_decay_ns(shared.decay_ns()) {
-            crate::purge::NEVER => -1i64,
-            ns => (ns / 1_000_000) as i64,
-        },
+        purge::ms_of(shared.policy.effective_decay_ns(shared.decay_ns())),
         shared.policy.cap(),
         empty_bytes,
         shared.policy.full_purges(),
@@ -1216,7 +1198,7 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
     writeln!(
         out,
         "\t\t\t\t\"dirty_decay_ms\": {},",
-        decay_ms(arena.decay_ns())
+        purge::ms_of(arena.decay_ns())
     )?;
     writeln!(
         out,
