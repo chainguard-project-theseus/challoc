@@ -3,7 +3,7 @@
 # A cell is a host shape plus a host image plus how the container runs on
 # it. `cb run` executes on the machine it is started on (the `local` cell:
 # the dev container or any Linux host); the GCE cells are what `cb launch`
-# (M1b) creates, one spot VM per replica, in the project and zones of
+# creates, one spot VM per replica, in the project and zones of
 # [defaults]. Every `*.toml` in this directory is loaded; a later file may
 # add cells or override fields of a cell by name. Only public images belong
 # in this file.
