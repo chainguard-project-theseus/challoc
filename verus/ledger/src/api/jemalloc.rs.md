@@ -14,7 +14,7 @@ file.
 
 ## `Hook`
 
-src/api/jemalloc.rs:121. Kind: ext_type_spec. Category: function pointer.
+src/api/jemalloc.rs:122. Kind: ext_type_spec. Category: function pointer.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 346261534, body none.
@@ -25,7 +25,7 @@ pub struct ExHook(Hook);
 
 ## `message_hook`
 
-src/api/jemalloc.rs:127. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/jemalloc.rs:128. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged on premises (Kani: api::jemalloc::kani_hook::message_hook_picks_first_set; premises: C1 (the program stores only null or a hook function in the two slots, and never while the volatile reads run)).
 
 > The installed hook, if any: `malloc_message`, else `je_malloc_message`.
@@ -38,7 +38,7 @@ pub fn message_hook() -> Option<Hook>
 
 ## `call_hook`
 
-src/api/jemalloc.rs:145. Kind: external_body. Category: function pointer.
+src/api/jemalloc.rs:146. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged on premises (Kani: api::jemalloc::kani_hook::call_hook_calls_once; premises: C1 (the program stores only null or a hook function in the two slots), C3 (the program's hook keeps the C allocation contract)).
 
 > `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc calls it, on the C string in `buf`, which holds a NUL.
@@ -55,7 +55,7 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
 
 ## `axiom_c_call`
 
-src/api/jemalloc.rs:1208. Kind: axiom. Category: C-program contract.
+src/api/jemalloc.rs:1225. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).

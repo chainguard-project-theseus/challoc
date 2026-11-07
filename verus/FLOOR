@@ -13,5 +13,6 @@ combined-lines 96.2
 # that pull requests landing in parallel do not conflict here. A figure set
 # below the base revision's fails unless a `lowered FIGURE P REASON` line
 # here, new in that change, names that figure and value.
-functions 85.7
+functions 85.6
+lowered functions 85.6 api::print::cancel_disable and cancel_restore, the report call-outs' two pthread_setcancelstate FFI seams, which Verus cannot verify (Kani discharges them on premise C9)
 lines 94.1
