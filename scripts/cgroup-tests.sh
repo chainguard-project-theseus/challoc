@@ -47,7 +47,7 @@ cgdir() {
 cg=$(cgdir) || cg=
 cgread() { [ -n "$cg" ] && [ -r "$cg/$1" ] && cat "$cg/$1" || echo n/a; }
 events() { [ -n "$cg" ] && [ -r "$cg/memory.events" ] && tr '\n' ' ' <"$cg/memory.events" || echo n/a; }
-mib() { case $1 in n/a|max) echo "$1";; *) echo "$(( $1 / 1048576 )) MiB";; esac; }
+bytes_mib() { case $1 in n/a|max) echo "$1";; *) echo "$(( $1 / 1048576 )) MiB";; esac; }
 
 case $kind in
   churn)     prog=cgroup_churn; [ $# -ge 3 ] || { echo "churn needs MODE MIB THRESHOLD_MIB" >&2; exit 2; } ;;
@@ -87,7 +87,7 @@ case $alloc in
   glibc)    version="glibc $(ldd --version 2>&1 | head -1 | sed 's/.* //')" ;;
 esac
 echo "== $kind under $alloc ($version): $prog $* $extra"
-echo "kernel $(uname -r) $(uname -m); cgroup ${cg:-(none)}: memory.max $(mib "$(cgread memory.max)"), memory.swap.max $(mib "$(cgread memory.swap.max)"), memory.current $(mib "$(cgread memory.current)")"
+echo "kernel $(uname -r) $(uname -m); cgroup ${cg:-(none)}: memory.max $(bytes_mib "$(cgread memory.max)"), memory.swap.max $(bytes_mib "$(cgread memory.swap.max)"), memory.current $(bytes_mib "$(cgread memory.current)")"
 [ -n "$conf" ] && echo "MALLOC_CONF=$conf"
 ev0=$(events); echo "memory.events before: $ev0"
 
@@ -99,7 +99,7 @@ status=$?
 unset LD_PRELOAD MALLOC_CONF
 
 ev1=$(events); echo "memory.events after: $ev1"
-echo "memory.peak $(mib "$(cgread memory.peak)"), memory.current $(mib "$(cgread memory.current)")"
+echo "memory.peak $(bytes_mib "$(cgread memory.peak)"), memory.current $(bytes_mib "$(cgread memory.current)")"
 oomk=$(echo "$ev1" | sed -n 's/.*oom_kill \([0-9]*\).*/\1/p')
 verdict=ok
 if [ "$status" -eq 137 ] && [ "${oomk:-0}" -gt 0 ]; then verdict=OOM-killed
