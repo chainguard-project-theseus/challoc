@@ -1567,7 +1567,7 @@ proof fn lemma_mul_cancel(a: int, b: int, s: int)
         requires a != b, s >= 1;
 }
 
-/// The mask `set_range` and `clear_range` build: bits `lo..hi`.
+/// The mask [`word_mask`] builds: bits `lo..hi`.
 proof fn lemma_word_mask(mask: u64, lo: u64, hi: u64)
     requires
         lo < hi <= 64,
@@ -1582,6 +1582,26 @@ proof fn lemma_word_mask(mask: u64, lo: u64, hi: u64)
     } else {
         lemma_range_mask((hi - lo) as u64, lo);
     }
+}
+
+/// The mask of bits `lo..hi` of a word.
+#[inline(always)]
+fn word_mask(lo: usize, hi: usize) -> (m: u64)
+    requires
+        lo < hi <= 64,
+    ensures
+        forall|b: u64| b < 64 ==> #[trigger] has_bit(m, b) == (lo <= b < hi),
+{
+    proof {
+        if hi - lo < 64 {
+            lemma_one_shl((hi - lo) as usize);
+        }
+    }
+    let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
+    proof {
+        lemma_word_mask(mask, lo as u64, hi as u64);
+    }
+    mask
 }
 
 /// Facts about `trailing_zeros` in terms of `has_bit`.
@@ -2020,62 +2040,6 @@ impl TwoLevelBitmap {
             if 0 <= b < n.nbits && b / 64 != w {
                 assert(b / 64 < o.l0_words);
                 assert(n.l0v(b / 64) == o.l0v(b / 64));
-            }
-        }
-    }
-
-    /// `clear`'s level-0 write, before the summary follows it: the new word
-    /// is the old one less `b`'s bit, and the set lost `b` once the summary
-    /// is right. With a non-zero word the summary already is.
-    proof fn lemma_clear_word(o: &Self, n: &Self, b: int)
-        requires
-            o.wf(),
-            0 <= b < o.nbits,
-            n.frame(o),
-            n.l1_used == o.l1_used,
-            o.ok(o.l0o(b / 64)),
-            n.perms@ == o.perms@.insert(o.l0o(b / 64), n.perms@[o.l0o(b / 64)]),
-            n.perms@[o.l0o(b / 64)].ptr() == o.perms@[o.l0o(b / 64)].ptr(),
-            n.perms@[o.l0o(b / 64)].is_init(),
-            n.perms@[o.l0o(b / 64)].value() == o.l0v(b / 64) & !(1u64 << ((b % 64) as u64)),
-        ensures
-            n.valid(),
-            forall|w: int| 0 <= w < o.l0_words && w != b / 64 ==> #[trigger] n.l0v(w) == o.l0v(w),
-            forall|j: int| 0 <= j < o.l1_words ==> #[trigger] n.l1v(j) == o.l1v(j),
-            forall|k: u64| k < 64 ==> #[trigger] has_bit(n.l0v(b / 64), k) == (has_bit(o.l0v(b / 64), k) && k != (b % 64) as u64),
-            forall|x: int| 0 <= x < o.nbits && x / 64 == b / 64 ==> #[trigger] has_bit(n.l0v(b / 64), (x % 64) as u64) == (o.has(x) && x != b),
-            forall|k: u64| k < 64 && b / 64 * 64 + k >= o.nbits ==> !#[trigger] has_bit(n.l0v(b / 64), k),
-            n.l0v(b / 64) != 0u64 ==> n.inner() && forall|x: int| #[trigger] n.has(x) == (o.has(x) && x != b),
-    {
-        let w = b / 64;
-        o.lemma_offsets();
-        Self::lemma_write(o, n, o.l0o(w), n.perms@[o.l0o(w)].value());
-        lemma_one_bit((b % 64) as u64);
-        assert forall|k: u64| k < 64 implies #[trigger] has_bit(n.l0v(w), k) == (has_bit(o.l0v(w), k) && k != (b % 64) as u64) by {
-            lemma_bit_ops(o.l0v(w), 1u64 << ((b % 64) as u64), k);
-        }
-        assert forall|k: u64| k < 64 && w * 64 + k >= o.nbits implies !#[trigger] has_bit(n.l0v(w), k) by {
-            assert(!has_bit(o.l0v(w), k));
-        }
-        assert forall|x: int| 0 <= x < o.nbits && x / 64 == w implies #[trigger] has_bit(n.l0v(w), (x % 64) as u64) == (o.has(x) && x != b) by {
-            assert(has_bit(n.l0v(w), (x % 64) as u64) == (has_bit(o.l0v(w), (x % 64) as u64) && (x % 64) as u64 != (b % 64) as u64));
-        }
-        if n.l0v(w) != 0u64 {
-            let a2 = n.l0v(w);
-            // A non-zero word was non-zero before: its summary bit is set.
-            if o.l0v(w) == 0u64 {
-                assert forall|k: u64| k < 64 implies !#[trigger] has_bit(a2, k) by {
-                    assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
-                }
-                lemma_zero_of_no_bits(a2);
-            }
-            assert(w / 64 * 64 + w % 64 == w);
-            assert(has_bit(o.l1v(w / 64), (w % 64) as u64));
-            Self::lemma_word(o, n, w, a2);
-            assert forall|x: int| #[trigger] n.has(x) == (o.has(x) && x != b) by {
-                if 0 <= x < o.nbits && x / 64 == w {
-                    assert(has_bit(n.l0v(w), (x % 64) as u64) == (o.has(x) && x != b));
-                }
             }
         }
     }
@@ -2564,27 +2528,27 @@ impl TwoLevelBitmap {
         (self.l0(bit / 64) >> (bit % 64)) & 1 == 1
     }
 
-    /// Insert `bit`.
-    pub fn set(&mut self, bit: usize)
+    /// Set the bits of `mask` in level-0 word `w`, set the word's summary
+    /// bit and raise `l1_used` past it: the word update of `set` and of
+    /// each step of `set_range`.
+    #[inline(always)]
+    fn or_word(&mut self, w: usize, mask: u64)
         requires
             old(self).wf(),
-            bit < old(self).spec_nbits(),
+            w < old(self).l0_words,
+            mask != 0u64,
+            forall|b: u64| b < 64 && w * 64 + b >= old(self).nbits ==> !#[trigger] has_bit(mask, b),
         ensures
-            final(self).place() == old(self).place(),
             final(self).wf(),
-            final(self).spec_nbits() == old(self).spec_nbits(),
-            final(self).view() == old(self).view().insert(bit as nat),
+            final(self).frame(old(self)),
+            forall|x: int| #[trigger] final(self).has(x) == (old(self).has(x) || (0 <= x && x / 64 == w && has_bit(mask, (x % 64) as u64))),
     {
-        assert!(bit < self.nbits, "bitmap: bit out of range");
-        let w = bit / 64;
         let ghost o = *self;
         proof {
-            lemma_one_bit((bit % 64) as u64);
             lemma_one_bit((w % 64) as u64);
-            assert(w < self.l0_words);
             assert(w / 64 < self.l1_words);
         }
-        *self.l0_mut(w) |= 1u64 << (bit % 64);
+        *self.l0_mut(w) |= mask;
         let ghost s1 = *self;
         proof {
             o.lemma_offsets();
@@ -2595,17 +2559,20 @@ impl TwoLevelBitmap {
         proof {
             s1.lemma_offsets();
             Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
+            let a0 = o.l0v(w as int);
             let a2 = s2.l0v(w as int);
-            assert forall|b: u64| b < 64 implies #[trigger] has_bit(a2, b) == (has_bit(o.l0v(w as int), b) || b == (bit % 64) as u64) by {
-                lemma_bit_ops(o.l0v(w as int), 1u64 << ((bit % 64) as u64), b);
+            assert(a2 == a0 | mask);
+            assert(a0 | mask != 0u64) by (bit_vector)
+                requires mask != 0u64;
+            assert forall|b: u64| b < 64 implies #[trigger] has_bit(a2, b) == (has_bit(a0, b) || has_bit(mask, b)) by {
+                lemma_bit_ops(a0, mask, b);
             }
             assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(o.l1v(w as int / 64), k) || k == (w % 64) as u64) by {
                 lemma_bit_ops(o.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
             }
             assert forall|b: u64| b < 64 && w * 64 + b >= o.nbits implies !#[trigger] has_bit(a2, b) by {
-                assert(!has_bit(o.l0v(w as int), b));
+                assert(!has_bit(a0, b));
             }
-            assert(has_bit(a2, (bit % 64) as u64));
             assert(has_bit(s2.l1v(w as int / 64), (w % 64) as u64));
             Self::lemma_word(&o, &s2, w as int, a2);
         }
@@ -2623,7 +2590,154 @@ impl TwoLevelBitmap {
             if n.l1_used > 0 && n.l1_used - 1 != w / 64 {
                 assert(n.l1v(n.l1_used - 1) == o.l1v(o.l1_used - 1));
             }
-            Self::lemma_view_insert(&o, &n, bit as int);
+            assert forall|x: int| #[trigger] n.has(x) == (o.has(x) || (0 <= x && x / 64 == w && has_bit(mask, (x % 64) as u64))) by {
+                if 0 <= x && x / 64 == w {
+                    assert(x == w * 64 + x % 64);
+                    assert(has_bit(s2.l0v(w as int), (x % 64) as u64) == (has_bit(o.l0v(w as int), (x % 64) as u64) || has_bit(mask, (x % 64) as u64)));
+                }
+            }
+        }
+    }
+
+    /// Clear the bits of `mask` in level-0 word `w`, and its summary bit if
+    /// the word became zero; returns whether it did. `l1_used` is left as
+    /// it was, so a caller that saw `true` restores `tight` with
+    /// [`trim_l1_used`](TwoLevelBitmap::trim_l1_used). The word update of
+    /// `clear` and of each step of `clear_range`.
+    #[inline(always)]
+    fn and_not_word(&mut self, w: usize, mask: u64) -> (zeroed: bool)
+        requires
+            old(self).inner(),
+            old(self).tail(),
+            w < old(self).l0_words,
+        ensures
+            final(self).inner(),
+            final(self).tail(),
+            final(self).frame(old(self)),
+            final(self).l1_used == old(self).l1_used,
+            !zeroed && old(self).tight() ==> final(self).tight(),
+            forall|x: int| #[trigger] final(self).has(x) == (old(self).has(x) && !(x / 64 == w && has_bit(mask, (x % 64) as u64))),
+    {
+        let ghost p = *self;
+        proof {
+            lemma_one_bit((w % 64) as u64);
+            assert(w / 64 < self.l1_words);
+            p.lemma_offsets();
+        }
+        let word = self.l0_mut(w);
+        *word &= !mask;
+        let zeroed = *word == 0;
+        if zeroed {
+            let ghost s1 = *self;
+            proof {
+                Self::lemma_and_not_word(&p, &s1, w as int, mask);
+            }
+            *self.l1_mut(w / 64) &= !(1u64 << (w % 64));
+            let ghost s2 = *self;
+            proof {
+                s1.lemma_offsets();
+                Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
+                assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(p.l1v(w as int / 64), k) && k != (w % 64) as u64) by {
+                    lemma_bit_ops(p.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
+                }
+                assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
+                    assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+                }
+                Self::lemma_word(&p, &s2, w as int, 0u64);
+                // The summary word only lost a bit, so a zero word stays zero.
+                if p.l1v(w as int / 64) == 0u64 {
+                    assert forall|k: u64| k < 64 implies !#[trigger] has_bit(s2.l1v(w as int / 64), k) by {
+                        assert(!has_bit(0u64, k));
+                    }
+                    lemma_zero_of_no_bits(s2.l1v(w as int / 64));
+                }
+                assert forall|j: int| s2.l1_used <= j < s2.l1_words implies #[trigger] s2.l1v(j) == 0u64 by {
+                    assert(p.l1v(j) == 0u64);
+                }
+                assert forall|x: int| #[trigger] s2.has(x) == (p.has(x) && !(x / 64 == w && has_bit(mask, (x % 64) as u64))) by {
+                    if 0 <= x < p.nbits && x / 64 == w {
+                        assert(has_bit(s1.l0v(w as int), (x % 64) as u64) == (p.has(x) && !has_bit(mask, (x % 64) as u64)));
+                    }
+                }
+            }
+        } else {
+            proof {
+                let s1 = *self;
+                Self::lemma_and_not_word(&p, &s1, w as int, mask);
+                assert forall|j: int| s1.l1_used <= j < s1.l1_words implies #[trigger] s1.l1v(j) == 0u64 by {
+                    assert(p.l1v(j) == 0u64);
+                }
+                if s1.l1_used > 0 {
+                    assert(s1.l1v(s1.l1_used - 1) == p.l1v(p.l1_used - 1));
+                }
+            }
+        }
+        zeroed
+    }
+
+    /// Lower `l1_used` past the zero level-1 words at its top, restoring
+    /// `tight` after a clear emptied a summary word.
+    #[inline(always)]
+    fn trim_l1_used(&mut self)
+        requires
+            old(self).inner(),
+            old(self).tail(),
+        ensures
+            final(self).wf(),
+            final(self).frame(old(self)),
+            forall|b: int| #[trigger] final(self).has(b) == old(self).has(b),
+    {
+        let ghost s = *self;
+        while self.l1_used > 0 && self.l1(self.l1_used - 1) == 0
+            invariant
+                self.inner(),
+                self.perms == s.perms,
+                self.frame(&s),
+                self.tail(),
+                forall|b: int| #[trigger] self.has(b) == s.has(b),
+            decreases self.l1_used,
+        {
+            let ghost p = *self;
+            self.l1_used -= 1;
+            proof {
+                Self::lemma_used(&p, self);
+                assert forall|j: int| self.l1_used <= j < self.l1_words implies #[trigger] self.l1v(j) == 0u64 by {
+                    if j > self.l1_used {
+                        assert(p.l1v(j) == 0u64);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Insert `bit`.
+    pub fn set(&mut self, bit: usize)
+        requires
+            old(self).wf(),
+            bit < old(self).spec_nbits(),
+        ensures
+            final(self).place() == old(self).place(),
+            final(self).wf(),
+            final(self).spec_nbits() == old(self).spec_nbits(),
+            final(self).view() == old(self).view().insert(bit as nat),
+    {
+        assert!(bit < self.nbits, "bitmap: bit out of range");
+        let w = bit / 64;
+        let ghost o = *self;
+        proof {
+            lemma_one_bit((bit % 64) as u64);
+            assert(w < self.l0_words);
+            assert(w * 64 + bit % 64 == bit);
+            assert(has_bit(1u64 << ((bit % 64) as u64), (bit % 64) as u64));
+        }
+        self.or_word(w, 1u64 << (bit % 64));
+        proof {
+            assert forall|x: int| #[trigger] self.has(x) == (o.has(x) || x == bit) by {
+                if 0 <= x {
+                    assert(has_bit(1u64 << ((bit % 64) as u64), (x % 64) as u64) == ((x % 64) as u64 == (bit % 64) as u64));
+                }
+            }
+            Self::lemma_view_insert(&o, self, bit as int);
         }
     }
 
@@ -2643,76 +2757,18 @@ impl TwoLevelBitmap {
         let ghost o = *self;
         proof {
             lemma_one_bit((bit % 64) as u64);
-            lemma_one_bit((w % 64) as u64);
             assert(w < self.l0_words);
-            assert(w / 64 < self.l1_words);
-            o.lemma_offsets();
         }
-        let word = self.l0_mut(w);
-        *word &= !(1u64 << (bit % 64));
-        if *word == 0 {
-            let ghost s1 = *self;
-            proof {
-                Self::lemma_clear_word(&o, &s1, bit as int);
-            }
-            *self.l1_mut(w / 64) &= !(1u64 << (w % 64));
-            let ghost s2 = *self;
-            proof {
-                s1.lemma_offsets();
-                Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
-                assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(o.l1v(w as int / 64), k) && k != (w % 64) as u64) by {
-                    lemma_bit_ops(o.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
-                }
-                assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
-                    assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
-                }
-                Self::lemma_word(&o, &s2, w as int, 0u64);
-                // The summary word only lost a bit, so a zero word stays zero.
-                if o.l1v(w as int / 64) == 0u64 {
-                    assert forall|k: u64| k < 64 implies !#[trigger] has_bit(s2.l1v(w as int / 64), k) by {
-                        assert(!has_bit(0u64, k));
-                    }
-                    lemma_zero_of_no_bits(s2.l1v(w as int / 64));
-                }
-                assert forall|j: int| s2.l1_used <= j < s2.l1_words implies #[trigger] s2.l1v(j) == 0u64 by {
-                    assert(o.l1v(j) == 0u64);
+        if self.and_not_word(w, 1u64 << (bit % 64)) {
+            self.trim_l1_used();
+        }
+        proof {
+            assert forall|x: int| #[trigger] self.has(x) == (o.has(x) && x != bit) by {
+                if 0 <= x {
+                    assert(has_bit(1u64 << ((bit % 64) as u64), (x % 64) as u64) == ((x % 64) as u64 == (bit % 64) as u64));
                 }
             }
-            while self.l1_used > 0 && self.l1(self.l1_used - 1) == 0
-                invariant
-                    self.inner(),
-                    self.perms == s2.perms,
-                    self.frame(&s2),
-                    self.tail(),
-                    forall|b: int| #[trigger] self.has(b) == s2.has(b),
-                decreases self.l1_used,
-            {
-                let ghost p = *self;
-                self.l1_used -= 1;
-                proof {
-                    Self::lemma_used(&p, self);
-                    assert forall|j: int| self.l1_used <= j < self.l1_words implies #[trigger] self.l1v(j) == 0u64 by {
-                        if j > self.l1_used {
-                            assert(p.l1v(j) == 0u64);
-                        }
-                    }
-                }
-            }
-            proof {
-                Self::lemma_view_remove(&o, self, bit as int);
-            }
-        } else {
-            proof {
-                let s1 = *self;
-                Self::lemma_clear_word(&o, &s1, bit as int);
-                assert forall|j: int| s1.l1_used <= j < s1.l1_words implies #[trigger] s1.l1v(j) == 0u64 by {
-                    assert(o.l1v(j) == 0u64);
-                }
-                if s1.l1_used > 0 {
-                    assert(s1.l1v(s1.l1_used - 1) == o.l1v(o.l1_used - 1));
-                }
-                Self::lemma_view_remove(&o, &s1, bit as int);
-            }
+            Self::lemma_view_remove(&o, self, bit as int);
         }
     }
 
@@ -2744,64 +2800,22 @@ impl TwoLevelBitmap {
             let w = bit / 64;
             let lo = bit % 64;
             let hi = (end - w * 64).min(64);
-            let ghost p = *self;
             proof {
                 assert(w < self.l0_words);
-                assert(w / 64 < self.l1_words);
                 assert(lo < hi <= 64);
-                lemma_one_bit((w % 64) as u64);
-                p.lemma_offsets();
-                if hi - lo < 64 {
-                    lemma_one_shl((hi - lo) as usize);
-                }
+                assert(w * 64 + hi <= end);
             }
-            let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
+            let mask = word_mask(lo, hi);
             proof {
-                lemma_word_mask(mask, lo as u64, hi as u64);
+                lemma_one_bit(lo as u64);
+                assert(has_bit(mask, lo as u64));
             }
-            *self.l0_mut(w) |= mask;
-            let ghost s1 = *self;
-            proof {
-                Self::lemma_write(&p, &s1, p.l0o(w as int), s1.l0v(w as int));
-            }
-            *self.l1_mut(w / 64) |= 1u64 << (w % 64);
-            let ghost s2 = *self;
-            proof {
-                s1.lemma_offsets();
-                Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
-                let a2 = s2.l0v(w as int);
-                assert forall|b: u64| b < 64 implies #[trigger] has_bit(a2, b) == (has_bit(p.l0v(w as int), b) || (lo <= b < hi)) by {
-                    lemma_bit_ops(p.l0v(w as int), mask, b);
-                }
-                assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(p.l1v(w as int / 64), k) || k == (w % 64) as u64) by {
-                    lemma_bit_ops(p.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
-                }
-                assert forall|b: u64| b < 64 && w * 64 + b >= p.nbits implies !#[trigger] has_bit(a2, b) by {
-                    assert(!has_bit(p.l0v(w as int), b));
-                }
-                assert(has_bit(a2, lo as u64));
-                assert(has_bit(s2.l1v(w as int / 64), (w % 64) as u64));
-                Self::lemma_word(&p, &s2, w as int, a2);
-            }
-            if w / 64 >= self.l1_used {
-                self.l1_used = w / 64 + 1;
-            }
+            self.or_word(w, mask);
             bit = w * 64 + hi;
             proof {
-                let n = *self;
-                Self::lemma_used(&s2, &n);
-                assert(has_bit(n.l1v(w as int / 64), (w % 64) as u64));
-                assert forall|j: int| n.l1_used <= j < n.l1_words implies #[trigger] n.l1v(j) == 0u64 by {
-                    assert(p.l1v(j) == 0u64);
-                }
-                assert(n.l1v(w as int / 64) != 0u64);
-                if n.l1_used > 0 && n.l1_used - 1 != w / 64 {
-                    assert(n.l1v(n.l1_used - 1) == p.l1v(p.l1_used - 1));
-                }
-                assert forall|x: int| #[trigger] n.has(x) == (o.has(x) || start <= x < bit) by {
-                    if x / 64 == w && 0 <= x < n.nbits {
-                        assert(has_bit(s2.l0v(w as int), (x % 64) as u64) == (has_bit(p.l0v(w as int), (x % 64) as u64) || (lo <= (x % 64) as u64 && (x % 64) < hi)));
-                        assert(p.has(x) == has_bit(p.l0v(w as int), (x % 64) as u64));
+                assert forall|x: int| #[trigger] self.has(x) == (o.has(x) || start <= x < bit) by {
+                    if 0 <= x && x / 64 == w {
+                        assert(has_bit(mask, (x % 64) as u64) == (lo <= (x % 64) as u64 && (x % 64) < hi));
                     }
                 }
             }
@@ -2842,95 +2856,22 @@ impl TwoLevelBitmap {
             let w = bit / 64;
             let lo = bit % 64;
             let hi = (end - w * 64).min(64);
-            let ghost p = *self;
             proof {
                 assert(w < self.l0_words);
-                assert(w / 64 < self.l1_words);
                 assert(lo < hi <= 64);
-                lemma_one_bit((w % 64) as u64);
-                p.lemma_offsets();
-                if hi - lo < 64 {
-                    lemma_one_shl((hi - lo) as usize);
-                }
             }
-            let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
-            proof {
-                lemma_word_mask(mask, lo as u64, hi as u64);
-            }
-            let word = self.l0_mut(w);
-            *word &= !mask;
-            if *word == 0 {
-                let ghost s1 = *self;
-                proof {
-                    Self::lemma_and_not_word(&p, &s1, w as int, mask);
-                }
-                *self.l1_mut(w / 64) &= !(1u64 << (w % 64));
-                let ghost s2 = *self;
-                proof {
-                    s1.lemma_offsets();
-                    Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
-                    assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(p.l1v(w as int / 64), k) && k != (w % 64) as u64) by {
-                        lemma_bit_ops(p.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
-                    }
-                    assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
-                        assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
-                    }
-                    Self::lemma_word(&p, &s2, w as int, 0u64);
-                    if p.l1v(w as int / 64) == 0u64 {
-                        assert forall|k: u64| k < 64 implies !#[trigger] has_bit(s2.l1v(w as int / 64), k) by {
-                            assert(!has_bit(0u64, k));
-                        }
-                        lemma_zero_of_no_bits(s2.l1v(w as int / 64));
-                    }
-                    assert forall|j: int| s2.l1_used <= j < s2.l1_words implies #[trigger] s2.l1v(j) == 0u64 by {
-                        assert(p.l1v(j) == 0u64);
-                    }
-                    assert forall|x: int| #[trigger] s2.has(x) == (p.has(x) && !(x / 64 == w && has_bit(mask, (x % 64) as u64))) by {
-                        if 0 <= x < p.nbits && x / 64 == w {
-                            assert(has_bit(s1.l0v(w as int), (x % 64) as u64) == (p.has(x) && !has_bit(mask, (x % 64) as u64)));
-                        }
-                    }
-                }
-            } else {
-                proof {
-                    let s1 = *self;
-                    Self::lemma_and_not_word(&p, &s1, w as int, mask);
-                    assert forall|j: int| s1.l1_used <= j < s1.l1_words implies #[trigger] s1.l1v(j) == 0u64 by {
-                        assert(p.l1v(j) == 0u64);
-                    }
-                }
-            }
+            let mask = word_mask(lo, hi);
+            self.and_not_word(w, mask);
             bit = w * 64 + hi;
             proof {
-                let n = *self;
-                assert forall|x: int| #[trigger] n.has(x) == (o.has(x) && !(start <= x < bit)) by {
+                assert forall|x: int| #[trigger] self.has(x) == (o.has(x) && !(start <= x < bit)) by {
                     if x / 64 == w && 0 <= x {
                         assert(has_bit(mask, (x % 64) as u64) == (lo <= (x % 64) as u64 && (x % 64) < hi));
                     }
                 }
             }
         }
-        let ghost s3 = *self;
-        while self.l1_used > 0 && self.l1(self.l1_used - 1) == 0
-            invariant
-                self.inner(),
-                self.perms == s3.perms,
-                self.frame(&s3),
-                self.tail(),
-                forall|b: int| #[trigger] self.has(b) == s3.has(b),
-            decreases self.l1_used,
-        {
-            let ghost p = *self;
-            self.l1_used -= 1;
-            proof {
-                Self::lemma_used(&p, self);
-                assert forall|j: int| self.l1_used <= j < self.l1_words implies #[trigger] self.l1v(j) == 0u64 by {
-                    if j > self.l1_used {
-                        assert(p.l1v(j) == 0u64);
-                    }
-                }
-            }
-        }
+        self.trim_l1_used();
         proof {
             broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
             assert(self.view() =~= o.view().difference(Set::<nat>::range(start as nat, (start + len) as nat)));
