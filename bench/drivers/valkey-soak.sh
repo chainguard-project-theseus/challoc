@@ -469,8 +469,6 @@ sample_stat() {
     }' "$OUT/$1/samples.csv"
 }
 vmhwm() { awk '$1=="VmHWM:" {printf "%.1f", $2/1024}' "$OUT/$1/vm.txt"; }
-# pct A B: (A/B-1)*100 signed, "-" if either is missing
-pct() { awk -v a="$1" -v b="$2" 'BEGIN {if(a=="-"||b=="-"||a==""||b==""||b==0)print "-";else printf "%+.1f%%", (a/b-1)*100}'; }
 
 # The jemalloc server is built before any soak runs: a build inside the
 # container leaves hundreds of MiB of page cache charged to the cgroup, and
@@ -581,15 +579,15 @@ ALLOCS=$SUMMARY_ALLOCS
     done
     if [ $cmp = 1 ]; then
       case $hib in
-        1) r="$r $(pct "$j" "$c") |";;
-        0) r="$r $(pct "$c" "$j") |";;
+        1) r="$r $(pct_of "$j" "$c") |";;
+        0) r="$r $(pct_of "$c" "$j") |";;
         *) r="$r - |";;
       esac
     fi
     if [ $cmp_old = 1 ]; then
       case $hib in
-        1) r="$r $(pct "$j" "$o") |";;
-        0) r="$r $(pct "$o" "$j") |";;
+        1) r="$r $(pct_of "$j" "$o") |";;
+        0) r="$r $(pct_of "$o" "$j") |";;
         *) r="$r - |";;
       esac
     fi

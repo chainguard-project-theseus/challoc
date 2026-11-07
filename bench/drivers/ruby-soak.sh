@@ -200,8 +200,6 @@ done
 # ---- report ------------------------------------------------------------------------------
 RUBY_V=$(run_ruby "$(alloc0)" -v)
 kv() { awk -v k="$2" '{for (i = 1; i <= NF; i++) {split($i, p, "="); if (p[1] == k) print p[2]}}' "$OUT/$1.out" | tail -1; }
-kb_mib() { awk -v k="$1" 'BEGIN {if (k=="-"||k=="") print "-"; else printf "%.1f", k/1024}'; }
-mib() { awk -v b="$1" 'BEGIN {if (b=="-"||b=="") print "-"; else printf "%.1f", b/1048576}'; }
 # col ALLOC WHAT: one figure from the CSV, in MiB.
 #   peak_rss      max vmrss over the samples        hwm      final VmHWM
 #   at_T          vmrss of the last row with t<=T   final    the final-fullgc row's vmrss
@@ -286,10 +284,10 @@ M5=$COMPACT_AT; M10=$DURATION
   rowc "VmHWM at the end" hwm
   rowk() { # label key: a kB figure from the summary line, as MiB
     r="| $1 |"
-    for a in $ALLOCS; do r="$r $(kb_mib "$(kv "$a" "$2")") |"; done
-    if has challoc && has jemalloc; then r="$r $(pct_of "$(kb_mib "$(kv challoc "$2")")" "$(kb_mib "$(kv jemalloc "$2")")") |"; fi
-    if has challoc; then for x in $(extras); do r="$r $(pct_of "$(kb_mib "$(kv "$x" "$2")")" "$(kb_mib "$(kv challoc "$2")")") |"; done; fi
-    if has jemalloc; then for x in $(extras); do r="$r $(pct_of "$(kb_mib "$(kv "$x" "$2")")" "$(kb_mib "$(kv jemalloc "$2")")") |"; done; fi
+    for a in $ALLOCS; do r="$r $(kib_to_mib "$(kv "$a" "$2")") |"; done
+    if has challoc && has jemalloc; then r="$r $(pct_of "$(kib_to_mib "$(kv challoc "$2")")" "$(kib_to_mib "$(kv jemalloc "$2")")") |"; fi
+    if has challoc; then for x in $(extras); do r="$r $(pct_of "$(kib_to_mib "$(kv "$x" "$2")")" "$(kib_to_mib "$(kv challoc "$2")")") |"; done; fi
+    if has jemalloc; then for x in $(extras); do r="$r $(pct_of "$(kib_to_mib "$(kv "$x" "$2")")" "$(kib_to_mib "$(kv jemalloc "$2")")") |"; done; fi
     echo "$r"
   }
   rowk "cgroup memory.peak, start..compact" cgroup_peak_before_compact_kb
