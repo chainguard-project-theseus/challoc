@@ -127,7 +127,12 @@ kernels and 4 pages on 16 KiB pages. Out of scope:
 - **A new set per `(arena, class)`, `closed`:** the slabs that are
   `Active` with at least one closed page. It is a view of the same
   `SetTable` as `partial`, `empty` and `purged` (design 5).
-- **`closed_slots` per class state:** the slots on closed pages.
+- **`closed_slots` per class state:** the slots on the closed pages of
+  `Active` slabs, the slabs `curslabs` counts. It is kept under the class
+  lock, and it is the invariant `closed_slots == Σ closed_slot_count(open)
+  over the class's Active slabs` (3.7). It never enters challoc's own
+  `curregs`, which stays `claimed - released` (3.6). Closed slots' bits
+  are clear, so no claim counted them.
 
 ### 3.3 Opening (the smaller initial slab)
 
@@ -153,11 +158,23 @@ kernels and 4 pages on 16 KiB pages. Out of scope:
 
 ### 3.4 Closing (giving pages back)
 
-- **Candidates.** A page is closable when every slot overlapping it is
-  clear: neither live nor cached. A release that leaves a slab with at
-  least one closable page stamps `pages_dirty_at` (if unset) and adds the
-  slab to the class's decay gate, as `dirty_at` does for an `Empty` slab
-  (design 8).
+- **Candidates are found by the walk, not by releases.** A page is
+  closable when every slot overlapping it is clear: neither live nor
+  cached. A release stays one lock-free `fetch_and` and a `live`
+  decrement (design 4), with no page test, so the flush is unchanged.
+  - **Where the walk looks.** It scans the class's partial slabs from a
+    cursor, a bounded number per step (64 slabs: at most a few thousand
+    word loads, about a microsecond), reading each slab's words with
+    plain loads.
+  - **How pages age.** A page it finds closable and unstamped gets
+    `pages_dirty_at` set to the walk's time. A stamped page that is no
+    longer closable has its stamp cleared. The age the curve reads is
+    therefore "closable since at least the stamp", measured at walk
+    granularity.
+  - **When the walk runs.** A class with partial slabs keeps a decay
+    deadline one step ahead (`dirty_decay_ms / STEPS`, 50 ms by default),
+    as a class with `Empty` slabs does now. It runs from the periodic tick
+    or the background thread (design 6.4, 8.1).
 - **The decay walk closes pages,** with the smootherstep curve over
   `dirty_decay_ms` applied to closable pages as it is to `Empty` slabs.
   Explicit purges and a defragmenter's hints close them too (7.1). For
@@ -202,10 +219,26 @@ kernels and 4 pages on 16 KiB pages. Out of scope:
   the page.
 - **The advice is the band's,** `MADV_DONTNEED` or `MADV_FREE`. A lazy
   discard clears `purged_is_zero` as it does now.
-- **A slab whose last live slot is freed goes `Empty` as now.** Its closed
-  pages are already discarded, so the slab's purge discards only its open
-  pages. A `Purged` slab reused through step 3 of the selection is opened
-  like a `Fresh` one.
+- **The `Empty`, `Purged` and reuse transitions.** Each runs under the
+  class lock, as the state changes do now (design 5, 8):
+  - **`Active` to `Empty`** (`live` reaches zero): the slab leaves
+    `curslabs`, so its closed slots leave `closed_slots`, and the slab
+    leaves `closed`. Its `open` mask is kept. Its closed pages are already
+    discarded, and its purge later discards only its open pages.
+  - **`Empty` to `Purged`:** every page is now discarded, so `open` is
+    reset to 0, all closed.
+  - **`Empty` reused** (step 3 of 3.3): the slab is `Active` again with
+    the mask it kept. Its closed slots re-enter `closed_slots`, and it
+    joins `closed` if any page is closed. The claim opens the pages it
+    needs.
+  - **`Purged` or `Fresh` reused:** `open` is 0, so the claim opens the
+    pages it needs (3.3). The slab joins `closed` with the rest, and
+    their slots enter `closed_slots`.
+
+  `bin_stats` reports `curregs + closed_slots`. Both count slots of
+  `curslabs` slabs only, and are disjoint, since claimed bits are set and
+  closed bits clear. So the report never exceeds `curslabs * nslots`, and
+  the clamp (`clamped`) stays a bookkeeping alarm.
 
 ### 3.5 Checks
 
@@ -261,6 +294,13 @@ design 13.4 must say so:
     loom or GenMC model of the walk racing a claim, like the existing
     models of the class protocol).
   - Per-page zero tracking stays out (7.4).
+- **`closed_slots` cannot leak.** The class-state invariant of 3.2 joins
+  the `ClassState` proofs, maintained by every transition above. A debug
+  check in `bin_stats` recomputes it from the masks of the class's
+  `Active` slabs, under the lock it already holds, as `live!=bits` is
+  checked in the report (design 16). Unit tests drive each transition
+  (close, then `Empty`, `Purged` and reuse, in each order) and compare
+  the two.
 - **The page-to-slot ranges** get an exhaustive `#[test]` over every
   class at every supported page size, like
   `slot_of_offset_is_exactly_the_reciprocal_check`
@@ -279,6 +319,8 @@ design 13.4 must say so:
 - **Flush: unchanged.** Its check that a released bit is set already
   covers closed pages.
 - **Decay:**
+  - a scan of at most 64 partial slabs' words per class per step, about a
+    microsecond, in classes with partial slabs (3.4);
   - an `madvise` per run of closed pages, batched (design 8);
   - a TLB shootdown for each `MADV_DONTNEED` in a multithreaded process.
     The curve and the `pages_dirty_at` gate bound the rate, and a churning
@@ -356,7 +398,21 @@ refill and flush pairs: 3 to 24 us per `cap / 2` (about 500) allocations,
 - **A defragmenter's hints close the hinted class's closable pages,** at
   most once per `DEFRAG_GC_INTERVAL_NS` (100 ms) per class, and only pages
   closable for at least one decay step (design 8: `dirty_decay_ms /
-  STEPS`, 50 ms by default). #576 already runs the cache GC from
+  STEPS`, 50 ms by default). Design 13.5 must change with this, as 13.4
+  does for the statistics.
+  - **Cost.** A hint call off the interval loads one per-class timestamp
+    and moves on. On the interval, it runs the class's closing walk: the
+    class lock, the scan, the read-modify-writes and one batched
+    `madvise`.
+  - **Capabilities.** That is a lock and a syscall path, which the hint
+    already has since #576: it requires `may_syscall`, `may_abort() ||
+    valid_aborts()` and `may_abort_corrupt()`, and takes class locks for
+    `lowest_partial` and `bin_stats`. The walk reaches no abort beyond
+    these. A refused discard (`EINVAL`) reopens the page without
+    aborting. Any other errno of the discard is a resource failure,
+    `kernel_aborts`, inside `valid_aborts`, as for every discard
+    (design 8). `theorem_defrag_hint_aborts_only_in_its_gc` extends to
+    say so. #576 already runs the cache GC from
   `get_defrag_hint` on the same interval. A defragmenter asking about a
   class is the signal that its fragmentation is unwanted now. It is what
   ends Redis's endless rescans: its figure drops on the next cycle, not a
