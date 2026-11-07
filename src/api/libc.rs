@@ -2527,7 +2527,8 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tra
 /// above `size` whose slot size is a multiple of `align`
 /// ([`spec_class_for`]). `None` when the request is a huge run, either
 /// because `size` is above `MEDIUM_MAX` or because `align` is. Shared by
-/// `aligned_alloc`, `mallocx`, `rallocx` and `nallocx`. The mask in the second postcondition says "a multiple
+/// `aligned_alloc`, `mallocx`, `rallocx`, `nallocx` and the sized frees'
+/// hints (`sdallocx`, `free_aligned_sized`). The mask in the second postcondition says "a multiple
 /// of `align`" because every caller passes a power of two.
 #[inline]
 pub(super) fn class_for(size: usize, align: usize) -> (r: Option<usize>)
@@ -2579,7 +2580,10 @@ pub(super) fn class_for(size: usize, align: usize) -> (r: Option<usize>)
     // an index) so that no bounds-check panic call sits in the functions
     // this is inlined into (`sdallocx`: a call in the body costs the fast
     // path a frame it otherwise needs no part of, design 6.3), and `align`
-    // is a power of two so the divisibility test is a mask.
+    // is a power of two so the divisibility test is a mask. The sizes come
+    // from `BASE_CLASSES`, whose sizes are `CLASSES`' (adoption changes
+    // only the slab geometry): `sdallocx` and `free_aligned_sized` ask for
+    // the class before they know the allocator is initialised.
     let ghost c0 = c;
     let mut c = c;
     loop
@@ -2598,7 +2602,10 @@ pub(super) fn class_for(size: usize, align: usize) -> (r: Option<usize>)
                 lemma_class_for_none(size, align);
             }
         }
-        let cls = CLASSES.table().get(c)?;
+        let cls = crate::layout::BASE_CLASSES.get(c)?;
+        proof {
+            crate::vspec::class::lemma_class_table_wf(c as int);
+        }
         if cls.size() & (align - 1) == 0 {
             proof {
                 lemma_class_for_some(size, align, c as int);

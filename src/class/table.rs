@@ -17,9 +17,9 @@ use crate::bitmap::{
     Slots, fresh_mark, fresh_marks, has_bit, init_mark, init_marks, subset, words_wf,
 };
 use crate::layout::pages::OpenView;
-use crate::layout::{CLASSES, Class, Regions};
+use crate::layout::{CLASSES, Class, NCLASSES, Regions};
 #[cfg(verus_keep_ghost)]
-use crate::layout::{NCLASSES, class_table, process_regions};
+use crate::layout::{class_table, process_regions};
 use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{lock_init, rank_meta, rank_table};
@@ -1749,7 +1749,7 @@ impl SlabTable {
             assert(regions.class_base[class as int] + (1usize << regions.lg_region) <= 1usize << 57);
             assert(regions.lg_page <= regions.lg_region);
         }
-        assert!(class < CLASSES.len(), "class: index out of range");
+        assert!(class < NCLASSES, "class: index out of range");
         assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
         assert!(
             guard_interval == 0 || guard_interval.is_power_of_two(),
