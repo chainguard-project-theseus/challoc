@@ -1,6 +1,3 @@
-# A match of `Name` on the names' text (`Name::cstr`'s, a unit test
-# checks); the harness runs it on every `Name`.
-word	core library	Kani	discharged (Kani: api::print::kani_print::word_returns)	contract 653785749, body 199771204
 # The C caller passed `opts` under the entry point's contract.
 axiom_c_call	C-program contract	none (assumption)
 # Opaque wrapper of the caller's callback, a function pointer.
