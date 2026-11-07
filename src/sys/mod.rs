@@ -641,6 +641,30 @@ mod linux {
 
     verus! {
 
+    /// A C `int` argument as the syscall word: sign-extended, as the
+    /// kernel ABI takes it.
+    #[inline(always)]
+    const fn arg(x: i32) -> (w: usize)
+        ensures
+            w == x as isize as usize,
+    {
+        x as isize as usize
+    }
+
+    /// `r` without its success value (`r.map(|_| ())`, spelled out so the
+    /// contract says what it keeps).
+    #[inline(always)]
+    fn ok_unit(r: Result<usize, Errno>) -> (u: Result<(), Errno>)
+        ensures
+            u is Ok <==> r is Ok,
+            r matches Err(e) ==> u == Err::<(), Errno>(e),
+    {
+        match r {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     // ---- structs ---------------------------------------------------------
 
     /// `struct timespec` (64-bit `time_t` on both architectures).
@@ -688,9 +712,9 @@ mod linux {
                 nr::MMAP,
                 addr,
                 len,
-                prot as isize as usize,
-                flags as isize as usize,
-                fd as isize as usize,
+                arg(prot),
+                arg(flags),
+                arg(fd),
                 offset,
             )
         })
@@ -706,7 +730,7 @@ mod linux {
             crate::sys::may_syscall(),
     {
         // SAFETY: forwarded to the caller's contract.
-        decode(unsafe { raw::syscall2(nr::MUNMAP, addr, len) }).map(|_| ())
+        ok_unit(decode(unsafe { raw::syscall2(nr::MUNMAP, addr, len) }))
     }
 
     /// The kernel answered an `mprotect(addr, len, prot)` with success:
@@ -730,8 +754,7 @@ mod linux {
             r is Ok ==> mprotect_ok(addr, len, prot),
     {
         // SAFETY: forwarded to the caller's contract.
-        decode(unsafe { raw::syscall3(nr::MPROTECT, addr, len, prot as isize as usize) })
-            .map(|_| ())
+        ok_unit(decode(unsafe { raw::syscall3(nr::MPROTECT, addr, len, arg(prot)) }))
     }
 
     /// The kernel answered an `madvise(addr, len, advice)` with success:
@@ -762,8 +785,7 @@ mod linux {
             r is Err ==> madvise_err(addr, len, advice),
     {
         // SAFETY: forwarded to the caller's contract.
-        decode(unsafe { raw::syscall3(nr::MADVISE, addr, len, advice as isize as usize) })
-            .map(|_| ())
+        ok_unit(decode(unsafe { raw::syscall3(nr::MADVISE, addr, len, arg(advice)) }))
     }
 
     /// `mseal(2)`. Forbids `munmap`, `mremap`, `mprotect` and `madvise`
@@ -777,7 +799,7 @@ mod linux {
             crate::sys::may_syscall(),
     {
         // SAFETY: forwarded to the caller's contract.
-        decode(unsafe { raw::syscall3(nr::MSEAL, addr, len, flags) }).map(|_| ())
+        ok_unit(decode(unsafe { raw::syscall3(nr::MSEAL, addr, len, flags) }))
     }
 
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name)`.
@@ -798,17 +820,16 @@ mod linux {
     {
         debug_assert!(!name.is_empty() && name[name.len() - 1] == 0);
         // SAFETY: forwarded to the caller's contract.
-        decode(unsafe {
+        ok_unit(decode(unsafe {
             raw::syscall5(
                 nr::PRCTL,
-                PR_SET_VMA as isize as usize,
+                arg(PR_SET_VMA),
                 PR_SET_VMA_ANON_NAME,
                 addr,
                 len,
                 name.as_ptr() as usize,
             )
-        })
-        .map(|_| ())
+        }))
     }
 
     /// Generic `prctl(2)` for options other than `PR_SET_VMA`.
@@ -828,7 +849,7 @@ mod linux {
     {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
-            raw::syscall5(nr::PRCTL, option as isize as usize, arg2, arg3, arg4, arg5)
+            raw::syscall5(nr::PRCTL, arg(option), arg2, arg3, arg4, arg5)
         })
     }
 
@@ -891,7 +912,7 @@ mod linux {
             match getrandom(&mut buf[filled..], 0) {
                 Ok(0) => return Err(Errno::EIO),
                 Ok(n) => filled += n,
-                Err(e) if e.0 == Errno::EINTR.0 => {}
+                Err(e) if e == Errno::EINTR => {}
                 Err(e) => return Err(e),
             }
         }
@@ -919,7 +940,7 @@ mod linux {
             raw::syscall6(
                 nr::FUTEX,
                 uaddr as usize,
-                op as isize as usize,
+                arg(op),
                 val as usize,
                 timeout as usize,
                 uaddr2 as usize,
@@ -948,7 +969,7 @@ mod linux {
     {
         let ts = timeout.map_or(core::ptr::null(), |t| core::ptr::from_ref(t));
         // SAFETY: forwarded to the caller's contract.
-        unsafe {
+        ok_unit(unsafe {
             futex(
                 uaddr,
                 FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
@@ -957,8 +978,7 @@ mod linux {
                 core::ptr::null(),
                 0,
             )
-        }
-        .map(|_| ())
+        })
     }
 
     /// `futex(FUTEX_WAKE | FUTEX_PRIVATE_FLAG)`: wake up to `n` waiters.
@@ -995,7 +1015,7 @@ mod linux {
         decode(unsafe {
             raw::syscall2(
                 nr::CLOCK_GETTIME,
-                clock as isize as usize,
+                arg(clock),
                 core::ptr::from_mut(&mut ts) as usize,
             )
         })
@@ -1032,9 +1052,9 @@ mod linux {
         decode(unsafe {
             raw::syscall4(
                 nr::OPENAT,
-                AT_FDCWD as isize as usize,
+                arg(AT_FDCWD),
                 path.as_ptr() as usize,
-                (flags | O_CLOEXEC) as isize as usize,
+                arg(flags | O_CLOEXEC),
                 0,
             )
         })
@@ -1071,7 +1091,7 @@ mod linux {
         decode(unsafe {
             raw::syscall3(
                 nr::READ,
-                fd as isize as usize,
+                arg(fd),
                 buf.as_mut_ptr() as usize,
                 buf.len(),
             )
@@ -1099,7 +1119,7 @@ mod linux {
             match read(fd, &mut buf[filled..]) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
-                Err(e) if e.0 == Errno::EINTR.0 => {}
+                Err(e) if e == Errno::EINTR => {}
                 Err(e) => return Err(e),
             }
         }
@@ -1153,7 +1173,7 @@ mod linux {
         decode(unsafe {
             raw::syscall3(
                 nr::WRITE,
-                fd as isize as usize,
+                arg(fd),
                 buf.as_ptr() as usize,
                 buf.len(),
             )
@@ -1178,7 +1198,7 @@ mod linux {
             match write(fd, &buf[done..]) {
                 Ok(0) => return,
                 Ok(n) => done += n,
-                Err(e) if e.0 == Errno::EINTR.0 => {}
+                Err(e) if e == Errno::EINTR => {}
                 Err(_) => return,
             }
         }
@@ -1191,7 +1211,7 @@ mod linux {
             crate::sys::may_syscall(),
     {
         // SAFETY: no pointers.
-        decode(unsafe { raw::syscall1(nr::CLOSE, fd as isize as usize) }).map(|_| ())
+        ok_unit(decode(unsafe { raw::syscall1(nr::CLOSE, arg(fd)) }))
     }
 
     // ---- process ---------------------------------------------------------
@@ -1358,7 +1378,7 @@ mod linux {
             raw::syscall3(
                 nr::SCHED_SETSCHEDULER,
                 0,
-                SCHED_OTHER as isize as usize,
+                arg(SCHED_OTHER),
                 param.as_ptr() as usize,
             )
         })
@@ -1377,7 +1397,7 @@ mod linux {
         decode(unsafe {
             raw::syscall3(
                 nr::SCHED_GETAFFINITY,
-                pid as isize as usize,
+                arg(pid),
                 len,
                 set.as_mut_ptr() as usize,
             )
@@ -1395,7 +1415,7 @@ mod linux {
         decode(unsafe {
             raw::syscall3(
                 nr::SCHED_SETAFFINITY,
-                pid as isize as usize,
+                arg(pid),
                 len,
                 set.as_ptr() as usize,
             )
@@ -1414,8 +1434,8 @@ mod linux {
         let r = decode(unsafe {
             raw::syscall2(
                 nr::GETPRIORITY,
-                PRIO_PROCESS as isize as usize,
-                pid as isize as usize,
+                arg(PRIO_PROCESS),
+                arg(pid),
             )
         });
         match r {
@@ -1437,9 +1457,9 @@ mod linux {
         decode(unsafe {
             raw::syscall3(
                 nr::SETPRIORITY,
-                PRIO_PROCESS as isize as usize,
-                pid as isize as usize,
-                nice as isize as usize,
+                arg(PRIO_PROCESS),
+                arg(pid),
+                arg(nice),
             )
         })
     }
@@ -1583,7 +1603,7 @@ mod linux {
     {
         // SAFETY: no pointers; does not return.
         unsafe {
-            raw::syscall1(nr::EXIT_GROUP, status as isize as usize);
+            raw::syscall1(nr::EXIT_GROUP, arg(status));
         }
         // The kernel never returns from exit_group; trap if it somehow did.
         trap()
