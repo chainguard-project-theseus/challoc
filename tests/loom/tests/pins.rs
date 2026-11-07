@@ -4,6 +4,14 @@
 //! so does a new line with an `Ordering::`, a `fence(` or a `futex_` call
 //! inside a function a pin falls in (`loom_pins_cover_every_atomic_in_pinned_fns`) until it is
 //! pinned, or waived in `WAIVED` with the reason the model leaves it out.
+//!
+//! The GenMC harnesses of tests/genmc copy steps too: `GENMC_PINS` pairs
+//! each copied source line with the harness's copy, and
+//! `genmc_copies_in_place` fails when either side of a pair changes
+//! without the other, when a pass case in tests/genmc/cases runs a
+//! harness with another ordering or step than the source's
+//! (`GENMC_SHIPPED`), or when a harness has no pins. The functions GenMC
+//! pins fall in get the same check for new atomic lines as loom's.
 
 use std::ops::Range;
 use std::path::Path;
@@ -582,6 +590,681 @@ fn copied_lines_in_place() {
     }
 }
 
+/// `(harness under tests/genmc, source file, [(source line, copy)])`: the
+/// lines of a source file a GenMC harness copies, in the file's order,
+/// each with the harness's copy of it. A copy is one trimmed line of the
+/// harness, or several consecutive ones joined by `\n` (a call rustfmt
+/// splits). The copies need not be in order, and one copy may stand for
+/// two source lines. An empty copy marks an anchor: a source line pinned
+/// only to place the next pins (a `fn` line, or a branch the harness
+/// takes another way). Each source line must be in the same `fn` as the
+/// one before it unless it is a `fn` line itself, so a short line such as
+/// `return None;` cannot match the same line of a later function. An
+/// ordering the harness takes from a case constant (`PUBLISH`, `ENTRY`)
+/// is pinned in `GENMC_SHIPPED`.
+const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
+    // `READY`'s publication and load (`api::state_publish`, `state_load`).
+    (
+        "flags.rs",
+        "src/api/mod.rs",
+        &[
+            ("pub const UNINIT: u32 = 0;", "const UNINIT: u32 = 0;"),
+            ("pub const READY: u32 = 2;", "const READY: u32 = 2;"),
+            (
+                "fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)",
+                "",
+            ),
+            (
+                "STATE.load(Ordering::Acquire)",
+                "self.state.load(Ordering::Acquire) == READY",
+            ),
+            (
+                "fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)",
+                "",
+            ),
+            (
+                "STATE.store(READY, Ordering::Release);",
+                "self.state.store(READY, PUBLISH);",
+            ),
+        ],
+    ),
+    // `set_multi_arena`, `put_flags`, `free_flags`.
+    (
+        "flags.rs",
+        "src/heap/shared.rs",
+        &[
+            (
+                "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);",
+                "Some((fetch_or(b, bits, Ordering::Relaxed), push))",
+            ),
+            ("unsafe fn put_flags<'a>(", ""),
+            (
+                "ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);",
+                "*self.push.get() = push;",
+            ),
+            (
+                "ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));",
+                "(*self.byte.get()).write(new(push));",
+            ),
+            ("pub fn free_flags(&self) -> (r: u8)", ""),
+            (
+                "crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)",
+                "let r0 = load(b, Ordering::Relaxed);\nlet r1 = load(b, Ordering::Relaxed);",
+            ),
+        ],
+    ),
+    // `load_mirror`, `load_owner`, `store_owner`, `mirror_watermark`,
+    // `committed_slabs`, `watermark`, `take_group` and `next_slab_locked`.
+    (
+        "watermark.rs",
+        "src/class/table.rs",
+        &[
+            (
+                "r = load_usize(a, Ordering::Relaxed, Tracked(&v.0));",
+                "let m = atom::load_usize(&self.mirror, Ordering::Relaxed, Tracked::assume_new());",
+            ),
+            (
+                "unsafe fn load_owner(t: &SlabTable, w: *const AtomicU16, Ghost(slab): Ghost<usize>, seen: Tracked<Option<&'static GhostPersistentSubset<int>>>) -> (r: u16)",
+                "",
+            ),
+            (
+                "r = unsafe { load_u16_at(w, Ordering::Relaxed, Tracked(&v.0)) };",
+                "atom::load_u16_at(&self.owners[slab], Ordering::Relaxed, Tracked::assume_new())",
+            ),
+            ("unsafe fn store_owner(", ""),
+            (
+                "unsafe { (*w).store(arena, Ordering::Relaxed) }",
+                "self.owners[s].store(arena, Ordering::Relaxed);",
+            ),
+            ("pub unsafe fn mirror_watermark(", ""),
+            (
+                "let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));",
+                "let g = self.lock.lock().unwrap();",
+            ),
+            (
+                "let wm = gi.next_slab;",
+                "let wm = unsafe { *self.next.get() };",
+            ),
+            (
+                "unsafe { store_usize_at(mirror, wm, Ordering::Release, Tracked(&mut v.0)) };",
+                "self.store_mirror(wm);",
+            ),
+            (
+                "gi.mirror = mirror;",
+                "unsafe { *self.installed.get() = true };",
+            ),
+            ("pub fn committed_slabs(&self) -> (r: usize)", ""),
+            (
+                "load_usize_seen(&self.committed_slabs, Ordering::Acquire, &self.committed_inv).0",
+                "if order == Ordering::Acquire {\nvspec::load_usize_seen(&self.committed, order)",
+            ),
+            ("fn watermark(&self, order: Ordering) -> (r: usize)", ""),
+            (
+                "r = load_usize(&self.committed_slabs, order, Tracked(&v.0));",
+                "atom::load_usize(&self.committed, order, Tracked::assume_new())",
+            ),
+            ("pub(super) fn take_group(", ""),
+            (
+                "let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));",
+                "let g = self.lock.lock().unwrap();",
+            ),
+            (
+                "let s = self.next_slab_locked(&*g, &*sets);",
+                "let s = unsafe { *self.next.get() };",
+            ),
+            ("if s >= self.nslabs {", "if s >= NSLABS {"),
+            ("return None;", "return None;"),
+            (
+                "if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {",
+                "s == self.watermark(Ordering::Relaxed),",
+            ),
+            (
+                "unsafe { store_owner(owner_word, arena, Ghost(*self), Ghost(s >> self.lg_group), Tracked(&mut v.0), Tracked(om)) };",
+                "self.owners[s].store(arena, Ordering::Relaxed);",
+            ),
+            ("gi.next_slab = end;", "unsafe { *self.next.get() = end };"),
+            (
+                "store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut v.0));",
+                "atom::store_usize(&self.committed, end, PUBLISH, Tracked::assume_new());",
+            ),
+            (
+                "if !gi.mirror.is_null() {",
+                "if installed && !MIRROR_UNLOCKED {\nself.store_mirror(end);",
+            ),
+            (
+                "unsafe { store_usize_at(gi.mirror, end, Ordering::Release, Tracked(&mut v.0)) };",
+                "atom::store_usize_at(\natom::usize_ptr(&self.mirror),\nv,\nOrdering::Release,\nTracked::assume_new(),\n)",
+            ),
+            ("g.unlock();", "drop(g);"),
+            (
+                "fn next_slab_locked(&self, t: &TableInner, v: &Inner) -> (r: usize)",
+                "",
+            ),
+            ("t.next_slab", "let s = unsafe { *self.next.get() };"),
+        ],
+    ),
+    // `ClassLine::set_slab`'s load of the copy.
+    (
+        "watermark.rs",
+        "src/heap/shared.rs",
+        &[(
+            "let committed = crate::class::load_mirror(&self.committed, self.committed_inv);",
+            "let m = atom::load_usize(&self.mirror, Ordering::Relaxed, Tracked::assume_new());",
+        )],
+    ),
+    // `unbind`, `assign`, `load_bound`, `count_in`, `try_bind_idle` and
+    // `bind_if_idle`.
+    (
+        "count.rs",
+        "src/arena.rs",
+        &[
+            (
+                "prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));",
+                "let prev = count::fetch_sub(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());",
+            ),
+            (
+                "if prev == 0 {",
+                "gassert!(prev != 0, \"unbinding a heap that was never bound (count 0)\");",
+            ),
+            (
+                "pub fn assign(&self, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (u16, Tracked<Homed>, Ghost<Seq<(u32, bool)>>))",
+                "",
+            ),
+            (
+                "let g = self.lock.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
+                "let g = self.lock.lock().unwrap();",
+            ),
+            (
+                "let mut best_key = (u32::MAX, true);",
+                "let mut best_key = (u32::MAX, true);",
+            ),
+            (
+                "let key = (self.load_bound(i), self.table[i].load(Ordering::Relaxed).is_null());",
+                "let key = (self.load_bound(i), !built);",
+            ),
+            ("if key_less(key, best_key) {", "if key < best_key {"),
+            ("if key == (0, false) {", "if key == (0, false) {"),
+            ("let t = self.count_in(best);", "self.count_in(best);"),
+            ("g.unlock();", "drop(g);"),
+            ("fn load_bound(&self, i: usize) -> u32", ""),
+            (
+                "n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));",
+                "count::load(&self.bound[i], Ordering::Relaxed, Tracked::assume_new())",
+            ),
+            ("fn count_in(&self, i: usize) -> (r: Tracked<Homed>)", ""),
+            (
+                "crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));",
+                "count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());",
+            ),
+            (
+                "pub fn try_bind_idle(&self, index: u16) -> (r: (bool, Tracked<Homed>))",
+                "",
+            ),
+            (
+                "if self.load_bound(i) != 0 {",
+                "if self.load_bound(i) != 0 {",
+            ),
+            (
+                "return (false, Tracked(no_ticket(index)));",
+                "return false;",
+            ),
+            (
+                "fn bind_if_idle(&self, i: usize) -> (r: (bool, Tracked<Homed>))",
+                "",
+            ),
+            (
+                "r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm));",
+                "count::compare_exchange(\n&self.bound[i],\n0,\n1,\nOrdering::Relaxed,\nOrdering::Relaxed,\nTracked::assume_new(),\n)",
+            ),
+        ],
+    ),
+    // `Heap::try_rehome`'s call of `try_bind_idle`, with no lock.
+    (
+        "count.rs",
+        "src/heap/mod.rs",
+        &[(
+            "let (won, Tracked(t)) = shared.arenas.try_bind_idle(to);",
+            "let won = a.try_bind_idle(1);",
+        )],
+    ),
+    // `get_existing`'s entry load, `count`, `build`'s entry store and
+    // `create`.
+    (
+        "narenas.rs",
+        "src/arena.rs",
+        &[
+            (
+                "p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));",
+                "entry::load(&self.table[i], Ordering::Acquire, Tracked::assume_new())",
+            ),
+            (
+                "pub fn count(&self) -> (r: u32)",
+                "fn count(&self) -> u32 {",
+            ),
+            (
+                "r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));",
+                "count::load(&self.count, Ordering::Acquire, Tracked::assume_new())",
+            ),
+            ("fn build<'a>(", ""),
+            (
+                "crate::vspec::entry::store(&self.table[index as usize], p, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(index as int)));",
+                "entry::store(\n&self.table[i],\nptr::dangling_mut(),\nENTRY,\nTracked::assume_new(),\n);",
+            ),
+            (
+                "pub fn create(&self, shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)",
+                "",
+            ),
+            (
+                "let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));",
+                "let g = self.lock.lock().unwrap();",
+            ),
+            (
+                "let index = g.n;",
+                "let index = unsafe { *self.next.get() };",
+            ),
+            (
+                "if index as usize >= MAX_ARENAS {",
+                "if index >= MAX_ARENAS {",
+            ),
+            ("return None;", "return None;"),
+            (
+                "if self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under)).is_none() {",
+                "unsafe { *self.fields[i].get() = u64::from(index) + 1 };",
+            ),
+            (
+                "c.n = index + 1;",
+                "unsafe { *self.next.get() = index + 1 };",
+            ),
+            (
+                "crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut v.count));",
+                "count::store(&self.count, index + 1, PUBLISH, Tracked::assume_new());",
+            ),
+        ],
+    ),
+    // `empty_bytes`'s walk below the arena count.
+    (
+        "narenas.rs",
+        "src/policy.rs",
+        &[
+            (
+                "let n = shared.arenas.count() as usize;",
+                "let n = self.count();",
+            ),
+            (
+                "if let Some(arena) = shared.arenas.get_existing(i as u16) {",
+                "if self.entry(i).is_null() {",
+            ),
+        ],
+    ),
+    // The state values, `step`'s compare-and-exchange and `free`'s call
+    // of it from `LIVE`.
+    (
+        "slotstate.rs",
+        "src/heap/slotstate.rs",
+        &[
+            ("pub const FREE: u8 = 0;", "const FREE: u8 = 0;"),
+            ("pub const CACHED: u8 = 1;", "const CACHED: u8 = 1;"),
+            ("pub const LIVE: u8 = 2;", "const LIVE: u8 = 2;"),
+            (
+                "fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool, Tracked(obs): Tracked<&mut Ghost<(u8, u8)>>) -> (r: u8)",
+                "",
+            ),
+            ("if exchange {", ""),
+            (
+                "match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {",
+                "byte::compare_exchange(\nb,\nLIVE,\nto,\nOrdering::Relaxed,\nOrdering::Relaxed,\nTracked::assume_new(),\n)",
+            ),
+            (
+                "pub(super) fn free(shared: &Shared, class: usize, p: *mut u8, to: u8)",
+                "",
+            ),
+            (
+                "let r = step(shared, class, p, LIVE, to, true, Tracked(&mut obs));",
+                "fn free(b: &AtomicU8, to: u8) -> bool {",
+            ),
+        ],
+    ),
+    // `AtomicBitmap::init` (whole words), `claim_word`, `claim_from` and
+    // `release`.
+    (
+        "bitmap.rs",
+        "src/bitmap.rs",
+        &[
+            (
+                "pub fn init(&self, nbits: usize, Ghost(slab): Ghost<int>, Tracked(f): Tracked<GhostSubset<int>>) -> (r: Tracked<GhostPersistentSubset<int>>)",
+                "",
+            ),
+            ("let lo = i * 64;", "let lo = i * 64;"),
+            (
+                "let pad = if nbits >= lo + 64 {",
+                "let pad = if nbits >= lo + 64 {",
+            ),
+            ("} else if nbits <= lo {", "} else if nbits <= lo {"),
+            ("!0u64 << (nbits - lo)", "!0u64 << (nbits - lo)"),
+            (
+                "crate::vspec::word::store(w, pad, Ordering::Relaxed, Tracked(&mut perm));",
+                "word::store(w, pad, Ordering::Relaxed, Tracked::assume_new());",
+            ),
+            ("pub fn claim_word(", ""),
+            (
+                "let cur = w.load(Ordering::Relaxed);",
+                "let cur = w.load(Ordering::Relaxed);",
+            ),
+            (
+                "let want = lowest_n_bits(!cur & self.mask, n);",
+                "let want = lowest_n_bits(!cur, n);",
+            ),
+            ("if want == 0 {", "if want == 0 {"),
+            ("return 0;", "return 0;"),
+            (
+                "prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));",
+                "let prev = word::fetch_or(w, want, Ordering::Acquire, Tracked::assume_new());",
+            ),
+            ("(want & !prev) >> self.shift", "want & !prev"),
+            ("pub fn claim_from(", ""),
+            ("let len = self.words.len();", "let len = self.words.len();"),
+            (
+                "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
+                "let got = self.claim_word(i, n);",
+            ),
+            ("if got != 0 {", "if got != 0 {"),
+            ("return Some((i, got));", "return Some((i, got));"),
+            ("i += 1;", "i += 1;"),
+            ("if i == len {", "if i == len {"),
+            ("i = 0;", "i = 0;"),
+            (
+                "pub fn release(&self, i: usize, mask: u64, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: (u64, bool))",
+                "",
+            ),
+            (
+                "prev = crate::vspec::word::fetch_and(w, !m, Ordering::Release, Tracked(&mut perm));",
+                "word::fetch_and(\n&self.words[0],\n!mask,\nOrdering::Release,\nTracked::assume_new(),\n)",
+            ),
+        ],
+    ),
+    // The class bitmap pass, `take`'s reservation under the class lock,
+    // the free path's release and `dec_live`.
+    (
+        "bitmap.rs",
+        "src/class/mod.rs",
+        &[
+            (
+                "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
+                "match self.claim_from(0, want - got.count_ones() as usize) {",
+            ),
+            ("empty_passes += 1;", "empty += 1;"),
+            (
+                "if empty_passes == MAX_EMPTY_PASSES {",
+                "if empty >= passes {",
+            ),
+            ("fn take(", "fn reserve(&self, want: usize) -> usize {"),
+            ("g: &mut Inner,", "let g = self.lock.lock().unwrap();"),
+            (
+                "let live = desc.live();",
+                "let live = self.live.load(Ordering::Acquire) as usize;",
+            ),
+            (
+                "let avail = self.class().nslots() - live;",
+                "let n = min(NSLOTS - live, want);",
+            ),
+            (
+                "let n = avail.min(*remaining);",
+                "let n = min(NSLOTS - live, want);",
+            ),
+            (
+                "desc.add_live(n);",
+                "self.live.fetch_add(n as u32, Ordering::AcqRel);",
+            ),
+            (
+                "fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<&mut GhostSubset<int>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)",
+                "",
+            ),
+            (
+                "let (prev, was_full) = bm.release(word, mask, Tracked(tok));",
+                "fn release(&self, mask: u64, relaxed: bool) {",
+            ),
+            (
+                "if prev & mask != mask {",
+                "gassert!(prev & mask == mask, \"released a clear bit\");",
+            ),
+            (
+                "fn dec_live(&self, slab: usize, n: usize, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)",
+                "",
+            ),
+            (
+                "if self.desc(slab).sub_live(n) == n {",
+                "let prev = self.live.fetch_sub(n, Ordering::AcqRel);",
+            ),
+        ],
+    ),
+    // `SlabDesc`'s `live`, `add_live` and `sub_live`.
+    (
+        "bitmap.rs",
+        "src/slab.rs",
+        &[
+            (
+                "self.live.load(Ordering::Acquire) as usize",
+                "let live = self.live.load(Ordering::Acquire) as usize;",
+            ),
+            ("pub fn add_live(&self, n: usize) -> usize {", ""),
+            (
+                "self.live.fetch_add(n as u32, Ordering::AcqRel) as usize",
+                "self.live.fetch_add(n as u32, Ordering::AcqRel);",
+            ),
+            ("pub fn sub_live(&self, n: usize) -> (r: usize)", ""),
+            (
+                "let prev = self.live.fetch_sub(n as u32, Ordering::AcqRel) as usize;",
+                "let prev = self.live.fetch_sub(n, Ordering::AcqRel);",
+            ),
+        ],
+    ),
+    // `committed_slabs`, and `take_group`'s bitmap init then the
+    // watermark's store, which publishes it.
+    (
+        "bitmap.rs",
+        "src/class/table.rs",
+        &[
+            (
+                "load_usize_seen(&self.committed_slabs, Ordering::Acquire, &self.committed_inv).0",
+                "if vspec::load_usize_seen(&s.committed, Ordering::Acquire) == 1 {",
+            ),
+            ("pub(super) fn take_group(", ""),
+            (
+                "let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(), Ghost(slab as int), Tracked(fs));",
+                "s.init(NSLOTS);\natom::store_usize(&s.committed, 1, PUBLISH, Tracked::assume_new());",
+            ),
+            (
+                "store_usize(&self.committed_slabs, end, Ordering::Release, Tracked(&mut v.0));",
+                "atom::store_usize(&s.committed, 1, PUBLISH, Tracked::assume_new());",
+            ),
+        ],
+    ),
+];
+
+/// `(harness, constants)`: the case constants that stand for the
+/// source's orderings and steps, each of which every `pass` case of the
+/// harness in tests/genmc/cases must write as given. A control may set
+/// them otherwise. Every `Ordering` constant a case of the harness sets
+/// must be listed.
+const GENMC_SHIPPED: &[(&str, &[&str])] = &[
+    (
+        "flags.rs",
+        &[
+            "const PUBLISH: Ordering = Ordering::Release;",
+            "const BITS: u8 = ROUTE;",
+        ],
+    ),
+    (
+        "watermark.rs",
+        &[
+            "const PUBLISH: Ordering = Ordering::Release;",
+            "const MIRROR_UNLOCKED: bool = false;",
+        ],
+    ),
+    (
+        "count.rs",
+        &[
+            "const SPLIT: bool = false;",
+            "const SPLIT_CAS: bool = false;",
+        ],
+    ),
+    (
+        "narenas.rs",
+        &[
+            "const PUBLISH: Ordering = Ordering::Release;",
+            "const ENTRY: Ordering = Ordering::Release;",
+        ],
+    ),
+    ("slotstate.rs", &["const LOAD_STORE: bool = false;"]),
+    (
+        "bitmap.rs",
+        &[
+            "const MUTANT: u32 = 0;",
+            "const PUBLISH: Ordering = Ordering::Release;",
+        ],
+    ),
+];
+
+/// The GenMC templates that copy no source step.
+const GENMC_NO_COPIES: &[&str] = &["litmus.rs"];
+
+/// Whether `copy` (lines joined by `\n`) is a run of consecutive lines of
+/// `src`, each trimmed.
+fn has_copy(src: &[&str], copy: &str) -> bool {
+    let want: Vec<&str> = copy.split('\n').collect();
+    src.windows(want.len())
+        .any(|w| w.iter().map(|l| l.trim()).eq(want.iter().copied()))
+}
+
+/// The GenMC harnesses' copies of source steps, both sides: each source
+/// line in `GENMC_PINS` is still in its file in order, each copy is still
+/// in its harness, every pass case runs a harness with the source's
+/// orderings (`GENMC_SHIPPED`), and every template but those in
+/// `GENMC_NO_COPIES` has pins.
+#[test]
+fn genmc_copies_in_place() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let genmc = root.join("tests/genmc");
+    let mut bad = Vec::new();
+    for (harness, file, pairs) in GENMC_PINS {
+        let src = std::fs::read_to_string(root.join(file)).unwrap();
+        let src: Vec<&str> = src.lines().collect();
+        let lines: Vec<&str> = pairs.iter().map(|(l, _)| *l).collect();
+        match pinned_at(&src, &lines) {
+            Err(missing) => bad.push(format!(
+                "{file}: no line {missing:?} in order (copied by {harness})"
+            )),
+            Ok(at) => {
+                for k in 1..at.len() {
+                    let (prev, cur) = (fn_span(&src, at[k - 1]), fn_span(&src, at[k]));
+                    if cur != prev && !fn_item(src[at[k]].trim()) {
+                        bad.push(format!(
+                            "{file}:{}: {:?} (copied by {harness}) is not in the fn of the pin before it; \
+                             pin its fn line first",
+                            at[k] + 1,
+                            lines[k]
+                        ));
+                    }
+                }
+            }
+        }
+        let text = std::fs::read_to_string(genmc.join(harness)).unwrap();
+        let text: Vec<&str> = text.lines().collect();
+        for (line, copy) in *pairs {
+            if copy.is_empty() {
+                continue;
+            }
+            if copy.split('\n').any(str::is_empty) {
+                bad.push(format!(
+                    "GENMC_PINS: {harness}: copy {copy:?} of {line:?} has an empty line"
+                ));
+            } else if !has_copy(&text, copy) {
+                bad.push(format!(
+                    "tests/genmc/{harness}: no copy {copy:?} of {file}'s {line:?}"
+                ));
+            }
+        }
+    }
+
+    // `name | template | models | constants | expected [| report]...`,
+    // each constant an item ending in `;`.
+    let text = std::fs::read_to_string(genmc.join("cases")).unwrap();
+    let mut cases = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = line.split('|').map(str::trim).collect();
+        if f.len() < 5 {
+            bad.push(format!("tests/genmc/cases: malformed line {line:?}"));
+            continue;
+        }
+        let consts: Vec<&str> = f[3]
+            .split(';')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        cases.push((f[0], f[1], consts, f[4]));
+    }
+    for (harness, shipped) in GENMC_SHIPPED {
+        let tmpl = harness.strip_suffix(".rs").unwrap();
+        let shipped: Vec<&str> = shipped.iter().map(|c| c.trim_end_matches(';')).collect();
+        let mut passes = 0;
+        for (name, _, consts, expected) in cases.iter().filter(|c| c.1 == tmpl) {
+            for c in consts.iter().filter(|c| c.contains(": Ordering =")) {
+                let decl = &c[..c.find('=').unwrap()];
+                if !shipped.iter().any(|s| s.starts_with(decl)) {
+                    bad.push(format!(
+                        "tests/genmc/cases: case {name} sets {c:?}, which GENMC_SHIPPED does not list for {harness}"
+                    ));
+                }
+            }
+            if *expected != "pass" {
+                continue;
+            }
+            passes += 1;
+            for s in &shipped {
+                if !consts.contains(s) {
+                    bad.push(format!("tests/genmc/cases: pass case {name} has no {s:?};"));
+                }
+            }
+        }
+        if passes == 0 {
+            bad.push(format!("tests/genmc/cases: no pass case of {tmpl}"));
+        }
+    }
+
+    for name in GENMC_NO_COPIES {
+        if !genmc.join(name).exists() {
+            bad.push(format!("GENMC_NO_COPIES: no tests/genmc/{name}"));
+        }
+    }
+
+    for entry in std::fs::read_dir(&genmc).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        if !name.ends_with(".rs")
+            || name == "prelude.rs"
+            || GENMC_NO_COPIES.contains(&name.as_str())
+        {
+            continue;
+        }
+        if !GENMC_PINS.iter().any(|(h, _, _)| *h == name) {
+            bad.push(format!("tests/genmc/{name}: no pins in GENMC_PINS"));
+        }
+        if !GENMC_SHIPPED.iter().any(|(h, _)| *h == name) {
+            bad.push(format!("tests/genmc/{name}: no entry in GENMC_SHIPPED"));
+        }
+    }
+
+    assert!(
+        bad.is_empty(),
+        "got = GenMC copies out of step with the source:\n  {}\n\
+         want = each source line and its harness copy changed together (GENMC_PINS), \
+         and every pass case on the source's orderings (GENMC_SHIPPED)",
+        bad.join("\n  ")
+    );
+}
+
 /// Whether `t` starts a `fn` item: qualifiers, then `fn `.
 fn fn_item(t: &str) -> bool {
     let mut t = t;
@@ -648,7 +1331,8 @@ fn fn_name(line: &str) -> &str {
 }
 
 /// Every line with an `Ordering::`, a `fence(` or a `futex_` call inside
-/// a function a pin falls in must be pinned itself, or waived in `WAIVED`
+/// a function a pin falls in (a loom pin in `PINS` or a GenMC one in
+/// `GENMC_PINS`) must be pinned itself, in either, or waived in `WAIVED`
 /// with its reason. Pins only check that the copied lines are still there,
 /// in order; this catches such a line inserted between them (a store, a
 /// fence, a direct futex call) that the model has not copied. It does not
@@ -658,7 +1342,13 @@ fn fn_name(line: &str) -> &str {
 #[test]
 fn loom_pins_cover_every_atomic_in_pinned_fns() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut files: Vec<&str> = PINS.iter().map(|(f, _)| *f).collect();
+    let mut groups: Vec<(&str, Vec<&str>)> = PINS.iter().map(|(f, l)| (*f, l.to_vec())).collect();
+    groups.extend(
+        GENMC_PINS
+            .iter()
+            .map(|(_, f, p)| (*f, p.iter().map(|(l, _)| *l).collect())),
+    );
+    let mut files: Vec<&str> = groups.iter().map(|(f, _)| *f).collect();
     files.sort();
     files.dedup();
     let mut unpinned = Vec::new();
@@ -668,7 +1358,7 @@ fn loom_pins_cover_every_atomic_in_pinned_fns() {
         let src: Vec<&str> = text.lines().collect();
         let mut pinned = vec![false; src.len()];
         let mut in_fn = vec![false; src.len()];
-        for (_, lines) in PINS.iter().filter(|(f, _)| *f == file) {
+        for (_, lines) in groups.iter().filter(|(f, _)| *f == file) {
             for i in pinned_at(&src, lines).unwrap_or_default() {
                 pinned[i] = true;
                 if let Some(span) = fn_span(&src, i) {
@@ -694,7 +1384,8 @@ fn loom_pins_cover_every_atomic_in_pinned_fns() {
     assert!(
         unpinned.is_empty(),
         "got = atomic lines in pinned functions that are neither pinned nor waived:\n  {}\n\
-         want = each copied into its loom model and pinned in PINS, or listed in WAIVED with a reason",
+         want = each copied into its loom model or GenMC harness and pinned in PINS or GENMC_PINS, \
+         or listed in WAIVED with a reason",
         unpinned.join("\n  ")
     );
     let wrong: Vec<String> = WAIVED

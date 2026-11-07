@@ -334,6 +334,24 @@ copies, as the loom models' are:
   and `init`'s publication through the commit count.
 - `litmus.rs` (`vspec::count`): the two shapes of loom's limits above.
 
+`tests/loom/tests/pins.rs` ties the copies to the code from both sides
+(`genmc_copies_in_place`). `GENMC_PINS` pairs each source line a harness
+copies (its atomic operations and their orderings, and the guards and
+lock steps around them) with the harness's copy. Both match as whole
+lines after trimming whitespace. The source lines must stay in their
+file's order, each in the same function as the pin before it unless it
+is a function's own `fn` line (pinned as an anchor), so a changed source
+line fails until its pair is revisited, and so does a changed copy.
+An ordering a harness takes from a case constant (`PUBLISH`, `ENTRY`),
+and a control switch (`SPLIT`, `LOAD_STORE`, `MUTANT`), must be the
+source's in every `pass` case of `tests/genmc/cases` (`GENMC_SHIPPED`),
+and every `Ordering` constant a case sets must be listed there. Every
+template but `litmus.rs` must have pins.
+`loom_pins_cover_every_atomic_in_pinned_fns` also covers the functions
+the GenMC pins fall in, so a new line with an `Ordering::`, a `fence(`
+or a `futex_` call there fails until it is pinned or waived. The pins
+run in the `loom` check, which runs on every pull request.
+
 Every case loom also runs has loom's controls (the `Release` stores made
 `Relaxed`, a read-modify-write split into a load and a store), each a
 `fail` case that must fail with its expected report. `sh
@@ -363,10 +381,21 @@ What GenMC does not check here:
   copy, so they say nothing of P2, and P3's wake-up is not modelled.
 - P4's `Shared` publication: the loom model (`tests/loom/src/init.rs`)
   copies `api/mod.rs`'s own functions, with no `vspec` wrapper, so a
-  GenMC port would be a copy through and through, and no source test
-  would tie it to the code.
-- No source test ties the harnesses' copied steps to the code, as
-  `tests/loom/tests/pins.rs` does for loom's.
+  GenMC port would be a copy through and through, tied to the code only
+  by line pins.
+- The GenMC pins match whole lines, not what they do. A harness step
+  that is not a line-for-line copy is not pinned: `bitmap.rs`'s
+  `lowest_n_bits`, which the harness writes its own way, `RawLock`'s own
+  body (a `Mutex` here; the lock and unlock calls are pinned), and the
+  order of steps that the source splits across files (`put_flags` before
+  `READY`'s store, `take_group`'s bitmap `init` before the watermark's
+  store) beyond each file's own order. The harness side is checked for
+  presence, not order, so a short copy (`return None;`, `drop(g);`) can
+  still be found elsewhere in its harness. A switch that is not an
+  `Ordering` (a `bool` or a `u32` mode) is checked only if
+  `GENMC_SHIPPED` lists it. A new atomic line in a pinned function is
+  caught only when its code names an `Ordering::`, a `fence(` or a
+  `futex_` call, as for loom's pins.
 - `-Copt-level=1` only. At 0, GenMC 0.20 stops on rustc's IR (an
   internal check in `PromoteMemIntrinsicPass`, or `Constant
   unimplemented for type`); at 1, LLVM can hoist a plain read of a

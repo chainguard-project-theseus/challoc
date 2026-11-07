@@ -36,7 +36,9 @@ require); each file is a workflow:
 - `lint.yaml`: rustfmt, clippy (`-D warnings`, the release library and
   every target, quantum 16 and 8), the `ctest-cc.sh` quantum-cache race
   test (`tests/ctest-cc-race.sh`), the loom models (the slow count model
-  in `loom-count`, on changes to `tests/loom/` or the code it copies),
+  in `loom-count`, on changes to `tests/loom/` or the code it copies)
+  and the pins of the lines the loom models and the GenMC harnesses copy
+  (`tests/loom/tests/pins.rs`, both sides for GenMC's),
   shellcheck, the codegen-fncmp fixtures, the Kani bool-comparison lint
   (`ci/kani-boolcmp-test.sh`), the bench harness's unit tests (`make
   bench-unit`), msrv-build (1.94).
@@ -59,7 +61,7 @@ require); each file is a workflow:
 - `codegen.yaml`: the advisory `codegen` and `codegen-arm64`, the machine-code diff from the merge base (`ci/codegen.sh`), and `heap-noalias` (`ci/heap-noalias.sh`), which gates: the home cache headers are written through a raw pointer while a `&mut Heap` is live, which relies on `Heap` being `!Unpin` (its `_pin` field) so that rustc emits no `noalias` for it; the check reads that off the IR at both quanta on x86_64 (`noalias` on a `&mut Heap` receiver; a `&self` receiver is `noalias readonly` and only listed).
 - `perf-budget.yaml`: `perf-budget`, the hot exports' fast-path cost table on x86_64 at both quanta, and `perf-budget-main` the same on main (`scripts/perf-budget.sh`, theorem 45); a change to their machine code updates `verus/perf-budget.txt` and `verus/perf-budget-q8.txt`.
 - `kani.yaml`: `kani` (`q16`, `q8`), `cargo kani` over every harness (`src/kani/` and the `kani_*` modules of other files; `verus/README.md`, "Kani") at each quantum, on x86_64; on pull requests that change `src/kani/**`, `src/vspec/**`, a file in its `changed:` list or `kani.yaml` itself; and `kani-ignoring` (`q16-1` to `q8-4`), every harness after every landing on main, which covers the `kani_*` modules in hot files (`heap/cache.rs`, `purge.rs`), one at a time in regular format in 4 shards per quantum (`ci/kani-regular.sh`), failing on a harness that does not verify or on CBMC's `warning: ignoring`.
-- `genmc.yaml`: `genmc`, rustfmt over the harness templates (`tests/genmc/run.sh --templates`), the control that a template no case names stops the run at setup (`--self-test`), then `tests/genmc/run.sh` (`verus/WEAKMEM.md`, "GenMC"): every case in `tests/genmc/cases`, GenMC ports of loom models that run the `src/vspec` wrappers and `src/sync.rs` unchanged over `core`'s atomics, under each memory model the case names (RC11, IMM, ARMv8); a pass case must pass and a control must fail with its expected report; on pull requests that change `src/sync.rs`, `src/vspec/**`, the source files the harnesses copy steps from, `Cargo.toml`, `tests/genmc/**`, `tests/loom/src/vspec.rs` or `genmc.yaml` itself.
+- `genmc.yaml`: `genmc`, rustfmt over the harness templates (`tests/genmc/run.sh --templates`), the control that a template no case names stops the run at setup (`--self-test`), then `tests/genmc/run.sh` (`verus/WEAKMEM.md`, "GenMC"): every case in `tests/genmc/cases`, GenMC ports of loom models that run the `src/vspec` wrappers and `src/sync.rs` unchanged over `core`'s atomics, under each memory model the case names (RC11, IMM, ARMv8); a pass case must pass and a control must fail with its expected report; on pull requests that change `src/sync.rs`, `src/vspec/**`, the source files the harnesses copy steps from, `Cargo.toml`, `tests/genmc/**`, `tests/loom/src/vspec.rs` or `genmc.yaml` itself. The pins that tie the harnesses' copies to the source run in `lint.yaml`'s loom check, on every pull request.
 
 On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
 --check <check>` for any pushed commit), until Checks schedules this

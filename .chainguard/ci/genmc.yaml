@@ -29,8 +29,9 @@ checks:
       Cargo.toml, tests/genmc/, tests/loom/src/vspec.rs or this file.
     # The wrappers, the loom crate's vspec.rs that declares them, and
     # src/sync.rs, which the harnesses compile; the files whose steps the
-    # harnesses copy (no source test ties those copies to the code, so a
-    # change there reruns the copies and asks for a look);
+    # harnesses copy (tests/loom/tests/pins.rs's `genmc_copies_in_place`
+    # ties the copied lines to the code, and a change there reruns the
+    # copies);
     # the root Cargo.toml (the vstd pin tests/genmc/Cargo.toml follows).
     when:
       changed:
