@@ -284,11 +284,7 @@ def execute(args) -> int:
     refs = {"base": args.base, "head": args.head}
     if launch is not None:
         only = set(vm_entry.get("variants") or [])
-        specs = [
-            VariantSpec(v["label"], v["kind"], v["source"], v.get("conf", ""), v.get("role", "variant"), dict(v.get("knobs") or {}))
-            for v in launch["variants"]
-            if not only or v["label"] in only
-        ]
+        specs = [VariantSpec.from_launch(v) for v in launch["variants"] if not only or v["label"] in only]
         refs = dict(launch.get("refs", refs))
     else:
         vitems = [v.strip() for v in args.variants.split(",")] if args.variants else suite.variants

@@ -1,0 +1,117 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH 1/4] Add MALLOC=challoc: link the system challoc instead of
+ the bundled jemalloc
+
+Redis 8.10.3 (tag 8.10.3, commit 1a2574ce1551d3de6e0b4a56756c0fdbc6659e4f).
+
+challoc (https://github.com/wolfi-dev/challoc) is a malloc replacement
+that exports jemalloc's je_-prefixed API and mallctl namespace (the
+stats.*, arenas.bin.*, epoch, purge, tcache, arenas.create and
+background_thread keys zmalloc.c, defrag.c and the Lua engines read) and
+je_get_defrag_hint, the extension of Redis's bundled jemalloc that active
+defrag needs. `make MALLOC=challoc` (or `USE_CHALLOC=yes`) keeps every
+USE_JEMALLOC code path and links the shared libchalloc instead of
+building deps/jemalloc. Modelled on contrib/valkey/0001.
+
+- src/Makefile: MALLOC=challoc adds -DUSE_JEMALLOC -DUSE_CHALLOC and
+  takes the include path and link flags from challoc.pc (challoc-dev),
+  whose Libs keep -lchalloc inside --push-state,--no-as-needed. Without
+  challoc.pc it links the same way bare. No jemalloc dependency target,
+  so deps/jemalloc is never built.
+- src/zmalloc.h: under USE_CHALLOC include <challoc/jemalloc.h> (challoc's
+  own header, so it never collides with jemalloc-dev) and report
+  ZMALLOC_LIB as "jemalloc-<version>-challoc": INFO memory and --version
+  say which allocator the build has, while everything keyed on "jemalloc"
+  (the tests, INFO consumers) still matches. The header defines
+  JEMALLOC_FRAG_HINT, so HAVE_DEFRAG and defrag.c compile unchanged.
+
+zmalloc.c is unchanged: under USE_CHALLOC it takes the USE_JEMALLOC paths
+(je_malloc, je_malloc_usable_size, je_sdallocx for zfree_with_size,
+mallocx/dallocx with MALLOCX_TCACHE_NONE for defrag, MALLOCX_ARENA and
+MALLOCX_TCACHE for the Lua heap, je_malloc_conf's tcache tuning), which
+challoc implements. Patch 2/4 adds challoc's size-returning entry points;
+patch 3/4 is an upstream bug fix the test suite needs; patch 4/4
+starts the replicaof flush defrag test lower under challoc.
+
+Build, with challoc-dev installed:
+       make MALLOC=challoc BUILD_TLS=yes
+An install outside the default paths: PKG_CONFIG_PATH=<libdir>/pkgconfig
+and LDFLAGS="-Wl,-rpath,<libdir>". challoc's quantum8 build matches the
+bundled jemalloc's lg_quantum=3 size classes. The system challoc
+(quantum16) works too, except for one test that asserts those classes:
+"Check MEMORY USAGE for embedded key strings with jemalloc" in
+tests/unit/type/string.tcl expects jemalloc's 40-byte class, which
+quantum16 rounds up to 48.
+---
+ src/Makefile  | 29 +++++++++++++++++++++++++++++
+ src/zmalloc.h | 12 ++++++++++++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/src/Makefile b/src/Makefile
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -106,6 +106,10 @@ ifeq ($(USE_JEMALLOC),no)
+ 	MALLOC=libc
+ endif
+ 
++ifeq ($(USE_CHALLOC),yes)
++	MALLOC=challoc
++endif
++
+ ifdef SANITIZER
+ ifeq ($(SANITIZER),address)
+ 	MALLOC=libc
+@@ -321,6 +325,31 @@ ifeq ($(MALLOC),jemalloc)
+ 	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
+ endif
+ 
++# challoc (https://github.com/wolfi-dev/challoc) is a malloc replacement that
++# exports jemalloc's je_-prefixed API and mallctl namespace, and the
++# je_get_defrag_hint extension of the bundled jemalloc that active defrag
++# needs. MALLOC=challoc keeps every USE_JEMALLOC code path (stats, purge,
++# background thread, active defrag, the Lua arena) and links the shared
++# libchalloc instead of building deps/jemalloc.
++#
++# challoc.pc (challoc-dev) gives the include path of <challoc/jemalloc.h> and
++# links -lchalloc inside --push-state,--no-as-needed, so every binary keeps
++# DT_NEEDED libchalloc.so.0 under a toolchain that defaults to --as-needed and
++# challoc, not libc, serves malloc for the whole process. Without challoc.pc
++# the same link flags are used bare; point PKG_CONFIG_PATH, or CFLAGS and
++# LDFLAGS, at an install outside the default paths.
++ifeq ($(MALLOC),challoc)
++	CHALLOC_PKGCONFIG := $(shell $(PKG_CONFIG) --exists challoc && echo $$?)
++ifeq ($(CHALLOC_PKGCONFIG),0)
++	CHALLOC_CFLAGS=$(shell $(PKG_CONFIG) --cflags challoc)
++	CHALLOC_LIBS=$(shell $(PKG_CONFIG) --libs challoc)
++else
++	CHALLOC_LIBS=-Wl,--push-state,--no-as-needed -lchalloc -Wl,--pop-state
++endif
++	FINAL_CFLAGS+= -DUSE_JEMALLOC -DUSE_CHALLOC $(CHALLOC_CFLAGS)
++	FINAL_LIBS := $(CHALLOC_LIBS) $(FINAL_LIBS)
++endif
++
+ # LIBSSL & LIBCRYPTO
+ LIBSSL_LIBS=
+ LIBSSL_PKGCONFIG := $(shell $(PKG_CONFIG) --exists libssl && echo $$?)
+diff --git a/src/zmalloc.h b/src/zmalloc.h
+--- a/src/zmalloc.h
++++ b/src/zmalloc.h
+@@ -28,6 +28,18 @@
+ #error "Newer version of tcmalloc required"
+ #endif
+ 
++#elif defined(USE_CHALLOC)
++/* challoc implements jemalloc's API under its own header, so it never
++ * collides with jemalloc-dev. ZMALLOC_LIB keeps the "jemalloc" prefix, so
++ * that everything keyed on it (the tests, INFO consumers) still recognises
++ * the API, and the suffix says which library is really behind it.
++ * <challoc/jemalloc.h> defines JEMALLOC_FRAG_HINT, so HAVE_DEFRAG below and
++ * defrag.c's je_get_defrag_hint work unchanged. */
++#define ZMALLOC_LIB ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX) "-challoc")
++#include <challoc/jemalloc.h>
++#define HAVE_MALLOC_SIZE 1
++#define zmalloc_size(p) je_malloc_usable_size(p)
++
+ #elif defined(USE_JEMALLOC)
+ #define ZMALLOC_LIB ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX))
+ #include <jemalloc/jemalloc.h>
