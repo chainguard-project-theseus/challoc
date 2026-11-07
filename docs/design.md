@@ -2251,7 +2251,8 @@ src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap creation, the 
 src/heap/tcaches.rs   explicit caches (tcache.create)
 src/heap/mallocx.rs   MALLOCX_* flag decoding and the mallocx/dallocx routing
 src/heap/tests.rs, src/heap/linux_tests.rs   heap tests
-src/huge/mod.rs       huge allocator: extents, guards, first fit, decay, the audit
+src/huge/mod.rs       huge allocator: extents, guards, first fit, the audit
+src/huge/decay.rs     the huge purge and decay walks (purge_empty, decay_with) and their Tally
 src/huge/table.rs     the open-addressing descriptor table (page number to HugeDesc)
 src/huge/tests.rs, src/huge/linux_tests.rs   huge tests
 src/meta.rs           metadata region allocator (objects and tables, eager carving)
