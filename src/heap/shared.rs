@@ -71,6 +71,11 @@ verus! {
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
 
+/// The shortest period between two cache GCs a defragmenter's
+/// `get_defrag_hint` calls run on the calling thread
+/// ([`Heap::gc_for_defrag`], design 13.5): 100 ms.
+pub const DEFRAG_GC_INTERVAL_NS: u64 = 100_000_000;
+
 /// Process-wide allocator state that every heap works against: the regions,
 /// one [`SlabTable`] per class, arena 0, the metadata allocator, the huge
 /// allocator, the arena and explicit-cache registries and the thread-exit

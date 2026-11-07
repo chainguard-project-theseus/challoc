@@ -1023,14 +1023,31 @@ pub open spec fn hint_read(p: usize, rd: HintRead, r: c_int) -> bool {
 /// the waste a move recovers (measured on KeyDB's memefficiency suite). 0 for
 /// everything else: a huge run (no slab to consolidate), a full slab, a
 /// freed or foreign pointer, null, and before the allocator is
-/// initialised. Never aborts: a defragmenter asks about pointers it owns,
-/// and a wrong answer only costs it a move. Cold: two class-lock
-/// acquisitions per call, as the verbose utilization query.
+/// initialised. Never aborts over the pointer: a defragmenter asks about
+/// pointers it owns, and a wrong answer only costs it a move. Before it
+/// answers, the call runs [`crate::heap::Heap::gc_for_defrag`] on the
+/// calling thread's heap: the cache GC, at most once per
+/// `DEFRAG_GC_INTERVAL_NS` (100 ms), with the clock read once every
+/// `PERIODIC_EVERY` calls. Cached slots are invisible to the defragmenter
+/// and keep their slabs occupied, so without it a large cache (Redis 8 sets
+/// 1000 slots a class) holds the class's figures above the defragmenter's
+/// threshold until the periodic GC while the defragmenter rescans. The
+/// GC's release is the free path's and can abort where a valid program's
+/// free can (a failed system call, or one of the pending free-path checks:
+/// `valid_aborts`), and the thread-heap lookup at an integrity check
+/// (`may_abort_corrupt`), so the hint requires those two and nothing
+/// wider; `theorem_defrag_hint_aborts_only_in_its_gc` (`api/mod.rs`)
+/// calls it with only them. It is not among the read-only entry points of
+/// `theorem_read_only_never_aborts`. Cold: two class-lock acquisitions per
+/// call, as the verbose utilization query, a counter, and now and then a
+/// clock read and a GC pass.
 #[allow(non_shorthand_field_patterns)] // `verus!`'s expansion of the `let`-`else`
 #[cold]
 #[inline(never)]
 pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
     requires
+        crate::sys::may_abort() || crate::sys::valid_aborts(),
+        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
     ensures
         r == 0 || r == 1,
@@ -1066,6 +1083,12 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
         shared.lemma_wf();
         shared.lemma_wf_ready();
         rd.ready = true;
+    }
+    // Premise (lock order): called from the entry point, which holds no
+    // lock.
+    let tracked mut ord = axiom_entry();
+    if let Some(h) = crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {
+        h.gc_for_defrag(shared, Tracked(&mut ord));
     }
     let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else {
         proof {
@@ -1118,9 +1141,6 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
         rd.found = true;
     }
     let cs = a.class(class);
-    // Premise (lock order): called from the entry point, which holds no
-    // lock.
-    let tracked mut ord = axiom_entry();
     let slabcur = cs.lowest_partial(Tracked(&mut ord));
     proof {
         rd.lowest = slabcur;
@@ -2209,6 +2229,105 @@ mod tests {
         // Without a hook it goes to stderr and must not crash.
         malloc_write(b"challoc: malloc_write test line\n", Tracked::assume_new());
     }
+    /// Design 13.5: hint calls run the calling thread's cache GC at most
+    /// once per `DEFRAG_GC_INTERVAL_NS`, reading the clock once every
+    /// `PERIODIC_EVERY` calls, so a GC runs within that many calls once one
+    /// is due, and releases idle cache entries. A free through no cache
+    /// runs none. Its own thread, so the heap and its caches are the
+    /// test's.
+    #[test]
+    fn get_defrag_hint_runs_the_callers_cache_gc() {
+        thread::spawn(|| {
+            // Fetched afresh each time: the hint takes the same heap.
+            let heap = || {
+                crate::heap::existing_heap(crate::heap::shared_ptr(shared()))
+                    .expect("this thread's heap")
+            };
+            // Through the thread's caches, in two classes: a batch out,
+            // all but one back in.
+            let mut kept = Vec::new();
+            for size in [100usize, 300] {
+                let ptrs: Vec<*mut u8> = (0..64)
+                    .map(|_| mallocx(size, 0, vstd::prelude::Tracked::assume_new()))
+                    .collect();
+                assert!(ptrs.iter().all(|p| !p.is_null()));
+                kept.push(ptrs[0]);
+                for p in &ptrs[1..] {
+                    dallocx(
+                        *p,
+                        0,
+                        vstd::prelude::Tracked::assume_new(),
+                        vstd::prelude::Tracked::assume_new(),
+                    );
+                }
+            }
+            let lens = || -> Vec<usize> {
+                (0..crate::layout::NCLASSES)
+                    .map(|c| heap().cache(c).map_or(0, |k| k.len()))
+                    .collect()
+            };
+            let every = crate::heap::PERIODIC_EVERY as usize;
+            // A free through no cache runs no step.
+            heap().set_last_gc(0);
+            let copy = mallocx(
+                100,
+                MALLOCX_TCACHE_NONE as c_int,
+                vstd::prelude::Tracked::assume_new(),
+            );
+            dallocx(
+                copy,
+                MALLOCX_TCACHE_NONE as c_int,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
+            assert_eq!(heap().last_gc(), 0, "a free runs no step");
+            // A last GC long ago (the monotonic clock is past 100 ms): a GC
+            // runs within `PERIODIC_EVERY` calls.
+            let first = lens();
+            heap().set_last_gc(0);
+            let mut calls = 0;
+            while heap().last_gc() == 0 {
+                assert!(calls < every, "no GC within {every} calls");
+                get_defrag_hint(kept[0]);
+                calls += 1;
+            }
+            // It restarted the low water; the next one, an interval later,
+            // gives back three quarters of what sat unused since.
+            let after_first = lens();
+            heap().set_last_gc(0);
+            for _ in 0..every {
+                get_defrag_hint(kept[0]);
+            }
+            let after_second = lens();
+            let c = crate::layout::class_of(100).unwrap();
+            assert!(first[c] > 0);
+            assert_eq!(
+                after_second[c],
+                after_first[c] - (after_first[c] - after_first[c] / 4)
+            );
+            // Further calls run a GC only once another is due.
+            let at = heap().last_gc();
+            for _ in 0..4 * every {
+                get_defrag_hint(kept[0]);
+            }
+            let at2 = heap().last_gc();
+            assert!(
+                at2 == at || at2.wrapping_sub(at) >= crate::heap::DEFRAG_GC_INTERVAL_NS,
+                "GCs {at} and {at2} closer than the interval"
+            );
+            for p in kept {
+                dallocx(
+                    p,
+                    0,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                );
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
     /// Design 13.5: `get_defrag_hint` answers from the utilization data
     /// with jemalloc's rule. A private arena keeps the bin figures this
     /// test's own.
