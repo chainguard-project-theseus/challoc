@@ -4,6 +4,13 @@
 // `set_multi_arena`, `free_flags`) are copies, as in the loom model.
 // The storage `init` writes is three plain bytes (GenMC rejects
 // mixed-size accesses, so no `Option<(u8, RouteByte)>` as in loom).
+//
+// The seam ledger cites this template's pass cases (verus/SEAMS.md,
+// "Status") for `flags::new`, `flags::load` and `flags::fetch_or`, whose
+// bodies run, and for `api::state_load` and `api::state_publish`
+// (`src/api/mod.rs`), whose `STATE` load and `READY` store the harness
+// copies onto `core`'s atomic. It is evidence only: the permissions are
+// erased (`Tracked::assume_new()`), so no case checks a seam's contract.
 
 use crate::vspec::flags::{ROUTE, RouteByte, fetch_or, load, new};
 use core::cell::UnsafeCell;

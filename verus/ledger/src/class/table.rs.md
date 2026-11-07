@@ -16,7 +16,7 @@ file.
 ## `store_owner`
 
 src/class/table.rs:1089. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes; not checked: this body, which the models replace with loom's `store` inside copies of the table steps, in the configurations their files state; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
+Tool: loom/GenMC. Status: trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes, and GenMC: wm [rc11 imm] and wm3 [rc11 imm arm8]; not checked: this body, which the models replace with loom's `store` and the GenMC cases with `core`'s `store` (a line tests/loom/tests/pins.rs pins to this body's), inside copies of the table steps, in the configurations their files state, the cases each only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); the free path's steps, which no case runs; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only).
 
 > `(*w).store(arena, Relaxed)` of the owner word of hand-out group `group` of `t`, through its permission `perm`: the permission holds `arena` ([`u16_value`], as `vspec::atom::load_u16_at` reads it back), and from here on [`slab_owner`] of every slab of the group is `arena`.
 
