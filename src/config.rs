@@ -1556,6 +1556,7 @@ impl Name {
 
 } // verus!
 
+pub(crate) use linux::byte_at;
 pub use linux::load;
 #[cfg(test)]
 use linux::{MAX_TEXT, cstr, env_var, first_line_of, malloc_conf_symbol};
@@ -1857,13 +1858,15 @@ mod linux {
     }
 
     /// The byte at `p + n`. Trusted: a raw read; nothing is claimed about
-    /// the value.
+    /// the value. Also `purge::background::single_threaded`'s read of
+    /// glibc's `__libc_single_threaded`.
     ///
     /// # Safety
-    /// `p + n` is a readable byte of the caller's string.
+    /// `p + n` is a readable byte (of the caller's string, or a `char`
+    /// object).
     #[verifier::external_body]
     #[inline(always)]
-    unsafe fn byte_at(p: *const u8, n: usize) -> u8 {
+    pub(crate) unsafe fn byte_at(p: *const u8, n: usize) -> u8 {
         // SAFETY: guaranteed by the caller.
         unsafe { p.add(n).read() }
     }
