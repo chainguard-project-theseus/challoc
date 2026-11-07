@@ -240,8 +240,13 @@ seccomp profile hides `mseal`.
 - `docs/tuning.md`: the operator's guide (keys, consumers, cgroup policy, THP, the report)
 - `docs/hardening.md`: security properties against jemalloc, and the windows the defaults leave
 - `docs/testing.md`: the test suite and how to add a test
-- `docs/benchmarking.md`: how numbers are produced; `bench/README.md` for the harness
+- `docs/benchmarking.md`: how numbers are produced
+- `bench/README.md`: the benchmark harness (cb), its rows, suites and cells, and operating it on GCE
 - `docs/research.md`: the survey behind the design decisions
+- `docs/proposals/`: designs not built yet
+- `docs/runbooks/`: one-off operational setups (the GCP identity of the floor checks)
+- `ci/README.md`: the CI checks and the scripts they call
+- `contrib/wolfi/README.md`: the Wolfi package definitions and swapping a jemalloc consumer to challoc
 - `CONTRIBUTING.md`, `SECURITY.md`
 
 ## Status

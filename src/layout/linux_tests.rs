@@ -1,3 +1,8 @@
+//! Layout tests on real address space: `Regions::reserve` lays out and
+//! randomises the regions and commits a slab, and `seal` locks the gaps
+//! while the regions stay usable. Pure layout arithmetic belongs in
+//! `tests.rs`.
+
 use super::*;
 use crate::sys::{
     self, Errno, MADV_DONTNEED, MAP_ANONYMOUS, MAP_FIXED, MAP_PRIVATE, PROT_NONE, PROT_READ,
