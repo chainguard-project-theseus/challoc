@@ -14,7 +14,7 @@ verus! {
 pub struct ExCVoid(core::ffi::c_void);
 
 /// `core::ffi::CStr`, opaque: verified code only passes the static names
-/// of `config::Value::Str` on.
+/// of `config::Name::cstr` on.
 #[verifier::external_type_specification]
 #[verifier::external_body]
 pub struct ExCStr(core::ffi::CStr);

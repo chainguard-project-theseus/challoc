@@ -21,9 +21,7 @@ Config::set_listed	function pointer	Kani	discharged (Kani: config::kani_config::
 # harness checks the reference is `CONF_BUF`'s and writable; that no two
 # are live at once is `api::init`'s once-only exchange.
 conf_buffer	raw pointer (internal)	Kani	trusted (partly checked, Kani: config::linux::kani_conf_buffer::conf_buffer_is_conf_buf; not checked: that no two references are live at once, which rests on `load`'s one caller, `api::init`, running once (its exchange on `STATE` lets one thread through))	contract 2174549885, body 3431169048
-# `get_contract` stubs `Thp::name` and `PercpuArena::name`, verified code
-# (inside `verus!`), whose tables `THP_NAMES` and `PERCPU_ARENA_NAMES` the
-# const asserts check; it runs the rest of `get`, the `TABLE` readers included.
+# `get_contract` runs all of `get`, the `TABLE` readers included.
 Config::get	function pointer	Kani	discharged (Kani: config::kani_config::get_contract)	contract 2444094337, body 4260931877
 # Inline assembly checked with Isla (verus/ISLA.md): run.sh checks
 # each against the contract verus/isla/seams.md quotes.

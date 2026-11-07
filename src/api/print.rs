@@ -22,13 +22,13 @@
 //! ignored. The cgroup line and object are the sampled figures of
 //! `sys::cgroup` (design 11).
 
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{c_char, c_int, c_void};
 use core::fmt::{self, Write};
 
 use super::jemalloc::malloc_write;
 use crate::QUANTUM;
 use crate::arena::Arena;
-use crate::config::{INERT_KEYS, KEYS, PercpuArena, Value};
+use crate::config::{INERT_KEYS, KEYS, Name, PercpuArena, Thp, Value};
 use crate::heap::Shared;
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
@@ -445,12 +445,19 @@ impl Report for Sink {
     }
 }
 
-/// A configuration value's name (`config::Value::Str`, the `thp` key).
-/// Trusted: `CStr::to_str`, which vstd does not specify; nothing is
+/// A configuration value's name (`config::Value::Str`, the `thp` and
+/// `percpu_arena` keys): the text of [`Name::cstr`]. Trusted; nothing is
 /// claimed about the result.
 #[verifier::external_body]
-fn word(s: &CStr) -> &str {
-    s.to_str().unwrap_or("?")
+fn word(n: Name) -> &'static str {
+    match n {
+        Name::Thp(Thp::Never) => "never",
+        Name::Thp(Thp::Auto) => "auto",
+        Name::Thp(Thp::Always) => "always",
+        Name::PercpuArena(PercpuArena::Disabled) => "disabled",
+        Name::PercpuArena(PercpuArena::Percpu) => "percpu",
+        Name::PercpuArena(PercpuArena::Phycpu) => "phycpu",
+    }
 }
 
 fn decay_ms(ns: u64) -> (r: i64)
@@ -647,7 +654,7 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     write!(
         out,
         "thp: {} -> {} ({})",
-        word(crate::thp::key().name()),
+        word(Name::Thp(crate::thp::key())),
         d.mode.name(),
         d.reason.text()
     )?;
@@ -1088,7 +1095,7 @@ fn json_general<W: Write + Report>(
     writeln!(
         out,
         "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\"}},",
-        word(crate::thp::key().name()),
+        word(Name::Thp(crate::thp::key())),
         td.mode.name(),
         td.reason.text(),
         ts.class_ranges,
@@ -2768,6 +2775,22 @@ mod tests {
             );
         }
     }
+
+    /// `word` gives the text of `Name::cstr`, the C string `mallctl`
+    /// hands out, for every name.
+    #[test]
+    fn word_is_the_c_name() {
+        for n in [
+            Name::Thp(Thp::Never),
+            Name::Thp(Thp::Auto),
+            Name::Thp(Thp::Always),
+            Name::PercpuArena(PercpuArena::Disabled),
+            Name::PercpuArena(PercpuArena::Percpu),
+            Name::PercpuArena(PercpuArena::Phycpu),
+        ] {
+            assert_eq!(Ok(word(n)), n.cstr().to_str(), "{n:?}");
+        }
+    }
 }
 
 /// Kani harnesses for this file's seams that Kani can run
@@ -2775,7 +2798,7 @@ mod tests {
 /// `call_back`.
 #[cfg(kani)]
 mod kani_print {
-    use super::{WriteCallback, call_back, hist_line, word};
+    use super::{Name, PercpuArena, Thp, WriteCallback, call_back, hist_line, word};
     use core::ffi::{c_char, c_void};
     use core::ptr;
     use vstd::prelude::Tracked;
@@ -2818,23 +2841,17 @@ mod kani_print {
         }
     }
 
-    /// `word`, no `requires`, no `ensures`: it returns for every C string
-    /// up to 3 bytes before its NUL, UTF-8 or not (built at run time:
-    /// Kani 0.68 has no C string literals), and gives the string when it
-    /// is UTF-8, else `?`.
+    /// `word`, no `requires`, no `ensures`: it returns for every `Name`.
     #[kani::proof]
-    #[kani::unwind(6)]
     fn word_returns() {
-        let a: [u8; 4] = kani::any();
-        let n: usize = kani::any();
-        kani::assume(n < 4 && a[n] == 0 && a[..n].iter().all(|&b| b != 0));
-        let s = core::ffi::CStr::from_bytes_with_nul(&a[..=n]).unwrap();
-        let w = word(s);
-        assert_eq!(
-            w.as_bytes() == &a[..n],
-            core::str::from_utf8(&a[..n]).is_ok()
-        );
-        assert!(w == "?" || w.as_bytes() == &a[..n]);
+        let _ = word(match kani::any::<u8>() {
+            0 => Name::Thp(Thp::Never),
+            1 => Name::Thp(Thp::Auto),
+            2 => Name::Thp(Thp::Always),
+            3 => Name::PercpuArena(PercpuArena::Disabled),
+            4 => Name::PercpuArena(PercpuArena::Percpu),
+            _ => Name::PercpuArena(PercpuArena::Phycpu),
+        });
     }
 
     /// `hist_line`, no `requires`, no `ensures`: it returns for every

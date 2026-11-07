@@ -14,16 +14,17 @@
 # the run to Cargo.lock first.
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` (symbol aliases and the TLS slot) that no harness reaches;
-# `-Z stubbing` for `get_contract`, which stubs the C-string `name`
-# methods of `config.rs`; `-Z mem-predicates` for `kani::mem`'s
-# `can_dereference` and its kin, with which harnesses check what Kani 0.68
-# does not check on a typed access: the alignment and the validity of the
-# value. `-j 4` runs four harnesses at once, on xlarge-amd64 for its
-# 64 GiB: CBMC peaks at 11.6 GiB on `config::kani_config::display_bytes`, 10.8 GiB on
-# `kani_proofs::misc::formatter_write_fmt`, 10.1 GiB on
-# `api::print::kani_print::word_returns` and 8.8 GiB on
-# `kani_proofs::slice::slice_is_sorted` (quantum 16), and the first three
-# alone sum to 32.5 GiB, past large-amd64's 32 GiB.
+# `-Z stubbing` for the harnesses that replace a call with a model
+# (`kani::stub`; `git grep -n 'kani::stub' src` lists them);
+# `-Z mem-predicates`
+# for `kani::mem`'s `can_dereference` and its kin, with which harnesses
+# check what Kani 0.68 does not check on a typed access: the alignment and
+# the validity of the value. `-j 4` runs four harnesses at once, on
+# xlarge-amd64 for its 64 GiB: CBMC peaks at 11.6 GiB on
+# `config::kani_config::display_bytes`, 10.8 GiB on
+# `kani_proofs::misc::formatter_write_fmt` and 8.8 GiB on
+# `kani_proofs::slice::slice_is_sorted` (quantum 16), 31.2 GiB together,
+# which leaves less than 1 GiB of large-amd64's 32 GiB for a fourth.
 version: 1
 
 environment:
