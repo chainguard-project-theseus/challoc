@@ -65,6 +65,10 @@
 #                              jemalloc server too)
 #   DURATION=1200              load seconds per allocator (write + delete)
 #   SETTLE=60                  idle seconds after the delete phase
+#   REFILL=0                   seconds of a second write phase after the
+#                              settle (0: none), which reuses what the settle
+#                              purged: its throughput and p99 are the
+#                              refault cost (refill_* metrics)
 #   INTERVAL=10                sampling period in seconds
 #   CHUNK=30                   memtier --test-time per run
 #   VB_REQS=20000000           valkey-benchmark -n per run
@@ -426,6 +430,18 @@ soak() { # alloc
   [ -z "$OCC_PID" ] || { wait "$OCC_PID" 2>/dev/null || true; OCC_PID=; }
   cgroup_peak_stop
   sample_once "$D" "$T0" "$D/samples.csv"
+  if [ "${REFILL:-0}" -gt 0 ]; then
+    echo refill > "$D/phase"; rm -f "$D/last"
+    echo "-- refill phase, ${REFILL}s"
+    r0=$(now)
+    while [ $(($(now) - r0)) -lt "$REFILL" ]; do
+      vb_run refill set -t set -d "$SIZE"
+      mt_run refill set --ratio=1:0 --key-pattern=R:R
+      printf .
+    done; echo
+    rss=$(grep '^VmRSS:' "/proc/$SERVER_PID/status" | awk '{print int($2/1024)}')
+    echo "$rss" > "$D/refill_rss"
+  fi
 
   # Final state: kernel RSS figures for the server, the full INFO memory and
   # the allocator's own stats print, then a clean shutdown.
@@ -524,7 +540,10 @@ if [ -n "${RESULT_JSONL:-}" ]; then
         "vmhwm_mib=$(vmhwm "$a")" "rss_peak_mib=$(sample_stat "$a" peak_rss)" \
         "rss_write_mib=$(sample_stat "$a" end_write)" "rss_delete_mib=$(sample_stat "$a" end_delete)" "rss_settle_mib=$(sample_stat "$a" end_settle)" \
         "frag_settle=$(sample_stat "$a" frag_end)" "defrag_hits=$(sample_stat "$a" defrag_hits)" "keys=$(cat "$OUT/$a/dbsize.txt" 2>/dev/null)" \
-        "cgpeak_write_mib=$(cgroup_peak_mib "$OUT/$a" write)" "cgpeak_delete_mib=$(cgroup_peak_mib "$OUT/$a" delete)" "cgpeak_settle_mib=$(cgroup_peak_mib "$OUT/$a" settle)"; do
+        "cgpeak_write_mib=$(cgroup_peak_mib "$OUT/$a" write)" "cgpeak_delete_mib=$(cgroup_peak_mib "$OUT/$a" delete)" "cgpeak_settle_mib=$(cgroup_peak_mib "$OUT/$a" settle)" \
+        "refill_vb_rps=$(phase_stat "$a" refill valkey-benchmark rps)" "refill_mt_rps=$(phase_stat "$a" refill memtier rps)" \
+        "refill_vb_p99_ms=$(phase_stat "$a" refill valkey-benchmark p99)" "refill_mt_p99_ms=$(phase_stat "$a" refill memtier p99)" \
+        "rss_refill_mib=$(cat "$OUT/$a/refill_rss" 2>/dev/null)"; do
         k=${kv%%=*}; v=${kv#*=}
         case $v in ''|-|*[!0-9.eE+-]*) continue;; esac
         printf '%s"%s":%s' "$sep" "$k" "$v"; sep=,

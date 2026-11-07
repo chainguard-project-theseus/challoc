@@ -388,6 +388,33 @@ metrics = [
 ]
 est_s = 1500
 
+# The soak with a refill: after the settle (longer than the 10 s decay
+# window, so what the delete phase freed is purged), REFILL seconds of the
+# write phase again, which reuses the purged memory. The score is the
+# refill's memtier throughput: what refaulting purged memory costs a
+# server (an eager purge refaults on reuse; `lazy_band:true` under a
+# cgroup limit may not), next to the RSS each leaves after the settle.
+[row.valkey-refill]
+kind = "soak"
+driver = "drivers/valkey-soak.sh"
+metric = "refill_mt_rps"
+unit = "req/s"
+better = "higher"
+class = "soak"
+features = "quantum8"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54", "glibc", "tcmalloc", "mimalloc"]
+placement = "one-variant-per-vm"
+env = { DURATION = "{valkey_soak_secs}", SETTLE = "{valkey_soak_settle}", KEY_PATTERN = "stock", REFILL = "240" }
+metrics = [
+  { name = "refill_vb_rps", unit = "req/s", better = "higher", class = "soak" },
+  { name = "refill_mt_p99_ms", unit = "ms", better = "lower", class = "soak" },
+  { name = "refill_vb_p99_ms", unit = "ms", better = "lower", class = "soak" },
+  { name = "write_mt_rps", unit = "req/s", better = "higher", class = "soak" },
+  { name = "rss_settle_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_refill_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 1800
+
 # The same soak on Redis (SERVER=redis): challoc is the runpath build of
 # Redis with contrib/redis/000{1,2,3} (quantum8, the bundled jemalloc's
 # lg_quantum=3 geometry), or preloaded on the MALLOC=libc build for a
@@ -1006,6 +1033,26 @@ metrics = [
   { name = "burst_s", unit = "s", better = "lower", class = "server" },
 ]
 est_s = 75
+
+# The sidecar with a second burst after the idle window, into the memory
+# the idle purged: burst2_s is what refaulting it costs (an eager purge
+# refaults on reuse; `lazy_band:true` under a cgroup limit may not).
+[row.sidecar-reburst]
+kind = "driver"
+driver = "drivers/sidecar.sh"
+metric = "burst2_s"
+unit = "s"
+better = "lower"
+class = "server"
+env = { IDLE = "{sidecar_idle}", REBURST = "1" }
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc", "jemalloc53", "jemalloc54"]
+metrics = [
+  { name = "burst_s", unit = "s", better = "lower", class = "server" },
+  { name = "rss_settle_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_reburst_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 110
 
 # ---- consumer runtimes (the former ruby-, node-, python- and
 # postgres-bench.sh tiers) --------------------------------------------------

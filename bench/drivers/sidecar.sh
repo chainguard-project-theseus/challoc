@@ -12,11 +12,14 @@
 #
 # Metrics: rss_settle_mib (the score: VmRSS at the end of the idle
 # window), rss_peak_mib (VmHWM), rss_idle5_mib (5 s into the idle window),
-# burst_s (the burst's wall time).
+# burst_s (the burst's wall time). REBURST=1 posts the burst a second time
+# after the idle window, into memory the idle purged: burst2_s is its wall
+# time (the refault cost) and rss_reburst_mib the VmRSS after it.
 . "$(dirname "$0")/cb.sh"
 BATCHES=${BATCHES:-400}
 BATCH=${BATCH:-500}
 IDLE=${IDLE:-60}
+REBURST=${REBURST:-0}
 command -v fluent-bit >/dev/null || die "no fluent-bit in this image"
 PORT=$(port_from 19000)
 W=$CB_OUT/fb
@@ -32,7 +35,7 @@ wait_port "$PORT" 200 || { cat "$W/fb.out" >&2; die "fluent-bit did not start"; 
 maps_check "$PID" fluent-bit
 rss0=$(rss_kib "$PID")
 t0=$(date +%s.%N 2>/dev/null || date +%s)
-python3 - "$PORT" "$BATCHES" "$BATCH" <<'EOF' || die "burst failed"
+cat > "$W/burst.py" <<'EOF'
 import http.client, json, random, sys
 port, batches, batch = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
 r = random.Random(1)
@@ -47,6 +50,7 @@ for b in range(batches):
     if resp.status >= 300:
         sys.exit(f"post {b}: HTTP {resp.status}")
 EOF
+python3 "$W/burst.py" "$PORT" "$BATCHES" "$BATCH" || die "burst failed"
 t1=$(date +%s.%N 2>/dev/null || date +%s)
 i=0; rss5=
 while [ $i -lt "$IDLE" ]; do
@@ -59,4 +63,11 @@ metric rss_peak_mib "$(mib "$(hwm_kib "$PID")")"
 metric rss_idle5_mib "$(mib "${rss5:-0}")"
 metric rss_start_mib "$(mib "$rss0")"
 metric burst_s "$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.3f", b - a }')"
+if [ "$REBURST" = 1 ]; then
+  t2=$(date +%s.%N 2>/dev/null || date +%s)
+  python3 "$W/burst.py" "$PORT" "$BATCHES" "$BATCH" || die "second burst failed"
+  t3=$(date +%s.%N 2>/dev/null || date +%s)
+  metric burst2_s "$(awk -v a="$t2" -v b="$t3" 'BEGIN { printf "%.3f", b - a }')"
+  metric rss_reburst_mib "$(mib "$(rss_kib "$PID")")"
+fi
 emit
