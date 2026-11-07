@@ -45,7 +45,7 @@ use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, SMALL_MAX, class_of, cl
 use crate::lock::axiom_entry;
 #[cfg(verus_keep_ghost)]
 use crate::meta::is_pow2;
-use crate::sys::Errno;
+use crate::sys::errno::{EINVAL, ENOMEM};
 use crate::vspec::cbuf::{CCall, COut};
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::usable::Stored;
@@ -64,11 +64,6 @@ use vstd::raw_ptr::MemContents;
 use vstd::raw_ptr::ptr_mut_write;
 
 verus! {
-
-// The codes as `c_int`, for `errno` and `posix_memalign`'s return; the
-// numbers live in `sys::errno`.
-pub const ENOMEM: c_int = Errno::ENOMEM.0;
-pub const EINVAL: c_int = Errno::EINVAL.0;
 
 /// Null with `errno = ENOMEM`.
 #[cold]

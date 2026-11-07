@@ -6,6 +6,8 @@
 //! that convention into a `Result` without touching libc's `errno`, which
 //! `free` must leave untouched.
 
+use core::ffi::c_int;
+
 use vstd::prelude::*;
 
 verus! {
@@ -83,6 +85,15 @@ impl core::fmt::Display for Errno {
         }
     }
 }
+
+// The codes C callers see as `c_int`: `errno`, `posix_memalign`'s and
+// `mallctl`'s return values.
+pub const EPERM: c_int = Errno::EPERM.0;
+pub const ENOENT: c_int = Errno::ENOENT.0;
+pub const EAGAIN: c_int = Errno::EAGAIN.0;
+pub const ENOMEM: c_int = Errno::ENOMEM.0;
+pub const EFAULT: c_int = Errno::EFAULT.0;
+pub const EINVAL: c_int = Errno::EINVAL.0;
 
 /// Largest `errno` the kernel will ever return, per `include/linux/err.h`.
 pub const MAX_ERRNO: usize = 4095;
