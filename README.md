@@ -262,11 +262,22 @@ limit is back to 13 MiB of RSS within 50 ms (jemalloc 5.3.1 still holds 190 MiB
 set swinging between 200 and 480 MiB runs for 5 minutes where jemalloc and
 mimalloc are OOM-killed within 12 s (`docs/tuning.md` section 4).
 
+Slab pages (`docs/proposals/slab-pages.md`) give back the free pages of
+partly used slabs. Redis's and Valkey's active-defrag tests
+(`unit/memefficiency`) pass at their stock targets, as do both test
+suites. Against jemalloc on the soaks: the JVM soak's RSS is 15% (x86_64)
+and 36% (aarch64) lower, Valkey's settled RSS 14..16% lower; Valkey's
+command mix is 4..9% faster than with its bundled jemalloc. A fluent-bit
+sidecar in a 512 MiB container settles at 15..18 MiB with
+`lazy_band:false` against jemalloc 5.4's 55..62 MiB; with the default
+lazy band (`MADV_FREE` below 70% of a limit) RSS counts the lazily freed
+pages until the kernel takes them (`docs/tuning.md` section 4).
+
 Known limitations are listed in `docs/tuning.md` section 8. The largest:
-on a 16-thread Ruby soak on x86_64, challoc's peak RSS is about 13% above
-jemalloc's (on aarch64 it is 6% below), and `narenas:1` brings the x86_64
-peak close to jemalloc's. The extra RSS comes from partly used 64 KiB
-slabs and empty slabs spread across many arenas; a fix is still open.
+on a 16-thread Ruby soak on x86_64, challoc's peak RSS is about 5% above
+jemalloc's (on aarch64 it is 16% below), and its RSS right after the last
+full GC is higher on both, from `Empty` 64 KiB slabs of the 2.5..4 KiB
+classes waiting out the decay curve in many arenas; a fix is still open.
 
 The test suite (unit tests, C programs under `LD_PRELOAD`, the vendored
 glibc and mimalloc suites, cgroup container tests, a fuzz driver) runs in
