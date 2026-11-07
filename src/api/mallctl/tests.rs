@@ -1775,8 +1775,8 @@ fn background_thread_enable_whose_thread_exits_before_it_publishes_fails() {
 /// bodies); and the helpers keep the contracts that tie what they read
 /// to those buffers (`c_readable` of the caller's buffer, and for
 /// `name_bytes` the call's string, with the slice borrowed from the
-/// call's token). The helpers are private to this file, so their uses
-/// are looked for here only: every mention of the name but a method
+/// call's token). The helpers are private to `mallctl.rs`, so their uses
+/// are looked for there only: every mention of the name but a method
 /// (`.name`), a `fn` item, or a path to another module's item
 /// (`m::name` but for `self::`, `super::` or `mallctl::`). Known
 /// escapes: a rename through a `use .. as` outside `verus!` (its later
@@ -1791,7 +1791,7 @@ fn c_buffer_reads_are_listed() {
     const READS: [&str; 2] = ["from_raw_parts", "read_unaligned"];
     const HELPERS: [&str; 5] = ["name_bytes", "cstr", "load", "query_ptr", "mib_in"];
     const HERE: &str = "api/mallctl.rs";
-    // (the function in this file, the name it uses, uses).
+    // (the function in `mallctl.rs`, the name it uses, uses).
     const SITES: [(&str, &str, usize); 12] = [
         ("name_bytes", "from_raw_parts", 1),
         ("load", "read_unaligned", 1),

@@ -289,7 +289,7 @@ above requires its token's block to be its `p`. Once per body, for that
 body's `p`, and no other maker of a free's token rest on convention
 (`axiom_c_call`'s doc comment), not on Verus and not on a source test.
 That no Rust code calls a minting export is checked by a line scan:
-`api::tests::exports_return_their_callees_result` (`api/mod.rs`)
+`api::tests::exports_return_their_callees_result` (`api/tests.rs`)
 fails if a line outside a comment names an `exports` module (a path
 through one, or a `use` of one). A double free, or a free of a slot or
 huge page start that is not a live block, gives C a token it does not
@@ -515,7 +515,7 @@ process statistics lock (`collect_into`, `snapshot`,
 `commit_slab`) and the background thread's state lock
 (`purge::background::request`, `start`, `present_or_creating`,
 `start_requested`, `auto_tick`, `main`); the source test
-`api::tests::guards_end_in_unlock` (`api/mod.rs`) checks that none of
+`api::tests::guards_end_in_unlock` (`api/tests.rs`) checks that none of
 these guards drops without it. For every other lock the invariant and
 frame are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Ten locks'
@@ -1003,7 +1003,7 @@ the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
   every holder outside the tests ends with it, which requires the invariant
   (`Inner::wf`) and frame (bounds and ghost identities fixed) that
   `meta::Inner`'s `LockSpec` impl (`meta.rs`) defines; the source test
-  `api::tests::guards_end_in_unlock` (`api/mod.rs`) checks it (common
+  `api::tests::guards_end_in_unlock` (`api/tests.rs`) checks it (common
   premises, "Locks").
   `Meta::commit` is verified: its caller gives the claim to the range that `reserve` or
   `reserve_table` handed out, which each lazily committed table keeps
@@ -1749,7 +1749,7 @@ sizes above the small table), which requires
   returns; a panic, a failed `vspec::check` included, reaches it through
   the `#[panic_handler]` (`lib.rs`). Outside tests, no Rust code
   calls an `extern "C"` function of the crate.
-  `sys::tests::syscall_grants_only_at_roots` (`sys/mod.rs`)
+  `sys::tests::syscall_grants_only_at_roots` (`sys/tests.rs`)
   checks the source: every grant is in an `extern "C"` function or in
   `abort_fmt`. `sys::tests::syscall_capability_only_as_a_clause` checks
   that `may_syscall` appears only as a `requires` or loop invariant
@@ -2620,7 +2620,7 @@ build a token; the handoff axioms below are the other source.
   inside the blockable signals (theorem 39). Each handler calls each axiom once. For
   `axiom_fork_resumed` a second call would prove `false` (the creation
   lock cell's permission it restates is exclusive), and the test
-  `fork_hold_is_resumed_once` (`api/mod.rs`) checks that its
+  `fork_hold_is_resumed_once` (`api/tests.rs`) checks that its
   wrapper `resume::resumed` has one call site; for
   `axiom_fork_resumed_state` the same test counts the call sites (one
   per handler), and nothing enforces the run-time count.
@@ -5990,7 +5990,7 @@ bounds, and `Sink::write_str` (verified) keeps it.
   export) and in the `#[panic_handler]`, which the panic
   runtime calls and no Rust code does; never in `abort_fmt` or another
   `-> !` helper, unlike `grant_syscalls`.
-  `sys::tests::abort_grants_only_at_roots` (`sys/mod.rs`) checks the
+  `sys::tests::abort_grants_only_at_roots` (`sys/tests.rs`) checks the
   grants' sites; `abort_capabilities_only_as_clauses` checks that
   `may_abort*` appear only as `requires`/invariant clauses and
   `integrity_aborts` only in the witnesses' `requires`,
@@ -6004,7 +6004,7 @@ bounds, and `Sink::write_str` (verified) keeps it.
   not by subtree. That every key under `opt`, `arenas` and `stats` is
   covered (no `thread.*` reader under them) is read off the static tree,
   and `mallctl::tests::read_only_subtrees_are_roots_4_5_and_7`
-  (`api/mallctl.rs`) checks it at run time: it checks each subtree's
+  (`api/mallctl/tests.rs`) checks it at run time: it checks each subtree's
   reader count (`KEYS.len()`, 8, 35).
 
 **Premises beyond the common ones.**
@@ -6751,7 +6751,7 @@ cannot carry a trigger of its own; it is a goal (proved from
 elsewhere.
 
 **Findings.** None: the code matches the statement. The tests
-`utilization_queries_answer_valkeys_defragmenter` (`api/mallctl.rs`)
+`utilization_queries_answer_valkeys_defragmenter` (`api/mallctl/tests.rs`)
 and `get_defrag_hint_follows_the_utilization_data`
 (`api/jemalloc/tests.rs`) exercise the shapes and the rule at run time.
 
@@ -7502,10 +7502,10 @@ premise, a second thread's write happens only after the first thread's
 release has read the slot and unlocked: each release reads its own
 prepare's mask. glibc serialises the handlers with its atfork lock
 anyway; the unit tests do not, and
-`concurrent_fork_handlers_restore_each_threads_mask` (`api/mod.rs`)
+`concurrent_fork_handlers_restore_each_threads_mask` (`api/tests.rs`)
 runs two threads with different masks through the prepare and parent
 handlers 200 times each and checks each gets its own mask back;
-`fork_handlers_block_signals_while_locked` (`api/mod.rs`) checks both sides
+`fork_handlers_block_signals_while_locked` (`api/tests.rs`) checks both sides
 for one thread.
 
 **Findings.** None: the code matches the statement.
@@ -8259,7 +8259,7 @@ pending checks rests on reading the code (below).
 two sinks are called only at its listed sites,
 `sys::tests::trusted_aborts_require_a_capability` that the trusted
 bodies whose text shows an abort require a capability for it, and
-`sys::tests::abort_grants_only_at_roots` (`sys/mod.rs`) where
+`sys::tests::abort_grants_only_at_roots` (`sys/tests.rs`) where
 `grant_aborts` is called. Covered, after init (`shared.wf()`; the prefix before it is
 not): the free through no cache (`heap::free_direct`: a thread with no
 heap, `MALLOCX_TCACHE_NONE`), slot and run; a free on a
@@ -8982,7 +8982,7 @@ only `check_zero()`'s `true` grants it.
   there, from `grant_user_reads`, or from a `true` that
   `purge::check_zero()` returned.
   `sys::tests::user_read_grants_only_in_listed_callers`
-  (`sys/mod.rs`) checks the source: each of the four grant sites
+  (`sys/tests.rs`) checks the source: each of the four grant sites
   calls `grant_user_reads` exactly once, and nothing else calls it. That
   `may_read_user` appears in an `ensures` only as `check_zero`'s
   `r ==> may_read_user()` and in the grant's own `ensures`, and
@@ -9533,7 +9533,7 @@ restates part of the Rust function's, and the nullable `api::libc`
 exports state its `errno` failure values as the `errno` the C caller
 reads (`c_errno()`); glibc's exports (`api/glibc.rs`) and the
 `mallctl` exports (`api/mallctl.rs`) state none of their own.
-`api::tests::exports_return_their_callees_result` (`api/mod.rs`)
+`api::tests::exports_return_their_callees_result` (`api/tests.rs`)
 checks that every export body in `api::libc`, `api::cxx` and
 `api::jemalloc` is that setup, one call of its Rust entry point, and
 that call's result returned unchanged. So the Rust function's `ensures`
@@ -9712,7 +9712,7 @@ Notes that recur below:
   export that passed `true` would get the claim on every path), and no
   verified code calls an export, so no proof sees two returns
   (`c_errno` names one). The source test
-  `api::tests::exports_return_their_callees_result` (`api/mod.rs`)
+  `api::tests::exports_return_their_callees_result` (`api/tests.rs`)
   checks these by reading the source: every `lend` call is in an export
   body, at most one per body in `api::libc`, `api::cxx` and
   `api::jemalloc`; every `axiom_errno_at_return` call is in one of the
