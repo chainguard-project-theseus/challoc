@@ -32,7 +32,7 @@ pub struct ExCVoid(core::ffi::c_void);
 src/vspec/config.rs:20. Kind: ext_type_spec. Category: core library.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
-> `core::ffi::CStr`, opaque: verified code only passes the static names of `config::Value::Str` on.
+> `core::ffi::CStr`, opaque: verified code only passes the static names of `config::Name::cstr` on.
 
 Hashes: contract 3079426279, body none.
 

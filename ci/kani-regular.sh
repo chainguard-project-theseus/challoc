@@ -53,7 +53,6 @@ weights='
   config::kani_config::display_bytes 342
   kani_proofs::slice::select_ptrs_by_key_short 322
   config::kani_config::set_listed_contract 304
-  api::print::kani_print::word_returns 296
   kani_proofs::slice::slice_is_sorted 249
   kani_proofs::slice::sort_ptrs_by_key_12 216
   kani_proofs::slice::select_ptrs_by_key_11 195

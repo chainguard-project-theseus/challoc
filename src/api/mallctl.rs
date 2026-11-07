@@ -2596,7 +2596,7 @@ fn opt_value(mib: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Resul
         Value::Int(i) => Ssize(i as isize),
         Value::Uint(u) => Unsigned(u as c_uint),
         Value::Size(n) => Size(n),
-        Value::Str(s) => Str(s.as_ptr()),
+        Value::Str(s) => Str(s.cstr().as_ptr()),
     })
 }
 
@@ -4396,7 +4396,7 @@ mod tests {
                 Value::Size(n) => assert_eq!(get::<usize>(&name), n, "{name}"),
                 Value::Str(s) => assert_eq!(
                     cstring_at(get::<*const c_char>(&name)),
-                    s.to_str().unwrap(),
+                    s.cstr().to_str().unwrap(),
                     "{name}"
                 ),
             }

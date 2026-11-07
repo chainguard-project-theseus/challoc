@@ -729,7 +729,7 @@ const ENTRIES: &[Key] = &[
             )?;
             Ok(())
         }),
-        read: Read(|c| Value::Str(c.percpu_arena.name())),
+        read: Read(|c| Value::Str(Name::PercpuArena(c.percpu_arena))),
     },
     bool_key!("tcache", tcache),
     Key {
@@ -780,7 +780,7 @@ const ENTRIES: &[Key] = &[
             )?;
             Ok(())
         }),
-        read: Read(|c| Value::Str(c.thp.name())),
+        read: Read(|c| Value::Str(Name::Thp(c.thp))),
     },
     bool_key!("lazy_band", lazy_band),
     bool_key!("guards", guards),
@@ -978,14 +978,15 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> (r: u32)
 /// times and the other signed keys), `Uint` is `unsigned` (a count:
 /// `narenas`, `tcache_nslots_small_max`, `guard_slab_interval`), `Size`
 /// is `size_t` (a byte count: `tcache_max`, `huge_retain_max`), `Str`
-/// is `const char *` (a static name, handed out as is).
+/// is `const char *` (a static name, handed out as [`Name::cstr`] gives
+/// it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
     Bool(bool),
     Int(i64),
     Uint(u64),
     Size(usize),
-    Str(&'static CStr),
+    Str(Name),
 }
 
 /// One problem found while parsing; the offending bytes borrow the input.
@@ -1562,6 +1563,27 @@ fn clamped<'a>(
         Ok((max, true))
     } else {
         Ok((v, false))
+    }
+}
+
+// `Name` and its impl come last in the module: rustc numbers a module's
+// impls (the derived ones included) in order, the number enters the
+// mangled names of each impl's items, and those names order `.text`.
+/// The static name a [`Value::Str`] carries: the value of the `thp` or
+/// the `percpu_arena` key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Name {
+    Thp(Thp),
+    PercpuArena(PercpuArena),
+}
+
+impl Name {
+    /// The name as a C string ([`Thp::name`], [`PercpuArena::name`]).
+    pub const fn cstr(self) -> &'static CStr {
+        match self {
+            Name::Thp(t) => t.name(),
+            Name::PercpuArena(p) => p.name(),
+        }
     }
 }
 
@@ -2336,8 +2358,14 @@ mod tests {
         assert_eq!(clean("thp:auto").thp, Thp::Auto);
         assert_eq!(clean("thp:never").thp, Thp::Never);
         assert_eq!(clean("thp:default").thp, Thp::Never);
-        assert_eq!(clean("thp:always").get(b"thp"), Some(Value::Str(c"always")));
-        assert_eq!(clean("thp:auto").get(b"thp"), Some(Value::Str(c"auto")));
+        assert_eq!(
+            clean("thp:always").get(b"thp"),
+            Some(Value::Str(Name::Thp(Thp::Always)))
+        );
+        assert_eq!(
+            clean("thp:auto").get(b"thp"),
+            Some(Value::Str(Name::Thp(Thp::Auto)))
+        );
         assert_eq!(Config::DEFAULT.thp, Thp::Never);
         let (cfg, issues) = parse("thp:madvise");
         assert_eq!(cfg.thp, Thp::Never);
@@ -2364,7 +2392,7 @@ mod tests {
             assert_eq!(cfg.percpu_arena, want, "{value}");
             assert_eq!(
                 cfg.get(b"percpu_arena"),
-                Some(Value::Str(want.name())),
+                Some(Value::Str(Name::PercpuArena(want))),
                 "{value}"
             );
             assert_eq!(want.name().to_str(), Ok(value));
@@ -2671,7 +2699,7 @@ mod tests {
                 Value::Int(i) => std::format!("{i}"),
                 Value::Uint(u) => std::format!("{u}"),
                 Value::Size(n) => std::format!("{n}"),
-                Value::Str(s) => s.to_str().unwrap().into(),
+                Value::Str(s) => s.cstr().to_str().unwrap().into(),
             };
             let text = std::format!("{key}:{value}");
             let parsed = clean(&text);
@@ -3423,39 +3451,11 @@ mod kani_config {
         assert!(wf(&c));
     }
 
-    /// `Thp::name`, the same bytes through `CStr::from_bytes_with_nul`
-    /// (Kani 0.68 has no C string literals; the original indexes
-    /// `THP_NAMES`).
-    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
-    fn stub_thp_name(t: Thp) -> &'static CStr {
-        let b: &'static [u8] = match t {
-            Thp::Never => b"never\0",
-            Thp::Auto => b"auto\0",
-            Thp::Always => b"always\0",
-        };
-        CStr::from_bytes_with_nul(b).unwrap()
-    }
-
-    /// `PercpuArena::name`, as [`stub_thp_name`].
-    #[allow(dead_code)] // As `stub_thp_name`.
-    fn stub_percpu_arena_name(p: PercpuArena) -> &'static CStr {
-        let b: &'static [u8] = match p {
-            PercpuArena::Disabled => b"disabled\0",
-            PercpuArena::Percpu => b"percpu\0",
-            PercpuArena::Phycpu => b"phycpu\0",
-        };
-        CStr::from_bytes_with_nul(b).unwrap()
-    }
-
     /// `Config::get`, no `requires`, no `ensures`: the call returns for
     /// every config and every key `any_key` gives, and (its comment) is
-    /// `Some` exactly when an entry is named `key`. The two `name`
-    /// methods the `thp` and `percpu_arena` readers call are stubbed
-    /// (above).
+    /// `Some` exactly when an entry is named `key`.
     #[kani::proof]
     #[kani::unwind(25)]
-    #[kani::stub(Thp::name, stub_thp_name)]
-    #[kani::stub(PercpuArena::name, stub_percpu_arena_name)]
     fn get_contract() {
         let kbuf: [u8; KEY_MAX] = kani::any();
         let key = any_key(&kbuf);
