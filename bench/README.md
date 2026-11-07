@@ -448,11 +448,14 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
 
 ## Operating on GCE
 
-- **Where.** The repository names no GCP project. A maintainer brings
+- **Where.** `cb launch` names no GCP project. A maintainer brings
   their own: a project, a bucket for bundles and results (a 30-day
   object lifecycle rule is assumed), an Artifact Registry repository for
   the bench image, and a VM service account with object read/write on
-  that bucket and read on that repository, nothing else. `cb launch`
+  that bucket and read on that repository, nothing else. (The one
+  project the repository names is the CI floor checks': `FLOOR_SA` in
+  `.chainguard/ci/floor.yaml`, set up as
+  `docs/runbooks/checks-gce-identity.md` describes.) `cb launch`
   takes the first three from, in order, `--project`, `--bucket` and
   `--service-account`; `CB_PROJECT`, `CB_BUCKET` and `CB_SERVICE_ACCOUNT`;
   or the `[defaults]` of a local overlay (`cb gc` needs only the

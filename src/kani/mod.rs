@@ -25,7 +25,7 @@
 //! the zero axioms of `class/table.rs`, the class table, the enums `eq.rs`
 //! matches). The list is kept by hand: a `kani_*` module added to a rarely
 //! changed file belongs in `changed:`; one added to a hot file, one most
-//! proof pull requests touch (today the fifteen files above), is left to
+//! proof pull requests touch (today the fourteen files above), is left to
 //! `kani-ignoring`, so a change that breaks it is caught after it lands,
 //! not before.
 //!

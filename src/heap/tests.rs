@@ -1,3 +1,11 @@
+//! Heap tests checked against the allocator's own state, mostly over a
+//! synthetic layout (`testutil::TestShared`): the cache pop and push, refill
+//! and flush, the fast and slow paths, the double-free checks, the class
+//! lines and the configuration keys the heap reads. A heap test whose
+//! claim is about the process or the hardware (thread-local storage,
+//! thread exit, fork, several threads, pointer authentication) belongs in
+//! `linux_tests.rs`.
+
 use super::compact::Verdict;
 use super::flush::{flag_sort, group_by_slab};
 use super::*;

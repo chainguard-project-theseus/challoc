@@ -1,6 +1,10 @@
-# challoc build entry points. The library is Linux-only; every target except
-# `help`, `verus`, `isla`, `emptyasm` and the `clean-*` targets runs inside the
-# Wolfi dev container built from Dockerfile.dev. `make help` lists the targets
+# challoc build entry points. The library is Linux-only. The build, test and
+# local benchmark targets run inside the Wolfi dev container built from
+# Dockerfile.dev. These run on the host: `help`, `print-docker-run`, `image`
+# (which builds the container), `verus`, `isla`, `emptyasm`, the `clean-*`
+# targets, and the bench targets that drive GCE or only read results
+# (`quick`, `bench-launch-quick`, `bench-launch`, `bench-image`, `bench-gc`,
+# `bench-compare`, `bench-unit`). `make help` lists the targets
 # from the `##` comments below; the benchmark harness (bench/cb, its targets in
 # bench/bench.mk) is described in bench/README.md, the environment (target
 # volumes) in CONTRIBUTING.md.

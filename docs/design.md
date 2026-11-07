@@ -2221,6 +2221,8 @@ src/sys/pac.rs        pointer authentication (arm64 FEAT_PAuth): probe, sign, au
 src/sys/tls.rs        the initial-exec TLS accessor (6.1)
 src/rseq.rs           glibc's rseq registration, read for the feature line's rseq= words
 src/lock.rs           futex lock, padded lock
+src/lock/tests.rs     lock tests
+src/sync.rs           the atomics the vspec wrappers use: core's, or loom's under cfg(loom)
 src/layout/mod.rs     size classes (Class, CLASSES, class_of), slab geometry, adopt_page_geometry
 src/layout/regions.rs Regions: the reservations, pointer classification, seal; the section 2 parameters
 src/layout/tests.rs, src/layout/linux_tests.rs   layout tests
@@ -2249,8 +2251,12 @@ src/heap/perms.rs     the CachePerms lemmas: the ghost model of the caches' stac
 src/heap/shared.rs    Shared: process-wide state, init, the free checks and routing, the class lines, the thread-exit key
 src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap creation, the exit destructor
 src/heap/tcaches.rs   explicit caches (tcache.create)
+src/heap/slotstate.rs the per-slot state bytes (free, cached, live) of the double-free scan (6.3)
+src/heap/heap_facts.rs  the set-free checker of what tcaches::heap_at trusts, shared by heap_at_tests and tlscheck
+src/heap/tlscheck.rs  debug-only (cfg(challoc_tls_check)) run-time check of the TLS slot premise
 src/heap/mallocx.rs   MALLOCX_* flag decoding and the mallocx/dallocx routing
 src/heap/tests.rs, src/heap/linux_tests.rs   heap tests
+src/heap/heap_at_tests.rs, src/api/heap_at_tests.rs   test-only: the heap_at checker on every heap heap_at hands out, and through the C API's MALLOCX_TCACHE paths
 src/huge/mod.rs       huge allocator: extents, guards, first fit, the audit
 src/huge/decay.rs     the huge purge and decay walks (purge_empty, decay_with) and their Tally
 src/huge/table.rs     the open-addressing descriptor table (page number to HugeDesc)
@@ -2274,6 +2280,7 @@ src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message 
 src/api/cxx.rs        operator new / delete
 src/api/mallctl.rs    the control namespace
 src/api/print.rs      malloc_stats_print, malloc_stats, malloc_info
+src/api/tests.rs, src/api/mallctl/tests.rs   api and mallctl unit tests
 src/api/c_programs.rs test-only: the C-test table and its driver (tests/c, fuzz/, tests/glibc, tests/mimalloc)
 src/api/restated.rs   test-only: checks the restating theorems still make their bodies' calls (verus/README.md)
 src/vspec/            Verus seams: contracts for core functions vstd does not specify, trusted wrappers

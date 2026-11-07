@@ -1,3 +1,9 @@
+//! Purge tests of the decay driver's logic: the `Decayer`'s steps and
+//! back-off, `Batch` merging and flushing, and the cgroup advice, checked
+//! against their own state. A test of what the kernel does with a discard
+//! (residency, locked, unmapped or sealed ranges) belongs in
+//! `linux_tests.rs`.
+
 use super::*;
 use crate::testutil::page_size;
 

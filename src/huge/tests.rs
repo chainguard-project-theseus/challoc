@@ -1,3 +1,10 @@
+//! Huge-allocator tests checked against its own state, over a synthetic
+//! region (`Env`): placement and first fit, alignment, coalescing, extent
+//! states, the retain cap, decay, the descriptor table and metadata
+//! exhaustion, and a randomised model check. A test whose claim is about
+//! what the kernel does with the pages (their contents, guard faults and
+//! VMAs, discard results) belongs in `linux_tests.rs`.
+
 use super::*;
 use crate::layout::{Kind, LG_MAX_SLAB, MAX_SLAB, Mapping, NCLASSES};
 use crate::meta;
