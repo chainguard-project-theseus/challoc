@@ -59,6 +59,14 @@ pub type WriteCb = Option<unsafe extern "C" fn(*mut c_void, *const c_char)>;
 #[repr(transparent)]
 pub struct WriteCallback(pub WriteCb);
 
+/// glibc's `PTHREAD_CANCEL_DISABLE`, the same on both targets, and its
+/// `pthread_setcancelstate`, which the `libc` crate does not bind: what
+/// [`cancel_disable`] and [`cancel_restore`] call (premise C9).
+const PTHREAD_CANCEL_DISABLE: i32 = 1;
+unsafe extern "C" {
+    fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
+}
+
 verus! {
 
 /// Opaque: `WriteCallback` holds a function pointer type, which Verus
@@ -79,7 +87,7 @@ enum Target {
 }
 
 /// Hand `buf[..len]` to `target`: the report's only calls out of the
-/// allocator. To the caller's callback ([`call_back`]) as the C string
+/// allocator. To the caller's callback ([`call_back_nocancel`]) as the C string
 /// `buf` holds, NUL-terminated at `len`; with no callback, to the
 /// `malloc_message` path ([`malloc_write`]: the hook, or `write(2)` to
 /// stderr); to the caller's stream ([`write_file`]); or with `write(2)` to
@@ -96,7 +104,7 @@ fn emit(target: &Target, buf: &[u8; 1024], len: usize, Tracked(ord): Tracked<&Lo
 {
     match target {
         Target::Callback(cb, opaque) => {
-            if !call_back(cb, *opaque, buf, Tracked(ord)) {
+            if !call_back_nocancel(cb, *opaque, buf, Tracked(ord)) {
                 malloc_write(&buf[..len], Tracked(ord));
             }
         }
@@ -131,6 +139,57 @@ fn call_back(
     true
 }
 
+/// [`call_back`] with cancellation disabled, as [`write_file`]'s `fwrite`
+/// runs: a deferred `pthread_cancel` is not acted on at a cancellation
+/// point inside the caller's callback, unless the callback turns
+/// cancellation back on (design 8.1). `ord` has top 0, as for [`emit`].
+#[inline(always)]
+fn call_back_nocancel(
+    cb: &WriteCallback,
+    opaque: *mut c_void,
+    buf: &[u8; 1024],
+    Tracked(ord): Tracked<&LockOrder>,
+) -> bool
+    requires
+        crate::sys::may_syscall(),
+        ord.top() == 0,
+        exists|i: int| 0 <= i < 1024 && #[trigger] buf@[i] == 0,
+{
+    let old = cancel_disable();
+    let called = call_back(cb, opaque, buf, Tracked(ord));
+    cancel_restore(old);
+    called
+}
+
+/// Disable the calling thread's cancellation (`pthread_setcancelstate`);
+/// the state it had, for [`cancel_restore`]. Trusted: a call into libc;
+/// claims nothing.
+#[verifier::external_body]
+#[inline(always)]
+pub(super) fn cancel_disable() -> i32
+    requires
+        crate::sys::may_syscall(),
+{
+    let mut old = 0;
+    // SAFETY: `old` is a live int the call writes.
+    unsafe { pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &mut old) };
+    old
+}
+
+/// Give the calling thread back the cancel state `old` that
+/// [`cancel_disable`] returned (`pthread_setcancelstate`). Trusted: a call
+/// into libc; claims nothing.
+#[verifier::external_body]
+#[inline(always)]
+pub(super) fn cancel_restore(old: i32)
+    requires
+        crate::sys::may_syscall(),
+{
+    let mut old = old;
+    // SAFETY: `old` is a live int the call writes.
+    unsafe { pthread_setcancelstate(old, &mut old) };
+}
+
 /// `fwrite` of `s` to the caller's stream `f`. Trusted: a call into libc;
 /// claims nothing. `fwrite` may itself call `malloc` (glibc allocates a
 /// stream's buffer on its first write), which re-enters this allocator
@@ -150,20 +209,10 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
         crate::sys::may_syscall(),
         ord.top() == 0,
 {
-    // glibc's, which the `libc` crate does not bind; the same on both
-    // targets.
-    const PTHREAD_CANCEL_DISABLE: i32 = 1;
-    unsafe extern "C" {
-        fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
-    }
-    // SAFETY: `f` is the caller's open stream; `s` is readable; `old` is
-    // a live int the cancel-state calls write.
-    unsafe {
-        let mut old = 0;
-        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &mut old);
-        libc::fwrite(s.as_ptr() as *const c_void, 1, s.len(), f);
-        pthread_setcancelstate(old, &mut old);
-    }
+    let old = cancel_disable();
+    // SAFETY: `f` is the caller's open stream; `s` is readable.
+    unsafe { libc::fwrite(s.as_ptr() as *const c_void, 1, s.len(), f) };
+    cancel_restore(old);
 }
 
 /// A `fmt::Write` that buffers up to 1023 bytes and forwards them,
@@ -2248,6 +2297,72 @@ mod tests {
         assert!(got.ends_with("--- End jemalloc statistics ---\n"));
     }
 
+    /// Design 8.1: a report runs the program's `write_cb` and its
+    /// `malloc_message` hook with cancellation disabled, and gives the
+    /// thread its cancel state back afterwards.
+    #[test]
+    fn report_callbacks_run_with_cancellation_disabled() {
+        use crate::api::jemalloc::set_message_hook_for_tests;
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        // glibc's values, which the `libc` crate does not bind.
+        const PTHREAD_CANCEL_ENABLE: i32 = 0;
+        const PTHREAD_CANCEL_DISABLE: i32 = 1;
+        unsafe extern "C" {
+            fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
+        }
+        /// The calling thread's cancel state, left unchanged.
+        fn cancel_state() -> i32 {
+            let (mut old, mut ignored) = (0, 0);
+            // SAFETY: both are live ints; the second call restores the
+            // state the first one read.
+            unsafe {
+                pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &mut old);
+                pthread_setcancelstate(old, &mut ignored);
+            }
+            old
+        }
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static ENABLED: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn record(_opaque: *mut c_void, _s: *const c_char) {
+            CALLS.fetch_add(1, Ordering::Relaxed);
+            if cancel_state() != PTHREAD_CANCEL_DISABLE {
+                ENABLED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let _serial = crate::testutil::global_state();
+        // Each case starts from one cancel state, which the report must
+        // leave as it found it.
+        for start in [PTHREAD_CANCEL_ENABLE, PTHREAD_CANCEL_DISABLE] {
+            let mut old = 0;
+            // SAFETY: `old` is a live int.
+            unsafe { pthread_setcancelstate(start, &mut old) };
+            // The `write_cb`, then (with none) the `malloc_message` hook.
+            for (write_cb, hook) in [
+                (WriteCallback(Some(record)), None),
+                (
+                    WriteCallback(None),
+                    Some(record as unsafe extern "C" fn(_, _)),
+                ),
+            ] {
+                CALLS.store(0, Ordering::Relaxed);
+                ENABLED.store(0, Ordering::Relaxed);
+                set_message_hook_for_tests(hook);
+                malloc_stats_print(write_cb, core::ptr::null_mut(), core::ptr::null());
+                set_message_hook_for_tests(None);
+                assert!(CALLS.load(Ordering::Relaxed) > 0, "no callback ran");
+                assert_eq!(
+                    ENABLED.load(Ordering::Relaxed),
+                    0,
+                    "callback calls with cancellation enabled: got = {}, want = 0",
+                    ENABLED.load(Ordering::Relaxed)
+                );
+                assert_eq!(cancel_state(), start, "cancel state after the report");
+            }
+            // SAFETY: `old` is a live int; this restores the test thread's state.
+            unsafe { pthread_setcancelstate(old, &mut old) };
+        }
+    }
+
     #[test]
     fn malloc_info_writes_glibc_xml_to_the_stream() {
         let live: Vec<*mut u8> = (0..50)
@@ -2795,7 +2910,8 @@ mod tests {
 
 /// Kani harnesses for this file's seams that Kani can run
 /// (`verus/ledger/src/api/print.rs.md`): `word`, `hist_line` and
-/// `call_back`.
+/// `call_back`; `kani_cancel` below checks `cancel_disable` and
+/// `cancel_restore`.
 #[cfg(kani)]
 mod kani_print {
     use super::{Name, PercpuArena, Thp, WriteCallback, call_back, hist_line, word};
@@ -2870,5 +2986,90 @@ mod kani_print {
             kani::any(),
             kani::any(),
         );
+    }
+}
+
+/// Kani checks of `cancel_disable` and `cancel_restore`
+/// (`verus/ledger/src/api/print.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_cancel {
+    use super::{cancel_disable, cancel_restore};
+    use core::ffi::c_int;
+
+    /// What the stand-in for `pthread_setcancelstate` returns, and the old
+    /// state it stores when that is 0.
+    static mut RC: c_int = 0;
+    static mut OLD: c_int = 0;
+    /// How many times it was called, and the last call's `state`.
+    static mut CALLS: usize = 0;
+    static mut STATE: c_int = 0;
+
+    /// A stand-in for glibc's `pthread_setcancelstate` (premise C9): it
+    /// records its call and `state`, checks that `oldstate` is writable,
+    /// and returns `RC`, storing `OLD` in `*oldstate` only when `RC` is 0.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn setcancelstate_model(state: c_int, oldstate: *mut c_int) -> c_int {
+        assert!(kani::mem::can_write(oldstate));
+        // SAFETY: the harness's own statics, and `oldstate`, writable
+        // (checked above); no other code runs in a harness.
+        unsafe {
+            CALLS += 1;
+            STATE = state;
+            if RC == 0 {
+                *oldstate = OLD;
+            }
+            RC
+        }
+    }
+
+    /// `cancel_disable`: no `ensures`; it returns, and (beyond the
+    /// contract) calls `pthread_setcancelstate` once with
+    /// `PTHREAD_CANCEL_DISABLE`, and returns the old state the call stored
+    /// when it returned 0, else 0, for any return value and old state.
+    #[kani::proof]
+    #[kani::stub(super::pthread_setcancelstate, setcancelstate_model)]
+    fn disable_keeps_the_old_state() {
+        let rc: c_int = kani::any();
+        let old: c_int = kani::any();
+        kani::cover!(rc == 0);
+        kani::cover!(rc != 0);
+        // SAFETY: as in `setcancelstate_model`.
+        unsafe {
+            RC = rc;
+            OLD = old;
+        }
+        let got = cancel_disable();
+        // SAFETY: as in `setcancelstate_model`.
+        let (calls, state) = unsafe { (CALLS, STATE) };
+        assert_eq!(calls, 1);
+        // glibc's `PTHREAD_CANCEL_DISABLE` (C9), not this file's constant.
+        assert_eq!(state, 1);
+        assert_eq!(got, if rc == 0 { old } else { 0 });
+    }
+
+    /// `cancel_restore`: no `ensures`; it returns, and (beyond the
+    /// contract) calls `pthread_setcancelstate` once with the state it was
+    /// given, for any state, return value and old state.
+    #[kani::proof]
+    #[kani::stub(super::pthread_setcancelstate, setcancelstate_model)]
+    fn restore_passes_the_old_state() {
+        let given: c_int = kani::any();
+        let rc: c_int = kani::any();
+        kani::cover!(given == 0);
+        kani::cover!(given == 1);
+        kani::cover!(given != 0 && given != 1);
+        kani::cover!(rc == 0);
+        kani::cover!(rc != 0);
+        // SAFETY: as in `setcancelstate_model`.
+        unsafe {
+            RC = rc;
+            OLD = kani::any();
+        }
+        cancel_restore(given);
+        // SAFETY: as in `setcancelstate_model`.
+        let (calls, state) = unsafe { (CALLS, STATE) };
+        assert_eq!(calls, 1);
+        assert_eq!(state, given);
     }
 }

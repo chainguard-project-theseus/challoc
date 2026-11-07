@@ -1084,25 +1084,22 @@ the next start joins it before reusing the stack. Every system call
 challoc makes is a raw `syscall`, never a cancellation point; the two
 libc calls it makes that are, that `pthread_join` and the `fwrite` of
 `malloc_info` to a `FILE *`, run with cancellation disabled: a deferred
-`pthread_cancel` of the thread inside `mallctl`, `malloc_info` or an
-allocation is acted on at the program's next cancellation point, never
-midway through a start and never by unwinding through challoc's frames
-(14.1). A report's calls into the program's own callback, the
-`write_cb` of `malloc_stats_print` (`api::print::call_back`) and the
-`malloc_message` hook (`api::jemalloc::call_hook`), are the exception.
-They run with cancellation enabled, unlike `api::print::write_file`'s
-`fwrite`, so a deferred cancel acted on at a cancellation point inside
-the callback unwinds through challoc's frames, which is undefined
-behaviour; until they disable cancellation as `write_file` does,
-premise C3 (`verus/kani/premises.md`) assumes the callback is not
-cancelled. Disabling it cannot stop the callback itself from leaving
-the call by `pthread_exit` (in glibc a forced unwind too) or
-`longjmp`: under C3 that stays the program's obligation.
+`pthread_cancel` of the thread inside `mallctl`, `malloc_info`,
+`malloc_stats_print` or an allocation is acted on at the program's next
+cancellation point, never midway through a start and never by unwinding
+through challoc's frames (14.1). A report's calls out to the program's
+own callback, the `write_cb` of `malloc_stats_print` and the
+`malloc_message` hook, run with cancellation disabled too, as
+`write_file`'s `fwrite` does (`api::print::call_back_nocancel` and
+`api::jemalloc::call_hook_nocancel` around `call_back` and
+`call_hook`). A callback that leaves the call by `pthread_exit` (in
+glibc a forced unwind too) or `longjmp`, or that re-enables
+cancellation, breaks premise C3 (`verus/kani/premises.md`).
 `operator new`'s calls into the program's `new_handler` (13.1;
-`api::cxx::call_handler` and `call_handler_caught`) are an exception
-too: they also run with cancellation enabled. A deferred cancel acted on
+`api::cxx::call_handler` and `call_handler_caught`) are the exception:
+they run with cancellation enabled. A deferred cancel acted on
 inside the handler unwinds through `api::cxx::oom` in the throwing
-forms, which is undefined behaviour as for the report's callbacks, and
+forms, which is undefined behaviour, and
 aborts the process in the `nothrow_t` forms, whose `catch (...)` in
 `cxx_handler.cpp` takes glibc's forced unwind without rethrowing it, as
 libstdc++'s own nothrow `operator new` does. Until the call runs with
@@ -1963,11 +1960,13 @@ aborts:
 
 Thread cancellation is not a failure either: challoc never acts on a
 (deferred) cancellation request (8.1), so none leaves its state half set.
-The exceptions are a report's call into the program's callback and
-`operator new`'s call into the program's `new_handler`, which run with
-cancellation enabled, so a cancel may be acted on inside them (8.1); a
-callback that leaves the call by `pthread_exit` or `longjmp` breaks
-premise C3, and a `new_handler` that does breaks C4, whatever the cancel
+A report's call-outs to the program's callback run with cancellation
+disabled, as `write_file`'s `fwrite` does (8.1); a callback that leaves
+the call by `pthread_exit` or `longjmp`, or re-enables cancellation,
+breaks premise C3. The exception is `operator new`'s call into the
+program's `new_handler`, which runs with cancellation enabled, so a
+cancel may be acted on inside it (8.1); a `new_handler` that leaves the
+call by `pthread_exit` or `longjmp` breaks C4, whatever the cancel
 state. `operator new` holds no lock and no half-set state of challoc's
 while its handler runs: the failed attempt has returned.
 

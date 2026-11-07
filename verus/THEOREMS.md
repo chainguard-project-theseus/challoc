@@ -1721,7 +1721,9 @@ sizes above the small table), which requires
   `init_fields`, with its `tid()` and `now_ns()`, `Meta::commit` and
   `Heap::destroy` are verified), `print::call_back`, `print::write_file`
   and `jemalloc::call_hook` (the report's call-outs, theorem 16;
-  `print::emit` is verified), the
+  `print::emit`, `call_back_nocancel` and `call_hook_nocancel` are
+  verified), `print::cancel_disable` and `print::cancel_restore` (the
+  `pthread_setcancelstate` calls around them), the
   C++ `call_handler` and `call_handler_caught` (the `nothrow_t` forms'
   call through `cxx_handler.cpp`'s catch),
   `call_get_new_handler`, `call_throw_bad_alloc` (`api/cxx.rs`), the
@@ -1761,7 +1763,8 @@ sizes above the small table), which requires
   while `existing_heap_in`, `tls_heap_slot` and `tls::get`/`get_tp`
   (which only read the `TlsSlot` token or borrow its heap) do not, so
   the fast paths stay as above. No allocator lock across external calls (theorem 16):
-  `print::emit`, `call_back`, `write_file` and `Sink::new` require it,
+  `print::emit`, `call_back_nocancel`, `call_back`, `write_file` and
+  `Sink::new` require it,
   and `Sink::flush` has it from `Sink`'s type invariant.
 
 So a system call happens only below a frame that requires
@@ -3156,15 +3159,22 @@ on the caller's stream, and `write(2)` to stderr. A callback, a hook or
 `fwrite` may allocate (glibc allocates a stream's buffer on its first
 write), so a lock held across one deadlocks the allocation.
 
-`emit` is verified. It hands the buffer to one of three trusted functions, which
-make the calls out: `call_back` (`api/print.rs`, the caller's
-callback), `write_file` (`fwrite` on the caller's stream) and,
-for the `malloc_message` hook, `call_hook` (`api/jemalloc.rs`,
-called only by the verified `malloc_write`, whose only caller is
-`emit`); or, for `malloc_stats` and a `malloc_write` with no hook, to
-the verified `sys::write_all` (`sys/mod.rs`, raw `write(2)`, which
-allocates nothing). `emit`, the three trusted functions and
-`malloc_write` each require the token at top 0:
+`emit` is verified. It hands the buffer, directly or through a verified
+wrapper, to one of three trusted functions, which make the calls out:
+`call_back` (`api/print.rs`, the caller's callback), `write_file`
+(`fwrite` on the caller's stream) and, for the `malloc_message` hook,
+`call_hook` (`api/jemalloc.rs`, called outside its Kani harness only
+through `call_hook_nocancel` by the verified `malloc_write`, whose only
+caller is `emit`); or, for `malloc_stats` and a `malloc_write` with no
+hook, to the verified `sys::write_all` (`sys/mod.rs`, raw `write(2)`, which
+allocates nothing). `emit` reaches `call_back`, and `malloc_write`
+reaches `call_hook`, through the verified `call_back_nocancel` and
+`call_hook_nocancel`, which disable cancellation around the call with
+the trusted `cancel_disable` and `cancel_restore` (`api/print.rs`,
+which take no token and claim nothing), have the same `requires` and
+pass the token on, so Verus checks `call_back`'s and `call_hook`'s
+`requires` at their calls. `emit`, the two wrappers, the three trusted
+functions and `malloc_write` each require the token at top 0:
 
 ```rust
 fn emit(target: &Target, buf: &[u8; 1024], len: usize,        // api/print.rs
@@ -3205,8 +3215,9 @@ guard (`RawLock::lock_held` needs a root). So Verus checks:
   is alive.
 
 The unverified code of `api/print.rs` and `api/jemalloc.rs` (the trusted
-bodies of `print.rs`, among them `call_back` and `write_file`, and
-`jemalloc.rs`'s `message_hook` and `call_hook`) could still call `emit`,
+bodies of `print.rs`, among them `call_back`, `write_file`,
+`cancel_disable` and `cancel_restore`, and `jemalloc.rs`'s
+`message_hook` and `call_hook`) could still call `emit`,
 `malloc_write` or a call-out with a forged token; it does not (by
 inspection; no source test checks it).
 
@@ -3250,7 +3261,10 @@ for `call_back`'s and `write_file`'s premise.
   through the caller's function pointer when it gave one, one `fwrite`,
   and a one-line call of the hook, claiming nothing. `emit` is verified,
   and the NUL a callback or hook reads is checked (`Sink::flush` stores
-  it; `emit`, `call_back` and `call_hook` require it).
+  it; `emit`, the two wrappers, `call_back` and `call_hook` require it).
+- `cancel_disable` and `cancel_restore` (`external_body`): one
+  `pthread_setcancelstate` call each, claiming nothing. The verified
+  wrappers and `write_file` call them around the call out.
 
 **Where the statement is weaker than the code.**
 - **The token is only as good as the lock order.** The token is the
@@ -10115,7 +10129,8 @@ alone):
 37. Data symbols `malloc_conf`, `malloc_message`, `je_malloc_message`
     (`api/jemalloc.rs`): no code. `message_hook`, which
     reads the hooks, is trusted; `malloc_write` is verified, over the
-    trusted one-line `call_hook`.
+    verified `call_hook_nocancel`, the trusted one-line `call_hook` and
+    the trusted `print::cancel_disable` and `print::cancel_restore`.
 
 ### Internal properties under every row
 
