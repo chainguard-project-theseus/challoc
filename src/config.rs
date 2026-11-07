@@ -2020,10 +2020,7 @@ mod linux {
         ensures
             r matches Some((line, cut)) ==> line@.len() < old(buf)@.len(),
     {
-        let fd = sys::open(path, sys::O_RDONLY).ok()?;
-        let n = sys::read_full(fd, buf);
-        let _ = sys::close(fd);
-        let n = n.ok()?;
+        let n = sys::read_small_file(path, buf)?;
         first_line(&buf[..n], n == buf.len())
     }
 
