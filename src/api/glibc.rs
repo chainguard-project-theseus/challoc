@@ -122,7 +122,7 @@ pub(crate) fn zero_info() -> (r: MallInfo2)
 /// ([`stats::ids_ascending`]). This contract leaves out
 /// `ordblks` and `keepcost`: their figure arithmetic (`stats::fig_add`,
 /// `fig_mul`) is exact only when it fits and wraps in the shipped library.
-/// The sum and each arena's figures (about 6 KiB each with their bins)
+/// The sum and each arena's figures (about 7 KiB each with their bins)
 /// are collected into a [`stats::Scratch`]'s two records, not onto the
 /// caller's stack; with no object for them every figure is 0 and `rd`'s
 /// flag is clear.

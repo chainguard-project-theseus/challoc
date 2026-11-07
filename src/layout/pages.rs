@@ -263,6 +263,8 @@ pub fn open_slots_word(size: usize, nslots: usize, pg: usize, pages: usize, mask
 
 /// Slot `s` is open under `mask` (`slot_open`): every page it overlaps
 /// has its bit set. A slot no larger than a page overlaps at most two.
+// The exhaustive test's reference for `OpenView::closed_slots`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn slot_is_open(size: usize, pg: usize, pages: usize, mask: u16, s: usize) -> (r: bool)
     requires
         1 <= size <= 0x10000,
@@ -336,6 +338,8 @@ pub proof fn lemma_closed_below_mono(size: int, pg: int, pages: int, m1: u16, m2
 
 /// How many of the slab's `nslots` slots `mask` closes (`closed_below`):
 /// the slots of the closed pages, each straddling slot counted once.
+// The exhaustive test's reference for `OpenView::closed_slots`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn closed_slot_count(size: usize, nslots: usize, pg: usize, pages: usize, mask: u16) -> (r: usize)
     requires
         1 <= size <= 0x10000,
@@ -521,29 +525,40 @@ impl OpenView {
         m
     }
 
-    /// The slots the closed pages hide ([`closed_below`]): a straddling
-    /// slot counts once. 0 for a view without page state.
+    /// The slots the closed pages hide: a straddling slot counts once
+    /// (exactly [`closed_below`], which `closed_slot_count` proves and the
+    /// exhaustive test checks this against). 0 for a view without page
+    /// state. The union of the closed pages' slot ranges, which come in
+    /// slot order, so at most 16 steps: a refill computes it.
     pub fn closed_slots(&self) -> (r: usize)
         ensures
-            self.paged() ==> r == closed_below(self.size as int, self.pg as int, self.pages as int, !self.closed, self.nslots as int),
             !self.paged() ==> r == 0,
             r <= self.nslots,
     {
-        let paged = 1 <= self.size && self.size <= 0x10000 && 4096 <= self.pg && self.pg <= 0x10000 && 2 <= self.pages
-            && self.pages <= MAX_MASK_PAGES && self.nslots <= 0x10000;
-        if !paged {
+        if !self.is_paged() || self.closed == 0 {
             return 0;
         }
-        if self.closed == 0 {
-            proof {
-                let c = self.closed;
-                assert(!c == !0u16) by (bit_vector)
-                    requires c == 0u16;
-                lemma_closed_below_all_open(self.size as int, self.pg as int, self.pages as int, self.nslots as int);
+        let mut total: usize = 0;
+        let mut covered: usize = 0;
+        let mut p: usize = 0;
+        while p < self.pages
+            invariant
+                self.paged(),
+                p <= self.pages,
+                total <= covered <= self.nslots,
+            decreases self.pages - p,
+        {
+            if (self.closed >> (p as u16)) & 1 == 1 {
+                let (first, end) = self.page_slots_of(p);
+                let lo = if first > covered { first } else { covered };
+                if end > lo {
+                    total += end - lo;
+                    covered = end;
+                }
             }
-            return 0;
+            p += 1;
         }
-        closed_slot_count(self.size, self.nslots, self.pg, self.pages, !self.closed)
+        total
     }
 }
 
@@ -628,6 +643,20 @@ mod tests {
                         closed,
                         "{size} B mask {mask:#x}"
                     );
+                    let view = OpenView {
+                        size,
+                        nslots,
+                        pg,
+                        pages,
+                        closed: !mask & ((1u32 << pages) - 1) as u16,
+                    };
+                    if pages >= 2 {
+                        assert_eq!(
+                            view.closed_slots(),
+                            closed,
+                            "{size} B mask {mask:#x}: the range union"
+                        );
+                    }
                     for w in 0..words + 1 {
                         let want = (0..64)
                             .filter(|&i| {

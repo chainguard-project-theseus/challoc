@@ -2886,6 +2886,8 @@ fn slab_pages_sit_after_the_header_where_the_stride_has_room() {
         with += 1;
         assert!(stride >= 32, "class {c}");
         let (d0, d1) = (cs.desc(s0), cs.desc(s1));
+        // The next slab opened on demand (docs/proposals/slab-pages.md, 3.3).
+        let m1 = cs.table().pages(s1).unwrap().closed();
         assert_eq!(
             pg as *const _ as usize,
             d0 as *const _ as usize + 16,
@@ -2904,7 +2906,7 @@ fn slab_pages_sit_after_the_header_where_the_stride_has_room() {
             assert_eq!(d.state_bytes(), (1, 2), "class {c}");
             assert_eq!((d.arena(), d.dirty_at()), (0, 0), "class {c}");
         }
-        assert_eq!(cs.table().pages(s1).unwrap().closed(), 0, "class {c}");
+        assert_eq!(cs.table().pages(s1).unwrap().closed(), m1, "class {c}");
         pg.set_pages(0, 0, Tracked::assume_new());
         cs.release(&p);
     }
@@ -3020,6 +3022,25 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
         assert_eq!(pg.closed(), want, "class {c}: closed pages");
         let hidden = view.with_closed(want).closed_slots();
         assert_eq!(closed_slots_t(cs), hidden, "class {c}");
+        // The statistics (docs/proposals/slab-pages.md, 3.6): the closed
+        // slots and pages, and the bin's closed bytes out of `active`.
+        let st = cs.bin_stats(Tracked::assume_new()).0;
+        assert_eq!(
+            (st.closed_slots, st.closed_pages),
+            (hidden, want.count_ones() as usize),
+            "class {c}"
+        );
+        let b = crate::stats::collect_bin(cs, Tracked::assume_new());
+        assert_eq!(b.closed_slots, hidden, "class {c}");
+        assert_eq!(
+            b.closed_bytes,
+            want.count_ones() as usize * view.pg,
+            "class {c}"
+        );
+        assert!(
+            b.curregs * b.size + b.closed_bytes <= b.curslabs * b.slab_size,
+            "class {c}"
+        );
         // Refills take the slab's open free slots, then reopen its closed
         // pages (counted out of `closed_slots`), and only then another slab.
         let v = view.with_closed(want);
@@ -3054,7 +3075,14 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
             0,
             "class {c}: every page reopened before another slab"
         );
-        assert_eq!(closed_slots_t(cs), 0, "class {c}");
+        // Only the next slab, opened on demand, has closed pages now.
+        let s1 = cs.locate(*more.last().unwrap()).0;
+        let m1 = cs.table().pages(s1).unwrap().closed();
+        assert_eq!(
+            closed_slots_t(cs),
+            view.with_closed(m1).closed_slots(),
+            "class {c}"
+        );
         assert_eq!(cs.desc(s0).live(), n, "class {c}");
         cs.release(&more);
         cs.release(&kept);
@@ -3124,4 +3152,46 @@ fn closed_slots_t(cs: &ClassState) -> usize {
 /// Slab pages: `ClassState::close_pages` with made-up lock order tokens.
 fn close_pages_t(cs: &ClassState, now: u64, decay_ns: u64, all: bool) -> Option<u64> {
     cs.close_pages(now, decay_ns, all, Tracked::assume_new())
+}
+
+/// Slab pages, a defragmenter's hint (docs/proposals/slab-pages.md, 7.1):
+/// a hint arms the class's next walk, which then closes every page
+/// closable for a curve step, though young on the curve; a second hint
+/// within 100 ms does not arm it again.
+#[test]
+fn a_defrag_hint_closes_pages_a_step_old() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let view = cs.table().page_view();
+    if view.pages < 2 {
+        return;
+    }
+    let n = view.nslots;
+    let mut held: Vec<*mut u8> = Vec::new();
+    while held.len() < n {
+        let (q, _) = env.claim(cs, n - held.len());
+        held.extend(q);
+    }
+    let (s0, _) = cs.locate(held[0]);
+    cs.release(&held[1..]);
+    let pg = cs.table().pages(s0).unwrap();
+    let period = 1_000_000_000u64;
+    let step = period / crate::purge::STEPS as u64;
+    let t0 = 5_000_000_000u64;
+    close_pages_t(cs, t0, period, false);
+    assert_eq!(pg.closed(), 0, "young on the curve");
+    cs.note_defrag_hint();
+    assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 1);
+    close_pages_t(cs, t0 + 2 * step, period, false);
+    assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 0);
+    let all = ((1u32 << view.pages) - 1) as u16;
+    assert_eq!(
+        pg.closed(),
+        all & !1,
+        "hinted: every page a step old closed"
+    );
+    cs.note_defrag_hint();
+    assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 0, "within 100 ms");
+    cs.release(&held[..1]);
+    assert_eq!(pg.closed(), 0);
 }

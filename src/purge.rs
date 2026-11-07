@@ -2558,6 +2558,17 @@ pub fn note_empty()
     background::wake();
 }
 
+/// A defragmenter's hint armed a class's slab-pages walk
+/// (`ClassState::note_defrag_hint`): wake a background thread that may be
+/// sleeping past it.
+#[inline]
+pub fn note_pages()
+    requires
+        crate::sys::may_syscall(),
+{
+    background::wake();
+}
+
 /// A decay period changed (`arena.<i>.dirty_decay_ms`, `malloc_conf` at
 /// run time): wake a background thread whose deadline was computed with
 /// the old period, so a shorter period takes effect now rather than at

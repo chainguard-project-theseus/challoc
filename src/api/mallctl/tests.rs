@@ -1335,14 +1335,25 @@ fn utilization_queries_answer_valkeys_defragmenter() {
         size_of::<*const c_void>(),
     );
     assert_eq!(rc, 0);
-    assert_eq!(u.nregs, cls.nslots());
+    // Slab pages (docs/proposals/slab-pages.md, 3.6): the slab's
+    // regions are its open slots, opened on demand by the 500 claims.
+    let open = |p: *const c_void| {
+        let t = s.table(c);
+        let (slab, _) = t.locate(p as *mut u8);
+        let closed = t
+            .pages(slab)
+            .map_or(0, |g| t.page_view().with_closed(g.closed()).closed_slots());
+        cls.nslots() - closed
+    };
+    assert_eq!(u.nregs, open(p0));
+    assert!(u.nregs <= cls.nslots());
     assert_eq!(
         u.size,
-        cls.nslots() * cls.size(),
+        u.nregs * cls.size(),
         "region bytes, so size / nregs is the class size"
     );
     assert!(u.nfree < u.nregs);
-    assert!(u.bin_nregs >= u.nregs && u.bin_nregs.is_multiple_of(u.nregs));
+    assert!(u.bin_nregs >= u.nregs);
     assert!(u.bin_nfree <= u.bin_nregs);
     assert!(
         u.bin_nregs - u.bin_nfree >= 500,
@@ -1370,10 +1381,18 @@ fn utilization_queries_answer_valkeys_defragmenter() {
     assert_eq!(rc, 0);
     for (i, p) in ptrs.iter().enumerate() {
         let (nfree, nregs, size) = (out[3 * i], out[3 * i + 1], out[3 * i + 2]);
-        assert_eq!(nregs, cls.nslots(), "ptr {i}");
-        assert_eq!(size, cls.nslots() * cls.size(), "ptr {i}");
+        let n = open(*p as *const c_void);
+        assert_eq!(nregs, n, "ptr {i}");
+        assert_eq!(size, n * cls.size(), "ptr {i}");
         let (slab, _) = s.table(c).locate(*p);
-        assert_eq!(nfree, s.table(c).desc(slab).nfree(cls), "ptr {i}");
+        assert_eq!(
+            nfree,
+            s.table(c)
+                .desc(slab)
+                .nfree(cls)
+                .saturating_sub(cls.nslots() - n),
+            "ptr {i}"
+        );
     }
     // Size mismatches are EINVAL; the pointer array is required.
     let mut short = outlen - size_of::<usize>();
@@ -1428,7 +1447,7 @@ fn utilization_queries_answer_valkeys_defragmenter() {
     );
     assert_eq!(&out4[..3], &[0, 1, s.huge.usable_for(3 << 20).unwrap()]);
     assert_eq!(&out4[3..6], &[0, 0, 0]);
-    assert_eq!(out4[7], cls.nslots());
+    assert_eq!(out4[7], open(ptrs[1] as *const c_void));
     assert_eq!(&out4[9..12], &[0, 1, CLASSES[cm].size()]);
     let um = utilization(s, m as *const c_void, true);
     assert_eq!(

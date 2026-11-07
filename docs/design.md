@@ -1725,9 +1725,20 @@ size, as Valkey asserts.
 collection, under the process statistics lock (section 9), as jemalloc's
 refresh does under `ctl_mtx`. `stats.allocated` is the sum over classes
 of `live * size` plus huge usable bytes; `active` counts committed slabs and huge runs that
-are not `Empty` or `Purged`; `resident` is `active` plus `Empty` bytes
+are not `Empty` or `Purged`, less the closed pages of those slabs (slab
+pages, [proposals/slab-pages.md](proposals/slab-pages.md)); `resident` is `active` plus `Empty` bytes
 plus committed metadata; `retained` is `Purged` bytes; `mapped` is
 `resident + retained`.
+
+A deliberate difference from jemalloc's per-bin identity:
+`stats.arenas.<i>.bins.<j>.curregs` reports the slots out of the
+bitmaps plus the slots the closed pages of the bin's slabs hide, so that
+`nregs * curslabs - curregs`, the free slots Redis's and Valkey's
+`frag_smallbins` counts, is the open free slots only, and falls with the
+memory the closed pages gave back. Reported `curregs * size` is then no
+longer `small.allocated` bin by bin, as it is in jemalloc;
+`small.allocated` itself, and the defrag hint's average (13.5), use the
+slots out of the bitmaps alone.
 
 `experimental.utilization.batch_query` fills `(nfree, nregs, size)` per
 pointer in jemalloc's layout, and the verbose `query` adds `(bin_nfree,

@@ -896,10 +896,12 @@ fn text_arena<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats, bin
     // 6.4): slots claimed by cache refills and by compaction rebuilds,
     // caches that entered and left compact mode, probes declined by the
     // refill-rate gate. `clamped` counts the times `curregs` was clamped
-    // to the bin's capacity (`ClassState::bin_stats`).
+    // to the bin's capacity (`ClassState::bin_stats`). `closed` is the
+    // slots the closed pages of the bin's slabs hide
+    // (docs/proposals/slab-pages.md, 3.6), not in `curregs` here.
     writeln!(
         out,
-        "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped"
+        "  bins:        size ind    nregs  slab_size   curregs  curslabs    closed   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped"
     )?;
     let mut large_header = false;
     // `for (j, b) in s.bins.iter().enumerate()` with its `continue`, as an
@@ -914,13 +916,14 @@ fn text_arena<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats, bin
             }
             writeln!(
                 out,
-                "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6} {:>7}",
+                "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6} {:>7}",
                 b.size,
                 j,
                 b.nregs,
                 b.slab_size,
                 b.curregs,
                 b.curslabs,
+                b.closed_slots,
                 b.nonfull_slabs,
                 b.empty_slabs,
                 b.purged_slabs,
@@ -1256,7 +1259,9 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
                 b.size,
                 b.nregs,
                 b.slab_size,
-                b.curregs,
+                // As `stats.arenas.<i>.bins.<j>.curregs` reports it: with the
+                // closed slots.
+                fig_add(b.curregs, b.closed_slots),
                 b.curslabs,
                 b.nonfull_slabs,
                 b.empty_slabs,
