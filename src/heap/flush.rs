@@ -44,8 +44,8 @@ use vstd::resource::set::{GhostSingleton, GhostSubset};
 verus! {
 
 impl Heap {
-    /// The batch claim behind a refill or a run rebuild: `cs.claim`, or
-    /// with `slot_randomize` `cs.claim_random` with this heap's xorshift
+    /// The batch claim behind a refill or a run rebuild: `cs.claim_tokens`,
+    /// or with `slot_randomize` `cs.claim_random_zero` with this heap's xorshift
     /// (the scan starts at a random bitmap word and the batch is shuffled;
     /// design 4). The key is read from the configuration here, on
     /// the slow path, so the fast paths carry nothing for it.

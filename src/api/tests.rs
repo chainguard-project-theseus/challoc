@@ -371,7 +371,6 @@ const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
     (
         "meta.rs:Meta.inner",
         &[
-            "meta.rs:alloc",
             "meta.rs:alloc_raw",
             "meta.rs:alloc_zeroed",
             "meta.rs:free",
@@ -1757,7 +1756,6 @@ fn lock_holders_match_inv_docs() {
         (
             "meta.rs:Meta.inner",
             &[
-                ("meta.rs:", "pub fn alloc(", "inner"),
                 ("meta.rs:", "pub fn alloc_raw(", "inner"),
                 ("meta.rs:", "pub fn alloc_zeroed(", "inner"),
                 ("meta.rs:", "pub fn free(", "inner"),
