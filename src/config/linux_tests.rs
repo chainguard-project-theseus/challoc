@@ -25,11 +25,13 @@ fn env_var_is_read_from_environ() {
     );
     assert_eq!(env_var(b"CHALLOC_CONF_TEST_EMPTY"), None);
     // The cap applies to the value, not to the `NAME=value` entry.
+    // SAFETY: as above.
     unsafe {
         std::env::set_var("CHALLOC_CONF_TEST_LONG", "a".repeat(MAX_TEXT));
     }
     let (value, cut) = env_var(b"CHALLOC_CONF_TEST_LONG").unwrap();
     assert_eq!((value.len(), cut), (MAX_TEXT, false));
+    // SAFETY: as above.
     unsafe {
         std::env::set_var("CHALLOC_CONF_TEST_LONG", "a".repeat(MAX_TEXT + 1));
     }

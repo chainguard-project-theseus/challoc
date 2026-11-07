@@ -1165,8 +1165,8 @@ fn thread_heaps_pass_the_checker_before_their_destructor() {
         let home = unsafe { (*kv).arena };
         let bound = s.arenas.bound(home);
         let key = s.thread_key().unwrap();
-        // SAFETY: `key` is the allocator's live thread key.
         assert_eq!(
+            // SAFETY: `key` is the allocator's live thread key.
             unsafe { libc::pthread_setspecific(key, core::ptr::null()) },
             0
         );

@@ -14,7 +14,7 @@ file.
 
 ## `read_global`
 
-src/rseq.rs:131. Kind: external_body. Category: raw pointer (internal).
+src/rseq.rs:132. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged on premises (Kani: rseq::kani_rseq::read_global_reads_the_value; premises: L1 (a non-null address `symbols` returns is glibc's live, aligned `isize` or `u32`, which nothing writes after startup, in a dynamic link; `probe` passes those three at the two instances the harness runs; and the provenance of an `asm!` output, premises.md: Provenance of the addresses); callers: rseq::tests::probe_reads_are_listed).
 
 > One read of a loader global [`symbols`] found; [`probe`] is the only caller (`tests::probe_reads_are_listed`).
@@ -29,7 +29,7 @@ unsafe fn read_global<T: Copy>(p: *const T) -> T
 
 ## `read_cpu_id`
 
-src/rseq.rs:153. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/rseq.rs:154. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged on premises (Kani: rseq::kani_rseq::read_cpu_id_reads_the_field; premises: L1 (`__rseq_offset` is stored before challoc runs and never after) and L2 (in a thread glibc created, the thread pointer plus `__rseq_offset` is its rseq area, at least 32 bytes and 32-byte aligned, whose `cpu_id` only glibc and the kernel write, never during the thread's own load; `probe` passes `area` of that offset; and the provenance of an exposed address, premises.md: Provenance of the addresses); callers: rseq::tests::probe_reads_are_listed).
 
 > A volatile read of the `cpu_id` field of the rseq area at `area`.
@@ -44,7 +44,7 @@ unsafe fn read_cpu_id(area: *mut u8, Ghost(size): Ghost<u32>) -> u32
 
 ## `symbols`
 
-src/rseq.rs:167. Kind: external_body. Category: inline asm.
+src/rseq.rs:168. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags` (null when they do not resolve).
@@ -57,7 +57,7 @@ fn symbols() -> (*const isize, *const u32, *const u32)
 
 ## `thread_pointer`
 
-src/rseq.rs:210. Kind: external_body. Category: inline asm.
+src/rseq.rs:211. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > The calling thread's thread pointer: `%fs:0` (the TCB's self pointer) on x86_64, `tpidr_el0` on aarch64.

@@ -900,18 +900,28 @@ fn eager_tables_are_one_mapping_in_parent_and_child() {
     // No hole: every byte from the base to the frontier is writable
     // (read back through a volatile touch of each page).
     for off in (0..s.writable).step_by(page_size()) {
+        // SAFETY: `b.base + off` is below the frontier, which the loop above
+        // proves writable.
         unsafe { core::ptr::read_volatile((b.base + off) as *const u8) };
     }
+    // SAFETY: `fork` in a multithreaded test binary: the child reads the
+    // tables, reads `/proc/self/maps` and allocates through the test
+    // binary's allocator (glibc's, whose fork handlers keep it usable in
+    // the child), then calls `_exit`.
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
     if pid == 0 {
         let ok = writable_ranges(b.base, b.len) == expect
             && tables.iter().enumerate().all(
+                // SAFETY: each `t` is a table whose first page was committed and
+                // written above.
                 |(i, &(t, _))| unsafe { core::ptr::read_volatile(t as *const u64) } == i as u64 + 1,
             );
+        // SAFETY: `_exit` has no preconditions.
         unsafe { libc::_exit(if ok { 0 } else { 1 }) };
     }
     let mut status = 0;
+    // SAFETY: `pid` is this process's child and `status` a local.
     assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
     assert!(
         libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,

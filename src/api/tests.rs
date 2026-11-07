@@ -2688,6 +2688,8 @@ fn fork_handlers_block_signals_while_locked() {
         "child handler did not restore the mask"
     );
 
+    // SAFETY: `before` is the mask this thread saved above; setting it
+    // back touches only the thread's own mask.
     unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
 }
 

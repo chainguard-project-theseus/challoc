@@ -164,6 +164,7 @@ fn call_get_new_handler(get: *const c_void) -> Option<Handler>
     // SAFETY: `std::get_new_handler` takes no arguments and returns a plain
     // function pointer, which is C-compatible on both ABIs.
     let get: unsafe extern "C" fn() -> NewHandler = unsafe { core::mem::transmute(get) };
+    // SAFETY: `get` is `std::get_new_handler` (`is_get_new_handler`), which takes no arguments and has no preconditions.
     unsafe { get() }.map(Handler)
 }
 
@@ -197,6 +198,7 @@ fn call_throw_bad_alloc(t: *const c_void) -> !
     // It leaves by unwinding through this frame, which the language does
     // not define (module doc).
     let t: unsafe extern "C" fn() -> ! = unsafe { core::mem::transmute(t) };
+    // SAFETY: `t` is `std::__throw_bad_alloc`, which takes no arguments and has no preconditions; it leaves by unwinding, as above.
     unsafe { t() }
 }
 

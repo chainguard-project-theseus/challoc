@@ -27,6 +27,7 @@ fn batch_discards_every_range() {
     let len = 8 * page;
     let addr = map_rw(len);
     for p in 0..8 {
+        // SAFETY: `addr..addr + len` is this test's read-write mapping.
         unsafe { *((addr + p * page) as *mut u8) = 0xA5 };
     }
     assert_eq!(resident(addr, len, page), 8);
@@ -36,14 +37,17 @@ fn batch_discards_every_range() {
     b.push_t(addr + 4 * page, 4 * page, |_, _, done| assert!(done));
     b.flush_t(|_, _, done| assert!(done));
     assert_eq!(resident(addr, len, page), 1);
+    // SAFETY: as above.
     assert_eq!(unsafe { *((addr + 3 * page) as *const u8) }, 0xA5);
     for p in [0usize, 1, 2, 4, 5, 6, 7] {
         assert_eq!(
+            // SAFETY: as above.
             unsafe { *((addr + p * page) as *const u8) },
             0,
             "page {p} not zero"
         );
     }
+    // SAFETY: the test's own mapping, unused after.
     unsafe { sys::munmap(addr, len) }.unwrap();
 }
 
