@@ -165,7 +165,8 @@ kernels and 4 pages on 16 KiB pages. Out of scope:
 - **The advice is the band's,** `MADV_DONTNEED` or `MADV_FREE`. A lazy
   discard clears `purged_is_zero` as it does now.
 - **Explicit purges close every closable page:** `malloc_trim(0)`,
-  `arena.<i>.purge`, and the `high`-rise full purge.
+  `arena.<i>.purge`, and the `high`-rise full purge. A defragmenter's
+  hints also close the hinted class's pages, rate-limited (7.1).
 - **A slab whose last live slot is freed goes `Empty` as now.** Its closed
   pages are already discarded, so the slab's purge discards only its open
   pages. A `Purged` slab reused through step 3 is opened like a `Fresh`
@@ -202,10 +203,15 @@ design 13.4 must say so:
 - **`experimental.utilization`** (Valkey's defragmenter) reports a slab's
   `nregs` as its open slots and `nfree` as its open free slots.
 - **The defrag hint's average** (`live * (curslabs - 1) <= curregs -
-  live(slabcur)`, design 13.5) must use the class's live slots, not a
-  `curregs` that includes closed ones. Otherwise closed capacity counts
-  as occupancy and the hint moves less. This needs its own check against
-  the Redis defrag tests.
+  live(slabcur)`, design 13.5) reads `curregs - closed_slots`: jemalloc's
+  meaning of `curregs`, live plus cached. With closed slots left in, the
+  right-hand side grows by every closed slot, and the hint also moves
+  objects out of slabs that are above the class's real average: wasted
+  moves, and `slabcur` filling faster than the rule intends.
+- **Compaction's probe needs no change.** `ClassState::holes` is
+  `curslabs * nslots - curregs` (`bin_stats`), so with closed slots in
+  `curregs` it counts open free slots only, which is what its
+  "worth four slabs" test means.
 - **The report** (design 16) gains a closed-pages column in the bins
   table.
 
@@ -277,27 +283,94 @@ design 13.4 must say so:
 - **Proofs:** Verus, Kani and the seam ledger; codegen-diff on the hot
   set.
 
-## 7. Open questions
+## 7. Decisions
 
-- **When to close.** Closing at flush time when a page empties would end
-  Redis's endless rescans immediately, at a discard per emptied page under
-  churn. The decay curve delays both. A middle path closes at flush only
-  when the class's closable bytes exceed a bound.
-- **How many pages to open at once.** One page per claim may open several
-  pages for one refill; opening the batch's pages in one lock hold is
-  assumed above.
-- **Compaction** (design 6.4): a compacting cache's rebuild claims from
-  the lowest partial slab. With closing, the lowest slab may be one with
-  closed pages, which step 2 of the selection order opens. Its probe's
-  hole count (`ClassState::holes`) must not count closed slots.
-- **Guard slabs and commit runs** (design 5) are unchanged. A closed
-  page is still committed (`PROT_READ | PROT_WRITE`), only discarded.
+The questions an earlier draft left open, answered.
+
+### 7.1 When to close: on the decay curve, and on two prompt signals
+
+Not at flush time. A close and its reopen cost one `madvise` and one fault
+per page. This host (x86_64, 16 CPUs, one 64 KiB mapping, the other
+threads spinning on their own memory in the same process) measured, per
+cycle:
+
+| Other threads | `MADV_DONTNEED`, 1 page | refault, per page | 1 page closed and reopened | 4 adjacent pages |
+|---|---|---|---|---|
+| 0 | 1.4 us | 1.9 us | 3.3 us | 9.0 us |
+| 3 | 7.1 us | 2.1 us | 9.2 us | 14.7 us |
+| 15 | 12.3 us | 3.1 us | 15.4 us | 23.7 us |
+
+The discard's cost is the TLB shootdown: it grows with the threads, and
+four adjacent pages cost about what one does. Under churn, a flush
+releases the high half of a cache (design 6.4), and the next refill
+claims those slots back. Closing at flush would pay one cycle in most
+refill and flush pairs: 3 to 24 us per `cap / 2` (about 500) allocations,
+6 to 47 ns per allocation, on paths that cost 10 to 20 ns. So:
+
+- **By default, pages close on the decay curve,** exactly as `Empty` slabs
+  are purged. Their age is `pages_dirty_at`, and the allowance is the
+  smootherstep over `dirty_decay_ms`. A page that reopens within the
+  window was never discarded.
+- **Explicit purges close every closable page at once:**
+  `malloc_trim(0)`, `arena.<i>.purge`, and the `high`-rise full purge.
+- **A defragmenter's hints close the hinted class's closable pages,** at
+  most once per `DEFRAG_GC_INTERVAL_NS` (100 ms) per class, and only pages
+  closable for at least one decay step (design 8: `dirty_decay_ms /
+  STEPS`, 50 ms by default). #576 already runs the cache GC from
+  `get_defrag_hint` on the same interval. A defragmenter asking about a
+  class is the signal that its fragmentation is unwanted now. It is what
+  ends Redis's endless rescans: its figure drops on the next cycle, not a
+  decay window later. A pass is one batched `madvise` per merged run, so
+  it costs at most 10 such passes per class per second, and only while
+  active defrag runs.
+
+### 7.2 How many pages to open: the batch's, in one lock hold
+
+Opening is a bit clear (`fetch_and`) and a mask update under the class
+lock the refill already holds for slab selection (design 5): no syscall.
+The fault happens at the first write either way. A claim that selects a
+slab with closed pages opens the lowest closed pages until the open free
+slots cover the batch or the slab is fully open, then claims. One lock
+hold per refill, as now; never one per page.
+
+### 7.3 Compaction: unchanged
+
+The compacting cache's rebuild (design 6.4) claims from the lowest slab
+with room. With step 2 of the selection order (3.3), that is a slab with
+closed pages before any higher slab, which is the downward migration
+compaction wants. Its probe reads `holes`, which already excludes closed
+slots (3.6).
+
+### 7.4 Zero tracking: not in the first version
+
+A page closed by an eager discard reads as zero, but design 5 reports no
+`Active` slab's slots as zero, and no zeroing entry point trusts the
+report (design 6.3). The first version keeps that. Reporting reopened
+pages zero under `purged_is_zero`, as `Purged` slabs are, is a later
+optimisation for `calloc`.
+
+### 7.5 Unchanged
+
+Guard slabs and commit runs (design 5) stay as they are. A closed page is
+still committed (`PROT_READ | PROT_WRITE`); it is only discarded.
 
 ## 8. Follow-up: the medium tier
 
-The medium tier's 64 KiB slabs (1280 B and up, 16 to 51 slots) showed
-the same pattern: 1536, 2048, 3072 and 4096 B each held one slab for 1 to
-3 live slots, about 240 KB on the fresh server. Their slots span one or
-more pages, so a closed page is a slot's pages. Their descriptors have no
-spare bytes (stride 16), so `open` would need a per-class side array like
-the owner array (design 4).
+The medium tier's slabs showed the same pattern: 1536, 2048, 3072 and
+4096 B each held one 64 KiB slab for 1 to 3 live slots, about 240 KB on
+the fresh server. Its descriptors have no spare bytes (16 slots or more
+per slab pad to whole bitmap lines at 8 slabs a line, stride 16, design
+4), so its state goes in a per-class side array of one `u32` per slab.
+That array is reserved on the table side of the metadata region and
+committed page by page as slab numbers grow, like the owner array.
+Classes above 4096 bytes are 16 to 25 slots per slab, so this is one
+32-bit word for every slab of the class, committed only where slabs are.
+
+- **1280 to 4096 bytes:** the slab is 64 KiB, and a page holds parts of
+  one to four slots. These classes use the small tier's mechanism
+  unchanged, with the 16-bit page mask in the side array.
+- **Above 4096 bytes:** the slab is the power of two at or above
+  `16 * size`: 128 KiB at 5120 B (25 slots), 256 KiB at 14336 B (18
+  slots). Every slot covers whole pages. The unit closed is the slot: a 32-bit
+  closed-slot mask (at most 25 slots per slab), whose slot closes when it
+  is free and opens when a claim wants it.
