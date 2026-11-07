@@ -12,7 +12,7 @@
  *
  *   cgroup_lazy MODE [MiB] [--any-allocator]
  *
- *   MODE  lazy    defaults: within 2 s of the frees `stats.cgroup.lazy_purges`
+ *   MODE  lazy    the opt-in, run with MALLOC_CONF=lazy_band:true: within 2 s of the frees `stats.cgroup.lazy_purges`
  *                 rises, `stats.cgroup.purge_advice` reads 1 (lazy),
  *                 `stats.cgroup.empty_bytes` is under the cap, and yet RSS
  *                 and `memory.current` stay where they were (the pages are
@@ -30,7 +30,7 @@
  *                 not 137); that is the proof the pages were reclaimable.
  *                 `memory.reclaim` is tried first when it is writable (a
  *                 privileged container on a host without `nsdelegate`).
- *         eager   the control, run with MALLOC_CONF=lazy_band:false: the
+ *         eager   the default (or MALLOC_CONF=lazy_band:false): the
  *                 same run, `eager_purges` rises, `purge_advice` reads 0,
  *                 RSS falls under the churn test's threshold (a quarter of
  *                 the churn) within 2 s, `pglazyfree` does not move; the

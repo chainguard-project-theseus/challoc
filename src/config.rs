@@ -236,7 +236,7 @@ impl Config {
         tcache_nslots_small_max: MAX_CAP,
         lg_tcache_nslots_mul: 1,
         thp: Thp::Never,
-        lazy_band: true,
+        lazy_band: false,
         guards: true,
         guard_slab_interval: 8,
         huge_retain_max: crate::huge::DEFAULT_RETAIN_MAX,

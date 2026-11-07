@@ -34,9 +34,10 @@
 //! tick already reads: `purge::decay` turns them into a per-arena effective
 //! period and keep ratio, `Heap::tick` into a zero GC interval above 90%.
 //!
-//! The advice ([`advice`]): a purge issues `MADV_FREE` (lazy: the pages
-//! stay mapped and charged until the kernel reclaims them) only where the
-//! policy knows the headroom, under 70% of a known limit, and
+//! The advice ([`advice`]): with `lazy_band` on (an opt-in, default off)
+//! a purge issues `MADV_FREE` (lazy: the pages stay mapped and charged
+//! until the kernel reclaims them) only where the policy knows the
+//! headroom, under 70% of a known limit, and
 //! `MADV_DONTNEED` (eager) everywhere else: with no limit (lazily freed
 //! pages would stay in RSS and mislead anything that reads it, design 8),
 //! in the scaled and immediate bands, for an explicit purge
@@ -45,8 +46,8 @@
 //! retention cap is in progress ([`Policy::headroom`]). That last rule
 //! keeps an excess first seen at 70% or above eager until it is back within
 //! the cap, even after the first walks bring usage under 70%: otherwise its
-//! tail would go out lazily and stay charged to the cgroup. `lazy_band:false`
-//! makes every purge eager. The advice is read at each batch flush from
+//! tail would go out lazily and stay charged to the cgroup. With `lazy_band`
+//! off, the default, every purge is eager. The advice is read at each batch flush from
 //! `purge`'s mirror of the band, at most one sample behind.
 //!
 //! THP: the `thp` key's mechanism is `thp.rs`. Design 11's "disabled under

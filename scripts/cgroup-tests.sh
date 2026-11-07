@@ -10,8 +10,10 @@
 #
 #   ALLOC   challoc       target/release/libchalloc.so, defaults (policy on)
 #           challoc-off   the same with MALLOC_CONF=cgroup:false (the control)
-#           challoc-eager the same with MALLOC_CONF=lazy_band:false (the two-advice
-#                         purge's control: MADV_DONTNEED in every band)
+#           challoc-lazy  the same with MALLOC_CONF=lazy_band:true (the two-advice
+#                         purge's opt-in: MADV_FREE in the headroom band)
+#           challoc-eager the same with MALLOC_CONF=lazy_band:false (the default,
+#                         spelled out: MADV_DONTNEED in every band)
 #           jemalloc      Wolfi's /usr/lib/libjemalloc.so.2 (5.3.1)
 #           mimalloc      target/bench-bin/libmimalloc.so (bench/build.sh)
 #           tcmalloc      Wolfi's /usr/lib/libtcmalloc_minimal.so.4 (gperftools)
@@ -60,6 +62,7 @@ preload=; conf=; extra=
 case $alloc in
   challoc)     preload=$ROOT/target/release/libchalloc.so ;;
   challoc-off) preload=$ROOT/target/release/libchalloc.so; conf=cgroup:false,abort_conf:true ;;
+  challoc-lazy) preload=$ROOT/target/release/libchalloc.so; conf=lazy_band:true,abort_conf:true ;;
   challoc-eager) preload=$ROOT/target/release/libchalloc.so; conf=lazy_band:false,abort_conf:true ;;
   jemalloc)    preload=/usr/lib/libjemalloc.so.2; extra=--any-allocator ;;
   mimalloc)    preload=$ROOT/target/bench-bin/libmimalloc.so; extra=--any-allocator ;;
