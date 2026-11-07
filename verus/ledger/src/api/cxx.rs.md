@@ -127,12 +127,12 @@ fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> b
 
 ## `oom`
 
-src/api/cxx.rs:263. Kind: no_decreases. Category: termination.
+src/api/cxx.rs:264. Kind: no_decreases. Category: termination.
 Tool: none (assumption). Status: trusted.
 
 > The `operator new` failure protocol: call the `new_handler` and retry until an attempt succeeds or no handler is installed, then throw `std::bad_alloc` (or return null for the `nothrow_t` forms, also when the handler throws).
 
-Hashes: contract 1275069563, body 1452698605.
+Hashes: contract 1859590458, body 2285227229.
 
 ```rust
 fn oom(
@@ -145,12 +145,10 @@ fn oom(
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        align == 0 || is_pow2(align),
     ensures
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
-        align != 0 && is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
-        // A non-zero alignment that is not a power of two never gets a
-        // block: `aligned_alloc` refuses it on every attempt.
-        align != 0 && !is_pow2(align) ==> r@.addr == 0,
+        align != 0 ==> crate::heap::fits(r, size as int, align as int),
         final(blk).gives(r, size as int),
         !nothrow ==> r@.addr != 0,
 ```
