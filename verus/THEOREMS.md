@@ -3785,8 +3785,8 @@ for ranges reported discarded; a settle only moves `Empty` slabs and
 extents to `Purged`, so the lock value's ownership, `Active`-ness and
 run authority stay those the batch's `free` was made from. The makers:
 
-- **Huge purges** (`Huge::purge_empty`, `purge_curve`, `free_run`,
-  `huge/mod.rs`): `free` is
+- **Huge purges** (`Huge::purge_empty`, `purge_curve`,
+  `huge/decay.rs`; `free_run`, `huge/mod.rs`): `free` is
   `free_page_byte(base, page, npages, S, _)`, where `S` is the set of
   the run-page authority the huge lock's value holds when the batch is
   made (`Inner::wf`: the `Active` descriptors' pages, `active_pages`).
@@ -5057,7 +5057,7 @@ exact only when the result fits (theorem 22). Each sum is bounded:
   `Regions::separated`), so an arena's
   huge bytes are below `2^54`;
 - arena 0 adds the free extents' pages, at most `u32::MAX`
-  (`Huge::stats`, `huge/mod.rs`, ensures it from the huge lock
+  (`Huge::stats`, `huge/decay.rs`, ensures it from the huge lock
   invariant), and the committed metadata, at most the region's length,
   below `meta::va_limit() = 2^57` (`Meta::stats`, `meta.rs`,
   ensures it).
@@ -5492,7 +5492,7 @@ step, so the deadline bound under it is no later than under lower usage.
 band never lengthens a configured step either.
 
 **Covers.** Both gates: `ClassState::decay_with` (`class/decay.rs`)
-and `Huge::decay_with` (`huge/mod.rs`) ensure the gate's contract
+and `Huge::decay_with` (`huge/decay.rs`) ensure the gate's contract
 for the `decay_ns` they are given. `mallctl
 arena.<i>.decay` (`purge::decay_arena`) gives them the periods
 `purge::decay` does, through the same `decay_one` and `decay_huge`
