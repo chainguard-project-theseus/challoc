@@ -2368,23 +2368,8 @@ pub(crate) mod tests {
 
     /// A fresh read/write private anonymous mapping of `len` bytes, for
     /// this module's tests and `features::linux_tests`.
-    pub(super) fn map_anon(len: usize) -> usize {
-        // SAFETY: fresh anonymous private mapping, no fixed address.
-        unsafe {
-            mmap(
-                0,
-                len,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-            .unwrap()
-        }
-    }
-
     fn map_page() -> usize {
-        map_anon(PAGE)
+        crate::testutil::map_rw(PAGE)
     }
 
     #[test]

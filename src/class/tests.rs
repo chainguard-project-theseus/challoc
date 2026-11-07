@@ -2,18 +2,14 @@
 //! (`Env`): real `PROT_NONE` reservations.
 
 use super::*;
-use crate::layout::{Kind, LG_MAX_SLAB, LG_MIN_SLAB, MAX_SLAB, MIN_SLAB, Mapping, NCLASSES};
-use crate::testutil::{align_up, page_size};
+use crate::layout::{Kind, LG_MIN_SLAB, MAX_SLAB, MIN_SLAB, NCLASSES};
+use crate::testutil::{Reservation, SB_LEN, page_size};
 use core::ptr;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::vec;
 use std::vec::Vec;
 
-/// Smallest layout `from_parts` accepts: 4 MiB class regions, so the
-/// 64 KiB classes have 64 slabs and the 4 MiB class has one.
-const LG_REGION: u32 = LG_MAX_SLAB;
-const LG_STRIDE: u32 = LG_REGION + 2;
 /// Test metadata: 256 KiB per class on a 4 KiB kernel, scaled with the
 /// page (every table reservation is rounded up to a page). The
 /// every-class tests build a slab table and a set table of all
@@ -25,39 +21,20 @@ fn meta_len() -> usize {
 
 /// Test environment: a metadata region and a class superblock, both real
 /// `PROT_NONE` reservations so commits and purges go through the kernel
-/// and slot memory can be touched.
+/// and slot memory can be touched. The reservations drop after the
+/// `Meta` over them.
 struct Env {
     meta: Meta,
     regions: Regions,
-    maps: [(usize, usize); 2],
+    _superblock: Reservation,
+    _meta: Reservation,
 }
 
+/// The synthetic layout ([`crate::testutil::regions_at`]) with a huge
+/// region past the superblock that is never touched, so not reserved.
 fn regions_at(superblock: usize, meta: (usize, usize), lg_page: u32) -> Regions {
-    let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
-    let huge = (superblock + sb_len + (1 << 30), 1usize << 34);
-    Regions::from_parts(
-        superblock,
-        LG_REGION,
-        LG_STRIDE,
-        &[0usize; NCLASSES],
-        huge,
-        meta,
-        lg_page,
-        [
-            Mapping {
-                addr: superblock,
-                len: sb_len,
-            },
-            Mapping {
-                addr: huge.0,
-                len: huge.1,
-            },
-            Mapping {
-                addr: meta.0,
-                len: meta.1,
-            },
-        ],
-    )
+    let huge = (superblock + SB_LEN + (1 << 30), 1usize << 34);
+    crate::testutil::regions_at(superblock, huge, meta, lg_page)
 }
 
 impl Env {
@@ -71,38 +48,19 @@ impl Env {
     /// larger than the real page it stands in for a 16 KiB or 64 KiB
     /// page kernel.
     fn with_lg_page(lg_page: u32) -> Env {
-        use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let page = 1usize << lg_page;
         assert!(
             page.is_multiple_of(crate::sys::features::page_size()),
             "fake page must be a real page multiple"
         );
-        let reserve = |len: usize| -> usize {
-            // SAFETY: a fresh anonymous `PROT_NONE` reservation at an address the
-            // kernel picks; it replaces nothing.
-            unsafe {
-                crate::sys::mmap(
-                    0,
-                    len,
-                    PROT_NONE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                    -1,
-                    0,
-                )
-            }
-            .expect("reserve")
-        };
-        let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
-        let sb = reserve(sb_len);
-        let mb_len = meta_len() + page;
-        let mb_raw = reserve(mb_len);
-        let mb = align_up(mb_raw, page);
-        let superblock = align_up(sb, MAX_SLAB);
-        let regions = regions_at(superblock, (mb, meta_len()), lg_page);
+        let superblock = Reservation::aligned(SB_LEN, MAX_SLAB);
+        let meta = Reservation::aligned(meta_len(), page);
+        let regions = regions_at(superblock.base, (meta.base, meta.len), lg_page);
         Env {
-            meta: Meta::new(mb, meta_len(), page),
+            meta: Meta::new(meta.base, meta.len, page),
             regions,
-            maps: [(sb, sb_len), (mb_raw, mb_len)],
+            _superblock: superblock,
+            _meta: meta,
         }
     }
 
@@ -212,16 +170,6 @@ fn set_scans_never_read_uncommitted_words() {
     assert_eq!(set.map.lowest_set_from(64 * 64 * 100), None);
     set.map.clear(100);
     assert_eq!(set.map.lowest_set_from(0), None);
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        for (addr, len) in self.maps {
-            // SAFETY: the reservations `new` made; nothing uses them once the
-            // `Env` goes.
-            unsafe { crate::sys::munmap(addr, len) }.unwrap();
-        }
-    }
 }
 
 /// A class with 64 KiB slabs and a handful of bitmap words.
@@ -1252,21 +1200,8 @@ fn metadata_exhaustion_is_reported_not_fatal() {
     // A metadata region too small for the smallest class's descriptor
     // array: 64 slabs * stride is small, so shrink the region to a
     // couple of pages instead.
-    let meta = {
-        use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
-        let mb = unsafe {
-            crate::sys::mmap(
-                0,
-                2 * page_size(),
-                PROT_NONE,
-                MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                -1,
-                0,
-            )
-        }
-        .unwrap();
-        Meta::new(mb, 2 * page_size(), page_size())
-    };
+    let backing = Reservation::new(2 * page_size());
+    let meta = backing.meta();
     let regions = regions_at(
         0x1000_0000_0000,
         (0x2000_0000_0000, 2 * page_size()),

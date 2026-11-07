@@ -3666,7 +3666,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use crate::testutil::{page_size, xorshift};
+    use crate::testutil::{Reservation, page_size, xorshift};
 
     /// The object side's commit step: [`COMMIT_CHUNK`] rounded up to the
     /// page, so 16 pages under 4 KiB pages and one under 64 KiB pages.
@@ -3700,46 +3700,6 @@ mod tests {
             Tracked::assume_new(),
             Tracked::assume_new(),
         )
-    }
-
-    /// A region for tests: a real `PROT_NONE` reservation, so that commit
-    /// goes through `mprotect`.
-    struct Backing {
-        base: usize,
-        len: usize,
-    }
-
-    impl Backing {
-        fn new(len: usize) -> Backing {
-            use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
-            // SAFETY: a fresh anonymous `PROT_NONE` reservation at an address the
-            // kernel picks; it replaces nothing.
-            let base = unsafe {
-                crate::sys::mmap(
-                    0,
-                    len,
-                    PROT_NONE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                    -1,
-                    0,
-                )
-            }
-            .expect("reserve");
-            assert_eq!(base % page_size(), 0);
-            Backing { base, len }
-        }
-
-        fn meta(&self) -> Meta {
-            Meta::new(self.base, self.len, page_size())
-        }
-    }
-
-    impl Drop for Backing {
-        fn drop(&mut self) {
-            // SAFETY: `base..base + len` is the reservation `new` made, and the
-            // tests bind it before the `Meta` over it, which therefore drops first.
-            unsafe { crate::sys::munmap(self.base, self.len) }.unwrap();
-        }
     }
 
     fn layout(size: usize, align: usize) -> Layout {
@@ -3809,7 +3769,7 @@ mod tests {
 
     #[test]
     fn fresh_region_stats() {
-        let b = Backing::new(1 << 20);
+        let b = Reservation::new(1 << 20);
         let m = b.meta();
         assert_eq!(m.base(), b.base);
         assert_eq!(m.top(), b.base + b.len);
@@ -3824,7 +3784,7 @@ mod tests {
 
     #[test]
     fn first_objects_come_from_zero_committed_memory() {
-        let b = Backing::new(4 << 20);
+        let b = Reservation::new(4 << 20);
         let m = b.meta();
         let l = layout(200, 8);
         let p = m.alloc(l, Tracked::assume_new());
@@ -3859,7 +3819,7 @@ mod tests {
 
     #[test]
     fn free_list_is_lifo_and_per_bin() {
-        let b = Backing::new(1 << 20);
+        let b = Reservation::new(1 << 20);
         let m = b.meta();
         let l = layout(100, 8);
         let a = m.alloc(l, Tracked::assume_new());
@@ -3903,7 +3863,7 @@ mod tests {
 
     #[test]
     fn alignment_is_honoured() {
-        let b = Backing::new(1 << 20);
+        let b = Reservation::new(1 << 20);
         let m = b.meta();
         for align in [1usize, 2, 4, 8, 16, 32, 64, 128] {
             for size in [1usize, 15, 16, 17, 48, 49, 64, 65, 96, 300, 4097] {
@@ -3921,7 +3881,7 @@ mod tests {
 
     #[test]
     fn exhaustion_returns_null_and_recovers() {
-        let b = Backing::new(16 * page_size());
+        let b = Reservation::new(16 * page_size());
         let m = b.meta();
         let l = layout(1024, 8);
         let mut got = Vec::new();
@@ -3957,7 +3917,7 @@ mod tests {
 
     #[test]
     fn reservations_come_from_the_top() {
-        let b = Backing::new(64 * page_size());
+        let b = Reservation::new(64 * page_size());
         let m = b.meta();
         // The eager carve below is the host policy's choice (off under a
         // finite `RLIMIT_DATA`); this test pins it on.
@@ -4027,7 +3987,7 @@ mod tests {
     /// makes pages writable and counts them.
     #[test]
     fn large_and_forced_tables_stay_on_the_reservation_side() {
-        let b = Backing::new(EAGER_MAX + (EAGER_MAX >> 1) + 64 * page_size());
+        let b = Reservation::new(EAGER_MAX + (EAGER_MAX >> 1) + 64 * page_size());
         let m = b.meta();
         let end = b.base + b.len;
         let big = reserve_table(&m, EAGER_MAX + page_size(), page_size()).unwrap();
@@ -4065,7 +4025,7 @@ mod tests {
     /// only counts.
     #[test]
     fn eager_tables_pack_on_the_object_side() {
-        let b = Backing::new(16 << 20);
+        let b = Reservation::new(16 << 20);
         let m = b.meta();
         m.set_eager_for_test(true);
         let o1 = m.alloc(layout(200, 8), Tracked::assume_new());
@@ -4119,7 +4079,7 @@ mod tests {
     /// way, and the failure leaves the allocator working for what does.
     #[test]
     fn eager_carve_stops_at_the_reservations() {
-        let b = Backing::new(16 * page_size());
+        let b = Reservation::new(16 * page_size());
         let m = b.meta();
         m.set_eager_for_test(true);
         let top = reserve(&m, 4 * page_size(), page_size()).unwrap();
@@ -4186,14 +4146,14 @@ mod tests {
             "overcommit_memory {mode:?}, RLIMIT_DATA {}",
             lim.rlim_cur
         );
-        let b = Backing::new(1 << 20);
+        let b = Reservation::new(1 << 20);
         let m = b.meta();
         assert_eq!(m.eager_allowed(), expect);
     }
 
     #[test]
     fn reserve_too_large_fails_cleanly() {
-        let b = Backing::new(8 * page_size());
+        let b = Reservation::new(8 * page_size());
         let m = b.meta();
         assert_eq!(reserve(&m, 9 * page_size(), page_size()), None);
         assert_eq!(reserve(&m, usize::MAX, page_size()), None);
@@ -4210,7 +4170,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "never allocated here")]
     fn free_of_foreign_pointer_aborts() {
-        let b = Backing::new(1 << 16);
+        let b = Reservation::new(1 << 16);
         let m = b.meta();
         let _ = m.alloc(layout(64, 8), Tracked::assume_new());
         let mut foreign = [0u8; 128];
@@ -4224,7 +4184,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "never allocated here")]
     fn free_of_misaligned_pointer_aborts() {
-        let b = Backing::new(1 << 16);
+        let b = Reservation::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8), Tracked::assume_new());
         // SAFETY: 8 bytes into the live 64-byte object `p`.
@@ -4234,7 +4194,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "never allocated here")]
     fn free_beyond_bump_aborts() {
-        let b = Backing::new(1 << 16);
+        let b = Reservation::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8), Tracked::assume_new());
         // SAFETY: one past the end of the live 64-byte object `p`.
@@ -4244,7 +4204,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "object too large")]
     fn oversized_object_aborts() {
-        let b = Backing::new(1 << 16);
+        let b = Reservation::new(1 << 16);
         let m = b.meta();
         let _ = m.alloc(layout(MAX_BINNED + 1, 8), Tracked::assume_new());
     }
@@ -4252,7 +4212,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "alignment too large")]
     fn overaligned_object_aborts() {
-        let b = Backing::new(1 << 16);
+        let b = Reservation::new(1 << 16);
         let m = b.meta();
         let _ = m.alloc(layout(64, 256), Tracked::assume_new());
     }
@@ -4261,7 +4221,7 @@ mod tests {
     #[should_panic(expected = "commit outside")]
     fn commit_outside_reservations_aborts() {
         // Several pages, so the one-page reservation leaves room below it.
-        let b = Backing::new(4 * page_size());
+        let b = Reservation::new(4 * page_size());
         let m = b.meta();
         let _ = reserve(&m, page_size(), page_size());
         let _ = commit(&m, b.base, page_size());
@@ -4271,7 +4231,7 @@ mod tests {
     /// survive, stats match, and freed space is reused rather than bumped.
     #[test]
     fn matches_model() {
-        let b = Backing::new(32 << 20);
+        let b = Reservation::new(32 << 20);
         let m = b.meta();
         let mut s = 0xDEAD_BEEF_CAFE_F00Du64;
         let mut live: Vec<(*mut u8, Layout, u8)> = Vec::new();
@@ -4340,7 +4300,7 @@ mod tests {
     /// patterns so any handout of the same block twice shows up.
     #[test]
     fn threads_get_disjoint_objects() {
-        let b = Backing::new(16 << 20);
+        let b = Reservation::new(16 << 20);
         let m = b.meta();
         std::thread::scope(|sc| {
             for t in 0..8u64 {
@@ -4416,7 +4376,7 @@ mod tests {
     /// an immediate commit would give.
     #[test]
     fn eager_carves_defer_their_commit_to_first_use() {
-        let b = Backing::new(64 << 20);
+        let b = Reservation::new(64 << 20);
         let m = b.meta();
         m.set_eager_for_test(true);
         let mut tables = Vec::new();
@@ -4473,7 +4433,7 @@ mod tests {
     /// range, a page committed in a large reservation another.
     #[test]
     fn maps_show_commits() {
-        let b = Backing::new(64 << 20);
+        let b = Reservation::new(64 << 20);
         let m = b.meta();
         m.set_eager_for_test(true);
         for _ in 0..10 {
@@ -4536,7 +4496,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "double free of the free list head")]
     fn a_double_free_of_the_list_head_aborts() {
-        let b = Backing::new(1 << 16);
+        let b = Reservation::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8), Tracked::assume_new());
         assert!(!p.is_null());
@@ -4547,7 +4507,7 @@ mod tests {
     #[test]
     fn a_free_below_the_list_head_is_accepted() {
         // Documents the limit of the check: only the head is compared.
-        let b = Backing::new(1 << 16);
+        let b = Reservation::new(1 << 16);
         let m = b.meta();
         let p = m.alloc(layout(64, 8), Tracked::assume_new());
         let q = m.alloc(layout(64, 8), Tracked::assume_new());
@@ -4562,7 +4522,7 @@ mod tests {
     /// one mapping: what a PostgreSQL backend inherits (the module doc).
     #[test]
     fn eager_tables_are_one_mapping_in_parent_and_child() {
-        let b = Backing::new(64 << 20);
+        let b = Reservation::new(64 << 20);
         let m = b.meta();
         m.set_eager_for_test(true);
         let mut tables = Vec::new();

@@ -1,15 +1,13 @@
 use super::*;
-use crate::layout::{Kind, LG_MAX_SLAB, MAX_SLAB, Mapping, NCLASSES};
+use crate::layout::{Kind, MAX_SLAB};
 use crate::meta;
+use crate::testutil::{META_LEN, Reservation, regions_at};
 use std::sync::Arc;
 use std::vec;
 use std::vec::Vec;
 
 pub(super) use crate::testutil::{page_size, xorshift};
 
-const LG_REGION: u32 = LG_MAX_SLAB;
-const LG_STRIDE: u32 = LG_REGION + 2;
-const META_LEN: usize = 16 << 20;
 /// A huge region of 16384 pages (64 MiB on a 4 KiB kernel, 1 GiB on a
 /// 64 KiB one; a `PROT_NONE` reservation either way), small enough to
 /// exhaust and the same page arithmetic on every kernel.
@@ -23,39 +21,14 @@ fn huge_pages() -> usize {
 
 /// Test environment: a metadata region and a huge region, both real
 /// `PROT_NONE` reservations so commits, guards and purges go through the
-/// kernel and run memory can be touched.
+/// kernel and run memory can be touched. The class superblock is never
+/// touched, so it is a bare address. The reservations drop after the
+/// `Meta` over them.
 pub(super) struct Env {
     pub meta: Meta,
     pub regions: Regions,
-    maps: [(usize, usize); 2],
-}
-
-fn regions_at(huge: (usize, usize), meta: (usize, usize)) -> Regions {
-    let superblock = 0x1000_0000_0000usize;
-    let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
-    Regions::from_parts(
-        superblock,
-        LG_REGION,
-        LG_STRIDE,
-        &[0usize; NCLASSES],
-        huge,
-        meta,
-        page_size().trailing_zeros(),
-        [
-            Mapping {
-                addr: superblock,
-                len: sb_len,
-            },
-            Mapping {
-                addr: huge.0,
-                len: huge.1,
-            },
-            Mapping {
-                addr: meta.0,
-                len: meta.1,
-            },
-        ],
-    )
+    huge: Reservation,
+    _meta: Reservation,
 }
 
 impl Env {
@@ -64,32 +37,21 @@ impl Env {
     }
 
     pub fn with_meta_len(meta_len: usize) -> Env {
-        use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
-        let reserve = |len: usize| -> usize {
-            // SAFETY: a fresh anonymous `PROT_NONE` reservation at an address the
-            // kernel picks; it replaces nothing.
-            unsafe {
-                crate::sys::mmap(
-                    0,
-                    len,
-                    PROT_NONE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                    -1,
-                    0,
-                )
-            }
-            .expect("reserve")
-        };
-        // `mmap` only promises page alignment; the alignment tests
-        // assume a `MAX_SLAB`-aligned huge base like the real layout.
-        let hraw = reserve(huge_len() + crate::layout::MAX_SLAB);
-        let hb = (hraw + crate::layout::MAX_SLAB - 1) & !(crate::layout::MAX_SLAB - 1);
-        let mb = reserve(meta_len);
-        let regions = regions_at((hb, huge_len()), (mb, meta_len));
+        // The alignment tests assume a `MAX_SLAB`-aligned huge base like
+        // the real layout.
+        let huge = Reservation::aligned(huge_len(), MAX_SLAB);
+        let meta = Reservation::new(meta_len);
+        let regions = regions_at(
+            0x1000_0000_0000,
+            (huge.base, huge.len),
+            (meta.base, meta.len),
+            page_size().trailing_zeros(),
+        );
         Env {
-            meta: Meta::new(mb, meta_len, page_size()),
+            meta: meta.meta(),
             regions,
-            maps: [(hraw, huge_len() + crate::layout::MAX_SLAB), (mb, meta_len)],
+            huge,
+            _meta: meta,
         }
     }
 
@@ -113,7 +75,7 @@ impl Env {
 
     /// The VMAs that overlap this environment's huge reservation.
     pub fn huge_vmas(&self) -> usize {
-        let (lo, len) = self.maps[0];
+        let (lo, len) = self.huge.mapping();
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
         maps.lines()
             .filter(|l| {
@@ -171,16 +133,6 @@ impl Env {
         match self.regions.classify(p as usize) {
             Kind::Huge { page } => page,
             other => panic!("{p:?} classified as {other:?}"),
-        }
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        for (addr, len) in self.maps {
-            // SAFETY: the reservations `with_meta_len` made; nothing uses them
-            // once the `Env` goes.
-            unsafe { crate::sys::munmap(addr, len) }.unwrap();
         }
     }
 }
