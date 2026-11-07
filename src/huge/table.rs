@@ -58,7 +58,7 @@ pub(super) struct Table {
     entries: *mut Entry,
     lg_cap: u32,
     pub(super) count: usize,
-    /// Storage came from `Meta::alloc` (and can be freed) rather than a
+    /// Storage came from `Meta::alloc_zeroed` (and can be freed) rather than a
     /// reservation.
     binned: bool,
     /// The storage's permissions (ghost).

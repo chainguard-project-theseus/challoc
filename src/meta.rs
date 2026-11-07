@@ -93,10 +93,10 @@ const _: () = assert!(CACHE_LINE == crate::lock::PAD_ALIGN);
 
 verus! {
 
-/// Largest alignment [`Meta::alloc`] accepts. Anything needing more (a
+/// Largest alignment an object ([`Meta::alloc_raw`]) accepts. Anything needing more (a
 /// thread stack) is a reservation.
 pub const MAX_ALIGN: usize = CACHE_LINE;
-/// Largest object [`Meta::alloc`] serves. Bigger things are reservations.
+/// Largest object [`Meta::alloc_raw`] serves. Bigger things are reservations.
 pub const LG_MAX_BINNED: u32 = 20;
 pub const MAX_BINNED: usize = 1 << LG_MAX_BINNED;
 /// Bins: 16, 32, 48, 64, 128, 256, then `1.5 * 2^(k-1)` and `2^k` for `k`
@@ -1256,8 +1256,8 @@ pub(crate) struct Inner {
     top: usize,
     free: [*mut FreeNode; NBINS],
     stats: MetaStats,
-    // The fields below sit after the fields the inlined object paths
-    // (`Meta::alloc` in `claim_with`, `Meta::free`) address, so those
+    // The fields below sit after the fields the object paths
+    // (`Meta::alloc_raw`, `Meta::alloc_zeroed`, `Meta::free`) address, so those
     // offsets, and their machine code, do not depend on them. New fields
     // go here too.
     /// Bytes committed on the reservation side (`commit` above `top`).
