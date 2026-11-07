@@ -11,22 +11,12 @@
  * The seed fixes each thread's operation sequence, not the interleaving
  * of the threads, so a rerun with it repeats the workload, not the run.
  */
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <malloc.h>
-#include <pthread.h>
+#include "common.h"
 #include <stdatomic.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/wait.h>
-#include <time.h>
-#include <unistd.h>
 
-/* Resolved from the preloaded library in main, so the program links bare. */
-static int (*mallctl_p)(const char *, void *, size_t *, void *, size_t);
-#define mallctl(...) (mallctl_p ? mallctl_p(__VA_ARGS__) : -1)
+/* Resolved from the preloaded library in main, which exits without it, so
+ * the program links bare. */
+static mallctl_fn mallctl_p;
 static void *(*mallocx_p)(size_t, int);
 static void (*dallocx_p)(void *, int);
 
@@ -35,14 +25,6 @@ static void *_Atomic xch[XN];
 static atomic_int stop;
 static atomic_long ops, forks, spawned, child_fail, running;
 static int nthreads;
-
-static uint64_t rng(uint64_t *s)
-{
-    *s ^= *s << 13;
-    *s ^= *s >> 7;
-    *s ^= *s << 17;
-    return *s;
-}
 
 static size_t size_of(uint64_t v)
 {
@@ -59,22 +41,22 @@ static size_t size_of(uint64_t v)
 
 static void step(uint64_t *s, void **mine, int nm)
 {
-    uint64_t v = rng(s);
+    uint64_t v = rng_next(s);
     int k = (v >> 4) % nm;
     switch (v % 12) {
     case 0:
     case 1:
     case 2:
         free(mine[k]);
-        mine[k] = malloc(size_of(rng(s)));
+        mine[k] = malloc(size_of(rng_next(s)));
         break;
     case 3:
         free(mine[k]);
-        mine[k] = calloc(1, size_of(rng(s)));
+        mine[k] = calloc(1, size_of(rng_next(s)));
         break;
     case 4:
     case 5: {
-        void *q = realloc(mine[k], size_of(rng(s)));
+        void *q = realloc(mine[k], size_of(rng_next(s)));
         if (q)
             mine[k] = q;
         break;
@@ -82,7 +64,7 @@ static void step(uint64_t *s, void **mine, int nm)
     case 6: {
         free(mine[k]);
         void *q = NULL;
-        mine[k] = posix_memalign(&q, (size_t)1 << ((v >> 8) % 13 + 3), size_of(rng(s))) == 0 ? q : NULL;
+        mine[k] = posix_memalign(&q, (size_t)1 << ((v >> 8) % 13 + 3), size_of(rng_next(s))) == 0 ? q : NULL;
         break;
     }
     case 7:
@@ -99,40 +81,40 @@ static void step(uint64_t *s, void **mine, int nm)
     case 10:
         switch ((v >> 8) % 6) {
         case 0:
-            mallctl("thread.tcache.flush", NULL, NULL, NULL, 0);
+            mallctl_p("thread.tcache.flush", NULL, NULL, NULL, 0);
             break;
         case 1: {
             uint64_t e = 1;
             size_t l = sizeof e;
-            mallctl("epoch", &e, &l, &e, sizeof e);
+            mallctl_p("epoch", &e, &l, &e, sizeof e);
             break;
         }
         case 2: {
             unsigned id;
             size_t l = sizeof id;
-            if (mallctl("tcache.create", &id, &l, NULL, 0) == 0) {
+            if (mallctl_p("tcache.create", &id, &l, NULL, 0) == 0) {
                 /* MALLOCX_TCACHE(id): the explicit-cache path (heap_at). */
                 int fl = (int)((id + 2) << 8);
                 if (mallocx_p && dallocx_p)
                     for (int j = 0; j < 16; j++)
-                        dallocx_p(mallocx_p(size_of(rng(s)), fl), fl);
-                mallctl("tcache.destroy", NULL, NULL, &id, sizeof id);
+                        dallocx_p(mallocx_p(size_of(rng_next(s)), fl), fl);
+                mallctl_p("tcache.destroy", NULL, NULL, &id, sizeof id);
             }
             break;
         }
         case 3: {
             uint64_t a;
             size_t l = sizeof a;
-            mallctl("thread.allocated", &a, &l, NULL, 0);
+            mallctl_p("thread.allocated", &a, &l, NULL, 0);
             break;
         }
         case 4:
-            mallctl("arena.0.purge", NULL, NULL, NULL, 0);
+            mallctl_p("arena.0.purge", NULL, NULL, NULL, 0);
             break;
         default: {
             size_t a;
             size_t l = sizeof a;
-            mallctl("stats.allocated", &a, &l, NULL, 0);
+            mallctl_p("stats.allocated", &a, &l, NULL, 0);
             break;
         }
         }
@@ -188,10 +170,10 @@ static void *worker(void *arg)
 {
     uint64_t s = (uintptr_t)arg | 1;
     void *m[64] = {0};
-    long life = rng(&s) % 50000 + 100;
+    long life = rng_next(&s) % 50000 + 100;
     for (long i = 0; i < life && !atomic_load(&stop); i++) {
         step(&s, m, 64);
-        if (rng(&s) % 20000 == 0) {
+        if (rng_next(&s) % 20000 == 0) {
             pid_t c = fork();
             if (c == 0)
                 in_child(s);
@@ -209,12 +191,12 @@ static void *worker(void *arg)
     /* Leave half the blocks for another thread to free after this exits. */
     for (int i = 0; i < 64; i++) {
         if (i % 2)
-            free(atomic_exchange(&xch[rng(&s) % XN], m[i]));
+            free(atomic_exchange(&xch[rng_next(&s) % XN], m[i]));
         else
             free(m[i]);
     }
     if (!atomic_load(&stop))
-        spawn(rng(&s));
+        spawn(rng_next(&s));
     atomic_fetch_sub(&running, 1);
     return NULL;
 }
@@ -224,7 +206,7 @@ int main(int argc, char **argv)
     int secs = argc > 1 ? atoi(argv[1]) : 10;
     uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 0) : 1;
     nthreads = argc > 3 ? atoi(argv[3]) : 16;
-    mallctl_p = (int (*)(const char *, void *, size_t *, void *, size_t))dlsym(RTLD_DEFAULT, "mallctl");
+    mallctl_p = mallctl_dl();
     mallocx_p = (void *(*)(size_t, int))dlsym(RTLD_DEFAULT, "mallocx");
     dallocx_p = (void (*)(void *, int))dlsym(RTLD_DEFAULT, "dallocx");
     if (!mallctl_p) {
