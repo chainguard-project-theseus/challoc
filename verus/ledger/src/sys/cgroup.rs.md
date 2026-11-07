@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `scan_lines` | no_decreases | termination | none (assumption) | trusted |
-| `discove...cratch` | external_body | allocator invariant | none (assumption) | trusted |
+| `discovery_scratch` | external_body | allocator invariant | Kani | trusted |
 | `untrack..._place` | external_body | raw pointer (internal) | Kani | discharged |
 | `axiom_c...phaned` | axiom | platform/kernel fact | none (assumption) | trusted |
 | `Deferred::discover` | no_decreases | termination | loom/GenMC | trusted |
@@ -40,7 +40,7 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
 ## `discovery_scratch`
 
 src/sys/cgroup.rs:1081. Kind: external_body. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+Tool: Kani. Status: trusted (partly checked, Kani: sys::cgroup::kani_discovery_scratch::discovery_scratch_is_the_static; not checked: that no two references are live at once, which rests on the process having one `Deferred` record, whose exchange from `PENDING` to `RUNNING` lets one thread through to the item's one caller, `Deferred::cell_discover`, and which fails in the residue `axiom_cell_orphaned` states (a second discovery in the child of a `fork` from a signal handler that interrupted one, when the handler allocates)).
 
 > The deferred discovery's scratch: one static, used only by the thread that won a [`Deferred`] record's exchange from `PENDING` to `RUNNING`, until its `DONE` store (the process has one record, and the exchange lets one thread through), so no two references are live at once.
 
