@@ -1006,13 +1006,7 @@ impl Huge {
         }
         // The cgroup policy's retention cap (design 11), as in the class
         // walk: keep at most this walk's share of the cap.
-        let mut allow = Curve::allowance(weighted);
-        proof {
-            crate::policy::frac_one_value();
-        }
-        if keep16 < crate::policy::KEEP_ALL {
-            allow = allow.min(crate::policy::mul16(total as u64, keep16) as usize);
-        }
+        let allow = Curve::capped_allowance(weighted, total, keep16);
         let mut excess = total.saturating_sub(allow);
         // Under the cap an extent larger than the excess goes whole: free
         // neighbours coalesce, so what a program frees in pieces is often

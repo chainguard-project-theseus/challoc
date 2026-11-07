@@ -1667,13 +1667,7 @@ impl ClassState {
         self.walk_empty(&mut g, &mut h);
         // The cgroup policy's retention cap (design 11): this walk's share
         // of the process-wide cap, on top of the curve.
-        let mut allow = Curve::allowance(h.weighted);
-        if keep16 < crate::policy::KEEP_ALL {
-            proof {
-                crate::policy::frac_one_value();
-            }
-            allow = allow.min(crate::policy::mul16(h.total as u64, keep16) as usize);
-        }
+        let allow = Curve::capped_allowance(h.weighted, h.total, keep16);
         if h.total <= allow {
             self.gate.set_oldest_empty(h.oldest);
             g.unlock();
