@@ -443,10 +443,13 @@ pub fn start_requested(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut L
 
 /// The lazy start's look, from a periodic tick that ran decay in the
 /// foreground and left dirty memory waiting (`purge::on_tick`): at most
-/// once per [`AUTO_CHECK_NS`], sum the dirty bytes and, when [`auto_due`]
-/// says so, request the thread, and start it if the tick is an
-/// allocation's (`alloc`; a `free`'s tick leaves the start to the next
-/// allocation's tick, which finds the request).
+/// once per [`AUTO_CHECK_NS`], or sooner once [`AUTO_BURST`] more bytes
+/// were flushed back to slabs since the last look ([`RELEASED`]), sum
+/// the dirty bytes and, when [`auto_due`] says so, request the thread,
+/// and start it if the tick is an allocation's (`alloc`) or a `free`'s
+/// in a process that has never had a thread ([`single_threaded`],
+/// design 8.1). Any other `free`'s tick leaves the start to the next
+/// allocation's tick, which finds the request.
 /// Out of line: the periodic tick inlines `on_tick`, and this look is
 /// rare next to it.
 #[cold]
@@ -802,7 +805,8 @@ fn create(
 fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
     requires
         // Its aborts are the two signal-mask calls' at a failed
-        // `rt_sigprocmask`, a resource failure.
+        // `rt_sigprocmask`, a resource failure, which is what
+        // `sys::block_all_signals` and `sys::set_signal_mask` require.
         crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
         shared.wf(),
