@@ -4927,20 +4927,23 @@ mod tests {
         let s = shared();
         let c = crate::layout::class_of(100).unwrap();
         let cls = &CLASSES[c];
+        // A private arena keeps the slabs, and so the nfree counts this
+        // test compares, its own: in arena 0 or a home arena, another
+        // test's allocation of this class can take free slots between
+        // the batch query and the read-back.
+        let first = s
+            .arenas
+            .create(
+                s,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+            .expect("arenas.create");
+        let flags = (mallocx_arena(first) | MALLOCX_TCACHE_NONE) as c_int;
         let ptrs: Vec<*mut u8> = (0..500)
-            .map(|_| {
-                mallocx(
-                    100,
-                    MALLOCX_TCACHE_NONE as c_int,
-                    vstd::prelude::Tracked::assume_new(),
-                )
-            })
+            .map(|_| mallocx(100, flags, vstd::prelude::Tracked::assume_new()))
             .collect();
-        // Direct allocations on a thread that has no heap yet come from
-        // arena 0 (`heap::mallocx::alloc`, `Tcache::None`); once the thread has a
-        // heap they come from its home arena. Either way one arena owns
-        // all 500.
-        let first = owner_of(s, ptrs[0] as *const c_void).expect("owned");
+        assert_eq!(owner_of(s, ptrs[0] as *const c_void), Some(first));
         // Verbose query on one pointer.
         let cname = CString::new("experimental.utilization.query").unwrap();
         let mut u = Utilization::ZERO;
@@ -5085,7 +5088,7 @@ mod tests {
         let gone = ptrs[2] as *const c_void;
         dallocx(
             ptrs[2],
-            MALLOCX_TCACHE_NONE as c_int,
+            flags,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -5096,7 +5099,7 @@ mod tests {
             if i != 2 {
                 dallocx(
                     p,
-                    MALLOCX_TCACHE_NONE as c_int,
+                    flags,
                     vstd::prelude::Tracked::assume_new(),
                     vstd::prelude::Tracked::assume_new(),
                 );
