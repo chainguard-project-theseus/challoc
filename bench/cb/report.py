@@ -52,6 +52,16 @@ def load_dir(d: str) -> dict[str, Any]:
     }
 
 
+def write_json(path: str, obj: Any) -> None:
+    """Write obj as indented JSON to path atomically (a temporary file,
+    then a rename), so a reader never sees a partial file."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=1, default=str)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
 def _vm_key(s: dict[str, Any]) -> str:
     # One run on one host is one replicate; two local runs on one machine
     # count as two (they are separate processes, builds cached or not).
