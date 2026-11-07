@@ -993,25 +993,6 @@ proof fn lemma_run_fits(t: SlabTable, first: usize, k: usize)
         requires first + k <= n, p >= 0;
 }
 
-/// A slab of a well-formed table has at least one byte.
-proof fn lemma_slab_bytes_pos(t: SlabTable)
-    requires
-        t.inv(),
-    ensures
-        (1usize << class_table()[t.spec_class() as int].lg_slab) as int > 0,
-{
-    broadcast use {super::table::lemma_spec_class, crate::vspec::class::lemma_class_table_wf};
-    let c = class_table()[t.spec_class() as int];
-    let l8 = c.lg_slab;
-    let lg = l8 as usize;
-    assert(c.wf());
-    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
-    vstd::bits::lemma_usize_shl_is_mul(1, lg);
-    vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
-    assert((1usize << l8) == (1usize << lg)) by (bit_vector)
-        requires lg == l8 as usize;
-}
-
 /// Every slab of the page group of `slab` (`spp` slabs) is this arena's
 /// and not active: [`ClassState::push_group`]'s precondition. Opaque, so
 /// the walk that establishes it ([`Purger::visit`]) hands it over as one
@@ -1105,7 +1086,7 @@ proof fn lemma_group_well_formed(t: SlabTable, slab: usize, spp: usize, first: u
     let sz = (1usize << class_table()[c].lg_slab) as int;
     let page = crate::purge::page_bytes();
     let base = t.base as int;
-    lemma_slab_bytes_pos(t);
+    super::table::lemma_slabs_fit(t);
     let lgs = t.lg_slabs_per_page;
     assert(spp == 1usize << lgs);
     // `first` is a multiple of `spp`, so its byte offset is a multiple of
@@ -1204,7 +1185,7 @@ impl ClassState {
             lemma_page_group(slab, t0.end@, self.spec_nslabs(), spp);
             assert(sub(spp, 1) == (spp - 1) as usize);
             lemma_run_fits(tb, first, spp);
-            lemma_slab_bytes_pos(tb);
+            super::table::lemma_slabs_fit(tb);
             assert((first as int + spp as int) * sz == first as int * sz + spp as int * sz) by (nonlinear_arith);
             assert(first as int * sz >= 0 && spp as int * sz >= 0) by (nonlinear_arith)
                 requires sz >= 0;
@@ -1316,7 +1297,7 @@ impl ClassState {
         proof {
             use_type_invariant(self);
             reveal(pend_ok);
-            lemma_slab_bytes_pos(tb);
+            super::table::lemma_slabs_fit(tb);
             vstd::arithmetic::div_mod::lemma_small_mod(0, piece as nat);
             assert(crate::purge::in_run(addr as int, len as int, piece, (addr as int, piece)));
             assert(pend_ok(self, g1, spp, t0.end@ as int, (addr as int, piece)));
