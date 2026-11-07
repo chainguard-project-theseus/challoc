@@ -64,7 +64,7 @@ leave out (theorem 33). Remaining work is tracked in
   environment is a source test (`environment_has_one_reader`,
   `config.rs`), not Verus. The theorem does not state that the loaded
   `Config` equals the one with neither variable set.
-- **Overflow reach** (`heap::theorem_overflow_reach`, `heap/mod.rs`):
+- **Overflow reach** (`heap::theorem_overflow_reach`, `heap/theorems.rs`):
   between any byte of a block that `fits` and any byte of the metadata
   region, the `Shared` static, another class region or the huge region,
   above or below it, lies a `MAX_SLAB` (4 MiB) run of challoc's own
@@ -103,7 +103,7 @@ leave out (theorem 33). Remaining work is tracked in
 | PAC | on or off: `heap::pac_mode()` reads the uninterpreted `shared_at(shared_storage())` |
 | Build | `cfg(not(test))`; test-only items (`Meta::new`, `*_t`) excluded |
 
-Because `pac_mode()` (`heap/mod.rs`) reads the uninterpreted `shared_at(shared_storage())`, every proof
+Because `pac_mode()` (`heap/theorems.rs`) reads the uninterpreted `shared_at(shared_storage())`, every proof
 holds for both values.
 
 Every combination runs in CI: the `verus` and `verus-arm64` checks
@@ -118,7 +118,7 @@ add.
 
 **One process, one `Shared`.**
 - `layout::process_regions` (`layout/regions.rs`) and
-  `heap::pac_mode` (`heap/mod.rs`) are opaque, defined as the
+  `heap::pac_mode` (`heap/theorems.rs`) are opaque, defined as the
   regions and `PUSH_PAC` bit of `shared_at(shared_storage())`
   (`heap/shared.rs`), which is uninterpreted;
   `heap::shared::lemma_process_shared` (`heap/shared.rs`) reveals
@@ -642,7 +642,7 @@ lock (theorem 9).
 Every non-null block an allocation returns lies wholly inside one class
 region or the huge region, and shares no byte with the metadata region.
 
-**Statement** (`heap/mod.rs`):
+**Statement** (`heap/theorems.rs`):
 
 ```rust
 pub open spec fn fits(p: *mut u8, size: int, align: int) -> bool {
@@ -676,7 +676,7 @@ pub proof fn theorem_region_separation(p: *mut u8, size: int, align: int)
 
 (Line breaks added; the code has the ensures on fewer lines.)
 `regions_ok()` is `process_regions().wf() && .separated()`
-(`heap/mod.rs`); `Regions::user_block` (`layout/regions.rs`) is
+(`heap/theorems.rs`); `Regions::user_block` (`layout/regions.rs`) is
 a slot start of a class at least `size` bytes (`is_slot`), or a
 page start of the huge region with `max(size, 1)` bytes of the region
 after it (`is_huge_block`). The proof is
@@ -718,11 +718,11 @@ and the guard inside the region); `vspec::usable::lemma_run_bytes_block`
 turns that into `is_huge_block(p, max(size, 1))`.
 
 **Premises beyond the common ones.**
-- Slab results: `CachePerms::tracks` (`heap/mod.rs`), part of the
+- Slab results: `CachePerms::tracks` (`heap/perms.rs`), part of the
   assumed `Heap::wf`; the cache entries' `is_slot` comes from verified
   refills and frees.
 - With PAC: `sys::pac::axiom_auth_sign` (`sys/pac.rs`, used at
-  `heap/mod.rs`): `spec_auth(spec_sign(p, m), m) == p` below the VA
+  `heap/perms.rs`): `spec_auth(spec_sign(p, m), m) == p` below the VA
   limit; `sign`, `auth` (`sys/pac.rs`) are `external_body`
   and equal `spec_sign`/`spec_auth`, one function per process (no
   `PR_PAC_RESET_KEYS`). The ledger (`verus/ledger/src/sys/pac.rs.md`)
@@ -782,7 +782,7 @@ page start, and its address is a multiple of the requested alignment.
 **Statement.** No theorem function: `fits` itself (above). Its
 `user_block` conjunct puts `size` bytes in one slot of a class at least
 `size` bytes, or in the huge region from a page start; its last conjunct
-is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/mod.rs`),
+is `p % align == 0`. Lemmas: `lemma_slot_fits` (`heap/theorems.rs`),
 `lemma_slot_fits_quantum`, `lemma_huge_fits`,
 `Regions::lemma_slot_aligned` (`layout/regions.rs`),
 `layout::lemma_class_size_quantum`.
@@ -823,7 +823,7 @@ cannot return normally, not that it reaches `SIGABRT` rather than
 hanging: the paths before an abort may wait on a lock, whose
 termination is not proved (common premises, "Termination not proved").
 
-**Statement** (`heap/mod.rs`):
+**Statement** (`heap/theorems.rs`):
 
 ```rust
 pub open spec fn slot_start(p: *mut u8) -> bool {
@@ -917,7 +917,7 @@ the `Shared` static included. It does
 not prove that every allocator write stays inside the object it is meant
 for, nor that a returned byte is mapped with the right permissions.
 
-**Statement** (`heap/mod.rs`):
+**Statement** (`heap/theorems.rs`):
 
 ```rust
 pub(crate) proof fn theorem_metadata_integrity(shared: &Shared, p: *mut u8,
@@ -1063,7 +1063,7 @@ the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
   (four pairings: three in `meta.rs`, and one in `huge/table.rs`,
   `Table::storage`'s binned branch, which pairs the permission and token
   `Meta::alloc_zeroed` returns for one object).
-- `CachePerms::lemma_fresh_stack` (`heap/mod.rs`, proved): a stack
+- `CachePerms::lemma_fresh_stack` (`heap/perms.rs`, proved): a stack
   `Meta::alloc_raw` just returned is fresh (it uses up the block's permission);
   `Heap::lemma_caches_in_meta` (`heap/mod.rs`) needs `cell_in_meta`,
   which `ensure_cache` (`heap/cache.rs`) proves for each stack.
@@ -1119,11 +1119,11 @@ the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
 
 ## 5. Uniqueness
 
-**Statement** (`heap/mod.rs`; private to `heap`, in
+**Statement** (`heap/perms.rs`; visible only in `heap`, in
 `impl CachePerms`):
 
 ```rust
-proof fn theorem_uniqueness_cached(tracked perms: &mut CachePerms,
+pub(super) proof fn theorem_uniqueness_cached(tracked perms: &mut CachePerms,
     p1: *mut CacheHeader, i1: int, p2: *mut CacheHeader, i2: int)
     requires
         old(perms).wf(),
@@ -1172,7 +1172,7 @@ writer keeps:
 - Claimed: `AtomicBitmap::claim_word`, `claim_from` (`bitmap.rs`)
   move out the tokens of the bits their `fetch_or` won;
   `ClassState::claim_with` (`class/mod.rs`) returns them by index.
-- Cached: `CachePerms::tokened` (`heap/mod.rs`), a conjunct of
+- Cached: `CachePerms::tokened` (`heap/perms.rs`), a conjunct of
   `Heap::wf` and `Heap::keeps`.
 - Released: `ClassState::release_owned` (`class/mod.rs`) takes a
   `GhostSubset` of the batch; `AtomicBitmap::release`
@@ -1181,7 +1181,7 @@ writer keeps:
 - Live: the program's. A `heap::live::Live` token (`heap/live.rs`)
   holds the slot's token while the program holds the block: the
   allocation paths move the popped, refilled, compacted or directly
-  claimed slot's token into it (`heap::hand_out`, `heap/mod.rs`;
+  claimed slot's token into it (`heap::hand_out`, `heap/perms.rs`;
   `Heap::pop_compact_run`; `Shared::alloc_direct`), and the free paths
   take it back out (`Live::take_slot`) for the cache push
   or the release. Huge runs have the same shape: a `huge::RunToken`
@@ -1427,7 +1427,7 @@ guard slabs. For huge runs, only at the huge lock invariant: every value
 the huge lock admits keeps live runs' usable pages off every run's
 guard page, but nothing is exported per call ("Huge runs" below).
 
-**Statement** (`heap/mod.rs`; `layout/regions.rs`):
+**Statement** (`heap/theorems.rs`; `layout/regions.rs`):
 
 ```rust
 pub open spec fn guard_slab(c: int, slab: int) -> bool {
@@ -2146,7 +2146,7 @@ pub fn flush_all(&mut self, shared: &Shared)
         log_adds(final(self).released(), old(self).released(), old(self).held_all()),
 ```
 
-with (`heap/mod.rs`; abridged)
+with (`heap/perms.rs`; abridged)
 
 ```rust
 pub open spec fn log_adds(new: Seq<(int, int)>, old: Seq<(int, int)>, s: Set<(int, int)>) -> bool {
@@ -3309,7 +3309,7 @@ every postcondition, so each one says what holds of a call that
 returns):
 
 ```rust
-// heap/mod.rs (theorem 3's target; the size hint's class)
+// heap/theorems.rs (theorem 3's target; the size hint's class)
 pub open spec fn free_target(p: *mut u8) -> bool {
     ||| slot_start(p)
     ||| process_regions().is_huge_block(p@.addr, 1)
@@ -3326,7 +3326,7 @@ fn sdallocx(p, size, flags)
     ensures p@.addr != 0 ==> hint_ok(p, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
             p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
 
-// heap/mod.rs (the huge half of the size hint, over the caller's token
+// heap/theorems.rs (the huge half of the size hint, over the caller's token
 // `blk` for `p`); api/libc.rs `free_sized_block`, api/jemalloc.rs
 // `sdallocx_block` (the cores the exports call with C's token)
 pub open spec fn huge_hint_ok(blk: Live, p: *mut u8, size: usize) -> bool {
@@ -3352,7 +3352,7 @@ fn dallocx(p, flags)     ensures p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::
 // api/cxx.rs
 fn new_aligned(size, align, nothrow)  ensures !is_pow2(align) ==> r@.addr == 0,
 
-// heap/mod.rs; heap/live.rs
+// heap/theorems.rs; heap/live.rs
 pub proof fn theorem_free_target_aligned(p: *mut u8)
     requires regions_ok(), free_target(p),
     ensures (p@.addr as int) % (QUANTUM as int) == 0,
@@ -4512,7 +4512,7 @@ pub proof fn lemma_block_nonzero(self, c: int, p: usize, len: int, size: int)
         self.is_huge_block(p, len) ==> p != 0,
         self.user_block(p, size) ==> p != 0,
 
-// heap/mod.rs
+// heap/theorems.rs
 pub proof fn theorem_no_block_at_zero(p: *mut u8, c: int, size: int)
     requires regions_ok(),
     ensures
@@ -9562,7 +9562,7 @@ cells.
 
 Properties:
 
-- **R**: the result fits and is aligned (`heap::fits`, `heap/mod.rs`);
+- **R**: the result fits and is aligned (`heap::fits`, `heap/theorems.rs`);
   a slab result is never in a guard slab (theorem 7).
 - **D**: the result is disjoint from every other live block: the core
   returns the token of the block (`Live::gives`), and two live tokens
@@ -9737,7 +9737,7 @@ Notes that recur below:
   restores it with `set_errno` around its calls, under the caller's
   token, and ensures `final(errno).val() == old(errno).val()`
   (`purge/background.rs`).
-- *(live)*: `free_target` (`heap/mod.rs`, theorem 3) is proved. A
+- *(live)*: `free_target` (`heap/theorems.rs`, theorem 3) is proved. A
   call with a pointer that is not a slot start or a huge page start does
   not return. A free core takes the caller's token for `p` (`Live::claims`) and ensures
   `p@.addr != 0 ==> blk.block(p)`: what it freed was a live block, whose
@@ -10139,8 +10139,8 @@ alone):
 
 | Property                                 | Code | Where                  |
 |------------------------------------------|------|------------------------|
-| I1 region separation                     | P    | th. 1, heap/mod.rs |
-| I2 user blocks apart from metadata       | P    | th. 4, heap/mod.rs |
+| I1 region separation                     | P    | th. 1, heap/theorems.rs |
+| I2 user blocks apart from metadata       | P    | th. 4, heap/theorems.rs |
 | I3 uniqueness (no slot handed out twice) | P    | theorem 5              |
 | I4 guard pages never handed out (slabs)  | P    | th. 7 (section 7)      |
 | I4 guard pages, huge (lock invariant)    | p    | th. 7 (section 7)      |
@@ -10159,7 +10159,7 @@ alone):
 - I4: theorem 7. For slabs, `Regions::is_slot`
   excludes the guard slabs, so every `fits` (the R column) and every
   `free_target` (the B column) states it per result: `theorem_guard_pages` and
-  `theorem_guard_free` (`heap/mod.rs`). For huge runs it is
+  `theorem_guard_free` (`heap/theorems.rs`). For huge runs it is
   stated only of the huge lock's values (`Inner::theorem_run_guards`,
   `huge/mod.rs`): `alloc_run` returns the run's token, but
   no lemma states the guard exclusion per result over it, and

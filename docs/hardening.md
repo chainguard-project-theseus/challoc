@@ -214,7 +214,7 @@ under `guards:false`); the run at the bottom of the region is preceded by
 that slack. `Regions::slack_ok`
 checks the property once at init and aborts if a layout ever breaks it.
 Verus proves it of the layout `Regions::reserve_owning` draws
-(`Regions::padded`), and `theorem_overflow_reach` (`heap/mod.rs`) proves
+(`Regions::padded`), and `theorem_overflow_reach` (`heap/theorems.rs`) proves
 the consequence for a block: between any of its bytes and the metadata
 region, the `Shared` static or another region, in either direction, lies
 the whole 4 MiB of that slack.

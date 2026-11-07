@@ -117,8 +117,8 @@ const SPECS: &[Spec] = &[
         ],
     },
     Spec {
-        file: "mod.rs",
-        sig: "spec fn wf(&self) -> bool {",
+        file: "perms.rs",
+        sig: "pub(super) open spec fn wf(&self) -> bool {",
         items: &[
             (
                 "&&& forall|p: *mut CacheHeader| #[trigger] self.hdrs.contains_key(p) ==> cell_ok(p, self.hdrs[p], self.slots)",
@@ -134,8 +134,8 @@ const SPECS: &[Spec] = &[
         ],
     },
     Spec {
-        file: "mod.rs",
-        sig: "spec fn cell_ok(p: *mut CacheHeader, hp: PointsTo<CacheHeader>, slots: Map<*mut *mut u8, PointsTo<*mut u8>>) -> bool {",
+        file: "perms.rs",
+        sig: "pub(super) open spec fn cell_ok(p: *mut CacheHeader, hp: PointsTo<CacheHeader>, slots: Map<*mut *mut u8, PointsTo<*mut u8>>) -> bool {",
         items: &[
             ("&&& hp.ptr() == p", Ghost, "the header's permission"),
             ("&&& hp.is_init()", Ghost, "the header's permission"),
@@ -145,8 +145,8 @@ const SPECS: &[Spec] = &[
         ],
     },
     Spec {
-        file: "mod.rs",
-        sig: "spec fn cell_in_meta(p: *mut CacheHeader, h: CacheHeader) -> bool {",
+        file: "perms.rs",
+        sig: "pub(super) open spec fn cell_in_meta(p: *mut CacheHeader, h: CacheHeader) -> bool {",
         items: &[
             (
                 "&&& process_regions().in_meta(p@.addr as int, 64)",
@@ -161,8 +161,8 @@ const SPECS: &[Spec] = &[
         ],
     },
     Spec {
-        file: "mod.rs",
-        sig: "spec fn stack_ok(h: CacheHeader, slots: Map<*mut *mut u8, PointsTo<*mut u8>>) -> bool {",
+        file: "perms.rs",
+        sig: "pub(super) open spec fn stack_ok(h: CacheHeader, slots: Map<*mut *mut u8, PointsTo<*mut u8>>) -> bool {",
         items: &[
             (
                 "&&& forall|i: int| 0 <= i < h.cap ==> { let q = #[trigger] slot_ptr(h.slots, i); &&& slots.contains_key(q) &&& slots[q].ptr() == q &&& (i < h.len ==> slots[q].is_init()) }",
@@ -199,8 +199,8 @@ const SPECS: &[Spec] = &[
         ],
     },
     Spec {
-        file: "mod.rs",
-        sig: "spec fn tracks(&self) -> bool {",
+        file: "perms.rs",
+        sig: "pub(super) open spec fn tracks(&self) -> bool {",
         items: &[(
             "forall|p: *mut CacheHeader, i: int| #![trigger self.ent(p, i)] self.hdrs.contains_key(p) && 0 <= i < self.hdr(p).cap ==> { &&& self.owner.contains_key(self.ent(p, i)) &&& self.owner[self.ent(p, i)] == (p, i) &&& (i < self.hdr(p).len ==> self.holds(self.cls[p], self.ent(p, i), self.hdr(p).slots)) }",
             Implied,
@@ -210,7 +210,7 @@ const SPECS: &[Spec] = &[
         )],
     },
     Spec {
-        file: "mod.rs",
+        file: "perms.rs",
         sig: "pub open spec fn slot_entry(c: int, e: *mut u8, base: *mut *mut u8) -> bool {",
         items: &[
             (
@@ -257,8 +257,8 @@ const SPECS: &[Spec] = &[
         ],
     },
     Spec {
-        file: "mod.rs",
-        sig: "spec fn tokened(&self) -> bool {",
+        file: "perms.rs",
+        sig: "pub(super) open spec fn tokened(&self) -> bool {",
         items: &[(
             "forall|p: *mut CacheHeader, i: int| #![trigger self.ent(p, i)] self.hdrs.contains_key(p) && 0 <= i < self.hdr(p).len ==> self.tok_at(p, i)",
             Implied,
@@ -266,8 +266,8 @@ const SPECS: &[Spec] = &[
         )],
     },
     Spec {
-        file: "mod.rs",
-        sig: "spec fn claimed(&self) -> bool {",
+        file: "perms.rs",
+        sig: "pub(super) open spec fn claimed(&self) -> bool {",
         items: &[(
             "forall|p: *mut CacheHeader| #[trigger] self.hdrs.contains_key(p) && self.hdr(p).cap != 0 ==> stack_claimed(self.hdr(p), self.blocks)",
             Implied,
@@ -275,8 +275,8 @@ const SPECS: &[Spec] = &[
         )],
     },
     Spec {
-        file: "mod.rs",
-        sig: "spec fn stack_claimed(h: CacheHeader, blocks: Map<*mut *mut u8, crate::meta::MetaClaim>) -> bool {",
+        file: "perms.rs",
+        sig: "pub(super) open spec fn stack_claimed(h: CacheHeader, blocks: Map<*mut *mut u8, crate::meta::MetaClaim>) -> bool {",
         items: &[
             ("&&& blocks.contains_key(h.slots)", Ghost, "metadata claims"),
             (
@@ -287,7 +287,7 @@ const SPECS: &[Spec] = &[
         ],
     },
     Spec {
-        file: "mod.rs",
+        file: "theorems.rs",
         sig: "pub open spec fn regions_ok() -> bool {",
         items: &[(
             "process_regions().wf() && process_regions().separated()",
@@ -360,7 +360,7 @@ const SPECS: &[Spec] = &[
         ],
     },
     Spec {
-        file: "mod.rs",
+        file: "perms.rs",
         sig: "pub open spec fn node_placed(node: *mut ArenaCaches) -> bool {",
         items: &[
             (
@@ -561,7 +561,7 @@ const SPECS: &[Spec] = &[
         )],
     },
     Spec {
-        file: "mod.rs",
+        file: "perms.rs",
         sig: "pub open spec fn node_hdr(node: *mut ArenaCaches, class: int) -> *mut CacheHeader {",
         items: &[(
             "vstd::raw_ptr::ptr_mut_from_data::<CacheHeader>( vstd::raw_ptr::PtrData { addr: (node@.addr + 64 + 64 * class) as usize, provenance: node@.provenance, metadata: () }, )",
@@ -570,7 +570,7 @@ const SPECS: &[Spec] = &[
         )],
     },
     Spec {
-        file: "mod.rs",
+        file: "perms.rs",
         sig: "pub open spec fn plain(e: *mut u8, base: *mut *mut u8) -> usize {",
         items: &[(
             "if pac_mode() { crate::sys::pac::spec_auth(e@.addr, base@.addr) } else { e@.addr }",
@@ -580,7 +580,7 @@ const SPECS: &[Spec] = &[
         )],
     },
     Spec {
-        file: "mod.rs",
+        file: "perms.rs",
         sig: "pub open spec fn stored(p: usize, base: *mut *mut u8) -> usize {",
         items: &[(
             "if pac_mode() { crate::sys::pac::spec_sign(p, base@.addr) } else { p }",

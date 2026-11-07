@@ -2244,6 +2244,8 @@ src/heap/zero.rs      the zero prefix of the thread caches as ghost tokens (no z
 src/heap/flush.rs     refill and flush; group_by_slab and the straddling double-free abort
 src/heap/compact.rs   the compacting cache: probe/compact modes, scheduled pop, rebuild (6.4)
 src/heap/others.rs    caches for other arenas (ArenaCaches) and the FOREIGN flush-only cache
+src/heap/theorems.rs  the block and region theorems (separation, guards, overflow reach, metadata integrity)
+src/heap/perms.rs     the CachePerms lemmas: the ghost model of the caches' stacks and slot tokens
 src/heap/shared.rs    Shared: process-wide state, init, the free checks and routing, the class lines, the thread-exit key
 src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap creation, the exit destructor
 src/heap/tcaches.rs   explicit caches (tcache.create)
