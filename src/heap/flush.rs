@@ -307,45 +307,25 @@ impl Heap {
     /// Release the `n` highest-address entries of a cache to their slabs
     /// (in `arena`, which owns them) in one batch grouped by slab and keep
     /// the rest. Selecting by address sends the holes to the high slabs,
-    /// which is what lets them drain (design 6.4). A full `sort_unstable`
-    /// of the slot array per flush would be the largest single cost
-    /// under tiny-object churn (glibc-simple, the Python json row), so
-    /// the ordering work is the least that keeps the release grouped,
-    /// as follows:
+    /// which is what lets them drain (design 6.4). The ordering work is the
+    /// least that keeps the release grouped (design 6.4 has the costs and
+    /// the alternatives):
     ///
-    /// - A slot array already in address order (a cache pushed in the order
-    ///   a producer's refill batch was handed out, xmalloc-test's consumer
-    ///   side, where even a sort's O(n) presorted path is about 1.25k
-    ///   cycles per flush) is split directly: `is_sorted` is one pass that
-    ///   stops at the first inversion, the released half is sorted and so
-    ///   grouped, and the kept half stays sorted for the next flush. That
-    ///   includes a whole flush (`n == len`, the `FOREIGN` cache, which is
-    ///   where xmalloc-test's consumers release the producers' slots in
-    ///   allocation order): sorted, it needs no [`group_by_slab`] pass,
-    ///   whose two sweeps over a sorted batch were about 5% of the row.
+    /// - A slot array already in address order is split directly:
+    ///   `is_sorted` is one pass that stops at the first inversion, the
+    ///   released half is sorted and so grouped, and the kept half stays
+    ///   sorted for the next flush. A sorted whole flush (`n == len`, the
+    ///   `FOREIGN` cache) needs no [`group_by_slab`] pass.
     /// - Otherwise `select_nth_unstable` on the address (O(len), in place)
     ///   puts the `n` highest at the top, and [`group_by_slab`] groups them
     ///   by slab (a counting pass over the slab numbers, O(n); nothing when
     ///   they are one slab); `release_owned` needs nothing more.
     /// - The kept half is left as the selection leaves it, except on the
     ///   first two consecutive unsorted flushes of a cache and every 32nd
-    ///   after that (`unsorted_flushes`), when it is sorted: a cache pushed
-    ///   in order that met one unsorted flush (its first fill, a producer
-    ///   moving to a lower slab) gets back onto the sorted path, where a
-    ///   scrambled kept half would have kept it on the selection forever
-    ///   (a measurable loss on xmalloc-test), while a cache pushed in
-    ///   arbitrary order pays two sorts of half the array and then one in
-    ///   32 (sorting the kept half at every flush gives back all that the
-    ///   selection saves on glibc-simple and Python). The run
-    ///   is dropped in every case and rebuilt by the scheduled pop (design
-    ///   6.4); the zero prefix is given up.
-    ///
-    /// Not done: a sort of the released half after the selection (the
-    /// selection scrambles it, so that is a full sort); an in-place bucket
-    /// pass over the whole array by address (about 10 cycles per entry: a
-    /// full sort's cost on random input and ten times its cost on sorted
-    /// input); the selection alone (a cache that leaves the sorted path
-    /// never returns to it).
+    ///   after that (`unsorted_flushes`), when it is sorted, so a cache
+    ///   pushed in order that met one unsorted flush gets back onto the
+    ///   sorted path. The run is dropped in every case and rebuilt by the
+    ///   scheduled pop (design 6.4); the zero prefix is given up.
     ///
     /// Double frees. `release_owned` aborts on a duplicate inside the
     /// released batch (a slab's slots are contiguous after the bucket pass
@@ -360,9 +340,7 @@ impl Heap {
     /// that, so a straddling pair is exactly a released entry equal to
     /// `kept_max`, and the lowest released address (found by the bucket
     /// pass's first sweep, or `slots[rest_len]` on the sorted path) is
-    /// compared with it. One compare, the same strength as the sorted
-    /// form's neighbour compare at the split; a pass over the kept half was
-    /// measured at 4.9% / 7.3% of xmalloc-test and is not done.
+    /// compared with it.
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
