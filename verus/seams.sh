@@ -95,11 +95,12 @@ case ${1:-} in
   *) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
 
-files=$(find src -name '*.rs' ! -name tests.rs ! -name linux_tests.rs \
+files=$(find src -name '*.rs' ! -name tests.rs ! -name linux_tests.rs ! -path 'src/*/tests/*' \
   ! -name testutil.rs | sort)
 [ -n "$files" ] || { echo "seams: no sources under src/" >&2; exit 2; }
 # The test files, read only for the impls a claims nothing status bars.
-testfiles=$(find src \( -name tests.rs -o -name linux_tests.rs -o -name testutil.rs \) | sort)
+testfiles=$(find src \( -name tests.rs -o -name linux_tests.rs -o -name testutil.rs \
+  -o -path 'src/*/tests/*.rs' \) | sort)
 ovfiles=$(find verus/ledger -name '*.rs.overrides' 2>/dev/null | sort)
 
 prog=$(cat <<'EOF'

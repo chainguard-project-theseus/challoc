@@ -8,10 +8,11 @@
 //!
 //! The checks match rustfmt-formatted source text, test and Kani code left
 //! out (`#[cfg(test)]`, `#[cfg(kani)]` and `#[cfg(all(test, ..))]` items,
-//! `src/kani/`, and the `tests.rs`, `linux_tests.rs` and `testutil.rs`
-//! files `verus/seams.sh` leaves out too): a write through a pointer or a
-//! name they do not look for is caught only by review. Each check has a
-//! control that adds one line it must reject.
+//! `src/kani/`, the `tests.rs`, `linux_tests.rs` and `testutil.rs` files
+//! and the `tests/` module directories, which `verus/seams.sh` leaves out
+//! too): a write through a pointer or a name they do not look for is
+//! caught only by review. Each check has a control that adds one line it
+//! must reject.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -28,7 +29,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Tree) {
     for p in entries {
         let rel = p.strip_prefix(root).unwrap().to_str().unwrap().to_string();
         if p.is_dir() {
-            if rel != "src/kani" {
+            if rel != "src/kani" && !rel.ends_with("/tests") {
                 walk(root, &p, out);
             }
         } else if rel.ends_with(".rs")

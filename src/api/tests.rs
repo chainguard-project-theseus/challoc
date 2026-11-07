@@ -1167,9 +1167,10 @@ fn fork_hold_is_resumed_once() {
 #[test]
 fn fork_child_resets_are_child_only() {
     use std::string::ToString;
-    /// Every `.rs` file under `dir` but the loom and Kani trees and the
-    /// `tests.rs` and `linux_tests.rs` files of test modules, as (path,
-    /// text before its first inline `#[cfg(test)]` test module).
+    /// Every `.rs` file under `dir` but the loom and Kani trees, the
+    /// `tests/` module directories and the `tests.rs` and
+    /// `linux_tests.rs` files of test modules, as (path, text before its
+    /// first inline `#[cfg(test)]` test module).
     fn sources(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
@@ -1179,7 +1180,10 @@ fn fork_child_resets_are_child_only() {
         for path in entries {
             let name = path.to_str().unwrap().to_string();
             if path.is_dir() {
-                if !name.ends_with("loom_tests") && !name.ends_with("kani") {
+                if !name.ends_with("loom_tests")
+                    && !name.ends_with("kani")
+                    && !name.ends_with("/tests")
+                {
                     sources(&path, out);
                 }
             } else if name.ends_with(".rs")

@@ -842,7 +842,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
     // Pin the home (a `thread.arena` write): this thread's heap is
     // young and the other thread's arena is idle now, so its first
     // free of a slot there would otherwise move it onto that arena
-    // (`Heap::try_rehome`, covered in heap/tests.rs).
+    // (`Heap::try_rehome`, covered in heap/tests/arenas.rs).
     h.set_arena(
         s,
         home,

@@ -2278,7 +2278,7 @@ src/heap/slotstate.rs the per-slot state bytes (free, cached, live) of the doubl
 src/heap/heap_facts.rs  the set-free checker of what tcaches::heap_at trusts, shared by heap_at_tests and tlscheck
 src/heap/tlscheck.rs  debug-only (cfg(challoc_tls_check)) run-time check of the TLS slot premise
 src/heap/mallocx.rs   MALLOCX_* flag decoding and the mallocx/dallocx routing
-src/heap/tests.rs, src/heap/linux_tests.rs   heap tests
+src/heap/tests/, src/heap/linux_tests.rs   heap tests
 src/heap/heap_at_tests.rs, src/api/heap_at_tests.rs   test-only: the heap_at checker on every heap heap_at hands out, and through the C API's MALLOCX_TCACHE paths
 src/huge/mod.rs       huge allocator: extents, guards, first fit, the audit
 src/huge/kernel.rs    commits, guard pages and the zeroing write; theorem_huge_commit_avoids_guards
