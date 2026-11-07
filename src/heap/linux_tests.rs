@@ -443,7 +443,10 @@ fn heap_off_pac_executes_no_pac_instruction() {
 fn cache_entries_and_the_tls_heap_pointer_are_signed() {
     let s = shared();
     if !s.pac() {
-        std::eprintln!("pac: off on this host, skipping");
+        crate::testutil::print_skip(
+            "cache_entries_and_the_tls_heap_pointer_are_signed",
+            "no pointer authentication",
+        );
         return;
     }
     std::thread::spawn(move || {
@@ -510,7 +513,10 @@ fn cache_entries_and_the_tls_heap_pointer_are_signed() {
 fn corrupted_cache_entry_or_heap_pointer_faults() {
     let s = shared();
     if !s.pac() {
-        std::eprintln!("pac: off on this host, skipping");
+        crate::testutil::print_skip(
+            "corrupted_cache_entry_or_heap_pointer_faults",
+            "no pointer authentication",
+        );
         return;
     }
     std::thread::spawn(move || {
