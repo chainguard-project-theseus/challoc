@@ -374,14 +374,16 @@ impl Curve {
 
     /// [`allowance`](Curve::allowance) under the cgroup policy's
     /// retention cap (design 11): with `keep16` below
-    /// [`KEEP_ALL`](crate::policy::KEEP_ALL), also at most that share of
-    /// the `total` units dirty.
+    /// [`KEEP_ALL`](crate::policy::KEEP_ALL), the smaller of that and
+    /// `keep16`'s share of the `total` units.
     #[inline(always)]
     pub fn capped_allowance(weighted: u64, total: usize, keep16: u32) -> (units: usize)
         ensures
             keep16 >= crate::policy::KEEP_ALL ==> units == (weighted + WEIGHT_ONE - 1) / WEIGHT_ONE as int,
-            keep16 < crate::policy::KEEP_ALL ==> units <= (weighted + WEIGHT_ONE - 1) / WEIGHT_ONE as int
-                && units <= total * keep16 / 0x1_0000,
+            keep16 < crate::policy::KEEP_ALL ==> units == vstd::math::min(
+                (weighted + WEIGHT_ONE - 1) / WEIGHT_ONE as int,
+                total * keep16 / 0x1_0000,
+            ),
     {
         let allow = Curve::allowance(weighted);
         proof {
