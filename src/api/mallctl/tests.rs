@@ -624,6 +624,8 @@ fn names_resolve_to_positional_mibs_and_back() {
         "nope",
         "arenas.bin.x.size",
         "arenas.bin..size",
+        "arenas.bin.7x.size",
+        "arenas.bin.18446744073709551616.size",
         "prof.active",
         "prof.dump",
         "stats.cgroup.nope",
