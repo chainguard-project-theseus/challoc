@@ -5154,19 +5154,10 @@ impl ClassState {
             // its purge discards the rest, and a reuse opens the slab
             // whole, as a `Fresh` one: no slab but an `Active` one has a
             // closed page.
-            if let Some(pg) = self.table().pages(slab) {
-                let (closed, stamp) = Self::pages_locked(&*g, pg, slab);
-                if closed != 0 || stamp != 0 {
-                    let n = self.table().page_view().with_closed(closed).closed_slots();
-                    let ghost gc = g@;
-                    g.closed_slots = g.closed_slots.saturating_sub(n);
-                    g.closed_pages = g.closed_pages.saturating_sub(pages::page_count(closed));
-                    proof {
-                        pages::lemma_walk_frame(self, gc, g@);
-                    }
-                    self.set_pages_locked(&mut *g, pg, slab, 0, 0);
-                }
+            proof {
+                assert(g@.slab_ok(slab as nat));
             }
+            self.reset_pages_on_empty(&mut *g, slab);
             // Never 0: an `Empty` slab's stamp is not 0
             // (`Inner::slab_core`).
             let now = crate::sys::now_coarse_ns().max(1);
