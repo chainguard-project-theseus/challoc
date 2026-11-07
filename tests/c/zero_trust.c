@@ -173,12 +173,6 @@ static int run_cell(struct cell *c)
     return failures;
 }
 
-static int cmp_ptr(const void *a, const void *b)
-{
-    uintptr_t x = (uintptr_t) * (void *const *)a, y = (uintptr_t) * (void *const *)b;
-    return x < y ? -1 : x > y;
-}
-
 /* Two adjacent slabs held whole; the upper one freed and purged (Purged:
  * MADV_DONTNEED, read-write), then one byte written past the lower slab's
  * last slot, into the Purged slab's first. */

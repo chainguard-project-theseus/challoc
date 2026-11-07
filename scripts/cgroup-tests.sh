@@ -74,7 +74,7 @@ fi
 quantum=$(sh scripts/ctest-cc.sh --quantum) || exit 2
 mkdir -p "target/cgroup-tests/q$quantum"
 bin=target/cgroup-tests/q$quantum/$prog
-if [ ! -x "$bin" ] || [ "tests/c/$prog.c" -nt "$bin" ] || [ tests/c/common.h -nt "$bin" ]; then
+if [ ! -x "$bin" ] || [ "tests/c/$prog.c" -nt "$bin" ] || [ tests/c/common.h -nt "$bin" ] || [ tests/c/cgroup.h -nt "$bin" ]; then
   sh scripts/ctest-cc.sh "tests/c/$prog.c" -o "$bin" || exit 2
 fi
 

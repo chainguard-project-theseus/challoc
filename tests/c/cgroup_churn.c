@@ -59,81 +59,14 @@
  * design 8.1: only an allocation's tick creates it); nothing else here
  * can purge: one program thread (no thread-exit flush), no `malloc_trim`.
  */
-#include "common.h"
+#include "cgroup.h"
 #include <stdbool.h>
 #include <time.h>
 
 #define MIB (1024UL * 1024UL)
 enum { WINDOW_MS = 2000, STEP_MS = 100, TRICKLE_MS = 10 };
 
-static char cgroup_dir[8192];
 static int have_cgroup;
-
-/* The cgroup directory, found the way the library finds it (design 11). */
-static int find_cgroup(void)
-{
-    char line[4096], path[4096] = "", mount[4096] = "";
-    FILE *f = fopen("/proc/self/cgroup", "r");
-    if (!f)
-        return 0;
-    while (fgets(line, sizeof line, f))
-        if (strncmp(line, "0::/", 4) == 0) {
-            snprintf(path, sizeof path, "%s", line + 3);
-            path[strcspn(path, "\n")] = 0;
-        }
-    fclose(f);
-    f = fopen("/proc/self/mountinfo", "r");
-    if (!f)
-        return 0;
-    while (fgets(line, sizeof line, f)) {
-        char *sep = strstr(line, " - ");
-        if (sep && strncmp(sep + 3, "cgroup2 ", 8) == 0 && !mount[0]) {
-            *sep = 0;
-            char *save = NULL, *tok = strtok_r(line, " ", &save);
-            for (int i = 0; tok && i < 4; i++)
-                tok = strtok_r(NULL, " ", &save);
-            if (tok)
-                snprintf(mount, sizeof mount, "%s", tok);
-        }
-    }
-    fclose(f);
-    if (!path[0] || !mount[0])
-        return 0;
-    snprintf(cgroup_dir, sizeof cgroup_dir, "%s%s", mount, strcmp(path, "/") == 0 ? "" : path);
-    return 1;
-}
-
-static long long read_cgroup_ll(const char *file)
-{
-    if (!have_cgroup)
-        return -1;
-    char p[8192 + 64];
-    snprintf(p, sizeof p, "%s/%s", cgroup_dir, file);
-    FILE *f = fopen(p, "r");
-    if (!f)
-        return -1;
-    char buf[64];
-    long long v = -1;
-    if (fgets(buf, sizeof buf, f)) {
-        if (strncmp(buf, "max", 3) == 0)
-            v = -2;
-        else
-            v = atoll(buf);
-    }
-    fclose(f);
-    return v;
-}
-
-static const char *fmt_mib(long long v, char *buf, size_t n)
-{
-    if (v == -2)
-        snprintf(buf, n, "max");
-    else if (v < 0)
-        snprintf(buf, n, "n/a");
-    else
-        snprintf(buf, n, "%lld MiB", v / (long long)MIB);
-    return buf;
-}
 
 /* The `LazyFree` bytes of `/proc/self/smaps_rollup`: resident pages
  * marked `MADV_FREE` and not yet reclaimed. 0 when the kernel does not
@@ -252,7 +185,7 @@ int main(int argc, char **argv)
     REQUIRE(total_mib >= 4 && threshold_mib >= 1, "sizes");
     if (!any)
         require_challoc();
-    have_cgroup = find_cgroup();
+    have_cgroup = find_cgroup(false);
     char b1[32], b2[32];
     long long limit = read_cgroup_ll("memory.max"), cur0 = read_cgroup_ll("memory.current");
     size_t rss0 = rss_bytes();

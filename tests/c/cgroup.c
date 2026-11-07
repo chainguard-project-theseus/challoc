@@ -19,29 +19,16 @@
  *          tracked `cgroup:` line and `current` follows the kernel's
  *          `memory.current`.
  */
-#include "common.h"
+#include "cgroup.h"
 #include <stdbool.h>
 #include <time.h>
 
 static char report[1 << 16];
-static size_t report_len;
-
-static void append(void *opaque, const char *s)
-{
-    (void)opaque;
-    size_t n = strlen(s);
-    if (report_len + n < sizeof report) {
-        memcpy(report + report_len, s, n);
-        report_len += n;
-    }
-}
 
 /* The `cgroup:` line of the text report, NUL-terminated in place. */
 static const char *cgroup_line(void)
 {
-    report_len = 0;
-    malloc_stats_print(append, NULL, NULL);
-    report[report_len] = 0;
+    stats_report(malloc_stats_print, NULL, report, sizeof report);
     char *l = strstr(report, "\ncgroup: ");
     REQUIRE(l != NULL, "no cgroup line in the report:\n%s", report);
     l++;
@@ -51,68 +38,10 @@ static const char *cgroup_line(void)
     return l;
 }
 
-static int read_size(const char *key, size_t *out)
-{
-    size_t len = sizeof *out;
-    return mallctl(key, out, &len, NULL, 0);
-}
-
-/* The cgroup directory (mount point plus the `0::` path), found the way
- * the library finds it; empty when there is no unified path or no cgroup2
- * mount. */
-static char cgroup_dir[8192];
-
-static int has_cgroup2(void)
-{
-    char line[4096], path[4096] = "", mount[4096] = "";
-    FILE *f = fopen("/proc/self/cgroup", "r");
-    REQUIRE(f != NULL, "open /proc/self/cgroup");
-    while (fgets(line, sizeof line, f))
-        if (strncmp(line, "0::/", 4) == 0) {
-            snprintf(path, sizeof path, "%s", line + 3);
-            path[strcspn(path, "\n")] = 0;
-        }
-    fclose(f);
-    f = fopen("/proc/self/mountinfo", "r");
-    REQUIRE(f != NULL, "open /proc/self/mountinfo");
-    while (fgets(line, sizeof line, f)) {
-        char *sep = strstr(line, " - ");
-        if (sep && strncmp(sep + 3, "cgroup2 ", 8) == 0 && !mount[0]) {
-            /* field 5 (0-based 4) of the part before the separator */
-            *sep = 0;
-            char *save = NULL, *tok = strtok_r(line, " ", &save);
-            for (int i = 0; tok && i < 4; i++)
-                tok = strtok_r(NULL, " ", &save);
-            if (tok)
-                snprintf(mount, sizeof mount, "%s", tok);
-        }
-    }
-    fclose(f);
-    fprintf(stderr, "cgroup: unified path %s, cgroup2 mount %s\n", path[0] ? path : "(none)", mount[0] ? mount : "(none)");
-    if (!path[0] || !mount[0])
-        return 0;
-    snprintf(cgroup_dir, sizeof cgroup_dir, "%s%s", mount, strcmp(path, "/") == 0 ? "" : path);
-    return 1;
-}
-
-/* The kernel's own memory.current for this cgroup, or 0 without one. */
-static size_t kernel_current(void)
-{
-    char p[8192 + 32];
-    snprintf(p, sizeof p, "%s/memory.current", cgroup_dir);
-    FILE *f = fopen(p, "r");
-    if (!f)
-        return 0;
-    unsigned long long v = 0;
-    if (fscanf(f, "%llu", &v) != 1)
-        v = 0;
-    fclose(f);
-    return (size_t)v;
-}
-
 static void mode_plain(void)
 {
-    int tracked = has_cgroup2();
+    int tracked = find_cgroup(true);
+    fprintf(stderr, "cgroup: %s\n", tracked ? cgroup_dir : "(none)");
     size_t limit = 0, high = 0, current = 0;
     int rl = read_size("stats.cgroup.limit", &limit);
     int rh = read_size("stats.cgroup.high", &high);
@@ -177,7 +106,8 @@ static void mode_off(void)
 
 static void mode_bg(void)
 {
-    int tracked = has_cgroup2();
+    int tracked = find_cgroup(true);
+    fprintf(stderr, "cgroup: %s\n", tracked ? cgroup_dir : "(none)");
     /* The thread is created on a periodic tick: churn until it exists. */
     bool present = false;
     for (int i = 0; i < 2000 && !present; i++) {

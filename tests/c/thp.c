@@ -48,20 +48,7 @@
 #include "common.h"
 #include <fcntl.h>
 
-typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
-
 static char report[1 << 18];
-static size_t report_len;
-
-static void stats_cb(void *opaque, const char *s)
-{
-    (void)opaque;
-    size_t n = strlen(s);
-    if (report_len + n < sizeof report) {
-        memcpy(report + report_len, s, n);
-        report_len += n;
-    }
-}
 
 extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
 __attribute__((weak)) const char *challoc_features(void);
@@ -252,8 +239,7 @@ int main(int argc, char **argv)
     /* The report's thp: line names the host's global mode. */
     stats_print_fn msp = (stats_print_fn)dlsym(RTLD_DEFAULT, "malloc_stats_print");
     REQUIRE(msp != NULL, "dlsym(malloc_stats_print)");
-    msp(stats_cb, NULL, "");
-    report[report_len] = 0;
+    stats_report(msp, "", report, sizeof report);
     const char *thp_report = strstr(report, "\nthp: ");
     REQUIRE(thp_report != NULL, "no thp: line in malloc_stats_print");
     thp_report++;

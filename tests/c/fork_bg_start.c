@@ -6,28 +6,6 @@
  * later start refuse, and the child would never get one.
  */
 #include "common.h"
-#include <dirent.h>
-
-static int bg_threads(void)
-{
-    DIR *d = opendir("/proc/self/task");
-    REQUIRE(d, "opendir /proc/self/task");
-    struct dirent *e;
-    int n = 0;
-    char path[300], name[64];
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof path, "/proc/self/task/%s/comm", e->d_name);
-        FILE *f = fopen(path, "r");
-        if (f && fgets(name, sizeof name, f) && strncmp(name, "challoc-bg", 10) == 0)
-            n++;
-        if (f)
-            fclose(f);
-    }
-    closedir(d);
-    return n;
-}
 
 /* bg_threads() once the count is exactly one, or after 2 s: a new thread
  * names itself `challoc-bg` when it starts running, a moment after the

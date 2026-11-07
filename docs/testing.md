@@ -170,9 +170,13 @@ per `cargo test` process into `target/ctests/`.
    for a claim the host cannot support, `return finish("<prog>")` last
    (prints `ok <prog>`). Helpers there: `fill`/`check_fill`/`is_zero`,
    `rng_next`, `sleep_ms`, `now_ms`, `rss_bytes`, `fork_and_wait`,
-   `expect_signal`, `mallctl_dl`, and every non-standard entry point
-   declared weak (`mallctl`, `mallocx`, `sdallocx`, `free_sized`, ...) plus
-   the `MALLOCX_*` flags.
+   `expect_signal`, `mallctl_dl`, `read_size` and `ctl_uint`/`ctl_bool`/
+   `ctl_size` (mallctl reads), `stats_report` (a whole `malloc_stats_print`
+   report), `ATFORK_FIRST` (atfork handlers from `.preinit_array`),
+   `bg_threads`, `cmp_ptr`, and every non-standard entry point declared
+   weak (`mallctl`, `mallocx`, `sdallocx`, `free_sized`, ...) plus the
+   `MALLOCX_*` flags. A program that reads its cgroup includes `cgroup.h`
+   instead (`find_cgroup`, `read_cgroup_ll`, `kernel_current`, `fmt_mib`).
 2. Add one entry to a `ctests!` block in `src/api/c_programs.rs`:
    `c_<prog> => [ CTest { prog: "<prog>", args: &["mode"], conf: Some("key:value"), ..BASE } ];`
    with a doc comment saying what the row proves. A row that must abort

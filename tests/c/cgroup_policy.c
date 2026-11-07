@@ -27,7 +27,7 @@
  *   high-child  Inside that cgroup: allocate past `memory.high`, tick, and
  *               see `stats.cgroup.full_purges` become 1.
  */
-#include "common.h"
+#include "cgroup.h"
 #include <fcntl.h>
 #include <stdbool.h>
 #include <sys/stat.h>
@@ -38,26 +38,12 @@
 enum { CHUNK = 8 * MIB, MAX_CHUNKS = 4096 };
 
 static char report[1 << 16];
-static size_t report_len;
-static char cgroup_dir[8192];
-
-static void append(void *opaque, const char *s)
-{
-    (void)opaque;
-    size_t n = strlen(s);
-    if (report_len + n < sizeof report) {
-        memcpy(report + report_len, s, n);
-        report_len += n;
-    }
-}
 
 /* One line of the text report starting with `prefix`, NUL-terminated in
  * place, or NULL. */
 static const char *report_line(const char *prefix)
 {
-    report_len = 0;
-    malloc_stats_print(append, NULL, NULL);
-    report[report_len] = 0;
+    stats_report(malloc_stats_print, NULL, report, sizeof report);
     char key[64];
     snprintf(key, sizeof key, "\n%s", prefix);
     char *l = strstr(report, key);
@@ -70,76 +56,12 @@ static const char *report_line(const char *prefix)
     return l;
 }
 
-static int read_size(const char *key, size_t *out)
-{
-    size_t len = sizeof *out;
-    return mallctl(key, out, &len, NULL, 0);
-}
-
-static size_t get_size(const char *key)
-{
-    size_t v = 0;
-    REQUIRE(read_size(key, &v) == 0, "mallctl %s", key);
-    return v;
-}
-
 static long base_decay_ms(void)
 {
     ssize_t v = 0;
     size_t len = sizeof v;
     REQUIRE(mallctl("opt.dirty_decay_ms", &v, &len, NULL, 0) == 0, "opt.dirty_decay_ms");
     return (long)v;
-}
-
-/* The cgroup directory, found the way the library finds it. */
-static int has_cgroup2(void)
-{
-    char line[4096], path[4096] = "", mount[4096] = "";
-    FILE *f = fopen("/proc/self/cgroup", "r");
-    REQUIRE(f != NULL, "open /proc/self/cgroup");
-    while (fgets(line, sizeof line, f))
-        if (strncmp(line, "0::/", 4) == 0) {
-            snprintf(path, sizeof path, "%s", line + 3);
-            path[strcspn(path, "\n")] = 0;
-        }
-    fclose(f);
-    f = fopen("/proc/self/mountinfo", "r");
-    REQUIRE(f != NULL, "open /proc/self/mountinfo");
-    while (fgets(line, sizeof line, f)) {
-        char *sep = strstr(line, " - ");
-        if (sep && strncmp(sep + 3, "cgroup2 ", 8) == 0 && !mount[0]) {
-            *sep = 0;
-            char *save = NULL, *tok = strtok_r(line, " ", &save);
-            for (int i = 0; tok && i < 4; i++)
-                tok = strtok_r(NULL, " ", &save);
-            if (tok)
-                snprintf(mount, sizeof mount, "%s", tok);
-        }
-    }
-    fclose(f);
-    if (!path[0] || !mount[0])
-        return 0;
-    snprintf(cgroup_dir, sizeof cgroup_dir, "%s%s", mount, strcmp(path, "/") == 0 ? "" : path);
-    return 1;
-}
-
-static size_t read_cgroup_u64(const char *dir, const char *file)
-{
-    char p[8192 + 64];
-    snprintf(p, sizeof p, "%s/%s", dir, file);
-    FILE *f = fopen(p, "r");
-    if (!f)
-        return 0;
-    unsigned long long v = 0;
-    if (fscanf(f, "%llu", &v) != 1)
-        v = 0;
-    fclose(f);
-    return (size_t)v;
-}
-
-static size_t kernel_current(void)
-{
-    return read_cgroup_u64(cgroup_dir, "memory.current");
 }
 
 /* Drive the slow path (as tests/c/decay.c): the 48-byte class refills and
@@ -202,7 +124,7 @@ static long expected_decay_ms(long base, size_t l, size_t u)
 
 static void mode_bands(void)
 {
-    int tracked = has_cgroup2();
+    int tracked = find_cgroup(true);
     size_t v;
     if (!tracked) {
         CHECK(read_size("stats.cgroup.decay_ms", &v) == ENOENT, "decay_ms without a cgroup2");
@@ -215,12 +137,12 @@ static void mode_bands(void)
         return;
     }
     long base = base_decay_ms();
-    size_t limit = get_size("stats.cgroup.limit");
-    size_t high = get_size("stats.cgroup.high");
+    size_t limit = ctl_size("stats.cgroup.limit");
+    size_t high = ctl_size("stats.cgroup.high");
     size_t l = limit < high ? limit : high;
-    size_t decay_ms = get_size("stats.cgroup.decay_ms");
-    size_t cap = get_size("stats.cgroup.retention_cap");
-    size_t full = get_size("stats.cgroup.full_purges");
+    size_t decay_ms = ctl_size("stats.cgroup.decay_ms");
+    size_t cap = ctl_size("stats.cgroup.retention_cap");
+    size_t full = ctl_size("stats.cgroup.full_purges");
     const char *line = report_line("cgroup policy: ");
     printf("%s\nbase %ld ms, limit %zu, high %zu, decay_ms %zu, retention_cap %zu\n", line ? line : "(none)", base, limit, high,
             decay_ms, cap);
@@ -233,9 +155,9 @@ static void mode_bands(void)
         fill_to(SIZE_MAX, 64 * MIB);
         release_all();
         tick();
-        size_t empty = get_size("stats.cgroup.empty_bytes");
-        CHECK(get_size("stats.cgroup.decay_ms") == decay_ms, "decay_ms changed without a limit");
-        CHECK(get_size("stats.cgroup.retention_cap") == SIZE_MAX, "retention_cap changed without a limit");
+        size_t empty = ctl_size("stats.cgroup.empty_bytes");
+        CHECK(ctl_size("stats.cgroup.decay_ms") == decay_ms, "decay_ms changed without a limit");
+        CHECK(ctl_size("stats.cgroup.retention_cap") == SIZE_MAX, "retention_cap changed without a limit");
         printf("empty_bytes %zu after freeing 64 MiB, no limit\n", empty);
         CHECK(empty >= 32 * MIB, "empty_bytes %zu after freeing 64 MiB (nothing should have been purged yet)", empty);
         skip_note("cgroup_policy/bands", "no cgroup limit, bands not exercised");
@@ -250,8 +172,8 @@ static void mode_bands(void)
     size_t mine = fill_to(l * 80 / 100, l * 88 / 100);
     sleep_ms(15);
     tick();
-    size_t current = get_size("stats.cgroup.current");
-    decay_ms = get_size("stats.cgroup.decay_ms");
+    size_t current = ctl_size("stats.cgroup.current");
+    decay_ms = ctl_size("stats.cgroup.decay_ms");
     line = report_line("cgroup policy: ");
     printf("80%%: allocated %zu MiB, current %zu MiB (%.1f%%), decay_ms %zu\n%s\n", mine / MIB, current / MIB,
             100.0 * (double)current / (double)l, decay_ms, line ? line : "(none)");
@@ -275,7 +197,7 @@ static void mode_bands(void)
     long elapsed = 0;
     while (elapsed < 3000) {
         tick();
-        empty = get_size("stats.cgroup.empty_bytes");
+        empty = ctl_size("stats.cgroup.empty_bytes");
         elapsed = now_ms() - t0;
         if (empty <= cap)
             break;
@@ -293,8 +215,8 @@ static void mode_bands(void)
           base_rss / MIB, cap / MIB);
     sleep_ms(15);
     tick();
-    current = get_size("stats.cgroup.current");
-    decay_ms = get_size("stats.cgroup.decay_ms");
+    current = ctl_size("stats.cgroup.current");
+    decay_ms = ctl_size("stats.cgroup.decay_ms");
     printf("after the purge: current %zu MiB (%.1f%%), decay_ms %zu\n", current / MIB, 100.0 * (double)current / (double)l,
             decay_ms);
     if (current < l * 70 / 100)
@@ -304,8 +226,8 @@ static void mode_bands(void)
     mine = fill_to(l * 94 / 100, l * 96 / 100);
     sleep_ms(15);
     tick();
-    current = get_size("stats.cgroup.current");
-    decay_ms = get_size("stats.cgroup.decay_ms");
+    current = ctl_size("stats.cgroup.current");
+    decay_ms = ctl_size("stats.cgroup.decay_ms");
     line = report_line("cgroup policy: ");
     printf("94%%: allocated %zu MiB, current %zu MiB (%.1f%%), decay_ms %zu\n%s\n", mine / MIB, current / MIB,
             100.0 * (double)current / (double)l, decay_ms, line ? line : "(none)");
@@ -319,7 +241,7 @@ static void mode_bands(void)
     release_all();
     tick();
     long dt = now_ms() - t0;
-    empty = get_size("stats.cgroup.empty_bytes");
+    empty = ctl_size("stats.cgroup.empty_bytes");
     size_t rss2 = rss_bytes();
     printf("94%% freed: one tick later (%ld ms) empty_bytes %zu, rss %zu MiB (base %zu MiB)\n", dt, empty, rss2 / MIB,
             base_rss / MIB);
@@ -330,7 +252,7 @@ static void mode_bands(void)
         CHECK(empty < CHUNK, "empty_bytes %zu after an immediate purge", empty);
         CHECK(rss2 <= base_rss + 2 * CHUNK + 8 * MIB, "rss %zu MiB after the immediate purge, base %zu MiB", rss2 / MIB, base_rss / MIB);
     }
-    CHECK(get_size("stats.cgroup.full_purges") == 0, "a full purge ran without a memory.high event");
+    CHECK(ctl_size("stats.cgroup.full_purges") == 0, "a full purge ran without a memory.high event");
     printf("bands: limit %zu MiB, scaled decay_ms observed, immediate purge in %ld ms\n", l / MIB, dt);
 }
 
@@ -348,7 +270,7 @@ static int write_str(const char *path, const char *s)
 
 static void mode_high(const char *self)
 {
-    if (!has_cgroup2()) {
+    if (!find_cgroup(true)) {
         skip_note("cgroup_policy/high", "no cgroup2");
         return;
     }
@@ -424,12 +346,12 @@ static void mode_high(const char *self)
 
 static void mode_high_child(void)
 {
-    REQUIRE(has_cgroup2(), "no cgroup2 in the child");
-    size_t high = get_size("stats.cgroup.high");
-    size_t limit = get_size("stats.cgroup.limit");
+    REQUIRE(find_cgroup(true), "no cgroup2 in the child");
+    size_t high = ctl_size("stats.cgroup.high");
+    size_t limit = ctl_size("stats.cgroup.limit");
     printf("child in %s: high %zu, limit %zu\n", cgroup_dir, high, limit);
     CHECK(high == 96 * MIB, "stats.cgroup.high %zu, expected 96 MiB", high);
-    CHECK(get_size("stats.cgroup.full_purges") == 0, "full_purges at start");
+    CHECK(ctl_size("stats.cgroup.full_purges") == 0, "full_purges at start");
     size_t events0 = read_cgroup_u64(cgroup_dir, "memory.events");
     /* Something to purge, then past `memory.high`: the kernel counts a
      * `high` event and throttles this process a little. */
@@ -441,7 +363,7 @@ static void mode_high_child(void)
     while (now_ms() - t0 < 5000) {
         sleep_ms(15);
         tick();
-        full = get_size("stats.cgroup.full_purges");
+        full = ctl_size("stats.cgroup.full_purges");
         if (full > 0)
             break;
     }

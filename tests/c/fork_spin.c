@@ -37,18 +37,7 @@ static void child_handler(void)
     read_both();
 }
 
-/* Registered from the program's .preinit_array, which runs before every
- * library's constructor, challoc's among them: before challoc registers
- * its own handlers, so these run inside challoc's fork window (design 9).
- * A handler registered later, from a constructor, runs outside it
- * (tests/c/atfork_pool.c). */
-static void register_first(void)
-{
-    if (pthread_atfork(NULL, NULL, child_handler) != 0)
-        _exit(3);
-}
-
-__attribute__((section(".preinit_array"), used)) static void (*const preinit_register)(void) = register_first;
+ATFORK_FIRST(NULL, NULL, child_handler);
 
 static volatile int go;
 

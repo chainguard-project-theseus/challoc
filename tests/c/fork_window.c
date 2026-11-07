@@ -11,30 +11,8 @@
  * repeatedly and never has more than one.
  */
 #include "common.h"
-#include <dirent.h>
 
 static volatile int window_rc = -1;
-
-static int bg_threads(void)
-{
-    DIR *d = opendir("/proc/self/task");
-    REQUIRE(d, "opendir /proc/self/task");
-    struct dirent *e;
-    int n = 0;
-    char path[300], name[64];
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof path, "/proc/self/task/%s/comm", e->d_name);
-        FILE *f = fopen(path, "r");
-        if (f && fgets(name, sizeof name, f) && strncmp(name, "challoc-bg", 10) == 0)
-            n++;
-        if (f)
-            fclose(f);
-    }
-    closedir(d);
-    return n;
-}
 
 /* bg_threads() once the count is at most one, or after 2 s. Turning the
  * thread on joins the one the last "off" stopped before it starts the
@@ -59,18 +37,7 @@ static void child_handler(void)
     window_rc = mallctl("background_thread", NULL, NULL, &on, sizeof on);
 }
 
-/* Registered from the program's .preinit_array, which runs before every
- * library's constructor, challoc's among them: before challoc registers
- * its own handlers, so these run inside challoc's fork window (design 9).
- * A handler registered later, from a constructor, runs outside it
- * (tests/c/atfork_pool.c). */
-static void register_first(void)
-{
-    if (pthread_atfork(NULL, NULL, child_handler) != 0)
-        _exit(3);
-}
-
-__attribute__((section(".preinit_array"), used)) static void (*const preinit_register)(void) = register_first;
+ATFORK_FIRST(NULL, NULL, child_handler);
 
 static void churn(void)
 {

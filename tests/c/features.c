@@ -14,20 +14,7 @@
  */
 #include "common.h"
 
-typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
-
 static char report[1 << 18];
-static size_t report_len;
-
-static void stats_cb(void *opaque, const char *s)
-{
-    (void)opaque;
-    size_t n = strlen(s);
-    if (report_len + n < sizeof report) {
-        memcpy(report + report_len, s, n);
-        report_len += n;
-    }
-}
 
 static int has_key(const char *line, const char *key)
 {
@@ -110,8 +97,7 @@ int main(void)
     /* The report carries the same line. */
     stats_print_fn msp = (stats_print_fn)dlsym(RTLD_DEFAULT, "malloc_stats_print");
     REQUIRE(msp != NULL, "dlsym(malloc_stats_print)");
-    msp(stats_cb, NULL, "");
-    report[report_len] = 0;
+    stats_report(msp, "", report, sizeof report);
     const char *at = strstr(report, "Kernel and CPU features: ");
     REQUIRE(at != NULL, "no `Kernel and CPU features:` line in malloc_stats_print");
     at += strlen("Kernel and CPU features: ");
