@@ -66,14 +66,16 @@ section's, and fails on a Kani status that names any other.
   `je_malloc_message` (C1), each keep the C allocation contract while
   challoc calls them: each reads `s` only up to its NUL and only until
   it returns, writes no byte through `s`, returns to its caller (it
-  neither unwinds nor `longjmp`s out of the call, is not cancelled and
-  does not call `pthread_exit` during it), and any call it makes into
-  challoc passes only pointers it owns and frees only live blocks.
-  challoc calls them, when not null, on the thread that called the
-  report, with a NUL-terminated buffer on challoc's stack and without
-  disabling cancellation: the `write_cb` with the program's `cbopaque`
-  (`api::print::call_back`), and, when `write_cb` is null, the hook with
-  a null `cbopaque` (`api::jemalloc::call_hook`). A write through `s`,
+  neither unwinds nor `longjmp`s out of the call and does not call
+  `pthread_exit` during it), does not re-enable cancellation, and any
+  call it makes into challoc passes only pointers it owns and frees only
+  live blocks. challoc calls them, when not null, on the thread that
+  called the report, with a NUL-terminated buffer on challoc's stack and
+  with cancellation disabled (`api::print::call_back_nocancel`,
+  `api::jemalloc::call_hook_nocancel`): the `write_cb` with the
+  program's `cbopaque` (`api::print::call_back`), and, when `write_cb`
+  is null, the hook with a null `cbopaque` (`api::jemalloc::call_hook`).
+  A write through `s`,
   or a read of it after the call returns, is the program's use of memory
   it does not own. Each harness runs its item with a recording callback
   in the program's place. Source: jemalloc(3), `malloc_stats_print` (it
@@ -247,6 +249,47 @@ section's, and fails on a Kani status that names any other.
   `malloc/dynarray-skeleton.c` and `malloc/dynarray_emplace_enlarge.c`
   (the in-place table and the `malloc` past it), as read on glibc's
   master branch on 2026-11-06 (a mirror).
+- **C9, glibc's `pthread_setcancelstate`.** The symbol
+  `pthread_setcancelstate` resolves to glibc's `int
+  pthread_setcancelstate(int state, int *oldstate)`, the signature of
+  challoc's declaration of it in `api/print.rs`. A program or preloaded
+  library that defines that symbol itself, interposing on glibc's, is
+  outside this premise unless its definition does the same. Called by
+  `api::print::cancel_disable` with `PTHREAD_CANCEL_DISABLE` (1; 0 is
+  `PTHREAD_CANCEL_ENABLE`) and by `api::print::cancel_restore` with any
+  `state`, each time with the address of a live, writable `int` on
+  challoc's stack as `oldstate`, it returns to its caller, writes no
+  memory of challoc's but `*oldstate`, and makes no call into challoc
+  while it runs. For a `state` of 0 or 1 it sets the calling thread's
+  cancelability state to `state`, stores the previous state, 0 or 1, in
+  `*oldstate`, and returns 0; for any other `state` it returns `EINVAL`
+  without writing `*oldstate`. It is not a cancellation point, so it
+  never acts on a deferred cancel. glibc acts on a pending cancel inside
+  it only when the call enables cancellation on a thread whose
+  cancelability type is asynchronous; asynchronous cancellation inside
+  challoc is outside its contract (`docs/design.md`, 8.1), and so
+  outside this premise. It allocates nothing. The harnesses run each
+  item with `pthread_setcancelstate` replaced by a stand-in that
+  records its call and `state`, checks that `oldstate` is writable, and
+  returns any value, storing any `int` in `*oldstate` when that value
+  is 0. Source: POSIX `pthread_setcancelstate` ("The
+  pthread_setcancelstate() function shall atomically both set the
+  calling thread's cancelability state to the indicated state and
+  return the previous cancelability state at the location referenced by
+  oldstate."; "If successful, the pthread_setcancelstate() and
+  pthread_setcanceltype() functions shall return zero; otherwise, an
+  error number shall be returned to indicate the error.") and section
+  2.9.5.2, "Cancellation Points", of its System Interfaces volume, whose
+  lists do not name it ("An implementation shall not introduce
+  cancellation points into any other functions specified in this volume
+  of POSIX.1-2024."); glibc `nptl/pthread_setcancelstate.c`
+  (`__pthread_setcancelstate`: the `EINVAL` return before any write,
+  the store to `*oldstate`, and `__do_cancel` only when
+  `cancel_enabled_and_canceled_and_async` holds of the new state),
+  `nptl/descr.h` (`cancel_enabled_and_canceled_and_async`: enabled,
+  asynchronous and cancelled, and neither exiting nor terminated) and
+  `sysdeps/nptl/pthread.h` (the two values), as read on glibc's master
+  branch on 2026-11-06.
 - **C10, glibc's `pthread_setspecific`.** The symbol
   `pthread_setspecific` resolves to glibc's `int
   pthread_setspecific(pthread_key_t key, const void *value)`, the

@@ -53,6 +53,7 @@ use core::ptr;
 use super::libc::{class_for, old_size_or_keep, usable_size};
 #[cfg(verus_keep_ghost)]
 use super::libc::{keeps, lemma_class_aligned, spec_class_for};
+use super::print::{cancel_disable, cancel_restore};
 #[cfg(verus_keep_ghost)]
 use crate::heap::mallocx::MALLOCX_ZERO;
 use crate::heap::mallocx::{self, Flags, Tcache};
@@ -101,7 +102,7 @@ pub static mut malloc_conf: *const c_char = ptr::null();
 
 /// An installed `malloc_message` hook. A newtype, opaque to the verifier,
 /// which rejects function pointer types: [`malloc_write`] carries it and
-/// calls it through [`call_hook`].
+/// calls it through [`call_hook_nocancel`] and [`call_hook`].
 #[derive(Copy, Clone)]
 pub struct Hook(unsafe extern "C" fn(*mut c_void, *const c_char));
 
@@ -153,6 +154,22 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
     unsafe { (cb.0)(ptr::null_mut(), buf.as_ptr() as *const c_char) };
 }
 
+/// [`call_hook`] with cancellation disabled, as `print::write_file`'s
+/// `fwrite` runs: a deferred `pthread_cancel` is not acted on at a
+/// cancellation point inside the hook, unless the hook turns cancellation
+/// back on (design 8.1). `ord` has top 0, as for `call_hook`.
+#[inline(always)]
+fn call_hook_nocancel(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
+    requires
+        crate::sys::may_syscall(),
+        ord.top() == 0,
+        exists|i: int| 0 <= i < 512 && #[trigger] buf@[i] == 0,
+{
+    let old = cancel_disable();
+    call_hook(cb, buf, Tracked(ord));
+    cancel_restore(old);
+}
+
 /// jemalloc's `malloc_write`: hand `s` to the `malloc_message` hook in
 /// NUL-terminated chunks (with a null `cbopaque`, as jemalloc does) or, with
 /// no hook, write it to stderr with `write(2)`. Under the report's lock-order
@@ -187,7 +204,7 @@ pub(super) fn malloc_write(s: &[u8], Tracked(ord): Tracked<&LockOrder>)
                 buf[..chunk.len()].copy_from_slice(chunk);
                 buf[chunk.len()] = 0;
                 assert(buf@[n as int] == 0);
-                call_hook(cb, &buf, Tracked(ord));
+                call_hook_nocancel(cb, &buf, Tracked(ord));
                 at += n;
             }
         }

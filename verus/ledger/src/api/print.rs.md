@@ -9,6 +9,8 @@ file.
 |---|---|---|---|---|
 | `WriteCallback` | ext_type_spec | function pointer | none (assumption) | trusted |
 | `call_back` | external_body | function pointer | Kani | discharged |
+| `cancel_disable` | external_body | FFI/syscall | Kani | discharged |
+| `cancel_restore` | external_body | FFI/syscall | Kani | discharged |
 | `write_file` | external_body | FFI/syscall | none (assumption) | trusted |
 | `word` | external_body | core library | Kani | discharged |
 | `hist_line` | external_body | core library | Kani | discharged |
@@ -16,7 +18,7 @@ file.
 
 ## `WriteCallback`
 
-src/api/print.rs:69. Kind: ext_type_spec. Category: function pointer.
+src/api/print.rs:77. Kind: ext_type_spec. Category: function pointer.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > Opaque: `WriteCallback` holds a function pointer type, which Verus rejects.
@@ -29,7 +31,7 @@ pub struct ExWriteCallback(WriteCallback);
 
 ## `call_back`
 
-src/api/print.rs:114. Kind: external_body. Category: function pointer.
+src/api/print.rs:122. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged on premises (Kani: api::print::kani_print::call_back_calls_once; premises: C3 (the program's `write_cb` is null or a report callback that keeps the C allocation contract)).
 
 > Call the caller's callback `cb`, when it gave one, with `opaque` and the C string in `buf`, which holds a NUL; whether it did.
@@ -49,14 +51,44 @@ fn call_back(
         exists|i: int| 0 <= i < 1024 && #[trigger] buf@[i] == 0,
 ```
 
+## `cancel_disable`
+
+src/api/print.rs:169. Kind: external_body. Category: FFI/syscall.
+Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::disable_keeps_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point)).
+
+> Disable the calling thread's cancellation (`pthread_setcancelstate`); the state it had, for [`cancel_restore`].
+
+Hashes: contract 1116002484, body 1821335431.
+
+```rust
+pub(super) fn cancel_disable() -> i32
+    requires
+        crate::sys::may_syscall(),
+```
+
+## `cancel_restore`
+
+src/api/print.rs:184. Kind: external_body. Category: FFI/syscall.
+Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::restore_passes_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point)).
+
+> Give the calling thread back the cancel state `old` that [`cancel_disable`] returned (`pthread_setcancelstate`).
+
+Hashes: contract 4251881114, body 3441625971.
+
+```rust
+pub(super) fn cancel_restore(old: i32)
+    requires
+        crate::sys::may_syscall(),
+```
+
 ## `write_file`
 
-src/api/print.rs:148. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:207. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `fwrite` of `s` to the caller's stream `f`.
 
-Hashes: contract 931825622, body 398941924.
+Hashes: contract 931825622, body 77406128.
 
 ```rust
 fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
@@ -67,7 +99,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 
 ## `word`
 
-src/api/print.rs:452. Kind: external_body. Category: core library.
+src/api/print.rs:501. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::word_returns).
 
 > A configuration value's name (`config::Value::Str`, the `thp` and `percpu_arena` keys): the text of [`Name::cstr`].
@@ -80,7 +112,7 @@ fn word(n: Name) -> &'static str
 
 ## `hist_line`
 
-src/api/print.rs:979. Kind: external_body. Category: core library.
+src/api/print.rs:1028. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: api::print::kani_print::hist_line_returns).
 
 > One class's line of [`slab_histogram`].
@@ -101,7 +133,7 @@ fn hist_line<W: Write>(
 
 ## `axiom_c_call`
 
-src/api/print.rs:1649. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1698. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).

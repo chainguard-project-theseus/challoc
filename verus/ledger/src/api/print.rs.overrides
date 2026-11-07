@@ -13,3 +13,8 @@ hist_line	core library	Kani	discharged (Kani: api::print::kani_print::hist_line_
 call_back	function pointer	Kani	discharged on premises (Kani: api::print::kani_print::call_back_calls_once; premises: C3 (the program's `write_cb` is null or a report callback that keeps the C allocation contract))	contract 2110597196, body 1036480111
 # The report's call out to the caller's stream.
 write_file	FFI/syscall	none (assumption)
+# The cancel-state calls into libc around the call outs. Kani runs each
+# body with glibc's pthread_setcancelstate replaced by a recording
+# stand-in; what glibc's function does is C9.
+cancel_disable	FFI/syscall	Kani	discharged on premises (Kani: api::print::kani_cancel::disable_keeps_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point))	contract 1116002484, body 1821335431
+cancel_restore	FFI/syscall	Kani	discharged on premises (Kani: api::print::kani_cancel::restore_passes_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point))	contract 4251881114, body 3441625971
