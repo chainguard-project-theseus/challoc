@@ -112,6 +112,32 @@ const PINS: &[(&str, &[&str])] = &[
             "self.dirty_at.store(ns, Ordering::Relaxed);",
         ],
     ),
+    // Slab pages, the walk racing a claim (tests/loom/src/pages.rs):
+    // close_page's steps, finish's mask loads, re-check and give-back,
+    // probe's read-modify-write and the claims' load of the mask.
+    (
+        "src/class/pages.rs",
+        &[
+            "self.set_pages_locked(g, pg, slab, new, stamp);",
+            "if bm.probe(w) & v.page_word(p, w) != 0 {",
+            "self.set_pages_locked(g, pg, slab, v.closed, stamp);",
+            "if !crate::purge::discard_one(a, len, Ghost(closed_page(new, p as u16, a as int, len as int))) {",
+        ],
+    ),
+    (
+        "src/class/mod.rs",
+        &[
+            "Some(pg) => geometry.with_closed(pg.closed()),",
+            "Some(pg) => pg.closed(),",
+            "let back = won & !open;",
+            "let _ = bm.release(w, back, Tracked(&mut bt));",
+        ],
+    ),
+    (
+        "src/bitmap.rs",
+        &["prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));"],
+    ),
+    ("src/slab.rs", &["self.closed.load(Ordering::Acquire)"]),
     // `SlabPages`' accessors of the lock-protected fields: pages_held,
     // set_pages (tests/loom/src/slab.rs).
     (

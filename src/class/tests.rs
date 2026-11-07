@@ -2969,3 +2969,137 @@ fn claims_take_only_the_slots_of_open_pages() {
     // A 64 KiB-page kernel has one page per small slab: nothing to close.
     assert!(tested > 0 || page_size() >= 0x10000);
 }
+
+/// Slab pages, the walk (docs/proposals/slab-pages.md, 3.4): per paged
+/// class, a full slab with every slot released but those of its first and
+/// last pages. An explicit walk closes exactly the pages none of whose
+/// slots is held (a page a held slot straddles into stays open), counts
+/// their slots in `closed_slots`, and the next refills take no slot of
+/// them. Emptying the slab opens every page and takes the count back.
+#[test]
+fn the_walk_closes_the_free_pages_of_a_partial_slab() {
+    let env = Env::new();
+    let mut tested = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        let view = cs.table().page_view();
+        if view.pages < 2 {
+            continue;
+        }
+        let n = view.nslots;
+        let mut held: Vec<*mut u8> = Vec::new();
+        while held.len() < n {
+            let (q, _) = env.claim(cs, n - held.len());
+            held.extend(q);
+        }
+        let (s0, _) = cs.locate(held[0]);
+        assert!(held.iter().all(|&p| cs.locate(p).0 == s0), "class {c}");
+        // Keep the slots that overlap the first or the last page.
+        let keep_page = |p: usize| p == 0 || p == view.pages - 1;
+        let overlaps = |s: usize, p: usize| {
+            s * view.size < (p + 1) * view.pg && p * view.pg < (s + 1) * view.size
+        };
+        let (kept, freed): (Vec<_>, Vec<_>) = held
+            .iter()
+            .partition(|&&x| (0..view.pages).any(|p| keep_page(p) && overlaps(cs.locate(x).1, p)));
+        cs.release(&freed);
+        let kept_slots: Vec<usize> = kept.iter().map(|&x| cs.locate(x).1).collect();
+        let want: u16 = (0..view.pages)
+            .filter(|&p| !kept_slots.iter().any(|&s| overlaps(s, p)))
+            .fold(0, |m, p| m | 1 << p);
+        assert_ne!(want, 0, "class {c}");
+        close_pages_t(cs, 1, 0, true);
+        let pg = cs.table().pages(s0).unwrap();
+        assert_eq!(pg.closed(), want, "class {c}: closed pages");
+        let hidden = view.with_closed(want).closed_slots();
+        assert_eq!(closed_slots_t(cs), hidden, "class {c}");
+        // Refills take the slab's open free slots only.
+        let mut more: Vec<*mut u8> = Vec::new();
+        loop {
+            let (q, _) = env.claim(cs, n);
+            let done = q.iter().any(|&x| cs.locate(x).0 != s0);
+            more.extend(q);
+            if done {
+                break;
+            }
+        }
+        let v = view.with_closed(want);
+        for &x in &more {
+            let (s, k) = cs.locate(x);
+            if s == s0 {
+                assert_eq!(
+                    v.word(k / 64) >> (k % 64) & 1,
+                    1,
+                    "class {c}: slot {k} on a closed page"
+                );
+            }
+        }
+        cs.release(&more);
+        cs.release(&kept);
+        assert_eq!(
+            pg.closed(),
+            0,
+            "class {c}: an Empty slab has every page open"
+        );
+        assert_eq!(closed_slots_t(cs), 0, "class {c}");
+        tested += 1;
+    }
+    assert!(tested > 0 || page_size() >= 0x10000);
+}
+
+/// Slab pages, the decay curve: a walk stamps a slab with closable pages
+/// and closes none while they are young; once their stamp is a period old
+/// a walk closes them all.
+#[test]
+fn the_walk_closes_pages_along_the_decay_curve() {
+    let env = Env::new();
+    let c = small_class();
+    let cs = env.class(c, 0);
+    let view = cs.table().page_view();
+    if view.pages < 2 {
+        return;
+    }
+    let n = view.nslots;
+    let mut held: Vec<*mut u8> = Vec::new();
+    while held.len() < n {
+        let (q, _) = env.claim(cs, n - held.len());
+        held.extend(q);
+    }
+    let (s0, _) = cs.locate(held[0]);
+    // Keep slot 0 only: every page but the first is closable.
+    cs.release(&held[1..]);
+    let pg = cs.table().pages(s0).unwrap();
+    let period = 1_000_000_000u64;
+    let t0 = 5_000_000_000u64;
+    let due = close_pages_t(cs, t0, period, false).expect("a deadline");
+    assert_eq!(pg.closed(), 0, "a young closable page stays open");
+    assert!(due > t0 && due <= t0 + period);
+    // Before the deadline the walk does not run.
+    assert_eq!(close_pages_t(cs, due - 1, period, false), Some(due));
+    assert_eq!(pg.closed(), 0);
+    close_pages_t(cs, t0 + period, period, false);
+    let all = ((1u32 << view.pages) - 1) as u16;
+    let first = (0..view.pages)
+        .filter(|&p| p * view.pg < view.size)
+        .fold(0u16, |m, p| m | 1 << p);
+    assert_eq!(
+        pg.closed(),
+        all & !first,
+        "a period old, every closable page closed"
+    );
+    cs.release(&held[..1]);
+    assert_eq!(pg.closed(), 0);
+}
+
+/// Slab pages: `cs`'s `closed_slots`, under the class lock.
+fn closed_slots_t(cs: &ClassState) -> usize {
+    let g = cs.inner.lock(Tracked::assume_new(), Tracked::assume_new());
+    let n = g.closed_slots;
+    g.unlock();
+    n
+}
+
+/// Slab pages: `ClassState::close_pages` with made-up lock order tokens.
+fn close_pages_t(cs: &ClassState, now: u64, decay_ns: u64, all: bool) -> Option<u64> {
+    cs.close_pages(now, decay_ns, all, Tracked::assume_new())
+}
