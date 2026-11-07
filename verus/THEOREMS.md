@@ -318,7 +318,8 @@ the call does not return (theorem 3, which is not voided for it).
   `CachePerms`) for the heap the value names, with the heap well formed
   (`heap::thread::slot_ok`). `thread::heap_from_slot` (verified)
   authenticates the value and borrows the heap from the token
-  through the trusted `heap::thread::slot_heap_ref`;
+  through the trusted `heap::thread::slot_heap_ref` (partly checked by
+  Kani, `verus/ledger/src/heap/thread.rs.md`);
   `create_heap_for_thread` puts a new heap's permission in the token
   (`tcaches::heap_new`, over the trusted `HeapPerm::assemble`, which
   states what `init_fields`, `mark_bound` and `mark_rehome` stored).
@@ -1971,7 +1972,8 @@ paths, verified unless marked trusted:
 - **Heap lookup:** `existing_heap` (on a ghost `TlsSlot::entry()`),
   `existing_heap_in`, `tls_heap_slot`, `sys::tls::get` and the aarch64
   `get_tp` (trusted asm), the x86_64 `get_tp`, `fast_flags`,
-  `heap_from_slot` (over the trusted `slot_heap_ref`).
+  `heap_from_slot` (over the trusted `slot_heap_ref`, partly checked by
+  Kani).
 - **Pop:** `Heap::alloc_fast`, `pop_fast`, `cache_ptr`, `home_ptr_at`
   (trusted, partly checked by Kani), `pop_top`, `CacheHeader::slots`.
 - **Push:** `free_fast_slot`, `free_fast_tail`, `Heap::push_fast`,
@@ -3084,7 +3086,8 @@ it).
   The token also carries the thread pointer (`TlsSlot::tp`) and, while the slot holds a heap, the heap's
   linear permission (`heap::thread::HeapPerm`), which
   `create_heap_for_thread` puts there and the slot readers borrow
-  (`heap_from_slot`, through the trusted `slot_heap_ref`); `entry` is
+  (`heap_from_slot`, through the trusted `slot_heap_ref`, partly checked
+  by Kani); `entry` is
   an axiom returning `&'static mut TlsSlot`, the thread's one slot,
   with `heap::thread::slot_ok`: a heap value comes with the permission
   to the heap it names, well formed (so `api::ready()`), and nothing

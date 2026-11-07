@@ -1355,3 +1355,69 @@ mod kani_assemble {
         assert!(t.table[c].load(Ordering::Relaxed).is_null());
     }
 }
+
+/// Kani check of `heap::thread::slot_heap_ref`
+/// (`verus/ledger/src/heap/thread.rs.md`; `cfg(kani)` only, see
+/// `verus/README.md`, "Kani"). It sits in this file, which the `kani`
+/// presubmit check covers, rather than in `heap/thread.rs`; `heap_new`
+/// here calls the item.
+#[cfg(kani)]
+mod kani_slot_heap_ref {
+    use super::{Heap, HeapLoan, slot_heap_ref};
+    use core::mem::{MaybeUninit, size_of};
+    use vstd::prelude::Tracked;
+
+    /// `slot_heap_ref`, `requires` the loan's permission at `h`'s address,
+    /// `ensures` the reference the heap the permission describes, and the
+    /// loan then holding a permission at `h`'s address describing what the
+    /// reference holds when it ends. The harness checks, for a heap of any
+    /// bytes (its bools any bool) at the address Kani gives the local: the
+    /// reference is `&*h` (`core::ptr::eq`), writable
+    /// (`kani::mem::can_write`: aligned, in bounds) and a valid `Heap`
+    /// (`kani::mem::can_dereference`), the call leaves each byte of the
+    /// heap as it was (byte `i`, for every `i`, padding included), and a
+    /// write to `arena` through the reference is the heap's at `h` once the
+    /// reference ends. The loan reaches the body as a `Tracked`, which has
+    /// no bytes (a layout fact the harness asserts), so the body cannot
+    /// change it. Not checked: the abstract value of the loan's `HeapPerm`
+    /// (that it describes the heap at `h` before the call and what the
+    /// reference holds when it ends), which only Verus's model gives
+    /// meaning to; that nothing else reaches the heap while the reference
+    /// lives, which the loan's linear `HeapPerm` gives verified code; and
+    /// the provenance of `h` and of the reference, which Kani does not
+    /// observe (the harness compares addresses).
+    #[kani::proof]
+    fn slot_heap_ref_is_the_heap() {
+        assert_eq!(size_of::<Tracked<&mut HeapLoan>>(), 0);
+        let mut m = MaybeUninit::<Heap>::uninit();
+        let h = m.as_mut_ptr();
+        // SAFETY: `h` is the heap's own storage, written whole and then
+        // its bools; every other field is a raw pointer, an integer, a
+        // `ThreadStats` (two integers), a `CacheHeader` (integers and a
+        // raw pointer), a ghost `Tracked`/`Ghost` (a `PhantomData`, no
+        // bytes) or a `PhantomPinned` (no bytes), valid with any bytes.
+        unsafe {
+            h.cast::<[u8; size_of::<Heap>()]>().write(kani::any());
+            (&raw mut (*h).tcache_enabled).write(kani::any());
+            (&raw mut (*h).bound).write(kani::any());
+            (&raw mut (*h).rehome).write(kani::any());
+        }
+        let i: usize = kani::any();
+        kani::assume(i < size_of::<Heap>());
+        // SAFETY: `i` is inside the heap, whose bytes are all written.
+        let before = unsafe { h.cast::<u8>().add(i).read() };
+        // SAFETY: `h` is a heap, and nothing else uses it while `r` lives.
+        let r = unsafe { slot_heap_ref(h, Tracked::assume_new()) };
+        let rp: *mut Heap = &raw mut *r;
+        assert!(core::ptr::eq(rp, h));
+        assert!(kani::mem::can_write(rp));
+        assert!(kani::mem::can_dereference(rp));
+        // SAFETY: as `before`, through the reference.
+        let after = unsafe { rp.cast::<u8>().add(i).read() };
+        assert_eq!(after, before);
+        let a: u16 = kani::any();
+        r.arena = a;
+        // SAFETY: `r` has ended; `h` is the heap, all of it written.
+        assert_eq!(unsafe { (*h).arena }, a);
+    }
+}

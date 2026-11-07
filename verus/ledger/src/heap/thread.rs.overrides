@@ -10,5 +10,9 @@ HeapPerm	allocator invariant	none (assumption)
 # creation (and `heap_new` to `create_heap_for_thread`, whose token comes
 # from `Heap::create`), and checks the four fields the `ensures` state.
 HeapPerm::assemble	allocator invariant	Kani	trusted (partly checked, Kani: heap::fresh::kani_assemble::writers_store_the_assembled_fields; not checked: any order of the writers but `Heap::create`'s, the one the harness runs; the join itself, that the token's raw permission to the head and `perms`' home headers stand for the whole-heap permission, a premise of Verus's own model that no tool checks; that nothing else writes those fields between the writers and the axiom, which the token's linear permission gives verified code; and the provenance of `shared`, which Kani does not observe)	contract 1966992394, body none
-# A raw-pointer dereference through the abstract heap permission.
-slot_heap_ref	raw pointer (internal)	none (assumption)
+# A raw-pointer dereference through the abstract heap permission. The
+# harness runs the body on a heap of any bytes and checks that the
+# reference is `&*h`, writable and a valid `Heap`, that the call changes
+# no byte of the heap, and that a write through it is the heap's; the
+# loan, a `Tracked`, has no bytes.
+slot_heap_ref	raw pointer (internal)	Kani	trusted (partly checked, Kani: heap::tcaches::kani_slot_heap_ref::slot_heap_ref_is_the_heap; not checked: the abstract value of the loan's `HeapPerm` (that it describes the heap at `h` before the call and what the reference holds when it ends), a premise of Verus's own model that no tool checks; that nothing else reaches the heap while the reference lives, which the loan's linear `HeapPerm` gives verified code; and the provenance of `h` and of the reference, which Kani cannot observe (the harness compares addresses))	contract 854713595, body 3810982117
