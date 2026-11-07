@@ -95,12 +95,16 @@ pass. There are three sources:
   `mlock_purge/{decay,background}` when the host is too slow to see the
   back-off (a 400 ms wait taking over 900 ms),
   `guard_slab/fault` and `pagemap_guard` below 6.13.
-- A unit test that needs `mlock` or `mseal` (`testutil::mlock_or_skip`
-  and `testutil::skip`: the purge tests over locked memory, and
-  `purge::linux_tests::a_sealed_range_aborts` below 6.10 or under
-  seccomp) prints
-  `SKIP <test> <reason>` on stderr when the host refuses, and fails
-  unless `CHALLOC_TEST_ALLOW_SKIP` is set.
+- A unit test whose host lacks a kernel feature or a privilege
+  (`testutil::mlock_or_skip` and `testutil::skip`: the purge tests over
+  locked memory, `mseal` below 6.10 or under seccomp, `MADV_GUARD_INSTALL`
+  below 6.13, `PR_SET_VMA_ANON_NAME` without `CONFIG_ANON_VMA_NAME`, the
+  cgroup sampling tests without a tracked cgroup, the rseq pinned check
+  on one CPU) prints `SKIP <test> <reason>` on stderr, and fails unless
+  `CHALLOC_TEST_ALLOW_SKIP` is set. A unit test whose claim needs a CPU
+  feature the fallback path's tests cover (`testutil::print_skip`: the
+  pointer-authentication tests on a CPU without it) prints the same line
+  and passes.
 
 `grep '^SKIP ' <log>` lists every claim a run did not check. With
 `CHALLOC_TEST_ALLOW_SKIP` set a skip passes with the note; unset, it fails

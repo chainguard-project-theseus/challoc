@@ -2484,7 +2484,10 @@ pub(crate) mod tests {
                 unsafe { madvise(addr, PAGE, MADV_DONTNEED).unwrap() };
             }
             Err(Errno::ENOSYS) => {
-                std::eprintln!("mseal: ENOSYS on this kernel, skipping");
+                crate::testutil::skip(
+                    "mseal_blocks_munmap_when_supported",
+                    "mseal: ENOSYS (a kernel before 6.10)",
+                );
                 // SAFETY: we own `addr`.
                 unsafe { munmap(addr, PAGE).unwrap() };
             }
@@ -2505,7 +2508,10 @@ pub(crate) mod tests {
                     .expect("mapping present in maps");
                 assert!(line.contains("[anon:challoc:test]"), "{line}");
             }
-            Err(Errno::EINVAL) => std::eprintln!("PR_SET_VMA_ANON_NAME: EINVAL, skipping"),
+            Err(Errno::EINVAL) => crate::testutil::skip(
+                "vma_naming_shows_in_maps_when_supported",
+                "PR_SET_VMA_ANON_NAME: EINVAL (a kernel without CONFIG_ANON_VMA_NAME)",
+            ),
             Err(e) => panic!("prctl: unexpected {e}"),
         }
         // SAFETY: we own `addr`.

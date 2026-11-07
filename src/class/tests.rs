@@ -263,9 +263,12 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     if (1usize << (LG_MIN_SLAB + 2)) < page_size() {
         // The faked page must be a multiple of the real one; on a
         // 64 KiB kernel the real page already is the larger-page case.
-        std::eprintln!(
-            "skipped: the real page ({}) is larger than the faked one",
-            page_size()
+        crate::testutil::print_skip(
+            "page_groups_when_the_page_is_larger_than_the_slab",
+            &std::format!(
+                "the real page ({}) is larger than the faked one",
+                page_size()
+            ),
         );
         return;
     }
@@ -2154,10 +2157,8 @@ fn slabs_are_committed_a_run_at_a_time() {
     use crate::sys::features::Features;
     let guards = Features::probe(true).guard_install;
     let env = Env::new();
-    if env.regions.page_size() > 64 << 10 {
-        std::eprintln!("page above 64 KiB; skipping the run layout test");
-        return;
-    }
+    // Supported kernels have 4, 16 or 64 KiB pages.
+    assert!(env.regions.page_size() <= 64 << 10);
     let c = (0..NCLASSES)
         .find(|&c| {
             let cls = &CLASSES[c];
@@ -2252,13 +2253,14 @@ fn runs_tile_every_group() {
 fn large_slabs_are_committed_one_at_a_time() {
     let env = Env::new();
     let page = env.regions.page_size();
-    let Some(c) = (0..NCLASSES).find(|&c| {
-        let cls = &CLASSES[c];
-        cls.slab_size() >= (512 << 10).max(page) && cls.slabs_per_line() >= 2
-    }) else {
-        std::eprintln!("no class of 512 KiB slabs in groups; skipping");
-        return;
-    };
+    // The class table is static and the page is at most 64 KiB, so both
+    // quanta have one.
+    let c = (0..NCLASSES)
+        .find(|&c| {
+            let cls = &CLASSES[c];
+            cls.slab_size() >= (512 << 10).max(page) && cls.slabs_per_line() >= 2
+        })
+        .expect("a class of 512 KiB slabs in groups");
     let cs = env.class(c, 0);
     let size = cs.class().slab_size();
     let (p, _) = env.claim(cs, cs.class().nslots());
@@ -2277,7 +2279,10 @@ fn guard_slab_faults_when_supported() {
     use crate::sys::features::Features;
     let f = Features::probe(true);
     if !f.guard_install {
-        std::eprintln!("guard_install=no on this kernel; skipping guard fault test");
+        crate::testutil::skip(
+            "guard_slab_faults_when_supported",
+            "no MADV_GUARD_INSTALL (a kernel before 6.13)",
+        );
         return;
     }
     let env = Env::new();
