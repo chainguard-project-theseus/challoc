@@ -1,16 +1,24 @@
 # GenMC: the weak-memory harnesses of tests/genmc (verus/WEAKMEM.md,
-# "GenMC"). Each runs challoc's own vspec wrappers and src/sync.rs,
-# compiled unchanged, under GenMC's exhaustive exploration with no bound
-# on store history, under RC11, IMM and (for the larger cases) ARMv8;
-# each control (a mutant ordering or step) must fail with its expected
-# report, as loom's #[should_panic] models do.
+# "GenMC"). Most run challoc's own vspec wrappers and src/sync.rs,
+# compiled unchanged; the ports of `Shared`'s publication and of the
+# background thread's wake-up, exit and publication run pinned copies of
+# their steps. GenMC explores every execution, with no bound on store
+# history, under RC11, IMM and (for the larger cases) ARMv8; each control
+# (a mutant ordering or step) must fail with its expected report, as
+# loom's #[should_panic] models do. A model marked `+live` in
+# tests/genmc/cases also runs GenMC's liveness check
+# (--check-liveness, --disable-spin-assume), so a lost wake-up or a
+# waiter left spinning fails as "Liveness violation".
 #
 # The genmc package is pinned to the release the harnesses were checked
 # with. It brings the rust stream whose LLVM major version its build
 # matches (rust-1.99, LLVM 22: GenMC interprets rustc's LLVM IR), so
 # this file installs no rust-1.98 (the two cannot be installed
 # together), and clang. GenMC has no futex, so the harnesses take
-# genmc-std's Mutex for a `RawLock`.
+# genmc-std's Mutex for a `RawLock`, and the background thread waits in
+# tests/genmc/prelude.rs's futex stand-in, which wakes it when the word
+# changes: it assumes no lost wake-up given the kernel's value check,
+# allows spurious wake-ups, and adds no ordering.
 version: 1
 
 environment:
@@ -22,9 +30,12 @@ checks:
       tests/genmc/run.sh: every GenMC case in tests/genmc/cases (the
       dispatch byte, the hand-out watermark and its copy, the arena bound
       counts, the arena count and table, the slot state byte, the slab
-      bitmap and two litmus shapes loom cannot produce) under each memory
-      model it names; a pass case must pass and a control must fail with
-      its expected report. Runs on pull requests that change the wrappers,
+      bitmap, two litmus shapes loom cannot produce, `Shared`'s
+      publication, and the background thread's wake-up, exit and
+      publication through a futex stand-in) under each memory model it
+      names, with GenMC's liveness check where the model is marked
+      `+live`; a pass case must pass and a control must fail with its
+      expected report. Runs on pull requests that change the wrappers,
       src/sync.rs, the source files the harnesses copy steps from,
       Cargo.toml, tests/genmc/, tests/loom/src/vspec.rs or this file.
     # The wrappers, the loom crate's vspec.rs that declares them, and
@@ -46,6 +57,8 @@ checks:
         - "src/heap/shared.rs"
         - "src/heap/slotstate.rs"
         - "src/policy.rs"
+        - "src/purge.rs"
+        - "src/purge/background.rs"
         - "src/slab.rs"
         - "Cargo.toml"
         - "tests/genmc/**"

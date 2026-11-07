@@ -1079,6 +1079,342 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
         ],
     ),
+    // `api::state_load`, `state_claim`, `state_publish`, `shared`,
+    // `shared_if_ready` and `init_slow`.
+    (
+        "init.rs",
+        "src/api/mod.rs",
+        &[
+            ("pub const UNINIT: u32 = 0;", "const UNINIT: u32 = 0;"),
+            (
+                "pub const INITIALISING: u32 = 1;",
+                "const INITIALISING: u32 = 1;",
+            ),
+            ("pub const READY: u32 = 2;", "const READY: u32 = 2;"),
+            (
+                "fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)",
+                "",
+            ),
+            (
+                "STATE.load(Ordering::Acquire)",
+                "let s = self.state.load(Ordering::Acquire);",
+            ),
+            (
+                "fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)",
+                "",
+            ),
+            (
+                "STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)",
+                "self.state\n.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire);",
+            ),
+            (
+                "fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)",
+                "",
+            ),
+            (
+                "STATE.store(READY, Ordering::Release);",
+                "self.state.store(READY, PUBLISH);",
+            ),
+            ("pub fn shared() -> (r: &'static Shared)", ""),
+            (
+                "if load_state(Tracked(&mut seen)) == READY {",
+                "if self.state_load(seen) == READY {",
+            ),
+            ("init_slow().0", "self.init_slow(tid, seen)"),
+            (
+                "pub fn shared_if_ready() -> (r: Option<&'static Shared>)",
+                "",
+            ),
+            (
+                "if load_state(Tracked(&mut seen)) == READY {",
+                "if self.state_load(&mut seen) == READY {",
+            ),
+            (
+                "fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))",
+                "",
+            ),
+            (
+                "let (won, Tracked(parts)) = claim_init(Tracked(&mut seen));",
+                "",
+            ),
+            ("match won {", "match won {"),
+            ("Ok(_) => {", "Ok(_) => {"),
+            (
+                "INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);",
+                "self.init_tid.store(tid, Ordering::Relaxed);",
+            ),
+            (
+                "init(Tracked(steps), Tracked(&mut seen));",
+                "self.init(tid, seen);",
+            ),
+            (
+                "let Tracked(m) = publish_ready(Tracked(seen.published.tracked_unwrap()), Tracked(half.tracked_unwrap()));",
+                "self.state.store(READY, PUBLISH);",
+            ),
+            ("Err(READY) => {}", "Err(READY) => {}"),
+            (
+                "if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {",
+                "if self.init_tid.load(Ordering::Relaxed) == tid {",
+            ),
+            (
+                "sys::abort(\"allocation during initialisation (re-entrant init)\");",
+                "return ABORT;",
+            ),
+            (
+                "while load_state(Tracked(&mut seen)) != READY {",
+                "await_until!(self.state_load(seen) == READY);",
+            ),
+        ],
+    ),
+    // The free: `on_live_zero`'s first `Empty` and its `note_empty`.
+    (
+        "background.rs",
+        "src/class/mod.rs",
+        &[
+            (
+                "if self.gate.note_first_empty(now) {",
+                "if note_first_empty() {",
+            ),
+            ("purge::note_empty();", "wake();"),
+        ],
+    ),
+    // `Decayer::oldest_empty`, `note_first_empty` and `due`'s no-deadline
+    // path, and `note_empty`.
+    (
+        "background.rs",
+        "src/purge.rs",
+        &[
+            ("pub fn oldest_empty(&self) -> u64 {", ""),
+            (
+                "self.oldest_empty.load(Ordering::Relaxed)",
+                "let oldest = OLDEST_EMPTY.load(Ordering::Relaxed);",
+            ),
+            ("pub fn note_first_empty(&self, now: u64) -> bool {", ""),
+            (
+                "if self.oldest_empty.load(Ordering::Relaxed) != 0 {",
+                "if OLDEST_EMPTY.load(Ordering::Relaxed) != 0 {",
+            ),
+            (
+                "self.oldest_empty.store(now, Ordering::Relaxed);",
+                "OLDEST_EMPTY.store(1, Ordering::Relaxed);",
+            ),
+            ("pub fn due(&self, now: u64, decay_ns: u64) -> (r: Due)", ""),
+            (
+                "let oldest = self.oldest_empty();",
+                "let oldest = OLDEST_EMPTY.load(Ordering::Relaxed);",
+            ),
+            ("if oldest == 0 {", ""),
+            ("return Due::Done(None);", ""),
+            ("pub fn note_empty()", ""),
+            ("background::wake();", "wake();"),
+        ],
+    ),
+    // `present`, `wake`, `kick`, `start`'s creation, publication and
+    // kick, and `main`'s loop.
+    (
+        "background.rs",
+        "src/purge/background.rs",
+        &[
+            ("pub fn present() -> bool {", ""),
+            (
+                "PRESENT.load(Ordering::Relaxed)",
+                "if PRESENT.load(Ordering::Relaxed) {",
+            ),
+            ("pub fn wake()", ""),
+            (
+                "fence(Ordering::SeqCst);",
+                "if FENCE_FREE {\nfence(Ordering::SeqCst);",
+            ),
+            ("if present() {", "if PRESENT.load(Ordering::Relaxed) {"),
+            ("kick();", "kick();"),
+            ("fn kick()", ""),
+            (
+                "SEQ.fetch_add(1, Ordering::SeqCst);",
+                "SEQ.fetch_add(1, Ordering::SeqCst);",
+            ),
+            (
+                "let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };",
+                "futex_wake(&SEQ);",
+            ),
+            (
+                "pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool",
+                "",
+            ),
+            (
+                "let (stack, thread) = create(shared, stack, previous, Tracked(ord), Tracked(cell));",
+                "create();",
+            ),
+            (
+                "PRESENT.store(g.present, Ordering::Relaxed);",
+                "PRESENT.store(true, Ordering::Relaxed);",
+            ),
+            ("if present {", ""),
+            (
+                "fence(Ordering::SeqCst);",
+                "if FENCE_START {\nfence(Ordering::SeqCst);",
+            ),
+            ("kick();", "kick();"),
+            (
+                "extern \"C\" fn main(arg: *mut c_void) -> *mut c_void {",
+                "",
+            ),
+            (
+                "let seq = SEQ.load(Ordering::SeqCst);",
+                "let seq = SEQ.load(Ordering::SeqCst);",
+            ),
+            (
+                "let deadline = super::decay(shared, now, Tracked(&mut ord));",
+                "let oldest = OLDEST_EMPTY.load(Ordering::Relaxed);",
+            ),
+            (
+                "let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };",
+                "futex_wait(&SEQ, seq, &mut spurious);",
+            ),
+        ],
+    ),
+    // `requested`, `request(false)`, `kick` and `main`'s loop.
+    (
+        "exit.rs",
+        "src/purge/background.rs",
+        &[
+            ("pub fn requested() -> bool {", ""),
+            (
+                "REQUESTED.load(Ordering::Relaxed)",
+                "if !REQUESTED.load(Ordering::Relaxed) {",
+            ),
+            (
+                "pub fn request(on: bool, Tracked(cc): Tracked<&CCall>, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>)",
+                "",
+            ),
+            (
+                "REQUESTED.store(on, Ordering::Relaxed);",
+                "REQUESTED.store(false, Ordering::Relaxed);",
+            ),
+            ("if !on {", "if WITHDRAW == 0 {"),
+            ("kick();", "kick();"),
+            ("fn kick()", ""),
+            (
+                "SEQ.fetch_add(1, Ordering::SeqCst);",
+                "SEQ.fetch_add(1, Ordering::SeqCst);",
+            ),
+            (
+                "let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };",
+                "futex_wake(&SEQ);",
+            ),
+            (
+                "extern \"C\" fn main(arg: *mut c_void) -> *mut c_void {",
+                "",
+            ),
+            (
+                "let seq = SEQ.load(Ordering::SeqCst);",
+                "let seq = SEQ.load(SEQ_LOAD);",
+            ),
+            (
+                "if !requested() {",
+                "if !REQUESTED.load(Ordering::Relaxed) {",
+            ),
+            ("return core::ptr::null_mut();", "return;"),
+            (
+                "let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };",
+                "futex_wait(&SEQ, seq, &mut spurious);",
+            ),
+        ],
+    ),
+    // `request(false)`, `kick`, `start`'s two holds and its kick, and
+    // `main`'s loop and exit.
+    (
+        "publish.rs",
+        "src/purge/background.rs",
+        &[
+            (
+                "pub fn request(on: bool, Tracked(cc): Tracked<&CCall>, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>)",
+                "",
+            ),
+            (
+                "let g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
+                "let g = STATE.lock().unwrap();",
+            ),
+            (
+                "REQUESTED.store(on, Ordering::Relaxed);",
+                "REQUESTED.store(false, Ordering::Relaxed);",
+            ),
+            ("g.unlock();", "drop(g);"),
+            ("if !on {", ""),
+            ("kick();", "kick();"),
+            ("fn kick()", ""),
+            (
+                "SEQ.fetch_add(1, Ordering::SeqCst);",
+                "SEQ.fetch_add(1, Ordering::SeqCst);",
+            ),
+            (
+                "let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };",
+                "futex_wake(&SEQ);",
+            ),
+            (
+                "pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool",
+                "",
+            ),
+            (
+                "let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
+                "let mut g = STATE.lock().unwrap();",
+            ),
+            ("if g.present {", "if g.present {"),
+            ("return true;", "return true;"),
+            ("if g.creating {", "if g.creating {"),
+            ("return false;", "return false;"),
+            ("g.creating = true;", "g.creating = true;"),
+            ("g.exited = false;", "g.exited = false;"),
+            ("g.unlock();", "drop(g);"),
+            (
+                "let (stack, thread) = create(shared, stack, previous, Tracked(ord), Tracked(cell));",
+                "create();",
+            ),
+            (
+                "let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
+                "let mut g = STATE.lock().unwrap();",
+            ),
+            ("g.creating = false;", "g.creating = false;"),
+            (
+                "g.present = thread.is_some() && !g.exited;",
+                "g.present = !CHECKS_EXITED || !g.exited;",
+            ),
+            (
+                "PRESENT.store(g.present, Ordering::Relaxed);",
+                "PRESENT.store(g.present, Ordering::Relaxed);",
+            ),
+            ("if present {", "if present {"),
+            ("fence(Ordering::SeqCst);", "fence(Ordering::SeqCst);"),
+            ("kick();", "kick();"),
+            (
+                "extern \"C\" fn main(arg: *mut c_void) -> *mut c_void {",
+                "",
+            ),
+            (
+                "let seq = SEQ.load(Ordering::SeqCst);",
+                "let seq = SEQ.load(SEQ_LOAD);",
+            ),
+            (
+                "if !requested() {",
+                "if !REQUESTED.load(Ordering::Relaxed) {",
+            ),
+            (
+                "let mut g = state().lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));",
+                "let mut g = STATE.lock().unwrap();",
+            ),
+            ("g.present = false;", "g.present = false;"),
+            ("g.exited = true;", "g.exited = true;"),
+            (
+                "PRESENT.store(false, Ordering::Relaxed);",
+                "PRESENT.store(false, Ordering::Relaxed);",
+            ),
+            ("g.unlock();", "drop(g);"),
+            ("return core::ptr::null_mut();", "return;"),
+            (
+                "let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };",
+                "futex_wait(&SEQ, seq, &mut spurious);",
+            ),
+        ],
+    ),
 ];
 
 /// `(harness, constants)`: the case constants that stand for the
@@ -1121,6 +1457,34 @@ const GENMC_SHIPPED: &[(&str, &[&str])] = &[
         &[
             "const MUTANT: u32 = 0;",
             "const PUBLISH: Ordering = Ordering::Release;",
+        ],
+    ),
+    (
+        "init.rs",
+        &[
+            "const PUBLISH: Ordering = Ordering::Release;",
+            "const UNPUBLISHED: bool = false;",
+        ],
+    ),
+    (
+        "background.rs",
+        &[
+            "const FENCE_FREE: bool = true;",
+            "const FENCE_START: bool = true;",
+        ],
+    ),
+    (
+        "exit.rs",
+        &[
+            "const WITHDRAW: u32 = 0;",
+            "const SEQ_LOAD: Ordering = Ordering::SeqCst;",
+        ],
+    ),
+    (
+        "publish.rs",
+        &[
+            "const CHECKS_EXITED: bool = true;",
+            "const SEQ_LOAD: Ordering = Ordering::SeqCst;",
         ],
     ),
 ];

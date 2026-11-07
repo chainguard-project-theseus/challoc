@@ -4,7 +4,11 @@
 #
 # template: the .rs file in this directory the case instantiates.
 # models: the memory models to run it under, each a run: rc11 (GenMC's
-#   default), imm (--imm) or arm8 (--arm8).
+#   default), imm (--imm) or arm8 (--arm8), each optionally with `+live`
+#   (--check-liveness --disable-spin-assume: a thread blocked for good
+#   at one of prelude.rs's `await_until!` waits, the futex stand-in's
+#   among them, is a reported "Liveness violation"; without it GenMC
+#   drops such an execution as blocked).
 # constants: Rust items written into the case's main.rs before the
 #   template (each template names the constants it reads).
 # expected: `pass` (GenMC explores at least one complete execution and
@@ -71,3 +75,39 @@ lb | litmus | rc11 | const MODE: u32 = 0; const N: u32 = 0; | pass
 lb_weak | litmus | imm arm8 | const MODE: u32 = 0; const N: u32 = 0; | fail | load buffering
 hist3 | litmus | rc11 imm | const MODE: u32 = 1; const N: u32 = 3; | fail | store history
 hist8 | litmus | rc11 imm | const MODE: u32 = 1; const N: u32 = 8; | fail | store history
+
+# init.rs (P4, api/mod.rs's own functions): publishing `Shared`. Three
+# callers put two waiters on `STATE` at once, which loom cannot run.
+init1 | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 1; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
+init2 | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 2; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
+init3 | init | rc11+live imm+live arm8+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 3; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
+init3_reenter | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 3; const REENTER: bool = true; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
+init3_readback | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 3; const REENTER: bool = false; const READBACK: bool = true; const UNPUBLISHED: bool = false; | pass
+init1_relaxed | init | rc11 imm | const PUBLISH: Ordering = Ordering::Relaxed; const CALLERS: u32 = 1; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | fail | Non-atomic race
+init3_relaxed | init | rc11 imm | const PUBLISH: Ordering = Ordering::Relaxed; const CALLERS: u32 = 3; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | fail | Non-atomic race
+init_unpublished | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 1; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = true; | fail | Liveness violation
+
+# background.rs (P3, the futex stand-in): the thread's wake-up against a
+# class's first `Empty` slab.
+background | background | rc11+live imm+live arm8+live | const FENCE_FREE: bool = true; const FENCE_START: bool = true; const SPURIOUS: u32 = 0; | pass
+# Two spurious wake-ups of `B` (prelude.rs, `futex_wait`).
+background_spurious | background | rc11+live imm+live | const FENCE_FREE: bool = true; const FENCE_START: bool = true; const SPURIOUS: u32 = 2; | pass
+background_no_fences | background | rc11+live imm+live arm8+live | const FENCE_FREE: bool = false; const FENCE_START: bool = false; const SPURIOUS: u32 = 0; | fail | Liveness violation
+background_no_fences_spurious | background | rc11+live imm+live | const FENCE_FREE: bool = false; const FENCE_START: bool = false; const SPURIOUS: u32 = 2; | fail | Liveness violation
+background_free_fence_only | background | rc11+live imm+live | const FENCE_FREE: bool = true; const FENCE_START: bool = false; const SPURIOUS: u32 = 0; | fail | Liveness violation
+background_start_fence_only | background | rc11+live imm+live | const FENCE_FREE: bool = false; const FENCE_START: bool = true; const SPURIOUS: u32 = 0; | fail | Liveness violation
+
+# exit.rs (P3, the futex stand-in): the thread's exit after `request(false)`.
+exit | exit | rc11+live imm+live arm8+live | const WITHDRAW: u32 = 0; const SEQ_LOAD: Ordering = Ordering::SeqCst; const WAKER: bool = false; const SPURIOUS: u32 = 0; | pass
+exit_waker | exit | rc11+live imm+live arm8+live | const WITHDRAW: u32 = 0; const SEQ_LOAD: Ordering = Ordering::SeqCst; const WAKER: bool = true; const SPURIOUS: u32 = 0; | pass
+exit_waker_spurious | exit | rc11+live imm+live | const WITHDRAW: u32 = 0; const SEQ_LOAD: Ordering = Ordering::SeqCst; const WAKER: bool = true; const SPURIOUS: u32 = 2; | pass
+exit_no_kick | exit | rc11+live imm+live arm8+live | const WITHDRAW: u32 = 1; const SEQ_LOAD: Ordering = Ordering::SeqCst; const WAKER: bool = false; const SPURIOUS: u32 = 0; | fail | Liveness violation
+exit_kick_first | exit | rc11+live imm+live | const WITHDRAW: u32 = 2; const SEQ_LOAD: Ordering = Ordering::SeqCst; const WAKER: bool = false; const SPURIOUS: u32 = 0; | fail | Liveness violation
+exit_relaxed_seq_load | exit | rc11+live imm+live arm8+live | const WITHDRAW: u32 = 0; const SEQ_LOAD: Ordering = Ordering::Relaxed; const WAKER: bool = false; const SPURIOUS: u32 = 0; | fail | Liveness violation
+
+# publish.rs (P3, the futex stand-in, the state lock a `Mutex`):
+# `start`'s publication against the new thread's exit.
+publish | publish | rc11+live imm+live arm8+live | const CHECKS_EXITED: bool = true; const SEQ_LOAD: Ordering = Ordering::SeqCst; const SPURIOUS: u32 = 0; | pass
+publish_spurious | publish | rc11+live imm+live | const CHECKS_EXITED: bool = true; const SEQ_LOAD: Ordering = Ordering::SeqCst; const SPURIOUS: u32 = 2; | pass
+publish_unchecked | publish | rc11+live imm+live | const CHECKS_EXITED: bool = false; const SEQ_LOAD: Ordering = Ordering::SeqCst; const SPURIOUS: u32 = 0; | fail | start published a thread that had exited
+publish_relaxed_seq_load | publish | rc11+live imm+live | const CHECKS_EXITED: bool = true; const SEQ_LOAD: Ordering = Ordering::Relaxed; const SPURIOUS: u32 = 0; | fail | Liveness violation
