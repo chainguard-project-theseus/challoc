@@ -19,7 +19,7 @@ file.
 
 ## `desc_stride`
 
-src/slab.rs:319. Kind: external_body. Category: core library.
+src/slab.rs:323. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: slab::kani_desc_stride::desc_stride_reads_the_table).
 
 > Descriptor stride for `class` in bytes.
@@ -37,7 +37,7 @@ pub fn desc_stride(class: usize) -> (r: usize)
 
 ## `SlabDesc::init`
 
-src/slab.rs:375. Kind: external_body. Category: atomics primitive.
+src/slab.rs:379. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > Initialise the descriptor of a slab handed to `arena`: `Fresh`, no live slots, through `p`, the descriptor's permission (ghost).
@@ -59,7 +59,7 @@ pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabDesc::state_byte_held`
 
-src/slab.rs:424. Kind: external_body. Category: atomics primitive.
+src/slab.rs:428. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > The `state` byte, as [`state_held`](SlabDesc::state_held): the state the permission under `k` records when that is this descriptor's.
@@ -74,7 +74,7 @@ fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, De
 
 ## `SlabDesc::dirty_held`
 
-src/slab.rs:442. Kind: external_body. Category: atomics primitive.
+src/slab.rs:446. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > [`dirty_at`](SlabDesc::dirty_at) read by a holder of `m`, as [`state_held`](SlabDesc::state_held): the stamp the permission under `k` records when that is this descriptor's.
@@ -89,7 +89,7 @@ pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 
 ## `SlabDesc::set_state`
 
-src/slab.rs:457. Kind: external_body. Category: atomics primitive.
+src/slab.rs:461. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > Only ever called with the class lock held, which holds `p`, the descriptor's permission (ghost), which records the new state.
@@ -108,7 +108,7 @@ pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabDesc::arena_held`
 
-src/slab.rs:494. Kind: external_body. Category: atomics primitive.
+src/slab.rs:498. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > [`arena`](SlabDesc::arena) read by a holder of `m`, the permissions a class lock value holds: the arena the permission under `k` records when that is this descriptor's.
@@ -123,7 +123,7 @@ pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 
 ## `SlabDesc::set_dirty_at`
 
-src/slab.rs:554. Kind: external_body. Category: atomics primitive.
+src/slab.rs:558. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).
@@ -142,7 +142,7 @@ pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)
 
 ## `SlabPages::pages_held`
 
-src/slab.rs:628. Kind: external_body. Category: atomics primitive.
+src/slab.rs:632. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > The closed pages and the stamp, read by a holder of `m`, the permissions a class lock value holds: the values the permission under `k` records when it is this slab's.
@@ -157,7 +157,7 @@ pub fn pages_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, Des
 
 ## `SlabPages::set_pages`
 
-src/slab.rs:644. Kind: external_body. Category: atomics primitive.
+src/slab.rs:648. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_reads_through_the_lock; not checked: this body, which the model copies over loom's atomics, with one descriptor, two threads and the two locks; the lock edge, `lock::axiom_acquired`'s assumption; the hand-over between the two locks, which the model runs on one thread; that no write but these reaches the fields, which tests/loom/tests/access.rs backs by matching source text only).
 
 > Write the closed pages and the stamp.

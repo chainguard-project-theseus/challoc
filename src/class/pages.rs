@@ -317,7 +317,8 @@ impl ClassState {
     /// stamp, under this arena's class lock (`g`). Returns whether it
     /// closed: it does not when the page's slots would leave a claim's
     /// reservation short, when a claim got one of them first, or when the
-    /// kernel refused the discard; the page is open again then.
+    /// kernel refused the discard; the page is open again then. Returns the
+    /// slots it hid (0 when it did not close it).
     ///
     /// 1. The mask bit (`SlabPages::set_pages`, `Release`): a claim that
     ///    reads the mask from now on takes nothing on the page.
@@ -329,7 +330,7 @@ impl ClassState {
     /// 4. `closed_slots` up by the slots that were open and are closed
     ///    now: a straddling slot whose other page is closed already does
     ///    not count twice.
-    fn close_page(&self, g: &mut Inner, slab: usize, pg: &SlabPages, v: OpenView, p: usize, stamp: u64) -> (r: bool)
+    fn close_page(&self, g: &mut Inner, slab: usize, pg: &SlabPages, v: OpenView, p: usize, stamp: u64) -> (r: usize)
         requires
             self.is_process(),
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -354,7 +355,7 @@ impl ClassState {
         let n_new = v.with_closed(new).closed_slots();
         // The reservation bound `take` rests on: `live + closed <= nslots`.
         if live > v.nslots - n_new {
-            return false;
+            return 0;
         }
         // Step 1.
         self.set_pages_locked(g, pg, slab, new, stamp);
@@ -377,12 +378,12 @@ impl ClassState {
         }
         if busy {
             self.set_pages_locked(g, pg, slab, v.closed, stamp);
-            return false;
+            return 0;
         }
         // Step 3.
         let Some((a, len)) = t.page_range(slab, p) else {
             self.set_pages_locked(g, pg, slab, v.closed, stamp);
-            return false;
+            return 0;
         };
         proof {
             let (c, pu) = (v.closed, p as u16);
@@ -394,16 +395,17 @@ impl ClassState {
             // Refused (`EINVAL`, `mlock`ed pages): the page reopens and keeps
             // its age, as a refused `Empty` slab stays `Empty`.
             self.set_pages_locked(g, pg, slab, v.closed, stamp);
-            return false;
+            return 0;
         }
         // Step 4.
         let ghost g0 = *g;
-        g.closed_slots = g.closed_slots.saturating_add(n_new.saturating_sub(n_old));
+        let hid = n_new.saturating_sub(n_old);
+        g.closed_slots = g.closed_slots.saturating_add(hid);
         g.closed_pages = g.closed_pages.saturating_add(1);
         proof {
             lemma_walk_frame(self, g0, *g);
         }
-        true
+        hid
     }
 
     /// Open the lowest closed pages of slab `slab` until its open free
@@ -491,8 +493,9 @@ impl ClassState {
     /// decay curve of period `decay_ns` (oldest stamp first; within the
     /// cut-off step the lowest pages stay), or, for an explicit purge
     /// (`all`), every closable page of every partial slab at once. Returns
-    /// the next deadline: a step on while closable pages are left, a
-    /// period while the class has partial slabs, none otherwise.
+    /// the next deadline while closable pages are left (a curve step on),
+    /// none otherwise; the walk's own gate stays a step ahead while the
+    /// class has partial slabs.
     pub fn close_pages(&self, now: u64, decay_ns: u64, all: bool, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
             self.is_process(),
@@ -525,6 +528,8 @@ impl ClassState {
         let mut total: usize = 0;
         let mut weighted: u64 = 0;
         let mut visited: usize = 0;
+        let mut found_slots: usize = 0;
+        let mut closed_now: usize = 0;
         let limit = if all { usize::MAX } else { WALK_SLABS };
         let start = if all { 0 } else { g.pages_cursor };
         proof {
@@ -582,6 +587,12 @@ impl ClassState {
                 let (closed, stamp) = Self::pages_locked(&g, pg, s);
                 let v = v0.with_closed(closed);
                 let cand = Self::closable(&t.bits(s), v);
+                // The slots those pages hold: free pages, not fragmentation
+                // (`ClassStats::closable_slots`).
+                if cand != 0 {
+                    let k = v0.with_closed(closed | cand).closed_slots().saturating_sub(v.closed_slots());
+                    found_slots = found_slots.saturating_add(k);
+                }
                 let st = if cand == 0 { 0 } else if stamp == 0 { if now == 0 { 1 } else { now } } else { stamp };
                 if st != stamp {
                     self.set_pages_locked(&mut g, pg, s, closed, st);
@@ -612,7 +623,8 @@ impl ClassState {
                                     assert(g@.slab_ok(s as nat));
                                 }
                                 let (c, sp) = Self::pages_locked(&g, pg, s);
-                                let _ = self.close_page(&mut g, s, pg, v0.with_closed(c), p, sp);
+                                let hid = self.close_page(&mut g, s, pg, v0.with_closed(c), p, sp);
+                                closed_now = closed_now.saturating_add(hid);
                             }
                             p += 1;
                         }
@@ -738,9 +750,11 @@ impl ClassState {
                                     assert(g@.slab_ok(fs as nat));
                                 }
                                 let (c, sp) = Self::pages_locked(&g, pg, fs);
-                                if !self.close_page(&mut g, fs, pg, v0.with_closed(c), p, sp) {
+                                let hid = self.close_page(&mut g, fs, pg, v0.with_closed(c), p, sp);
+                                if hid == 0 {
                                     left = true;
                                 }
+                                closed_now = closed_now.saturating_add(hid);
                             } else {
                                 left = true;
                             }
@@ -758,20 +772,35 @@ impl ClassState {
             }
         }
         let any = visited > 0;
+        // The closable slots of this pass over the partial set, less the
+        // ones this walk closed; published once the cursor has been round
+        // the set, the walks between accumulate.
+        let ghost gk = g@;
+        g.closable_cycle = g.closable_cycle.saturating_add(found_slots.saturating_sub(closed_now));
+        if next.is_none() || all {
+            g.closable_slots = g.closable_cycle;
+            g.closable_cycle = 0;
+        }
+        proof {
+            lemma_walk_frame(self, gk, g@);
+        }
         g.unlock();
+        // The class keeps its walk a curve step ahead while it has partial
+        // slabs (docs/proposals/slab-pages.md, 3.4), so that a page that
+        // becomes closable is stamped within a step; the driver is told
+        // the deadline only while closable pages are left, so that partial
+        // slabs alone neither keep a background thread awake nor start one.
         let step = curve.step_ns();
-        let next_due = if left {
+        let next_due = if left || any {
             now.saturating_add(if step == 0 { 1 } else { step })
-        } else if any {
-            now.saturating_add(if decay_ns == 0 { 1 } else { decay_ns })
         } else {
             0
         };
         self.pages_due.store(next_due, Ordering::Relaxed);
-        if next_due == 0 {
-            None
-        } else {
+        if left {
             Some(next_due)
+        } else {
+            None
         }
     }
 }

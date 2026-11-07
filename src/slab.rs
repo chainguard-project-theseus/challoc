@@ -40,6 +40,10 @@ pub const HEADER: usize = 16;
 /// Descriptor arrays are cache-line aligned, and a line of descriptors
 /// never spans two arenas' slab groups (see [`desc_stride`]).
 pub const DESC_ALIGN: usize = 64;
+/// The smallest descriptor stride: the header and the [`SlabPages`] after
+/// it, so that every class has page state (docs/proposals/slab-pages.md,
+/// 8: the medium tier's 64 KiB slabs close pages too).
+pub const PAGES_STRIDE: usize = 32;
 
 /// Abort on a state byte no [`State`] has. A pending check
 /// (`sys::may_abort_pending`): the class lock's permissions record a valid
@@ -264,7 +268,7 @@ const fn strides_of(classes: &[Class; NCLASSES]) -> (out: [u32; NCLASSES])
         // arenas never write the same line.
         let per_line = classes[c].slabs_per_line();
         let s = DESC_ALIGN / per_line;
-        out[c] = (if s > HEADER { s } else { HEADER }) as u32;
+        out[c] = (if s > PAGES_STRIDE { s } else { PAGES_STRIDE }) as u32;
         c += 1;
     }
     out
@@ -277,7 +281,7 @@ const fn build_strides() -> [u32; NCLASSES] {
 /// The stride is compile-time although the slab geometry of the 512..1024
 /// classes is fixed at init (`layout::adopt_page_geometry`): on every page
 /// size a class can take (4 KiB to 64 KiB) those classes have at least four
-/// slabs per bitmap line, so their stride is the header either way. This
+/// slabs per bitmap line, so their stride is the minimum either way. This
 /// checks it for every geometry the table can adopt.
 const fn strides_match_every_page() -> bool {
     let base = build_strides();
@@ -305,7 +309,7 @@ const fn strides_match_every_page() -> bool {
 }
 
 /// Per-class descriptor stride in bytes: 64 for classes whose slabs are
-/// handed out singly, 32 for pairs, 16 (the header) from groups of four.
+/// handed out singly, 32 (the header and its `SlabPages`) for the rest.
 pub exec static DESC_STRIDE: [u32; NCLASSES] = build_strides();
 
 /// The stride [`desc_stride`] reads for class `c`.
@@ -713,7 +717,7 @@ mod tests {
         for (c, cls) in CLASSES.iter().enumerate() {
             let s = desc_stride(c);
             assert!(
-                (HEADER..=DESC_ALIGN).contains(&s) && DESC_ALIGN.is_multiple_of(s),
+                (PAGES_STRIDE..=DESC_ALIGN).contains(&s) && DESC_ALIGN.is_multiple_of(s),
                 "class {c}: stride {s}"
             );
             // The descriptors sharing a line are consecutive slabs of one
@@ -721,15 +725,16 @@ mod tests {
             assert!(DESC_ALIGN / s <= cls.slabs_per_line(), "class {c}");
             assert_eq!(
                 s,
-                (DESC_ALIGN / cls.slabs_per_line()).max(HEADER),
+                (DESC_ALIGN / cls.slabs_per_line()).max(PAGES_STRIDE),
                 "class {c}"
             );
         }
         // Singly handed-out slabs (the small classes) keep a line each.
         assert_eq!(desc_stride(0), DESC_ALIGN);
-        // The 1024-byte class (4 slots, groups of 128) is down to the header.
+        // The 1024-byte class (4 slots, groups of 128) is down to the header
+        // and its page state.
         let c = CLASSES.iter().position(|c| c.size() == 1024).unwrap();
-        assert_eq!(desc_stride(c), HEADER);
+        assert_eq!(desc_stride(c), PAGES_STRIDE);
     }
 
     /// The stride table is compile-time; every geometry the class table can
@@ -747,7 +752,7 @@ mod tests {
             for (c, cls) in t.iter().enumerate() {
                 if cls != &BASE_CLASSES[c] {
                     assert!(cls.slabs_per_line() >= 4, "class {c} at 2^{lg_page}");
-                    assert_eq!(s[c] as usize, HEADER);
+                    assert_eq!(s[c] as usize, PAGES_STRIDE);
                 }
             }
         }

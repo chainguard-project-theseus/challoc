@@ -107,6 +107,10 @@ pub struct BinStats {
     /// `active` and `resident` leave out.
     pub closed_slots: usize,
     pub closed_bytes: usize,
+    /// The slots of the bin's whole free pages the walk has yet to close
+    /// (`ClassStats::closable_slots`): dirty memory, not fragmentation;
+    /// the reported `curregs` adds them too.
+    pub closable_slots: usize,
 }
 
 impl BinStats {
@@ -127,6 +131,7 @@ impl BinStats {
         clamped: 0,
         closed_slots: 0,
         closed_bytes: 0,
+        closable_slots: 0,
     };
 
     /// Bytes allocated: `curregs * size`.
@@ -196,6 +201,7 @@ impl BinStats {
         &&& self.clamped + o.clamped <= u64::MAX
         &&& self.closed_slots + o.closed_slots <= usize::MAX
         &&& self.closed_bytes + o.closed_bytes <= usize::MAX
+        &&& self.closable_slots + o.closable_slots <= usize::MAX
     }
 
     /// `o` merged into `self`: the geometry from `o` where `self` has none,
@@ -219,6 +225,7 @@ impl BinStats {
             clamped: (self.clamped + o.clamped) as u64,
             closed_slots: (self.closed_slots + o.closed_slots) as usize,
             closed_bytes: (self.closed_bytes + o.closed_bytes) as usize,
+            closable_slots: (self.closable_slots + o.closable_slots) as usize,
         }
     }
 
@@ -754,6 +761,7 @@ impl ArenaStats {
             b.clamped = fig_add64(b.clamped, ob.clamped);
             b.closed_slots = fig_add(b.closed_slots, ob.closed_slots);
             b.closed_bytes = fig_add(b.closed_bytes, ob.closed_bytes);
+            b.closable_slots = fig_add(b.closable_slots, ob.closable_slots);
             proof {
                 if old(self).can_add(*o) {
                     assert(old(self).bins[c as int].can_add(o.bins[c as int]));
@@ -959,6 +967,7 @@ pub fn collect_bin(cs: &ClassState, Tracked(ord): Tracked<&mut LockOrder>) -> (r
         clamped: cs.clamped(),
         closed_slots: s.closed_slots,
         closed_bytes,
+        closable_slots: s.closable_slots,
     }
 }
 
@@ -1918,9 +1927,9 @@ verus! {
 // records of the head (an index and 18 figures) and one `BinStats` per
 // class.
 #[cfg(feature = "quantum16")]
-global layout StatsPair is size == 13616, align == 8;
+global layout StatsPair is size == 14448, align == 8;
 #[cfg(feature = "quantum8")]
-global layout StatsPair is size == 14640, align == 8;
+global layout StatsPair is size == 15536, align == 8;
 
 /// The two records a statistics entry point collects into: `a` (the
 /// arena, or the sum) and `b` (each arena of a sum in turn).

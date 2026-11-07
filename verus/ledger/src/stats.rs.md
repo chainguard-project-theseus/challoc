@@ -16,7 +16,7 @@ file.
 
 ## `fig_add`
 
-src/stats.rs:559. Kind: external_body. Category: core library.
+src/stats.rs:566. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_add_exact).
 
 > `a + b` for a statistics figure, as the build computes it: a panic on overflow where overflow checks are on (the tests), wrapping where they are off (the shipped library).
@@ -31,7 +31,7 @@ pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
 
 ## `fig_mul`
 
-src/stats.rs:570. Kind: external_body. Category: core library.
+src/stats.rs:577. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_mul_exact).
 
 > `a * b` for a statistics figure; see [`fig_add`].
@@ -46,7 +46,7 @@ pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
 
 ## `fig_add64`
 
-src/stats.rs:581. Kind: external_body. Category: core library.
+src/stats.rs:588. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::stats::fig_add64_exact).
 
 > `a + b` for a statistics counter; see [`fig_add`].
@@ -61,7 +61,7 @@ pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
 
 ## `zero_records`
 
-src/stats.rs:2096. Kind: external_body. Category: raw pointer (internal).
+src/stats.rs:2105. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: stats::kani_records::zero_records_zeroes).
 
 > Zero the records at `p` in place: every field of an `ArenaStats` is an integer, for which zero is a value.
@@ -79,12 +79,12 @@ fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPai
 
 ## `pool_take`
 
-src/stats.rs:2131. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2140. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A pooled object for thread `tid` at stack position `mark`, with its permission: one no call holds, one `tid`'s call abandoned (held by `tid` at a mark at or below `mark`: that call's frame is gone, since a call made from inside it would be deeper), or one a thread that has exited held.
 
-Body mints Tracked at line 2137.
+Body mints Tracked at line 2146.
 
 Hashes: contract 1387577703, body 171475313.
 
@@ -98,7 +98,7 @@ fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<Point
 
 ## `empty_pool`
 
-src/stats.rs:2260. Kind: external_body. Category: core library.
+src/stats.rs:2269. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: stats::pool::kani_pool::empty_pool_is_empty).
 
 > `[EMPTY; POOL_SLOTS]`, which Verus does not take for an element type that is not `Copy`.

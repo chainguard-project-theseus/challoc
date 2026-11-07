@@ -2927,7 +2927,8 @@ fn claims_take_only_the_slots_of_open_pages() {
     for c in 0..NCLASSES {
         let cs = env.class(c, 0);
         let view = cs.table().page_view();
-        if view.pages < 2 {
+        // A page to close between the first and the last.
+        if view.pages < 3 {
             continue;
         }
         let (p0, _) = env.claim(cs, 1);
@@ -3016,7 +3017,11 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
         let want: u16 = (0..view.pages)
             .filter(|&p| !kept_slots.iter().any(|&s| overlaps(s, p)))
             .fold(0, |m, p| m | 1 << p);
-        assert_ne!(want, 0, "class {c}");
+        if want == 0 {
+            // Slots large enough that the kept ones touch every page.
+            cs.release(&kept);
+            continue;
+        }
         close_pages_t(cs, 1, 0, true);
         let pg = cs.table().pages(s0).unwrap();
         assert_eq!(pg.closed(), want, "class {c}: closed pages");
