@@ -8,20 +8,30 @@
  *                                      slow path ticking for 1.5 s: the
  *                                      process stays single-threaded and
  *                                      unshare(CLONE_NEWUSER) works
- *   burst    dirty_decay_ms:500        96 MiB freed at once: the next ticks
+ *   burst    dirty_decay_ms:5000       96 MiB freed at once: the next ticks
  *                                      start the thread, RSS drops with
  *                                      nobody touching the allocator; a
  *                                      fork child stays single-threaded
  *                                      through a small workload of its own;
  *                                      exec gives a fresh single-threaded
  *                                      image (the `small` mode again)
- *   idle     dirty_decay_ms:500        96 MiB of small blocks freed, then
+ *   idle     dirty_decay_ms:5000       96 MiB of small blocks freed, then
  *                                      no allocator call at all: the frees'
  *                                      own ticks start the thread (the
  *                                      process has never had one) and RSS
- *                                      drops; read through raw open/read,
- *                                      which allocate nothing
- *   idlemt   dirty_decay_ms:500        the same after a thread was created
+ *                                      drops within the window; read
+ *                                      through raw open/read, which
+ *                                      allocate nothing. The window is
+ *                                      longer than the free loop takes on
+ *                                      a loaded host: with 500 ms the
+ *                                      frees' foreground decay purged most
+ *                                      of it there, so the thread was not
+ *                                      needed and the check missed (burst
+ *                                      and idlemt likewise: a window
+ *                                      shorter than the frees lets the
+ *                                      foreground decay outrun the lazy
+ *                                      start's look)
+ *   idlemt   dirty_decay_ms:5000       the same after a thread was created
  *                                      and joined: a free's tick starts
  *                                      nothing there (glibc may hold its
  *                                      stack cache lock in a free), the
@@ -260,7 +270,7 @@ static void mode_burst(void)
     printf("burst: unshare with the thread: %s\n", strerror(rc));
     /* No allocator activity from here: only the thread can purge. */
     size_t late = full;
-    for (int i = 0; i < 60 && drop(full, late) < 80 * MIB; i++) {
+    for (int i = 0; i < 200 && drop(full, late) < 80 * MIB; i++) {
         sleep_ms(50);
         late = rss_bytes();
     }
@@ -367,7 +377,7 @@ static void mode_idle(void)
     CHECK(tasks() == 1, "%d tasks at start", tasks());
     long threads;
     size_t dropped;
-    idle_after_burst(3000, &threads, &dropped);
+    idle_after_burst(10000, &threads, &dropped);
     printf("idle: %ld threads, rss down %zu MiB with no allocator call\n", threads, dropped / MIB);
     CHECK(threads == 2, "no background thread from the frees of a single-threaded process (%ld threads)", threads);
     CHECK(dropped >= 80 * MIB, "the idle process released only %zu MiB", dropped / MIB);

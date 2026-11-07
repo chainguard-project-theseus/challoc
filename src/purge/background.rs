@@ -101,15 +101,26 @@ exec static AUTO_BASE: AtomicU64 = AtomicU64::new(0);
 /// ([`note_released`]); wraps. Unsynchronised: a lost add between threads
 /// only delays an early look.
 exec static RELEASED: AtomicU64 = AtomicU64::new(0);
-/// [`RELEASED`] at the last look: once [`AUTO_BURST`] more has been
+/// [`RELEASED`] at the last look: once [`AUTO_STEP`] more has been
 /// released since, the next look comes early, without waiting out
 /// [`AUTO_CHECK_NS`]. A burst of frees shorter than that window would
 /// otherwise see one look, at its start, and a process that then idles
 /// would see none until its next allocation.
 exec static AUTO_RELEASED: AtomicU64 = AtomicU64::new(0);
+/// Coarse time before which no look comes early: a failed lazy start's
+/// [`AUTO_RETRY_NS`] holds every look, early ones included, so a burst
+/// of frees cannot run up [`AUTO_TRIES`] failures in one go.
+exec static AUTO_RETRY_AT: AtomicU64 = AtomicU64::new(0);
 
 /// Dirty bytes that start the thread at the first look.
 pub const AUTO_BURST: u64 = 64 << 20;
+/// Bytes flushed back to slabs since the last look that make the next one
+/// early ([`AUTO_RELEASED`]): a quarter of [`AUTO_BURST`], so a burst
+/// crossing [`AUTO_BURST`] gets a look after it has. At [`AUTO_BURST`]
+/// itself the look would come as the flushed bytes reach it, when the
+/// `Empty` bytes are still short of it (the caches and the last partial
+/// slab hold the rest), and the next one only another [`AUTO_BURST`] on.
+pub const AUTO_STEP: u64 = AUTO_BURST / 4;
 /// Dirty bytes that start it when they stay at least this high (at every
 /// look) for [`AUTO_HOLD_NS`].
 pub const AUTO_FLOOR: u64 = 4 << 20;
@@ -431,10 +442,9 @@ pub fn start_requested(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut L
         if fails >= AUTO_TRIES {
             AUTO.store(false, Ordering::Relaxed);
         } else {
-            AUTO_NEXT.store(
-                sys::now_coarse_ns().saturating_add(AUTO_RETRY_NS),
-                Ordering::Relaxed,
-            );
+            let retry = sys::now_coarse_ns().saturating_add(AUTO_RETRY_NS);
+            AUTO_NEXT.store(retry, Ordering::Relaxed);
+            AUTO_RETRY_AT.store(retry, Ordering::Relaxed);
         }
     }
     g.unlock();
@@ -443,7 +453,7 @@ pub fn start_requested(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut L
 
 /// The lazy start's look, from a periodic tick that ran decay in the
 /// foreground and left dirty memory waiting (`purge::on_tick`): at most
-/// once per [`AUTO_CHECK_NS`], or sooner once [`AUTO_BURST`] more bytes
+/// once per [`AUTO_CHECK_NS`], or sooner once [`AUTO_STEP`] more bytes
 /// were flushed back to slabs since the last look ([`RELEASED`]), sum
 /// the dirty bytes and, when [`auto_due`] says so, request the thread,
 /// and start it if the tick is an allocation's (`alloc`) or a `free`'s
@@ -476,7 +486,8 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
     // Early, inside the window, once a burst's worth was flushed back
     // since the last look.
     let released = RELEASED.load(Ordering::Relaxed);
-    let early = released.wrapping_sub(AUTO_RELEASED.load(Ordering::Relaxed)) >= AUTO_BURST;
+    let early = released.wrapping_sub(AUTO_RELEASED.load(Ordering::Relaxed)) >= AUTO_STEP
+        && now >= AUTO_RETRY_AT.load(Ordering::Relaxed);
     let next = AUTO_NEXT.load(Ordering::Relaxed);
     if early {
         AUTO_NEXT.store(now.saturating_add(AUTO_CHECK_NS), Ordering::Relaxed);
@@ -561,6 +572,8 @@ pub fn set_auto(shared: Option<&Shared>) {
     );
     AUTO.store(shared.is_some(), Ordering::Relaxed);
     AUTO_NEXT.store(0, Ordering::Relaxed);
+    AUTO_RETRY_AT.store(0, Ordering::Relaxed);
+    AUTO_RELEASED.store(RELEASED.load(Ordering::Relaxed), Ordering::Relaxed);
     AUTO_SINCE.store(0, Ordering::Relaxed);
     AUTO_BASE.store(0, Ordering::Relaxed);
     AUTO_FAILS.store(0, Ordering::Relaxed);
@@ -1130,6 +1143,7 @@ pub fn fork_child(Tracked(hold): Tracked<&mut StateHold>)
     PRESENT.store(false, Ordering::Relaxed);
     REQUESTED.store(false, Ordering::Relaxed);
     AUTO_NEXT.store(0, Ordering::Relaxed);
+    AUTO_RETRY_AT.store(0, Ordering::Relaxed);
     AUTO_SINCE.store(0, Ordering::Relaxed);
 }
 
