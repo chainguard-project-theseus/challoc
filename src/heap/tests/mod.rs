@@ -87,8 +87,13 @@ impl TestHeap {
     }
 
     pub(crate) fn free(&self, p: *mut u8) {
-        self.heap()
-            .free(self.s, p, Tracked::assume_new(), Tracked::assume_new(), Tracked::assume_new())
+        self.heap().free(
+            self.s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 
     pub(crate) fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
