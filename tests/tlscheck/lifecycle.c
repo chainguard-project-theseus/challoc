@@ -16,55 +16,41 @@
  *   lifecycle keyafter a pthread key whose destructor allocates after
  *                      challoc's destructor ran
  */
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <pthread.h>
+#include "common.h"
 #include <stdatomic.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
-static void stats(const char *tag)
+/* The check's counters (uses, published, exited, rehomed, deep) into `s`;
+ * exits 3 on a library built without the check. */
+static void check_stats(size_t s[5])
 {
     void (*f)(size_t *) = (void (*)(size_t *))dlsym(RTLD_DEFAULT, "challoc_tls_check_stats");
     if (!f) {
         fprintf(stderr, "FATAL: challoc_tls_check_stats missing (not a check build?)\n");
         exit(3);
     }
-    size_t s[5];
     f(s);
+}
+
+static void stats(const char *tag)
+{
+    size_t s[5];
+    check_stats(s);
     printf("%s: uses=%zu published=%zu exited=%zu rehomed=%zu deep=%zu\n", tag, s[0], s[1], s[2], s[3], s[4]);
     fflush(stdout);
 }
 
 static size_t stat_at(int i)
 {
-    void (*f)(size_t *) = (void (*)(size_t *))dlsym(RTLD_DEFAULT, "challoc_tls_check_stats");
     size_t s[5];
-    if (!f) {
-        fprintf(stderr, "FATAL: challoc_tls_check_stats missing (not a check build?)\n");
-        exit(3);
-    }
-    f(s);
+    check_stats(s);
     return s[i];
-}
-
-static uint64_t rng(uint64_t *s)
-{
-    *s ^= *s << 13;
-    *s ^= *s >> 7;
-    *s ^= *s << 17;
-    return *s;
 }
 
 static void churn(uint64_t seed, int n)
 {
     void *p[64] = {0};
     for (int i = 0; i < n; i++) {
-        uint64_t v = rng(&seed);
+        uint64_t v = rng_next(&seed);
         int k = v % 64;
         free(p[k]);
         size_t sz = (v >> 8) % 4 == 0 ? (v >> 16) % 300000 : (v >> 16) % 2048 + 1;
@@ -159,9 +145,9 @@ static void *producer(void *arg)
 {
     uint64_t s = (uintptr_t)arg + 3;
     for (int i = 0; i < 64; i++) {
-        size_t sz = rng(&s) % 5000 + 1;
+        size_t sz = rng_next(&s) % 5000 + 1;
         void *p = malloc(sz);
-        int k = rng(&s) % QN;
+        int k = rng_next(&s) % QN;
         void *old = atomic_exchange(&q[k], p);
         free(old); /* a free of another thread's block, maybe of an exited one */
     }
@@ -173,7 +159,7 @@ static void *consumer(void *arg)
     (void)arg;
     uint64_t s = 11;
     while (atomic_load(&producers_left) > 0) {
-        int k = rng(&s) % QN;
+        int k = rng_next(&s) % QN;
         free(atomic_exchange(&q[k], NULL));
     }
     return NULL;
