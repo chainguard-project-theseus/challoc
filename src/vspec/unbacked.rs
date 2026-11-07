@@ -18,13 +18,13 @@ verus! {
 
 /// The byte at `a` was committed: the kernel answered with success an
 /// `mprotect` that made a range holding it readable and writable
-/// (`sys::mprotect_ok` with `meta::PROT_RW`). Timeless: every such call
+/// (`sys::mprotect_ok` with `sys::PROT_RW`). Timeless: every such call
 /// establishes it, including the class tables' and the huge allocator's
 /// commits of bytes they later make `PROT_NONE` again. What it means for
 /// an [`Unbacked`] token's bytes is [`Unbacked::commit`]'s kernel fact,
 /// whose premise covers the timelessness.
 pub open spec fn committed(a: int) -> bool {
-    exists|addr: usize, len: usize| #[trigger] crate::sys::mprotect_ok(addr, len, crate::meta::PROT_RW) && addr <= a < addr + len
+    exists|addr: usize, len: usize| #[trigger] crate::sys::mprotect_ok(addr, len, crate::sys::PROT_RW) && addr <= a < addr + len
 }
 
 /// Every byte of `[a, a + len)` is [`committed`].

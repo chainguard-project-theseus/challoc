@@ -64,7 +64,9 @@ use crate::lock::{Lock, LockOrder, RawLock};
 use crate::lock::{axiom_entry, lock_frame, lock_init, rank_huge, rank_meta};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, Due, Settle};
-use crate::sys::{self, Errno};
+use crate::sys::{
+    self, Errno, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MADV_POPULATE_WRITE, PROT_NONE, PROT_RW,
+};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::slice::array_iter_rest;
 
@@ -1873,30 +1875,6 @@ impl Huge {
         &&& self.inner.rank() == rank_huge()
     }
 }
-
-} // verus!
-
-verus! {
-
-/// `PROT_NONE`, `PROT_READ | PROT_WRITE` and the guard advice of
-/// `sys` (checked against them below).
-const PROT_NONE: i32 = 0;
-const PROT_RW: i32 = 3;
-const MADV_GUARD_INSTALL: i32 = 102;
-const MADV_GUARD_REMOVE: i32 = 103;
-/// `MADV_POPULATE_WRITE` (Linux 5.14, `include/uapi/asm-generic/mman-common.h`).
-const MADV_POPULATE_WRITE: i32 = 23;
-
-} // verus!
-
-const _: () = assert!(
-    PROT_NONE == sys::PROT_NONE
-        && PROT_RW == sys::PROT_READ | sys::PROT_WRITE
-        && MADV_GUARD_INSTALL == sys::MADV_GUARD_INSTALL
-        && MADV_GUARD_REMOVE == sys::MADV_GUARD_REMOVE
-);
-
-verus! {
 
 /// A commit, or a guard marker's removal, of `[addr, addr + len)` leaves
 /// the guard page of every live run of `g` (the huge lock's value) but
