@@ -848,10 +848,10 @@ ctests! {
     /// keep the CPU pin and policy of the worker that started it.
     c_lazy_bg => [
         CTest { prog: "lazy_bg", args: &["small"], conf: Some("abort_conf:true"), ..BASE },
-        CTest { prog: "lazy_bg", args: &["burst"], conf: Some("abort_conf:true,dirty_decay_ms:500"),
+        CTest { prog: "lazy_bg", args: &["burst"], conf: Some("abort_conf:true,dirty_decay_ms:5000"),
             stdout_has: &["burst: exec small"], ..BASE },
-        CTest { prog: "lazy_bg", args: &["idle"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },
-        CTest { prog: "lazy_bg", args: &["idlemt"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["idle"], conf: Some("abort_conf:true,dirty_decay_ms:5000"), ..BASE },
+        CTest { prog: "lazy_bg", args: &["idlemt"], conf: Some("abort_conf:true,dirty_decay_ms:5000"), ..BASE },
         CTest { prog: "lazy_bg", args: &["hold"], conf: Some("abort_conf:true,dirty_decay_ms:5000"), ..BASE },
         CTest { prog: "lazy_bg", args: &["optout"], conf: Some("abort_conf:true,background_thread:false,dirty_decay_ms:500"), ..BASE },
         CTest { prog: "lazy_bg", args: &["seccomp"], conf: Some("abort_conf:true,dirty_decay_ms:500"), ..BASE },

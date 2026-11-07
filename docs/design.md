@@ -1082,9 +1082,13 @@ every 100 ms, from a periodic tick whose foreground decay pass left dirty
 memory waiting: it sums the `Empty` bytes (every class and the huge tier)
 and starts the thread at 64 MiB, or at 4 MiB held at every look for a
 second. A look comes early, inside the 100 ms, once the free slow paths
-have flushed another 64 MiB of slots back to their slabs since the last
-one (`background::RELEASED`): a burst of frees shorter than the window
-would otherwise get one look, at its start, before it had freed much. A process that never holds that much never starts a thread: it
+have flushed another 16 MiB of slots back to their slabs since the last
+one (`background::RELEASED`, `AUTO_STEP`): a burst of frees shorter than
+the window would otherwise get one look, at its start, before it had
+freed much. The step is a quarter of the 64 MiB start, because the
+`Empty` bytes trail the flushed ones (the caches and the last partial
+slab hold the rest): a look made just as 64 MiB had been flushed would
+find less than 64 MiB `Empty`. A process that never holds that much never starts a thread: it
 stays single-threaded (`unshare(CLONE_NEWUSER)` keeps working) and its
 startup is unchanged (the key is read with the others; nothing else
 happens at init). `background_thread:false` (or any write through
