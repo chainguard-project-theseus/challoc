@@ -112,6 +112,44 @@ const PINS: &[(&str, &[&str])] = &[
             "self.dirty_at.store(ns, Ordering::Relaxed);",
         ],
     ),
+    // Slab pages, the walk racing a claim (tests/loom/src/pages.rs):
+    // close_page's steps, finish's mask loads, re-check and give-back,
+    // probe's read-modify-write and the claims' load of the mask.
+    (
+        "src/class/pages.rs",
+        &[
+            "self.set_pages_locked(g, pg, slab, new, stamp);",
+            "if bm.probe(w) & v.page_word(p, w) != 0 {",
+            "self.set_pages_locked(g, pg, slab, v.closed, stamp);",
+            "if !crate::purge::discard_one(a, len, Ghost(closed_page(new, p as u16, a as int, len as int))) {",
+        ],
+    ),
+    (
+        "src/class/mod.rs",
+        &[
+            "Some(pg) => geometry.with_closed(pg.closed()),",
+            "Some(pg) => pg.closed(),",
+            "let back = won & !open;",
+            "let _ = bm.release(w, back, Tracked(&mut bt));",
+        ],
+    ),
+    (
+        "src/bitmap.rs",
+        &["prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));"],
+    ),
+    ("src/slab.rs", &["self.closed.load(Ordering::Acquire)"]),
+    // `SlabPages`' accessors of the lock-protected fields: pages_held,
+    // set_pages (tests/loom/src/slab.rs).
+    (
+        "src/slab.rs",
+        &[
+            "pub fn pages_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: (u16, u64))",
+            "(self.closed.load(Ordering::Relaxed), self.stamp.load(Ordering::Relaxed))",
+            "pub fn set_pages(&self, closed: u16, stamp: u64, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.stamp.store(stamp, Ordering::Relaxed);",
+            "self.closed.store(closed, Ordering::Release);",
+        ],
+    ),
     // `AtomicBitmap`: init's whole-word padding, claim_word, claim_from
     // and release (tests/loom/src/bitmap.rs).
     (
@@ -122,12 +160,12 @@ const PINS: &[(&str, &[&str])] = &[
             "!0u64 << (nbits - lo)",
             "crate::vspec::word::store(w, pad, Ordering::Relaxed, Tracked(&mut perm));",
             "let cur = w.load(Ordering::Relaxed);",
-            "let want = lowest_n_bits(!cur & self.mask, n);",
+            "let want = lowest_n_bits(!cur & self.mask & (allow << self.shift), n);",
             "if want == 0 {",
             "return 0;",
             "prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));",
             "(want & !prev) >> self.shift",
-            "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
+            "let got = self.claim_word(i, n, view.word(i), Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
             "if got != 0 {",
             "return Some((i, got));",
             "i += 1;",
@@ -142,12 +180,12 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/class/mod.rs",
         &[
-            "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
+            "let Some((w, won)) = bm.claim_from(word, want - k, view, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
             "empty_passes += 1;",
             "if empty_passes == MAX_EMPTY_PASSES {",
             "fn take(",
             "let live = desc.live();",
-            "let avail = self.class().nslots() - live;",
+            "let avail = self.class().nslots() - nclosed - live;",
             "let n = avail.min(*remaining);",
             "desc.add_live(n);",
             "if self.desc(slab).sub_live(n) == n {",
@@ -951,7 +989,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "let cur = w.load(Ordering::Relaxed);",
             ),
             (
-                "let want = lowest_n_bits(!cur & self.mask, n);",
+                "let want = lowest_n_bits(!cur & self.mask & (allow << self.shift), n);",
                 "let want = lowest_n_bits(!cur, n);",
             ),
             ("if want == 0 {", "if want == 0 {"),
@@ -964,7 +1002,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("pub fn claim_from(", ""),
             ("let len = self.words.len();", "let len = self.words.len();"),
             (
-                "let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
+                "let got = self.claim_word(i, n, view.word(i), Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
                 "let got = self.claim_word(i, n);",
             ),
             ("if got != 0 {", "if got != 0 {"),
@@ -989,7 +1027,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         "src/class/mod.rs",
         &[
             (
-                "let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
+                "let Some((w, won)) = bm.claim_from(word, want - k, view, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {",
                 "match self.claim_from(0, want - got.count_ones() as usize) {",
             ),
             ("empty_passes += 1;", "empty += 1;"),
@@ -1004,7 +1042,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "let live = self.live.load(Ordering::Acquire) as usize;",
             ),
             (
-                "let avail = self.class().nslots() - live;",
+                "let avail = self.class().nslots() - nclosed - live;",
                 "let n = min(NSLOTS - live, want);",
             ),
             (
@@ -1420,6 +1458,59 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
         ],
     ),
+    // Slab pages, the walk racing a claim (pages.rs, the port of
+    // tests/loom/src/pages.rs): close_page's mask stores, probe test and
+    // discard; the probe's read-modify-write; finish's re-check and
+    // give-back; the claims' load of the mask.
+    (
+        "pages.rs",
+        "src/class/pages.rs",
+        &[
+            (
+                "self.set_pages_locked(g, pg, slab, new, stamp);",
+                "self.closed.store(0b10, Ordering::Release);",
+            ),
+            (
+                "if bm.probe(w) & v.page_word(p, w) != 0 {",
+                "if prev & PAGE_SLOTS[1] != 0 {",
+            ),
+            (
+                "self.set_pages_locked(g, pg, slab, v.closed, stamp);",
+                "self.closed.store(0, Ordering::Release);",
+            ),
+            (
+                "if !crate::purge::discard_one(a, len, Ghost(closed_page(new, p as u16, a as int, len as int))) {",
+                "self.write(PAGE_SLOTS[1], 0);",
+            ),
+        ],
+    ),
+    (
+        "pages.rs",
+        "src/bitmap.rs",
+        &[(
+            "prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));",
+            "word::fetch_or(&self.word, 0, Ordering::AcqRel, Tracked::assume_new())",
+        )],
+    ),
+    (
+        "pages.rs",
+        "src/class/mod.rs",
+        &[
+            ("let back = won & !open;", "let back = won & !open;"),
+            (
+                "let _ = bm.release(w, back, Tracked(&mut bt));",
+                "word::fetch_and(&self.word, !back, Ordering::Release, Tracked::assume_new());",
+            ),
+        ],
+    ),
+    (
+        "pages.rs",
+        "src/slab.rs",
+        &[(
+            "self.closed.load(Ordering::Acquire)",
+            "let closed = self.closed.load(Ordering::Acquire);",
+        )],
+    ),
 ];
 
 /// `(harness, constants)`: the case constants that stand for the
@@ -1457,6 +1548,7 @@ const GENMC_SHIPPED: &[(&str, &[&str])] = &[
         ],
     ),
     ("slotstate.rs", &["const LOAD_STORE: bool = false;"]),
+    ("pages.rs", &["const MUTANT: u32 = 0;"]),
     (
         "bitmap.rs",
         &[

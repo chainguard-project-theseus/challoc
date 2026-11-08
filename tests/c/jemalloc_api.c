@@ -313,10 +313,13 @@ static void test_valkey_defrag_pattern(void)
     size_t full = 0;
     for (int i = 0; i < N; i++) {
         size_t nfree = out[3 * i], nregs = out[3 * i + 1], size = out[3 * i + 2];
-        CHECK(nregs == my_nregs, "ptr %d nregs %zu != %zu", i, nregs, my_nregs);
+        /* A slab's regions are its open slots (slab pages: a slab opens
+         * its pages on demand and closes the ones it frees), at most the
+         * bin's nregs. */
+        CHECK(nregs >= 1 && nregs <= my_nregs, "ptr %d nregs %zu > %zu", i, nregs, my_nregs);
         /* The region bytes of the slab (nregs * size), not the slab size:
          * Valkey divides size by nregs and expects the bin size. */
-        CHECK(size == my_nregs * my_size && size <= my_slab, "ptr %d size %zu != %zu", i, size, my_nregs * my_size);
+        CHECK(size == nregs * my_size && size <= my_slab, "ptr %d size %zu != %zu", i, size, nregs * my_size);
         CHECK(nfree < nregs, "ptr %d nfree %zu", i, nfree);
         if (nfree == 0)
             full++;
@@ -330,7 +333,7 @@ static void test_valkey_defrag_pattern(void)
     size_t ulen = sizeof u;
     void *ptr0 = ptrs[0];
     REQUIRE(mallctl("experimental.utilization.query", &u, &ulen, &ptr0, sizeof ptr0) == 0, "utilization.query");
-    CHECK(u.nregs == my_nregs && u.size == my_nregs * my_size, "verbose geometry");
+    CHECK(u.nregs >= 1 && u.nregs <= my_nregs && u.size == u.nregs * my_size, "verbose geometry");
     CHECK(u.bin_nregs >= u.nregs && u.bin_nfree <= u.bin_nregs, "verbose bin figures");
     CHECK(u.bin_nregs - u.bin_nfree >= N, "bin has our slots out");
     for (int i = 0; i < N; i++)

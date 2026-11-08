@@ -1086,7 +1086,7 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
         live: 0,
         found: false,
         lowest: None,
-        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0 },
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed_slots: 0, closed_pages: 0 },
         curregs: 0,
         cur_live: None,
     };
@@ -1158,6 +1158,10 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
         rd.found = true;
     }
     let cs = a.class(class);
+    // A defragmenter is at work on this class: its slab-pages walk runs at
+    // once and closes what the moves left closable (lock-free, at most
+    // once per 100 ms per class; docs/proposals/slab-pages.md, 7.1).
+    cs.note_defrag_hint();
     let slabcur = cs.lowest_partial(Tracked(&mut ord));
     proof {
         rd.lowest = slabcur;

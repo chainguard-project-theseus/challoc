@@ -2369,6 +2369,7 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
         cs.table().bits(1).claim_word(
             0,
             1,
+            !0,
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new()
@@ -2840,4 +2841,690 @@ fn stress_class_cross_thread_release() {
     let st = cs.stats();
     assert_eq!(st.empty + st.purged, st.committed, "{st:?}");
     assert_eq!(st.nonfull, 0, "{st:?}");
+}
+
+/// Every class whose descriptor stride leaves room (32 or 64 bytes) has a
+/// `SlabPages` 16 bytes after each slab's header, zero (every page open)
+/// when the slab is handed out; a write through it reads back through the
+/// permission and the claims' load, and touches neither its own header
+/// nor the next slab's. Classes with the bare header have none.
+#[test]
+fn slab_pages_sit_after_the_header_where_the_stride_has_room() {
+    let env = Env::new();
+    let mut with = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        // Claims until a second slab is taken (a claim returns at most a
+        // batch).
+        let mut p = Vec::new();
+        let (s0, _) = {
+            p.extend(env.claim(cs, 1).0);
+            cs.locate(p[0])
+        };
+        let s1 = loop {
+            let (q, _) = env.claim(cs, cs.class().nslots());
+            if q.is_empty() {
+                break None;
+            }
+            p.extend(q);
+            let (s, _) = cs.locate(p[p.len() - 1]);
+            if s != s0 {
+                break Some(s);
+            }
+        };
+        // The largest classes have one slab in the test region.
+        let Some(s1) = s1 else {
+            cs.release(&p);
+            continue;
+        };
+        assert_ne!(s0, s1, "class {c}");
+        let stride = crate::slab::DESC_STRIDE[c] as usize;
+        let Some(pg) = cs.table().pages(s0) else {
+            assert!(stride < 32, "class {c}: stride {stride} has no SlabPages");
+            continue;
+        };
+        with += 1;
+        assert!(stride >= 32, "class {c}");
+        let (d0, d1) = (cs.desc(s0), cs.desc(s1));
+        // The next slab opened on demand (docs/proposals/slab-pages.md, 3.3).
+        let m1 = cs.table().pages(s1).unwrap().closed();
+        assert_eq!(
+            pg as *const _ as usize,
+            d0 as *const _ as usize + 16,
+            "class {c}"
+        );
+        assert_eq!(pg.closed(), 0, "class {c}");
+        pg.set_pages(0b1010_0101, 77, Tracked::assume_new());
+        assert_eq!(
+            pg.pages_held(Ghost::assume_new(), Tracked::assume_new()),
+            (0b1010_0101, 77),
+            "class {c}"
+        );
+        assert_eq!(pg.closed(), 0b1010_0101, "class {c}");
+        for d in [d0, d1] {
+            assert_eq!(d.state(), State::Active, "class {c}");
+            assert_eq!(d.state_bytes(), (1, 2), "class {c}");
+            assert_eq!((d.arena(), d.dirty_at()), (0, 0), "class {c}");
+        }
+        assert_eq!(cs.table().pages(s1).unwrap().closed(), m1, "class {c}");
+        pg.set_pages(0, 0, Tracked::assume_new());
+        cs.release(&p);
+    }
+    assert!(with > 0);
+}
+
+/// Slab pages, the claim (docs/proposals/slab-pages.md, 3.3 and 3.4):
+/// with pages of an `Active` slab closed, refills take the slab's open
+/// slots first (a slot straddling an open and a closed page is closed),
+/// since `take` reserves only open free slots and the claim takes only
+/// open slots, met without the `reservation_unmet` abort; then the next
+/// refill reopens the slab's lowest closed page rather than take another
+/// slab.
+#[test]
+fn claims_take_only_the_slots_of_open_pages() {
+    let env = Env::new();
+    let mut tested = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        let view = cs.table().page_view();
+        // A page to close between the first and the last.
+        if view.pages < 3 {
+            continue;
+        }
+        let (p0, _) = env.claim(cs, 1);
+        let (s0, k0) = cs.locate(p0[0]);
+        assert_eq!(k0, 0, "class {c}");
+        let pg = cs.table().pages(s0).unwrap();
+        // Every page closed but the first and the last.
+        let all = ((1u32 << view.pages) - 1) as u16;
+        let closed = all & !1 & !(1 << (view.pages - 1));
+        pg.set_pages(closed, 0, Tracked::assume_new());
+        let v = view.with_closed(closed);
+        let open: Vec<usize> = (0..view.nslots)
+            .filter(|&s| v.word(s / 64) >> (s % 64) & 1 == 1)
+            .collect();
+        assert!(open.len() < view.nslots, "class {c}");
+        let mut held = p0.clone();
+        let mut in_s0 = vec![k0];
+        while in_s0.len() < open.len() {
+            let (q, _) = env.claim(cs, open.len() - in_s0.len());
+            assert!(!q.is_empty(), "class {c}");
+            for &x in &q {
+                let (s, k) = cs.locate(x);
+                assert_eq!(
+                    s, s0,
+                    "class {c}: another slab before the open slots ran out"
+                );
+                in_s0.push(k);
+            }
+            held.extend(q);
+        }
+        in_s0.sort_unstable();
+        assert_eq!(in_s0, open, "class {c}: slots taken on slab {s0}");
+        assert_eq!(cs.desc(s0).live(), open.len(), "class {c}");
+        // The next refill reopens the lowest closed page.
+        let (q, _) = env.claim(cs, 1);
+        let (s, _) = cs.locate(q[0]);
+        assert_eq!(s, s0, "class {c}: a closed page reopens before a new slab");
+        assert_eq!(
+            pg.closed(),
+            closed & (closed - 1),
+            "class {c}: the lowest closed page reopened"
+        );
+        held.extend(q);
+        pg.set_pages(0, 0, Tracked::assume_new());
+        cs.release(&held);
+        tested += 1;
+    }
+    // A 64 KiB-page kernel has one page per small slab: nothing to close.
+    if tested == 0 {
+        assert!(
+            page_size() >= 0x10000,
+            "no paged class tested at a 4 KiB page"
+        );
+        crate::testutil::skip(
+            "claims_take_only_the_slots_of_open_pages",
+            "no slab of a paged class spans two pages at this page size",
+        );
+    }
+}
+
+/// Slab pages, the walk (docs/proposals/slab-pages.md, 3.4): per paged
+/// class, a full slab with every slot released but those of its first and
+/// last pages. An explicit walk closes exactly the pages none of whose
+/// slots is held (a page a held slot straddles into stays open), counts
+/// their slots in `closed_slots`, and the next refills take no slot of
+/// them. Emptying the slab opens every page and takes the count back.
+#[test]
+fn the_walk_closes_the_free_pages_of_a_partial_slab() {
+    let env = Env::new();
+    let mut tested = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        let view = cs.table().page_view();
+        if view.pages < 2 {
+            continue;
+        }
+        let n = view.nslots;
+        let mut held: Vec<*mut u8> = Vec::new();
+        while held.len() < n {
+            let (q, _) = env.claim(cs, n - held.len());
+            held.extend(q);
+        }
+        let (s0, _) = cs.locate(held[0]);
+        assert!(held.iter().all(|&p| cs.locate(p).0 == s0), "class {c}");
+        // Keep the slots that overlap the first or the last page.
+        let keep_page = |p: usize| p == 0 || p == view.pages - 1;
+        let overlaps = |s: usize, p: usize| {
+            s * view.size < (p + 1) * view.pg && p * view.pg < (s + 1) * view.size
+        };
+        let (kept, freed): (Vec<_>, Vec<_>) = held
+            .iter()
+            .partition(|&&x| (0..view.pages).any(|p| keep_page(p) && overlaps(cs.locate(x).1, p)));
+        cs.release(&freed);
+        let kept_slots: Vec<usize> = kept.iter().map(|&x| cs.locate(x).1).collect();
+        let want: u16 = (0..view.pages)
+            .filter(|&p| !kept_slots.iter().any(|&s| overlaps(s, p)))
+            .fold(0, |m, p| m | 1 << p);
+        if want == 0 {
+            // Slots large enough that the kept ones touch every page.
+            cs.release(&kept);
+            continue;
+        }
+        close_pages_t(cs, 1, 0, true);
+        let pg = cs.table().pages(s0).unwrap();
+        assert_eq!(pg.closed(), want, "class {c}: closed pages");
+        let hidden = view.with_closed(want).closed_slots();
+        assert_eq!(closed_slots_t(cs), hidden, "class {c}");
+        // The statistics (docs/proposals/slab-pages.md, 3.6): the closed
+        // slots and pages, and the bin's closed bytes out of `active`.
+        let st = cs.bin_stats(Tracked::assume_new()).0;
+        assert_eq!(
+            (st.closed_slots, st.closed_pages),
+            (hidden, want.count_ones() as usize),
+            "class {c}"
+        );
+        let b = crate::stats::collect_bin(cs, Tracked::assume_new());
+        assert_eq!(b.closed_slots, hidden, "class {c}");
+        assert_eq!(
+            b.closed_bytes,
+            want.count_ones() as usize * view.pg,
+            "class {c}"
+        );
+        assert!(
+            b.curregs * b.size + b.closed_bytes <= b.curslabs * b.slab_size,
+            "class {c}"
+        );
+        // Refills take the slab's open free slots, then reopen its closed
+        // pages (counted out of `closed_slots`), and only then another slab.
+        let v = view.with_closed(want);
+        let open_free = (0..n)
+            .filter(|&k| v.word(k / 64) >> (k % 64) & 1 == 1)
+            .count()
+            - kept.len();
+        let mut more: Vec<*mut u8> = Vec::new();
+        while more.len() < open_free {
+            let (q, _) = env.claim(cs, open_free - more.len());
+            more.extend(q);
+        }
+        for &x in &more {
+            let (s, k) = cs.locate(x);
+            assert_eq!(s, s0, "class {c}");
+            assert_eq!(
+                v.word(k / 64) >> (k % 64) & 1,
+                1,
+                "class {c}: slot {k} on a closed page"
+            );
+        }
+        loop {
+            let (q, _) = env.claim(cs, n);
+            let done = q.iter().any(|&x| cs.locate(x).0 != s0);
+            more.extend(q);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(
+            pg.closed(),
+            0,
+            "class {c}: every page reopened before another slab"
+        );
+        // Only the next slab, opened on demand, has closed pages now.
+        let s1 = cs.locate(*more.last().unwrap()).0;
+        let m1 = cs.table().pages(s1).unwrap().closed();
+        assert_eq!(
+            closed_slots_t(cs),
+            view.with_closed(m1).closed_slots(),
+            "class {c}"
+        );
+        assert_eq!(cs.desc(s0).live(), n, "class {c}");
+        cs.release(&more);
+        cs.release(&kept);
+        assert_eq!(
+            pg.closed(),
+            0,
+            "class {c}: an Empty slab has every page open"
+        );
+        assert_eq!(closed_slots_t(cs), 0, "class {c}");
+        tested += 1;
+    }
+    if tested == 0 {
+        assert!(
+            page_size() >= 0x10000,
+            "no paged class tested at a 4 KiB page"
+        );
+        crate::testutil::skip(
+            "the_walk_closes_the_free_pages_of_a_partial_slab",
+            "no slab of a paged class spans two pages at this page size",
+        );
+    }
+}
+
+/// Slab pages, the decay curve: a walk stamps a slab with closable pages
+/// and closes none while they are young; once their stamp is a period old
+/// a walk closes them all.
+#[test]
+fn the_walk_closes_pages_along_the_decay_curve() {
+    let env = Env::new();
+    let c = small_class();
+    let cs = env.class(c, 0);
+    let view = cs.table().page_view();
+    if view.pages < 2 {
+        crate::testutil::skip(
+            "the_walk_closes_pages_along_the_decay_curve",
+            "no slab of a paged class spans two pages at this page size",
+        );
+        return;
+    }
+    let n = view.nslots;
+    let mut held: Vec<*mut u8> = Vec::new();
+    while held.len() < n {
+        let (q, _) = env.claim(cs, n - held.len());
+        held.extend(q);
+    }
+    let (s0, _) = cs.locate(held[0]);
+    // Keep slot 0 only: every page but the first is closable.
+    cs.release(&held[1..]);
+    let pg = cs.table().pages(s0).unwrap();
+    let period = 1_000_000_000u64;
+    let t0 = 5_000_000_000u64;
+    let due = close_pages_t(cs, t0, period, false).expect("a deadline");
+    assert_eq!(pg.closed(), 0, "a young closable page stays open");
+    assert!(due > t0 && due <= t0 + period);
+    // Before the deadline the walk does not run.
+    assert_eq!(close_pages_t(cs, due - 1, period, false), Some(due));
+    assert_eq!(pg.closed(), 0);
+    close_pages_t(cs, t0 + period, period, false);
+    let all = ((1u32 << view.pages) - 1) as u16;
+    let first = (0..view.pages)
+        .filter(|&p| p * view.pg < view.size)
+        .fold(0u16, |m, p| m | 1 << p);
+    assert_eq!(
+        pg.closed(),
+        all & !first,
+        "a period old, every closable page closed"
+    );
+    cs.release(&held[..1]);
+    assert_eq!(pg.closed(), 0);
+}
+
+/// Slab pages: `cs`'s `closed_slots`, under the class lock.
+fn closed_slots_t(cs: &ClassState) -> usize {
+    let g = cs.inner.lock(Tracked::assume_new(), Tracked::assume_new());
+    let n = g.closed_slots;
+    g.unlock();
+    n
+}
+
+/// Slab pages: `ClassState::close_pages` with made-up lock order tokens.
+fn close_pages_t(cs: &ClassState, now: u64, decay_ns: u64, all: bool) -> Option<u64> {
+    cs.close_pages(now, decay_ns, all, Tracked::assume_new())
+}
+
+/// Slab pages, a defragmenter's hint (docs/proposals/slab-pages.md, 7.1):
+/// a hint arms the class's next walk, which then closes every page
+/// closable for a curve step, though young on the curve; a second hint
+/// within 100 ms does not arm it again.
+#[test]
+fn a_defrag_hint_closes_pages_a_step_old() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let view = cs.table().page_view();
+    if view.pages < 2 {
+        crate::testutil::skip(
+            "a_defrag_hint_closes_pages_a_step_old",
+            "no slab of a paged class spans two pages at this page size",
+        );
+        return;
+    }
+    let n = view.nslots;
+    let mut held: Vec<*mut u8> = Vec::new();
+    while held.len() < n {
+        let (q, _) = env.claim(cs, n - held.len());
+        held.extend(q);
+    }
+    let (s0, _) = cs.locate(held[0]);
+    cs.release(&held[1..]);
+    let pg = cs.table().pages(s0).unwrap();
+    let period = 1_000_000_000u64;
+    let step = period / crate::purge::STEPS as u64;
+    let t0 = 5_000_000_000u64;
+    close_pages_t(cs, t0, period, false);
+    assert_eq!(pg.closed(), 0, "young on the curve");
+    cs.note_defrag_hint();
+    assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 1);
+    close_pages_t(cs, t0 + 2 * step, period, false);
+    assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 0);
+    let all = ((1u32 << view.pages) - 1) as u16;
+    assert_eq!(
+        pg.closed(),
+        all & !1,
+        "hinted: every page a step old closed"
+    );
+    cs.note_defrag_hint();
+    assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 0, "within 100 ms");
+    cs.release(&held[..1]);
+    assert_eq!(pg.closed(), 0);
+}
+
+/// Slab pages, the reservation bound: a walk between a refill's
+/// reservation and its claim (`AFTER_PLAN`) closes a page only while
+/// `live + closed <= nslots` holds after it, so the claim meets its
+/// reservation and takes no slot of a closed page. Without the bound
+/// the walk closes every free page and the claim aborts
+/// (`reservation_unmet`).
+#[test]
+fn a_walk_between_reservation_and_claim_leaves_the_reserved_slots_open() {
+    let env = Env::new();
+    let mut tested = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        let view = cs.table().page_view();
+        if view.pages < 2 {
+            continue;
+        }
+        let n = view.nslots;
+        let mut held: Vec<*mut u8> = Vec::new();
+        while held.len() < n {
+            let (q, _) = env.claim(cs, n - held.len());
+            held.extend(q);
+        }
+        let (s0, _) = cs.locate(held[0]);
+        // Every slot released but those starting on the first page.
+        let (kept, freed): (Vec<*mut u8>, Vec<*mut u8>) = held
+            .iter()
+            .partition(|&&x| cs.locate(x).1 * view.size < view.pg);
+        cs.release(&freed);
+        let want = (freed.len() / 2).max(1);
+        let addr = cs as *const ClassState as usize;
+        *AFTER_PLAN.lock().unwrap() = Some((
+            addr,
+            std::boxed::Box::new(move || {
+                // SAFETY: the class state outlives the claim this runs in.
+                let cs = unsafe { &*(addr as *const ClassState) };
+                close_pages_t(cs, 1, 0, true);
+            }),
+        ));
+        let (got, _) = env.claim(cs, want);
+        assert!(
+            AFTER_PLAN.lock().unwrap().is_none(),
+            "class {c}: the walk ran"
+        );
+        assert_eq!(got.len(), want, "class {c}: the reservation was met");
+        let pg = cs.table().pages(s0).unwrap();
+        let v = view.with_closed(pg.closed());
+        for &x in &got {
+            let (s, k) = cs.locate(x);
+            assert_eq!(s, s0, "class {c}");
+            assert_eq!(
+                v.word(k / 64) >> (k % 64) & 1,
+                1,
+                "class {c}: slot {k} on a closed page"
+            );
+        }
+        assert!(
+            cs.desc(s0).live() + v.closed_slots() <= n,
+            "class {c}: live + closed > nslots"
+        );
+        cs.release(&got);
+        cs.release(&kept);
+        tested += 1;
+    }
+    if tested == 0 {
+        assert!(
+            page_size() >= 0x10000,
+            "no paged class tested at a 4 KiB page"
+        );
+        crate::testutil::skip(
+            "a_walk_between_reservation_and_claim_leaves_the_reserved_slots_open",
+            "no slab of a paged class spans two pages at this page size",
+        );
+    }
+}
+
+/// Slab pages, the empty transition: a slab that empties while pages are
+/// still closed takes its closed slots and pages out of the class's
+/// counts and opens every page (`reset_pages_on_empty`), so only `Active`
+/// slabs have closed pages.
+#[test]
+fn an_emptied_slab_takes_its_closed_slots_out_of_the_count() {
+    let env = Env::new();
+    let mut tested = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        let view = cs.table().page_view();
+        if view.pages < 2 {
+            continue;
+        }
+        let n = view.nslots;
+        let mut held: Vec<*mut u8> = Vec::new();
+        while held.len() < n {
+            let (q, _) = env.claim(cs, n - held.len());
+            held.extend(q);
+        }
+        let (s0, _) = cs.locate(held[0]);
+        let (kept, freed): (Vec<*mut u8>, Vec<*mut u8>) = held
+            .iter()
+            .partition(|&&x| cs.locate(x).1 * view.size < view.pg);
+        cs.release(&freed);
+        close_pages_t(cs, 1, 0, true);
+        let pg = cs.table().pages(s0).unwrap();
+        if pg.closed() == 0 {
+            cs.release(&kept);
+            continue;
+        }
+        assert!(closed_slots_t(cs) > 0, "class {c}");
+        // The last held slots go: the slab empties with its pages closed.
+        cs.release(&kept);
+        assert_eq!(
+            pg.closed(),
+            0,
+            "class {c}: an Empty slab has every page open"
+        );
+        assert_eq!(
+            closed_slots_t(cs),
+            0,
+            "class {c}: closed slots of an Empty slab still counted"
+        );
+        let st = cs.bin_stats(Tracked::assume_new()).0;
+        assert_eq!((st.closed_slots, st.closed_pages), (0, 0), "class {c}");
+        tested += 1;
+    }
+    if tested == 0 {
+        assert!(
+            page_size() >= 0x10000,
+            "no paged class tested at a 4 KiB page"
+        );
+        crate::testutil::skip(
+            "an_emptied_slab_takes_its_closed_slots_out_of_the_count",
+            "no slab of a paged class spans two pages at this page size",
+        );
+    }
+}
+
+/// Slab pages, an `epoch` write (`purge::note_epoch` →
+/// `Arena::note_epoch` → `ClassState::arm_pages_hint`): arming the class
+/// makes its next walk close every page closable for a curve step,
+/// though young on the curve; a second arm within `HINT_NS` does not arm
+/// it again, and one after it does.
+#[test]
+fn an_epoch_arms_the_walk_to_close_pages_a_step_old() {
+    use super::pages::HINT_NS;
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let view = cs.table().page_view();
+    if view.pages < 2 {
+        crate::testutil::skip(
+            "an_epoch_arms_the_walk_to_close_pages_a_step_old",
+            "no slab of a paged class spans two pages at this page size",
+        );
+        return;
+    }
+    let n = view.nslots;
+    let mut held: Vec<*mut u8> = Vec::new();
+    while held.len() < n {
+        let (q, _) = env.claim(cs, n - held.len());
+        held.extend(q);
+    }
+    let (s0, _) = cs.locate(held[0]);
+    cs.release(&held[1..]);
+    let pg = cs.table().pages(s0).unwrap();
+    let period = 1_000_000_000u64;
+    let step = period / crate::purge::STEPS as u64;
+    let t0 = 5_000_000_000u64;
+    close_pages_t(cs, t0, period, false);
+    assert_eq!(pg.closed(), 0, "young on the curve");
+    let t1 = t0 + 2 * step;
+    assert!(cs.arm_pages_hint(t1), "the first epoch arms the walk");
+    assert!(
+        !cs.arm_pages_hint(t1 + HINT_NS - 1),
+        "a second within HINT_NS does not"
+    );
+    close_pages_t(cs, t1, period, false);
+    let all = ((1u32 << view.pages) - 1) as u16;
+    assert_eq!(pg.closed(), all & !1, "armed: every page a step old closed");
+    assert!(
+        cs.arm_pages_hint(t1 + HINT_NS),
+        "one HINT_NS later arms it again"
+    );
+    cs.release(&held[..1]);
+    assert_eq!(pg.closed(), 0);
+}
+
+/// `cs.lowest_partial()` with a made-up lock order token.
+fn lowest_partial_t(cs: &ClassState) -> Option<usize> {
+    cs.lowest_partial(Tracked::assume_new())
+}
+
+/// Two full slabs of `cs`'s class, in address order, with every slot but
+/// the first `keep` of each released: their held slots.
+fn two_partial_slabs(
+    env: &Env,
+    cs: &ClassState,
+    keep: usize,
+) -> (usize, usize, Vec<*mut u8>, Vec<*mut u8>) {
+    let n = cs.table().page_view().nslots;
+    let mut held: Vec<*mut u8> = Vec::new();
+    while held.len() < 2 * n {
+        let (q, _) = env.claim(cs, 2 * n - held.len());
+        held.extend(q);
+    }
+    let mut slabs: Vec<usize> = held.iter().map(|&x| cs.locate(x).0).collect();
+    slabs.sort_unstable();
+    slabs.dedup();
+    assert_eq!(slabs.len(), 2);
+    let (s0, s1) = (slabs[0], slabs[1]);
+    let (mut k0, mut k1, mut freed) = (Vec::new(), Vec::new(), Vec::new());
+    for &x in &held {
+        let (s, k) = cs.locate(x);
+        if k < keep {
+            if s == s0 { k0.push(x) } else { k1.push(x) }
+        } else {
+            freed.push(x);
+        }
+    }
+    cs.release(&freed);
+    (s0, s1, k0, k1)
+}
+
+/// Slab pages, the defrag hint's `slabcur` (`lowest_partial`): a partial
+/// slab whose open free slots are all reserved by a claim in flight is
+/// not where the next claim takes from, so it is skipped for the next
+/// partial slab.
+#[test]
+fn lowest_partial_skips_a_slab_whose_free_slots_are_all_reserved() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let n = cs.table().page_view().nslots;
+    let keep = n / 2;
+    let (s0, s1, k0, k1) = two_partial_slabs(&env, cs, keep);
+    assert_eq!(lowest_partial_t(cs), Some(s0));
+    // A claim of exactly s0's free slots: inside it, after its plan, every
+    // slot of s0 is held or reserved.
+    let addr = cs as *const ClassState as usize;
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let seen2 = seen.clone();
+    *AFTER_PLAN.lock().unwrap() = Some((
+        addr,
+        std::boxed::Box::new(move || {
+            // SAFETY: the class state outlives the claim this runs in.
+            let cs = unsafe { &*(addr as *const ClassState) };
+            *seen2.lock().unwrap() = Some(lowest_partial_t(cs));
+        }),
+    ));
+    let (got, _) = env.claim(cs, n - keep);
+    assert!(got.iter().all(|&x| cs.locate(x).0 == s0));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        Some(Some(s1)),
+        "a fully reserved slab is skipped"
+    );
+    cs.release(&got);
+    cs.release(&k0);
+    cs.release(&k1);
+}
+
+/// Slab pages, `lowest_partial` with closed pages: a slab whose free slots
+/// are all on closed pages (no open free slot) is still where the next
+/// claim takes from, by reopening them, so it stays the hint's `slabcur`
+/// ahead of a higher slab with open free slots.
+#[test]
+fn lowest_partial_keeps_a_slab_with_closed_pages_to_reopen() {
+    let env = Env::new();
+    // A class whose slots tile the page, so no slot straddles the first
+    // page's end and every free slot of the slab is on a page that closes.
+    let found = (0..NCLASSES).map(|c| env.class(c, 0)).find(|cs| {
+        let v = cs.table().page_view();
+        v.pages >= 2 && v.pg % v.size == 0
+    });
+    let Some(cs) = found else {
+        crate::testutil::skip(
+            "lowest_partial_keeps_a_slab_with_closed_pages_to_reopen",
+            "no paged class whose slots tile a page at this page size",
+        );
+        return;
+    };
+    let view = cs.table().page_view();
+    // Keep the slots of the first page of each slab.
+    let keep = view.pg / view.size;
+    let (s0, s1, k0, k1) = two_partial_slabs(&env, cs, keep);
+    close_pages_t(cs, 1, 0, true);
+    let v = view.with_closed(cs.table().pages(s0).unwrap().closed());
+    let open_free = (0..view.nslots)
+        .filter(|&k| v.word(k / 64) >> (k % 64) & 1 == 1)
+        .count()
+        - k0.len();
+    assert_eq!(open_free, 0, "every free slot of s0 is on a closed page");
+    assert!(v.closed_slots() > 0);
+    // s1 gets an open free slot: one of its held slots, on its open page.
+    let (gone, k1) = k1.split_at(1);
+    cs.release(gone);
+    assert_eq!(cs.locate(gone[0]).0, s1);
+    assert_eq!(
+        lowest_partial_t(cs),
+        Some(s0),
+        "closed pages to reopen keep s0 ahead of s1"
+    );
+    cs.release(&k0);
+    cs.release(k1);
 }

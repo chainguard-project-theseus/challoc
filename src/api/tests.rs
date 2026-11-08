@@ -330,6 +330,7 @@ const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
             "class/decay.rs:empty_bytes",
             "class/decay.rs:purge_empty",
             "class/decay.rs:purge_curve",
+            "class/pages.rs:close_pages",
         ],
     ),
     ("class/sets.rs:SetTable.tables", &["class/sets.rs:ensure"]),
@@ -1696,6 +1697,7 @@ fn lock_holders_match_inv_docs() {
                 ("class/decay.rs:", "pub fn empty_bytes(", "inner"),
                 ("class/decay.rs:", "pub fn purge_empty(", "inner"),
                 ("class/decay.rs:", "fn purge_curve(", "inner"),
+                ("class/pages.rs:", "pub fn close_pages(", "inner"),
             ],
         ),
         // `class::sets`'s `LockSpec` impl for `[Lazy; SET_GROUPS]`.

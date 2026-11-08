@@ -148,6 +148,7 @@ finish() { # status exit-code reason
   [ -f /run/cb-uploader.pid ] && kill "$(cat /run/cb-uploader.pid)" 2>/dev/null
   upload_res
   [ -f "$OUT/cb.log" ] && put "$OUT/cb.log" "$RES/cb.log"
+  [ -f "$OUT/prebuild.log" ] && put "$OUT/prebuild.log" "$RES/prebuild.log"
   if [ -d "$OUT/res/logs" ]; then
     tar -C "$OUT/res" -czf "$OUT/logs.tgz" logs 2>/dev/null && put "$OUT/logs.tgz" "$RES/logs.tgz"
   fi
@@ -351,8 +352,21 @@ esac
 [ "$RT" = podman ] && PROFILE+=(--security-opt label=disable)
 [ -n "$CPUS" ] && PROFILE+=(--cpus "$CPUS")
 [ -n "$CPUSET" ] && PROFILE+=(--cpuset-cpus "$CPUSET")
-[ -n "$MEMORY" ] && PROFILE+=(--memory "$MEMORY" --memory-swap "$MEMORY")
 DIGEST=${IMAGE##*@}
+# A memory-limited run (the sidecar suite) builds its variants first, in the
+# same image and mounts but without the limit: compiling challoc does not
+# fit 128 or 256 MiB. The run below finds the builds by tree and reuses them
+# (bench/cb/variants.py), so only the benchmarks run under the limit.
+if [ -n "$MEMORY" ]; then
+  $RT run --rm --name cb-build "${NET[@]}" "${PROFILE[@]}" \
+    -v "$W/src:/src" -v "$OUT:/out" -v "$W/sources:/cb/sources:ro" \
+    -e CB_HOST="$NAME" -e CB_CONTAINER="$CONTAINER" \
+    -w /src "$IMG_ID" \
+    python3 bench/cb run --launch /out/launch.json --vm "$NAME" --sources /cb/sources --out /out/prebuild --bin /opt/cb/bench-bin --build-only \
+    > "$OUT/prebuild.log" 2>&1 || { tail -25 "$OUT/prebuild.log"; finish infra 3 "cb run --build-only: $(grep '^cb: ' "$OUT/prebuild.log" | tail -1)"; }
+  stamp prebuilt
+fi
+[ -n "$MEMORY" ] && PROFILE+=(--memory "$MEMORY" --memory-swap "$MEMORY")
 $RT run --rm --name cb "${NET[@]}" "${PROFILE[@]}" "${PERF_MOUNT[@]}" \
   -v "$W/src:/src" -v "$OUT:/out" -v "$W/sources:/cb/sources:ro" \
   -e CB_HOST="$NAME" -e CB_MACHINE="$MACHINE" -e CB_ZONE="$ZONE" \

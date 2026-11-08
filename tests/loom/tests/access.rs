@@ -704,10 +704,12 @@ fn access_entry_tables_control() {
     assert!(!check_entries(&t2).is_empty());
 }
 
-// The descriptor fields a permission records (`SlabDesc`'s seams):
-// non-test slab.rs names `state`, `shadow`, `arena` and `dirty_at` (private
-// fields) only in a `Relaxed` load, ghost code, or the seven write lines of
-// `init`, `set_state` and `set_dirty_at`, each once; and no line starts a
+// The descriptor fields a permission records (`SlabDesc`'s and
+// `SlabPages`' seams): non-test slab.rs names `state`, `shadow`, `arena`,
+// `dirty_at`, `closed` and `stamp` (private fields) only in a `Relaxed`
+// load, `SlabPages::closed`'s one `Acquire` load, ghost code, or the nine
+// write lines of `init`, `set_state`, `set_dirty_at` and `set_pages`, each
+// once; and no line starts a
 // split write chain, takes a field's address or borrow, builds a
 // `SlabDesc`, or writes through `as *mut SlabDesc`, `write_bytes`,
 // `write_volatile`, `addr_of` or `transmute`.
@@ -732,6 +734,8 @@ const DESC_WRITES: &[(&str, &str)] = &[
         "set_dirty_at",
         "self.dirty_at.store(ns, Ordering::Relaxed);",
     ),
+    ("set_pages", "self.stamp.store(stamp, Ordering::Relaxed);"),
+    ("set_pages", "self.closed.store(closed, Ordering::Release);"),
 ];
 
 fn check_desc(t: &Tree) -> Vec<String> {
@@ -768,7 +772,14 @@ fn check_desc(t: &Tree) -> Vec<String> {
             && c != "pub struct SlabDesc {"
             && c != "impl SlabDesc {";
         let mut field = false;
-        for f in [".state", ".shadow", ".arena", ".dirty_at"] {
+        for f in [
+            ".state",
+            ".shadow",
+            ".arena",
+            ".dirty_at",
+            ".closed",
+            ".stamp",
+        ] {
             for i in occurs(c, f, &['(']) {
                 let rest = &c[i + f.len()..];
                 let borrowed = c[..i].rfind('&').is_some_and(|b| {
@@ -779,7 +790,11 @@ fn check_desc(t: &Tree) -> Vec<String> {
                 });
                 if borrowed {
                     field = true;
-                } else if rest.starts_with(".load(Ordering::Relaxed)") {
+                } else if rest.starts_with(".load(Ordering::Relaxed)")
+                    || (f == ".closed"
+                        && l.func == "closed"
+                        && c == "self.closed.load(Ordering::Acquire)")
+                {
                 } else if writes(rest) && rest.starts_with('.') {
                     match DESC_WRITES
                         .iter()
@@ -833,6 +848,27 @@ fn access_desc_fields_control() {
             "src/slab.rs",
             anchor,
             "self.dirty_at.store(ns, Ordering::Relaxed);"
+        ))
+        .is_empty()
+    );
+    // A `SlabPages` write outside `set_pages`, and an `Acquire` load of
+    // the mask outside `closed`.
+    let pages = "self.closed.store(closed, Ordering::Release);";
+    assert!(
+        !check_desc(&with(
+            &t,
+            "src/slab.rs",
+            anchor,
+            "self.closed.store(0, Ordering::Release);"
+        ))
+        .is_empty()
+    );
+    assert!(
+        !check_desc(&with(
+            &t,
+            "src/slab.rs",
+            pages,
+            "self.closed.load(Ordering::Acquire);"
         ))
         .is_empty()
     );
