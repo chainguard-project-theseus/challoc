@@ -1607,6 +1607,22 @@ impl Arena {
         crate::purge::note_decay_changed();
     }
 
+    /// An `epoch` write (a consumer about to read the bin figures, as
+    /// Valkey and Redis do from their cron): arm every class's slab-pages
+    /// walk as a hint, at most once per `class::pages::HINT_NS` each
+    /// (`ClassState::arm_pages_hint`), so the pages free for a curve step
+    /// close at the next pass and the figures count what was released, not
+    /// what the walk will release later. Whether any class armed.
+    pub fn note_epoch(&self, now: u64) -> bool {
+        let mut any = false;
+        for cs in it: self.classes.iter() {
+            if cs.arm_pages_hint(now) {
+                any = true;
+            }
+        }
+        any
+    }
+
     /// Decay step over every class (see `ClassState::decay_with`) with
     /// the period the cgroup policy gives this arena and its keep ratio
     /// for the retention cap (design 11): the earliest next deadline,

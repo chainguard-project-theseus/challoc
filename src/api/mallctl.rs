@@ -2659,7 +2659,7 @@ fn arena_figure(m: &[usize], fig: Fig, Tracked(mark): Tracked<&'static ReadyMark
                     // Slab pages (docs/proposals/slab-pages.md, 3.6): with the
                     // closed slots, so `nregs * curslabs - curregs` counts only
                     // open free slots (Redis's and Valkey's fragmentation).
-                    Some(b) => Ok(Size(stats::fig_add(stats::fig_add(b.curregs, b.closed_slots), b.closable_slots))),
+                    Some(b) => Ok(Size(stats::fig_add(b.curregs, b.closed_slots))),
                     None => Err(ENOENT),
                 },
                 Fig::Curslabs => match bin {
@@ -2829,6 +2829,9 @@ fn ctl(
                     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
                         h.gc_if_due(shared, Tracked(&mut ord));
                     }
+                    // And the slab-pages walks, so a consumer's next read
+                    // counts the free pages they release as released.
+                    crate::purge::note_epoch(shared);
                     stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut ord)).ok_or(EAGAIN)?
                 },
                 None => stats::snapshot(shared, Tracked(&mut ord)).epoch,

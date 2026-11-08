@@ -2569,6 +2569,33 @@ pub fn note_pages()
     background::wake();
 }
 
+/// An `epoch` write: every arena's slab-pages walks are armed as hints
+/// (`Arena::note_epoch`), and the background thread is woken once if any
+/// armed, so the pages a consumer's figures would count as free close
+/// before its next read (docs/proposals/slab-pages.md, 9).
+pub fn note_epoch(shared: &Shared)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    let now = crate::sys::now_coarse_ns();
+    let mut any = false;
+    let count = arena_count(shared);
+    for i in 0..count
+        invariant
+            crate::sys::may_syscall(),
+            shared.wf(),
+            count <= crate::arena::MAX_ARENAS,
+    {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            any = arena.note_epoch(now) || any;
+        }
+    }
+    if any {
+        note_pages();
+    }
+}
+
 /// A decay period changed (`arena.<i>.dirty_decay_ms`, `malloc_conf` at
 /// run time): wake a background thread whose deadline was computed with
 /// the old period, so a shorter period takes effect now rather than at

@@ -510,9 +510,13 @@ above, and why:
 - **The walk respects reservations.** A slot `take` reserved is clear
   until its claim sets it, so a page closes only while `live + closed <=
   nslots` holds after it, the bound the reservation rests on.
-- **Closable slots are not fragmentation.** The reported `curregs` also
-  adds the slots of whole free pages the walk has found closable and not
-  closed yet (design 13.4), as jemalloc's bins leave an empty slab out.
+- **`epoch` arms the walk.** The reported `curregs` adds only closed
+  slots: free pages the walk has not closed are fragmentation, as they
+  are resident. An `epoch` write arms every class's walk as a defrag
+  hint does (at most once per 100 ms per class), so pages free for a
+  curve step close before a consumer's next read (design 13.4). An
+  earlier build added the closable-but-open slots to `curregs` instead,
+  which made the figure count resident memory as given back.
 - **The defrag hint arms the walk.** `get_defrag_hint` stays lock-free:
   at most once per 100 ms per class it sets the class's walk due and
   wakes the background thread, and the hinted walk closes every page

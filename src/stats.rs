@@ -108,8 +108,9 @@ pub struct BinStats {
     pub closed_slots: usize,
     pub closed_bytes: usize,
     /// The slots of the bin's whole free pages the walk has yet to close
-    /// (`ClassStats::closable_slots`): dirty memory, not fragmentation;
-    /// the reported `curregs` adds them too.
+    /// (`ClassStats::closable_slots`): resident and free, so fragmentation;
+    /// the reported `curregs` leaves them out (they close once a walk
+    /// reaches them, which an `epoch` write arms).
     pub closable_slots: usize,
 }
 
