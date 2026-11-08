@@ -8526,6 +8526,13 @@ called only at the test's listed sites):
   `getauxval` specification, `verus/ledger/src/sys/auxv.rs.md`; init reserves the regions with it), which
   also makes `page_size`'s own abort unreachable, so `page_size`
   requires no `may_abort()`.
+- `sys::sigprocmask_failed`, a failed `rt_sigprocmask` in
+  `sys::block_all_signals` or `sys::set_signal_mask` around the
+  background thread's `pthread_create`, which a valid program's free
+  reaches when its tick starts the thread in a process that has never
+  had one (`purge::on_tick`). `rt_sigprocmask` fails only with `EFAULT`
+  or `EINVAL`, on a mask the allocator passes from its own stack; that
+  it never does is read from the errno list, not proved.
 
 Metadata the arena build, the cache stack and the arena's set table
 cannot get is no abort: `Shared::arena` and `ensure_cache` return none,

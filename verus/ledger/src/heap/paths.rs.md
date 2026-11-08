@@ -11,7 +11,7 @@ file.
 
 ## `debug_scheduled`
 
-src/heap/paths.rs:1588. Kind: external_body. Category: panic/abort.
+src/heap/paths.rs:1602. Kind: external_body. Category: panic/abort.
 Tool: Kani. Status: discharged (Kani: heap::paths::kani_aborts::debug_scheduled_returns_only_if_clear, heap::paths::kani_aborts::debug_scheduled_returns_if_clear).
 
 > The scheduled pop's check, in debug builds: `allocs` is a multiple of the compaction period.

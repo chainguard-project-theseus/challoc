@@ -2462,17 +2462,20 @@ pub fn purge_arena(
 /// Periodic-work hook (design 6.4): start the background thread if one was
 /// requested and does not exist, otherwise run decay here unless the
 /// thread is doing it, and let the lazy start look at what decay left.
-/// `alloc` is whether the tick is an allocation's: a `free`'s tick never
-/// creates (or joins) a thread, because glibc frees with its stack cache
-/// lock held (`pthread_join`'s TLS teardown, the stack cache trim) and
-/// `pthread_create` takes that lock again. Such a tick purges in the
-/// foreground and leaves the start to the next allocation's tick.
-/// So it needs only `valid_aborts`: the thread start, which may abort,
-/// runs only on an allocation's tick, and decay reaches only resource
-/// failures and pending checks.
+/// `alloc` is whether the tick is an allocation's. A `free`'s tick creates
+/// the thread only while the process has never had a thread
+/// ([`background::single_threaded`]): glibc frees with its stack cache
+/// lock held (`pthread_join`'s TLS teardown, the stack cache trim), and
+/// `pthread_create` takes that lock again, but that lock is held only in
+/// a process that has created a thread. In any other process a `free`'s
+/// tick purges in the foreground and leaves the start to the next
+/// allocation's tick. `cell` is the calling thread's slot cell.
+/// So it needs only `valid_aborts`: a start from a `free`'s tick joins no
+/// previous thread (the one abort a start may reach), and decay reaches
+/// only resource failures and pending checks.
 pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>, Tracked(cell): Tracked<Option<&mut crate::sys::tls::TlsCell>>)
     requires
-        alloc ==> cell is Some,
+        cell is Some,
         crate::sys::may_abort() || (crate::sys::valid_aborts() && !alloc),
         crate::sys::may_syscall(),
         shared.wf(),
@@ -2487,7 +2490,10 @@ pub fn on_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&mu
         return;
     }
     let tracked mut cell = cell;
-    if alloc && background::requested() && background::start_requested(shared, Tracked(ord), Tracked(&mut *errno), Tracked(crate::sys::tls::TlsCell::lend(&mut cell))) {
+    if background::requested()
+        && (alloc || background::single_threaded())
+        && background::start_requested(shared, !alloc, Tracked(ord), Tracked(&mut *errno), Tracked(crate::sys::tls::TlsCell::lend(&mut cell)))
+    {
         return;
     }
     if decay(shared, now, Tracked(ord)).is_some() {

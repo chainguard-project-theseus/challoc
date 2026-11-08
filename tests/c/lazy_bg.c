@@ -8,13 +8,34 @@
  *                                      slow path ticking for 1.5 s: the
  *                                      process stays single-threaded and
  *                                      unshare(CLONE_NEWUSER) works
- *   burst    dirty_decay_ms:500        96 MiB freed at once: the next ticks
+ *   burst    dirty_decay_ms:5000       96 MiB freed at once: the next ticks
  *                                      start the thread, RSS drops with
  *                                      nobody touching the allocator; a
  *                                      fork child stays single-threaded
  *                                      through a small workload of its own;
  *                                      exec gives a fresh single-threaded
  *                                      image (the `small` mode again)
+ *   idle     dirty_decay_ms:5000       96 MiB of small blocks freed, then
+ *                                      no allocator call at all: the frees'
+ *                                      own ticks start the thread (the
+ *                                      process has never had one) and RSS
+ *                                      drops within the window; read
+ *                                      through raw open/read, which
+ *                                      allocate nothing. The window is
+ *                                      longer than the free loop takes on
+ *                                      a loaded host: with 500 ms the
+ *                                      frees' foreground decay purged most
+ *                                      of it there, so the thread was not
+ *                                      needed and the check missed (burst
+ *                                      and idlemt likewise: a window
+ *                                      shorter than the frees lets the
+ *                                      foreground decay outrun the lazy
+ *                                      start's look)
+ *   idlemt   dirty_decay_ms:5000       the same after a thread was created
+ *                                      and joined: a free's tick starts
+ *                                      nothing there (glibc may hold its
+ *                                      stack cache lock in a free), the
+ *                                      next allocation's tick does
  *   hold     dirty_decay_ms:5000       8 MiB left dirty: no thread at once,
  *                                      one after about a second of ticks
  *   optout   background_thread:false,  the burst never starts a thread
@@ -59,6 +80,7 @@
 #include "common.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
@@ -248,7 +270,7 @@ static void mode_burst(void)
     printf("burst: unshare with the thread: %s\n", strerror(rc));
     /* No allocator activity from here: only the thread can purge. */
     size_t late = full;
-    for (int i = 0; i < 60 && drop(full, late) < 80 * MIB; i++) {
+    for (int i = 0; i < 200 && drop(full, late) < 80 * MIB; i++) {
         sleep_ms(50);
         late = rss_bytes();
     }
@@ -271,6 +293,114 @@ static void mode_burst(void)
     char *argv[] = { self_path, "exec-small", NULL };
     execv(self_path, argv);
     REQUIRE(0, "execv %s: %s", self_path, strerror(errno));
+}
+
+/* /proc/self/stat's num_threads and /proc/self/statm's resident pages,
+ * through open/read on the stack: nothing here calls the allocator. */
+static long raw_read(const char *path, char *buf, size_t len)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    REQUIRE(fd >= 0, "open %s: %s", path, strerror(errno));
+    long n = read(fd, buf, len - 1);
+    close(fd);
+    REQUIRE(n > 0, "read %s", path);
+    buf[n] = 0;
+    return n;
+}
+
+static long raw_threads(void)
+{
+    char buf[1024];
+    raw_read("/proc/self/stat", buf, sizeof buf);
+    /* After the command's closing parenthesis: state is field 3,
+     * num_threads field 20. */
+    char *q = strrchr(buf, ')');
+    REQUIRE(q != NULL, "parse /proc/self/stat");
+    long field = 2, v = -1;
+    for (char *t = q + 1; *t; t++) {
+        if (*t == ' ') {
+            field++;
+            if (field == 20) {
+                v = strtol(t + 1, NULL, 10);
+                break;
+            }
+        }
+    }
+    return v;
+}
+
+static size_t raw_rss(void)
+{
+    char buf[128];
+    raw_read("/proc/self/statm", buf, sizeof buf);
+    char *e;
+    strtoul(buf, &e, 10);
+    return (size_t)strtoul(e, NULL, 10) * (size_t)sysconf(_SC_PAGESIZE);
+}
+
+/* Free 96 MiB of 1 KiB blocks and then call nothing in the allocator for
+ * up to `ms`: the most threads seen and the RSS drop over the burst's
+ * peak. */
+static void idle_after_burst(long ms, long *threads, size_t *dropped)
+{
+    size_t n = 96 * MIB / 1024;
+    void **b = malloc(n * sizeof *b);
+    REQUIRE(b != NULL, "malloc table");
+    for (size_t i = 0; i < n; i++) {
+        b[i] = malloc(1024);
+        REQUIRE(b[i] != NULL, "malloc(1024)");
+        memset(b[i], 0x5a, 1024);
+    }
+    size_t full = raw_rss();
+    for (size_t i = 0; i < n; i++)
+        free(b[i]);
+    /* The table stays: its free would be one more tick. */
+    long most = 0;
+    size_t late = full;
+    long t0 = now_ms();
+    while (now_ms() - t0 < ms) {
+        long t = raw_threads();
+        if (t > most)
+            most = t;
+        late = raw_rss();
+        if (most > 1 && drop(full, late) >= 80 * MIB)
+            break;
+        sleep_ms(20);
+    }
+    *threads = most;
+    *dropped = drop(full, late);
+    free(b);
+}
+
+static void mode_idle(void)
+{
+    CHECK(tasks() == 1, "%d tasks at start", tasks());
+    long threads;
+    size_t dropped;
+    idle_after_burst(10000, &threads, &dropped);
+    printf("idle: %ld threads, rss down %zu MiB with no allocator call\n", threads, dropped / MIB);
+    CHECK(threads == 2, "no background thread from the frees of a single-threaded process (%ld threads)", threads);
+    CHECK(dropped >= 80 * MIB, "the idle process released only %zu MiB", dropped / MIB);
+}
+
+static void *nothing(void *arg)
+{
+    return arg;
+}
+
+static void mode_idlemt(void)
+{
+    pthread_t th;
+    REQUIRE(pthread_create(&th, NULL, nothing, NULL) == 0, "pthread_create");
+    REQUIRE(pthread_join(th, NULL) == 0, "pthread_join");
+    long threads;
+    size_t dropped;
+    idle_after_burst(1000, &threads, &dropped);
+    printf("idlemt: %ld threads in the idle second\n", threads);
+    CHECK(threads == 1, "a free started the thread in a process that had one (%ld threads)", threads);
+    long t = wait_thread(2000);
+    printf("idlemt: thread after %ld ms of allocations\n", t);
+    CHECK(t >= 0, "the next allocations started no thread");
 }
 
 static void mode_hold(void)
@@ -617,7 +747,7 @@ static void mode_sched(void)
 
 int main(int argc, char **argv)
 {
-    REQUIRE(argc == 2, "usage: lazy_bg <small|burst|hold|optout|seccomp|nproc|join|forkburst|forkdirty|sched>");
+    REQUIRE(argc == 2, "usage: lazy_bg <small|burst|idle|idlemt|hold|optout|seccomp|nproc|join|forkburst|forkdirty|sched>");
     self_path = argv[0];
     printf("lazy_bg: start %s\n", argv[1]);
     fflush(stdout);
@@ -630,6 +760,10 @@ int main(int argc, char **argv)
         mode_burst();
     else if (strcmp(argv[1], "hold") == 0)
         mode_hold();
+    else if (strcmp(argv[1], "idle") == 0)
+        mode_idle();
+    else if (strcmp(argv[1], "idlemt") == 0)
+        mode_idlemt();
     else if (strcmp(argv[1], "optout") == 0)
         mode_optout();
     else if (strcmp(argv[1], "seccomp") == 0)

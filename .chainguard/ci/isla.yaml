@@ -11,7 +11,7 @@
 # on arm64, traces on the Sail Armv8.5-A model `svc #0`, every TLS slot
 # load and store (tls::get_tp, get and set), every `mrs` of TPIDR_EL0
 # (rseq::thread_pointer), `brk #0x1` (sys::trap), the GOT functions
-# (api::cxx, config) and rseq::symbols, and every PAC instruction
+# (api::cxx, config, purge::background) and rseq::symbols, and every PAC instruction
 # (sys::pac's pacda, autda and xpacd) on it and on the Armv9.4-A model.
 # The x86_64 half, on amd64, traces `syscall`, every TLS slot load and
 # store, every load of %fs:0, `ud2`, the GOT functions and rseq::symbols
@@ -58,7 +58,8 @@ checks:
     trigger: [presubmit]
     # The files holding the checked asm! blocks (src/sys/raw.rs,
     # src/sys/tls.rs, src/sys/pac.rs, src/sys/mod.rs, src/api/cxx.rs,
-    # src/config.rs, src/rseq.rs), the build inputs, the harness
+    # src/config.rs, src/rseq.rs, src/purge/background.rs), the build
+    # inputs, the harness
     # (verus/isla/x86/ included), the ledger it reads and this file. A
     # change elsewhere can still move a site's registers (a TLS load or a
     # PAC instruction inlined into new code); isla-main below catches that
@@ -69,6 +70,7 @@ checks:
         - "src/api/cxx.rs"
         - "src/config.rs"
         - "src/rseq.rs"
+        - "src/purge/background.rs"
         - "Cargo.toml"
         - "Cargo.lock"
         - "build.rs"

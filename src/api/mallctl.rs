@@ -2819,7 +2819,7 @@ fn ctl(
                 // returns 0 without waiting. Should that creation fail,
                 // the request stays and the next tick tries again.
                 if on && !purge::background::present()
-                    && !purge::background::start(shared, Tracked(&mut ord), Tracked(errno), Tracked(&mut tls.cell))
+                    && !purge::background::start(shared, false, Tracked(&mut ord), Tracked(errno), Tracked(&mut tls.cell))
                     && !purge::background::present_or_creating(Tracked(&mut ord))
                 {
                     return Err(EAGAIN);

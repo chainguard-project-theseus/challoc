@@ -507,14 +507,15 @@ fn_body() { # NAME-PART: the words and relocations of the one function whose sym
 		END { if (nfn != 1) print "functions:", nfn + 0 }' "$out/dis.txt" | tr '\n' ' '
 }
 # get_new_handler_addr, throw_bad_alloc_addr, malloc_conf_addr,
-# je_malloc_conf_addr: `adrp x0, :got:SYM; ldr x0, [x0, :got_lo12:SYM];
-# ret`, one job for the four (the relocated immediates are symbolic).
+# je_malloc_conf_addr, single_threaded_addr: `adrp x0, :got:SYM; ldr x0,
+# [x0, :got_lo12:SYM]; ret`, one job for the five (the relocated
+# immediates are symbolic).
 # The job is recorded once for each function whose shape matches it
 # (aarch64/got-fn-NAME), so a seam names a function this section checked.
 gotfns=
 for f in 20get_new_handler_addr:_ZSt15get_new_handlerv \
 	20throw_bad_alloc_addr:_ZSt17__throw_bad_allocv 16malloc_conf_addr:malloc_conf \
-	19je_malloc_conf_addr:je_malloc_conf; do
+	19je_malloc_conf_addr:je_malloc_conf 20single_threaded_addr:__libc_single_threaded; do
 	s=${f#*:}
 	want="90000000 R_AARCH64_ADR_GOT_PAGE $s f9400000 R_AARCH64_LD64_GOT_LO12_NC $s d65f03c0 "
 	body=$(fn_body "${f%%:*}")

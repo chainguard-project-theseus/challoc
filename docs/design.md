@@ -1081,7 +1081,14 @@ with the key unset (the default), lazily. The lazy start looks at most
 every 100 ms, from a periodic tick whose foreground decay pass left dirty
 memory waiting: it sums the `Empty` bytes (every class and the huge tier)
 and starts the thread at 64 MiB, or at 4 MiB held at every look for a
-second. A process that never holds that much never starts a thread: it
+second. A look comes early, inside the 100 ms, once the free slow paths
+have flushed another 16 MiB of slots back to their slabs since the last
+one (`background::RELEASED`, `AUTO_STEP`): a burst of frees shorter than
+the window would otherwise get one look, at its start, before it had
+freed much. The step is a quarter of the 64 MiB start, because the
+`Empty` bytes trail the flushed ones (the caches and the last partial
+slab hold the rest): a look made just as 64 MiB had been flushed would
+find less than 64 MiB `Empty`. A process that never holds that much never starts a thread: it
 stays single-threaded (`unshare(CLONE_NEWUSER)` keeps working) and its
 startup is unchanged (the key is read with the others; nothing else
 happens at init). `background_thread:false` (or any write through
@@ -1094,13 +1101,22 @@ failure disarms it for good. A filter that kills on
 `background_thread:false`. Once the thread exists glibc's
 `__libc_single_threaded` stays 0, so libstdc++ reference counts turn
 atomic and stdio locks, as in any process that ever started a thread.
-Only an allocation's tick creates (or joins) the thread, under any
-setting: glibc calls `free` with its stack cache lock held
-(`pthread_join` frees the TLS of a thread on a user stack, and trimming
-the stack cache frees the cached ones), and `pthread_create` takes that
-lock again, so a start from that `free` would deadlock. A `free`'s tick
-that finds the start due only records the request; the next
-allocation's tick acts on it. It
+A `free`'s tick creates the thread only in a process that has never had
+one, under any setting: glibc calls `free` with its stack cache lock
+held (`pthread_join` frees the TLS of a thread on a user stack, and
+trimming the stack cache frees the cached ones), and `pthread_create`
+takes that lock again, so a start from that `free` would deadlock. Only
+`pthread_create`, `pthread_join` and thread exit take the lock, so it is
+never held while glibc's `__libc_single_threaded` is set, which the first
+`pthread_create` clears before it locks anything
+(`background::single_threaded`). Such a start joins no previous thread
+(none can exist). In a process that has had a thread a `free`'s tick that
+finds the start due only records the request, and the next allocation's
+tick acts on it, so a multithreaded process that frees a burst and then
+makes no allocation at all keeps that memory until it does. A
+single-threaded one starts the thread from the frees themselves, and its
+idle time purges as with the thread on (`tests/c/lazy_bg.c`, `idle` and
+`idlemt`). It
 sleeps on a futex until the next decay deadline, is woken when a class's
 first slab goes `Empty`, and samples the cgroup (section 11) before each
 decay pass. Its stack is one metadata reservation, made by the first

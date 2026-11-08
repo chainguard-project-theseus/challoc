@@ -399,7 +399,7 @@ const PINS: &[(&str, &[&str])] = &[
             "let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };",
             "let mut g = state().lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
             "if g.present {",
-            "if g.creating {",
+            "if g.creating || (free && g.thread.is_some()) {",
             "g.creating = true;",
             "g.exited = false;",
             "let (stack, thread) = create(shared, stack, previous, Tracked(ord), Tracked(cell));",
@@ -1237,7 +1237,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "futex_wake(&SEQ);",
             ),
             (
-                "pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool",
+                "pub fn start(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool",
                 "",
             ),
             (
@@ -1351,7 +1351,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "futex_wake(&SEQ);",
             ),
             (
-                "pub fn start(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool",
+                "pub fn start(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool",
                 "",
             ),
             (
@@ -1360,7 +1360,12 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
             ("if g.present {", "if g.present {"),
             ("return true;", "return true;"),
-            ("if g.creating {", "if g.creating {"),
+            // An allocation's start (`free` false): a `free`'s refusal for a
+            // recorded thread is not in the harness.
+            (
+                "if g.creating || (free && g.thread.is_some()) {",
+                "if g.creating {",
+            ),
             ("return false;", "return false;"),
             ("g.creating = true;", "g.creating = true;"),
             ("g.exited = false;", "g.exited = false;"),

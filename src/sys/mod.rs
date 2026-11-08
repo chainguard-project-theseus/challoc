@@ -614,7 +614,7 @@ mod linux {
     use super::{
         AT_FDCWD, BLOCKABLE_SIGNALS, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG,
         FUTEX_WAIT, FUTEX_WAKE, O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIG_BLOCK,
-        SIG_SETMASK, SIGSET_WORDS_BYTES, SigMask, abort_fmt,
+        SIG_SETMASK, SIGSET_WORDS_BYTES, SigMask, abort_kernel,
     };
     #[cfg(verus_keep_ghost)]
     use super::{all_blocked, effective, lemma_effective_idempotent};
@@ -1471,7 +1471,7 @@ mod linux {
     /// the calling thread's mask ([`SigMask`]).
     pub fn block_all_signals(Tracked(sig): Tracked<&mut SigMask>) -> (r: u64)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             old(sig).wf(),
         ensures
@@ -1498,7 +1498,7 @@ mod linux {
     /// signals unblocked, as every mask `block_all_signals` returns does.
     pub fn set_signal_mask(mask: u64, Tracked(sig): Tracked<&mut SigMask>)
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             mask & !BLOCKABLE_SIGNALS == 0,
         ensures
@@ -1583,16 +1583,18 @@ mod linux {
         }
     }
 
-    /// Abort on a failed `rt_sigprocmask(how)`.
+    /// Abort on a failed `rt_sigprocmask(how)`: a resource failure
+    /// ([`super::kernel_aborts`]), so under [`super::may_abort_kernel`]
+    /// (`purge::background::spawn`'s, which a `free`'s tick may reach).
     #[cold]
     #[inline(never)]
     fn sigprocmask_failed(how: &str, e: Errno) -> !
         requires
-            crate::sys::may_abort(),
+            crate::sys::may_abort_kernel(),
     {
         broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
-        abort_fmt(format_args!("rt_sigprocmask({how}) failed: {e}"))
+        abort_kernel(format_args!("rt_sigprocmask({how}) failed: {e}"))
     }
 
     /// `exit_group(2)`: terminate every thread in the process.
