@@ -2315,6 +2315,45 @@ fn lazy_start_waits_for_dirty_memory() {
     assert!(stopped, "background thread did not stop");
 }
 
+/// A failed lazy start inside the retry delay of the last counted one is
+/// the same burst and does not count toward `AUTO_TRIES`
+/// (`background::count_failed_start`, `start_requested`'s accounting):
+/// two failures inside one delay count once, one after it counts again,
+/// and the third counted failure disarms the lazy start.
+#[test]
+fn failed_lazy_starts_inside_one_retry_delay_count_once() {
+    use purge::background::{
+        AUTO_RETRY_NS, AUTO_TRIES, auto, auto_fails, count_failed_start, set_auto,
+    };
+    let _serial = crate::testutil::global_state();
+    let s = crate::testutil::shared();
+    set_auto(Some(s));
+    assert_eq!(AUTO_TRIES, 3);
+    let t = 1_000_000_000u64;
+    assert!(count_failed_start(t), "the first failure counts");
+    assert_eq!(auto_fails(), 1);
+    assert!(
+        !count_failed_start(t + 1),
+        "a failure inside its retry delay does not"
+    );
+    assert!(!count_failed_start(t + AUTO_RETRY_NS - 1));
+    assert_eq!(auto_fails(), 1);
+    assert!(auto());
+    assert!(
+        count_failed_start(t + AUTO_RETRY_NS),
+        "one at the retry time counts"
+    );
+    assert_eq!(auto_fails(), 2);
+    assert!(auto());
+    assert!(count_failed_start(t + 2 * AUTO_RETRY_NS));
+    assert_eq!(auto_fails(), 3);
+    assert!(
+        !auto(),
+        "the AUTO_TRIES-th counted failure disarms the lazy start"
+    );
+    set_auto(None);
+}
+
 /// A first `Empty` that lands while `start` is publishing the thread
 /// is purged: the thread has already scanned and gone to sleep with
 /// no deadline, and the free's `wake` does nothing because the
