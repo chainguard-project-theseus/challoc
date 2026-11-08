@@ -3200,3 +3200,120 @@ fn a_defrag_hint_closes_pages_a_step_old() {
     cs.release(&held[..1]);
     assert_eq!(pg.closed(), 0);
 }
+
+/// Slab pages, the reservation bound: a walk between a refill's
+/// reservation and its claim (`AFTER_PLAN`) closes a page only while
+/// `live + closed <= nslots` holds after it, so the claim meets its
+/// reservation and takes no slot of a closed page. Without the bound
+/// the walk closes every free page and the claim aborts
+/// (`reservation_unmet`).
+#[test]
+fn a_walk_between_reservation_and_claim_leaves_the_reserved_slots_open() {
+    let env = Env::new();
+    let mut tested = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        let view = cs.table().page_view();
+        if view.pages < 2 {
+            continue;
+        }
+        let n = view.nslots;
+        let mut held: Vec<*mut u8> = Vec::new();
+        while held.len() < n {
+            let (q, _) = env.claim(cs, n - held.len());
+            held.extend(q);
+        }
+        let (s0, _) = cs.locate(held[0]);
+        // Every slot released but those starting on the first page.
+        let (kept, freed): (Vec<*mut u8>, Vec<*mut u8>) = held
+            .iter()
+            .partition(|&&x| cs.locate(x).1 * view.size < view.pg);
+        cs.release(&freed);
+        let want = (freed.len() / 2).max(1);
+        let addr = cs as *const ClassState as usize;
+        *AFTER_PLAN.lock().unwrap() = Some((
+            addr,
+            std::boxed::Box::new(move || {
+                // SAFETY: the class state outlives the claim this runs in.
+                let cs = unsafe { &*(addr as *const ClassState) };
+                close_pages_t(cs, 1, 0, true);
+            }),
+        ));
+        let (got, _) = env.claim(cs, want);
+        assert!(
+            AFTER_PLAN.lock().unwrap().is_none(),
+            "class {c}: the walk ran"
+        );
+        assert_eq!(got.len(), want, "class {c}: the reservation was met");
+        let pg = cs.table().pages(s0).unwrap();
+        let v = view.with_closed(pg.closed());
+        for &x in &got {
+            let (s, k) = cs.locate(x);
+            assert_eq!(s, s0, "class {c}");
+            assert_eq!(
+                v.word(k / 64) >> (k % 64) & 1,
+                1,
+                "class {c}: slot {k} on a closed page"
+            );
+        }
+        assert!(
+            cs.desc(s0).live() + v.closed_slots() <= n,
+            "class {c}: live + closed > nslots"
+        );
+        cs.release(&got);
+        cs.release(&kept);
+        tested += 1;
+    }
+    assert!(tested > 0 || page_size() >= 0x10000);
+}
+
+/// Slab pages, the empty transition: a slab that empties while pages are
+/// still closed takes its closed slots and pages out of the class's
+/// counts and opens every page (`reset_pages_on_empty`), so only `Active`
+/// slabs have closed pages.
+#[test]
+fn an_emptied_slab_takes_its_closed_slots_out_of_the_count() {
+    let env = Env::new();
+    let mut tested = 0;
+    for c in 0..NCLASSES {
+        let cs = env.class(c, 0);
+        let view = cs.table().page_view();
+        if view.pages < 2 {
+            continue;
+        }
+        let n = view.nslots;
+        let mut held: Vec<*mut u8> = Vec::new();
+        while held.len() < n {
+            let (q, _) = env.claim(cs, n - held.len());
+            held.extend(q);
+        }
+        let (s0, _) = cs.locate(held[0]);
+        let (kept, freed): (Vec<*mut u8>, Vec<*mut u8>) = held
+            .iter()
+            .partition(|&&x| cs.locate(x).1 * view.size < view.pg);
+        cs.release(&freed);
+        close_pages_t(cs, 1, 0, true);
+        let pg = cs.table().pages(s0).unwrap();
+        if pg.closed() == 0 {
+            cs.release(&kept);
+            continue;
+        }
+        assert!(closed_slots_t(cs) > 0, "class {c}");
+        // The last held slots go: the slab empties with its pages closed.
+        cs.release(&kept);
+        assert_eq!(
+            pg.closed(),
+            0,
+            "class {c}: an Empty slab has every page open"
+        );
+        assert_eq!(
+            closed_slots_t(cs),
+            0,
+            "class {c}: closed slots of an Empty slab still counted"
+        );
+        let st = cs.bin_stats(Tracked::assume_new()).0;
+        assert_eq!((st.closed_slots, st.closed_pages), (0, 0), "class {c}");
+        tested += 1;
+    }
+    assert!(tested > 0 || page_size() >= 0x10000);
+}

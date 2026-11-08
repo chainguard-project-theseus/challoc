@@ -3096,6 +3096,8 @@ impl ClassState {
             let tracked mut pz: Map<int, Zeroed> = Map::tracked_empty();
             let tracked mut pm: Map<int, GhostPersistentSubset<int>> = Map::tracked_empty();
             let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm), Tracked(&mut *ex), pubw, Tracked(ord));
+            #[cfg(test)]
+            after_plan_hook(self);
             if np == 0 {
                 proof {
                     dry = true;
@@ -6270,3 +6272,24 @@ proof fn lemma_class_frame_reflexive(v: Inner)
 }
 
 } // verus!
+
+/// Run once, for tests, by the next claim of the class state whose address
+/// it names, between its `plan` (the reservations, under the class lock)
+/// and its `finish` (the bitmap claims): what a concurrent slab-pages walk
+/// may do there.
+#[cfg(test)]
+pub(crate) static AFTER_PLAN: std::sync::Mutex<
+    Option<(usize, std::boxed::Box<dyn FnOnce() + Send>)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn after_plan_hook(cs: &ClassState) {
+    let mut h = AFTER_PLAN.lock().unwrap();
+    if h.as_ref()
+        .is_some_and(|(at, _)| *at == cs as *const ClassState as usize)
+    {
+        let (_, f) = h.take().unwrap();
+        drop(h);
+        f();
+    }
+}
