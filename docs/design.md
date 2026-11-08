@@ -1739,7 +1739,10 @@ bitmaps plus the slots on the closed pages of the bin's `Active` slabs
 `(nregs * curslabs - curregs) * size`, Redis's and Valkey's small-bin
 fragmentation, counts only open free slots. That differs from jemalloc,
 where the reported `curregs * size` equals the bin's `small.allocated`:
-`allocated` here stays the slots out of the bitmaps times the size.
+`allocated` here stays the slots out of the bitmaps times the size. The
+other readers keep the slots out of the bitmaps: the bins table of the
+report, the defrag hint's average (13.5), and `mallinfo`, whose free
+chunks count closed slots as free capacity.
 
 `experimental.utilization.batch_query` fills `(nfree, nregs, size)` per
 pointer in jemalloc's layout, and the verbose `query` adds `(bin_nfree,

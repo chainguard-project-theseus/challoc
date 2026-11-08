@@ -24,8 +24,12 @@ Where the build departs from the text below (wolfi-dev/challoc#660):
   slots overlap (two divisions each), and the open count and the pages
   a claim opens take one division for a prefix mask, which every mask a
   claim makes is.
-- **`active` is still whole slabs** (3.6): only the bins' `curregs`
-  reports closed slots.
+- **`active` is still whole slabs** (3.6): only `mallctl`'s
+  `bins.<j>.curregs` reports closed slots. The bins table of
+  `malloc_stats_print` and its JSON print the kept `curregs` (the
+  closed-pages column comes with stage 3), the defrag hint's average
+  reads the kept `curregs` as 3.6 says, and `mallinfo` counts closed
+  slots as free capacity.
 
 The measurements of 1.1 were taken with the Redis harness of #597
 (`contrib/redis`, `tests/consumers/redis-build.sh`), and the validation
