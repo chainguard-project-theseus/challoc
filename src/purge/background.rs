@@ -483,15 +483,22 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
     if AUTO_ONLY.load(Ordering::Relaxed) != shared as *const Shared as usize {
         return;
     }
-    // Early, inside the window, once a burst's worth was flushed back
-    // since the last look.
+    // Early, inside the window, once AUTO_STEP more was flushed back since
+    // the last look, unless a failed start's retry delay holds it. One
+    // looker either way: an early one first claims its step (the
+    // `AUTO_RELEASED` exchange, so each step makes one early look), and
+    // every look then claims `AUTO_NEXT`, so an early look and a window
+    // one never run at once and concurrent failed starts cannot run up
+    // `AUTO_TRIES` together.
     let released = RELEASED.load(Ordering::Relaxed);
-    let early = released.wrapping_sub(AUTO_RELEASED.load(Ordering::Relaxed)) >= AUTO_STEP
-        && now >= AUTO_RETRY_AT.load(Ordering::Relaxed);
+    let last = AUTO_RELEASED.load(Ordering::Relaxed);
     let next = AUTO_NEXT.load(Ordering::Relaxed);
-    if early {
-        AUTO_NEXT.store(now.saturating_add(AUTO_CHECK_NS), Ordering::Relaxed);
-    } else if now < next
+    let early = released.wrapping_sub(last) >= AUTO_STEP
+        && now >= AUTO_RETRY_AT.load(Ordering::Relaxed)
+        && AUTO_RELEASED
+            .compare_exchange(last, released, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok();
+    if (!early && now < next)
         || AUTO_NEXT
             .compare_exchange(
                 next,
