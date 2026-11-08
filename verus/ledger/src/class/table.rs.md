@@ -12,7 +12,7 @@ file.
 | `axiom_zero_desc` | axiom | raw pointer (internal) | Kani | trusted |
 | `axiom_zero_owner` | axiom | raw pointer (internal) | Kani | trusted |
 | `axiom_fresh_words` | axiom | allocator invariant | Kani | trusted |
-| `SlabTab...n_mask` | external_body | raw pointer (internal) | RefinedRust | trusted |
+| `SlabTab...hecked` | external_body | raw pointer (internal) | RefinedRust | trusted |
 
 ## `store_owner`
 
@@ -135,17 +135,17 @@ axiom fn axiom_fresh_words(tracked z: ZeroRaw, base: usize, n: nat, c: int, trac
         words_perms_ok(r.1, base as int, n as int);
 ```
 
-## `SlabTable::open_mask`
+## `SlabTable::open_mask_unchecked`
 
-src/class/table.rs:3450. Kind: external_body. Category: raw pointer (internal).
+src/class/table.rs:3468. Kind: external_body. Category: raw pointer (internal).
 Tool: RefinedRust. Status: trusted.
 
-> The open-page mask of `slab` (slab pages, design 5): bit `p` set when page `p` of the slab is open.
+> [`SlabTable::open_mask`] without the watermark check: the `AtomicU16` at byte [`PAGES_OFFSET`] of the slab's descriptor stride, after the header, in the bytes the stride of a paged class leaves spare.
 
-Hashes: contract 85865826, body 3610437291.
+Hashes: contract 736607252, body 3610437291.
 
 ```rust
-pub fn open_mask(&self, slab: usize) -> &AtomicU16
+unsafe fn open_mask_unchecked(&self, slab: usize) -> &AtomicU16
     requires
         slab < self.spec_nslabs(),
         self.spec_paged(),

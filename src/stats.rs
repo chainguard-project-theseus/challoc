@@ -874,6 +874,9 @@ pub fn collect_bin(cs: &ClassState, Tracked(ord): Tracked<&mut LockOrder>) -> (r
         r.nregs == class_table()[cs.spec_class() as int].nslots,
         r.empty_slabs + r.purged_slabs + r.curslabs <= cs.spec_nslabs(),
         r.fits(),
+        // The reported `bins.<j>.curregs` (slab pages) stays within the
+        // bin's capacity.
+        r.curregs + r.closed <= r.curslabs * r.nregs,
         *final(ord) == *old(ord),
 {
     let (s, curregs) = cs.bin_stats(Tracked(ord));

@@ -427,10 +427,16 @@ const PINS: &[(&str, &[&str])] = &[
 /// `(file, enclosing fn, line, reason)`.
 const WAIVED: &[(&str, &str, &str, &str)] = &[
     (
+        "src/class/mod.rs",
+        "finish",
+        "Some((p, m)) => p.open_words(m.load(Ordering::Acquire)),",
+        "slab pages' open-page mask read for where a randomised claim starts (`slot_randomize`): any value it reads only moves the start word; the claim itself reloads the mask for each word (claim_from)",
+    ),
+    (
         "src/bitmap.rs",
         "claim_from",
         "let o = m.load(Ordering::Acquire);",
-        "slab pages' open-page mask (design 5): written only under the class lock and only grown while the slab is `Active`, so a claim that reads it stale takes fewer slots and rescans; the models' slabs are wholly open (allow all ones), so the claim's atomics are the ones bitmap.rs copies",
+        "slab pages' open-page mask (design 5): written only under the class lock and only grown while the slab is `Active`. A claim that reads it stale may find the slots it reserved taken by a claim that opened more pages; it rescans, reloading the mask for each word, until a load reads that store, which coherence makes visible (class::tests::concurrent_claims_on_a_paged_slab_are_met runs the race). The models' slabs are wholly open (allow all ones), so the claim's atomics are the ones bitmap.rs copies",
     ),
     (
         "src/heap/slotstate.rs",

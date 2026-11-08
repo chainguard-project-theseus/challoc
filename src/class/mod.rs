@@ -62,7 +62,9 @@
 //! If a word was full before the clear the releaser sets the partial bit
 //! under the lock (once per batch, not per word); if `live` reaches zero
 //! the releaser makes the slab `Empty` under the lock. A refill plans all
-//! its slabs in one lock hold, reserving at most `nslots - live` from each,
+//! its slabs in one lock hold, reserving at most `nslots - live` from each
+//! (`open slots - live` from a paged slab, after opening what the claim
+//! needs: slab pages, design 5),
 //! and clears the partial bit of a slab it finds full (`is_full` under the
 //! lock), so a concurrent release either is visible to that check or sets
 //! the bit afterwards.
@@ -3411,7 +3413,14 @@ impl ClassState {
                 None => None,
             };
             let mut k: usize = 0;
+            // `slot_randomize` starts at a random word with an open slot:
+            // the open words of a paged slab, every word otherwise.
+            let (lo_w, hi_w) = match open {
+                Some((p, m)) => p.open_words(m.load(Ordering::Acquire)),
+                None => (0, words),
+            };
             let mut word = match rng.as_deref_mut() {
+                Some(r) if lo_w < hi_w && hi_w <= words => lo_w + (xorshift(r) as usize) % (hi_w - lo_w),
                 Some(r) => (xorshift(r) as usize) % words,
                 None => 0,
             };
@@ -3469,10 +3478,12 @@ impl ClassState {
                 let tracked mut wt = t.empty_tokens();
                 let Some((w, bits)) = bm.claim_from(word, want - k, open, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {
                     // Every word was full when inspected. `plan` reserved
-                    // no more than `nslots - live` and set bits never
-                    // exceed `live`, so the slots exist: a concurrent
-                    // claimer took the bits we looked at and left ours
-                    // in a word we had already passed. Scan again.
+                    // no more than `nslots - live` (`open slots - live` on
+                    // a paged slab) and set bits never exceed `live`, so
+                    // the slots exist: a concurrent claimer took the bits
+                    // we looked at and left ours in a word we had already
+                    // passed, or, on a paged slab, on a page it opened,
+                    // which a later load of the mask shows. Scan again.
                     empty_passes += 1;
                     if empty_passes == MAX_EMPTY_PASSES {
                         let d = self.desc(slab);
@@ -3899,7 +3910,10 @@ impl ClassState {
     /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
     /// picks written. Zero picks means nothing more can be committed.
     ///
-    /// `nslots - live` is a lower bound on a slab's claimable slots: every
+    /// `nslots - live` is a lower bound on a slab's claimable slots, and
+    /// on a paged slab `open slots - live` (slab pages, design 5: `take`
+    /// opens pages before it reserves, and a slab's open pages only grow
+    /// while it is `Active`): every
     /// claimer reserves in `live` under this lock before it sets bits, and
     /// every releaser clears bits before it subtracts. So a reservation of
     /// at most that many is always met (the claimer may have to rescan when
@@ -4100,7 +4114,8 @@ impl ClassState {
     }
 
     /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
-    /// lock, fix up its state and partial bit, and record the pick.
+    /// lock (`open slots - live` for a paged slab, after opening the pages
+    /// the claim needs: [`ClassState::open_pages`]), fix up its state and partial bit, and record the pick.
     /// Modelled at `model::Model::take`, inside the locked step
     /// `protocol::Refill::PlanLocked` of `model::Model::step_refill`.
     ///
@@ -4390,6 +4405,7 @@ impl ClassState {
     /// `Active` it only grows, so a claim's reservation stays coverable.
     fn open_pages(&self, slab: usize, state: State, live: usize, remaining: usize, closed: usize) -> (r: (usize, usize))
         requires
+            crate::sys::may_abort(),
             slab < self.spec_nslabs(),
             live <= class_table()[self.spec_class() as int].nslots,
         ensures
@@ -4426,6 +4442,7 @@ impl ClassState {
     #[inline(never)]
     fn closed_slots(&self, slab: usize) -> usize
         requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
             slab < self.spec_nslabs(),
     {
         let t = self.table();

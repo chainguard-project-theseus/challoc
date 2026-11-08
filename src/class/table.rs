@@ -3432,22 +3432,40 @@ impl SlabTable {
         self.desc_stride as usize >= PAGES_END
     }
 
-    /// The open-page mask of `slab` (slab pages, design 5): bit `p` set
-    /// when page `p` of the slab is open. It is the `AtomicU16` at byte
-    /// [`PAGES_OFFSET`] of the slab's descriptor stride, after the header,
-    /// in the bytes the stride of a paged class leaves spare.
+    /// The open-page mask of a handed-out slab (slab pages, design 5):
+    /// bit `p` set when page `p` of the slab is open. Aborts for a slab
+    /// that was never handed out, as [`SlabTable::desc`] does.
+    #[inline]
+    pub fn open_mask(&self, slab: usize) -> &AtomicU16
+        requires
+            crate::sys::may_abort_pending(),
+            self.spec_paged(),
+    {
+        if slab >= self.committed_slabs() {
+            never_committed(self.class as usize, slab);
+        }
+        // SAFETY: `slab` is below the acquire-loaded watermark.
+        unsafe { self.open_mask_unchecked(slab) }
+    }
+
+    /// [`SlabTable::open_mask`] without the watermark check: the
+    /// `AtomicU16` at byte [`PAGES_OFFSET`] of the slab's descriptor
+    /// stride, after the header, in the bytes the stride of a paged class
+    /// leaves spare.
     ///
     /// Trusted: the descriptor array is reserved at `nslabs * stride`
-    /// bytes and committed a page at a time as the hand-out watermark
-    /// rises, before the watermark covers a slab (`Lazy::ensure`), so for
-    /// a slab below the watermark the whole stride is committed and read
-    /// as zero until written; `PAGES_END <= stride` keeps the field inside
-    /// the slab's own stride; and no other code reads or writes those
-    /// bytes. The caller has checked the slab against the watermark
-    /// (`desc`, which aborts otherwise).
+    /// bytes and committed as the hand-out watermark rises, through the
+    /// end of the last handed-out slab's stride, before the watermark
+    /// covers the slab (`SlabTable::take_group`'s `descs.ensure`), so for a
+    /// slab below the watermark the whole stride is committed and reads as
+    /// zero until written; `PAGES_END <= stride` keeps the field inside the
+    /// slab's own stride; and no other code reads or writes those bytes.
+    ///
+    /// # Safety
+    /// `slab` must be below a value `committed_slabs` has held.
     #[inline(always)]
     #[verifier::external_body]
-    pub fn open_mask(&self, slab: usize) -> &AtomicU16
+    unsafe fn open_mask_unchecked(&self, slab: usize) -> &AtomicU16
         requires
             slab < self.spec_nslabs(),
             self.spec_paged(),

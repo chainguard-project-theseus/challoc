@@ -3024,3 +3024,38 @@ fn bin_figures_count_closed_slots_apart() {
         assert_eq!(b.nregs * b.curslabs - (b.curregs + b.closed), per_page - 10);
     }
 }
+
+/// Slab pages (design 5) under concurrency: threads claim and release
+/// batches of a paged class at once, so claims race claims that open
+/// pages of the same slab and take the slots others reserved. Every
+/// claim is met (`reservation_unmet` would abort), every slot handed out
+/// is on an open page, and the closed count matches the masks at the end.
+#[test]
+fn concurrent_claims_on_a_paged_slab_are_met() {
+    let env = Arc::new(Env::new());
+    let c = small_class();
+    let cs: &'static ClassState = env.class(c, 0);
+    if cs.table().pages().is_none() {
+        crate::testutil::print_skip("concurrent_claims_on_a_paged_slab_are_met", "unpaged class");
+        return;
+    }
+    let threads: Vec<_> = (0..4u64)
+        .map(|t| {
+            let env = Arc::clone(&env);
+            std::thread::spawn(move || {
+                let mut rng = 0x9e37_79b9_7f4a_7c15u64 ^ (t + 1);
+                for _ in 0..2000 {
+                    let n = 1 + (xorshift(&mut rng) % 90) as usize;
+                    let (p, claim) = env.claim(cs, n);
+                    assert_eq!(claim.n, n);
+                    on_open_pages(&env, cs, c, &p);
+                    cs.release(&p);
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    assert_eq!(cs.stats().closed, closed_recount(cs));
+}

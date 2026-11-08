@@ -1012,6 +1012,7 @@ impl<'a> AtomicBitmap<'a> {
             self.seen_by(*seen),
         ensures
             subset(r, self.slab_mask()),
+            subset(r, allow),
             self.all_real(i as int, r),
             popcount(r) <= n,
             final(toks).id() == old(toks).id(),
@@ -1031,6 +1032,7 @@ impl<'a> AtomicBitmap<'a> {
             assert(subset(0u64, mask >> s)) by (bit_vector);
             assert(subset(free, mask)) by (bit_vector)
                 requires free == !cur & mask & (allow << s);
+            assert(subset(0u64, allow)) by (bit_vector);
             lemma_subset_bits(want, free);
             lemma_subset_bits(free, mask);
             lemma_subset_bits(want, mask);
@@ -1157,6 +1159,13 @@ impl<'a> AtomicBitmap<'a> {
             lemma_popcount(won >> s);
             assert(subset(won, mask)) by (bit_vector)
                 requires won == want & !prev, want & !mask == 0u64;
+            // The won bits are among the allowed ones (slab pages: only
+            // open slots).
+            let a = allow;
+            let f = free;
+            assert(want & !f == 0u64);
+            assert(subset(won >> s, a)) by (bit_vector)
+                requires won == want & !prev, want & !f == 0u64, f == !cur & mask & (a << s), s < 64;
             self.lemma_tokens(i as int, won);
             // A won bit was clear: a padding bit of an initialised slab is
             // set, so the bit is a slot.
@@ -1224,15 +1233,20 @@ impl<'a> AtomicBitmap<'a> {
             }
             // A paged slab's open slots only (slab pages, design 5). The
             // mask is loaded for each word: it only grows while the slab
-            // holds this claim's reservation, and a claim that saw it
-            // smaller must see the pages a later reservation opened.
+            // holds this claim's reservation, and another claim that
+            // opened more pages may have taken the slots this one
+            // reserved, which are then on those pages; the caller rescans
+            // until a load reads that claim's store (no paged slab has
+            // 0x1000 words).
             let allow = match open {
                 Some((pg, m)) => {
                     let o = m.load(Ordering::Acquire);
                     if o == pg.full() {
                         !0
-                    } else {
+                    } else if i < 0x1000 {
                         pg.open_slots(o, i)
+                    } else {
+                        0
                     }
                 },
                 None => !0,
