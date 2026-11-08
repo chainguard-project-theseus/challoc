@@ -31,7 +31,7 @@ libc = { version = "0.2", default-features = false }
 # Verus specifications and proofs (`verus/README.md`). Ghost code is erased
 # from ordinary builds; without default features vstd needs neither std nor
 # alloc. The Verus release must match this version exactly.
-vstd = { version = "=0.0.0-2026-10-18-0147", default-features = false }
+vstd = { version = "=0.0.0-2026-11-01-0251", default-features = false }
 
 [profile.dev]
 panic = "abort"
