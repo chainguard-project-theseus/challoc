@@ -513,20 +513,14 @@ churn), `lazy_band` (lazy purges in the headroom band, an opt-in) and `thp`
 
 Each records what was measured and, where it is known, the cause.
 
-- **Ruby threaded RSS on x86_64**: on a 16-thread Ruby soak, peak
-  RSS is about 5% above jemalloc's on x86_64 (16% below it on aarch64;
-  13% above and 6% below before slab pages closed partly used slabs'
-  free pages). RSS right after the soak's last full GC is about 40%
-  above on x86_64 and 7% on aarch64: the burst's 2.5..4 KiB strings leave
-  `Empty` 64 KiB slabs (about 60 MiB over the 17 arenas) waiting out the
-  decay curve, which jemalloc's dirty pages, reusable by any size,
-  do not. `narenas:1` gives the lower peak.
-- **RSS under a cgroup limit with the lazy band**: below 70% of a
-  memory limit purges are `MADV_FREE` (section 4), so a process scored
-  by its RSS after a burst (a fluent-bit sidecar in 512 MiB: about
-  117 MiB) shows the lazily freed pages until the kernel reclaims them;
-  `lazy_band:false` gives 15..18 MiB, where jemalloc 5.4 settles at
-  55..62 MiB.
+- **Ruby threaded RSS on x86_64**: on a 16-thread Ruby soak, RSS right
+  after the soak's last full GC is about 40% above jemalloc's on x86_64
+  and 7% on aarch64 (cb run `20261107t1119z-39280b4-soak-pxv56`): the
+  burst's 2.5..4 KiB strings leave `Empty` 64 KiB slabs (about 60 MiB
+  over the 17 arenas) waiting out the decay curve, which jemalloc's dirty
+  pages, reusable by any size, do not. Slab pages do not change it (the
+  same soak against the build without them: within 2%,
+  `20261108t0506z-ab3f7e4-soak-63t5c`). `narenas:1` gives the lower peak.
 - **PostgreSQL `select500` on aarch64**: pgbench select-only at 500
   clients reads up to 9% behind glibc on the C4A, in a run bound by the
   client's threads sharing the CPUs with the backends; instructions and
