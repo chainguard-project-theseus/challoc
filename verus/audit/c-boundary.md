@@ -29,7 +29,7 @@ false or unsound and corrected it; the reason gives the corrected
 contract. Remaining seam work is tracked in
 [wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
 
-Totals for the 51 seams listed: 49 sound, 2 fixed.
+Totals for the 52 seams listed: 50 sound, 2 fixed.
 
 ## Verdicts
 
@@ -41,7 +41,8 @@ Totals for the 51 seams listed: 49 sound, 2 fixed.
 | `read_slot` | `config.rs` | sound | Claims nothing. |
 | `malloc_conf_addr` | `config.rs` | sound | GOT load; claims nothing. |
 | `je_malloc_conf_addr` | `config.rs` | sound | As `malloc_conf_addr`, for a weak symbol. |
-| `byte_at` | `config.rs` | sound | Claims nothing. |
+| `single_threaded_addr` | `purge/background.rs` | sound | As `je_malloc_conf_addr`, for glibc's weak `__libc_single_threaded`. |
+| `byte_at` | `config.rs` | sound | Claims nothing (also the read of `__libc_single_threaded`). |
 | `bytes_at` | `config.rs` | sound | `r@.len() == n` is what `from_raw_parts` returns. |
 | `env_var` | `config.rs` | sound | The value is a non-empty suffix of an `environ` entry, cut by `cstr` at `MAX_TEXT`; requires and keeps `!secure_exec()`. |
 | `axiom_c_claim` | `heap/live.rs` | sound | The C contract of `free`, once per entry point (and per branch of the verification-only fast-path theorem); a double free makes the proof vacuous, as documented. |

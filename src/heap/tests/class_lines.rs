@@ -376,8 +376,20 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
         (None, None)
     );
     // A freed slot's bit clears at the flush; until then it is cached and set.
-    h.free(s, p0, Tracked::assume_new(), Tracked::assume_new());
-    h.free(s, p1, Tracked::assume_new(), Tracked::assume_new());
+    h.free(
+        s,
+        p0,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    h.free(
+        s,
+        p1,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(s.checked_slot_any(p0), Some(c));
     h.flush_all(s, Tracked::assume_new());
     assert_eq!(

@@ -3023,6 +3023,9 @@ impl Heap {
     /// `arena_of_slot` read.
     #[cold]
     #[inline(never)]
+    // The tracked tokens (`blk`, `errno`, the slot cell) are ghost:
+    // erased from the build.
+    #[allow(clippy::too_many_arguments)]
     fn rehome_on_free(
         &mut self,
         shared: &Shared,
@@ -3031,6 +3034,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(ord): Tracked<&mut LockOrder>,
         Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
     ) -> (r: bool)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -3044,6 +3048,7 @@ impl Heap {
             old(self).rehome,
         ensures
             final(errno).val() == old(errno).val(),
+            final(cell).kept(*old(cell)),
             *final(ord) == *old(ord),
             final(self).wf(),
             !r ==> final(self).keeps(*old(self)),
@@ -3076,7 +3081,7 @@ impl Heap {
         proof {
             vstd::modes::tracked_swap(blk, &mut own);
         }
-        self.push(shared, class, p, Tracked(own), Tracked(errno));
+        self.push(shared, class, p, Tracked(own), Tracked(errno), Tracked(cell));
         true
     }
 
@@ -3085,10 +3090,11 @@ impl Heap {
     /// then decay (or starting the background thread that will do it,
     /// `purge::on_tick`). Nothing else: thread statistics are merged by
     /// `epoch` (`stats.rs`), not here. `ALLOC` is whether the caller is
-    /// an allocation: only an allocation's tick may create the thread
-    /// (design 8.1), because glibc calls `free` with locks held that
-    /// `pthread_create` and `pthread_join` take again (the stack cache
-    /// lock, from `pthread_join`'s TLS teardown).
+    /// an allocation: a free's tick creates the thread only in a process
+    /// that has never had one (design 8.1), because glibc calls `free`
+    /// with locks held that `pthread_create` and `pthread_join` take again
+    /// (the stack cache lock, from `pthread_join`'s TLS teardown). `cell`
+    /// is the calling thread's slot cell.
     // Hot slow-path tick: left as written so its codegen does not move.
     #[allow(clippy::manual_is_multiple_of)]
     fn tick<const ALLOC: bool>(
@@ -3099,7 +3105,7 @@ impl Heap {
         Tracked(cell): Tracked<Option<&mut crate::sys::tls::TlsCell>>,
     )
         requires
-            ALLOC ==> cell is Some,
+            cell is Some,
             crate::sys::may_abort() || (crate::sys::valid_aborts() && !ALLOC),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),

@@ -1223,7 +1223,13 @@ fn created_heap_passes_the_checker_before_destroy() {
     }
     for p in ps {
         // SAFETY: as above.
-        unsafe { &mut *h }.free(s, p, Tracked::assume_new(), Tracked::assume_new());
+        unsafe { &mut *h }.free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_heap_ok(h, s, "a free");
     }
     // SAFETY: as above.

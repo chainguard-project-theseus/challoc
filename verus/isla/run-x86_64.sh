@@ -248,14 +248,14 @@ xfn_body() { # NAME-PART: the bytes (one word per instruction) and relocations o
 		END { if (nfn != 1) print "functions:", nfn + 0 }' "$out/dis-x86.txt" | tr '\n' ' '
 }
 # get_new_handler_addr, throw_bad_alloc_addr, malloc_conf_addr,
-# je_malloc_conf_addr: `mov rax, [rip + SYM@GOTPCREL]; ret`, one job for
-# the four.
+# je_malloc_conf_addr, single_threaded_addr: `mov rax, [rip +
+# SYM@GOTPCREL]; ret`, one job for the five.
 # The job is recorded once for each function whose shape matches it
 # (x86_64/got-fn-NAME), so a seam names a function this section checked.
 xgotfns=
 for f in 20get_new_handler_addr:_ZSt15get_new_handlerv \
 	20throw_bad_alloc_addr:_ZSt17__throw_bad_allocv 16malloc_conf_addr:malloc_conf \
-	19je_malloc_conf_addr:je_malloc_conf; do
+	19je_malloc_conf_addr:je_malloc_conf 20single_threaded_addr:__libc_single_threaded; do
 	want="488b0500000000 R_X86_64_GOTPCREL ${f#*:}-0x4 c3 "
 	body=$(xfn_body "${f%%:*}")
 	if [ "$body" = "$want" ]; then

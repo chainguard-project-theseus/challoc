@@ -1,5 +1,6 @@
 # A function returning a symbol's GOT entry, x86_64 (get_new_handler_addr,
-# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr;
+# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr,
+# single_threaded_addr;
 # verus/isla/seams.md), on the x86 model in its
 # application view with the processor in 64-bit mode (run-x86_64.sh, section 13):
 #   mov rax, qword ptr [rip + SYM@GOTPCREL]   (48 8b 05, R_X86_64_GOTPCREL)

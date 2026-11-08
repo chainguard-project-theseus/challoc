@@ -214,9 +214,9 @@ model") and the cell recording the calling thread's TPIDR_EL0
 
 ## The GOT functions
 
-`get_new_handler_addr`, `throw_bad_alloc_addr`, `malloc_conf_addr` and
-`je_malloc_conf_addr` (`#[inline(never)]`) each load one symbol's GOT
-entry. On aarch64 each compiled function is exactly `adrp x0, :got:SYM; ldr x0, [x0,
+`get_new_handler_addr`, `throw_bad_alloc_addr`, `malloc_conf_addr`,
+`je_malloc_conf_addr` and `purge::background::single_threaded_addr`
+(`#[inline(never)]`) each load one symbol's GOT entry. On aarch64 each compiled function is exactly `adrp x0, :got:SYM; ldr x0, [x0,
 :got_lo12:SYM]; ret` (`got-fn.job.in`); on x86_64 exactly `mov rax, [rip
 + SYM@GOTPCREL]; ret` (`x86/got-fn.job`). Under the relocations'
 definitions each reads exactly the GOT entry, returns it in the result
@@ -277,6 +277,16 @@ Premises: P1, P2, P3, P4, P6, P7
 
 ```rust
 fn je_malloc_conf_addr() -> *const c_void
+```
+
+## `src/purge/background.rs` `single_threaded_addr` (both)
+
+Jobs: `aarch64/got-fn-single_threaded_addr` `x86_64/got-fn-single_threaded_addr`
+
+Premises: P1, P2, P3, P4, P6, P7
+
+```rust
+fn single_threaded_addr() -> *const u8
 ```
 
 ## The rseq symbols and the thread pointer

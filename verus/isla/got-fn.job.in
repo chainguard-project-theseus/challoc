@@ -1,5 +1,6 @@
 # A function returning a symbol's GOT entry (the aarch64 get_new_handler_addr,
-# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr;
+# throw_bad_alloc_addr, malloc_conf_addr, je_malloc_conf_addr,
+# single_threaded_addr;
 # verus/isla/seams.md):
 #   adrp x0, :got:SYM            (R_AARCH64_ADR_GOT_PAGE)
 #   ldr  x0, [x0, :got_lo12:SYM] (R_AARCH64_LD64_GOT_LO12_NC)
