@@ -2977,7 +2977,16 @@ fn claims_take_only_the_slots_of_open_pages() {
         tested += 1;
     }
     // A 64 KiB-page kernel has one page per small slab: nothing to close.
-    assert!(tested > 0 || page_size() >= 0x10000);
+    if tested == 0 {
+        assert!(
+            page_size() >= 0x10000,
+            "no paged class tested at a 4 KiB page"
+        );
+        crate::testutil::skip(
+            "claims_take_only_the_slots_of_open_pages",
+            "no slab of a paged class spans two pages at this page size",
+        );
+    }
 }
 
 /// Slab pages, the walk (docs/proposals/slab-pages.md, 3.4): per paged
@@ -3099,7 +3108,16 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
         assert_eq!(closed_slots_t(cs), 0, "class {c}");
         tested += 1;
     }
-    assert!(tested > 0 || page_size() >= 0x10000);
+    if tested == 0 {
+        assert!(
+            page_size() >= 0x10000,
+            "no paged class tested at a 4 KiB page"
+        );
+        crate::testutil::skip(
+            "the_walk_closes_the_free_pages_of_a_partial_slab",
+            "no slab of a paged class spans two pages at this page size",
+        );
+    }
 }
 
 /// Slab pages, the decay curve: a walk stamps a slab with closable pages
@@ -3112,6 +3130,10 @@ fn the_walk_closes_pages_along_the_decay_curve() {
     let cs = env.class(c, 0);
     let view = cs.table().page_view();
     if view.pages < 2 {
+        crate::testutil::skip(
+            "the_walk_closes_pages_along_the_decay_curve",
+            "no slab of a paged class spans two pages at this page size",
+        );
         return;
     }
     let n = view.nslots;
@@ -3169,6 +3191,10 @@ fn a_defrag_hint_closes_pages_a_step_old() {
     let cs = env.class(small_class(), 0);
     let view = cs.table().page_view();
     if view.pages < 2 {
+        crate::testutil::skip(
+            "a_defrag_hint_closes_pages_a_step_old",
+            "no slab of a paged class spans two pages at this page size",
+        );
         return;
     }
     let n = view.nslots;
@@ -3264,7 +3290,16 @@ fn a_walk_between_reservation_and_claim_leaves_the_reserved_slots_open() {
         cs.release(&kept);
         tested += 1;
     }
-    assert!(tested > 0 || page_size() >= 0x10000);
+    if tested == 0 {
+        assert!(
+            page_size() >= 0x10000,
+            "no paged class tested at a 4 KiB page"
+        );
+        crate::testutil::skip(
+            "a_walk_between_reservation_and_claim_leaves_the_reserved_slots_open",
+            "no slab of a paged class spans two pages at this page size",
+        );
+    }
 }
 
 /// Slab pages, the empty transition: a slab that empties while pages are
@@ -3315,7 +3350,16 @@ fn an_emptied_slab_takes_its_closed_slots_out_of_the_count() {
         assert_eq!((st.closed_slots, st.closed_pages), (0, 0), "class {c}");
         tested += 1;
     }
-    assert!(tested > 0 || page_size() >= 0x10000);
+    if tested == 0 {
+        assert!(
+            page_size() >= 0x10000,
+            "no paged class tested at a 4 KiB page"
+        );
+        crate::testutil::skip(
+            "an_emptied_slab_takes_its_closed_slots_out_of_the_count",
+            "no slab of a paged class spans two pages at this page size",
+        );
+    }
 }
 
 /// Slab pages, an `epoch` write (`purge::note_epoch` →
@@ -3330,6 +3374,10 @@ fn an_epoch_arms_the_walk_to_close_pages_a_step_old() {
     let cs = env.class(small_class(), 0);
     let view = cs.table().page_view();
     if view.pages < 2 {
+        crate::testutil::skip(
+            "an_epoch_arms_the_walk_to_close_pages_a_step_old",
+            "no slab of a paged class spans two pages at this page size",
+        );
         return;
     }
     let n = view.nslots;
@@ -3443,13 +3491,22 @@ fn lowest_partial_skips_a_slab_whose_free_slots_are_all_reserved() {
 #[test]
 fn lowest_partial_keeps_a_slab_with_closed_pages_to_reopen() {
     let env = Env::new();
-    let cs = env.class(small_class(), 0);
-    let view = cs.table().page_view();
-    if view.pages < 2 {
+    // A class whose slots tile the page, so no slot straddles the first
+    // page's end and every free slot of the slab is on a page that closes.
+    let found = (0..NCLASSES).map(|c| env.class(c, 0)).find(|cs| {
+        let v = cs.table().page_view();
+        v.pages >= 2 && v.pg % v.size == 0
+    });
+    let Some(cs) = found else {
+        crate::testutil::skip(
+            "lowest_partial_keeps_a_slab_with_closed_pages_to_reopen",
+            "no paged class whose slots tile a page at this page size",
+        );
         return;
-    }
-    // Keep the slots that start on the first page of each slab.
-    let keep = view.pg.div_ceil(view.size).min(view.nslots);
+    };
+    let view = cs.table().page_view();
+    // Keep the slots of the first page of each slab.
+    let keep = view.pg / view.size;
     let (s0, s1, k0, k1) = two_partial_slabs(&env, cs, keep);
     close_pages_t(cs, 1, 0, true);
     let v = view.with_closed(cs.table().pages(s0).unwrap().closed());
@@ -3457,12 +3514,7 @@ fn lowest_partial_keeps_a_slab_with_closed_pages_to_reopen() {
         .filter(|&k| v.word(k / 64) >> (k % 64) & 1 == 1)
         .count()
         - k0.len();
-    if open_free > 0 {
-        // A straddling slot left an open free slot: nothing to check here.
-        cs.release(&k0);
-        cs.release(&k1);
-        return;
-    }
+    assert_eq!(open_free, 0, "every free slot of s0 is on a closed page");
     assert!(v.closed_slots() > 0);
     // s1 gets an open free slot: one of its held slots, on its open page.
     let (gone, k1) = k1.split_at(1);
