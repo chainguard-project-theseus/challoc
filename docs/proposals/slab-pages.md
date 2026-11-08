@@ -18,9 +18,12 @@ Where the build departs from the text below (wolfi-dev/challoc#660):
   claim. A lower slab's closed page is therefore reopened before a
   higher slab's open free slot is used (3.3's order puts them the other
   way round).
-- **Page ranges are computed** (`Pages::page_slots`, one division per
-  page on the refill path), not stored in the class table: `Class` has
-  12 spare bytes, not the 64 a table needs.
+- **Page ranges are computed** (`Pages::page_slots`), not stored in the
+  class table: `Class` has 12 spare bytes, not the 64 a table needs. A
+  claim's per-word open slots look only at the closed pages the word's
+  slots overlap (two divisions each), and the open count and the pages
+  a claim opens take one division for a prefix mask, which every mask a
+  claim makes is.
 - **`active` is still whole slabs** (3.6): only the bins' `curregs`
   reports closed slots.
 
