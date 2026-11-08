@@ -581,8 +581,6 @@ impl ClassState {
         let mut total: usize = 0;
         let mut weighted: u64 = 0;
         let mut visited: usize = 0;
-        let mut found_slots: usize = 0;
-        let mut closed_now: usize = 0;
         let limit = if all { usize::MAX } else { WALK_SLABS };
         let start = if all { 0 } else { g.pages_cursor };
         proof {
@@ -640,12 +638,6 @@ impl ClassState {
                 let (closed, stamp) = Self::pages_locked(&g, pg, s);
                 let v = v0.with_closed(closed);
                 let cand = Self::closable(&t.bits(s), v);
-                // The slots those pages hold: free pages, not fragmentation
-                // (`ClassStats::closable_slots`).
-                if cand != 0 {
-                    let k = v0.with_closed(closed | cand).closed_slots().saturating_sub(v.closed_slots());
-                    found_slots = found_slots.saturating_add(k);
-                }
                 let st = if cand == 0 { 0 } else if stamp == 0 { if now == 0 { 1 } else { now } } else { stamp };
                 if st != stamp {
                     self.set_pages_locked(&mut g, pg, s, closed, st);
@@ -676,8 +668,7 @@ impl ClassState {
                                     assert(g@.slab_ok(s as nat));
                                 }
                                 let (c, sp) = Self::pages_locked(&g, pg, s);
-                                let hid = self.close_page(&mut g, s, pg, v0.with_closed(c), p, sp);
-                                closed_now = closed_now.saturating_add(hid);
+                                let _ = self.close_page(&mut g, s, pg, v0.with_closed(c), p, sp);
                             }
                             p += 1;
                         }
@@ -807,7 +798,6 @@ impl ClassState {
                                 if hid == 0 {
                                     left = true;
                                 }
-                                closed_now = closed_now.saturating_add(hid);
                             } else {
                                 left = true;
                             }
@@ -825,18 +815,6 @@ impl ClassState {
             }
         }
         let any = visited > 0;
-        // The closable slots of this pass over the partial set, less the
-        // ones this walk closed; published once the cursor has been round
-        // the set, the walks between accumulate.
-        let ghost gk = g@;
-        g.closable_cycle = g.closable_cycle.saturating_add(found_slots.saturating_sub(closed_now));
-        if next.is_none() || all {
-            g.closable_slots = g.closable_cycle;
-            g.closable_cycle = 0;
-        }
-        proof {
-            lemma_walk_frame(self, gk, g@);
-        }
         g.unlock();
         // The class keeps its walk a curve step ahead while it has partial
         // slabs (docs/proposals/slab-pages.md, 3.4), so that a page that
@@ -859,3 +837,11 @@ impl ClassState {
 }
 
 } // verus!
+
+#[cfg(test)]
+impl ClassState {
+    /// The coarse time before which no hint arms the walk again, for tests.
+    pub(crate) fn hint_due_for_tests(&self) -> u64 {
+        self.hint_due.load(Ordering::Relaxed)
+    }
+}

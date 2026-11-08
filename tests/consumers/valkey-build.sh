@@ -86,4 +86,5 @@ find_tclsh
 # Every memefficiency test runs at Valkey's stock targets: slab pages
 # (wolfi-dev/challoc#604, #660) release the free pages of sparse slabs, so
 # "Active Defrag eval scripts: standalone", skipped here before, passes.
-run_stages
+set --
+run_stages "$@"

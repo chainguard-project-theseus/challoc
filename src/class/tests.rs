@@ -3317,3 +3317,162 @@ fn an_emptied_slab_takes_its_closed_slots_out_of_the_count() {
     }
     assert!(tested > 0 || page_size() >= 0x10000);
 }
+
+/// Slab pages, an `epoch` write (`purge::note_epoch` →
+/// `Arena::note_epoch` → `ClassState::arm_pages_hint`): arming the class
+/// makes its next walk close every page closable for a curve step,
+/// though young on the curve; a second arm within `HINT_NS` does not arm
+/// it again, and one after it does.
+#[test]
+fn an_epoch_arms_the_walk_to_close_pages_a_step_old() {
+    use super::pages::HINT_NS;
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let view = cs.table().page_view();
+    if view.pages < 2 {
+        return;
+    }
+    let n = view.nslots;
+    let mut held: Vec<*mut u8> = Vec::new();
+    while held.len() < n {
+        let (q, _) = env.claim(cs, n - held.len());
+        held.extend(q);
+    }
+    let (s0, _) = cs.locate(held[0]);
+    cs.release(&held[1..]);
+    let pg = cs.table().pages(s0).unwrap();
+    let period = 1_000_000_000u64;
+    let step = period / crate::purge::STEPS as u64;
+    let t0 = 5_000_000_000u64;
+    close_pages_t(cs, t0, period, false);
+    assert_eq!(pg.closed(), 0, "young on the curve");
+    let t1 = t0 + 2 * step;
+    assert!(cs.arm_pages_hint(t1), "the first epoch arms the walk");
+    assert!(
+        !cs.arm_pages_hint(t1 + HINT_NS - 1),
+        "a second within HINT_NS does not"
+    );
+    close_pages_t(cs, t1, period, false);
+    let all = ((1u32 << view.pages) - 1) as u16;
+    assert_eq!(pg.closed(), all & !1, "armed: every page a step old closed");
+    assert!(
+        cs.arm_pages_hint(t1 + HINT_NS),
+        "one HINT_NS later arms it again"
+    );
+    cs.release(&held[..1]);
+    assert_eq!(pg.closed(), 0);
+}
+
+/// `cs.lowest_partial()` with a made-up lock order token.
+fn lowest_partial_t(cs: &ClassState) -> Option<usize> {
+    cs.lowest_partial(Tracked::assume_new())
+}
+
+/// Two full slabs of `cs`'s class, in address order, with every slot but
+/// the first `keep` of each released: their held slots.
+fn two_partial_slabs(
+    env: &Env,
+    cs: &ClassState,
+    keep: usize,
+) -> (usize, usize, Vec<*mut u8>, Vec<*mut u8>) {
+    let n = cs.table().page_view().nslots;
+    let mut held: Vec<*mut u8> = Vec::new();
+    while held.len() < 2 * n {
+        let (q, _) = env.claim(cs, 2 * n - held.len());
+        held.extend(q);
+    }
+    let mut slabs: Vec<usize> = held.iter().map(|&x| cs.locate(x).0).collect();
+    slabs.sort_unstable();
+    slabs.dedup();
+    assert_eq!(slabs.len(), 2);
+    let (s0, s1) = (slabs[0], slabs[1]);
+    let (mut k0, mut k1, mut freed) = (Vec::new(), Vec::new(), Vec::new());
+    for &x in &held {
+        let (s, k) = cs.locate(x);
+        if k < keep {
+            if s == s0 { k0.push(x) } else { k1.push(x) }
+        } else {
+            freed.push(x);
+        }
+    }
+    cs.release(&freed);
+    (s0, s1, k0, k1)
+}
+
+/// Slab pages, the defrag hint's `slabcur` (`lowest_partial`): a partial
+/// slab whose open free slots are all reserved by a claim in flight is
+/// not where the next claim takes from, so it is skipped for the next
+/// partial slab.
+#[test]
+fn lowest_partial_skips_a_slab_whose_free_slots_are_all_reserved() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let n = cs.table().page_view().nslots;
+    let keep = n / 2;
+    let (s0, s1, k0, k1) = two_partial_slabs(&env, cs, keep);
+    assert_eq!(lowest_partial_t(cs), Some(s0));
+    // A claim of exactly s0's free slots: inside it, after its plan, every
+    // slot of s0 is held or reserved.
+    let addr = cs as *const ClassState as usize;
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let seen2 = seen.clone();
+    *AFTER_PLAN.lock().unwrap() = Some((
+        addr,
+        std::boxed::Box::new(move || {
+            // SAFETY: the class state outlives the claim this runs in.
+            let cs = unsafe { &*(addr as *const ClassState) };
+            *seen2.lock().unwrap() = Some(lowest_partial_t(cs));
+        }),
+    ));
+    let (got, _) = env.claim(cs, n - keep);
+    assert!(got.iter().all(|&x| cs.locate(x).0 == s0));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        Some(Some(s1)),
+        "a fully reserved slab is skipped"
+    );
+    cs.release(&got);
+    cs.release(&k0);
+    cs.release(&k1);
+}
+
+/// Slab pages, `lowest_partial` with closed pages: a slab whose free slots
+/// are all on closed pages (no open free slot) is still where the next
+/// claim takes from, by reopening them, so it stays the hint's `slabcur`
+/// ahead of a higher slab with open free slots.
+#[test]
+fn lowest_partial_keeps_a_slab_with_closed_pages_to_reopen() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let view = cs.table().page_view();
+    if view.pages < 2 {
+        return;
+    }
+    // Keep the slots that start on the first page of each slab.
+    let keep = view.pg.div_ceil(view.size).min(view.nslots);
+    let (s0, s1, k0, k1) = two_partial_slabs(&env, cs, keep);
+    close_pages_t(cs, 1, 0, true);
+    let v = view.with_closed(cs.table().pages(s0).unwrap().closed());
+    let open_free = (0..view.nslots)
+        .filter(|&k| v.word(k / 64) >> (k % 64) & 1 == 1)
+        .count()
+        - k0.len();
+    if open_free > 0 {
+        // A straddling slot left an open free slot: nothing to check here.
+        cs.release(&k0);
+        cs.release(&k1);
+        return;
+    }
+    assert!(v.closed_slots() > 0);
+    // s1 gets an open free slot: one of its held slots, on its open page.
+    let (gone, k1) = k1.split_at(1);
+    cs.release(gone);
+    assert_eq!(cs.locate(gone[0]).0, s1);
+    assert_eq!(
+        lowest_partial_t(cs),
+        Some(s0),
+        "closed pages to reopen keep s0 ahead of s1"
+    );
+    cs.release(&k0);
+    cs.release(k1);
+}

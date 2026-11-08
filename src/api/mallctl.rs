@@ -2197,7 +2197,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Util
         committed: false,
         live: 0,
         found: false,
-        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed_slots: 0, closed_pages: 0, closable_slots: 0 },
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed_slots: 0, closed_pages: 0 },
         curregs: 0,
         lowest: None,
         run: None,
