@@ -408,8 +408,10 @@ pub fn present_or_creating(Tracked(ord): Tracked<&mut LockOrder>) -> bool
 /// process keeps purging in the foreground, as with
 /// `background_thread:false`, and the lazy start looks again no sooner
 /// than [`AUTO_RETRY_NS`] later, up to [`AUTO_TRIES`] failures in all,
-/// after which it is off for good. An explicit request stays, and the
-/// next tick tries again.
+/// after which it is off for good. A failure inside the retry delay of
+/// the last counted one (a look another thread claimed meanwhile) is the
+/// same burst and does not count again. An explicit request stays, and
+/// the next tick tries again.
 pub fn start_requested(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut LockOrder>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut TlsCell>) -> bool
     requires
         crate::sys::may_abort() || (free && crate::sys::valid_aborts()),
@@ -434,17 +436,24 @@ pub fn start_requested(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut L
     // failed start: the next allocation's tick joins it and starts.
     if !g.creating && !g.present && !(free && g.thread.is_some()) && AUTO.load(Ordering::Relaxed) {
         REQUESTED.store(false, Ordering::Relaxed);
-        // `+ 1` as the release build computes it (overflow checks are off
-        // there): the count only ever reaches `AUTO_TRIES`, but it is an
-        // atomic, whose loads Verus does not bound.
-        let fails = AUTO_FAILS.load(Ordering::Relaxed).wrapping_add(1);
-        AUTO_FAILS.store(fails, Ordering::Relaxed);
-        if fails >= AUTO_TRIES {
-            AUTO.store(false, Ordering::Relaxed);
-        } else {
-            let retry = sys::now_coarse_ns().saturating_add(AUTO_RETRY_NS);
-            AUTO_NEXT.store(retry, Ordering::Relaxed);
-            AUTO_RETRY_AT.store(retry, Ordering::Relaxed);
+        // A failure inside the retry delay of the last counted one is the
+        // same burst (a look another thread claimed before that failure
+        // set `AUTO_RETRY_AT`): it does not count again. Under the state
+        // lock, so the counted failures are ordered.
+        let now = sys::now_coarse_ns();
+        if now >= AUTO_RETRY_AT.load(Ordering::Relaxed) {
+            // `+ 1` as the release build computes it (overflow checks are
+            // off there): the count only ever reaches `AUTO_TRIES`, but it
+            // is an atomic, whose loads Verus does not bound.
+            let fails = AUTO_FAILS.load(Ordering::Relaxed).wrapping_add(1);
+            AUTO_FAILS.store(fails, Ordering::Relaxed);
+            if fails >= AUTO_TRIES {
+                AUTO.store(false, Ordering::Relaxed);
+            } else {
+                let retry = now.saturating_add(AUTO_RETRY_NS);
+                AUTO_NEXT.store(retry, Ordering::Relaxed);
+                AUTO_RETRY_AT.store(retry, Ordering::Relaxed);
+            }
         }
     }
     g.unlock();
@@ -484,12 +493,14 @@ pub fn auto_tick(shared: &Shared, now: u64, alloc: bool, Tracked(ord): Tracked<&
         return;
     }
     // Early, inside the window, once AUTO_STEP more was flushed back since
-    // the last look, unless a failed start's retry delay holds it. One
-    // looker either way: an early one first claims its step (the
-    // `AUTO_RELEASED` exchange, so each step makes one early look), and
-    // every look then claims `AUTO_NEXT`, so an early look and a window
-    // one never run at once and concurrent failed starts cannot run up
-    // `AUTO_TRIES` together.
+    // the last look, unless a failed start's retry delay holds it. An
+    // early look first claims its step (the `AUTO_RELEASED` exchange, so
+    // each step makes one early look), and every look then claims
+    // `AUTO_NEXT`, so claims are made one at a time. A claim does not wait
+    // for an earlier look to finish: an early look may run while another
+    // thread's start is still failing. `start_requested` counts a failure
+    // only outside the last counted one's retry delay, so such overlaps
+    // count once.
     let released = RELEASED.load(Ordering::Relaxed);
     let last = AUTO_RELEASED.load(Ordering::Relaxed);
     let next = AUTO_NEXT.load(Ordering::Relaxed);
