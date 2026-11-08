@@ -436,28 +436,36 @@ pub fn start_requested(shared: &Shared, free: bool, Tracked(ord): Tracked<&mut L
     // failed start: the next allocation's tick joins it and starts.
     if !g.creating && !g.present && !(free && g.thread.is_some()) && AUTO.load(Ordering::Relaxed) {
         REQUESTED.store(false, Ordering::Relaxed);
-        // A failure inside the retry delay of the last counted one is the
-        // same burst (a look another thread claimed before that failure
-        // set `AUTO_RETRY_AT`): it does not count again. Under the state
-        // lock, so the counted failures are ordered.
-        let now = sys::now_coarse_ns();
-        if now >= AUTO_RETRY_AT.load(Ordering::Relaxed) {
-            // `+ 1` as the release build computes it (overflow checks are
-            // off there): the count only ever reaches `AUTO_TRIES`, but it
-            // is an atomic, whose loads Verus does not bound.
-            let fails = AUTO_FAILS.load(Ordering::Relaxed).wrapping_add(1);
-            AUTO_FAILS.store(fails, Ordering::Relaxed);
-            if fails >= AUTO_TRIES {
-                AUTO.store(false, Ordering::Relaxed);
-            } else {
-                let retry = now.saturating_add(AUTO_RETRY_NS);
-                AUTO_NEXT.store(retry, Ordering::Relaxed);
-                AUTO_RETRY_AT.store(retry, Ordering::Relaxed);
-            }
-        }
+        count_failed_start(sys::now_coarse_ns());
     }
     g.unlock();
     false
+}
+
+/// Count a failed lazy start at `now`, under the state lock (so the
+/// counted failures are ordered): whether it counted. A failure inside
+/// the retry delay of the last counted one is the same burst (a look
+/// another thread claimed before that failure set `AUTO_RETRY_AT`) and
+/// does not count again. The [`AUTO_TRIES`]th counted failure disarms the
+/// lazy start; an earlier one holds every look until [`AUTO_RETRY_NS`]
+/// later.
+pub(crate) fn count_failed_start(now: u64) -> bool {
+    if now < AUTO_RETRY_AT.load(Ordering::Relaxed) {
+        return false;
+    }
+    // `+ 1` as the release build computes it (overflow checks are off
+    // there): the count only ever reaches `AUTO_TRIES`, but it is an
+    // atomic, whose loads Verus does not bound.
+    let fails = AUTO_FAILS.load(Ordering::Relaxed).wrapping_add(1);
+    AUTO_FAILS.store(fails, Ordering::Relaxed);
+    if fails >= AUTO_TRIES {
+        AUTO.store(false, Ordering::Relaxed);
+    } else {
+        let retry = now.saturating_add(AUTO_RETRY_NS);
+        AUTO_NEXT.store(retry, Ordering::Relaxed);
+        AUTO_RETRY_AT.store(retry, Ordering::Relaxed);
+    }
+    true
 }
 
 /// The lazy start's look, from a periodic tick that ran decay in the
@@ -595,6 +603,12 @@ pub fn set_auto(shared: Option<&Shared>) {
     AUTO_SINCE.store(0, Ordering::Relaxed);
     AUTO_BASE.store(0, Ordering::Relaxed);
     AUTO_FAILS.store(0, Ordering::Relaxed);
+}
+
+/// Lazy starts that failed and counted so far, for tests.
+#[cfg(test)]
+pub fn auto_fails() -> u32 {
+    AUTO_FAILS.load(Ordering::Relaxed)
 }
 
 /// The glibc functions [`pthread_join`] calls, one of which shares its
