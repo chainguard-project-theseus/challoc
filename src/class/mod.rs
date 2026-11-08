@@ -1235,11 +1235,15 @@ verus! {
 /// acquisition on one core does not evict the table pointer from the
 /// others. The alignment makes `[ClassState; NCLASSES]` line-granular too.
 ///
-/// The stride of that array must not be a multiple of 512 bytes. With 4 KiB
-/// pages a 512-byte stride puts the hot line of every class on the same
-/// handful of L1 sets: on Apple silicon (128-byte lines, sets indexed by
-/// page-offset bits) single-threaded `alloc-test` slowed from 2.13 s to
-/// 2.52 s. `_tail` makes the stride 640 = 5 lines, which visits every set.
+/// The stride of that array must be an odd number of 128-byte lines. With
+/// 4 KiB pages a 512-byte stride puts the hot line of every class on the
+/// same handful of L1 sets: on Apple silicon (128-byte lines, sets indexed
+/// by page-offset bits) single-threaded `alloc-test` slowed from 2.13 s to
+/// 2.52 s. Any even number of lines reaches at most half of the 32 line
+/// positions of a 4 KiB page (768 = 6 lines: gcd(768, 4096) = 256, 16 of
+/// them); an odd one reaches all 32. `_tail` makes the stride 896 = 7 lines
+/// (slab pages' fields took it past 640 = 5). On 64-byte-line cores, 7 lines
+/// are 14 and reach 32 of 64 sets, as 640's 10 did.
 #[repr(C, align(128))]
 pub struct ClassState {
     class: u16,
@@ -1295,7 +1299,7 @@ pub struct ClassState {
     /// on, per class: docs/proposals/slab-pages.md, 7.1).
     hint_armed: AtomicU64,
     hint_due: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 88],
+    _tail: [u8; PAD_ALIGN - 88 + PAD_ALIGN],
 }
 
 } // verus!
@@ -1305,7 +1309,7 @@ const _: () =
     assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>().is_multiple_of(PAD_ALIGN));
-const _: () = assert!(!core::mem::size_of::<ClassState>().is_multiple_of(512));
+const _: () = assert!((core::mem::size_of::<ClassState>() / PAD_ALIGN) % 2 == 1);
 const _: () = assert!(core::mem::size_of::<TablePtr>() == core::mem::size_of::<*const SlabTable>());
 
 // SAFETY: the only non-`Sync`, non-`Send` field is the table pointer
@@ -2417,7 +2421,7 @@ impl ClassState {
             pages_due: AtomicU64::new(0),
             hint_armed: AtomicU64::new(0),
             hint_due: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 88],
+            _tail: [0; PAD_ALIGN - 88 + PAD_ALIGN],
         })
     }
 
