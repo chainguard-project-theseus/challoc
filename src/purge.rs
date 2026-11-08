@@ -2578,6 +2578,8 @@ pub fn note_epoch(shared: &Shared)
         crate::sys::may_syscall(),
         shared.wf(),
 {
+    #[cfg(test)]
+    NOTE_EPOCH_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let now = crate::sys::now_coarse_ns();
     let mut any = false;
     let count = arena_count(shared);
@@ -2863,3 +2865,8 @@ mod kani_explicit {
         assert_eq!(EXPLICIT.load(Relaxed), d.wrapping_sub(1));
     }
 }
+
+/// Calls of [`note_epoch`], for tests: an `epoch` write must make one.
+#[cfg(test)]
+pub static NOTE_EPOCH_CALLS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);

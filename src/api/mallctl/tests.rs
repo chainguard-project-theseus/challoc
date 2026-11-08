@@ -244,6 +244,30 @@ fn epoch() -> u64 {
     e
 }
 
+/// An `epoch` write arms the slab-pages walks (`purge::note_epoch`), so a
+/// consumer's next read counts the free pages they release as released:
+/// the write makes a call, and afterwards every class of arena 0 is
+/// within its hint interval (armed by this write or by one less than
+/// `HINT_NS` before it).
+#[test]
+fn an_epoch_write_arms_the_slab_pages_walks() {
+    let calls = crate::purge::NOTE_EPOCH_CALLS.load(core::sync::atomic::Ordering::Relaxed);
+    let before = crate::sys::now_coarse_ns();
+    epoch();
+    assert!(
+        crate::purge::NOTE_EPOCH_CALLS.load(core::sync::atomic::Ordering::Relaxed) > calls,
+        "the write called note_epoch"
+    );
+    let s = shared();
+    let a = s.arenas.get_existing(0).unwrap();
+    for c in 0..crate::layout::NCLASSES {
+        assert!(
+            a.class(c).hint_due_for_tests() > before,
+            "class {c} not armed"
+        );
+    }
+}
+
 /// Each `epoch` write stores a new number and reads that number back,
 /// so concurrent writers all read back different numbers. The four
 /// writers start every write together, on a private allocator so no
