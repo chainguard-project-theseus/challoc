@@ -520,12 +520,23 @@ impl ClassState {
         requires
             crate::sys::may_syscall(),
     {
-        let now = crate::sys::now_coarse_ns();
+        if self.arm_pages_hint(crate::sys::now_coarse_ns()) {
+            crate::purge::note_pages();
+        }
+    }
+
+    /// Arm the next slab-pages walk as a hint (see [`Self::note_defrag_hint`])
+    /// at most once per [`HINT_NS`]: whether it armed. The caller wakes the
+    /// background thread (`purge::note_pages`), once for however many
+    /// classes it armed.
+    pub fn arm_pages_hint(&self, now: u64) -> bool {
         if now >= self.hint_due.load(Ordering::Relaxed) {
             self.hint_due.store(now.saturating_add(HINT_NS), Ordering::Relaxed);
             self.hint_armed.store(1, Ordering::Relaxed);
             self.pages_due.store(0, Ordering::Relaxed);
-            crate::purge::note_pages();
+            true
+        } else {
+            false
         }
     }
 

@@ -1738,11 +1738,13 @@ bitmaps plus the slots the closed pages of the bin's slabs hide, so that
 memory the closed pages gave back. Reported `curregs * size` is then no
 longer `small.allocated` bin by bin, as it is in jemalloc;
 `small.allocated` itself, and the defrag hint's average (13.5), use the
-slots out of the bitmaps alone. The reported `curregs` also adds the
-slots of whole free pages that the slab-pages walk has found closable and
-not closed yet: dirty memory the walk gives back by itself, as jemalloc's
-bins leave an empty slab out of `curslabs`, so `frag_smallbins` counts
-only what moving objects can reclaim. The defrag hint's `slabcur` is the
+slots out of the bitmaps alone. Free pages the walk has not closed yet
+stay fragmentation, resident as they are: the figures count only memory
+given back. An `epoch` write (Valkey and Redis make one from their cron
+before they read these figures) arms every class's walk as a defrag hint
+does (`purge::note_epoch`, at most once per 100 ms per class), so a page
+free for a curve step (50 ms by default) closes at the next pass and the
+next read counts it as given back. The defrag hint's `slabcur` is the
 lowest partial slab with an open free slot or a closed page to reopen,
 the slab a claim takes from next.
 

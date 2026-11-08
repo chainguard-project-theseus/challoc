@@ -1261,7 +1261,7 @@ fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
                 b.slab_size,
                 // As `stats.arenas.<i>.bins.<j>.curregs` reports it: with the
                 // closed slots.
-                fig_add(fig_add(b.curregs, b.closed_slots), b.closable_slots),
+                fig_add(b.curregs, b.closed_slots),
                 b.curslabs,
                 b.nonfull_slabs,
                 b.empty_slabs,

@@ -196,7 +196,9 @@ exactly; `nonfull_slabs` includes the slab the next claim takes from,
 where jemalloc's excludes it, so for the same heap challoc reports one
 more non-full slab and moves slightly more (design 13.4). With slab pages
 a slab's `nregs` is its open slots, and `curregs` counts the slots of
-closed and closable pages as in use, not fragmentation (design 13.4).
+closed pages as in use, not fragmentation (design 13.4): only memory
+given back to the kernel. An `epoch` write arms the slab-pages walks, so
+the pages free for a curve step close before the next read.
 Valkey's and Redis's `unit/memefficiency` pass at their stock targets;
 the contrib patches change no Valkey threshold, and one Redis test's
 order (`contrib/redis/0004`). Nothing about defrag is tunable on the
