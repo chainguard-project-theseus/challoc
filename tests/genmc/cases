@@ -111,3 +111,10 @@ publish | publish | rc11+live imm+live arm8+live | const CHECKS_EXITED: bool = t
 publish_spurious | publish | rc11+live imm+live | const CHECKS_EXITED: bool = true; const SEQ_LOAD: Ordering = Ordering::SeqCst; const SPURIOUS: u32 = 2; | pass
 publish_unchecked | publish | rc11+live imm+live | const CHECKS_EXITED: bool = false; const SEQ_LOAD: Ordering = Ordering::SeqCst; const SPURIOUS: u32 = 0; | fail | start published a thread that had exited
 publish_relaxed_seq_load | publish | rc11+live imm+live | const CHECKS_EXITED: bool = true; const SEQ_LOAD: Ordering = Ordering::Relaxed; const SPURIOUS: u32 = 0; | fail | Liveness violation
+
+# Slab pages: the walk closing a page while a claim takes a slot of it
+# (pages.rs, tests/loom/src/pages.rs's port). The controls: a claim
+# without its re-check, and a walk whose probe is a load.
+pages_walk_claim | pages | rc11 imm arm8 | const MUTANT: u32 = 0; | pass
+pages_no_recheck | pages | rc11 imm | const MUTANT: u32 = 1; | fail | Non-atomic race | a kept slot was discarded
+pages_load_probe | pages | rc11 imm | const MUTANT: u32 = 2; | fail | Non-atomic race | a kept slot was discarded

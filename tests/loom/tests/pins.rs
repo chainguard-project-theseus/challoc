@@ -1458,6 +1458,59 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
         ],
     ),
+    // Slab pages, the walk racing a claim (pages.rs, the port of
+    // tests/loom/src/pages.rs): close_page's mask stores, probe test and
+    // discard; the probe's read-modify-write; finish's re-check and
+    // give-back; the claims' load of the mask.
+    (
+        "pages.rs",
+        "src/class/pages.rs",
+        &[
+            (
+                "self.set_pages_locked(g, pg, slab, new, stamp);",
+                "self.closed.store(0b10, Ordering::Release);",
+            ),
+            (
+                "if bm.probe(w) & v.page_word(p, w) != 0 {",
+                "if prev & PAGE_SLOTS[1] != 0 {",
+            ),
+            (
+                "self.set_pages_locked(g, pg, slab, v.closed, stamp);",
+                "self.closed.store(0, Ordering::Release);",
+            ),
+            (
+                "if !crate::purge::discard_one(a, len, Ghost(closed_page(new, p as u16, a as int, len as int))) {",
+                "self.write(PAGE_SLOTS[1], 0);",
+            ),
+        ],
+    ),
+    (
+        "pages.rs",
+        "src/bitmap.rs",
+        &[(
+            "prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));",
+            "word::fetch_or(&self.word, 0, Ordering::AcqRel, Tracked::assume_new())",
+        )],
+    ),
+    (
+        "pages.rs",
+        "src/class/mod.rs",
+        &[
+            ("let back = won & !open;", "let back = won & !open;"),
+            (
+                "let _ = bm.release(w, back, Tracked(&mut bt));",
+                "word::fetch_and(&self.word, !back, Ordering::Release, Tracked::assume_new());",
+            ),
+        ],
+    ),
+    (
+        "pages.rs",
+        "src/slab.rs",
+        &[(
+            "self.closed.load(Ordering::Acquire)",
+            "let closed = self.closed.load(Ordering::Acquire);",
+        )],
+    ),
 ];
 
 /// `(harness, constants)`: the case constants that stand for the
@@ -1495,6 +1548,7 @@ const GENMC_SHIPPED: &[(&str, &[&str])] = &[
         ],
     ),
     ("slotstate.rs", &["const LOAD_STORE: bool = false;"]),
+    ("pages.rs", &["const MUTANT: u32 = 0;"]),
     (
         "bitmap.rs",
         &[
