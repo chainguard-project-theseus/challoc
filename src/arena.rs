@@ -1108,7 +1108,7 @@ impl Arena {
 
     /// The per-arena statistics lock, free, over [`ArenaStats::empty`],
     /// written at `p` through its permission. Out of line, so the record
-    /// (about 6 KiB with its bins) is built in place at `p` rather than in
+    /// (about 7 KiB with its bins) is built in place at `p` rather than in
     /// [`Arena::init`]'s frame and copied, on the first `malloc` of a
     /// thread whose arena is not built yet.
     ///
@@ -1119,7 +1119,7 @@ impl Arena {
     /// and an all-zero record but its `index`; the test
     /// `put_stats_writes_lock_new_of_empty` compares them), which has the
     /// arena's statistics rank. Rust has no placement construction, and
-    /// through `ptr_mut_write` the record went through a 6 KiB stack copy.
+    /// through `ptr_mut_write` the record went through a 7 KiB stack copy.
     #[verifier::external_body]
     #[inline(never)]
     unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)
@@ -1607,6 +1607,22 @@ impl Arena {
         crate::purge::note_decay_changed();
     }
 
+    /// An `epoch` write (a consumer about to read the bin figures, as
+    /// Valkey and Redis do from their cron): arm every class's slab-pages
+    /// walk as a hint, at most once per `class::pages::HINT_NS` each
+    /// (`ClassState::arm_pages_hint`), so the pages free for a curve step
+    /// close at the next pass and the figures count what was released, not
+    /// what the walk will release later. Whether any class armed.
+    pub fn note_epoch(&self, now: u64) -> bool {
+        let mut any = false;
+        for cs in it: self.classes.iter() {
+            if cs.arm_pages_hint(now) {
+                any = true;
+            }
+        }
+        any
+    }
+
     /// Decay step over every class (see `ClassState::decay_with`) with
     /// the period the cgroup policy gives this arena and its keep ratio
     /// for the retention cap (design 11): the earliest next deadline,
@@ -1639,6 +1655,11 @@ impl Arena {
                 assert(cs.is_process());
             }
             if let Some(d) = cs.decay_with(now, decay_ns, keep16, Tracked(ord)) {
+                next = Some(next.map_or(d, |n| n.min(d)));
+            }
+            // The closable pages of the class's partial slabs, on the same
+            // curve (docs/proposals/slab-pages.md, 3.4).
+            if let Some(d) = cs.close_pages(now, decay_ns, false, Tracked(ord)) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
         }
@@ -1737,6 +1758,9 @@ impl Arena {
             cs.nslabs_fit();
             let tracked mut lc = Ghost(Left::none());
             sum += cs.purge_empty(u64::MAX, Tracked(&mut lc), Tracked(ord));
+            // An explicit purge closes every closable page of the class's
+            // partial slabs too (docs/proposals/slab-pages.md, 7.1).
+            let _ = cs.close_pages(crate::sys::now_coarse_ns(), 0, true, Tracked(ord));
             proof {
                 use_type_invariant(self);
                 let l0 = left@;

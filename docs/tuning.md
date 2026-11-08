@@ -194,11 +194,15 @@ Active defragmentation: `CONFIG SET activedefrag yes` works on the
 `experimental.utilization.batch_query` and `stats.arenas.<i>.bins.<j>.*`
 exactly; `nonfull_slabs` includes the slab the next claim takes from,
 where jemalloc's excludes it, so for the same heap challoc reports one
-more non-full slab and moves slightly more (design 13.4). The contrib
-patch changes one Valkey test threshold (`memefficiency.tcl`,
-`ignore_bytes` for the Lua script test: challoc replaces libc `malloc`
-too, so the Lua heap sits in its bins). Nothing about defrag is tunable
-on the challoc side; the decision rule is Valkey's.
+more non-full slab and moves slightly more (design 13.4). With slab pages
+a slab's `nregs` is its open slots, and `curregs` counts the slots of
+closed pages as in use, not fragmentation (design 13.4): only memory
+given back to the kernel. An `epoch` write arms the slab-pages walks, so
+the pages free for a curve step close before the next read.
+Valkey's and Redis's `unit/memefficiency` pass at their stock targets;
+the contrib patches change no Valkey threshold, and one Redis test's
+order (`contrib/redis/0004`). Nothing about defrag is tunable on the
+challoc side; the decision rule is Valkey's.
 
 RSS-derived metrics under a cgroup limit: purges are eager by default,
 so `allocator_resident`, RSS and `allocator_frag_ratio` follow what is
@@ -509,10 +513,14 @@ churn), `lazy_band` (lazy purges in the headroom band, an opt-in) and `thp`
 
 Each records what was measured and, where it is known, the cause.
 
-- **Ruby threaded RSS on x86_64**: on a 16-thread Ruby soak, peak
-  RSS is about 13% above jemalloc's on x86_64 (6% below it on aarch64),
-  from 64 KiB-slab holes across many arenas and `Empty` slabs left in
-  arenas already purged. `narenas:1` gives the lower peak.
+- **Ruby threaded RSS on x86_64**: on a 16-thread Ruby soak, RSS right
+  after the soak's last full GC is about 40% above jemalloc's on x86_64
+  and 7% on aarch64 (cb run `20261107t1119z-39280b4-soak-pxv56`): the
+  burst's 2.5..4 KiB strings leave `Empty` 64 KiB slabs (about 60 MiB
+  over the 17 arenas) waiting out the decay curve, which jemalloc's dirty
+  pages, reusable by any size, do not. Slab pages do not change it (the
+  same soak against the build without them: within 2%,
+  `20261108t0506z-ab3f7e4-soak-63t5c`). `narenas:1` gives the lower peak.
 - **PostgreSQL `select500` on aarch64**: pgbench select-only at 500
   clients reads up to 9% behind glibc on the C4A, in a run bound by the
   client's threads sharing the CPUs with the backends; instructions and

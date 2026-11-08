@@ -16,6 +16,7 @@ use crate::bitmap::{AtomicBitmap, WordInv};
 use crate::bitmap::{
     Slots, fresh_mark, fresh_marks, has_bit, init_mark, init_marks, subset, words_wf,
 };
+use crate::layout::pages::OpenView;
 use crate::layout::{CLASSES, Class, Regions};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
@@ -24,9 +25,9 @@ use crate::lock::{Lock, LockOrder, PAD_ALIGN, Padded, RawLock};
 use crate::lock::{lock_init, rank_meta, rank_table};
 use crate::meta::Meta;
 use crate::purge;
-use crate::slab::{DESC_ALIGN, DescPerm, HEADER, SlabDesc, desc_stride};
+use crate::slab::{DESC_ALIGN, DescPerm, HEADER, SlabDesc, SlabPages, desc_stride};
 #[cfg(verus_keep_ghost)]
-use crate::slab::{desc_id, stride_of};
+use crate::slab::{desc_id, pages_id, stride_of};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_keep_ghost)]
@@ -167,12 +168,15 @@ pub(super) open spec fn lazy_ok(l: Lazy, page: usize) -> bool {
 }
 
 /// `p` is the permission of the descriptor at `addr` as the reservation
-/// holds it before any write: all zero (`Fresh`, stamp 0, arena 0).
+/// holds it before any write: all zero (`Fresh`, stamp 0, arena 0, every
+/// page open).
 pub(super) open spec fn desc_fresh(p: DescPerm, addr: int) -> bool {
     &&& p.id() == addr
     &&& p.state() == 0
     &&& p.dirty() == 0
     &&& p.arena() == 0
+    &&& p.closed() == 0
+    &&& p.stamp() == 0
 }
 
 /// `m` holds slab `s`'s descriptor permission as `new` made it, for a
@@ -190,6 +194,8 @@ pub(super) open spec fn desc_handed(m: Map<nat, DescPerm>, t: SlabTable, x: nat,
     &&& m[x].id() == desc_id(&desc_at(t, x as usize))
     &&& m[x].state() == 0
     &&& m[x].dirty() == 0
+    &&& m[x].closed() == 0
+    &&& m[x].stamp() == 0
     &&& !t.spec_is_guard(x as usize) ==> m[x].arena() == arena
 }
 
@@ -390,6 +396,12 @@ pub struct SlabTable {
     /// ([`SlabTable::perms_ok`]).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) desc_perms: Tracked<Map<int, PointsTo<SlabDesc>>>,
+    /// Ghost (no bytes): where the stride leaves room for one (32 or 64
+    /// bytes), the permissions to every slab's [`SlabPages`], the 16
+    /// bytes after its descriptor's header, made by `new` with
+    /// `desc_perms` ([`SlabTable::perms_ok`]); empty otherwise.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) pages_perms: Tracked<Map<int, PointsTo<SlabPages>>>,
     /// Ghost (no bytes): the invariant of every hand-out group's owner
     /// word ([`OwnerPred`]), which holds the word's permission, frozen
     /// (`new`).
@@ -668,6 +680,7 @@ spec fn words_perms_ok(m: Map<int, PointsTo<AtomicU64>>, base: int, n: int) -> b
 // [`axiom_fresh_words`] make a value of (Verus checks them against the
 // compiler's).
 global layout SlabDesc is size == 16, align == 16;
+global layout SlabPages is size == 16, align == 16;
 global layout AtomicU16 is size == 2, align == 2;
 global layout AtomicU64 is size == 8, align == 8;
 
@@ -677,6 +690,12 @@ global layout AtomicU64 is size == 8, align == 8;
 /// about its contents.
 pub closed spec fn desc_at(t: SlabTable, slab: usize) -> SlabDesc {
     t.desc_perms@[slab as int].value()
+}
+
+/// The [`SlabPages`] of `slab` in `t`, as [`desc_at`]: the one its
+/// permission ([`SlabTable::perms_ok`]) is to, where `t`'s stride has one.
+pub closed spec fn pages_at(t: SlabTable, slab: usize) -> SlabPages {
+    t.pages_perms@[slab as int].value()
 }
 
 /// Owner-store markers are not bit markers.
@@ -1283,6 +1302,10 @@ impl SlabTable {
             ==> desc_id(&(#[trigger] self.desc_perms@[s]).value()) == self.desc_base + s * (self.desc_stride as int)
         &&& forall|s: int| #![trigger self.desc_perms@.contains_key(s)] #![trigger self.desc_perms@[s]] 0 <= s < self.nslabs ==> self.desc_perms@.contains_key(s)
             && perm_at(self.desc_perms@[s], self.desc_base + s * (self.desc_stride as int))
+        &&& self.desc_stride >= 32 ==> forall|s: int| #![trigger self.pages_perms@.contains_key(s)] #![trigger self.pages_perms@[s]] 0 <= s < self.nslabs
+            ==> self.pages_perms@.contains_key(s)
+            && perm_at(self.pages_perms@[s], self.desc_base + s * (self.desc_stride as int) + 16)
+            && pages_id(&self.pages_perms@[s].value()) == self.desc_base + s * (self.desc_stride as int) + 16
         &&& forall|g: int| #![trigger self.owner_invs@.contains_key(g)] #![trigger self.owner_invs@[g]] 0 <= g < self.spec_ngroups() ==> self.owner_invs@.contains_key(g)
             && owner_inv_at(self.owner_invs@[g], self.owners_base as int, self.class as int, self.lg_group, self.group, self.nslabs, self.spec_sloc(), g)
         &&& words_perms_ok(*self.word_perms@, self.bits_base as int, self.spec_nwords())
@@ -1935,7 +1958,7 @@ impl SlabTable {
         proof {
             assert(stride == (stride as u32) as usize);
         }
-        let tracked (dmap, omap, dps) = table_perms(
+        let tracked (dmap, omap, dps, pmap) = table_perms(
             draw, oraw, descs.spec_base() as int, owners.spec_base() as int,
             align, stagger as int, stride as int, nslabs as int, group as int, class as int);
         // The ghost variable that ties the watermark to `next_slab`: both
@@ -2066,6 +2089,7 @@ impl SlabTable {
             word_perms: Tracked(vstd::modes::tracked_static_ref(wperms)),
             mark_auth: Tracked(mark_auth),
             desc_perms: Tracked(dmap),
+            pages_perms: Tracked(pmap),
             owner_invs: Tracked(vstd::modes::tracked_static_ref(oinvs)),
             committed_inv: Tracked(committed_inv),
         })
@@ -2548,7 +2572,7 @@ proof fn table_perms(
     nslabs: int,
     group: int,
     class: int,
-) -> (tracked r: (Map<int, PointsTo<SlabDesc>>, Map<int, PointsTo<AtomicU16>>, Map<int, DescPerm>))
+) -> (tracked r: (Map<int, PointsTo<SlabDesc>>, Map<int, PointsTo<AtomicU16>>, Map<int, DescPerm>, Map<int, PointsTo<SlabPages>>))
     requires
         crate::meta::is_pow2(align),
         align >= 64,
@@ -2576,6 +2600,9 @@ proof fn table_perms(
             && desc_fresh(r.2[s], d + stagger + s * stride),
         forall|g: int| #![trigger r.1.contains_key(g)] #![trigger r.1[g]] 0 <= g < (nslabs + group - 1) / group ==> r.1.contains_key(g)
             && perm_at(r.1[g], o + stagger + 2 * g),
+        stride >= 32 ==> forall|s: int| #![trigger r.3.contains_key(s)] #![trigger r.3[s]] 0 <= s < nslabs ==> r.3.contains_key(s)
+            && perm_at(r.3[s], d + stagger + s * stride + 16)
+            && pages_id(&r.3[s].value()) == d + stagger + s * stride + 16,
 {
     let ngroups = (nslabs + group - 1) / group;
     let a = align;
@@ -2596,11 +2623,13 @@ proof fn table_perms(
         requires stride >= 0, nslabs >= 0;
     lemma_round_up8(stagger + nslabs * stride);
     lemma_round_up8(stagger + ngroups * 2);
-    let tracked dz = carve_zero(draw, d + stagger, stride, 16, nslabs);
-    let tracked (dmap, dps) = zero_descs(dz, d + stagger, stride, nslabs);
+    // The header, and where the stride leaves room the `SlabPages` after it.
+    let piece = if stride >= 32 { 32 } else { 16 };
+    let tracked dz = carve_zero(draw, d + stagger, stride, piece, nslabs);
+    let tracked (dmap, dps, pmap) = zero_descs(dz, d + stagger, stride, piece, nslabs);
     let tracked oz = carve_zero(oraw, o + stagger, 2, 2, ngroups);
     let tracked omap = zero_owners(oz, o + stagger, ngroups);
-    (dmap, omap, dps)
+    (dmap, omap, dps, pmap)
 }
 
 /// The `n` pieces of `z` of `size` bytes at `base`, `base + stride`, ...,
@@ -2640,28 +2669,36 @@ proof fn carve_zero(tracked z: ZeroRaw, base: int, stride: int, size: int, n: in
     }
 }
 
-/// [`table_perms`]' descriptors: the `n` zero pieces of `z` at `base`,
-/// `base + stride`, ..., each made a descriptor with its permission
+/// [`table_perms`]' descriptors: the `n` zero pieces of `z` of `piece`
+/// bytes at `base`, `base + stride`, ..., each made a descriptor with its
+/// permission and, for 32-byte pieces, the [`SlabPages`] after it
 /// ([`axiom_zero_desc`]).
-proof fn zero_descs(tracked z: Map<int, ZeroRaw>, base: int, stride: int, n: int) -> (tracked r: (Map<int, PointsTo<SlabDesc>>, Map<int, DescPerm>))
+proof fn zero_descs(tracked z: Map<int, ZeroRaw>, base: int, stride: int, piece: int, n: int) -> (tracked r: (
+    Map<int, PointsTo<SlabDesc>>,
+    Map<int, DescPerm>,
+    Map<int, PointsTo<SlabPages>>,
+))
     requires
         0 <= n,
         16 <= stride,
+        piece == 16 || (piece == 32 && stride >= 32),
         base % 16 == 0,
         stride % 16 == 0,
         0 < base,
         base + n * stride <= usize::MAX,
         forall|i: int| #![trigger z.contains_key(i)] #![trigger z[i]] 0 <= i < n ==> z.contains_key(i)
-            && z[i].is_range(base + i * stride, 16) && z[i].provenance() == cast_provenance(),
+            && z[i].is_range(base + i * stride, piece) && z[i].provenance() == cast_provenance(),
     ensures
         forall|s: int| #![trigger r.0.contains_key(s)] #![trigger r.0[s]] 0 <= s < n ==> r.0.contains_key(s)
             && perm_at(r.0[s], base + s * stride) && desc_id(&r.0[s].value()) == base + s * stride,
         forall|s: int| #![trigger r.1.contains_key(s)] #![trigger r.1[s]] 0 <= s < n ==> r.1.contains_key(s)
             && desc_fresh(r.1[s], base + s * stride),
+        piece == 32 ==> forall|s: int| #![trigger r.2.contains_key(s)] #![trigger r.2[s]] 0 <= s < n ==> r.2.contains_key(s)
+            && perm_at(r.2[s], base + s * stride + 16) && pages_id(&r.2[s].value()) == base + s * stride + 16,
     decreases n,
 {
     if n == 0 {
-        (Map::tracked_empty(), Map::tracked_empty())
+        (Map::tracked_empty(), Map::tracked_empty(), Map::tracked_empty())
     } else {
         let m = n - 1;
         let a = base + m * stride;
@@ -2673,14 +2710,25 @@ proof fn zero_descs(tracked z: Map<int, ZeroRaw>, base: int, stride: int, n: int
                 requires stride == (stride / 16) * 16;
             vstd::arithmetic::div_mod::lemma_add_mod_noop(base, m * stride, 16);
         }
+        assert(a + stride <= base + n * stride);
         let tracked mut z = z;
         assert(z.contains_key(m));
-        let tracked piece = z.tracked_remove(m);
-        let tracked (p, dp) = axiom_zero_desc(piece, a);
-        let tracked (mut descs, mut dps) = zero_descs(z, base, stride, m);
-        let ghost (d0, p0) = (descs, dps);
+        let tracked bytes = z.tracked_remove(m);
+        let tracked (p, dp, opg) = axiom_zero_desc(bytes, a, piece);
+        let tracked (mut descs, mut dps, mut pgs) = zero_descs(z, base, stride, piece, m);
+        let ghost (d0, p0, g0) = (descs, dps, pgs);
         descs.tracked_insert(m, p);
         dps.tracked_insert(m, dp);
+        if piece == 32 {
+            let tracked pg = opg.tracked_unwrap();
+            pgs.tracked_insert(m, pg);
+            assert forall|s: int| #![trigger pgs.contains_key(s)] #![trigger pgs[s]] 0 <= s < n implies pgs.contains_key(s)
+                && perm_at(pgs[s], base + s * stride + 16) && pages_id(&pgs[s].value()) == base + s * stride + 16 by {
+                if s < m {
+                    assert(g0.contains_key(s));
+                }
+            }
+        }
         assert forall|s: int| #![trigger descs.contains_key(s)] #![trigger descs[s]] 0 <= s < n implies descs.contains_key(s)
             && perm_at(descs[s], base + s * stride) && desc_id(&descs[s].value()) == base + s * stride by {
             if s < m {
@@ -2693,7 +2741,7 @@ proof fn zero_descs(tracked z: Map<int, ZeroRaw>, base: int, stride: int, n: int
                 assert(p0.contains_key(s));
             }
         }
-        (descs, dps)
+        (descs, dps, pgs)
     }
 }
 
@@ -2731,27 +2779,32 @@ proof fn zero_owners(tracked z: Map<int, ZeroRaw>, base: int, n: int) -> (tracke
     }
 }
 
-/// Trusted: the 16 bytes at `addr`, which read as zero (`z`, a piece of
-/// the descriptor array `Meta::reserve_table` returned), are a
-/// `SlabDesc`, initialised: plain atomics, valid for every bit pattern
+/// Trusted: the `piece` bytes at `addr`, which read as zero (`z`, a piece
+/// of the descriptor array `Meta::reserve_table` returned), are a
+/// `SlabDesc`, initialised, and for a 32-byte piece (a stride with room)
+/// a `SlabPages` after it: plain atomics, valid for every bit pattern
 /// (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw
 /// permissions do not track byte values). Also the one [`DescPerm`] of
 /// that descriptor: the descriptor at `addr` is the one [`desc_id`] names
-/// there, and the permission records its zero fields, which nothing has
-/// written yet. One permission per descriptor: `z` is used up, and a
-/// `ZeroRaw` for bytes is minted only where the metadata allocator carves
-/// them, once (`ZeroRaw::axiom_new`).
-axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int) -> (tracked r: (PointsTo<SlabDesc>, DescPerm))
+/// there, the `SlabPages` at `addr + 16` the one [`pages_id`] names, and
+/// the permission records their zero fields (`Fresh`, every page open),
+/// which nothing has written yet. One permission per descriptor: `z` is
+/// used up, and a `ZeroRaw` for bytes is minted only where the metadata
+/// allocator carves them, once (`ZeroRaw::axiom_new`).
+axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int, piece: int) -> (tracked r: (PointsTo<SlabDesc>, DescPerm, Option<PointsTo<SlabPages>>))
     requires
-        z.is_range(addr, 16),
+        piece == 16 || piece == 32,
+        z.is_range(addr, piece),
         z.provenance() == cast_provenance(),
         0 < addr,
         addr % 16 == 0,
-        addr + 16 <= usize::MAX,
+        addr + piece <= usize::MAX,
     ensures
         perm_at(r.0, addr),
         desc_id(&r.0.value()) == addr,
         desc_fresh(r.1, addr),
+        r.2 is Some <==> piece == 32,
+        r.2 matches Some(pg) ==> perm_at(pg, addr + 16) && pages_id(&pg.value()) == addr + 16,
 ;
 
 /// Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of
@@ -3400,6 +3453,102 @@ impl SlabTable {
         ptr_ref(p, Tracked(self.desc_perms.borrow().tracked_borrow(slab as int)))
     }
 
+    /// [`pages`](SlabTable::pages) of a slab below the watermark, `None`
+    /// otherwise or where the class has no page state: no abort, as
+    /// [`desc_if_committed`](SlabTable::desc_if_committed) (the
+    /// utilization query, which may not abort).
+    pub fn pages_if_committed(&self, slab: usize) -> (r: Option<&SlabPages>)
+        ensures
+            r matches Some(p) ==> *p == pages_at(*self, slab) && pages_id(p) == desc_id(&desc_at(*self, slab)) + 16,
+    {
+        if slab >= self.watermark(Ordering::Relaxed) || (self.desc_stride as usize) < 32 {
+            return None;
+        }
+        proof {
+            use_type_invariant(self);
+            let d = self.desc_stride as int;
+            assert(slab * d <= self.nslabs * d) by (nonlinear_arith)
+                requires slab < self.nslabs, d >= 0;
+            assert(self.pages_perms@.contains_key(slab as int));
+            assert(self.desc_perms@.contains_key(slab as int));
+        }
+        let p = addr_to_ptr(self.desc_base + slab * self.desc_stride as usize + HEADER) as *const SlabPages;
+        // SAFETY: `slab` is below a value the watermark held, so its
+        // descriptor, `SlabPages` included, is committed.
+        Some(ptr_ref(p, Tracked(self.pages_perms.borrow().tracked_borrow(slab as int))))
+    }
+
+    /// The page geometry of the class's slabs, every page open, where the
+    /// class has page state ([`SlabPages`]: a stride of 32 or 64) and a
+    /// slab spans two to 16 pages; [`OpenView::none`] otherwise.
+    // Verus specifies the comparisons, not `RangeInclusive::contains`.
+    #[allow(clippy::manual_range_contains)]
+    pub fn page_view(&self) -> (r: OpenView)
+        ensures
+            r.paged() ==> self.spec_desc_stride() >= 32 && r.closed == 0
+                && r.size == class_table()[self.spec_class() as int].size
+                && r.nslots == class_table()[self.spec_class() as int].nslots,
+    {
+        proof {
+            use_type_invariant(self);
+            crate::vspec::class::lemma_class_table_wf(self.class as int);
+        }
+        if (self.desc_stride as usize) < 32 || self.lg_page >= 32 {
+            return OpenView::none();
+        }
+        let cls = &CLASSES.table()[self.class as usize];
+        let lg = self.lg_page;
+        proof {
+            assert((1usize << lg) >= 1) by (bit_vector)
+                requires lg < 32;
+        }
+        let pg = 1usize << lg;
+        let slab = cls.slab_size();
+        let pages = slab / pg;
+        // The small tier only (docs/proposals/slab-pages.md, 3.1): a slab
+        // of the page or less has nothing to close, and one of more than
+        // 16 pages (the medium tier, a follow-up) has more pages than the
+        // mask.
+        if pages < 2 || pages > crate::layout::pages::MAX_MASK_PAGES {
+            return OpenView::none();
+        }
+        OpenView { size: cls.size(), nslots: cls.nslots(), pg, pages, closed: 0 }
+    }
+
+    /// The page state of a handed-out slab ([`SlabPages`]), where its
+    /// class's stride has one, the one its descriptor's permission tracks
+    /// ([`pages_for`](crate::slab::pages_for)). Aborts for a slab that was
+    /// never handed out, as [`desc`](SlabTable::desc).
+    // The claim's re-check and the decay walk call it (slab-pages, milestone 1).
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[inline]
+    pub fn pages(&self, slab: usize) -> (r: Option<&SlabPages>)
+        requires
+            crate::sys::may_abort_pending(),
+        ensures
+            r is Some <==> self.spec_desc_stride() >= 32,
+            r matches Some(p) ==> *p == pages_at(*self, slab) && pages_id(p) == desc_id(&desc_at(*self, slab)) + 16,
+    {
+        if slab >= self.committed_slabs() {
+            never_committed(self.class as usize, slab);
+        }
+        if (self.desc_stride as usize) < 32 {
+            return None;
+        }
+        proof {
+            use_type_invariant(self);
+            let d = self.desc_stride as int;
+            assert(slab * d <= self.nslabs * d) by (nonlinear_arith)
+                requires slab < self.nslabs, d >= 0;
+            assert(self.pages_perms@.contains_key(slab as int));
+            assert(self.desc_perms@.contains_key(slab as int));
+        }
+        let p = addr_to_ptr(self.desc_base + slab * self.desc_stride as usize + HEADER) as *const SlabPages;
+        // SAFETY: `slab` is below the acquire-loaded watermark, so its
+        // descriptor, `SlabPages` included, is committed.
+        Some(ptr_ref(p, Tracked(self.pages_perms.borrow().tracked_borrow(slab as int))))
+    }
+
     /// The slot bits of a handed-out slab (design 4). Aborts for a
     /// slab that was never handed out.
     #[inline]
@@ -3824,6 +3973,60 @@ impl SlabTable {
             vstd::bits::lemma_usize_shl_is_mul(1, lg);
         }
         self.base + (slab << self.class().lg_slab)
+    }
+
+    /// The bytes of page `p` of slab `slab`, a page of the process's size
+    /// (`purge::page_bytes`): a well-formed purge range, the slab being no
+    /// guard slab (the slab-pages walk's discard,
+    /// docs/proposals/slab-pages.md, 3.4). `None` when the slab is smaller
+    /// than a page or the page is past the slab's end.
+    pub(super) fn page_range(&self, slab: usize, p: usize) -> (r: Option<(usize, usize)>)
+        requires
+            self.is_process(),
+            slab < self.spec_nslabs(),
+            !self.spec_is_guard(slab),
+        ensures
+            r matches Some((a, l)) ==> crate::purge::well_formed(a as int, l as int) && a + l <= usize::MAX,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let start = self.slab_addr(slab);
+        let lg = self.lg_page;
+        let sz = 1usize << self.class().lg_slab;
+        if self.slabs_per_page != 1 || lg >= 32 {
+            return None;
+        }
+        proof {
+            assert((1usize << lg) >= 1) by (bit_vector)
+                requires lg < 32;
+        }
+        let page = 1usize << lg;
+        if p >= 0x10000 {
+            return None;
+        }
+        proof {
+            assert((1usize << lg) <= 0x8000_0000) by (bit_vector)
+                requires lg < 32;
+            assert((p + 1) * page <= 0x10000 * 0x8000_0000) by (nonlinear_arith)
+                requires p < 0x10000, page <= 0x8000_0000;
+        }
+        if (p + 1) * page > sz {
+            return None;
+        }
+        proof {
+            broadcast use {lemma_spec_slabs_per_page};
+            assert(slab & !((1usize - 1) as usize) == slab) by (bit_vector);
+            crate::vspec::class::lemma_class_table_wf(self.class as int);
+            super::decay::lemma_group_well_formed(*self, slab, 1, slab);
+            assert(self.lg_page == crate::layout::process_regions().lg_page);
+            assert(crate::purge::page_bytes() == page as int);
+            vstd::arithmetic::div_mod::lemma_mod_multiples_basic(p as int, page as int);
+            vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
+            assert(p * page + page == (p + 1) * page) by (nonlinear_arith);
+            crate::purge::lemma_well_formed_sub(start as int, sz as int, (p * page) as int, page as int);
+        }
+        Some((start + p * page, page))
     }
 
     /// The start of slot `slot` of slab `slab`: `slot_at` of the

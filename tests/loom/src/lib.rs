@@ -69,6 +69,8 @@ mod narenas;
 #[cfg(test)]
 mod oncecell;
 #[cfg(test)]
+mod pages;
+#[cfg(test)]
 mod position;
 #[cfg(test)]
 mod publish;

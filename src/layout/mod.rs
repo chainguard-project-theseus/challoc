@@ -2051,6 +2051,7 @@ pub fn class_size_of(n: usize) -> Option<usize> {
 
 const _: () = assert!(MAX_SLAB_WORDS == max_slab_words());
 
+pub mod pages;
 mod regions;
 
 #[cfg(all(verus_keep_ghost, not(test)))]

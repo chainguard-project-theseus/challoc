@@ -26,9 +26,9 @@
 #      back to zmalloc_size() lookups;
 #   5. runs the test suite (tests/test_helper.tcl, as ./runtest does, from
 #      any tclsh 8.5 or newer): `unit/memefficiency` alone (the active
-#      defrag tests), then the full suite. The active-defrag tests that fail
-#      on challoc's slab floor, a known challoc issue, are skipped and listed
-#      (below, at the skip list).
+#      defrag tests), then the full suite, every active-defrag test at its
+#      stock targets (slab pages, wolfi-dev/challoc#604, removed the slab
+#      floor that used to fail eight of them).
 #
 # The steps shared with valkey-build.sh are in tests/consumers/lib.sh.
 #
@@ -117,23 +117,4 @@ find_tclsh
 # to 48.
 set --
 [ "$QUANTUM" = 16 ] && set -- --skiptest "Check MEMORY USAGE for embedded key strings with jemalloc"
-# Known challoc issue, skipped rather than calibrated: challoc keeps at
-# least one 64 KiB slab per size class in use, and a few long-lived small
-# objects can hold many such slabs, so after active defrag it leaves 1.4 to
-# 5 MB that no pass recovers (jemalloc: 0.5 to 2.5 MB). These tests'
-# fragmentation targets and active-defrag-ignore-bytes sit below that
-# floor, so they fail, and their defrag never stops. unit/moduleapi/
-# datatype's "Reduce defrag CPU usage when module data can't be
-# defragged" fails on the same floor before any delete: 1.40 MB of
-# fragmentation after its 20000-key fill (ratio 1.12 against its 1.05),
-# where jemalloc has 267 KB. Since PR #576 the cache GC returns cached
-# slots to their slabs, and Redis counts them there as fragmentation. Redis prints each as
-# [skip]; the line below says why. Tracked by wolfi-dev/challoc#604 (the
-# slab-pages proposal); remove a pattern once challoc passes the test.
-for t in "Active defrag eval scripts" "Active defrag IDMP streams" "Active Defrag HFE with" \
-    "Active defrag for argv retained by the main thread from IO thread" "Active defrag big list" \
-    "Active defrag template-encoded hashes" "Reduce defrag CPU usage when module data can"; do
-    set -- "$@" --skiptest "/^$t"
-done
-echo "skipping (known challoc issue, slab floor, wolfi-dev/challoc#604): eval scripts, IDMP streams, HFE x3, argv retained, big list, template-encoded hashes, moduleapi/datatype defrag CPU"
 run_stages "$@"

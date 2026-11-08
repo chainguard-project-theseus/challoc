@@ -2069,7 +2069,9 @@ pub open spec fn classified(rg: crate::layout::Regions, p: usize, k: Kind) -> bo
 /// it (`nslots - nfree`: the load, clamped at `nslots`), `found` that the
 /// arena the descriptor names is built, `st` and `curregs` that arena's
 /// class counters from one lock hold (`bin_stats`), `lowest` its lowest
-/// partial slab, and `run` the huge descriptor at `p`'s page
+/// partial slab, `closed` the slots its slab's closed pages hide
+/// (docs/proposals/slab-pages.md, 3.6; 0 when they would hide every slot,
+/// so `nregs` is never 0), and `run` the huge descriptor at `p`'s page
 /// (`Huge::lookup`, under the huge lock).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
@@ -2083,6 +2085,7 @@ pub ghost struct UtilRead {
     pub curregs: int,
     pub lowest: Option<usize>,
     pub run: Option<crate::huge::RunInfo>,
+    pub closed: int,
 }
 
 /// `a - b`, or 0 below zero (`saturating_sub`).
@@ -2120,9 +2123,12 @@ pub open spec fn util_from(rg: crate::layout::Regions, p: usize, verbose: bool, 
                 triple_is(u, 0, 1, c.size as int) && no_bin(u)
             } else {
                 let curslabs = rd.st.committed - rd.st.empty - rd.st.purged;
-                &&& triple_is(u, sat_sub(c.nslots as int, rd.live), c.nslots as int, c.nslots * c.size)
+                // Slab pages (docs/proposals/slab-pages.md, 3.6): the slab's
+                // open slots, and the bin's.
+                let nregs = c.nslots - rd.closed;
+                &&& triple_is(u, sat_sub(nregs, rd.live), nregs, nregs * c.size)
                 &&& if verbose && rd.found {
-                    &&& u.bin_nregs == curslabs * c.nslots
+                    &&& u.bin_nregs == curslabs * c.nslots - rd.st.closed_slots
                     &&& u.bin_nfree == u.bin_nregs - rd.curregs
                     &&& u.slabcur_addr@.addr == match rd.lowest {
                         Some(s) => rg.class_base[class as int] + (s << c.lg_slab),
@@ -2154,6 +2160,14 @@ pub open spec fn util_read(rg: crate::layout::Regions, p: usize, verbose: bool, 
         _ => 0,
     })
     &&& (rd.lowest matches Some(s) ==> rd.kind matches Kind::Slab { class, .. } && (s as int) < rg.spec_nslabs(class as int))
+    &&& rd.curregs + rd.st.closed_slots <= (rd.st.committed - rd.st.empty - rd.st.purged) * (match rd.kind {
+        Kind::Slab { class, .. } => class_table()[class as int].nslots as int,
+        _ => 0,
+    })
+    &&& 0 <= rd.closed < (match rd.kind {
+        Kind::Slab { class, .. } => class_table()[class as int].nslots as int,
+        _ => 1,
+    })
     &&& util_from(rg, p, verbose, rd, u)
 }
 
@@ -2183,10 +2197,11 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Util
         committed: false,
         live: 0,
         found: false,
-        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0 },
+        st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed_slots: 0, closed_pages: 0 },
         curregs: 0,
         lowest: None,
         run: None,
+        closed: 0,
     };
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
@@ -2225,18 +2240,39 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Util
                 }
                 return u;
             }
-            u.nfree = d.nfree(cls);
+            let nfree = d.nfree(cls);
             proof {
                 // `nfree` is `nslots` less the live count it loaded.
-                rd.live = cls.nslots - u.nfree;
+                rd.live = cls.nslots - nfree;
             }
-            u.nregs = cls.nslots();
-            // The region bytes of the slab, not its power-of-two size: the
-            // tail past the last slot belongs to no region, and Valkey's
-            // allocatorShouldDefrag divides `size` by `nregs` and asserts
-            // that the quotient is a bin size (jemalloc's slabs are exact
-            // multiples of their region size).
-            u.size = cls.nslots() * cls.size();
+            // Slab pages (docs/proposals/slab-pages.md, 3.6): the slab's
+            // regions are its open slots, its free ones the open free
+            // ones. A closed mask that would hide every slot reads as none
+            // (the queried slot is live, so its pages are open), so that
+            // `nregs` is never 0: Valkey divides by it.
+            let closed = match t.pages_if_committed(slab as usize) {
+                Some(pg) => t.page_view().with_closed(pg.closed()).closed_slots(),
+                None => 0,
+            };
+            let closed = if closed >= cls.nslots() { 0 } else { closed };
+            proof {
+                rd.closed = closed as int;
+            }
+            u.nregs = cls.nslots() - closed;
+            u.nfree = nfree.saturating_sub(closed);
+            // The region bytes of the slab's open slots, not its
+            // power-of-two size: the tail past the last slot belongs to no
+            // region, and Valkey's allocatorShouldDefrag divides `size` by
+            // `nregs` and asserts that the quotient is a bin size
+            // (jemalloc's slabs are exact multiples of their region size).
+            proof {
+                assert(u.nregs * cls.size <= cls.nslots * cls.size) by (nonlinear_arith)
+                    requires u.nregs <= cls.nslots;
+                assert(cls.nslots * cls.size <= usize::MAX) by {
+                    crate::vspec::class::lemma_class_table_wf(class as int);
+                }
+            }
+            u.size = u.nregs * cls.size();
             // Two `if`s, not a let chain: Verus takes no let chain.
             #[allow(clippy::collapsible_if)]
             if verbose {
@@ -2254,7 +2290,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> (u: Util
                         rd.st = st;
                         rd.curregs = curregs as int;
                     }
-                    u.bin_nregs = st.curslabs() * cls.nslots();
+                    u.bin_nregs = st.curslabs() * cls.nslots() - st.closed_slots;
                     u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
                     if let Some(s) = cs.lowest_partial(Tracked(&mut ord)) {
                         // No code (the body is empty): a step for the
@@ -2620,7 +2656,10 @@ fn arena_figure(m: &[usize], fig: Fig, Tracked(mark): Tracked<&'static ReadyMark
                 Fig::Mapped => Ok(Size(a.mapped)),
                 Fig::Retained => Ok(Size(a.retained)),
                 Fig::Curregs => match bin {
-                    Some(b) => Ok(Size(b.curregs)),
+                    // Slab pages (docs/proposals/slab-pages.md, 3.6): with the
+                    // closed slots, so `nregs * curslabs - curregs` counts only
+                    // open free slots (Redis's and Valkey's fragmentation).
+                    Some(b) => Ok(Size(stats::fig_add(b.curregs, b.closed_slots))),
                     None => Err(ENOENT),
                 },
                 Fig::Curslabs => match bin {
@@ -2790,6 +2829,9 @@ fn ctl(
                     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
                         h.gc_if_due(shared, Tracked(&mut ord));
                     }
+                    // And the slab-pages walks, so a consumer's next read
+                    // counts the free pages they release as released.
+                    crate::purge::note_epoch(shared);
                     stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut ord)).ok_or(EAGAIN)?
                 },
                 None => stats::snapshot(shared, Tracked(&mut ord)).epoch,

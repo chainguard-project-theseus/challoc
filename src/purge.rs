@@ -413,6 +413,27 @@ proof fn lemma_well_formed(addr: int, len: int)
     reveal(well_formed);
 }
 
+/// A page-aligned piece of a well-formed range is one (the slab-pages
+/// walk's discard of one page of a slab, `class::ClassState::close_page`).
+pub proof fn lemma_well_formed_sub(a: int, l: int, off: int, len: int)
+    requires
+        well_formed(a, l),
+        0 <= off,
+        0 < len,
+        off + len <= l,
+        off % page_bytes() == 0,
+        len % page_bytes() == 0,
+    ensures
+        well_formed(a + off, len),
+{
+    reveal(well_formed);
+    vstd::arithmetic::div_mod::lemma_add_mod_noop(a, off, page_bytes());
+    vstd::arithmetic::div_mod::lemma_small_mod(0, page_bytes() as nat);
+    assert forall|b: int| a + off <= b < a + off + len implies #[trigger] discardable(b) by {
+        assert(a <= b < a + l);
+    }
+}
+
 /// Two adjacent well-formed ranges make one ([`Batch::push`]'s merge).
 proof fn lemma_well_formed_join(a: int, l1: int, l2: int)
     requires
@@ -2537,6 +2558,46 @@ pub fn note_empty()
     background::wake();
 }
 
+/// A defragmenter's hint armed a class's slab-pages walk
+/// (`ClassState::note_defrag_hint`): wake a background thread that may be
+/// sleeping past it.
+#[inline]
+pub fn note_pages()
+    requires
+        crate::sys::may_syscall(),
+{
+    background::wake();
+}
+
+/// An `epoch` write: every arena's slab-pages walks are armed as hints
+/// (`Arena::note_epoch`), and the background thread is woken once if any
+/// armed, so the pages a consumer's figures would count as free close
+/// before its next read (docs/proposals/slab-pages.md, 9).
+pub fn note_epoch(shared: &Shared)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+{
+    #[cfg(test)]
+    NOTE_EPOCH_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let now = crate::sys::now_coarse_ns();
+    let mut any = false;
+    let count = arena_count(shared);
+    for i in 0..count
+        invariant
+            crate::sys::may_syscall(),
+            shared.wf(),
+            count <= crate::arena::MAX_ARENAS,
+    {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            any = arena.note_epoch(now) || any;
+        }
+    }
+    if any {
+        note_pages();
+    }
+}
+
 /// A decay period changed (`arena.<i>.dirty_decay_ms`, `malloc_conf` at
 /// run time): wake a background thread whose deadline was computed with
 /// the old period, so a shorter period takes effect now rather than at
@@ -2804,3 +2865,8 @@ mod kani_explicit {
         assert_eq!(EXPLICIT.load(Relaxed), d.wrapping_sub(1));
     }
 }
+
+/// Calls of [`note_epoch`], for tests: an `epoch` write must make one.
+#[cfg(test)]
+pub static NOTE_EPOCH_CALLS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);

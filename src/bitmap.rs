@@ -21,6 +21,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 use vstd::prelude::*;
 
+use crate::layout::pages::OpenView;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::core_int::popcount;
 #[cfg(verus_keep_ghost)]
@@ -971,6 +972,49 @@ impl<'a> AtomicBitmap<'a> {
         }
     }
 
+    /// A claim that gives back `back` of the bits `won` it claimed in
+    /// word `i` (a page closed meanwhile, `class::ClassState::finish`):
+    /// the slots it gives back are among those it holds, and it keeps the
+    /// slots of `won & !back`, all of them slots, no more of them.
+    pub proof fn lemma_give_back(&self, i: int, won: u64, back: u64)
+        requires
+            self.spec_slots().wf(),
+            subset(back, won),
+            self.all_real(i, won),
+        ensures
+            self.slot_addrs(i, back).subset_of(self.slot_addrs(i, won)),
+            self.slot_addrs(i, won).difference(self.slot_addrs(i, back)) == self.slot_addrs(i, won & !back),
+            self.all_real(i, back),
+            self.all_real(i, won & !back),
+            subset(won & !back, won),
+            popcount(won & !back) <= popcount(won),
+    {
+        broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+        let s = self.spec_slots();
+        let f = self.spec_first();
+        let keep = won & !back;
+        lemma_subset_bits(back, won);
+        assert(subset(keep, won)) by (bit_vector)
+            requires keep == won & !back;
+        lemma_subset_bits(keep, won);
+        assert(self.tokens(i, back).subset_of(self.tokens(i, won)));
+        assert forall|x: int| #[trigger] self.tokens(i, won).difference(self.tokens(i, back)).contains(x)
+            == self.tokens(i, keep).contains(x) by {
+            if f + 64 * i <= x < f + 64 * i + 64 {
+                lemma_bit_ops(won, back, (x - f - 64 * i) as u64);
+            }
+        }
+        assert(self.tokens(i, won).difference(self.tokens(i, back)) =~= self.tokens(i, keep));
+        lemma_addrs_difference(s, self.tokens(i, won), self.tokens(i, back));
+        assert forall|y: int| #[trigger] self.slot_addrs(i, back).contains(y) implies self.slot_addrs(i, won).contains(y) by {
+            let x = choose|x: int| self.tokens(i, back).contains(x) && y == s.addr(x);
+            assert(self.tokens(i, won).contains(x));
+        }
+        lemma_count_le(keep, won);
+        lemma_popcount(keep);
+        lemma_popcount(won);
+    }
+
     /// No bit of zero is set, so a zero mask has no tokens.
     proof fn lemma_tokens_zero(&self, i: int)
         ensures
@@ -984,7 +1028,11 @@ impl<'a> AtomicBitmap<'a> {
         assert(self.slot_addrs(i, 0) =~= Set::<int>::empty());
     }
 
-    /// Claim up to `n` clear bits from word `i`. Returns the mask of slots
+    /// Claim up to `n` clear bits from word `i`, of the bits `allow` (slab
+    /// coordinates) sets: a slab with closed pages passes its open slots
+    /// (`layout::pages::OpenView::word`), so that a claim does not keep
+    /// winning and giving back the slots of a closed page; every other
+    /// claim passes `!0`. Returns the mask of slots
     /// this call actually claimed (slab coordinates), which may be zero if
     /// the word was full or a concurrent claimer won every bit we wanted.
     /// The tokens of the slots it claimed join `toks`: no other claim can
@@ -1000,6 +1048,7 @@ impl<'a> AtomicBitmap<'a> {
         &self,
         i: usize,
         n: usize,
+        allow: u64,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
         Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
         Tracked(seen): Tracked<&GhostPersistentSubset<int>>,
@@ -1022,12 +1071,15 @@ impl<'a> AtomicBitmap<'a> {
         }
         let w = &self.words[i];
         let cur = w.load(Ordering::Relaxed);
-        let want = lowest_n_bits(!cur & self.mask, n);
+        let want = lowest_n_bits(!cur & self.mask & (allow << self.shift), n);
         proof {
             let s = self.shift;
             let mask = self.mask;
             assert(subset(0u64, mask >> s)) by (bit_vector);
             assert(subset(!cur & mask, mask)) by (bit_vector);
+            let al = allow << s;
+            assert(subset(want, !cur & mask)) by (bit_vector)
+                requires subset(want, !cur & mask & al);
             lemma_subset_bits(want, !cur & mask);
             lemma_subset_bits(!cur & mask, mask);
             lemma_subset_bits(want, mask);
@@ -1178,11 +1230,14 @@ impl<'a> AtomicBitmap<'a> {
     /// time it was inspected. A single call never spans words; callers loop
     /// until they have enough or get `None`. The claimed slots' tokens join
     /// `toks`; as for [`claim_word`](AtomicBitmap::claim_word), given
-    /// `inited` and `seen`, the bits are slots.
+    /// `inited` and `seen`, the bits are slots. Only slots `view` has open
+    /// are wanted ([`OpenView::word`]); a page that closes meanwhile is the
+    /// caller's to check after the claim.
     pub fn claim_from(
         &self,
         start: usize,
         n: usize,
+        view: OpenView,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
         Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
         Tracked(seen): Tracked<&GhostPersistentSubset<int>>,
@@ -1213,7 +1268,7 @@ impl<'a> AtomicBitmap<'a> {
                 self.inited_by(*inited),
                 self.seen_by(*seen),
         {
-            let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited), Tracked(seen));
+            let got = self.claim_word(i, n, view.word(i), Tracked(&mut *toks), Tracked(inited), Tracked(seen));
             if got != 0 {
                 return Some((i, got));
             }
@@ -1375,6 +1430,43 @@ impl<'a> AtomicBitmap<'a> {
             assert(subset((v & sm) >> s, sm >> s)) by (bit_vector);
         }
         (v & self.mask) >> self.shift
+    }
+
+    /// The slab's bits in word `i` (slab coordinates, padding included),
+    /// read with a read-modify-write that changes nothing (`fetch_or(0)`,
+    /// `AcqRel`): the slab-pages walk's step 2
+    /// (docs/proposals/slab-pages.md, 3.4). Unlike a load it takes a place
+    /// in the word's modification order against every claim's `fetch_or`,
+    /// so a claim that comes after it reads from it and, through its
+    /// `Release` half, sees the page the walk closed before it.
+    pub fn probe(&self, i: usize) -> (r: u64)
+        requires
+            i < self.spec_words(),
+        ensures
+            subset(r, self.slab_mask()),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let ghost j = self.first@ / 64 + i;
+        assert(word_ok(self.words@[i as int], j, self.slots@, *self.invs@));
+        let tracked inv = self.invs.borrow().tracked_borrow(j);
+        let w = &self.words[i];
+        let prev;
+        vstd::open_atomic_invariant!(inv => pair => {
+            let tracked (mut perm, g, u, d, sn) = pair;
+            prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));
+            proof {
+                assert(prev | 0u64 == prev) by (bit_vector);
+                pair = (perm, g, u, d, sn);
+            }
+        });
+        proof {
+            let s = self.shift;
+            let sm = self.mask;
+            assert(subset((prev & sm) >> s, sm >> s)) by (bit_vector);
+        }
+        (prev & self.mask) >> self.shift
     }
 
     /// Set slot bits, padding excluded: the slab's allocated (or cached)
@@ -3808,6 +3900,7 @@ impl<'a> AtomicBitmap<'a> {
         self.claim_from(
             start,
             n,
+            OpenView::none(),
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
