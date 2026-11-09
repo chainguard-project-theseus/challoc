@@ -3,15 +3,17 @@
 # teeth, and that its hashes catch an edited seam. Each script mutant
 # below is one sed edit of seams.sh that weakens the `loom:` citation
 # rule, the `GenMC:` citation rule, the hash rule, the claims nothing
-# rule, the one-line `const assert:` form or the not-Copy rule for
-# tracked types; the mutated copy's `--check`
+# rule, the one-line `const assert:` form, the not-Copy rule for
+# tracked seams or the rule that every tracked type has a not-Copy
+# check; the mutated copy's `--check`
 # must report a self-test failure of that rule. Each tree mutant is one
 # sed edit of a source file in a copy of the tree, followed by `--write`
 # and `--check` there: an edit to a discharged seam's attribute,
 # `requires`, `ensures` or body, to the attributes of a seam that
 # claims nothing, or one that gives such a seam an `unsafe impl Send` or
-# makes it a `tracked` struct, or one that weakens a tracked type's
-# not-Copy check in src/vspec/notcopy.rs, must fail `--check` with the
+# makes it a `tracked` struct, or one that weakens or removes a tracked
+# type's not-Copy check in src/vspec/notcopy.rs or adds a tracked type
+# with none, must fail `--check` with the
 # message of the rule it breaks, and one that only adds a
 # comment, reindents or moves the seam (or rewraps the check) must pass.
 # Exits 1 if a mutant survives, a passing edit
@@ -150,13 +152,53 @@ EOF
 
 # shellcheck disable=SC2016 # sed scripts, not shell expansions
 script 'self-test: not Copy' <<'EOF'
-NotClone need not be named|s/ \&\& s ~ ("\[<:\]" t " as NotClone<_>>::HOLDS")//
-any type's check matches|s/("\[<:\]" t " as NotCopy<_>>::HOLDS") \&\& s ~ ("\[<:\]" t " as NotClone/(" as NotCopy<_>>::HOLDS") \&\& s ~ (" as NotClone/
-a longer name matches|s/"\[<:\]" t " as Not/t " as Not/g
+NotClone need not be named|s/ \&\& s ~ ("\[<:\]" t g " as NotClone<_>>::HOLDS")//
+any type's check matches|s/("\[<:\]" t g " as NotCopy<_>>::HOLDS") \&\& s ~ ("\[<:\]" t g " as NotClone/(" as NotCopy<_>>::HOLDS") \&\& s ~ (" as NotClone/
+a longer name matches|s/"\[<:\]" t g " as Not/t g " as Not/g
 comments count|s/sub(\/\\\/\\\/\.\*\$\/, "", x); //
 tracked types are not held to it|s/ \&\& index(estat\[e\], "const assert: ")) notcopycites(e, ok)$/ \&\& 0) notcopycites(e, ok)/
 a failing cite is ignored|s/if (!(keys\[i\] in ok)) {/if (0) {/
 the second impls are not required|s/if (n != 1 || !ic || !il) exit 1/if (n != 1) exit 1/
+EOF
+
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+script 'self-test: tracked' <<'EOF'
+enums need no check|/^    \/\^\[ \\t\]\*(pub/s/(struct|enum)/struct/
+a restricted visibility is not read|/^    \/\^\[ \\t\]\*(pub/s/(pub(\\(\[^)\]\*\\))?/(pub/
+indented items need no check|/^    \/\^\[ \\t\]\*(pub/s/\^\[ \\t\]\*(pub/^(pub/
+a missing check is accepted|s/^    elif ! { notcopy/    elif false \&\& { notcopy/
+a gated check is accepted|s/ \&\& assertion "[^"]*"; }; then$/; }; then/
+a second type of a name shares its check|s/d = (n in seen) ? "dup" : ""/d = ""/
+generic arguments are not read|s/g = "(<\[^<>\]\*>)?"/g = ""/
+EOF
+
+# The tracked type Unbacked of src/vspec/unbacked.rs, not a seam, and
+# its check in src/vspec/notcopy.rs, which every tracked type needs.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+tree src/vspec/notcopy.rs Unbacked src/vspec/unbacked.rs <<'EOF'
+its check removed|a tracked type with no check|/^const _: () = assert!(<Unbacked as NotCopy/d
+its Clone check dropped|a tracked type with no check|s/^\(const _: () = assert!(<Unbacked as NotCopy<_>>::HOLDS\) \&\& <Unbacked as NotClone<_>>::HOLDS);$/\1);/
+its label misspelled|a tracked type with no check|s/^\/\/ `Unbacked` is neither/\/\/ `Unbaked` is neither/
+its check gated|a tracked type with no check|/^\/\/ `Unbacked` is neither/i #[cfg(any())]
+a comment added|pass|/^\/\/ `Unbacked` is neither/s/$/ More words./
+EOF
+
+# A generic tracked type's check at another argument.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+tree src/vspec/notcopy.rs Held src/arena.rs <<'EOF'
+another argument|pass|s/<Held<()> as/<Held<u16> as/g
+EOF
+
+# A tracked struct added to src/vspec/zero.rs with no check.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+tree src/vspec/zero.rs Extra <<'EOF'
+a tracked struct with no check|a tracked type with no check|/^pub tracked struct Zeroed {$/i pub(crate) tracked struct Extra { ghost x: int }
+EOF
+
+# A second tracked struct named Unbacked added to src/vspec/zero.rs.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+tree src/vspec/zero.rs Unbacked <<'EOF'
+a second type of a checked name|a second tracked type|/^pub tracked struct Zeroed {$/i pub(crate) tracked struct Unbacked { ghost x: int }
 EOF
 
 # The seam is the external_body tracked type WordPerm of src/vspec/word.rs,

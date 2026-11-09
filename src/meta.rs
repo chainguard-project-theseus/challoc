@@ -1336,7 +1336,7 @@ pub(crate) struct Inner {
 /// token for bytes its owner has written since.
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
-tracked struct Carve {
+pub(crate) tracked struct Carve {
     tracked claim: GhostSubmap<int, bool>,
     tracked raw: PointsToRaw,
     tracked zero: Zeroed,
