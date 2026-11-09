@@ -864,6 +864,47 @@ ctests! {
     c_align => [ CTest { prog: "align", ..BASE } ];
     c_realloc_tiers => [ CTest { prog: "realloc_tiers", ..BASE } ];
     c_calloc_zero => [ CTest { prog: "calloc_zero", ..BASE } ];
+    /// The CVE shapes of verus/RESULTS.md's "Vulnerability classes ruled
+    /// out" table, one row per CVE (`tests/c/cve_shapes.c`; CVE-2023-4911
+    /// is [`c_cve_2023_4911`]). CVE-2006-7252: `calloc`, `je_calloc` and
+    /// `reallocarray` with a count times a size that wraps to a small
+    /// product fail with `ENOMEM`, and a failed `reallocarray` keeps the
+    /// block.
+    c_cve_2006_7252 => [ CTest { prog: "cve_shapes", args: &["cve-2006-7252"], ..BASE } ];
+    /// CVE-2013-4332: `pvalloc`, `valloc`, `memalign`, `aligned_alloc`,
+    /// `posix_memalign` and their `je_` twins at `SIZE_MAX - k`, where the
+    /// page or alignment rounding wraps, fail with `ENOMEM`.
+    c_cve_2013_4332 => [ CTest { prog: "cve_shapes", args: &["cve-2013-4332"], ..BASE } ];
+    /// CVE-2018-6485: `memalign`, `aligned_alloc` and `posix_memalign`
+    /// with a size for which size + alignment wraps, or an alignment of
+    /// 2^47 or more (larger than the huge region, which `Huge::run_pages`
+    /// refuses on every host), fail with `ENOMEM`; with large alignments that can be
+    /// met the block is aligned and holds the size.
+    c_cve_2018_6485 => [ CTest { prog: "cve_shapes", args: &["cve-2018-6485"], ..BASE } ];
+    /// CVE-2017-17426: `malloc`, `je_malloc`, `calloc`, `realloc`,
+    /// `je_realloc` and `challoc_malloc_usable` at `SIZE_MAX - k` fail with
+    /// `ENOMEM` while the thread cache of every class up to 1024 bytes
+    /// holds freed slots, on the main thread and a fresh one.
+    c_cve_2017_17426 => [ CTest { prog: "cve_shapes", args: &["cve-2017-17426"], ..BASE } ];
+    /// CVE-2018-6551: the same requests under `tcache:false`, so each
+    /// reaches the class and huge paths.
+    c_cve_2018_6551 => [
+        CTest { prog: "cve_shapes", args: &["cve-2018-6551"], conf: Some("abort_conf:true,tcache:false"), ..BASE },
+    ];
+    /// CVE-2005-4895: `mallocx` and `je_mallocx` at `SIZE_MAX - k` with
+    /// every `MALLOCX_LG_ALIGN` return NULL with `errno` untouched and
+    /// `nallocx` answers 0; `rallocx` to such a size fails and `xallocx`
+    /// with such a size, or a wrapping `extra`, returns the block's usable
+    /// size, the block intact.
+    c_cve_2005_4895 => [ CTest { prog: "cve_shapes", args: &["cve-2005-4895"], ..BASE } ];
+    /// `tests/c/raw_clone.c`: `malloc` and `free` on a raw `clone` child,
+    /// which premises C9 to C12, C14, C15 and L2 (verus/kani/premises.md) put
+    /// outside every theorem. The row records what happens, once with the
+    /// creator's thread pointer and once with a zeroed one, and asserts
+    /// only that the program ran both experiments.
+    c_raw_clone => [
+        CTest { prog: "raw_clone", stdout_has: &["raw_clone: shared: child ", "raw_clone: own: child "], ..BASE },
+    ];
     /// Every zeroing entry point (`calloc`, `challoc_calloc_usable`,
     /// `MALLOCX_ZERO` through the cache, direct and `rallocx`) returns zero
     /// after an overflow, underflow or stale-pointer write reached memory not
@@ -1406,6 +1447,138 @@ fn c_conf_env_overrides_the_symbol() {
             ..BASE
         },
     );
+}
+
+/// CVE-2023-4911's shape (glibc's `GLIBC_TUNABLES`, parsed by a setuid
+/// program's loader): a secure-execution process reads neither
+/// `MALLOC_CONF` nor `CHALLOC_CONF` (`config::linux::theorem_secure_conf`
+/// in `config.rs`). `tests/c/secure_conf.c` is linked against challoc
+/// with an absolute run path, because the runtime linker ignores an
+/// `LD_PRELOAD` path in a secure-execution process. Its plain copy under
+/// `abort_conf:true,no_such_key:1,tcache:false`, in either variable,
+/// aborts on the unknown key (and under `tcache:false` alone reads
+/// `opt.tcache` false): the variables reach the parser. A setgid copy
+/// (group 65534, so the effective group differs from the real one and
+/// the kernel sets `AT_SECURE`) under both variables at once must not
+/// abort, must read `opt.tcache` at its default (true), and must print
+/// no `challoc:` line. The setgid copy needs `CAP_CHOWN` (root in the
+/// test containers) and a mount that honours setgid (the target directory
+/// or `/var/tmp`); elsewhere it is a skip.
+#[test]
+fn c_cve_2023_4911() {
+    const TEST: &str = "c_cve_2023_4911";
+    const BAD: &str = "abort_conf:true,no_such_key:1,tcache:false";
+    let d = LinkedDir::new("secure-conf");
+    let plain = d.path("secure_conf");
+    let [ldir, rpath] = d.link_flags();
+    d.cc(&[
+        &std::format!("{}/tests/c/secure_conf.c", root()),
+        "-o",
+        &plain,
+        &ldir,
+        &rpath,
+        "-lchalloc",
+    ]);
+    let run = |exe: &str, args: &[&str], env: &[(&str, &str)]| {
+        let mut cmd = Command::new(exe);
+        cmd.args(args)
+            .env_remove("LD_PRELOAD")
+            .env_remove("MALLOC_CONF")
+            .env_remove("CHALLOC_CONF");
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out.status, stdout, stderr)
+    };
+
+    // The controls: without AT_SECURE each variable is read.
+    let (st, stdout, stderr) = run(&plain, &["0", "0"], &[("MALLOC_CONF", "tcache:false")]);
+    assert!(
+        st.success() && stdout.lines().any(|l| l == "ok secure_conf"),
+        "{TEST}: plain copy under MALLOC_CONF=tcache:false ({st:?})\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    for var in ["MALLOC_CONF", "CHALLOC_CONF"] {
+        let (st, stdout, stderr) = run(&plain, &["0", "1"], &[(var, BAD)]);
+        let want = std::format!("challoc: {var}: unknown conf key \"no_such_key\"");
+        assert!(
+            st.signal() == Some(SIGABRT) && stderr.contains(&want),
+            "{TEST}: plain copy under {var}={BAD} must abort with `{want}` ({st:?})\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+
+    // The setgid copy, compiled again rather than copied: a binary this
+    // process wrote itself can be held open for writing by a child that
+    // another test forks meanwhile, and its exec then fails with ETXTBSY.
+    // It goes next to the library, or into /var/tmp where that mount
+    // ignores setgid (a nosuid target directory).
+    let var_tmp = std::format!("/var/tmp/challoc-{TEST}-{}", std::process::id());
+    let cleanup = || {
+        let _ = std::fs::remove_dir_all(&var_tmp);
+    };
+    let mut probes = Vec::new();
+    let mut secure = None;
+    for dir in [d.path(""), var_tmp.clone()] {
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = std::format!("{}/secure_conf_setgid", dir.trim_end_matches('/'));
+        d.cc(&[
+            &std::format!("{}/tests/c/secure_conf.c", root()),
+            "-o",
+            &exe,
+            &ldir,
+            &rpath,
+            "-lchalloc",
+        ]);
+        if let Err(e) = std::os::unix::fs::chown(&exe, None, Some(65534)) {
+            cleanup();
+            d.remove();
+            skip!(
+                TEST,
+                "chown to group 65534 failed ({e}): no CAP_CHOWN; the secure-execution run not made"
+            );
+        }
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o2755)).unwrap();
+        }
+        let (st, stdout, stderr) = run(&exe, &["probe"], &[]);
+        assert!(
+            st.success(),
+            "{TEST}: setgid probe {exe} ({st:?})\nstdout: {stdout}\nstderr: {stderr}"
+        );
+        if stdout.trim() == "AT_SECURE=1" {
+            secure = Some(exe);
+            break;
+        }
+        probes.push(std::format!("{exe}: {}", stdout.trim()));
+    }
+    let Some(secure) = secure else {
+        cleanup();
+        d.remove();
+        skip!(
+            TEST,
+            "no setgid copy ran with AT_SECURE=1 ({}: a nosuid mount or no_new_privs); the secure-execution run not made",
+            probes.join(", ")
+        );
+    };
+    let (st, stdout, stderr) = run(
+        &secure,
+        &["1", "1"],
+        &[("MALLOC_CONF", BAD), ("CHALLOC_CONF", BAD)],
+    );
+    assert!(
+        st.success() && stdout.lines().any(|l| l == "ok secure_conf"),
+        "{TEST}: setgid copy under MALLOC_CONF and CHALLOC_CONF={BAD} ({st:?})\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("challoc:"),
+        "{TEST}: challoc wrote to stderr in a secure-execution process:\n{stderr}"
+    );
+    std::eprintln!("{TEST}: {secure}: {}", stdout.trim_end());
+    cleanup();
+    d.remove();
 }
 
 // ---------------------------------------------------------------------------
