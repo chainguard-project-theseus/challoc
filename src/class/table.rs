@@ -412,6 +412,11 @@ pub struct SlabTable {
     /// words of the groups below it are stored.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) committed_inv: Tracked<WatermarkInv>,
+    /// Ghost (no bytes): the class table's frozen permission
+    /// ([`crate::layout::frozen_table`]), through which the table reads
+    /// its class's geometry before and after the allocator is published.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) classes: Tracked<&'static PointsTo<[Class; NCLASSES]>>,
 }
 
 /// A page group of a class table starts and ends on a page boundary: the
@@ -1222,6 +1227,7 @@ impl SlabTable {
     #[verifier::type_invariant]
     pub(super) open spec fn inv(self) -> bool {
         &&& self.class < NCLASSES
+        &&& crate::layout::frozen_table(*self.classes@)
         &&& class_table()[self.class as int].wf()
         &&& self.slab_bits == class_table()[self.class as int].slab_bits
         &&& self.slab_bits >= 64 ==> self.slab_bits % 64 == 0
@@ -1714,6 +1720,7 @@ impl SlabTable {
         guard_interval: u32,
         Tracked(words_once): Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
+        Tracked(classes): Tracked<&'static PointsTo<[Class; NCLASSES]>>,
     ) -> (r: Option<SlabTable>)
         requires
             crate::sys::may_abort_corrupt(),
@@ -1723,6 +1730,7 @@ impl SlabTable {
             *regions == process_regions(),
             meta.is_process(),
             class < NCLASSES,
+            crate::layout::frozen_table(*classes),
             guard_interval != 1,
             guard_interval == 0 || exists|k: nat| k < 32 && guard_interval as nat == #[trigger] pow2(k),
             old(ord).allows(rank_meta()),
@@ -1755,12 +1763,12 @@ impl SlabTable {
             guard_interval == 0 || guard_interval.is_power_of_two(),
             "class: guard interval {guard_interval} is not a power of two"
         );
-        let cls = &CLASSES.table()[class];
+        let cls = &CLASSES.table_with(Tracked(classes))[class];
         proof {
             crate::vspec::class::lemma_class_table_wf(class as int);
         }
         let page = regions.page_size();
-        let nslabs = regions.nslabs(class);
+        let nslabs = regions.nslabs(class, Tracked(classes));
         let stagger = desc_stagger(class);
         let align = DESC_ALIGN.max(page);
         let slabs_per_page = (page / cls.slab_size()).max(1);
@@ -2092,6 +2100,7 @@ impl SlabTable {
             pages_perms: Tracked(pmap),
             owner_invs: Tracked(vstd::modes::tracked_static_ref(oinvs)),
             committed_inv: Tracked(committed_inv),
+            classes: Tracked(classes),
         })
     }
 }
@@ -3055,7 +3064,21 @@ impl SlabTable {
         proof {
             use_type_invariant(self);
         }
-        &CLASSES.table()[self.class as usize]
+        &CLASSES.table_with(Tracked(*self.classes.borrow()))[self.class as usize]
+    }
+
+    /// The class table's frozen permission ([`crate::layout::frozen_table`])
+    /// the table keeps, for readers of the class table that hold a table
+    /// but not the fact that the allocator is published. No code.
+    #[inline(always)]
+    pub(crate) fn frozen_classes(&self) -> (r: Tracked<&'static PointsTo<[Class; NCLASSES]>>)
+        ensures
+            crate::layout::frozen_table(*r@),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        Tracked(*self.classes.borrow())
     }
 
     #[inline]
@@ -3496,7 +3519,7 @@ impl SlabTable {
         if (self.desc_stride as usize) < 32 || self.lg_page >= 32 {
             return OpenView::none();
         }
-        let cls = &CLASSES.table()[self.class as usize];
+        let cls = &CLASSES.table_with(Tracked(*self.classes.borrow()))[self.class as usize];
         let lg = self.lg_page;
         proof {
             assert((1usize << lg) >= 1) by (bit_vector)
@@ -4746,7 +4769,7 @@ impl SlabTable {
         }
         // `double_free_scan`'s state bytes for the group, before the
         // watermark that lets a free read them (nothing without the key).
-        crate::heap::slotstate::commit(class, self.base, s, end);
+        crate::heap::slotstate::commit(class, self.base, s, end, Tracked(*self.classes.borrow()));
         // The watermark becomes `end`, the new `next_slab`, with both
         // halves of the ghost variable that ties the two.
         vstd::open_atomic_invariant!(self.committed_inv.borrow() => v => {

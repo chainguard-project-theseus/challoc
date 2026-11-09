@@ -294,7 +294,10 @@ fn seal_child(page: usize) -> i32 {
     for (addr, len) in [
         (r.slab_addr(0, 0), first_slab),
         (
-            r.slab_addr(NCLASSES - 1, r.nslabs(NCLASSES - 1) - 1),
+            r.slab_addr(
+                NCLASSES - 1,
+                r.nslabs(NCLASSES - 1, vstd::prelude::Tracked::assume_new()) - 1,
+            ),
             last_slab,
         ),
         (r.huge_addr(0), page),

@@ -1501,11 +1501,11 @@ fn line_ptr() -> (p: *mut FeatureLine)
 /// learns its value only from them and [`line_load`]; nothing writes it
 /// before `init` makes that invariant (the line's requests first return
 /// from `shared`, and the fork handlers are registered at `init`'s end).
-/// Nothing reads [`layout::CLASSES`] before `init`'s
-/// [`layout::adopt_page_geometry`] (`init`'s first statement), so the
-/// table `layout::ClassTable::table` reads is the one
-/// [`layout::axiom_class_table`] fixes. The token is used up, so the
-/// permissions are handed out once.
+/// Verified code reads [`layout::CLASSES`] only through the class table's
+/// permission, which `init` freezes after
+/// [`layout::adopt_page_geometry`] (`layout::frozen_table`), so the table
+/// it reads is the one [`layout::axiom_class_table`] fixes. The token is
+/// used up, so the permissions are handed out once.
 axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
     PointsTo<Features>,
     PointsTo<FeatureLine>,
@@ -1723,6 +1723,12 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
     // thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
     unsafe { layout::adopt_page_geometry(crate::sys::features::page_size().trailing_zeros(), Tracked(&mut classes)) };
+    // Frozen now: every later reader, here and from `READY` on, reads the
+    // table through this one shared permission.
+    let tracked classes = vstd::modes::tracked_static_ref(classes);
+    proof {
+        layout::axiom_class_table(classes);
+    }
     let config = config::load();
     // The per-size THP files only matter to `thp:auto` and `thp:always`;
     // under `never` they wait for the feature line (`feature_line_ready`).
@@ -1745,7 +1751,7 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
     } else {
         config.background_thread
     });
-    let (regions, space) = Regions::reserve_owning(features.page_size, features.anon_name);
+    let (regions, space) = Regions::reserve_owning(features.page_size, features.anon_name, Tracked(classes));
     if features.mseal {
         SEALED.store(regions.seal(), Ordering::Relaxed);
     }
@@ -1762,6 +1768,7 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
             features.pac,
             Tracked(steps),
             Tracked(&mut built),
+            Tracked(classes),
         );
         if !ok {
             sys::abort("cannot set up the allocator tables: metadata region too small, or the kernel refused their commit (RLIMIT_DATA, vm.max_map_count)");
@@ -1778,8 +1785,6 @@ fn init(Tracked(steps): Tracked<Map<once::Step, once::Once>>, Tracked(seen): Tra
             // features and the line's storage, for its first request.
             let tracked cell = LineCell { features: feats, line };
             let tracked line_inv = LineInv::new((), LineVal { perm: line_state, cell: Some(cell), frozen: None }, line_ns());
-            let tracked classes = vstd::modes::tracked_static_ref(classes);
-            layout::axiom_class_table(classes);
             let tracked p = Published {
                 shared: shared_perm,
                 classes,

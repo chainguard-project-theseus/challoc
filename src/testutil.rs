@@ -241,6 +241,7 @@ impl TestShared {
                 self.pac,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             )
         });
         if let Some(ns) = self.gc_interval_ns {

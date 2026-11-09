@@ -641,6 +641,9 @@ fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapsho
     )?;
     writeln!(out, "Quantum size: {}", QUANTUM)?;
     writeln!(out, "Page size: {}", shared.regions.page_size())?;
+    proof {
+        shared.lemma_wf_ready();
+    }
     if let Some((lo, hi)) = crate::layout::page_sized_classes() {
         // Design 3: on a kernel whose page is larger than a class's table
         // slab, the class's slab is the page.

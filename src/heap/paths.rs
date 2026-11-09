@@ -1224,6 +1224,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
     proof {
         shared.lemma_wf();
         shared.lemma_regions_ok();
+        shared.lemma_wf_ready();
     }
     // Premise (lock order): called from the entry points, which hold no
     // lock.
@@ -1553,6 +1554,7 @@ pub(super) unsafe fn zero_slot(
     requires
         class < NCLASSES,
         regions_ok(),
+        crate::api::ready(),
         process_regions().is_slot(class as int, p@.addr),
         old(blk).slot_block(p, class as int),
     ensures
@@ -1582,6 +1584,7 @@ pub(super) unsafe fn zero_slot(
 pub(super) fn class_size(class: usize) -> (r: usize)
     requires
         class < NCLASSES,
+        crate::api::ready(),
     ensures
         r == crate::layout::class_table()[class as int].size,
 {

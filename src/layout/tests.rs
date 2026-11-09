@@ -528,7 +528,10 @@ fn from_parts_layout_invariants() {
         assert_eq!(base & (CLASSES[c].slab_size() - 1), 0);
         let start = r.superblock + c * r.stride();
         assert!(base >= start && base + r.region_len() <= start + r.stride());
-        assert_eq!(r.nslabs(c), r.region_len() / CLASSES[c].slab_size());
+        assert_eq!(
+            r.nslabs(c, vstd::prelude::Tracked::assume_new()),
+            r.region_len() / CLASSES[c].slab_size()
+        );
         assert_eq!(r.slab_addr(c, 0), base);
         assert_eq!(r.slab_addr(c, 3), base + 3 * CLASSES[c].slab_size());
         assert_eq!(
@@ -545,7 +548,7 @@ fn slot_arithmetic_round_trips_for_every_slot() {
     let r = synthetic(32, 34);
     for c in 0..NCLASSES {
         let cls = &CLASSES[c];
-        let last = r.nslabs(c) - 1;
+        let last = r.nslabs(c, vstd::prelude::Tracked::assume_new()) - 1;
         for slab in [0usize, 1, 7, last / 2, last] {
             for slot in 0..cls.nslots() {
                 let p = r.slot_addr(c, slab, slot);
@@ -568,7 +571,7 @@ fn every_in_slab_offset_classifies_exactly() {
     let r = synthetic(32, 34);
     for c in 0..NCLASSES {
         let cls = &CLASSES[c];
-        let last = r.nslabs(c) - 1;
+        let last = r.nslabs(c, vstd::prelude::Tracked::assume_new()) - 1;
         for slab in [0usize, last] {
             let base = r.slab_addr(c, slab);
             for offset in 0..cls.slab_size() {
@@ -599,7 +602,7 @@ fn slot_in_class_agrees_with_slab_slot() {
     let r = synthetic(32, 34);
     for c in 0..NCLASSES {
         let cls = &CLASSES[c];
-        let last = r.nslabs(c) - 1;
+        let last = r.nslabs(c, vstd::prelude::Tracked::assume_new()) - 1;
         for slab in [0usize, last] {
             let base = r.slab_addr(c, slab);
             for offset in 0..cls.slab_size() {
@@ -717,7 +720,7 @@ fn minimal_stride_layout_still_classifies() {
     let r = synthetic(32, 33);
     for c in [0usize, NCLASSES / 2, NCLASSES - 1] {
         let cls = &CLASSES[c];
-        let last = r.nslabs(c) - 1;
+        let last = r.nslabs(c, vstd::prelude::Tracked::assume_new()) - 1;
         for slab in [0usize, last] {
             for slot in [0usize, 1, cls.nslots() - 1] {
                 let p = r.slot_addr(c, slab, slot);

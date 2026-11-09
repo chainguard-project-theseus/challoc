@@ -1545,24 +1545,59 @@ impl ClassTable {
         ClassTable(UnsafeCell::new(table))
     }
 
-    /// The table, for verified code: [`class_table`], whose entries are
-    /// well formed and sized [`spec_class_size`]
-    /// (`vspec::class::lemma_class_table_wf`). Trusted: the table is
-    /// written only before the allocator is published (the `Sync` impl),
-    /// its value is [`table_ok`] (`api::axiom_statics` gives
-    /// [`BASE_CLASSES`]' value and [`adopt_page_geometry`] keeps it),
-    /// without which [`class_table`] is its spec fallback, and what this
-    /// assumes is that a reader sees the value `init` left:
-    /// `Shared::init` reads the table before the allocator is published.
+    /// The table, for verified code that holds `t`, the permission to
+    /// [`CLASSES`]' storage that `api::init` freezes once
+    /// [`adopt_page_geometry`] has written it ([`frozen_table`]):
+    /// [`class_table`], whose entries are well formed and sized
+    /// [`spec_class_size`] (`vspec::class::lemma_class_table_wf`).
+    /// Trusted: what it assumes is that a reader holding that permission
+    /// sees the value the permission holds, which nothing writes again
+    /// (the `Sync` impl).
     #[verifier::external_body]
     #[inline(always)]
-    pub fn table(&self) -> (r: &[Class; NCLASSES])
+    pub fn table_with(&self, Tracked(t): Tracked<&'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>>) -> (r: &[Class; NCLASSES])
+        requires
+            frozen_table(*t),
         ensures
             *r == class_table(),
     {
         // SAFETY: see the `Sync` impl.
         unsafe { &*self.0.get() }
     }
+
+    /// The table, for verified code that knows the allocator is published
+    /// ([`crate::api::ready`]): [`ClassTable::table_with`] the permission
+    /// frozen at `READY` (`api::axiom_published`).
+    #[inline(always)]
+    pub fn table(&self) -> (r: &[Class; NCLASSES])
+        requires
+            crate::api::ready(),
+        ensures
+            *r == class_table(),
+    {
+        let tracked published = crate::api::axiom_published();
+        self.table_with(Tracked(published.classes))
+    }
+}
+
+/// `t` is the permission to [`CLASSES`]' storage that `api::init` freezes
+/// after [`adopt_page_geometry`]: initialised and holding [`class_table`].
+pub open spec fn frozen_table(t: vstd::raw_ptr::PointsTo<[Class; NCLASSES]>) -> bool {
+    &&& t.ptr() == classes_storage()
+    &&& t.is_init()
+    &&& t.value() == class_table()
+}
+
+/// The class table's frozen permission ([`frozen_table`]), for a thread
+/// that knows the allocator is published ([`crate::api::ready`]): the one
+/// `init` froze and published (`api::axiom_published`).
+pub proof fn ready_table() -> (tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
+    requires
+        crate::api::ready(),
+    ensures
+        frozen_table(*t),
+{
+    crate::api::axiom_published().classes
 }
 
 } // verus!
@@ -1570,10 +1605,10 @@ impl ClassTable {
 // SAFETY: the table is written only by `adopt_page_geometry`, once, by the
 // initialising thread before the allocator is published (`api::init`),
 // through a `&mut` to the whole table, so nothing may read it during that
-// call (`nallocx`, for one, gets the initialised `Shared` before it
-// reads a class size). Only the geometry fields change: `size`,
-// `inv_odd` and `tz` keep their compile-time values. After that it is
-// read-only for the life of the process.
+// call: verified code reads it only through the permission `init` freezes
+// after it (`ClassTable::table_with`). Only the geometry fields change:
+// `size`, `inv_odd` and `tz` keep their compile-time values. After that it
+// is read-only for the life of the process.
 unsafe impl Sync for ClassTable {}
 
 /// The table, as [`ClassTable::table`] gives it, for the tests
@@ -1731,6 +1766,8 @@ verus! {
 // Verus does not support the closure form.
 #[allow(clippy::manual_map)]
 pub fn page_sized_classes() -> (r: Option<(usize, usize)>)
+    requires
+        crate::api::ready(),
     ensures
         r matches Some((lo, hi)) ==> lo <= hi < NCLASSES,
 {
@@ -2087,7 +2124,7 @@ mod tests;
 mod linux_tests;
 
 /// Kani checks of the class table's trusted access, `ClassTable::new`,
-/// `ClassTable::table` and `classes_ptr`
+/// `ClassTable::table_with` and `classes_ptr`
 /// (`verus/ledger/src/layout/mod.rs.md`; `cfg(kani)` only, see
 /// `verus/README.md`, "Kani").
 #[cfg(kani)]
@@ -2154,7 +2191,7 @@ mod kani_classes {
         }
     }
 
-    /// `ClassTable::table`, `ensures *r == class_table()`: with
+    /// `ClassTable::table_with`, `ensures *r == class_table()`: with
     /// `classes_after_init()` read as the contents of `CLASSES`' storage
     /// (what `axiom_class_table` fixes, from a permission to
     /// `classes_storage()`), the reference is to that storage
@@ -2166,7 +2203,7 @@ mod kani_classes {
     #[kani::proof]
     #[kani::unwind(60)]
     fn class_table_entries() {
-        let r = CLASSES.table();
+        let r = CLASSES.table_with(Tracked::assume_new());
         assert!(core::ptr::eq(r, classes_ptr()));
         assert!(*r == BASE_CLASSES);
         table_ok(r);
@@ -2178,7 +2215,7 @@ mod kani_classes {
         // SAFETY: once, before any other access (nothing else runs in a
         // harness); the permission is ghost.
         unsafe { adopt_page_geometry(lg_page, Tracked::assume_new()) };
-        let r2 = CLASSES.table();
+        let r2 = CLASSES.table_with(Tracked::assume_new());
         assert!(core::ptr::eq(r2, first));
         table_ok(r2);
     }

@@ -1829,6 +1829,7 @@ pub open spec fn reports_usable(c: MemContents<usize>, r: *mut u8, size: int) ->
 fn class_size(class: usize) -> (r: usize)
     requires
         class < NCLASSES,
+        crate::api::ready(),
     ensures
         r == class_table()[class as int].size,
 {
@@ -1949,6 +1950,7 @@ fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(uout): Tracked<
     let shared = super::shared();
     proof {
         shared.lemma_regions_ok();
+        shared.lemma_wf_ready();
     }
     let p = heap::alloc_declined(shared, class, Tracked(blk), Tracked(&mut *errno));
     if p.is_null() {
@@ -2102,6 +2104,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
             let zeroed = false;
             proof {
                 cls = c as int;
+                shared.lemma_wf_ready();
                 lemma_class_fits(p, c as int, size);
                 if p@.addr != 0 {
                     crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);

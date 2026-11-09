@@ -559,7 +559,7 @@ impl ClassLine {
     {
         broadcast use crate::vspec::class::lemma_class_table_wf;
 
-        let cls = &CLASSES.table()[class];
+        let cls = &CLASSES.table_with(table.frozen_classes())[class];
         let (committed, committed_inv, auth) = table.new_mirror();
         proof {
             assert(cls.wf());
@@ -1258,9 +1258,15 @@ pub open spec fn table_interval_ok(i: u32) -> bool {
 /// `interval` (what `config.rs` guarantees, `Config::wf`) stays one, as
 /// the mask test needs, and a 4 KiB to 4 MiB page and an interval of at
 /// most `2^22` keep it at most `2^26`, clear of the saturation.
-pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> (r: u32)
+pub(crate) fn guard_interval_for(
+    class: usize,
+    page: usize,
+    interval: u32,
+    Tracked(classes): Tracked<&'static PointsTo<[crate::layout::Class; NCLASSES]>>,
+) -> (r: u32)
     requires
         class < NCLASSES,
+        crate::layout::frozen_table(*classes),
     ensures
         (exists|lg: u32| 12 <= lg <= 22 && page == 1usize << lg) && (interval == 0 || (2 <= interval <= 0x40_0000
             && crate::meta::is_pow2(interval as usize))) ==> table_interval_ok(r),
@@ -1268,7 +1274,7 @@ pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> (r
     broadcast use crate::vspec::class::lemma_class_table_wf;
 
     let unit = (1usize << crate::layout::LG_GUARD_UNIT).max(page);
-    let group = CLASSES.table()[class].slab_size().max(page);
+    let group = CLASSES.table_with(Tracked(classes))[class].slab_size().max(page);
     proof {
         assert((1usize << crate::layout::LG_GUARD_UNIT) == 0x1_0000usize) by (compute);
     }
@@ -2172,11 +2178,13 @@ impl Shared {
         pac: bool,
         Tracked(steps): Tracked<Map<Step, Once>>,
         Tracked(built): Tracked<&mut Built>,
+        Tracked(classes): Tracked<&'static PointsTo<[crate::layout::Class; NCLASSES]>>,
     ) -> (r: bool)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             this == shared_storage(),
+            crate::layout::frozen_table(*classes),
             regions.wf(),
             regions.separated(),
             regions.fenced(),
@@ -2205,7 +2213,7 @@ impl Shared {
         // `double_free_scan`'s slot-state arrays, before any class table
         // can hand out a slab (`slotstate::commit`).
         if config.double_free_scan {
-            super::slotstate::init(&regions);
+            super::slotstate::init(&regions, Tracked(classes));
         }
         let ghost steps0 = steps;
         let tracked mut steps = steps;
@@ -2305,9 +2313,10 @@ impl Shared {
                     meta,
                     regions,
                     c,
-                    guard_interval_for(c, regions.page_size(), guard_interval),
+                    guard_interval_for(c, regions.page_size(), guard_interval, Tracked(classes)),
                     Tracked(words_once),
                     Tracked(&mut ord),
+                    Tracked(classes),
                 ) {
                     Some(t) => {
                         let ghost before = table_perms;
@@ -2400,7 +2409,7 @@ impl Shared {
                 axiom_shared_layout();
                 axiom_ptr_add_addr(this as *mut u8, S_ARENA0);
             }
-            if !Arena::init(arena0, meta, regions, tables, Tracked(table_perms), 0, decay_ns, Tracked(&mut parts.arena0), Tracked(&mut ord)) {
+            if !Arena::init(arena0, meta, regions, tables, Tracked(table_perms), 0, decay_ns, Tracked(&mut parts.arena0), Tracked(&mut ord), Tracked(classes)) {
                 return false;
             }
             // Arena 0's permission, frozen: the arena registry's table
@@ -3788,6 +3797,7 @@ impl Shared {
         requires
             crate::sys::may_abort_pending(),
             class < NCLASSES,
+            crate::api::ready(),
     {
         if self.double_free_scan() {
             super::slotstate::check_not_cached(self, class, p);
@@ -4094,6 +4104,7 @@ fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> !
     requires
         crate::sys::may_abort(),
         (class as usize) < NCLASSES,
+        crate::api::ready(),
 {
     crate::sys::abort_fmt(format_args!(
         "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",

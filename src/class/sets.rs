@@ -3,7 +3,7 @@
 //! interleaved table of every class's three sets ([`SetTable`]).
 
 use crate::bitmap::TwoLevelBitmap;
-use crate::layout::{CLASSES, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
+use crate::layout::{CLASSES, Class, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
 use crate::lock::{Lock, LockOrder, RawLock};
@@ -409,11 +409,13 @@ pub(crate) struct Group {
 }
 
 impl SetTable {
-    /// Group of a class: its slab size.
+    /// Group of a class: its slab size, read through `classes`, the class
+    /// table's frozen permission ([`crate::layout::frozen_table`]).
     #[inline]
-    pub fn group_of(class: usize) -> (r: usize)
+    pub fn group_of(class: usize, Tracked(classes): Tracked<&'static PointsTo<[Class; NCLASSES]>>) -> (r: usize)
         requires
             class < NCLASSES,
+            crate::layout::frozen_table(*classes),
         ensures
             r < SET_GROUPS,
             r == class_table()[class as int].lg_slab - LG_MIN_SLAB,
@@ -422,7 +424,7 @@ impl SetTable {
             broadcast use crate::vspec::class::lemma_class_table_wf;
             assert(class_table()[class as int].wf());
         }
-        (CLASSES.table()[class].lg_slab as u32 - LG_MIN_SLAB) as usize
+        (CLASSES.table_with(Tracked(classes))[class].lg_slab as u32 - LG_MIN_SLAB) as usize
     }
 }
 
@@ -852,16 +854,19 @@ impl Set {
     /// group's slab count, through `words`, the permission to its slot's
     /// bytes, which [`SetTable::new`] handed out once
     /// ([`SetTable::holds_set`]). `tperm` is the frozen permission to the
-    /// table, which outlives the set and which the set keeps.
+    /// table, which outlives the set and which the set keeps; `classes` the
+    /// class table's ([`crate::layout::frozen_table`]).
     pub(crate) fn in_table(
         tp: *const SetTable,
         Tracked(tperm): Tracked<&'static PointsTo<SetTable>>,
         class: usize,
         kind: usize,
         Tracked(words): Tracked<ZeroRaw>,
+        Tracked(classes): Tracked<&'static PointsTo<[Class; NCLASSES]>>,
     ) -> (r: Set)
         requires
             class < NCLASSES,
+            crate::layout::frozen_table(*classes),
             kind < SETS_PER_CLASS,
             tperm.ptr() == tp,
             tperm.is_init(),
@@ -882,7 +887,7 @@ impl Set {
     {
         let table = vstd::raw_ptr::ptr_ref(tp, Tracked(tperm));
         debug_assert!(kind < SETS_PER_CLASS);
-        let g = SetTable::group_of(class);
+        let g = SetTable::group_of(class, Tracked(classes));
         let group = &table.groups[g];
         proof {
             let (n, s, c) = (table.nslabs[g as int] as int, group.stride as int, group.count as int);
@@ -979,9 +984,11 @@ impl SetTable {
         Ghost(arena): Ghost<u16>,
         Tracked(sets): Tracked<&mut Map<(int, int), ZeroRaw>>,
         Tracked(ord): Tracked<&mut LockOrder>,
+        Tracked(classes): Tracked<&'static PointsTo<[Class; NCLASSES]>>,
     ) -> (r: Option<SetTable>)
         requires
             crate::sys::may_syscall(),
+            crate::layout::frozen_table(*classes),
             regions.wf(),
             // A page of at least 4 KiB: the group tables start on a word.
             regions.separated(),
@@ -1006,6 +1013,7 @@ impl SetTable {
         for c in 0..NCLASSES
             invariant
                 regions.wf(),
+                crate::layout::frozen_table(*classes),
                 forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] groups[g].count <= c,
                 forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] nslabs[g] <= 0x400_0000,
                 forall|g: int| 0 <= g < SET_GROUPS ==> #[trigger] groups[g].stride <= 3 * NCLASSES,
@@ -1013,7 +1021,7 @@ impl SetTable {
                 forall|d: int| 0 <= d < c ==> #[trigger] placed(pos, groups, nslabs, *regions, d),
                 pos_apart(pos, c as int),
         {
-            let g = Self::group_of(c);
+            let g = Self::group_of(c, Tracked(classes));
             proof {
                 crate::vspec::class::lemma_class_table_wf(c as int);
                 let (lr, ls) = (regions.lg_region, class_table()[c as int].lg_slab);
@@ -1025,7 +1033,7 @@ impl SetTable {
             let mut grp = groups[g];
             grp.count += 1;
             groups[g] = grp;
-            nslabs[g] = regions.nslabs(c);
+            nslabs[g] = regions.nslabs(c, Tracked(classes));
             proof {
                 assert forall|d: int| 0 <= d < c + 1 implies #[trigger] placed(pos, groups, nslabs, *regions, d) by {
                     if d < c {

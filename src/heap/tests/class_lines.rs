@@ -3,6 +3,12 @@
 
 use super::*;
 
+/// [`super::guard_interval_for`], with the class table's permission,
+/// which is ghost.
+fn guard_interval_for(class: usize, page: usize, interval: u32) -> u32 {
+    super::guard_interval_for(class, page, interval, Tracked::assume_new())
+}
+
 /// Every class's [`ClassLine`](super::shared::ClassLine) holds what the
 /// regions and the slab table say (region base, bitmap and owner bases,
 /// group size), and its watermark copy follows the table's through
