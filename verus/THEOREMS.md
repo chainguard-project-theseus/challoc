@@ -403,15 +403,16 @@ the call does not return (theorem 3, which is not voided for it).
   leaves its ghost fields alone (theorem 15), nothing more.
 
 **Class table.**
-- `ClassTable::table_with` (`layout/mod.rs`, `external_body`, `requires
-  layout::frozen_table`): returns `class_table()` to a reader that
-  holds the class table's permission, which `api::init` freezes right
-  after `adopt_page_geometry` writes the table, trusting that such a
-  reader sees the value the permission holds. Readers before `READY`
-  (`Regions::reserve_owning`, `Shared::init` and what it calls) get the
-  permission from `init`, the class layer from the `SlabTable` that
-  keeps it, and every other reader from `READY` (`ClassTable::table`,
-  verified, `requires api::ready()`, through `api::axiom_published`).
+- `ClassTable::table_with` (`layout/mod.rs`, verified, `requires
+  layout::frozen_table`): the table, through the class table's
+  permission, which `api::init` freezes right after
+  `adopt_page_geometry` writes the table; its value is `class_table()`
+  (`layout::axiom_class_table`, trusted, definitional). Readers before
+  `READY` (`Regions::reserve_owning`, `Shared::init` and what it calls)
+  get the permission from `init`, the class layer from the `SlabTable`
+  that keeps it, and every other reader from `READY`
+  (`ClassTable::table`, `requires api::ready()`, through
+  `api::axiom_published`).
 - `layout::regions::class_entry` (verified, `requires
   api::ready()`): the entry, through the class table's permission
   frozen at `READY` (`api::axiom_published`), its element
@@ -6056,7 +6057,7 @@ bounds, and `Sink::write_str` (verified) keeps it.
   atomic operation each), the `LINE_STATE` wrappers (`line_load`,
   `line_compare_exchange`, `line_store`) and the deferred record's
   phase wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one bare
-  atomic operation each), `ClassTable::table_with`, `class_entry`,
+  atomic operation each), `class_entry`,
   the watermark's load `vspec::atom::load_usize` (the registry is read
   through `Arenas::get_existing` and the verified `arena_ref`),
   `Config::get` and `KEYS`, `vspec::ptr::ref_ptr`

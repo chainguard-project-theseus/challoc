@@ -10,7 +10,6 @@ file.
 | `ClassTable` | external_body type | UnsafeCell/volatile/transmute | none (assumption) | trusted |
 | `axiom_c..._table` | axiom | allocator invariant | none (assumption) | trusted |
 | `ClassTable::new` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
-| `ClassTa...e_with` | external_body | UnsafeCell/volatile/transmute | Kani | trusted |
 | `classes_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 
 ## `ClassTable`
@@ -57,26 +56,9 @@ Hashes: contract 3932435869, body 785407001.
 const fn new(table: [Class; NCLASSES]) -> ClassTable
 ```
 
-## `ClassTable::table_with`
-
-src/layout/mod.rs:1558. Kind: external_body. Category: UnsafeCell/volatile/transmute.
-Tool: Kani. Status: trusted (partly checked, Kani: layout::kani_classes::class_table_entries; not checked: that a reader holding the frozen permission sees the value it holds, which is the `Sync` impl's argument).
-
-> The table, for verified code that holds `t`, the permission to [`CLASSES`]' storage that `api::init` freezes once [`adopt_page_geometry`] has written it ([`frozen_table`]): [`class_table`], whose entries are well formed and sized [`spec_class_size`] (`vspec::class::lemma_class_table_wf`).
-
-Hashes: contract 1253691562, body 3243834738.
-
-```rust
-pub fn table_with(&self, Tracked(t): Tracked<&'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>>) -> (r: &[Class; NCLASSES])
-    requires
-        frozen_table(*t),
-    ensures
-        *r == class_table(),
-```
-
 ## `classes_ptr`
 
-src/layout/mod.rs:1646. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1643. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 > The storage of [`CLASSES`]' table, as a raw pointer.
