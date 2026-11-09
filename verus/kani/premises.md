@@ -255,7 +255,9 @@ section's, and fails on a Kani status that names any other.
   challoc's declarations of it in `api/print.rs` and
   `purge/background.rs` (its `glibc` module). A program or preloaded
   library that defines that symbol itself, interposing on glibc's, is
-  outside this premise unless its definition does the same. Called by
+  outside this premise unless its definition does the same, and so is a
+  thread challoc runs on that glibc did not create (a raw `clone`),
+  whose thread pointer names no descriptor of its own. Called by
   `api::print::cancel_disable` with `PTHREAD_CANCEL_DISABLE` (1; 0 is
   `PTHREAD_CANCEL_ENABLE`), by `api::print::cancel_restore` with any
   `state`, and by `purge::background::pthread_join` with
